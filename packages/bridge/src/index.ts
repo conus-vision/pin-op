@@ -16,6 +16,11 @@ export {
   type ClientRegistration,
   type RegisteredClient,
 } from "./clientRegistry.js";
+export {
+  PeerStateRegistry,
+  type PeerStateSnapshot,
+  type PeerStateTransition,
+} from "./peerStateRegistry.js";
 export { startHeartbeat, type Heartbeat } from "./heartbeat.js";
 export { routeMessage } from "./router.js";
 export {

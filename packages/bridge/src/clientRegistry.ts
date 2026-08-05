@@ -123,6 +123,16 @@ export class ClientRegistry {
     return count;
   }
 
+  countBySessionAndRole(sessionId: string, role: ClientRole): number {
+    let count = 0;
+    for (const client of this.clients.values()) {
+      if (client.sessionId === sessionId && client.source.role === role) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   clear(): void {
     this.clients.clear();
   }

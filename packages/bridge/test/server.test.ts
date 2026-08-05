@@ -9,7 +9,9 @@ import {
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";
+import { ClientRegistry, type ClientRegistration } from "../src/clientRegistry.js";
 import { LinkAuthenticator } from "../src/linkAuthenticator.js";
+import { PeerStateRegistry } from "../src/peerStateRegistry.js";
 import { ReplyRouteRegistry } from "../src/replyRouteRegistry.js";
 import {
   BRIDGE_MAX_PAYLOAD_BYTES,
@@ -31,7 +33,11 @@ describe("bridge server link authentication", () => {
 
     try {
       const socket = await connect(server.getUrl());
-      const accepted = await sendJsonAndReceive(socket, linkRequest());
+      const accepted = await sendJsonAndExpectType(
+        socket,
+        linkRequest(),
+        "linkAccepted",
+      );
 
       expect(accepted).toMatchObject({
         protocolVersion: PROTOCOL_VERSION,
@@ -46,7 +52,7 @@ describe("bridge server link authentication", () => {
       const authToken = readString(accepted, "authToken");
       const survivingToken = acceptedToken(authenticator);
       await expect(
-        sendJsonAndReceive(socket, hello(authToken)),
+        sendJsonAndExpectType(socket, hello(authToken), "authenticated"),
       ).resolves.toMatchObject({
         protocolVersion: PROTOCOL_VERSION,
         type: "authenticated",
@@ -68,7 +74,11 @@ describe("bridge server link authentication", () => {
 
       const survivingSocket = await connect(server.getUrl());
       await expect(
-        sendJsonAndReceive(survivingSocket, hello(survivingToken)),
+        sendJsonAndExpectType(
+          survivingSocket,
+          hello(survivingToken),
+          "authenticated",
+        ),
       ).resolves.toMatchObject({ type: "authenticated" });
       await closeSocket(survivingSocket);
     } finally {
@@ -139,7 +149,11 @@ describe("bridge server link authentication", () => {
     try {
       const socket = await connect(server.getUrl());
       await expect(
-        sendJsonAndReceive(socket, linkRequest(PIN, "link-first")),
+        sendJsonAndExpectType(
+          socket,
+          linkRequest(PIN, "link-first"),
+          "linkAccepted",
+        ),
       ).resolves.toMatchObject({ type: "linkAccepted" });
 
       await expectSocketErrorAndClose(
@@ -178,7 +192,7 @@ describe("bridge server link authentication", () => {
     try {
       const socket = await connect(server.getUrl());
       await expect(
-        sendJsonAndReceive(socket, hello(authToken)),
+        sendJsonAndExpectType(socket, hello(authToken), "authenticated"),
       ).resolves.toMatchObject({ type: "authenticated" });
       await delay(100);
       expect(socket.readyState).toBe(WebSocket.OPEN);
@@ -199,9 +213,13 @@ describe("bridge server link authentication", () => {
 
     try {
       const ide = await connect(server.getUrl());
-      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
       const browser = await connect(server.getUrl());
-      await sendJsonAndReceive(browser, hello(browserToken));
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
       const countListener = server.onClientCountChanged((next) => {
         counts.push(next);
         tokenStateAtCount.push(
@@ -214,17 +232,20 @@ describe("bridge server link authentication", () => {
         );
       });
 
-      const routed: unknown[] = [];
-      ide.on("message", (data) => routed.push(JSON.parse(data.toString())));
+      const routed = listenForJsonMessages(
+        ide,
+        (message) => message.type === "inspect",
+      );
       const closed = once(browser, "close");
       browser.send(JSON.stringify(unlink()));
       browser.send(JSON.stringify(inspectMessage()));
       await closed;
-      await delay(20);
+      await ideErrorBarrier(ide, "unlink-queued-barrier");
 
-      expect(routed).toEqual([]);
+      expect(routed.messages).toEqual([]);
       expect(counts).toEqual([{ browser: 0, ide: 1 }]);
       expect(tokenStateAtCount).toEqual(["rejected"]);
+      routed.dispose();
       countListener.dispose();
       await closeSocket(ide);
     } finally {
@@ -288,7 +309,11 @@ describe("bridge server link authentication", () => {
 
     try {
       const linkSocket = await connect(server.getUrl());
-      const accepted = await sendJsonAndReceive(linkSocket, linkRequest());
+      const accepted = await sendJsonAndExpectType(
+        linkSocket,
+        linkRequest(),
+        "linkAccepted",
+      );
       const authToken = readString(accepted, "authToken");
       await closeSocket(linkSocket);
 
@@ -308,7 +333,11 @@ describe("bridge server link authentication", () => {
 
     try {
       const linkSocket = await connect(server.getUrl());
-      const accepted = await sendJsonAndReceive(linkSocket, linkRequest());
+      const accepted = await sendJsonAndExpectType(
+        linkSocket,
+        linkRequest(),
+        "linkAccepted",
+      );
       const authToken = readString(accepted, "authToken");
       await closeSocket(linkSocket);
 
@@ -376,7 +405,11 @@ describe("bridge server link authentication", () => {
     try {
       const socket = await connect(server.getUrl());
       await expect(
-        sendJsonAndReceive(socket, hello(token.value, "ide")),
+        sendJsonAndExpectType(
+          socket,
+          hello(token.value, "ide"),
+          "authenticated",
+        ),
       ).resolves.toMatchObject({ type: "authenticated" });
 
       await expectSocketErrorAndClose(socket, hello(token.value, "ide"), {
@@ -395,9 +428,10 @@ describe("bridge server link authentication", () => {
 
     try {
       const socket = await connect(server.getUrl());
-      const accepted = await sendJsonAndReceive(
+      const accepted = await sendJsonAndExpectType(
         socket,
         linkRequest(server.getLinkInfo().pin),
+        "linkAccepted",
       );
       expect(accepted).toMatchObject({
         type: "linkAccepted",
@@ -408,6 +442,696 @@ describe("bridge server link authentication", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("bridge server peer state", () => {
+  it("sends authenticated before a disconnected generation-zero snapshot", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const messages = listenForJsonMessages(browser, () => true);
+
+    try {
+      await expect(
+        sendJsonAndExpectType(browser, hello(browserToken), "authenticated"),
+      ).resolves.toMatchObject({ type: "authenticated" });
+
+      await eventually(() =>
+        expect(messages.messages).toEqual([
+          expect.objectContaining({ type: "authenticated" }),
+          expect.objectContaining({
+            protocolVersion: PROTOCOL_VERSION,
+            type: "peerState",
+            sessionId: SESSION_ID,
+            role: "ide",
+            connected: false,
+            peerGeneration: 0,
+            metadata: {},
+          }),
+        ]),
+      );
+    } finally {
+      messages.dispose();
+      await closeSocket(browser);
+      await server.stop();
+    }
+  });
+
+  it("sends a newly authenticated browser the current connected generation", async () => {
+    const authenticator = createAuthenticator();
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const browserToken = acceptedToken(authenticator);
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const ide = await connect(server.getUrl());
+    const browser = await connect(server.getUrl());
+    const messages = listenForJsonMessages(browser, () => true);
+
+    try {
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
+      await expect(
+        sendJsonAndExpectType(browser, hello(browserToken), "authenticated"),
+      ).resolves.toMatchObject({ type: "authenticated" });
+
+      await eventually(() =>
+        expect(messages.messages).toEqual([
+          expect.objectContaining({ type: "authenticated" }),
+          expect.objectContaining({
+            type: "peerState",
+            sessionId: SESSION_ID,
+            connected: true,
+            peerGeneration: 1,
+            metadata: {},
+          }),
+        ]),
+      );
+    } finally {
+      messages.dispose();
+      await Promise.all([closeSocket(browser), closeSocket(ide)]);
+      await server.stop();
+    }
+  });
+
+  it("reconciles a populated injected registry before sending a browser snapshot", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const registry = new ClientRegistry();
+    const existingBrowser = inMemoryClient("browser", SESSION_ID);
+    const existingSimulator = inMemoryClient("simulator", SESSION_ID);
+    const existingIde = inMemoryClient("ide", SESSION_ID);
+    registry.add(existingBrowser.registration);
+    registry.add(existingSimulator.registration);
+    registry.add(existingIde.registration);
+    const server = createBridgeServer({ port: 0, authenticator, registry });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const orderedMessages = listenForJsonMessages(
+      browser,
+      (message) =>
+        message.type === "authenticated" || message.type === "peerState",
+    );
+
+    try {
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      await expectSocketErrorAndClose(browser, hello(browserToken), {
+        code: "protocol.invalidMessage",
+        message: "Client is already authenticated",
+      });
+
+      expect(orderedMessages.messages).toEqual([
+        expect.objectContaining({ type: "authenticated" }),
+        expect.objectContaining({
+          type: "peerState",
+          sessionId: SESSION_ID,
+          connected: true,
+          peerGeneration: 1,
+        }),
+      ]);
+      expect(
+        existingBrowser.sent.filter((message) => message.type === "peerState"),
+      ).toEqual([
+        expect.objectContaining({ connected: true, peerGeneration: 1 }),
+      ]);
+      expect(
+        existingSimulator.sent.filter((message) => message.type === "peerState"),
+      ).toEqual([
+        expect.objectContaining({ connected: true, peerGeneration: 1 }),
+      ]);
+      expect(
+        existingIde.sent.filter((message) => message.type === "peerState"),
+      ).toEqual([]);
+    } finally {
+      orderedMessages.dispose();
+      await server.stop();
+    }
+  });
+
+  it("reconciles a connected injected tracker when the registry has no IDE", async () => {
+    const authenticator = createAuthenticator();
+    const simulatorToken = acceptedToken(authenticator, "simulator");
+    const registry = new ClientRegistry();
+    const peerStateRegistry = new PeerStateRegistry();
+    const existingBrowser = inMemoryClient("browser", SESSION_ID);
+    const existingSimulator = inMemoryClient("simulator", SESSION_ID);
+    registry.add(existingBrowser.registration);
+    registry.add(existingSimulator.registration);
+    peerStateRegistry.updateIdeCount(SESSION_ID, 1);
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      registry,
+      peerStateRegistry,
+    });
+    await server.start();
+    const simulator = await connect(server.getUrl());
+    const orderedMessages = listenForJsonMessages(
+      simulator,
+      (message) =>
+        message.type === "authenticated" || message.type === "peerState",
+    );
+
+    try {
+      await sendJsonAndExpectType(
+        simulator,
+        hello(simulatorToken, "simulator"),
+        "authenticated",
+      );
+      await expectSocketErrorAndClose(
+        simulator,
+        hello(simulatorToken, "simulator"),
+        {
+          code: "protocol.invalidMessage",
+          message: "Client is already authenticated",
+        },
+      );
+
+      expect(orderedMessages.messages).toEqual([
+        expect.objectContaining({ type: "authenticated" }),
+        expect.objectContaining({
+          type: "peerState",
+          sessionId: SESSION_ID,
+          connected: false,
+          peerGeneration: 2,
+        }),
+      ]);
+      expect(
+        existingBrowser.sent.filter((message) => message.type === "peerState"),
+      ).toEqual([
+        expect.objectContaining({ connected: false, peerGeneration: 2 }),
+      ]);
+      expect(
+        existingSimulator.sent.filter((message) => message.type === "peerState"),
+      ).toEqual([
+        expect.objectContaining({ connected: false, peerGeneration: 2 }),
+      ]);
+    } finally {
+      orderedMessages.dispose();
+      await server.stop();
+    }
+  });
+
+  it("sends simulator authenticated before exactly one same-session snapshot", async () => {
+    const authenticator = createAuthenticator();
+    const simulatorToken = acceptedToken(authenticator, "simulator");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const simulator = await connect(server.getUrl());
+    const messages = listenForJsonMessages(simulator, () => true);
+
+    try {
+      await expect(
+        sendJsonAndExpectType(
+          simulator,
+          hello(simulatorToken, "simulator"),
+          "authenticated",
+        ),
+      ).resolves.toMatchObject({ type: "authenticated" });
+
+      await eventually(() =>
+        expect(messages.messages).toEqual([
+          expect.objectContaining({ type: "authenticated" }),
+          expect.objectContaining({
+            protocolVersion: PROTOCOL_VERSION,
+            type: "peerState",
+            sessionId: SESSION_ID,
+            role: "ide",
+            connected: false,
+            peerGeneration: 0,
+            metadata: {},
+          }),
+        ]),
+      );
+    } finally {
+      messages.dispose();
+      await closeSocket(simulator);
+      await server.stop();
+    }
+  });
+
+  it("publishes only boundary transitions across two IDE connections", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const laterBrowserToken = acceptedToken(authenticator);
+    const firstIdeToken = authenticator.issueTrustedToken("ide");
+    const secondIdeToken = authenticator.issueTrustedToken("ide");
+    const reconnectIdeToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const peerStates = listenForJsonMessages(
+      browser,
+      (message) => message.type === "peerState",
+    );
+    let laterBrowserStates: MessageQueue | undefined;
+
+    try {
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: false, peerGeneration: 0 }),
+        ),
+      );
+
+      const firstIde = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        firstIde,
+        hello(firstIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: true, peerGeneration: 1 }),
+        ),
+      );
+
+      const secondIde = await connect(server.getUrl());
+      const secondIdeCount = clientCountBarrier(server, { browser: 1, ide: 2 });
+      await sendJsonAndExpectType(
+        secondIde,
+        hello(secondIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await secondIdeCount.promise;
+      secondIdeCount.dispose();
+      await recipientResolutionBarrier(
+        browser,
+        secondIde,
+        "second-ide-auth-barrier",
+        "browser",
+      );
+      expect(peerStates.messages).toHaveLength(2);
+
+      const firstIdeRemoval = clientCountBarrier(server, { browser: 1, ide: 1 });
+      await closeSocket(firstIde);
+      await firstIdeRemoval.promise;
+      firstIdeRemoval.dispose();
+      await recipientResolutionBarrier(
+        browser,
+        secondIde,
+        "first-ide-close-barrier",
+        "browser",
+      );
+      expect(peerStates.messages).toHaveLength(2);
+
+      const lastIdeRemoval = clientCountBarrier(server, { browser: 1, ide: 0 });
+      await closeSocket(secondIde);
+      await lastIdeRemoval.promise;
+      lastIdeRemoval.dispose();
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: false, peerGeneration: 2 }),
+        ),
+      );
+
+      const laterBrowser = await connect(server.getUrl());
+      const nextBrowserStates = listenForJsonMessages(
+        laterBrowser,
+        (message) => message.type === "peerState",
+      );
+      laterBrowserStates = nextBrowserStates;
+      await sendJsonAndExpectType(
+        laterBrowser,
+        hello(laterBrowserToken),
+        "authenticated",
+      );
+      await eventually(() =>
+        expect(nextBrowserStates.messages).toEqual([
+          expect.objectContaining({ connected: false, peerGeneration: 2 }),
+        ]),
+      );
+
+      const reconnectIde = await connect(server.getUrl());
+      const reconnectIdeCount = clientCountBarrier(server, { browser: 2, ide: 1 });
+      await sendJsonAndExpectType(
+        reconnectIde,
+        hello(reconnectIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await reconnectIdeCount.promise;
+      reconnectIdeCount.dispose();
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: true, peerGeneration: 3 }),
+        ),
+      );
+
+      await Promise.all([closeSocket(browser), closeSocket(laterBrowser), closeSocket(reconnectIde)]);
+    } finally {
+      laterBrowserStates?.dispose();
+      peerStates.dispose();
+      await server.stop();
+    }
+  });
+
+  it("targets transitions by session and role", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const simulatorToken = acceptedToken(authenticator, "simulator");
+    const firstIdeToken = authenticator.issueTrustedToken("ide");
+    const secondIdeToken = authenticator.issueTrustedToken("ide");
+    const registry = new ClientRegistry();
+    const otherBrowser = inMemoryClient("browser", "other-session");
+    const otherSimulator = inMemoryClient("simulator", "other-session");
+    registry.add(otherBrowser.registration);
+    registry.add(otherSimulator.registration);
+    const server = createBridgeServer({ port: 0, authenticator, registry });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const simulator = await connect(server.getUrl());
+    const firstIde = await connect(server.getUrl());
+    const secondIde = await connect(server.getUrl());
+    const browserStates = listenForJsonMessages(
+      browser,
+      (message) => message.type === "peerState",
+    );
+    const simulatorStates = listenForJsonMessages(
+      simulator,
+      (message) => message.type === "peerState",
+    );
+    const firstIdeMessages = listenForJsonMessages(firstIde, () => true);
+    const secondIdeMessages = listenForJsonMessages(secondIde, () => true);
+
+    try {
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      await sendJsonAndExpectType(
+        simulator,
+        hello(simulatorToken, "simulator"),
+        "authenticated",
+      );
+      await sendJsonAndExpectType(
+        firstIde,
+        hello(firstIdeToken.value, "ide"),
+        "authenticated",
+      );
+      const secondIdeCount = clientCountBarrier(server, { browser: 2, ide: 2 });
+      await sendJsonAndExpectType(
+        secondIde,
+        hello(secondIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await secondIdeCount.promise;
+      secondIdeCount.dispose();
+      await recipientResolutionBarrier(
+        browser,
+        firstIde,
+        "target-browser-barrier",
+        "browser",
+      );
+      await recipientResolutionBarrier(
+        simulator,
+        firstIde,
+        "target-simulator-barrier",
+        "simulator",
+      );
+      await ideErrorBarrier(firstIde, "target-first-ide-barrier");
+      await ideErrorBarrier(secondIde, "target-second-ide-barrier");
+
+      await eventually(() => {
+        expect(browserStates.messages).toEqual([
+          expect.objectContaining({ connected: false, peerGeneration: 0 }),
+          expect.objectContaining({ connected: true, peerGeneration: 1 }),
+        ]);
+        expect(simulatorStates.messages).toEqual([
+          expect.objectContaining({ connected: false, peerGeneration: 0 }),
+          expect.objectContaining({ connected: true, peerGeneration: 1 }),
+        ]);
+      });
+      expect(otherBrowser.sent).toEqual([]);
+      expect(otherSimulator.sent).toEqual([]);
+      expect(
+        firstIdeMessages.messages.filter((message) => message.type === "peerState"),
+      ).toEqual([]);
+      expect(
+        secondIdeMessages.messages.filter((message) => message.type === "peerState"),
+      ).toEqual([]);
+    } finally {
+      browserStates.dispose();
+      simulatorStates.dispose();
+      firstIdeMessages.dispose();
+      secondIdeMessages.dispose();
+      await Promise.all([
+        closeSocket(browser),
+        closeSocket(simulator),
+        closeSocket(firstIde),
+        closeSocket(secondIde),
+      ]);
+      await server.stop();
+    }
+  });
+
+  it("publishes unlink transitions for the last IDE and advances reconnect generation", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const firstIdeToken = authenticator.issueTrustedToken("ide");
+    const secondIdeToken = authenticator.issueTrustedToken("ide");
+    const reconnectIdeToken = authenticator.issueTrustedToken("ide");
+    const peerStateRegistry = new PeerStateRegistry();
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      peerStateRegistry,
+    });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const peerStates = listenForJsonMessages(
+      browser,
+      (message) => message.type === "peerState",
+    );
+
+    try {
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      const firstIde = await connect(server.getUrl());
+      const firstIdeCount = clientCountBarrier(server, { browser: 1, ide: 1 });
+      await sendJsonAndExpectType(
+        firstIde,
+        hello(firstIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await firstIdeCount.promise;
+      firstIdeCount.dispose();
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: true, peerGeneration: 1 }),
+        ),
+      );
+
+      const secondIde = await connect(server.getUrl());
+      const secondIdeCount = clientCountBarrier(server, { browser: 1, ide: 2 });
+      await sendJsonAndExpectType(
+        secondIde,
+        hello(secondIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await secondIdeCount.promise;
+      secondIdeCount.dispose();
+      expect(peerStates.messages).toHaveLength(2);
+
+      const firstUnlinkCount = clientCountBarrier(server, { browser: 1, ide: 1 });
+      const firstUnlinkClosed = expectSocketCloses(firstIde);
+      firstIde.send(JSON.stringify(unlink("first-ide-unlink")));
+      await Promise.all([firstUnlinkCount.promise, firstUnlinkClosed]);
+      firstUnlinkCount.dispose();
+      await recipientResolutionBarrier(
+        browser,
+        secondIde,
+        "first-ide-unlink-barrier",
+        "browser",
+      );
+      expect(peerStates.messages).toHaveLength(2);
+      expect(peerStateRegistry.get(SESSION_ID)).toEqual({
+        connected: true,
+        peerGeneration: 1,
+      });
+
+      const lastUnlinkCount = clientCountBarrier(server, { browser: 1, ide: 0 });
+      const lastUnlinkClosed = expectSocketCloses(secondIde);
+      secondIde.send(JSON.stringify(unlink("last-ide-unlink")));
+      await Promise.all([lastUnlinkCount.promise, lastUnlinkClosed]);
+      lastUnlinkCount.dispose();
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: false, peerGeneration: 2 }),
+        ),
+      );
+      expect(peerStateRegistry.get(SESSION_ID)).toEqual({
+        connected: false,
+        peerGeneration: 2,
+      });
+
+      const reconnectIde = await connect(server.getUrl());
+      const reconnectIdeCount = clientCountBarrier(server, { browser: 1, ide: 1 });
+      await sendJsonAndExpectType(
+        reconnectIde,
+        hello(reconnectIdeToken.value, "ide"),
+        "authenticated",
+      );
+      await reconnectIdeCount.promise;
+      reconnectIdeCount.dispose();
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: true, peerGeneration: 3 }),
+        ),
+      );
+      expect(peerStateRegistry.get(SESSION_ID)).toEqual({
+        connected: true,
+        peerGeneration: 3,
+      });
+      await Promise.all([closeSocket(browser), closeSocket(reconnectIde)]);
+    } finally {
+      peerStates.dispose();
+      await server.stop();
+    }
+  });
+
+  it("publishes a false transition when heartbeat evicts the last IDE", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      heartbeatIntervalMs: 10,
+    });
+    await server.start();
+    const browser = await connect(server.getUrl());
+    const ide = await connect(server.getUrl());
+    const peerStates = listenForJsonMessages(
+      browser,
+      (message) => message.type === "peerState",
+    );
+    const stopBrowserPong = autoPong(browser);
+
+    try {
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
+      const ideClosed = expectSocketCloses(ide);
+
+      await eventually(() =>
+        expect(peerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: false, peerGeneration: 2 }),
+        ),
+      );
+      await ideClosed;
+      expect(server.registry.countBySessionAndRole(SESSION_ID, "ide")).toBe(0);
+    } finally {
+      stopBrowserPong();
+      peerStates.dispose();
+      await closeSocket(browser);
+      await server.stop();
+    }
+  });
+
+  it("continues publishing to surviving browsers after one send fails", async () => {
+    const authenticator = createAuthenticator();
+    const browserAToken = acceptedToken(authenticator);
+    const browserBToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const browserA = await connect(server.getUrl());
+    const browserB = await connect(server.getUrl());
+    const browserBPeerStates = listenForJsonMessages(
+      browserB,
+      (message) => message.type === "peerState",
+    );
+
+    try {
+      await sendJsonAndExpectType(browserA, hello(browserAToken), "authenticated");
+      await sendJsonAndExpectType(browserB, hello(browserBToken), "authenticated");
+      const failingBrowser = server.registry
+        .findBySessionAndRole(SESSION_ID, "browser")
+        .at(0);
+      if (!failingBrowser) {
+        throw new Error("Expected an authenticated browser");
+      }
+      failingBrowser.connection.send = () => {
+        throw new Error("peer state send failed");
+      };
+
+      const ide = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
+      await eventually(() =>
+        expect(browserBPeerStates.messages).toContainEqual(
+          expect.objectContaining({ connected: true, peerGeneration: 1 }),
+        ),
+      );
+      await Promise.all([closeSocket(browserA), closeSocket(browserB), closeSocket(ide)]);
+    } finally {
+      browserBPeerStates.dispose();
+      await server.stop();
+    }
+  });
+
+  it.each(["browser", "simulator", "ide"] as const)(
+    "rejects an inbound peerState from %s and closes the socket",
+    async (role) => {
+      const authenticator = createAuthenticator();
+      const token =
+        role === "ide"
+          ? authenticator.issueTrustedToken("ide").value
+          : acceptedToken(authenticator, role);
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+      const socket = await connect(server.getUrl());
+      const errors = listenForJsonMessages(
+        socket,
+        (message) => message.type === "error",
+      );
+
+      try {
+        await sendJsonAndExpectType(
+          socket,
+          hello(token, role),
+          "authenticated",
+        );
+        const closed = expectSocketCloses(socket);
+        socket.send(JSON.stringify(peerStateMessage()));
+        await eventually(() =>
+          expect(errors.messages).toContainEqual(
+            expect.objectContaining({
+              type: "error",
+              code: "protocol.invalidMessage",
+            }),
+          ),
+        );
+        await closed;
+      } finally {
+        errors.dispose();
+        await server.stop();
+      }
+    },
+  );
+
+  it("clears an injected peer state registry on stop", async () => {
+    const peerStateRegistry = new PeerStateRegistry();
+    peerStateRegistry.updateIdeCount(SESSION_ID, 1);
+    const server = createBridgeServer({
+      port: 0,
+      peerStateRegistry,
+    });
+
+    await server.start();
+    await server.stop();
+
+    expect(peerStateRegistry.get(SESSION_ID)).toEqual({
+      connected: false,
+      peerGeneration: 0,
+    });
   });
 });
 
@@ -428,7 +1152,7 @@ describe("bridge server client counts", () => {
       const socket = await connect(server.getUrl());
       const closed = once(socket, "close");
       await expect(
-        sendJsonAndReceive(socket, hello(authToken)),
+        sendJsonAndExpectType(socket, hello(authToken), "authenticated"),
       ).resolves.toMatchObject({ type: "authenticated" });
 
       await eventually(() =>
@@ -459,7 +1183,7 @@ describe("bridge server client counts", () => {
 
     try {
       const first = await connect(server.getUrl());
-      await expect(sendJsonAndReceive(first, hello(authToken))).resolves.toMatchObject({
+      await expect(sendJsonAndExpectType(first, hello(authToken), "authenticated")).resolves.toMatchObject({
         type: "authenticated",
       });
       await eventually(() => expect(counts).toEqual([{ browser: 1, ide: 0 }]));
@@ -476,7 +1200,7 @@ describe("bridge server client counts", () => {
       const countAtDisposal = counts.length;
       const second = await connect(server.getUrl());
       await expect(
-        sendJsonAndReceive(second, hello(authToken)),
+        sendJsonAndExpectType(second, hello(authToken), "authenticated"),
       ).resolves.toMatchObject({ type: "authenticated" });
       await closeSocket(second);
       expect(counts).toHaveLength(countAtDisposal);
@@ -497,7 +1221,7 @@ describe("bridge server client counts", () => {
     await server.start();
 
     const socket = await connect(server.getUrl());
-    await expect(sendJsonAndReceive(socket, hello(authToken))).resolves.toMatchObject({
+    await expect(sendJsonAndExpectType(socket, hello(authToken), "authenticated")).resolves.toMatchObject({
       type: "authenticated",
     });
     expect(server.registry.countByRole("browser")).toBe(1);
@@ -516,7 +1240,7 @@ describe("bridge server client counts", () => {
     await server.start();
 
     const socket = await connect(server.getUrl());
-    await expect(sendJsonAndReceive(socket, hello(authToken))).resolves.toMatchObject({
+    await expect(sendJsonAndExpectType(socket, hello(authToken), "authenticated")).resolves.toMatchObject({
       type: "authenticated",
     });
     await eventually(() => expect(server.registry.countByRole("browser")).toBe(1));
@@ -594,40 +1318,54 @@ describe("bridge server authenticated envelope identity", () => {
       const ideToken = authenticator.issueTrustedToken("ide");
       const server = createBridgeServer({ port: 0, authenticator });
       await server.start();
+      const queues: MessageQueue[] = [];
 
       try {
         const ide = await connect(server.getUrl());
-        await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+        await sendJsonAndExpectType(
+          ide,
+          hello(ideToken.value, "ide"),
+          "authenticated",
+        );
         const browser = await connect(server.getUrl());
-        await sendJsonAndReceive(browser, hello(browserToken));
-        const ideMessages: unknown[] = [];
-        const browserMessages: unknown[] = [];
-        ide.on("message", (data) =>
-          ideMessages.push(JSON.parse(data.toString())),
+        await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+        const idePeerStates = listenForJsonMessages(
+          ide,
+          (message) => message.type === "peerState",
         );
-        browser.on("message", (data) =>
-          browserMessages.push(JSON.parse(data.toString())),
+        const browserErrors = listenForJsonMessages(
+          browser,
+          (message) => message.type === "error",
         );
+        queues.push(idePeerStates, browserErrors);
         const closed = once(browser, "close");
+        const browserError = nextJsonMessageOfType(browser, "error");
 
         browser.send(JSON.stringify(createMessage()));
 
-        await eventually(() =>
-          expect(browserMessages).toEqual([
-            expect.objectContaining({
-              type: "error",
-              code: "protocol.invalidMessage",
-              message: "Message does not match protocol",
-              details: { fatal: true },
-            }),
-          ]),
-        );
+        await expect(browserError).resolves.toMatchObject({
+          type: "error",
+          code: "protocol.invalidMessage",
+          message: "Message does not match protocol",
+          details: { fatal: true },
+        });
         await closed;
-        await delay(20);
-        expect(ideMessages).toEqual([]);
+        await ideErrorBarrier(ide, "post-auth-replay-ide-barrier");
+        expect(browserErrors.messages).toEqual([
+          expect.objectContaining({
+            type: "error",
+            code: "protocol.invalidMessage",
+            message: "Message does not match protocol",
+            details: { fatal: true },
+          }),
+        ]);
+        expect(idePeerStates.messages).toEqual([]);
         expect(server.registry.countByRole("browser")).toBe(0);
         await closeSocket(ide);
       } finally {
+        for (const queue of queues) {
+          queue.dispose();
+        }
         await server.stop();
       }
     },
@@ -644,11 +1382,19 @@ describe("bridge server authenticated envelope identity", () => {
 
       try {
         const ide = await connect(server.getUrl());
-        await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+        await sendJsonAndExpectType(
+          ide,
+          hello(ideToken.value, "ide"),
+          "authenticated",
+        );
         const sender = await connect(server.getUrl());
-        await sendJsonAndReceive(sender, hello(senderToken, role));
+        await sendJsonAndExpectType(
+          sender,
+          hello(senderToken, role),
+          "authenticated",
+        );
 
-        const firstRouted = nextJsonMessageBeforeClose(ide, sender);
+        const firstRouted = nextJsonMessageBeforeClose(ide, sender, "inspect");
         sender.send(JSON.stringify(inspectMessage("panel-101", role)));
         await expect(firstRouted).resolves.toMatchObject({
           type: "inspect",
@@ -656,7 +1402,7 @@ describe("bridge server authenticated envelope identity", () => {
           source: { role, id: "panel-101" },
         });
 
-        const secondRouted = nextJsonMessageBeforeClose(ide, sender);
+        const secondRouted = nextJsonMessageBeforeClose(ide, sender, "inspect");
         sender.send(JSON.stringify(inspectMessage("panel-102", role)));
         await expect(secondRouted).resolves.toMatchObject({
           type: "inspect",
@@ -683,11 +1429,15 @@ describe("bridge server authenticated envelope identity", () => {
 
     try {
       const ide = await connect(server.getUrl());
-      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
       const browserA = await connect(server.getUrl());
-      await sendJsonAndReceive(browserA, hello(browserAToken));
+      await sendJsonAndExpectType(browserA, hello(browserAToken), "authenticated");
       const browserB = await connect(server.getUrl());
-      await sendJsonAndReceive(browserB, hello(browserBToken));
+      await sendJsonAndExpectType(browserB, hello(browserBToken), "authenticated");
       const ideInspects = listenForJsonMessages(
         ide,
         (message) => message.type === "inspect",
@@ -767,9 +1517,13 @@ describe("bridge server authenticated envelope identity", () => {
 
     try {
       const ide = await connect(server.getUrl());
-      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
       const browser = await connect(server.getUrl());
-      await sendJsonAndReceive(browser, hello(browserToken));
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
 
       await expectSocketErrorAndClose(
         ide,
@@ -802,7 +1556,11 @@ describe("bridge server authenticated envelope identity", () => {
 
     try {
       const ide = await connect(server.getUrl());
-      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
       listenerDisposers.push(autoPong(ide));
       const ideInspects = listenForJsonMessages(
         ide,
@@ -815,7 +1573,11 @@ describe("bridge server authenticated envelope identity", () => {
       queues.push(ideInspects, ideErrors);
 
       const browserAfterClose = await connect(server.getUrl());
-      await sendJsonAndReceive(browserAfterClose, hello(browserToken));
+      await sendJsonAndExpectType(
+        browserAfterClose,
+        hello(browserToken),
+        "authenticated",
+      );
       listenerDisposers.push(autoPong(browserAfterClose));
       browserAfterClose.send(JSON.stringify(inspectMessage("close-route")));
       await eventually(() =>
@@ -834,7 +1596,11 @@ describe("bridge server authenticated envelope identity", () => {
       );
 
       const browserAfterUnlink = await connect(server.getUrl());
-      await sendJsonAndReceive(browserAfterUnlink, hello(unlinkBrowserToken));
+      await sendJsonAndExpectType(
+        browserAfterUnlink,
+        hello(unlinkBrowserToken),
+        "authenticated",
+      );
       listenerDisposers.push(autoPong(browserAfterUnlink));
       browserAfterUnlink.send(JSON.stringify(inspectMessage("unlink-route")));
       await eventually(() =>
@@ -855,7 +1621,11 @@ describe("bridge server authenticated envelope identity", () => {
       );
 
       const browserAfterEviction = await connect(server.getUrl());
-      await sendJsonAndReceive(browserAfterEviction, hello(evictionBrowserToken));
+      await sendJsonAndExpectType(
+        browserAfterEviction,
+        hello(evictionBrowserToken),
+        "authenticated",
+      );
       browserAfterEviction.send(JSON.stringify(inspectMessage("eviction-route")));
       await eventually(() =>
         expect(ideInspects.messages).toContainEqual(
@@ -879,7 +1649,11 @@ describe("bridge server authenticated envelope identity", () => {
       );
 
       const browserBeforeStop = await connect(server.getUrl());
-      await sendJsonAndReceive(browserBeforeStop, hello(stopBrowserToken));
+      await sendJsonAndExpectType(
+        browserBeforeStop,
+        hello(stopBrowserToken),
+        "authenticated",
+      );
       listenerDisposers.push(autoPong(browserBeforeStop));
       browserBeforeStop.send(JSON.stringify(inspectMessage("stop-route")));
       await eventually(() =>
@@ -936,11 +1710,17 @@ describe("bridge server authenticated envelope identity", () => {
 
       try {
         const ide = await connect(server.getUrl());
-        await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+        await sendJsonAndExpectType(
+          ide,
+          hello(ideToken.value, "ide"),
+          "authenticated",
+        );
         const browser = await connect(server.getUrl());
-        await sendJsonAndReceive(browser, hello(browserToken));
-        const routed: unknown[] = [];
-        ide.on("message", (data) => routed.push(JSON.parse(data.toString())));
+        await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+        const routed = listenForJsonMessages(
+          ide,
+          (message) => message.type === "inspect",
+        );
 
         const error = await expectSocketErrorAndClose(
           browser,
@@ -950,10 +1730,11 @@ describe("bridge server authenticated envelope identity", () => {
             message: "Message does not match protocol",
           },
         );
-        await delay(20);
+        await ideErrorBarrier(ide, "mismatched-inspect-barrier");
 
-        expect(routed).toEqual([]);
+        expect(routed.messages).toEqual([]);
         expect(JSON.stringify(error)).not.toContain(browserToken);
+        routed.dispose();
         await closeSocket(ide);
       } finally {
         await server.stop();
@@ -969,7 +1750,7 @@ describe("bridge server authenticated envelope identity", () => {
 
     try {
       const browser = await connect(server.getUrl());
-      await sendJsonAndReceive(browser, hello(browserToken));
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
 
       await expectSocketErrorAndClose(
         browser,
@@ -1001,10 +1782,14 @@ describe("bridge server authenticated envelope identity", () => {
 
     try {
       const ide = await connect(server.getUrl());
-      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
       const browser = await connect(server.getUrl());
-      await sendJsonAndReceive(browser, hello(browserToken));
-      const routed = nextJsonMessage(ide);
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      const routed = nextJsonMessageOfType(ide, "inspect");
 
       browser.send(JSON.stringify(inspectMessage()));
 
@@ -1022,7 +1807,7 @@ describe("bridge server authenticated envelope identity", () => {
         arguments: { selector: "#submit", metadata: {} },
         metadata: {},
       };
-      const routedCommand = nextJsonMessage(browser);
+      const routedCommand = nextJsonMessageOfType(browser, "command");
       ide.send(JSON.stringify(command));
       await expect(routedCommand).resolves.toMatchObject(command);
 
@@ -1034,7 +1819,7 @@ describe("bridge server authenticated envelope identity", () => {
         references: [],
         metadata: {},
       };
-      const routedReferences = nextJsonMessage(browser);
+      const routedReferences = nextJsonMessageOfType(browser, "references");
       ide.send(JSON.stringify(references));
       await expect(routedReferences).resolves.toMatchObject(references);
 
@@ -1074,7 +1859,7 @@ describe("bridge server send safety", () => {
 
     try {
       const socket = await connect(server.getUrl());
-      await sendJsonAndReceive(socket, hello(authToken));
+      await sendJsonAndExpectType(socket, hello(authToken), "authenticated");
       const connection = server.registry.all()[0]?.connection;
       if (!connection) {
         throw new Error("Expected registered browser connection");
@@ -1112,7 +1897,7 @@ describe("bridge server network policy", () => {
 
     try {
       const atLimit = await connect(server.getUrl());
-      const acceptedAtLimit = nextJsonMessage(atLimit);
+      const acceptedAtLimit = nextJsonMessageOfType(atLimit, "error");
       const atLimitClosed = once(atLimit, "close");
       atLimit.send(Buffer.alloc(BRIDGE_MAX_PAYLOAD_BYTES, 0x61));
       await expect(acceptedAtLimit).resolves.toMatchObject({
@@ -1373,11 +2158,11 @@ function hello(
   };
 }
 
-function unlink() {
+function unlink(messageId = "unlink-1") {
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "unlink",
-    messageId: "unlink-1",
+    messageId,
     sessionId: SESSION_ID,
     metadata: {},
   };
@@ -1403,6 +2188,19 @@ function inspectMessage(
       },
     ],
     context: { url: "http://localhost:3000", metadata: {} },
+    metadata: {},
+  };
+}
+
+function peerStateMessage() {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: "inbound-peer-state",
+    sessionId: SESSION_ID,
+    role: "ide",
+    connected: true,
+    peerGeneration: 1,
     metadata: {},
   };
 }
@@ -1456,6 +2254,76 @@ function listenForJsonMessages(
   };
 }
 
+function inMemoryClient(
+  role: ClientRole,
+  sessionId: string,
+): { readonly registration: ClientRegistration; readonly sent: JsonMessage[] } {
+  const sent: JsonMessage[] = [];
+  return {
+    sent,
+    registration: {
+      connection: {
+        send(payload) {
+          sent.push(JSON.parse(payload) as JsonMessage);
+          return true;
+        },
+        terminate() {},
+      },
+      source: { role, id: `${role}-${sessionId}`, metadata: {} },
+      sessionId,
+      authToken: `${role}-${sessionId}-token`,
+    },
+  };
+}
+
+function clientCountBarrier(
+  server: BridgeServer,
+  expected: { readonly browser: number; readonly ide: number },
+): { readonly promise: Promise<void>; dispose(): void } {
+  let subscription: { dispose(): void } | undefined;
+  const promise = new Promise<void>((resolve) => {
+    subscription = server.onClientCountChanged((counts) => {
+      if (counts.browser !== expected.browser || counts.ide !== expected.ide) {
+        return;
+      }
+
+      subscription?.dispose();
+      resolve();
+    });
+  });
+
+  return {
+    promise,
+    dispose() {
+      subscription?.dispose();
+    },
+  };
+}
+
+async function recipientResolutionBarrier(
+  sender: WebSocket,
+  ide: WebSocket,
+  markerId: string,
+  role: "browser" | "simulator",
+): Promise<void> {
+  const inspectId = `inspect-${markerId}`;
+  const routedInspect = nextJsonMessageOfType(ide, "inspect");
+  const routedResolution = nextJsonMessageOfType(sender, "resolution");
+  sender.send(JSON.stringify(inspectMessage(markerId, role)));
+  await routedInspect;
+  ide.send(JSON.stringify(resolutionMessage(inspectId)));
+  await routedResolution;
+}
+
+async function ideErrorBarrier(ide: WebSocket, markerId: string): Promise<void> {
+  const response = nextJsonMessageOfType(ide, "error");
+  ide.send(JSON.stringify(resolutionMessage(`unrouted-${markerId}`)));
+  await expect(response).resolves.toMatchObject({
+    type: "error",
+    code: "bridge.noBrowserClient",
+  });
+}
+
 async function connect(url: string, origin?: string): Promise<WebSocket> {
   const socket = new WebSocket(url, origin ? { origin } : undefined);
   await once(socket, "open");
@@ -1485,28 +2353,130 @@ function autoPong(socket: WebSocket): () => void {
   return () => socket.off("message", listener);
 }
 
-async function sendJsonAndReceive(
+interface JsonMessageBuffer {
+  next(filter: (message: JsonMessage) => boolean): Promise<JsonMessage>;
+  dispose(): void;
+}
+
+interface JsonMessageWaiter {
+  readonly filter: (message: JsonMessage) => boolean;
+  readonly resolve: (message: JsonMessage) => void;
+  readonly reject: (error: Error) => void;
+}
+
+const jsonMessageBuffers = new WeakMap<WebSocket, JsonMessageBuffer>();
+
+function getJsonMessageBuffer(socket: WebSocket): JsonMessageBuffer {
+  const existing = jsonMessageBuffers.get(socket);
+  if (existing) {
+    return existing;
+  }
+
+  const messages: JsonMessage[] = [];
+  const waiters: JsonMessageWaiter[] = [];
+  let disposed = false;
+
+  const cleanup = (): void => {
+    socket.off("message", onMessage);
+    socket.off("close", onClose);
+    jsonMessageBuffers.delete(socket);
+  };
+
+  const rejectWaiters = (error: Error): void => {
+    for (const waiter of waiters.splice(0)) {
+      waiter.reject(error);
+    }
+  };
+
+  const onMessage = (data: { toString(): string }): void => {
+    let message: JsonMessage;
+    try {
+      message = JSON.parse(data.toString()) as JsonMessage;
+    } catch {
+      return;
+    }
+
+    const waiterIndex = waiters.findIndex((waiter) => waiter.filter(message));
+    if (waiterIndex >= 0) {
+      const [waiter] = waiters.splice(waiterIndex, 1);
+      waiter.resolve(message);
+      return;
+    }
+
+    messages.push(message);
+  };
+
+  const onClose = (): void => {
+    if (disposed) {
+      return;
+    }
+
+    disposed = true;
+    cleanup();
+    rejectWaiters(new Error("Socket closed before receiving the expected message"));
+  };
+
+  const buffer: JsonMessageBuffer = {
+    next(filter) {
+      if (disposed) {
+        return Promise.reject(
+          new Error("Socket closed before receiving the expected message"),
+        );
+      }
+
+      const messageIndex = messages.findIndex(filter);
+      if (messageIndex >= 0) {
+        const [message] = messages.splice(messageIndex, 1);
+        return Promise.resolve(message);
+      }
+
+      return new Promise<JsonMessage>((resolve, reject) => {
+        waiters.push({ filter, resolve, reject });
+      });
+    },
+    dispose() {
+      if (disposed) {
+        return;
+      }
+
+      disposed = true;
+      cleanup();
+      rejectWaiters(new Error("Message buffer disposed"));
+    },
+  };
+
+  socket.on("message", onMessage);
+  socket.once("close", onClose);
+  jsonMessageBuffers.set(socket, buffer);
+  return buffer;
+}
+
+async function sendJsonAndExpectType(
   socket: WebSocket,
   message: unknown,
+  type: string,
 ): Promise<Record<string, unknown>> {
-  const response = nextJsonMessage(socket);
+  const response = nextJsonMessageOfType(socket, type);
   socket.send(JSON.stringify(message));
   return response;
 }
 
-async function nextJsonMessage(
+function nextJsonMessageOfType(
   socket: WebSocket,
+  type: string,
 ): Promise<Record<string, unknown>> {
-  const [data] = await once(socket, "message");
-  return JSON.parse(data.toString()) as Record<string, unknown>;
+  return getJsonMessageBuffer(socket).next(
+    (message) => message.type === type,
+  );
 }
 
 async function nextJsonMessageBeforeClose(
   receiver: WebSocket,
   sender: WebSocket,
+  type: string,
 ): Promise<Record<string, unknown>> {
   return Promise.race([
-    nextJsonMessage(receiver),
+    nextJsonMessageOfType(receiver, type),
     once(sender, "close").then(() => {
       throw new Error("Authenticated sender closed before inspect was routed");
     }),
@@ -1518,7 +2488,7 @@ async function expectSocketErrorAndClose(
   message: unknown,
   expected: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const response = nextJsonMessage(socket);
+  const response = nextJsonMessageOfType(socket, "error");
   const closed = expectSocketCloses(socket);
   socket.send(JSON.stringify(message));
   const parsed = await response;
