@@ -7,6 +7,7 @@ import {
   sendConnectionSafely,
   terminateConnectionSafely,
   type ClientRegistry,
+  type RegisteredClient,
 } from "./clientRegistry.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -18,7 +19,7 @@ export interface Heartbeat {
 export function startHeartbeat(
   registry: ClientRegistry,
   intervalMs = HEARTBEAT_INTERVAL_MS,
-  onClientEvicted: () => void = () => undefined,
+  onClientEvicted: (client: RegisteredClient) => void = () => undefined,
 ): Heartbeat {
   const interval = setInterval(() => {
     for (const client of registry.all()) {
@@ -26,7 +27,7 @@ export function startHeartbeat(
         const removed = registry.remove(client.id);
         terminateConnectionSafely(client.connection);
         if (removed) {
-          onClientEvicted();
+          onClientEvicted(client);
         }
         continue;
       }

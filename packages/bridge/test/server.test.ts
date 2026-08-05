@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";
 import { LinkAuthenticator } from "../src/linkAuthenticator.js";
+import { ReplyRouteRegistry } from "../src/replyRouteRegistry.js";
 import {
   BRIDGE_MAX_PAYLOAD_BYTES,
   createBridgeServer,
@@ -671,6 +672,244 @@ describe("bridge server authenticated envelope identity", () => {
     },
   );
 
+  it("delivers resolutions only to the originating authenticated client", async () => {
+    const authenticator = createAuthenticator();
+    const browserAToken = acceptedToken(authenticator);
+    const browserBToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+    const queues: MessageQueue[] = [];
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      const browserA = await connect(server.getUrl());
+      await sendJsonAndReceive(browserA, hello(browserAToken));
+      const browserB = await connect(server.getUrl());
+      await sendJsonAndReceive(browserB, hello(browserBToken));
+      const ideInspects = listenForJsonMessages(
+        ide,
+        (message) => message.type === "inspect",
+      );
+      const browserAResolutions = listenForJsonMessages(
+        browserA,
+        (message) => message.type === "resolution",
+      );
+      const browserBResolutions = listenForJsonMessages(
+        browserB,
+        (message) => message.type === "resolution",
+      );
+      const browserBCommands = listenForJsonMessages(
+        browserB,
+        (message) => message.type === "command",
+      );
+      queues.push(
+        ideInspects,
+        browserAResolutions,
+        browserBResolutions,
+        browserBCommands,
+      );
+
+      browserA.send(JSON.stringify(inspectMessage("browser-a")));
+      browserB.send(JSON.stringify(inspectMessage("browser-b")));
+      await eventually(() => {
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ messageId: "inspect-browser-a" }),
+        );
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ messageId: "inspect-browser-b" }),
+        );
+      });
+
+      ide.send(JSON.stringify(resolutionMessage("inspect-browser-a")));
+      ide.send(JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "command",
+        messageId: "resolution-barrier-command",
+        command: "highlightElement",
+        arguments: { selector: "#barrier", metadata: {} },
+        metadata: {},
+      }));
+      await eventually(() =>
+        expect(browserAResolutions.messages).toContainEqual(
+          expect.objectContaining({
+            type: "resolution",
+            inspectMessageId: "inspect-browser-a",
+          }),
+        ),
+      );
+      await eventually(() =>
+        expect(browserBCommands.messages).toContainEqual(
+          expect.objectContaining({ messageId: "resolution-barrier-command" }),
+        ),
+      );
+      expect(browserBResolutions.messages).toEqual([]);
+
+      await Promise.all([closeSocket(browserA), closeSocket(browserB), closeSocket(ide)]);
+    } finally {
+      for (const queue of queues) {
+        queue.dispose();
+      }
+      await server.stop();
+    }
+  });
+
+  it.each([
+    ["source", { source: { role: "ide" as const, id: "spoofed-ide" } }],
+    ["session", { sessionId: "other-session" }],
+  ])("rejects a resolution with a spoofed authenticated IDE %s", async (_field, spoof) => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      const browser = await connect(server.getUrl());
+      await sendJsonAndReceive(browser, hello(browserToken));
+
+      await expectSocketErrorAndClose(
+        ide,
+        { ...resolutionMessage("unknown-inspect"), ...spoof },
+        { code: "protocol.invalidMessage", message: "Message does not match protocol" },
+      );
+      await closeSocket(browser);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("removes routes on close, unlink, heartbeat eviction, and stop", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const unlinkBrowserToken = acceptedToken(authenticator);
+    const evictionBrowserToken = acceptedToken(authenticator);
+    const stopBrowserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const replyRoutes = new ReplyRouteRegistry();
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      heartbeatIntervalMs: 100,
+      replyRoutes,
+    });
+    await server.start();
+    const queues: MessageQueue[] = [];
+    const listenerDisposers: Array<() => void> = [];
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      listenerDisposers.push(autoPong(ide));
+      const ideInspects = listenForJsonMessages(
+        ide,
+        (message) => message.type === "inspect",
+      );
+      const ideErrors = listenForJsonMessages(
+        ide,
+        (message) => message.type === "error",
+      );
+      queues.push(ideInspects, ideErrors);
+
+      const browserAfterClose = await connect(server.getUrl());
+      await sendJsonAndReceive(browserAfterClose, hello(browserToken));
+      listenerDisposers.push(autoPong(browserAfterClose));
+      browserAfterClose.send(JSON.stringify(inspectMessage("close-route")));
+      await eventually(() =>
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ type: "inspect", messageId: "inspect-close-route" }),
+        ),
+      );
+      await closeSocket(browserAfterClose);
+      await eventually(() => expect(server.registry.countByRole("browser")).toBe(0));
+      expect(replyRoutes.resolve("session-1", "inspect-close-route")).toBeUndefined();
+      ide.send(JSON.stringify(resolutionMessage("inspect-close-route")));
+      await eventually(() =>
+        expect(ideErrors.messages.at(-1)).toEqual(
+          expect.objectContaining({ code: "bridge.noBrowserClient" }),
+        ),
+      );
+
+      const browserAfterUnlink = await connect(server.getUrl());
+      await sendJsonAndReceive(browserAfterUnlink, hello(unlinkBrowserToken));
+      listenerDisposers.push(autoPong(browserAfterUnlink));
+      browserAfterUnlink.send(JSON.stringify(inspectMessage("unlink-route")));
+      await eventually(() =>
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ type: "inspect", messageId: "inspect-unlink-route" }),
+        ),
+      );
+      const unlinked = once(browserAfterUnlink, "close");
+      browserAfterUnlink.send(JSON.stringify(unlink()));
+      await unlinked;
+      await eventually(() => expect(server.registry.countByRole("browser")).toBe(0));
+      expect(replyRoutes.resolve("session-1", "inspect-unlink-route")).toBeUndefined();
+      ide.send(JSON.stringify(resolutionMessage("inspect-unlink-route")));
+      await eventually(() =>
+        expect(ideErrors.messages.at(-1)).toEqual(
+          expect.objectContaining({ code: "bridge.noBrowserClient" }),
+        ),
+      );
+
+      const browserAfterEviction = await connect(server.getUrl());
+      await sendJsonAndReceive(browserAfterEviction, hello(evictionBrowserToken));
+      browserAfterEviction.send(JSON.stringify(inspectMessage("eviction-route")));
+      await eventually(() =>
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ type: "inspect", messageId: "inspect-eviction-route" }),
+        ),
+      );
+      const registered = server.registry
+        .all()
+        .find((client) => client.source.role === "browser");
+      if (!registered) {
+        throw new Error("Expected registered browser client");
+      }
+      registered.missedPongs = 2;
+      await eventually(() => expect(server.registry.countByRole("browser")).toBe(0));
+      expect(replyRoutes.resolve("session-1", "inspect-eviction-route")).toBeUndefined();
+      ide.send(JSON.stringify(resolutionMessage("inspect-eviction-route")));
+      await eventually(() =>
+        expect(ideErrors.messages.at(-1)).toEqual(
+          expect.objectContaining({ code: "bridge.noBrowserClient" }),
+        ),
+      );
+
+      const browserBeforeStop = await connect(server.getUrl());
+      await sendJsonAndReceive(browserBeforeStop, hello(stopBrowserToken));
+      listenerDisposers.push(autoPong(browserBeforeStop));
+      browserBeforeStop.send(JSON.stringify(inspectMessage("stop-route")));
+      await eventually(() =>
+        expect(ideInspects.messages).toContainEqual(
+          expect.objectContaining({ type: "inspect", messageId: "inspect-stop-route" }),
+        ),
+      );
+      const stopClient = server.registry
+        .all()
+        .find((client) => client.source.role === "browser");
+      if (!stopClient) {
+        throw new Error("Expected browser client before stop");
+      }
+      expect(replyRoutes.resolve("session-1", "inspect-stop-route")).toBe(
+        stopClient.id,
+      );
+      await server.stop();
+      expect(server.registry.all()).toEqual([]);
+      expect(replyRoutes.resolve("session-1", "inspect-stop-route")).toBeUndefined();
+    } finally {
+      for (const disposer of listenerDisposers) {
+        disposer();
+      }
+      for (const queue of queues) {
+        queue.dispose();
+      }
+      await server.stop();
+    }
+  });
+
   it.each([
     [
       "session",
@@ -1168,10 +1407,82 @@ function inspectMessage(
   };
 }
 
+function resolutionMessage(
+  inspectMessageId: string,
+  sourceId = "ide-source",
+  sessionId = SESSION_ID,
+) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution" as const,
+    messageId: `resolution-${inspectMessageId}`,
+    sessionId,
+    source: { role: "ide" as const, id: sourceId },
+    inspectMessageId,
+    resolutionGeneration: 1,
+    status: "no-facts" as const,
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+type JsonMessage = Record<string, unknown>;
+
+interface MessageQueue {
+  readonly messages: JsonMessage[];
+  dispose(): void;
+}
+
+function listenForJsonMessages(
+  socket: WebSocket,
+  filter: (message: JsonMessage) => boolean,
+): MessageQueue {
+  const messages: JsonMessage[] = [];
+  const listener = (data: { toString(): string }): void => {
+    const message = JSON.parse(data.toString()) as JsonMessage;
+    if (filter(message)) {
+      messages.push(message);
+    }
+  };
+  socket.on("message", listener);
+  return {
+    messages,
+    dispose() {
+      socket.off("message", listener);
+    },
+  };
+}
+
 async function connect(url: string, origin?: string): Promise<WebSocket> {
   const socket = new WebSocket(url, origin ? { origin } : undefined);
   await once(socket, "open");
   return socket;
+}
+
+function autoPong(socket: WebSocket): () => void {
+  const listener = (data: { toString(): string }): void => {
+    const message = JSON.parse(data.toString()) as {
+      type?: string;
+      messageId?: string;
+    };
+    if (message.type !== "ping" || !message.messageId) {
+      return;
+    }
+
+    socket.send(JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "pong",
+      messageId: `pong-${message.messageId}`,
+      pingMessageId: message.messageId,
+      sentAt: STARTED_AT.toISOString(),
+      metadata: {},
+    }));
+  };
+  socket.on("message", listener);
+  return () => socket.off("message", listener);
 }
 
 async function sendJsonAndReceive(

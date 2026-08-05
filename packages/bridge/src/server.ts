@@ -16,6 +16,7 @@ import {
 } from "./clientRegistry.js";
 import { startHeartbeat, type Heartbeat } from "./heartbeat.js";
 import { LinkAuthenticator } from "./linkAuthenticator.js";
+import { ReplyRouteRegistry } from "./replyRouteRegistry.js";
 import { routeMessage } from "./router.js";
 
 export interface BridgeServerOptions {
@@ -24,6 +25,7 @@ export interface BridgeServerOptions {
   readonly sessionId?: string;
   readonly authenticator?: LinkAuthenticator;
   readonly registry?: ClientRegistry;
+  readonly replyRoutes?: ReplyRouteRegistry;
   readonly handshakeTimeoutMs?: number;
   readonly heartbeatIntervalMs?: number;
   readonly maxPayloadBytes?: number;
@@ -93,6 +95,7 @@ export function createBridgeServer(
 
   const defaultSessionId = options.sessionId ?? "default";
   const registry = options.registry ?? new ClientRegistry();
+  const replyRoutes = options.replyRoutes ?? new ReplyRouteRegistry();
   const authenticator =
     options.authenticator ?? new LinkAuthenticator({ sessionId: defaultSessionId });
   const activeSockets = new Map<WebSocket, BridgeConnection>();
@@ -189,6 +192,7 @@ export function createBridgeServer(
             socket,
             connection,
             registry,
+            replyRoutes,
             authenticator,
             notifyClientCounts,
             () => clearHandshakeTimer(socket),
@@ -210,7 +214,10 @@ export function createBridgeServer(
         heartbeat = startHeartbeat(
           registry,
           heartbeatIntervalMs,
-          notifyClientCounts,
+          (client) => {
+            replyRoutes.removeClient(client.id);
+            notifyClientCounts();
+          },
         );
         startedSuccessfully = true;
       })();
@@ -240,6 +247,7 @@ export function createBridgeServer(
         heartbeat = undefined;
 
         registry.clear();
+        replyRoutes.clear();
         authenticator.revokeAll();
         notifyClientCounts();
 
@@ -302,6 +310,7 @@ function handleConnection(
   socket: WebSocket,
   connection: BridgeConnection,
   registry: ClientRegistry,
+  replyRoutes: ReplyRouteRegistry,
   authenticator: LinkAuthenticator,
   notifyClientCounts: () => void,
   clearHandshakeTimer: () => void,
@@ -315,6 +324,9 @@ function handleConnection(
     registered = undefined;
     if (client && registry.remove(client.id)) {
       notifyClientCounts();
+    }
+    if (client) {
+      replyRoutes.removeClient(client.id);
     }
     return client;
   };
@@ -457,6 +469,9 @@ function handleConnection(
       registered = undefined;
       const removed = client ? registry.remove(client.id) : false;
       if (client) {
+        replyRoutes.removeClient(client.id);
+      }
+      if (client) {
         authenticator.revokeToken(client.authToken);
       }
       if (removed) {
@@ -471,7 +486,7 @@ function handleConnection(
       return;
     }
 
-    routeMessage(registry, registered, message);
+    routeMessage(registry, replyRoutes, registered, message);
   });
 
   socket.on("close", () => {
@@ -498,6 +513,12 @@ function isAllowedInboundMessage(
     case "references":
     case "command":
       return client.source.role === "ide";
+    case "resolution":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id
+      );
     case "pong":
       return true;
     default:
