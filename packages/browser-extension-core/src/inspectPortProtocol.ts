@@ -1,3 +1,9 @@
+import type {
+  DomEvent,
+  DomRequest,
+  DomResponse,
+} from "./domProtocol.js";
+
 export const INSPECT_CONTENT_LEASE_PORT_NAME =
   "browser2ide.inspect.contentLease";
 export const DEVTOOLS_PANEL_PORT_PREFIX = "browser2ide.devtools.";
@@ -26,6 +32,30 @@ export interface InspectPortInvalidated {
   readonly type: "browser2ide.inspect.invalidated";
   readonly reason: "documentDisconnected";
 }
+
+/** Messages sent from the DevTools panel to its trusted background port. */
+export type PanelToBackgroundInspectPortMessage =
+  | InspectPortRequest
+  | DomRequest;
+
+/** Messages sent from the trusted background port to the DevTools panel. */
+export type BackgroundToPanelInspectPortMessage =
+  | InspectPortResult
+  | InspectPortInvalidated
+  | DomResponse
+  | DomEvent;
+
+/** Messages sent from the trusted background port to the content-script lease. */
+export type BackgroundToContentInspectPortMessage =
+  | InspectPortRequest
+  | DomRequest;
+
+/** Messages sent from the content-script lease to its trusted background port. */
+export type ContentToBackgroundInspectPortMessage =
+  | InspectPortResult
+  | InspectPortInvalidated
+  | DomResponse
+  | DomEvent;
 
 export interface InspectPortEvent<T> {
   addListener(listener: T): void;

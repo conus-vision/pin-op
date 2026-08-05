@@ -76,6 +76,38 @@ export { sanitizeErrorMessage } from "./errorSanitizer.js";
 export { createElementSnapshot } from "./elementSnapshot.js";
 export type { ElementSnapshotSource } from "./elementSnapshot.js";
 export {
+  DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomProtocolError,
+  parseDomEvent,
+  parseDomRequest,
+  parseDomResponse,
+} from "./domProtocol.js";
+export type {
+  DomClearHoverRequest,
+  DomChildrenResponse,
+  DomErrorCode,
+  DomErrorResponse,
+  DomEvent,
+  DomGetChildrenRequest,
+  DomGetRootRequest,
+  DomHoverChangedEvent,
+  DomHoverRequest,
+  DomInvalidatedEvent,
+  DomInvalidationBranch,
+  DomNodeView,
+  DomRequest,
+  DomResponse,
+  DomRootResponse,
+  DomSelectRequest,
+  DomSelectionChangedEvent,
+} from "./domProtocol.js";
+export {
   boundedLength,
   boundedPageUrl,
   consumeJsonBudget,
@@ -114,13 +146,17 @@ export {
   parseInspectPortResult,
 } from "./inspectPortProtocol.js";
 export type {
+  BackgroundToContentInspectPortMessage,
+  BackgroundToPanelInspectPortMessage,
   BackgroundInspectPort,
+  ContentToBackgroundInspectPortMessage,
   ContentInspectPort,
   InspectPortEvent,
   InspectPortInvalidated,
   InspectPortRequest,
   InspectPortResult,
   PanelInspectPort,
+  PanelToBackgroundInspectPortMessage,
 } from "./inspectPortProtocol.js";
 export { parseLinkCode } from "./linkCode.js";
 export type { ParsedLinkCode } from "./linkCode.js";

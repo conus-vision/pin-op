@@ -9,9 +9,20 @@ import {
   createBackgroundRouter,
   createDevtoolsPanelPortName,
   createInspectPayload,
+  DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomProtocolError,
   InspectMode,
   PanelController,
   parseLinkCode,
+  parseDomEvent,
+  parseDomRequest,
+  parseDomResponse,
   PanelInspectTransport,
   registerDevtoolsPanel,
   sanitizeErrorMessage,
@@ -31,9 +42,20 @@ assert.equal(typeof createPanelIcons, "function");
 assert.equal(typeof createBackgroundRouter, "function");
 assert.equal(typeof createDevtoolsPanelPortName, "function");
 assert.equal(typeof createInspectPayload, "function");
+assert.equal(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH, 64);
+assert.equal(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH, 100);
+assert.equal(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH, 128);
+assert.equal(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES, 128);
+assert.equal(DOM_PROTOCOL_MAX_LABEL_LENGTH, 512);
+assert.equal(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES, 64 * 1024);
+assert.equal(DOM_PROTOCOL_MAX_SUMMARY_LENGTH, 512);
+assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof InspectMode, "function");
 assert.equal(typeof PanelController, "function");
 assert.equal(typeof parseLinkCode, "function");
+assert.equal(typeof parseDomEvent, "function");
+assert.equal(typeof parseDomRequest, "function");
+assert.equal(typeof parseDomResponse, "function");
 assert.equal(typeof PanelInspectTransport, "function");
 assert.equal(typeof registerDevtoolsPanel, "function");
 assert.equal(typeof sanitizeErrorMessage, "function");
