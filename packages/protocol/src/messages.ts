@@ -9,9 +9,43 @@ import { JsonObjectSchema, utf8ByteLength } from "./json.js";
 import {
   INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
+  RESOLUTION_ENVELOPE_MAX_BYTES,
+  RESOLUTION_LIMITS,
 } from "./limits.js";
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
+
+export type EmptyMetadata = Readonly<Record<string, never>>;
+
+type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? ReadonlyArray<DeepReadonly<Item>>
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T;
+
+export const EmptyMetadataSchema = z
+  .object({})
+  .strict()
+  .transform((metadata): EmptyMetadata => metadata);
+
+const opaqueIdSchema = z
+  .string()
+  .min(1)
+  .max(RESOLUTION_LIMITS.opaqueIdLength);
+
+const generationSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(RESOLUTION_LIMITS.generation);
+
+const countSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(RESOLUTION_LIMITS.count);
 
 const baseMessageSchema = z
   .object({
@@ -212,6 +246,145 @@ export const InspectMessageSchema = baseMessageSchema
     }
   });
 
+const resolutionSourceObjectSchema = z
+  .object({
+    role: z.literal("ide"),
+    id: opaqueIdSchema,
+  })
+  .strict();
+
+export const ResolutionSourceSchema = resolutionSourceObjectSchema.transform(
+  (source): DeepReadonly<z.infer<typeof resolutionSourceObjectSchema>> =>
+    source,
+);
+
+export const ResolutionDiagnosticCodeSchema = z.enum([
+  "resolver.plugin-error",
+  "resolver.plugin-timeout",
+  "resolver.invalid-result",
+  "resolver.source-read-failed",
+]);
+
+export const ResolutionStatusSchema = z.enum([
+  "matched",
+  "no-active-editor",
+  "unsupported-document",
+  "no-facts",
+  "source-not-found",
+  "source-not-active-document",
+  "source-ambiguous",
+  "source-map-missing",
+  "source-map-invalid",
+  "no-rule-match",
+  "rule-match-ambiguous",
+  "error",
+]);
+
+const ResolutionDocumentSchema = z
+  .object({
+    label: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
+    languageId: z
+      .string()
+      .min(1)
+      .max(RESOLUTION_LIMITS.languageIdLength),
+  })
+  .strict();
+
+export function createResolutionMessageSchema(
+  envelopeMaxBytes = RESOLUTION_ENVELOPE_MAX_BYTES,
+) {
+  const schema = z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("resolution"),
+      messageId: opaqueIdSchema,
+      sessionId: opaqueIdSchema,
+      source: ResolutionSourceSchema,
+      inspectMessageId: opaqueIdSchema,
+      resolutionGeneration: generationSchema,
+      document: ResolutionDocumentSchema.optional(),
+      status: ResolutionStatusSchema,
+      selectedMatchCount: countSchema,
+      parentMatchCount: countSchema,
+      inaccessibleStylesheetCount: countSchema,
+      diagnosticCodes: z
+        .array(ResolutionDiagnosticCodeSchema)
+        .max(RESOLUTION_LIMITS.diagnosticCodes),
+      metadata: EmptyMetadataSchema,
+    })
+    .strict();
+
+  return schema
+    .superRefine((message, context) => {
+      const hasMatches =
+        message.selectedMatchCount > 0 || message.parentMatchCount > 0;
+
+      if (message.status === "matched" && !hasMatches) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["status"],
+          message: "matched resolutions require at least one match",
+        });
+      }
+
+      if (message.status !== "matched" && hasMatches) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["status"],
+          message: "non-matched resolutions require zero matches",
+        });
+      }
+
+      if (
+        new Set(message.diagnosticCodes).size !== message.diagnosticCodes.length
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["diagnosticCodes"],
+          message: "resolution diagnostic codes must be unique",
+        });
+      }
+
+      try {
+        if (utf8ByteLength(JSON.stringify(message)) > envelopeMaxBytes) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [],
+            message: "resolution message exceeds serialized byte limit",
+          });
+        }
+      } catch {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [],
+          message: "resolution message must be JSON serializable",
+        });
+      }
+    })
+    .transform(
+      (message): DeepReadonly<z.infer<typeof schema>> => message,
+    );
+}
+
+export const ResolutionMessageSchema = createResolutionMessageSchema();
+
+const peerStateObjectSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    type: z.literal("peerState"),
+    messageId: opaqueIdSchema,
+    sessionId: opaqueIdSchema,
+    role: z.literal("ide"),
+    connected: z.boolean(),
+    peerGeneration: generationSchema,
+    metadata: EmptyMetadataSchema,
+  })
+  .strict();
+
+export const PeerStateMessageSchema = peerStateObjectSchema.transform(
+  (message): DeepReadonly<z.infer<typeof peerStateObjectSchema>> => message,
+);
+
 export const ReferencesMessageSchema = baseMessageSchema
   .extend({
     type: z.literal("references"),
@@ -302,6 +475,8 @@ export const Browser2IdeMessageSchema = z.union([
   AuthenticatedMessageSchema,
   UnlinkMessageSchema,
   InspectMessageSchema,
+  ResolutionMessageSchema,
+  PeerStateMessageSchema,
   ReferencesMessageSchema,
   CommandMessageSchema,
   ErrorMessageSchema,
@@ -327,6 +502,13 @@ export type AuthenticatedMessage = z.infer<
 >;
 export type UnlinkMessage = z.infer<typeof UnlinkMessageSchema>;
 export type InspectMessage = z.infer<typeof InspectMessageSchema>;
+export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>;
+export type ResolutionDiagnosticCode = z.infer<
+  typeof ResolutionDiagnosticCodeSchema
+>;
+export type ResolutionStatus = z.infer<typeof ResolutionStatusSchema>;
+export type ResolutionMessage = z.infer<typeof ResolutionMessageSchema>;
+export type PeerStateMessage = z.infer<typeof PeerStateMessageSchema>;
 export type ReferencesMessage = z.infer<typeof ReferencesMessageSchema>;
 export type OpenSourceCommandMessage = z.infer<
   typeof OpenSourceCommandMessageSchema

@@ -13,8 +13,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run && pnpm run build && node test/public-export.mjs",
-    "test:public": "pnpm run build && node test/public-export.mjs",
+    "test": "vitest run && pnpm run test:public",
+    "test:public": "pnpm run build && pnpm run test:public-types:check && node test/public-export.mjs",
+    "test:public-types": "pnpm run build && pnpm run test:public-types:check",
+    "test:public-types:check": "tsc --noEmit -p test/public-types.tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
