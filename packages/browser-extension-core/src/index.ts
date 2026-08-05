@@ -56,6 +56,26 @@ export type {
   StyleRuleSource,
   StylesheetSource,
 } from "./collectCssFacts.js";
+export { DomNodeRegistry } from "./domNodeRegistry.js";
+export type {
+  DomNodeRegistryOptions,
+  NodeScope,
+  NodeWeakReference,
+  RetentionReason,
+} from "./domNodeRegistry.js";
+export { FrameRegistry } from "./frameRegistry.js";
+export type {
+  AccessibleFrameDescription,
+  FrameContext,
+  FrameDescription,
+  FrameIdentity,
+  FrameLifecycleEvent,
+  FrameLifecycleType,
+  FrameRegistryOptions,
+  InaccessibleFrameDescription,
+  TopViewportRect,
+  ViewportRect,
+} from "./frameRegistry.js";
 export { startContentScriptRuntime } from "./contentScriptRuntime.js";
 export type {
   ContentScriptDocument,

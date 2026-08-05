@@ -16,7 +16,9 @@ import {
   DOM_PROTOCOL_MAX_LABEL_LENGTH,
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomNodeRegistry,
   DomProtocolError,
+  FrameRegistry,
   InspectMode,
   PanelController,
   parseLinkCode,
@@ -49,7 +51,9 @@ assert.equal(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES, 128);
 assert.equal(DOM_PROTOCOL_MAX_LABEL_LENGTH, 512);
 assert.equal(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES, 64 * 1024);
 assert.equal(DOM_PROTOCOL_MAX_SUMMARY_LENGTH, 512);
+assert.equal(typeof DomNodeRegistry, "function");
 assert.equal(typeof DomProtocolError, "function");
+assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
 assert.equal(typeof PanelController, "function");
 assert.equal(typeof parseLinkCode, "function");

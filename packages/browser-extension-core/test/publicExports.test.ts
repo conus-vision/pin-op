@@ -16,7 +16,9 @@ import {
   DOM_PROTOCOL_MAX_LABEL_LENGTH,
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomNodeRegistry,
   DomProtocolError,
+  FrameRegistry,
   InspectMode,
   PanelController,
   PanelInspectTransport,
@@ -50,7 +52,9 @@ describe("browser extension core exports", () => {
     expect(DOM_PROTOCOL_MAX_LABEL_LENGTH).toBe(512);
     expect(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES).toBe(64 * 1024);
     expect(DOM_PROTOCOL_MAX_SUMMARY_LENGTH).toBe(512);
+    expect(DomNodeRegistry).toBeTypeOf("function");
     expect(DomProtocolError).toBeTypeOf("function");
+    expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
     expect(parseLinkCode).toBeTypeOf("function");
