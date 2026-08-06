@@ -86,6 +86,12 @@ export type {
   TopViewportRect,
   ViewportRect,
 } from "./frameRegistry.js";
+export { PageOverlay } from "./pageOverlay.js";
+export type {
+  PageOverlayFrameRegistry,
+  PageOverlayOptions,
+  PageOverlayViewportSize,
+} from "./pageOverlay.js";
 export { startContentScriptRuntime } from "./contentScriptRuntime.js";
 export type {
   ContentScriptDocument,

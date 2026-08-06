@@ -22,6 +22,7 @@ import {
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  PageOverlay,
   PanelController,
   PanelInspectTransport,
   parseLinkCode,
@@ -61,6 +62,7 @@ describe("browser extension core exports", () => {
     expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
+    expect(PageOverlay).toBeTypeOf("function");
     expect(parseLinkCode).toBeTypeOf("function");
     expect(parseDomEvent).toBeTypeOf("function");
     expect(parseDomRequest).toBeTypeOf("function");

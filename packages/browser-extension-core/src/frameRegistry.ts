@@ -903,7 +903,7 @@ function hasUntransformedAncestry(
   return false;
 }
 
-function hasNeutralGeometryStyle(
+export function hasNeutralGeometryStyle(
   style: object,
   isAuthoritative: GeometryAuthority,
 ): boolean {

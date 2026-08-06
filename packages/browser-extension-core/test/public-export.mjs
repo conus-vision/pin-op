@@ -22,6 +22,7 @@ import {
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  PageOverlay,
   PanelController,
   parseLinkCode,
   parseDomEvent,
@@ -59,6 +60,7 @@ assert.equal(typeof DomTreeProviderError, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
+assert.equal(typeof PageOverlay, "function");
 assert.equal(typeof PanelController, "function");
 assert.equal(typeof parseLinkCode, "function");
 assert.equal(typeof parseDomEvent, "function");
