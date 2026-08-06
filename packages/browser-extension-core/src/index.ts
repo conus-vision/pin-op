@@ -63,6 +63,16 @@ export type {
   NodeWeakReference,
   RetentionReason,
 } from "./domNodeRegistry.js";
+export {
+  DomTreeProvider,
+  DomTreeProviderError,
+} from "./domTreeProvider.js";
+export type {
+  DomChildrenRequest,
+  DomTreeMutationObserver,
+  DomTreeProviderOptions,
+  DomTreeSelectedNodeRemoval,
+} from "./domTreeProvider.js";
 export { FrameRegistry } from "./frameRegistry.js";
 export type {
   AccessibleFrameDescription,

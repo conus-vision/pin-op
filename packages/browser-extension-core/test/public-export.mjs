@@ -17,6 +17,8 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
+  DomTreeProvider,
+  DomTreeProviderError,
   DomProtocolError,
   FrameRegistry,
   InspectMode,
@@ -52,6 +54,8 @@ assert.equal(DOM_PROTOCOL_MAX_LABEL_LENGTH, 512);
 assert.equal(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES, 64 * 1024);
 assert.equal(DOM_PROTOCOL_MAX_SUMMARY_LENGTH, 512);
 assert.equal(typeof DomNodeRegistry, "function");
+assert.equal(typeof DomTreeProvider, "function");
+assert.equal(typeof DomTreeProviderError, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
