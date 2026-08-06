@@ -3,22 +3,38 @@ import {
   InspectMessageSchema,
   PROTOCOL_VERSION,
   type ClientSource,
+  type PeerStateMessage,
+  type ResolutionMessage,
 } from "@browser2ide/protocol";
 import {
   BrowserProtocolError,
   type InspectPayload,
+  type InspectSendOutcome,
 } from "./bridgeClient.js";
 import {
   BackgroundInspectSession,
   type BackgroundInspectCoordinator,
+  type InspectSessionInvalidationReason,
 } from "./backgroundInspectSession.js";
 import {
-  INSPECT_CONTENT_LEASE_PORT_NAME,
+  parseDomEvent,
+  parseDomRequest,
+  parseDomResponse,
+  type DomEvent,
+  type DomErrorCode,
+  type DomRequest,
+} from "./domProtocol.js";
+import { InspectCorrelationStore } from "./inspectCorrelationStore.js";
+import {
+  isValidContentSessionId,
   isValidDevtoolsChannel,
+  parseInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectPortRequest,
+  type ContentSessionId,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
+import { PanelSessionTransport } from "./panelSessionTransport.js";
 import type {
   BrowserWindowConnectionState,
   PanelRegistration,
@@ -52,9 +68,10 @@ export interface BackgroundWindowCoordinator {
   registerPanel(registration: PanelRegistration): { dispose(): void };
   publishInspect(
     windowId: number,
+    inspectMessageId: string,
     sourceId: string,
     payload: InspectPayload,
-  ): boolean;
+  ): InspectSendOutcome;
   removeWindow(windowId: number): Promise<void>;
 }
 
@@ -95,6 +112,15 @@ export interface BackgroundRouterOptions {
   readonly getTab: (tabId: number) => Promise<BackgroundTab | undefined>;
   readonly coordinator: BackgroundWindowCoordinator;
   readonly inspectCoordinator: BackgroundInspectCoordinator;
+  readonly panelSessionTransport?: PanelSessionTransport;
+  readonly inspectCorrelationStore?: InspectCorrelationStore;
+  readonly inspectMessageId?: () => string;
+  readonly subscribeResolutions?: (
+    listener: (message: ResolutionMessage) => void,
+  ) => () => void;
+  readonly subscribePeerStates?: (
+    listener: (windowId: number, message: PeerStateMessage) => void,
+  ) => () => void;
   readonly subscriptions?: BackgroundRouterSubscriptions;
   readonly onError?: (error: unknown) => void;
 }
@@ -129,12 +155,28 @@ interface PanelPortRecord {
   bindingGeneration?: number;
   registration?: { dispose(): void };
   inspectSession?: BackgroundInspectSession;
+  inspectTabId?: number;
+  inspectWindowId?: number;
+  contentSessionId?: ContentSessionId;
+  panelSessionBinding?: { dispose(): void };
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
+  lastWindowState?: BrowserWindowConnectionState;
+  republishWindowId?: number;
+  republishedAvailabilityEpoch: number;
+  republishInFlightEpoch?: number;
+  contentRecoveryAvailable: boolean;
+  inspectionFailedClosed: boolean;
 }
 
 interface WindowStateQueue {
   tail: Promise<void>;
+}
+
+interface WindowAvailabilityState {
+  bridgeConnected: boolean | undefined;
+  epoch: number;
+  initialPeerCoveredEpoch?: number;
 }
 
 interface PanelCommandRecord {
@@ -164,6 +206,9 @@ export class BackgroundRouter {
   private readonly getTab: BackgroundRouterOptions["getTab"];
   private readonly coordinator: BackgroundWindowCoordinator;
   private readonly inspectCoordinator: BackgroundInspectCoordinator;
+  private readonly panelSessions: PanelSessionTransport;
+  private readonly correlations: InspectCorrelationStore;
+  private readonly inspectMessageId: () => string;
   private readonly onError: BackgroundRouterOptions["onError"];
   private readonly bindings = new Map<string, ChannelBinding>();
   private readonly channelByTab = new Map<number, string>();
@@ -176,6 +221,18 @@ export class BackgroundRouter {
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly removedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
+  private readonly peerStates = new Map<
+    number,
+    {
+      readonly sessionId: string;
+      readonly connected: boolean;
+      readonly generation: number;
+    }
+  >();
+  private readonly availabilityStates = new Map<
+    number,
+    WindowAvailabilityState
+  >();
   private nextGeneration = 1;
   private disposeGeneration = 1;
   private disposed = false;
@@ -187,7 +244,33 @@ export class BackgroundRouter {
     this.getTab = options.getTab;
     this.coordinator = options.coordinator;
     this.inspectCoordinator = options.inspectCoordinator;
+    this.correlations = options.inspectCorrelationStore ??
+      new InspectCorrelationStore();
+    this.inspectMessageId = options.inspectMessageId ??
+      createInspectMessageId;
+    this.panelSessions = options.panelSessionTransport ??
+      new PanelSessionTransport({
+        maxChannels: this.maxPanelPorts,
+        sendTabMessage: (tabId, message) =>
+          this.inspectCoordinator.sendTabMessage(tabId, message),
+        postPanelMessage: (channel, message) =>
+          this.postToActiveChannel(channel, message),
+      });
     this.onError = options.onError;
+    if (options.subscribeResolutions) {
+      this.removeSubscriptions.push(
+        options.subscribeResolutions((message) =>
+          this.receiveResolution(message),
+        ),
+      );
+    }
+    if (options.subscribePeerStates) {
+      this.removeSubscriptions.push(
+        options.subscribePeerStates((windowId, message) =>
+          this.receivePeerState(windowId, message),
+        ),
+      );
+    }
     this.attachSubscriptions(options.subscriptions);
   }
 
@@ -221,11 +304,24 @@ export class BackgroundRouter {
       return this.executePanelWindowCommand(command, binding);
     }
 
-    const payload = parseElementSelectedMessage(message);
-    if (!payload) {
+    const domEvent = parseContentDomEventMessage(message);
+    if (domEvent) {
+      return this.publishContentDomEvent(
+        domEvent.event,
+        domEvent.contentSessionId,
+        sender,
+      );
+    }
+
+    const selection = parseElementSelectedMessage(message);
+    if (!selection) {
       return undefined;
     }
-    return this.publishSelection(payload, sender);
+    return this.publishSelection(
+      selection.payload,
+      selection.contentSessionId,
+      sender,
+    );
   }
 
   public connectPort(port: BackgroundRuntimePort): void {
@@ -233,8 +329,9 @@ export class BackgroundRouter {
       safeDisconnect(port);
       return;
     }
-    if (port.name === INSPECT_CONTENT_LEASE_PORT_NAME) {
-      this.connectContentLease(port);
+    const contentSessionId = parseInspectContentLeasePortName(port.name);
+    if (contentSessionId) {
+      this.connectContentLease(port, contentSessionId);
       return;
     }
 
@@ -257,6 +354,9 @@ export class BackgroundRouter {
       onDisconnect: () => this.closePanelPort(record, false),
       onMessage: (message) => this.rejectPendingInspect(record, message),
       inspectCommandTail: Promise.resolve(),
+      republishedAvailabilityEpoch: 0,
+      contentRecoveryAvailable: false,
+      inspectionFailedClosed: false,
     };
     this.panelPorts.set(channel, record);
     port.onMessage.addListener(record.onMessage);
@@ -273,6 +373,8 @@ export class BackgroundRouter {
       return;
     }
     this.removedWindows.add(windowId);
+    this.peerStates.delete(windowId);
+    this.availabilityStates.delete(windowId);
     const removedBindings = [...this.bindings.values()].filter(
       (binding) => !binding.suspended && binding.windowId === windowId,
     );
@@ -309,6 +411,8 @@ export class BackgroundRouter {
     this.channelByTab.clear();
     this.channelBySource.clear();
     this.removedWindows.clear();
+    this.peerStates.clear();
+    this.availabilityStates.clear();
   }
 
   private attachSubscriptions(
@@ -617,25 +721,35 @@ export class BackgroundRouter {
       return;
     }
 
-    this.clearPanelActivation(record, true);
+    const preserveInspection = Boolean(
+      record.inspectSession &&
+        record.inspectTabId === binding.tabId &&
+        record.inspectWindowId === binding.windowId,
+    );
+    const previousRepublishWindowId = record.republishWindowId;
+    const previousRepublishedEpoch = record.republishedAvailabilityEpoch;
+    this.clearPanelActivation(record, true, preserveInspection);
+    if (!preserveInspection) {
+      record.inspectionFailedClosed = false;
+    }
     record.port.onMessage.removeListener(record.onMessage);
     const token = {};
     const windowStateQueue: WindowStateQueue = {
       tail: Promise.resolve(),
     };
-    const session = new BackgroundInspectSession(
-      this.inspectCoordinator,
-      binding.tabId,
-      (result) => this.postToCurrentPort(record, token, result),
-    );
     const onMessage = (message: unknown): void => {
       this.queueInspectRequest(record, token, message);
     };
     record.onMessage = onMessage;
     record.activationToken = token;
     record.bindingGeneration = binding.generation;
-    record.inspectSession = session;
     record.windowStateQueue = windowStateQueue;
+    record.lastWindowState = undefined;
+    record.republishWindowId = binding.windowId;
+    record.republishedAvailabilityEpoch =
+      previousRepublishWindowId === binding.windowId
+        ? previousRepublishedEpoch
+        : (this.availabilityStates.get(binding.windowId)?.epoch ?? 0);
     record.port.onMessage.addListener(onMessage);
 
     let registration: { dispose(): void };
@@ -661,7 +775,7 @@ export class BackgroundRouter {
 
     if (!this.isCurrentActivation(record, token, binding)) {
       registration.dispose();
-      session.disconnect();
+      this.disposeInspectionSession(record, false);
       return;
     }
     record.registration = registration;
@@ -670,24 +784,132 @@ export class BackgroundRouter {
   private clearPanelActivation(
     record: PanelPortRecord,
     settlePendingInspect = false,
+    preserveInspection = false,
   ): void {
     const activationToken = record.activationToken;
-    const session = record.inspectSession;
-    record.inspectSession = undefined;
-    if (settlePendingInspect) {
-      session?.retire("stalePanel");
+    if (preserveInspection) {
+      this.correlations.disposeChannel(record.channel);
+      if (settlePendingInspect) {
+        record.inspectSession?.suspend("stalePanel");
+      }
     } else {
-      session?.disconnect();
+      this.disposeInspectionSession(record, settlePendingInspect);
     }
     record.activationToken = undefined;
     record.bindingGeneration = undefined;
     record.windowStateQueue = undefined;
+    record.lastWindowState = undefined;
+    record.republishWindowId = undefined;
+    record.republishInFlightEpoch = undefined;
+    record.republishedAvailabilityEpoch = 0;
     if (activationToken) {
       this.abortPanelCommand(record, activationToken);
     }
     const registration = record.registration;
     record.registration = undefined;
     registration?.dispose();
+  }
+
+  private startInspectionSession(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+  ): void {
+    if (
+      record.inspectSession ||
+      record.panelSessionBinding ||
+      record.inspectionFailedClosed
+    ) {
+      return;
+    }
+    record.contentRecoveryAvailable = false;
+    record.contentSessionId = undefined;
+    const panelSessionBinding = this.panelSessions.bind(
+      record.channel,
+      binding.tabId,
+    );
+    let session!: BackgroundInspectSession;
+    session = new BackgroundInspectSession(
+      this.inspectCoordinator,
+      binding.tabId,
+      (message) => {
+        this.postToActiveChannel(record.channel, message);
+      },
+      {
+        onContentLeaseAttached: (contentSessionId) => {
+          if (
+            this.panelPorts.get(record.channel) === record &&
+            record.inspectSession === session
+          ) {
+            record.contentSessionId = contentSessionId;
+            record.contentRecoveryAvailable = true;
+            record.inspectionFailedClosed = false;
+          }
+        },
+        onInvalidated: (reason) =>
+          this.handleInspectionInvalidation(record, session, reason),
+      },
+    );
+    record.panelSessionBinding = panelSessionBinding;
+    record.inspectSession = session;
+    record.inspectTabId = binding.tabId;
+    record.inspectWindowId = binding.windowId;
+  }
+
+  private handleInspectionInvalidation(
+    record: PanelPortRecord,
+    session: BackgroundInspectSession,
+    reason: InspectSessionInvalidationReason,
+  ): void {
+    if (
+      this.panelPorts.get(record.channel) !== record ||
+      record.inspectSession !== session
+    ) {
+      return;
+    }
+    record.contentSessionId = undefined;
+    const binding = this.bindings.get(record.channel);
+    const token = record.activationToken;
+    const recover = reason === "documentDisconnected" &&
+      record.contentRecoveryAvailable &&
+      token !== undefined &&
+      binding !== undefined &&
+      this.isCurrentActivation(record, token, binding) &&
+      maintainsInspectionSession(record.lastWindowState);
+    record.contentRecoveryAvailable = false;
+    if (!recover) {
+      record.inspectionFailedClosed = true;
+    }
+    this.disposeInspectionSession(record, false);
+    if (!recover || !binding) {
+      return;
+    }
+    try {
+      this.startInspectionSession(record, binding);
+    } catch (error) {
+      record.inspectionFailedClosed = true;
+      this.reportError(error);
+    }
+  }
+
+  private disposeInspectionSession(
+    record: PanelPortRecord,
+    settlePendingInspect: boolean,
+  ): void {
+    const session = record.inspectSession;
+    record.inspectSession = undefined;
+    record.inspectTabId = undefined;
+    record.inspectWindowId = undefined;
+    record.contentSessionId = undefined;
+    record.panelSessionBinding?.dispose();
+    record.panelSessionBinding = undefined;
+    record.contentRecoveryAvailable = false;
+    this.panelSessions.disposeChannel(record.channel);
+    this.correlations.disposeChannel(record.channel);
+    if (settlePendingInspect) {
+      session?.retire("stalePanel");
+    } else {
+      session?.disconnect();
+    }
   }
 
   private closePanelPort(record: PanelPortRecord, disconnect: boolean): void {
@@ -870,6 +1092,13 @@ export class BackgroundRouter {
   ): void {
     const request = parseInspectPortRequest(message);
     if (!request) {
+      let domRequest: DomRequest;
+      try {
+        domRequest = parseDomRequest(message);
+      } catch {
+        return;
+      }
+      this.queueDomRequest(record, activationToken, domRequest);
       return;
     }
     const operation = record.inspectCommandTail.then(async () => {
@@ -931,6 +1160,84 @@ export class BackgroundRouter {
       this.reportError(error);
       this.postInspectFailure(record, request.requestId);
     });
+  }
+
+  private queueDomRequest(
+    record: PanelPortRecord,
+    activationToken: object,
+    request: DomRequest,
+  ): void {
+    const requestId = domQueryRequestId(request);
+    const settleQuery = (code: DomErrorCode): void => {
+      if (requestId) {
+        this.postDomQueryError(record, requestId, code);
+      }
+    };
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (
+        !binding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settleQuery("session-disposed");
+        return;
+      }
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      if (
+        refreshed !== binding ||
+        record.activationToken !== activationToken ||
+        !record.inspectSession ||
+        !record.panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settleQuery("session-disposed");
+        return;
+      }
+      if (requestId) {
+        const inspectSession = record.inspectSession;
+        const panelSessionBinding = record.panelSessionBinding;
+        const response = await this.panelSessions.request(record.channel, request);
+        if (
+          record.inspectSession !== inspectSession ||
+          record.panelSessionBinding !== panelSessionBinding ||
+          !this.isCurrentActivation(record, activationToken, binding)
+        ) {
+          settleQuery("session-disposed");
+          return;
+        }
+        this.postToCurrentPort(record, activationToken, response);
+        return;
+      }
+      await this.panelSessions.dispatch(record.channel, request);
+    });
+    record.inspectCommandTail = operation.catch((error) => {
+      this.reportError(error);
+      settleQuery("internal-error");
+    });
+  }
+
+  private postDomQueryError(
+    record: PanelPortRecord,
+    requestId: string,
+    code: DomErrorCode,
+  ): void {
+    if (this.panelPorts.get(record.channel) !== record) {
+      return;
+    }
+    const response = parseDomResponse({
+      type: "dom.error",
+      requestId,
+      code,
+    });
+    try {
+      record.port.postMessage(response);
+    } catch {
+      // A disconnected original port rejects its own pending panel request.
+    }
   }
 
   private async refreshPanelBinding(
@@ -1015,17 +1322,21 @@ export class BackgroundRouter {
     }
   }
 
-  private connectContentLease(port: BackgroundRuntimePort): void {
+  private connectContentLease(
+    port: BackgroundRuntimePort,
+    contentSessionId: ContentSessionId,
+  ): void {
     const tabId = port.sender?.tab?.id;
     if (!isBrowserId(tabId)) {
       safeDisconnect(port);
       return;
     }
-    this.inspectCoordinator.attachContentLease(tabId, port);
+    this.inspectCoordinator.attachContentLease(tabId, contentSessionId, port);
   }
 
   private async publishSelection(
     payload: InspectPayload,
+    contentSessionId: ContentSessionId,
     sender: BackgroundMessageSender,
   ): Promise<BackgroundRouteResult | undefined> {
     const senderTab = validatedSenderTab(sender);
@@ -1038,6 +1349,8 @@ export class BackgroundRouter {
     if (
       !binding ||
       !record ||
+      !record.inspectSession ||
+      record.contentSessionId !== contentSessionId ||
       record.bindingGeneration !== binding.generation ||
       !record.registration ||
       !record.activationToken
@@ -1048,17 +1361,72 @@ export class BackgroundRouter {
     const refreshed = await this.refreshPanelBinding(binding, record, token);
     if (
       !refreshed ||
+      !record.inspectSession ||
+      record.contentSessionId !== contentSessionId ||
       (senderTab.windowId !== undefined &&
         senderTab.windowId !== refreshed.windowId)
     ) {
       return undefined;
     }
 
-    this.coordinator.publishInspect(
-      refreshed.windowId,
-      refreshed.sourceId,
-      payload,
-    );
+    let inspectMessageId: string;
+    try {
+      inspectMessageId = this.inspectMessageId();
+      this.correlations.record(
+        refreshed.channel,
+        inspectMessageId,
+        refreshed.tabId,
+      );
+    } catch (error) {
+      this.reportError(error);
+      return undefined;
+    }
+    let outcome: InspectSendOutcome;
+    try {
+      outcome = this.coordinator.publishInspect(
+        refreshed.windowId,
+        inspectMessageId,
+        refreshed.sourceId,
+        payload,
+      );
+    } catch (error) {
+      this.reportError(error);
+      outcome = "transport-error";
+    }
+    if (outcome !== "sent") {
+      this.correlations.discard(inspectMessageId);
+      this.panelSessions.publishIdeDisconnected(
+        refreshed.channel,
+        inspectMessageId,
+      );
+    }
+    return okResult;
+  }
+
+  private async publishContentDomEvent(
+    event: DomEvent,
+    contentSessionId: ContentSessionId,
+    sender: BackgroundMessageSender,
+  ): Promise<BackgroundRouteResult | undefined> {
+    const senderTab = validatedSenderTab(sender);
+    if (!senderTab) {
+      return undefined;
+    }
+    const channel = this.channelByTab.get(senderTab.id);
+    const binding = channel ? this.bindings.get(channel) : undefined;
+    const record = channel ? this.panelPorts.get(channel) : undefined;
+    if (
+      !binding ||
+      !record ||
+      !record.inspectSession ||
+      record.contentSessionId !== contentSessionId ||
+      record.bindingGeneration !== binding.generation ||
+      (senderTab.windowId !== undefined &&
+        senderTab.windowId !== binding.windowId)
+    ) {
+      return undefined;
+    }
+    this.panelSessions.publish(binding.channel, event);
     return okResult;
   }
 
@@ -1096,6 +1464,34 @@ export class BackgroundRouter {
       ) {
         return;
       }
+      const previousState = record.lastWindowState;
+      record.lastWindowState = state;
+      if (state === "notLinked") {
+        this.peerStates.delete(binding.windowId);
+        this.availabilityStates.delete(binding.windowId);
+        record.republishInFlightEpoch = undefined;
+        record.republishedAvailabilityEpoch = 0;
+        record.inspectionFailedClosed = false;
+        if (record.inspectSession || record.panelSessionBinding) {
+          this.disposeInspectionSession(record, false);
+        }
+      } else if (
+        (state === "linking" || state === "linked") &&
+        !record.inspectSession &&
+        !record.inspectionFailedClosed
+      ) {
+        try {
+          this.startInspectionSession(record, binding);
+        } catch (error) {
+          record.inspectionFailedClosed = true;
+          this.reportError(error);
+        }
+      }
+      this.updateBridgeAvailability(
+        binding.windowId,
+        previousState,
+        state,
+      );
       this.postToCurrentPort(record, token, {
         type: "browser2ide.windowState",
         state,
@@ -1104,6 +1500,227 @@ export class BackgroundRouter {
     queue.tail = operation.catch((error) =>
       this.reportError(error),
     );
+  }
+
+  private updateBridgeAvailability(
+    windowId: number,
+    previousState: BrowserWindowConnectionState | undefined,
+    state: BrowserWindowConnectionState,
+  ): void {
+    if (state === "notLinked") {
+      return;
+    }
+    const availability = this.getAvailabilityState(windowId);
+    const peer = this.peerStates.get(windowId);
+    if (state !== "linked") {
+      const wasAvailable = windowIsAvailable(availability, peer);
+      availability.bridgeConnected = false;
+      const initialLink = state === "linking" &&
+        (previousState === undefined || previousState === "notLinked");
+      if (wasAvailable && !initialLink) {
+        this.beginAvailabilityEpoch(availability);
+      }
+      return;
+    }
+
+    availability.bridgeConnected = true;
+    if (
+      peer === undefined &&
+      availability.epoch > 0
+    ) {
+      availability.initialPeerCoveredEpoch = availability.epoch;
+    }
+    this.scheduleAvailabilityRepublish(windowId, availability);
+  }
+
+  private getAvailabilityState(windowId: number): WindowAvailabilityState {
+    const current = this.availabilityStates.get(windowId);
+    if (current) {
+      return current;
+    }
+    const created: WindowAvailabilityState = {
+      bridgeConnected: undefined,
+      epoch: 0,
+    };
+    this.availabilityStates.set(windowId, created);
+    return created;
+  }
+
+  private beginAvailabilityEpoch(state: WindowAvailabilityState): void {
+    state.epoch += 1;
+    state.initialPeerCoveredEpoch = undefined;
+  }
+
+  private scheduleAvailabilityRepublish(
+    windowId: number,
+    availability: WindowAvailabilityState,
+  ): void {
+    if (
+      this.availabilityStates.get(windowId) !== availability ||
+      availability.epoch === 0 ||
+      !windowIsAvailable(availability, this.peerStates.get(windowId))
+    ) {
+      return;
+    }
+    for (const record of this.activeInspectionRecords(windowId)) {
+      this.scheduleRecordRepublish(record, windowId, availability);
+    }
+  }
+
+  private scheduleRecordRepublish(
+    record: PanelPortRecord,
+    windowId: number,
+    availability: WindowAvailabilityState,
+  ): void {
+    const epoch = availability.epoch;
+    if (
+      record.republishWindowId !== windowId ||
+      record.republishedAvailabilityEpoch >= epoch ||
+      record.republishInFlightEpoch !== undefined
+    ) {
+      return;
+    }
+    const token = record.activationToken;
+    const binding = this.bindings.get(record.channel);
+    const session = record.inspectSession;
+    if (
+      !token ||
+      !binding ||
+      !session ||
+      binding.windowId !== windowId ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
+      return;
+    }
+    record.republishInFlightEpoch = epoch;
+    void this.panelSessions.republishSelection(record.channel)
+      .then((republished) => {
+        if (
+          record.republishInFlightEpoch !== epoch ||
+          record.republishWindowId !== windowId
+        ) {
+          return;
+        }
+        record.republishInFlightEpoch = undefined;
+        if (
+          republished &&
+          record.inspectSession === session &&
+          this.isCurrentActivation(record, token, binding)
+        ) {
+          record.republishedAvailabilityEpoch = Math.max(
+            record.republishedAvailabilityEpoch,
+            epoch,
+          );
+        }
+        const current = this.availabilityStates.get(windowId);
+        if (current && current.epoch > epoch) {
+          this.scheduleAvailabilityRepublish(windowId, current);
+        }
+      })
+      .catch((error) => {
+        if (record.republishInFlightEpoch === epoch) {
+          record.republishInFlightEpoch = undefined;
+        }
+        this.reportError(error);
+      });
+  }
+
+  private activeInspectionRecords(windowId: number): PanelPortRecord[] {
+    return [...this.panelPorts.values()].filter((record) => {
+      const token = record.activationToken;
+      const binding = this.bindings.get(record.channel);
+      return Boolean(
+        token &&
+          binding &&
+          binding.windowId === windowId &&
+          record.registration &&
+          record.inspectSession &&
+          maintainsInspectionSession(record.lastWindowState) &&
+          this.isCurrentActivation(record, token, binding),
+      );
+    });
+  }
+
+  private receiveResolution(message: ResolutionMessage): void {
+    if (this.disposed) {
+      return;
+    }
+    const channel = this.correlations.accept(message);
+    if (!channel) {
+      return;
+    }
+    this.panelSessions.publish(channel, message);
+  }
+
+  private receivePeerState(
+    windowId: number,
+    message: PeerStateMessage,
+  ): void {
+    if (
+      this.disposed ||
+      !isBrowserId(windowId) ||
+      this.removedWindows.has(windowId)
+    ) {
+      this.peerStates.delete(windowId);
+      this.availabilityStates.delete(windowId);
+      return;
+    }
+    const activeRecords = this.activeInspectionRecords(windowId);
+    if (activeRecords.length === 0) {
+      this.peerStates.delete(windowId);
+      this.availabilityStates.delete(windowId);
+      return;
+    }
+    const previous = this.peerStates.get(windowId);
+    if (
+      previous?.sessionId === message.sessionId &&
+      message.peerGeneration <= previous.generation
+    ) {
+      return;
+    }
+    const availability = this.getAvailabilityState(windowId);
+    const wasAvailable = windowIsAvailable(availability, previous);
+    const coveredInitialPeer = previous === undefined &&
+      message.connected &&
+      availability.epoch > 0 &&
+      availability.initialPeerCoveredEpoch === availability.epoch;
+    const connectedSessionChanged = message.connected &&
+      previous !== undefined &&
+      previous.sessionId !== message.sessionId;
+
+    if (!message.connected) {
+      if (wasAvailable) {
+        this.beginAvailabilityEpoch(availability);
+      }
+    } else if (previous === undefined) {
+      if (!coveredInitialPeer) {
+        this.beginAvailabilityEpoch(availability);
+      }
+    } else if (connectedSessionChanged && wasAvailable) {
+      this.beginAvailabilityEpoch(availability);
+    }
+    this.peerStates.set(windowId, {
+      sessionId: message.sessionId,
+      connected: message.connected,
+      generation: message.peerGeneration,
+    });
+    for (const record of activeRecords) {
+      const token = record.activationToken;
+      const binding = this.bindings.get(record.channel);
+      if (
+        !token ||
+        !binding ||
+        binding.windowId !== windowId ||
+        !record.inspectSession ||
+        !this.isCurrentActivation(record, token, binding)
+      ) {
+        continue;
+      }
+      this.panelSessions.publish(record.channel, message);
+    }
+    if (message.connected) {
+      this.scheduleAvailabilityRepublish(windowId, availability);
+    }
   }
 
   private postToCurrentPort(
@@ -1122,6 +1739,15 @@ export class BackgroundRouter {
     } catch {
       // A disappearing panel is finalized by its disconnect event.
     }
+  }
+
+  private postToActiveChannel(channel: string, message: unknown): void {
+    const record = this.panelPorts.get(channel);
+    const token = record?.activationToken;
+    if (!record || !token) {
+      return;
+    }
+    this.postToCurrentPort(record, token, message);
   }
 
   private isCurrentPending(pending: PendingRegistration): boolean {
@@ -1295,11 +1921,24 @@ function parsePanelWindowCommand(
   return undefined;
 }
 
-function parseElementSelectedMessage(value: unknown): InspectPayload | undefined {
+interface ContentSelectionEnvelope {
+  readonly contentSessionId: ContentSessionId;
+  readonly payload: InspectPayload;
+}
+
+interface ContentDomEventEnvelope {
+  readonly contentSessionId: ContentSessionId;
+  readonly event: DomEvent;
+}
+
+function parseElementSelectedMessage(
+  value: unknown,
+): ContentSelectionEnvelope | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["type", "payload"]) ||
+    !hasOnlyKeys(value, ["type", "contentSessionId", "payload"]) ||
     value.type !== "elementSelected" ||
+    !isValidContentSessionId(value.contentSessionId) ||
     !isRecord(value.payload)
   ) {
     return undefined;
@@ -1321,11 +1960,35 @@ function parseElementSelectedMessage(value: unknown): InspectPayload | undefined
     });
     return parsed.success
       ? {
-          targets: parsed.data.targets,
-          context: parsed.data.context,
-          metadata: parsed.data.metadata,
+          contentSessionId: value.contentSessionId,
+          payload: {
+            targets: parsed.data.targets,
+            context: parsed.data.context,
+            metadata: parsed.data.metadata,
+          },
         }
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseContentDomEventMessage(
+  value: unknown,
+): ContentDomEventEnvelope | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["type", "contentSessionId", "event"]) ||
+    value.type !== "browser2ide.dom.event" ||
+    !isValidContentSessionId(value.contentSessionId)
+  ) {
+    return undefined;
+  }
+  try {
+    return {
+      contentSessionId: value.contentSessionId,
+      event: parseDomEvent(value.event),
+    };
   } catch {
     return undefined;
   }
@@ -1387,6 +2050,28 @@ function isBrowserId(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function maintainsInspectionSession(
+  state: BrowserWindowConnectionState | undefined,
+): boolean {
+  return state === "linking" ||
+    state === "linked" ||
+    state === "offline" ||
+    state === "reconnecting";
+}
+
+function domQueryRequestId(request: DomRequest): string | undefined {
+  return request.type === "dom.getRoot" || request.type === "dom.getChildren"
+    ? request.requestId
+    : undefined;
+}
+
+function windowIsAvailable(
+  state: WindowAvailabilityState,
+  peer: { readonly connected: boolean } | undefined,
+): boolean {
+  return state.bridgeConnected !== false && peer?.connected !== false;
+}
+
 function hasOnlyKeys(
   value: Record<string, unknown>,
   keys: readonly string[],
@@ -1406,4 +2091,19 @@ function safeDisconnect(port: { disconnect(): void }): void {
   } catch {
     // Teardown remains best effort after browser-side disconnect.
   }
+}
+
+let inspectMessageSequence = 0;
+
+function createInspectMessageId(): string {
+  try {
+    const randomUuid = globalThis.crypto?.randomUUID;
+    if (typeof randomUuid === "function") {
+      return randomUuid.call(globalThis.crypto);
+    }
+  } catch {
+    // Use a bounded process-local fallback below.
+  }
+  inspectMessageSequence = (inspectMessageSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `inspect-${Date.now().toString(36)}-${inspectMessageSequence.toString(36)}`;
 }

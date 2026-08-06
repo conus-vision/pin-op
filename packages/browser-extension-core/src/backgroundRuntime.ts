@@ -7,6 +7,7 @@ import {
   type BackgroundRouterSubscriptions,
   type BackgroundRuntimePort,
   type BackgroundTab,
+  type BackgroundWindowCoordinator,
 } from "./backgroundRouter.js";
 import {
   BrowserWindowLinkStore,
@@ -24,6 +25,13 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly subscribeWindowRemoved: BackgroundRouterSubscriptions["subscribeWindowRemoved"];
   readonly subscribeTabDetached: BackgroundRouterSubscriptions["subscribeTabDetached"];
   readonly subscribeTabAttached: BackgroundRouterSubscriptions["subscribeTabAttached"];
+  readonly createWindowConnectionCoordinator?: (
+    store: BrowserWindowLinkStore,
+  ) => BackgroundWindowCoordinator &
+    Pick<
+      WindowConnectionCoordinator,
+      "onResolution" | "onPeerState" | "dispose"
+    >;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -39,13 +47,26 @@ export function startBackgroundRuntime(
     sendTabMessage: options.sendTabMessage,
   });
   const store = new BrowserWindowLinkStore(options.storage);
-  const coordinator = new WindowConnectionCoordinator({ store });
+  const coordinator = options.createWindowConnectionCoordinator?.(store) ??
+    new WindowConnectionCoordinator({ store });
   const router = createBackgroundRouter({
     expectedDevtoolsUrl: options.expectedDevtoolsUrl,
     expectedPanelUrl: options.expectedPanelUrl,
     getTab: options.getTab,
     coordinator,
     inspectCoordinator,
+    subscribeResolutions: (listener) => {
+      const subscription = coordinator.onResolution((_windowId, message) =>
+        listener(message),
+      );
+      return () => subscription.dispose();
+    },
+    subscribePeerStates: (listener) => {
+      const subscription = coordinator.onPeerState((windowId, message) =>
+        listener(windowId, message),
+      );
+      return () => subscription.dispose();
+    },
     subscriptions: {
       subscribeRuntimeMessages: options.subscribeRuntimeMessages,
       subscribeRuntimePorts: options.subscribeRuntimePorts,

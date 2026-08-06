@@ -1,0 +1,195 @@
+import {
+  PROTOCOL_VERSION,
+  type PeerStateMessage,
+  type ResolutionMessage,
+} from "@browser2ide/protocol";
+import { describe, expect, it } from "vitest";
+import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
+import { PanelInspectTransport } from "../src/panelInspectTransport.js";
+
+describe("PanelInspectTransport DOM integration", () => {
+  it("correlates a validated DOM query without a panel-supplied tab ID", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-1",
+    });
+
+    expect(port.sent).toEqual([
+      { type: "dom.getRoot", requestId: "root-1" },
+    ]);
+    port.emitMessage(rootResponse("root-1"));
+    await expect(pending).resolves.toEqual(rootResponse("root-1"));
+
+    await expect(transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-spoofed",
+      tabId: 999,
+    })).rejects.toThrow("Invalid DOM request");
+    expect(port.sent).toHaveLength(1);
+  });
+
+  it("dispatches validated DOM commands and rejects pending queries on close", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+
+    transport.dispatchDom({
+      type: "dom.select",
+      documentEpoch: 1,
+      nodeRef: "node-1",
+    });
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-pending",
+    });
+
+    expect(port.sent).toEqual([
+      {
+        type: "dom.select",
+        documentEpoch: 1,
+        nodeRef: "node-1",
+      },
+      { type: "dom.getRoot", requestId: "root-pending" },
+    ]);
+
+    transport.dispose();
+    await expect(pending).rejects.toThrow("Inspect connection is closed");
+  });
+
+  it("forwards only validated DOM and public protocol push messages", () => {
+    const port = new FakePort();
+    const received: unknown[] = [];
+    const transport = new PanelInspectTransport(
+      () => port,
+      () => undefined,
+      (message) => received.push(message),
+    );
+    transport.connect();
+    const selection = selectionChanged();
+    const currentResolution = resolution("inspect-1", 1);
+    const currentPeerState = peerState(true, 2);
+
+    port.emitMessage(selection);
+    port.emitMessage(currentResolution);
+    port.emitMessage(currentPeerState);
+    port.emitMessage({ ...selection, tabId: 999 });
+    port.emitMessage({ ...currentResolution, resolutionGeneration: -1 });
+    port.emitMessage({ ...currentPeerState, connected: "yes" });
+
+    expect(received).toEqual([
+      selection,
+      currentResolution,
+      currentPeerState,
+    ]);
+  });
+});
+
+class FakePort implements PanelInspectPort {
+  public readonly name = "browser2ide.devtools.channel-1";
+  public readonly sent: unknown[] = [];
+  public readonly onMessage = new FakeEvent<(message: unknown) => void>();
+  public readonly onDisconnect = new FakeEvent<() => void>();
+  public disconnected = false;
+
+  public postMessage(message: unknown): void {
+    this.sent.push(message);
+  }
+
+  public disconnect(): void {
+    this.disconnected = true;
+    this.onDisconnect.emit();
+  }
+
+  public emitMessage(message: unknown): void {
+    this.onMessage.emit(message);
+  }
+}
+
+class FakeEvent<T extends (...args: never[]) => void> {
+  private readonly listeners = new Set<T>();
+
+  public addListener(listener: T): void {
+    this.listeners.add(listener);
+  }
+
+  public removeListener(listener: T): void {
+    this.listeners.delete(listener);
+  }
+
+  public emit(...args: Parameters<T>): void {
+    for (const listener of this.listeners) {
+      listener(...args);
+    }
+  }
+}
+
+function rootResponse(requestId: string) {
+  return {
+    type: "dom.root" as const,
+    requestId,
+    documentEpoch: 1,
+    node: {
+      nodeRef: "node-root",
+      kind: "element" as const,
+      label: "html",
+      expandable: true,
+      branchRevision: 0,
+    },
+  };
+}
+
+function selectionChanged() {
+  return {
+    type: "dom.selectionChanged" as const,
+    documentEpoch: 1,
+    nodeRef: "node-1",
+    ancestorPath: [
+      {
+        nodeRef: "node-1",
+        kind: "element" as const,
+        label: "main#content",
+        expandable: true,
+        branchRevision: 0,
+      },
+    ],
+  };
+}
+
+function resolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: `resolution-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    status: "no-active-editor",
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function peerState(
+  connected: boolean,
+  peerGeneration: number,
+): PeerStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: `peer-${peerGeneration}`,
+    sessionId: "session-a",
+    role: "ide",
+    connected,
+    peerGeneration,
+    metadata: {},
+  };
+}

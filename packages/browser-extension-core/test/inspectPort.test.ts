@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
   createDevtoolsPanelPortName,
+  createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
+  parseInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
 describe("panel inspect transport", () => {
+  it("creates and parses strict document-scoped content lease names", () => {
+    expect(createInspectContentLeasePortName("content-session-1")).toBe(
+      "browser2ide.inspect.contentLease.content-session-1",
+    );
+    expect(
+      parseInspectContentLeasePortName(
+        "browser2ide.inspect.contentLease.content-session-1",
+      ),
+    ).toBe("content-session-1");
+    expect(
+      parseInspectContentLeasePortName("browser2ide.inspect.contentLease"),
+    ).toBeUndefined();
+    expect(
+      parseInspectContentLeasePortName(
+        "browser2ide.inspect.contentLease.content/session",
+      ),
+    ).toBeUndefined();
+    expect(() => createInspectContentLeasePortName("content/session"))
+      .toThrow(/session/i);
+  });
+
   it("creates and validates canonical channel-only port names", () => {
     expect(createDevtoolsPanelPortName("channel-1")).toBe(
       "browser2ide.devtools.channel-1",

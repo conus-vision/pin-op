@@ -1,4 +1,9 @@
-import type { ClientSource } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type ClientSource,
+  type PeerStateMessage,
+  type ResolutionMessage,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,
@@ -11,6 +16,7 @@ import {
   type InspectPayload,
   type SessionStorage,
 } from "../src/index.js";
+import type { InspectSendOutcome } from "../src/bridgeClient.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -439,11 +445,23 @@ describe("WindowConnectionCoordinator", () => {
     };
 
     expect(
-      harness.coordinator.publishInspect(10, "panel-101", payload),
-    ).toBe(true);
+      harness.coordinator.publishInspect(
+        10,
+        "inspect-panel-101",
+        "panel-101",
+        payload,
+      ),
+    ).toBe("sent");
     expect(
-      harness.coordinator.publishInspect(10, "panel-102", payload),
-    ).toBe(true);
+      harness.coordinator.publishInspect(
+        10,
+        "inspect-panel-102",
+        "panel-102",
+        payload,
+      ),
+    ).toBe("sent");
+    expect(client.inspectCalls.map(({ inspectMessageId }) => inspectMessageId))
+      .toEqual(["inspect-panel-101", "inspect-panel-102"]);
     expect(client.inspectCalls.map(({ sourceId }) => sourceId)).toEqual([
       "panel-101",
       "panel-102",
@@ -458,16 +476,67 @@ describe("WindowConnectionCoordinator", () => {
       tabId: 999,
     });
     expect(
-      harness.coordinator.publishInspect(10, "not-registered", payload),
-    ).toBe(false);
+      harness.coordinator.publishInspect(
+        10,
+        "inspect-not-registered",
+        "not-registered",
+        payload,
+      ),
+    ).toBe("not-connected");
     expect(
-      harness.coordinator.publishInspect(20, "panel-101", payload),
-    ).toBe(false);
+      harness.coordinator.publishInspect(
+        20,
+        "inspect-wrong-window",
+        "panel-101",
+        payload,
+      ),
+    ).toBe("not-connected");
 
     client.emitState("disconnected");
     expect(
-      harness.coordinator.publishInspect(10, "panel-101", payload),
-    ).toBe(false);
+      harness.coordinator.publishInspect(
+        10,
+        "inspect-disconnected",
+        "panel-101",
+        payload,
+      ),
+    ).toBe("not-connected");
+  });
+
+  it("forwards protocol events only from the current window client", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const receivedResolutions: Array<[number, ResolutionMessage]> = [];
+    const receivedPeerStates: Array<[number, PeerStateMessage]> = [];
+    const resolutionSubscription = harness.coordinator.onResolution(
+      (windowId, message) => receivedResolutions.push([windowId, message]),
+    );
+    const peerSubscription = harness.coordinator.onPeerState(
+      (windowId, message) => receivedPeerStates.push([windowId, message]),
+    );
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const currentResolution = resolution("inspect-current", 1);
+    const currentPeerState = peerState(true, 1);
+
+    client.emitResolution(currentResolution);
+    client.emitPeerState(currentPeerState);
+
+    expect(receivedResolutions).toEqual([[10, currentResolution]]);
+    expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
+
+    await harness.coordinator.unlinkWindow(10);
+    client.emitResolution(resolution("inspect-revoked", 2));
+    client.emitPeerState(peerState(false, 2));
+    expect(receivedResolutions).toEqual([[10, currentResolution]]);
+    expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
+
+    resolutionSubscription.dispose();
+    peerSubscription.dispose();
   });
 
   it("snapshots registration identity, metadata, callback, and disposal", async () => {
@@ -497,11 +566,13 @@ describe("WindowConnectionCoordinator", () => {
     expect(
       harness.coordinator.publishInspect(
         10,
+        "inspect-stable-registration",
         "panel-101",
         selection(".stable-registration"),
       ),
-    ).toBe(true);
+    ).toBe("sent");
     expect(client.inspectCalls.at(-1)).toMatchObject({
+      inspectMessageId: "inspect-stable-registration",
       sourceId: "panel-101",
       payload: {
         metadata: {},
@@ -631,6 +702,31 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.createdClients).toHaveLength(0);
     valid.dispose();
   });
+
+  it("disposes an earlier client subscription when later setup fails", async () => {
+    const createdClients: FakeWindowClient[] = [];
+    const coordinator = new WindowConnectionCoordinator({
+      store: new BrowserWindowLinkStore(new MemorySessionStorage()),
+      createClient: (options) => {
+        const client = new FakeWindowClient(options);
+        client.throwOnPeerStateSubscription = true;
+        createdClients.push(client);
+        return client;
+      },
+    });
+
+    await coordinator.linkWindow(10, "4873507", browserSource("window-10"));
+    coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+
+    expect(createdClients).toHaveLength(1);
+    expect(createdClients[0]?.resolutionListenerCount()).toBe(0);
+    expect(createdClients[0]?.disconnectCalls).toBe(1);
+    expect(coordinator.state(10)).toBe("error");
+  });
 });
 
 class FakeWindowClient {
@@ -640,12 +736,20 @@ class FakeWindowClient {
   public readonly linkCalls: string[] = [];
   public readonly connectCalls: BrowserCredentials[] = [];
   public readonly inspectCalls: Array<{
+    inspectMessageId: string;
     payload: InspectPayload;
-    sourceId: string | undefined;
+    sourceId: string;
   }> = [];
   public disconnectCalls = 0;
   public unlinkCalls = 0;
-  public inspectResult = true;
+  public inspectResult: InspectSendOutcome = "sent";
+  public throwOnPeerStateSubscription = false;
+  private readonly resolutionListeners = new Set<
+    (message: ResolutionMessage) => void
+  >();
+  private readonly peerStateListeners = new Set<
+    (message: PeerStateMessage) => void
+  >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
     this.url = options.url;
@@ -669,9 +773,46 @@ class FakeWindowClient {
     this.unlinkCalls += 1;
   }
 
-  public sendInspect(payload: InspectPayload, sourceId?: string): boolean {
-    this.inspectCalls.push({ payload, sourceId });
+  public sendInspect(
+    inspectMessageId: string,
+    payload: InspectPayload,
+    sourceId: string,
+  ): InspectSendOutcome {
+    this.inspectCalls.push({ inspectMessageId, payload, sourceId });
     return this.inspectResult;
+  }
+
+  public onResolution(listener: (message: ResolutionMessage) => void) {
+    this.resolutionListeners.add(listener);
+    return {
+      dispose: () => this.resolutionListeners.delete(listener),
+    };
+  }
+
+  public onPeerState(listener: (message: PeerStateMessage) => void) {
+    if (this.throwOnPeerStateSubscription) {
+      throw new Error("peer-state subscription failed");
+    }
+    this.peerStateListeners.add(listener);
+    return {
+      dispose: () => this.peerStateListeners.delete(listener),
+    };
+  }
+
+  public emitResolution(message: ResolutionMessage): void {
+    for (const listener of this.resolutionListeners) {
+      listener(message);
+    }
+  }
+
+  public resolutionListenerCount(): number {
+    return this.resolutionListeners.size;
+  }
+
+  public emitPeerState(message: PeerStateMessage): void {
+    for (const listener of this.peerStateListeners) {
+      listener(message);
+    }
   }
 
   public emitCredentials(credentials: BrowserCredentials): void {
@@ -819,6 +960,43 @@ function coordinatorHarness(storage: SessionStorage = new MemorySessionStorage()
       expect(coordinator.state(windowIdFor(saved))).toBe("linked");
     },
     flush: flushMicrotasks,
+  };
+}
+
+function resolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: `resolution-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    status: "no-active-editor",
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function peerState(
+  connected: boolean,
+  peerGeneration: number,
+): PeerStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: `peer-${peerGeneration}`,
+    sessionId: "session-a",
+    role: "ide",
+    connected,
+    peerGeneration,
+    metadata: {},
   };
 }
 

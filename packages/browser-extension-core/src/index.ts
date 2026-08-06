@@ -189,11 +189,15 @@ export {
 } from "./inspectLease.js";
 export type { InspectLeaseTarget } from "./inspectLease.js";
 export {
+  CONTENT_SESSION_ID_MAX_LENGTH,
+  createInspectContentLeasePortName,
   createDevtoolsPanelPortName,
   DEVTOOLS_CHANNEL_MAX_LENGTH,
   DEVTOOLS_PANEL_PORT_PREFIX,
-  INSPECT_CONTENT_LEASE_PORT_NAME,
+  INSPECT_CONTENT_LEASE_PORT_PREFIX,
+  isValidContentSessionId,
   isValidDevtoolsChannel,
+  parseInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectControllerCommand,
   parseInspectPortInvalidated,
@@ -204,6 +208,7 @@ export type {
   BackgroundToContentInspectPortMessage,
   BackgroundToPanelInspectPortMessage,
   BackgroundInspectPort,
+  ContentSessionId,
   ContentToBackgroundInspectPortMessage,
   ContentInspectPort,
   InspectPortEvent,

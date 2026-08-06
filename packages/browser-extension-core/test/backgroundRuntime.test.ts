@@ -2,6 +2,52 @@ import { describe, expect, it, vi } from "vitest";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 
 describe("startBackgroundRuntime", () => {
+  it("wires bridge protocol events into the router and disposes subscriptions", () => {
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const resolutionDispose = vi.fn();
+    const peerStateDispose = vi.fn();
+    const coordinatorDispose = vi.fn();
+    const coordinator = {
+      linkWindow: vi.fn(async () => undefined),
+      unlinkWindow: vi.fn(async () => undefined),
+      registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
+      publishInspect: vi.fn(() => "sent" as const),
+      removeWindow: vi.fn(async () => undefined),
+      onResolution: vi.fn(() => ({ dispose: resolutionDispose })),
+      onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
+      dispose: coordinatorDispose,
+    };
+
+    const runtime = startBackgroundRuntime({
+      expectedDevtoolsUrl: "moz-extension://browser2ide/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://browser2ide/dist/panel.html",
+      storage: memoryStorage(),
+      executeScript: vi.fn(async () => []),
+      sendTabMessage: vi.fn(async () => undefined),
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      createWindowConnectionCoordinator: () => coordinator,
+    });
+
+    expect(coordinator.onResolution).toHaveBeenCalledOnce();
+    expect(coordinator.onPeerState).toHaveBeenCalledOnce();
+
+    runtime.dispose();
+    runtime.dispose();
+
+    expect(resolutionDispose).toHaveBeenCalledOnce();
+    expect(peerStateDispose).toHaveBeenCalledOnce();
+    expect(coordinatorDispose).toHaveBeenCalledOnce();
+  });
+
   it("composes the background services and removes every platform listener", async () => {
     const messages = eventHarness();
     const ports = eventHarness();

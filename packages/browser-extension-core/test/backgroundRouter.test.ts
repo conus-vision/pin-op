@@ -1,7 +1,13 @@
+import {
+  PROTOCOL_VERSION,
+  type PeerStateMessage,
+  type ResolutionMessage,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,
   type InspectPayload,
+  type InspectSendOutcome,
 } from "../src/bridgeClient.js";
 import {
   BackgroundInspectCoordinator,
@@ -14,14 +20,17 @@ import {
 } from "../src/backgroundRouter.js";
 import {
   createDevtoolsPanelPortName,
-  INSPECT_CONTENT_LEASE_PORT_NAME,
+  createInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
+import { PanelSessionTransport } from "../src/panelSessionTransport.js";
 import type {
+  BrowserWindowConnectionState,
   PanelRegistration,
 } from "../src/windowConnectionCoordinator.js";
 
 const DEVTOOLS_URL = "moz-extension://browser2ide/dist/devtools.html";
 const PANEL_URL = "moz-extension://browser2ide/dist/panel.html";
+const DEFAULT_CONTENT_SESSION_ID = "content-session-default";
 
 describe("BackgroundRouter", () => {
   it("accepts registration only from the exact injected DevTools URL", async () => {
@@ -58,7 +67,7 @@ describe("BackgroundRouter", () => {
   });
 
   it("derives the window, keeps exact re-registration idempotent, and posts state", async () => {
-    const harness = createHarness();
+    const harness = createHarness({ initialPanelState: "notLinked" });
     const registration = registerMessage("channel-1", 17, "source-17");
 
     await harness.router.routeMessage(registration, devtoolsSender());
@@ -289,6 +298,7 @@ describe("BackgroundRouter", () => {
       17,
       "source-17",
     );
+    await harness.attachContentSession(17);
 
     const staleAnnouncement = harness.router.routeMessage(
       registerMessage("channel-1", 17, "source-17"),
@@ -296,7 +306,14 @@ describe("BackgroundRouter", () => {
     );
     await expect(
       harness.router.routeMessage(
-        { type: "elementSelected", payload: inspectPayload() },
+        selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+        contentSender(17, 20),
+      ),
+    ).resolves.toBeUndefined();
+    await harness.attachContentSession(17, "content-session-moved");
+    await expect(
+      harness.router.routeMessage(
+        selectedMessage("content-session-moved"),
         contentSender(17, 20),
       ),
     ).resolves.toEqual({ ok: true });
@@ -322,6 +339,7 @@ describe("BackgroundRouter", () => {
     const movedLookup = deferred<{ id: number; windowId: number }>();
     let lookup = 0;
     const harness = createHarness({
+      initialPanelState: "notLinked",
       getTab: async (tabId) => {
         lookup += 1;
         return lookup === 1
@@ -454,6 +472,7 @@ describe("BackgroundRouter", () => {
     });
     await harness.registerAndConnect("channel-1", 17, "source-17");
     await harness.registerAndConnect("channel-2", 18, "source-18");
+    await harness.attachContentSession(17);
     const payloadWithDiagnostics = {
       ...inspectPayload(),
       inaccessibleStylesheets: [{ sourceUrl: "x", reason: "denied" }],
@@ -462,7 +481,7 @@ describe("BackgroundRouter", () => {
 
     expect(
       await harness.router.routeMessage(
-        { type: "elementSelected", payload: payloadWithDiagnostics },
+        selectedMessage(DEFAULT_CONTENT_SESSION_ID, payloadWithDiagnostics),
         contentSender(17, 10),
       ),
     ).toEqual({ ok: true });
@@ -470,10 +489,677 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.published).toEqual([
       {
         windowId: 10,
+        inspectMessageId: "inspect-1",
         sourceId: "source-17",
         payload: inspectPayload(),
       },
     ]);
+  });
+
+  it("records correlation before send and removes it after send failure", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    harness.coordinator.onPublish = ({ inspectMessageId }) => {
+      harness.resolutions.emit(resolution(inspectMessageId, 1));
+    };
+
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    expect(messagesOfType(panel, "resolution")).toEqual([
+      resolution("inspect-1", 1),
+    ]);
+
+    harness.coordinator.onPublish = undefined;
+    harness.coordinator.publishOutcome = "not-connected";
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-2", 1));
+
+    expect(messagesOfType(panel, "resolution")).toHaveLength(1);
+    expect(messagesOfType(panel, "browser2ide.ideState")).toEqual([
+      {
+        type: "browser2ide.ideState",
+        status: "ide-disconnected",
+        inspectMessageId: "inspect-2",
+      },
+    ]);
+  });
+
+  it("rejects delayed selection and DOM events from a retired content document", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    const firstSessionId = "content-session-a";
+    const firstLease = harness.port(
+      createInspectContentLeasePortName(firstSessionId),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(firstLease);
+    const firstEvent = selectionChanged("node-a");
+
+    await expect(harness.router.routeMessage(
+      selectedMessage(firstSessionId),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage(
+      domEventMessage(firstSessionId, firstEvent),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+
+    firstLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    const secondSessionId = "content-session-b";
+    const secondLease = harness.port(
+      createInspectContentLeasePortName(secondSessionId),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(secondLease);
+    const secondEvent = selectionChanged("node-b");
+
+    await expect(harness.router.routeMessage(
+      selectedMessage(firstSessionId),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await expect(harness.router.routeMessage(
+      domEventMessage(firstSessionId, firstEvent),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await expect(harness.router.routeMessage(
+      selectedMessage(secondSessionId),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage(
+      domEventMessage(secondSessionId, secondEvent),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+
+    expect(harness.coordinator.published.map(({ inspectMessageId }) =>
+      inspectMessageId
+    )).toEqual(["inspect-1", "inspect-2"]);
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      firstEvent,
+      secondEvent,
+    ]);
+  });
+
+  it("removes correlation when inspect publication throws", async () => {
+    const harness = createHarness({
+      publishInspect() {
+        throw new Error("unexpected transport failure");
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    await expect(harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.resolutions.emit(resolution("inspect-1", 1));
+
+    expect(messagesOfType(panel, "resolution")).toEqual([]);
+    expect(messagesOfType(panel, "browser2ide.ideState")).toEqual([
+      {
+        type: "browser2ide.ideState",
+        status: "ide-disconnected",
+        inspectMessageId: "inspect-1",
+      },
+    ]);
+    expect(harness.reportedErrors).toHaveLength(1);
+  });
+
+  it("routes increasing resolution generations only to the originating panel", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 10],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+
+    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(resolution("inspect-1", 1));
+
+    expect(messagesOfType(panelA, "resolution")).toEqual([
+      resolution("inspect-1", 2),
+    ]);
+    expect(messagesOfType(panelB, "resolution")).toEqual([]);
+  });
+
+  it("rejects stale peer state and republishes selection after IDE reconnect", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    harness.peerStates.emit(10, peerState(false, 3));
+    harness.peerStates.emit(10, peerState(true, 4));
+    harness.peerStates.emit(10, peerState(false, 2));
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "peerState")).toEqual([
+      peerState(false, 3),
+      peerState(true, 4),
+    ]);
+    expect(harness.inspectCalls).toContainEqual([
+      "tab",
+      17,
+      { type: "browser2ide.inspect.republish" },
+    ]);
+  });
+
+  it("republishes for the first connected peer snapshot", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+
+    harness.peerStates.emit(10, peerState(true, 1));
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(1);
+  });
+
+  it("republishes for a new connected peer session", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+
+    harness.peerStates.emit(10, peerState(true, 1, "session-a"));
+    await flushMicrotasks();
+    const firstSessionCalls = republishCallCount(harness.inspectCalls);
+
+    harness.peerStates.emit(10, peerState(true, 1, "session-b"));
+    await flushMicrotasks();
+
+    expect(firstSessionCalls).toBe(1);
+    expect(republishCallCount(harness.inspectCalls)).toBe(2);
+  });
+
+  it("defers browser reconnect republish while the IDE peer is disconnected", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+    const registration = harness.coordinator.registrations[0];
+
+    harness.peerStates.emit(10, peerState(false, 1));
+    registration?.onStateChanged?.("offline");
+    registration?.onStateChanged?.("reconnecting");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(0);
+
+    harness.peerStates.emit(10, peerState(true, 2));
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(1);
+  });
+
+  it("defers IDE reconnect republish while the browser bridge is offline", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+    const registration = harness.coordinator.registrations[0];
+
+    harness.peerStates.emit(10, peerState(false, 1));
+    registration?.onStateChanged?.("offline");
+    await flushMicrotasks();
+    harness.peerStates.emit(10, peerState(true, 2));
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(0);
+
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(1);
+  });
+
+  it("dedupes a later initial peer signal after browser republish completed", async () => {
+    let harness!: ReturnType<typeof createHarness>;
+    const republishFinished = deferred<void>();
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "browser2ide.inspect.republish"
+        ) {
+          await harness.router.routeMessage(
+            selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+            contentSender(tabId, 10),
+          );
+          republishFinished.resolve();
+          return true;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.inspectCalls.length = 0;
+    const registration = harness.coordinator.registrations[0];
+
+    registration?.onStateChanged?.("offline");
+    registration?.onStateChanged?.("reconnecting");
+    registration?.onStateChanged?.("linked");
+    await republishFinished.promise;
+    expect(republishCallCount(harness.inspectCalls)).toBe(1);
+    expect(harness.coordinator.published).toHaveLength(2);
+
+    harness.peerStates.emit(10, peerState(true, 1));
+    await flushMicrotasks();
+
+    expect(republishCallCount(harness.inspectCalls)).toBe(1);
+    expect(harness.coordinator.published.map(({ inspectMessageId }) =>
+      inspectMessageId
+    )).toEqual(["inspect-1", "inspect-2"]);
+  });
+
+  it("republishes reconnect selection with a new current inspect ID", async () => {
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "browser2ide.inspect.republish"
+        ) {
+          await harness.router.routeMessage(
+            selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+            contentSender(tabId, 10),
+          );
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17);
+
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    const firstId = harness.coordinator.published[0]?.inspectMessageId;
+
+    harness.peerStates.emit(10, peerState(false, 1));
+    harness.peerStates.emit(10, peerState(true, 2));
+    await flushMicrotasks();
+
+    const secondId = harness.coordinator.published[1]?.inspectMessageId;
+    expect(firstId).toBe("inspect-1");
+    expect(secondId).toBe("inspect-2");
+    expect(secondId).not.toBe(firstId);
+
+    harness.resolutions.emit(resolution(String(firstId), 99));
+    harness.resolutions.emit(resolution(String(secondId), 1));
+
+    expect(messagesOfType(panel, "resolution")).toEqual([
+      resolution("inspect-2", 1),
+    ]);
+  });
+
+  it("republishes once when the browser reconnects with unchanged peer generation", async () => {
+    let harness!: ReturnType<typeof createHarness>;
+    const republishResults: unknown[] = [];
+    const twoRepublishesFinished = deferred<void>();
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "browser2ide.inspect.republish"
+        ) {
+          republishResults.push(await harness.router.routeMessage(
+            selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+            contentSender(tabId, 10),
+          ));
+          if (republishResults.length === 2) {
+            twoRepublishesFinished.resolve();
+          }
+          return true;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.peerStates.emit(10, peerState(true, 7));
+    await flushMicrotasks();
+    const initialPeerRepublishes = republishCallCount(harness.inspectCalls);
+    const publicationsBeforeBridgeReconnect = harness.coordinator.published.length;
+    const registration = harness.coordinator.registrations[0];
+
+    registration?.onStateChanged?.("offline");
+    registration?.onStateChanged?.("reconnecting");
+    registration?.onStateChanged?.("linked");
+    registration?.onStateChanged?.("linked");
+    harness.peerStates.emit(10, peerState(true, 7));
+    await twoRepublishesFinished.promise;
+
+    expect(initialPeerRepublishes).toBe(1);
+    expect(republishCallCount(harness.inspectCalls)).toBe(
+      initialPeerRepublishes + 1,
+    );
+    expect(republishResults).toEqual([{ ok: true }, { ok: true }]);
+    expect(harness.coordinator.published).toHaveLength(
+      publicationsBeforeBridgeReconnect + 1,
+    );
+  });
+
+  it("bounds peer state per window and clears it across unlink and removal", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    const registration = harness.coordinator.registrations[0];
+
+    harness.peerStates.emit(10, peerState(false, 40, "session-a"));
+    harness.peerStates.emit(10, peerState(true, 1, "session-b"));
+    harness.peerStates.emit(10, peerState(true, 2, "session-b"));
+    harness.peerStates.emit(10, peerState(false, 1, "session-b"));
+
+    expect(peerStateHistory(harness.router)).toEqual([
+      [
+        10,
+        { sessionId: "session-b", connected: true, generation: 2 },
+      ],
+    ]);
+    expect(messagesOfType(panel, "peerState").slice(-2)).toEqual([
+      peerState(true, 1, "session-b"),
+      peerState(true, 2, "session-b"),
+    ]);
+
+    registration?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    expect(peerStateHistory(harness.router)).toEqual([]);
+    harness.peerStates.emit(10, peerState(false, 99, "late-unlinked"));
+    expect(peerStateHistory(harness.router)).toEqual([]);
+
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    harness.peerStates.emit(10, peerState(true, 1, "session-c"));
+    expect(peerStateHistory(harness.router)).toEqual([
+      [
+        10,
+        { sessionId: "session-c", connected: true, generation: 1 },
+      ],
+    ]);
+
+    await harness.router.removeWindow(10);
+    expect(peerStateHistory(harness.router)).toEqual([]);
+    harness.peerStates.emit(10, peerState(false, 99, "late-session"));
+    expect(peerStateHistory(harness.router)).toEqual([]);
+  });
+
+  it("scopes peer state and reconnect republish to its browser window", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.inspectCoordinator.whenIdle(18);
+    harness.inspectCalls.length = 0;
+
+    harness.peerStates.emit(10, peerState(false, 1));
+    harness.peerStates.emit(10, peerState(true, 2));
+    await flushMicrotasks();
+
+    expect(messagesOfType(panelA, "peerState")).toEqual([
+      peerState(false, 1),
+      peerState(true, 2),
+    ]);
+    expect(messagesOfType(panelB, "peerState")).toEqual([]);
+    expect(harness.inspectCalls).toEqual([
+      ["tab", 17, { type: "browser2ide.inspect.republish" }],
+    ]);
+  });
+
+  it("routes DOM requests through the registered tab while picker is off", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? domRoot(String(message.requestId))
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    panel.emitMessage({
+      type: "browser2ide.inspect.setEnabled",
+      requestId: "picker-off",
+      enabled: false,
+    });
+    panel.emitMessage({
+      type: "dom.getRoot",
+      requestId: "root-1",
+    });
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(harness.inspectCalls).toContainEqual([
+      "tab",
+      17,
+      { type: "dom.getRoot", requestId: "root-1" },
+    ]);
+    expect(messagesOfType(panel, "dom.root")).toEqual([domRoot("root-1")]);
+  });
+
+  it.each([
+    {
+      type: "dom.getRoot" as const,
+      requestId: "root-after-unlink",
+    },
+    {
+      type: "dom.getChildren" as const,
+      requestId: "children-after-unlink",
+      documentEpoch: 1,
+      nodeRef: "node-root",
+      branchRevision: 0,
+    },
+  ])("settles queued $type after unlink before dispatch", async (request) => {
+    const enable = deferred<void>();
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await enable.promise;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    panel.emitMessage({
+      type: "browser2ide.inspect.setEnabled",
+      requestId: "blocking-enable",
+      enabled: true,
+    });
+    panel.emitMessage(request);
+    await flushMicrotasks();
+
+    harness.coordinator.registrations[0]?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    enable.resolve();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toContainEqual({
+      type: "dom.error",
+      requestId: request.requestId,
+      code: "session-disposed",
+    });
+    expect(harness.inspectCalls).not.toContainEqual(["tab", 17, request]);
+  });
+
+  it("settles an in-flight DOM query when its tab migrates", async () => {
+    const tabs = new Map([[17, 10]]);
+    const query = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? query.promise
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    panel.emitMessage({ type: "dom.getRoot", requestId: "migrating-root" });
+    await flushMicrotasks();
+
+    tabs.set(17, 20);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 20),
+    );
+    query.resolve(domRoot("migrating-root"));
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(messagesOfType(panel, "dom.root")).toEqual([]);
+    expect(messagesOfType(panel, "dom.error")).toContainEqual({
+      type: "dom.error",
+      requestId: "migrating-root",
+      code: "session-disposed",
+    });
+  });
+
+  it("does not deliver an old DOM query result to a replacement panel port", async () => {
+    const query = deferred<unknown>();
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? query.promise
+          : undefined,
+    });
+    const original = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    original.emitMessage({ type: "dom.getRoot", requestId: "old-root" });
+    await flushMicrotasks();
+
+    original.disconnect();
+    const replacement = harness.panelPort("channel-1");
+    harness.router.connectPort(replacement);
+    await flushMicrotasks();
+    query.resolve(domRoot("old-root"));
+    await flushMicrotasks();
+
+    expect(original.disconnected).toBe(true);
+    expect(messagesOfType(replacement, "dom.root")).toEqual([]);
+    expect(messagesOfType(replacement, "dom.error")).toEqual([]);
+  });
+
+  it("settles a DOM query when the panel operation throws unexpectedly", async () => {
+    const panelSessions = new PanelSessionTransport({
+      sendTabMessage: async () => undefined,
+      postPanelMessage: () => undefined,
+    });
+    panelSessions.request = async () => {
+      throw new Error("unexpected panel transport failure");
+    };
+    const harness = createHarness({ panelSessionTransport: panelSessions });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+
+    panel.emitMessage({ type: "dom.getRoot", requestId: "throwing-root" });
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toEqual([{
+      type: "dom.error",
+      requestId: "throwing-root",
+      code: "internal-error",
+    }]);
+    expect(harness.reportedErrors).toHaveLength(1);
   });
 
   it("allows an in-flight selection in another window to publish", async () => {
@@ -489,10 +1175,11 @@ describe("BackgroundRouter", () => {
     });
     await harness.registerAndConnect("channel-a", 17, "source-a");
     await harness.registerAndConnect("channel-b", 18, "source-b");
+    await harness.attachContentSession(18);
     deferWindowB = true;
 
     const publishing = harness.router.routeMessage(
-      { type: "elementSelected", payload: inspectPayload() },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(18, 20),
     );
     await harness.router.removeWindow(10);
@@ -502,6 +1189,7 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.published).toEqual([
       {
         windowId: 20,
+        inspectMessageId: "inspect-1",
         sourceId: "source-b",
         payload: inspectPayload(),
       },
@@ -517,10 +1205,11 @@ describe("BackgroundRouter", () => {
         deferSelection ? tabLookup.promise : { id: tabId, windowId: 10 },
     });
     await harness.registerAndConnect("channel-a", 17, "source-a");
+    await harness.attachContentSession(17);
     deferSelection = true;
 
     const publishing = harness.router.routeMessage(
-      { type: "elementSelected", payload: inspectPayload() },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
     await harness.router.removeWindow(10);
@@ -533,20 +1222,21 @@ describe("BackgroundRouter", () => {
   it("fails closed for invalid payloads, inactive tabs, and sender window mismatches", async () => {
     const harness = createHarness();
     await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
 
     await harness.router.routeMessage(
-      {
-        type: "elementSelected",
-        payload: { ...inspectPayload(), targets: [] },
-      },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID, {
+        ...inspectPayload(),
+        targets: [],
+      }),
       contentSender(17, 10),
     );
     await harness.router.routeMessage(
-      { type: "elementSelected", payload: inspectPayload() },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 999),
     );
     await harness.router.routeMessage(
-      { type: "elementSelected", payload: inspectPayload() },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(18, 10),
     );
 
@@ -575,7 +1265,9 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
 
-    const crossTabLease = harness.port(INSPECT_CONTENT_LEASE_PORT_NAME, {
+    const crossTabLease = harness.port(createInspectContentLeasePortName(
+      "cross-tab-session",
+    ), {
       tab: { id: 99, windowId: 10 },
     });
     harness.router.connectPort(crossTabLease);
@@ -594,14 +1286,22 @@ describe("BackgroundRouter", () => {
       17,
       "source-17",
     );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
 
     await harness.router.removeWindow(10);
+    await harness.inspectCoordinator.whenIdle(17);
 
     expect(harness.coordinator.removedWindows).toEqual([10]);
     expect(harness.coordinator.disposeCalls).toBe(1);
     expect(port.disconnected).toBe(true);
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "browser2ide.inspect.disposeSession" },
+    ]);
     await harness.router.routeMessage(
-      { type: "elementSelected", payload: inspectPayload() },
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
     expect(harness.coordinator.published).toEqual([]);
@@ -694,6 +1394,12 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
     expect(harness.inspectCalls).toEqual([
       ["inject", { target: { tabId: 17 }, files: ["dist/contentScript.js"] }],
+      [
+        "tab",
+        17,
+        { type: "browser2ide.inspect.disposeSession" },
+      ],
+      ["inject", { target: { tabId: 17 }, files: ["dist/contentScript.js"] }],
       ["tab", 17, { type: "enableInspectMode" }],
     ]);
     expect(harness.getTabCalls).toEqual([
@@ -718,6 +1424,8 @@ describe("BackgroundRouter", () => {
       17,
       "source-17",
     );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
     tabs.delete(17);
 
     port.emitMessage({
@@ -737,7 +1445,20 @@ describe("BackgroundRouter", () => {
       ),
     ).resolves.toEqual({ ok: false, error: "stalePanel" });
 
-    expect(harness.inspectCalls).toEqual([]);
+    expect(harness.inspectCalls).toEqual([
+      [
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
+      ],
+      [
+        "tab",
+        17,
+        { type: "browser2ide.inspect.disposeSession" },
+      ],
+    ]);
     expect(harness.coordinator.unlinks).toEqual([]);
     expect(harness.coordinator.activeSources()).toEqual([]);
     expect(port.sent).toContainEqual({
@@ -1025,6 +1746,7 @@ describe("BackgroundRouter", () => {
         17,
         "source-17",
       );
+      await harness.attachContentSession(17);
       const staleRegistration = harness.coordinator.registrations.at(-1);
       const command = harness.router.routeMessage(
         kind === "link"
@@ -1044,10 +1766,10 @@ describe("BackgroundRouter", () => {
       tabs.set(17, 20);
       await expect(
         harness.router.routeMessage(
-          { type: "elementSelected", payload: inspectPayload() },
+          selectedMessage(DEFAULT_CONTENT_SESSION_ID),
           contentSender(17, 20),
         ),
-      ).resolves.toEqual({ ok: true });
+      ).resolves.toBeUndefined();
 
       expect(signals).toHaveLength(1);
       expect(signals[0]?.aborted).toBe(true);
@@ -1249,6 +1971,7 @@ describe("BackgroundRouter", () => {
     const operation = deferred<void>();
     let signal: AbortSignal | undefined;
     const harness = createHarness({
+      initialPanelState: "notLinked",
       tabs,
       linkWindow: async (_windowId, _code, _source, currentSignal) => {
         signal = currentSignal;
@@ -1311,12 +2034,181 @@ describe("BackgroundRouter", () => {
     expect(windowStates(port).slice(-2)).toEqual(["linking", "linked"]);
   });
 
+  it("starts inspection only when linking and retains it while credentials remain", async () => {
+    const harness = createHarness({ initialPanelState: "notLinked" });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const registration = harness.coordinator.registrations[0];
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(injectionCount(harness.inspectCalls)).toBe(0);
+
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(injectionCount(harness.inspectCalls)).toBe(1);
+
+    const contentLease = new FakePort(
+      createInspectContentLeasePortName("content-session-link"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(contentLease);
+    registration?.onStateChanged?.("offline");
+    registration?.onStateChanged?.("reconnecting");
+    await flushMicrotasks();
+
+    expect(contentLease.disconnected).toBe(false);
+    expect(injectionCount(harness.inspectCalls)).toBe(1);
+
+    registration?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(contentLease.disconnected).toBe(true);
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "browser2ide.inspect.disposeSession" },
+    ]);
+    expect(port.disconnected).toBe(false);
+  });
+
+  it("recovers once per trusted content lease across repeated navigations", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    const registration = harness.coordinator.registrations[0];
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    const firstLease = new FakePort(
+      createInspectContentLeasePortName("content-session-first"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(firstLease);
+    firstLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(injectionCount(harness.inspectCalls)).toBe(2);
+
+    const secondLease = new FakePort(
+      createInspectContentLeasePortName("content-session-second"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(secondLease);
+    expect(secondLease.disconnected).toBe(false);
+    secondLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(injectionCount(harness.inspectCalls)).toBe(3);
+
+    const thirdLease = new FakePort(
+      createInspectContentLeasePortName("content-session-third"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(thirdLease);
+    expect(thirdLease.disconnected).toBe(false);
+  });
+
+  it("fails closed after one recovery injection failure without retrying", async () => {
+    let injectionAttempts = 0;
+    const harness = createHarness({
+      executeScript: async () => {
+        injectionAttempts += 1;
+        if (injectionAttempts === 2) {
+          throw new Error("Protected page");
+        }
+      },
+    });
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
+    const registration = harness.coordinator.registrations[0];
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    const contentLease = new FakePort(
+      createInspectContentLeasePortName("content-session-before-failure"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(contentLease);
+    contentLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(injectionAttempts).toBe(2);
+
+    registration?.onStateChanged?.("linked");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(injectionAttempts).toBe(2);
+
+    const unownedLease = new FakePort(
+      createInspectContentLeasePortName("content-session-unowned"),
+      contentSender(17, 10),
+    );
+    harness.router.connectPort(unownedLease);
+    expect(unownedLease.disconnected).toBe(true);
+  });
+
+  it("disposes inspection on unlink and recreates it only for a new link", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? domRoot(String(message.requestId))
+          : undefined,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    const registration = harness.coordinator.registrations[0];
+
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    registration?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "browser2ide.inspect.disposeSession" },
+    ]);
+    const callsAfterUnlink = harness.inspectCalls.length;
+    port.emitMessage({ type: "dom.getRoot", requestId: "after-unlink" });
+    await flushMicrotasks();
+    expect(harness.inspectCalls).toHaveLength(callsAfterUnlink);
+
+    registration?.onStateChanged?.("linking");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "inject",
+      {
+        target: { tabId: 17 },
+        files: ["dist/contentScript.js"],
+      },
+    ]);
+  });
+
   it("does not let a pending A state verification block initial B state", async () => {
     const pendingAState = deferred<{ id: number; windowId: number }>();
     const events = createRouterSubscriptionHarness();
     const tabs = new Map([[17, 10]]);
     let lookup = 0;
     const harness = createHarness({
+      initialPanelState: "notLinked",
       tabs,
       subscriptions: events.subscriptions,
       getTab: async (tabId) => {
@@ -1390,6 +2282,7 @@ describe("BackgroundRouter", () => {
       },
     });
     await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
     const command = harness.router.routeMessage(
       {
         type: "browser2ide.unlinkWindow",
@@ -1422,6 +2315,7 @@ describe("BackgroundRouter", () => {
       },
     });
     await harness.registerAndConnect("channel-1", 17, "source-17");
+    await harness.attachContentSession(17);
     const command = harness.router.routeMessage(
       {
         type: "browser2ide.linkWindow",
@@ -1435,7 +2329,7 @@ describe("BackgroundRouter", () => {
     tabs.delete(17);
     await expect(
       harness.router.routeMessage(
-        { type: "elementSelected", payload: inspectPayload() },
+        selectedMessage(DEFAULT_CONTENT_SESSION_ID),
         contentSender(17, 10),
       ),
     ).resolves.toBeUndefined();
@@ -1465,6 +2359,7 @@ describe("BackgroundRouter", () => {
       17,
       "source-17",
     );
+    await harness.attachContentSession(17);
     port.emitMessage({
       type: "browser2ide.inspect.setEnabled",
       requestId: "pending-enable",
@@ -1475,10 +2370,10 @@ describe("BackgroundRouter", () => {
     tabs.set(17, 20);
     await expect(
       harness.router.routeMessage(
-        { type: "elementSelected", payload: inspectPayload() },
+        selectedMessage(DEFAULT_CONTENT_SESSION_ID),
         contentSender(17, 20),
       ),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toBeUndefined();
 
     expect(port.sent).toContainEqual({
       type: "browser2ide.inspect.result",
@@ -1501,10 +2396,23 @@ describe("BackgroundRouter", () => {
       requestId: "pending-enable",
       ok: true,
     });
-    expect(harness.inspectCalls.at(-1)).toEqual([
-      "tab",
-      17,
-      { type: "disableInspectMode" },
+    expect(harness.inspectCalls).toEqual([
+      [
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
+      ],
+      ["tab", 17, { type: "enableInspectMode" }],
+      ["tab", 17, { type: "browser2ide.inspect.disposeSession" }],
+      [
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
+      ],
     ]);
     expect(harness.coordinator.registrations.at(-1)).toMatchObject({
       windowId: 20,
@@ -1564,10 +2472,27 @@ describe("BackgroundRouter", () => {
     await harness.inspectCoordinator.whenIdle(17);
 
     expect(inspectResults(port)).toHaveLength(1);
-    expect(harness.inspectCalls.at(-1)).toEqual([
-      "tab",
-      17,
-      { type: "disableInspectMode" },
+    expect(harness.inspectCalls).toEqual([
+      [
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
+      ],
+      ["tab", 17, { type: "enableInspectMode" }],
+      [
+        "tab",
+        17,
+        { type: "browser2ide.inspect.disposeSession" },
+      ],
+      [
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
+      ],
     ]);
   });
 
@@ -1620,9 +2545,11 @@ describe("BackgroundRouter", () => {
         },
       ]);
       expect(harness.inspectCalls.at(-1)).toEqual([
-        "tab",
-        17,
-        { type: "disableInspectMode" },
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
       ]);
       expect(harness.coordinator.registrations.at(-1)).toMatchObject({
         windowId: 20,
@@ -1682,13 +2609,16 @@ describe("BackgroundRouter", () => {
         },
       ]);
       expect(harness.inspectCalls.at(-1)).toEqual([
-        "tab",
-        17,
-        { type: "disableInspectMode" },
+        "inject",
+        {
+          target: { tabId: 17 },
+          files: ["dist/contentScript.js"],
+        },
       ]);
       expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
-        .toEqual([10, 20]);
+        .toEqual(stage === "executeScript" ? [10] : [10, 20]);
       expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
+      expect(port.disconnected).toBe(false);
     },
   );
 
@@ -1838,7 +2768,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "disableInspectMode" },
+      { type: "browser2ide.inspect.disposeSession" },
     ]);
   });
 });
@@ -1869,6 +2799,11 @@ interface HarnessOptions {
     windowId: number,
     signal?: AbortSignal,
   ) => Promise<void>;
+  readonly publishInspect?: (
+    publication: PublishedInspect,
+  ) => InspectSendOutcome;
+  readonly panelSessionTransport?: PanelSessionTransport;
+  readonly initialPanelState?: BrowserWindowConnectionState;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -1876,9 +2811,15 @@ function createHarness(options: HarnessOptions = {}) {
   const getTabCalls: number[] = [];
   const inspectCalls: unknown[] = [];
   const reportedErrors: unknown[] = [];
+  const resolutions = new FakeEvent<(message: ResolutionMessage) => void>();
+  const peerStates = new FakeEvent<
+    (windowId: number, message: PeerStateMessage) => void
+  >();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
     options.unlinkWindow,
+    options.publishInspect,
+    options.initialPanelState ?? "linked",
   );
   const inspectCoordinator = new BackgroundInspectCoordinator({
     async executeScript(details) {
@@ -1887,7 +2828,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     async sendTabMessage(tabId, message) {
       inspectCalls.push(["tab", tabId, message]);
-      await options.sendTabMessage?.(tabId, message);
+      return await options.sendTabMessage?.(tabId, message);
     },
   });
   const harness = {
@@ -1895,6 +2836,8 @@ function createHarness(options: HarnessOptions = {}) {
     getTabCalls,
     inspectCalls,
     reportedErrors,
+    resolutions,
+    peerStates,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
     port(
@@ -1922,6 +2865,19 @@ function createHarness(options: HarnessOptions = {}) {
       harness.router.connectPort(port);
       return port;
     },
+    async attachContentSession(
+      tabId: number,
+      contentSessionId = DEFAULT_CONTENT_SESSION_ID,
+    ): Promise<FakePort> {
+      await flushMicrotasks();
+      await inspectCoordinator.whenIdle(tabId);
+      const port = harness.port(
+        createInspectContentLeasePortName(contentSessionId),
+        { tab: { id: tabId } },
+      );
+      harness.router.connectPort(port);
+      return port;
+    },
   };
   harness.router = createBackgroundRouter({
     expectedDevtoolsUrl: Object.hasOwn(options, "expectedDevtoolsUrl")
@@ -1938,19 +2894,37 @@ function createHarness(options: HarnessOptions = {}) {
       }),
     coordinator,
     inspectCoordinator,
+    panelSessionTransport: options.panelSessionTransport,
     subscriptions: options.subscriptions,
+    subscribeResolutions: (listener: (message: ResolutionMessage) => void) => {
+      resolutions.addListener(listener);
+      return () => resolutions.removeListener(listener);
+    },
+    subscribePeerStates: (
+      listener: (windowId: number, message: PeerStateMessage) => void,
+    ) => {
+      peerStates.addListener(listener);
+      return () => peerStates.removeListener(listener);
+    },
+    inspectMessageId: (() => {
+      let sequence = 0;
+      return () => `inspect-${++sequence}`;
+    })(),
     onError: (error) => reportedErrors.push(error),
   });
   return harness;
 }
 
+interface PublishedInspect {
+  readonly windowId: number;
+  readonly inspectMessageId: string;
+  readonly sourceId: string;
+  readonly payload: InspectPayload;
+}
+
 class FakeWindowCoordinator {
   public readonly registrations: PanelRegistration[] = [];
-  public readonly published: Array<{
-    windowId: number;
-    sourceId: string;
-    payload: InspectPayload;
-  }> = [];
+  public readonly published: PublishedInspect[] = [];
   public readonly removedWindows: number[] = [];
   public readonly links: Array<{
     windowId: number;
@@ -1959,6 +2933,8 @@ class FakeWindowCoordinator {
   }> = [];
   public readonly unlinks: number[] = [];
   public disposeCalls = 0;
+  public publishOutcome: InspectSendOutcome = "sent";
+  public onPublish?: (publication: PublishedInspect) => void;
   private readonly active = new Set<PanelRegistration>();
 
   public constructor(
@@ -1972,6 +2948,10 @@ class FakeWindowCoordinator {
       windowId: number,
       signal?: AbortSignal,
     ) => Promise<void>,
+    private readonly publishBehavior?: (
+      publication: PublishedInspect,
+    ) => InspectSendOutcome,
+    private readonly initialPanelState: BrowserWindowConnectionState = "linked",
   ) {}
 
   public async linkWindow(
@@ -1995,7 +2975,7 @@ class FakeWindowCoordinator {
   public registerPanel(registration: PanelRegistration): { dispose(): void } {
     this.registrations.push(registration);
     this.active.add(registration);
-    registration.onStateChanged?.("notLinked");
+    registration.onStateChanged?.(this.initialPanelState);
     let disposed = false;
     return {
       dispose: () => {
@@ -2011,11 +2991,14 @@ class FakeWindowCoordinator {
 
   public publishInspect(
     windowId: number,
+    inspectMessageId: string,
     sourceId: string,
     payload: InspectPayload,
-  ): boolean {
-    this.published.push({ windowId, sourceId, payload });
-    return true;
+  ): InspectSendOutcome {
+    const publication = { windowId, inspectMessageId, sourceId, payload };
+    this.published.push(publication);
+    this.onPublish?.(publication);
+    return this.publishBehavior?.(publication) ?? this.publishOutcome;
   }
 
   public async removeWindow(windowId: number): Promise<void> {
@@ -2128,6 +3111,34 @@ function inspectPayload(): InspectPayload {
   };
 }
 
+function selectedMessage(
+  contentSessionId: string,
+  payload: InspectPayload = inspectPayload(),
+) {
+  return {
+    type: "elementSelected" as const,
+    contentSessionId,
+    payload,
+  };
+}
+
+function domEventMessage(contentSessionId: string, event: unknown) {
+  return {
+    type: "browser2ide.dom.event" as const,
+    contentSessionId,
+    event,
+  };
+}
+
+function selectionChanged(nodeRef: string) {
+  return {
+    type: "dom.selectionChanged" as const,
+    documentEpoch: 1,
+    nodeRef,
+    ancestorPath: [],
+  };
+}
+
 function inspectResults(port: FakePort): unknown[] {
   return port.sent.filter(
     (message) =>
@@ -2195,6 +3206,89 @@ function createRouterSubscriptionHarness(): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function injectionCount(calls: readonly unknown[]): number {
+  return calls.filter(
+    (call) => Array.isArray(call) && call[0] === "inject",
+  ).length;
+}
+
+function republishCallCount(calls: readonly unknown[]): number {
+  return calls.filter(
+    (call) =>
+      Array.isArray(call) &&
+      isRecord(call[2]) &&
+      call[2].type === "browser2ide.inspect.republish",
+  ).length;
+}
+
+function messagesOfType(port: FakePort, type: string): unknown[] {
+  return port.sent.filter(
+    (message) => isRecord(message) && message.type === type,
+  );
+}
+
+function resolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: `resolution-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    status: "no-active-editor",
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function peerState(
+  connected: boolean,
+  peerGeneration: number,
+  sessionId = "session-a",
+): PeerStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: `peer-${peerGeneration}`,
+    sessionId,
+    role: "ide",
+    connected,
+    peerGeneration,
+    metadata: {},
+  };
+}
+
+function peerStateHistory(
+  router: ReturnType<typeof createBackgroundRouter>,
+): unknown[] {
+  const state = router as unknown as {
+    peerStates: Map<unknown, unknown>;
+  };
+  return [...state.peerStates.entries()];
+}
+
+function domRoot(requestId: string) {
+  return {
+    type: "dom.root" as const,
+    requestId,
+    documentEpoch: 1,
+    node: {
+      nodeRef: "node-root",
+      kind: "element" as const,
+      label: "html",
+      expandable: true,
+      branchRevision: 0,
+    },
+  };
 }
 
 async function flushMicrotasks(): Promise<void> {

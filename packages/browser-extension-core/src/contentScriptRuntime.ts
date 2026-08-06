@@ -1,15 +1,21 @@
 import type { CssDocumentSource } from "./collectCssFacts.js";
-import { createInspectPayload, type LocationSource } from "./inspectPayload.js";
+import { parseDomRequest, type DomEvent, type DomRequest } from "./domProtocol.js";
+import type { LocationSource } from "./inspectPayload.js";
 import {
-  INSPECT_CONTENT_LEASE_PORT_NAME,
+  createInspectContentLeasePortName,
+  isValidContentSessionId,
+  type ContentSessionId,
   type ContentInspectPort,
 } from "./inspectPortProtocol.js";
 import {
-  InspectMode,
-  type InspectableElement,
   type InspectDocument,
 } from "./inspectMode.js";
-import { ContentInspectLease } from "./inspectLease.js";
+import {
+  PageInspectionSession,
+  type PageInspectionDocument,
+  type PageInspectionSelection,
+  type PageInspectionSessionOptions,
+} from "./pageInspectionSession.js";
 
 const CONTENT_RUNTIME_KEY = Symbol.for("browser2ide.contentScriptRuntime");
 const CONTENT_RUNTIME_BRAND = Symbol.for("browser2ide.contentScriptRuntime.brand");
@@ -25,12 +31,24 @@ export interface ContentScriptRuntimeOptions {
   readonly connectRuntimePort: (name: string) => ContentInspectPort;
   readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
   readonly subscribeRuntimeMessages: (
-    listener: (message: unknown) => void,
+    listener: (message: unknown) => unknown,
   ) => () => void;
+  readonly createPageInspectionSession?: (
+    options: PageInspectionSessionOptions,
+  ) => ContentPageInspectionSession;
+  readonly createContentSessionId?: () => string;
   readonly onError?: (error: unknown) => void;
 }
 
 export interface ContentScriptRuntime {
+  dispose(): void;
+}
+
+export interface ContentPageInspectionSession {
+  enablePicker(): void;
+  disablePicker(): void;
+  handle(request: DomRequest): Promise<unknown>;
+  republishSelection(): Promise<boolean>;
   dispose(): void;
 }
 
@@ -51,6 +69,11 @@ export function startContentScriptRuntime(
     return existing;
   }
 
+  const contentSessionId = createContentSessionId(options);
+  const contentLeasePortName = createInspectContentLeasePortName(
+    contentSessionId,
+  );
+
   const reportError = (error: unknown): void => {
     try {
       options.onError?.(error);
@@ -58,33 +81,56 @@ export function startContentScriptRuntime(
       // Diagnostics cannot break content-script ownership.
     }
   };
-  const mode = new InspectMode({
-    document: options.document,
-    onSelect: (element) => publishSelection(options, element),
+  const createSession = options.createPageInspectionSession ??
+    ((sessionOptions) => new PageInspectionSession(sessionOptions));
+  const session = createSession({
+    document: options.document as unknown as PageInspectionDocument,
+    location: options.location,
+    onSelection: (selection) => {
+      publishSelection(options, contentSessionId, selection, reportError);
+      return true;
+    },
+    onEvent: (event) =>
+      publishDomEvent(options, contentSessionId, event, reportError),
     onError: reportError,
   });
-  const lease = new ContentInspectLease(mode, () =>
-    options.connectRuntimePort(INSPECT_CONTENT_LEASE_PORT_NAME),
-  );
   let disposed = false;
   const removeRuntimeMessages = options.subscribeRuntimeMessages((message) => {
     if (disposed) {
-      return;
+      return undefined;
     }
     const enabled = parseInspectModeMessage(message);
-    if (enabled === undefined) {
-      return;
+    if (enabled !== undefined) {
+      try {
+        if (enabled) {
+          session.enablePicker();
+        } else {
+          session.disablePicker();
+        }
+      } catch (error) {
+        reportError(error);
+      }
+      return undefined;
+    }
+    if (isExactTypeMessage(message, "browser2ide.inspect.republish")) {
+      return session.republishSelection().catch((error) => {
+        reportError(error);
+        return false;
+      });
+    }
+    if (isExactTypeMessage(message, "browser2ide.inspect.disposeSession")) {
+      runtime.dispose();
+      return undefined;
     }
     try {
-      if (enabled) {
-        lease.enable();
-      } else {
-        lease.disable();
-      }
-    } catch (error) {
-      reportError(error);
+      return session.handle(parseDomRequest(message));
+    } catch {
+      return undefined;
     }
   });
+
+  let leasePort: ContentInspectPort | undefined;
+  const onLeaseDisconnected = (): void => runtime.dispose();
 
   const runtime: BrandedContentScriptRuntime = {
     [CONTENT_RUNTIME_BRAND]: true,
@@ -94,36 +140,57 @@ export function startContentScriptRuntime(
       }
       disposed = true;
       removeRuntimeMessages();
-      try {
-        lease.disable();
-      } catch (error) {
-        reportError(error);
+      const port = leasePort;
+      leasePort = undefined;
+      if (port) {
+        port.onDisconnect.removeListener(onLeaseDisconnected);
+        try {
+          port.disconnect();
+        } catch {
+          // The background may already have released the content lease.
+        }
       }
-      mode.dispose();
+      session.dispose();
       if (scope[CONTENT_RUNTIME_KEY] === runtime) {
         delete scope[CONTENT_RUNTIME_KEY];
       }
     },
   };
   scope[CONTENT_RUNTIME_KEY] = runtime;
+  try {
+    leasePort = options.connectRuntimePort(contentLeasePortName);
+    leasePort.onDisconnect.addListener(onLeaseDisconnected);
+  } catch (error) {
+    reportError(error);
+    runtime.dispose();
+  }
   return runtime;
 }
 
-async function publishSelection(
+function publishSelection(
   options: ContentScriptRuntimeOptions,
-  element: InspectableElement,
-): Promise<void> {
-  await options.sendRuntimeMessage({
+  contentSessionId: ContentSessionId,
+  selection: PageInspectionSelection,
+  reportError: (error: unknown) => void,
+): void {
+  void options.sendRuntimeMessage({
     type: "elementSelected",
-    payload: createInspectPayload(
-      element,
-      {
-        pageUrl: options.location.href,
-        styleSheets: options.document.styleSheets,
-      },
-      options.location,
-    ),
-  });
+    contentSessionId,
+    payload: selection.payload,
+  }).catch(reportError);
+}
+
+function publishDomEvent(
+  options: ContentScriptRuntimeOptions,
+  contentSessionId: ContentSessionId,
+  event: DomEvent,
+  reportError: (error: unknown) => void,
+): void {
+  void options.sendRuntimeMessage({
+    type: "browser2ide.dom.event",
+    contentSessionId,
+    event,
+  }).catch(reportError);
 }
 
 function parseInspectModeMessage(value: unknown): boolean | undefined {
@@ -151,4 +218,35 @@ function isContentScriptRuntime(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function isExactTypeMessage(value: unknown, type: string): boolean {
+  return isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    value.type === type;
+}
+
+function createContentSessionId(
+  options: ContentScriptRuntimeOptions,
+): ContentSessionId {
+  const value = options.createContentSessionId?.() ?? defaultContentSessionId();
+  if (!isValidContentSessionId(value)) {
+    throw new Error("Content session ID generator returned an invalid value");
+  }
+  return value;
+}
+
+let contentSessionSequence = 0;
+
+function defaultContentSessionId(): string {
+  try {
+    const randomUuid = globalThis.crypto?.randomUUID;
+    if (typeof randomUuid === "function") {
+      return randomUuid.call(globalThis.crypto);
+    }
+  } catch {
+    // Use a process-local fallback when extension crypto is unavailable.
+  }
+  contentSessionSequence += 1;
+  return `content-${Date.now().toString(36)}-${contentSessionSequence.toString(36)}`;
 }

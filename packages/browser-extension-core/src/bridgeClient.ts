@@ -4,7 +4,9 @@ import {
   PROTOCOL_VERSION,
   type ClientSource,
   type InspectMessage,
+  type PeerStateMessage,
   type ProtocolErrorCode,
+  type ResolutionMessage,
 } from "@browser2ide/protocol";
 
 export class BrowserProtocolError extends Error {
@@ -64,6 +66,16 @@ export type InspectPayload = Pick<
   "targets" | "context" | "metadata"
 >;
 
+export type InspectSendOutcome =
+  | "sent"
+  | "not-connected"
+  | "invalid-message"
+  | "transport-error";
+
+export interface BrowserBridgeSubscription {
+  dispose(): void;
+}
+
 type ConnectionIntent =
   | { readonly kind: "link"; readonly pin: string }
   | { readonly kind: "credentials"; readonly credentials: BrowserCredentials };
@@ -97,6 +109,12 @@ export class BrowserBridgeClient {
   private authenticated = false;
   private pendingCredentialNotification = false;
   private state: BrowserConnectionState = "disconnected";
+  private readonly resolutionListeners = new Set<
+    (message: ResolutionMessage) => void
+  >();
+  private readonly peerStateListeners = new Set<
+    (message: PeerStateMessage) => void
+  >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
     this.socketFactory =
@@ -161,22 +179,43 @@ export class BrowserBridgeClient {
   }
 
   public sendInspect(
+    inspectMessageId: string,
     payload: InspectPayload,
-    sourceId = this.connectionSource.id,
-  ): boolean {
+    sourceId: string,
+  ): InspectSendOutcome {
+    return this.sendInspectMessage(inspectMessageId, payload, sourceId);
+  }
+
+  public onResolution(
+    listener: (message: ResolutionMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribe(this.resolutionListeners, listener);
+  }
+
+  public onPeerState(
+    listener: (message: PeerStateMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribe(this.peerStateListeners, listener);
+  }
+
+  private sendInspectMessage(
+    inspectMessageId: string,
+    payload: InspectPayload,
+    sourceId: string,
+  ): InspectSendOutcome {
     if (
       !this.socket ||
       !this.credentials ||
       !this.authenticated ||
       this.state !== "connected"
     ) {
-      return false;
+      return "not-connected";
     }
     const safePayload = withoutInternalRoutingMetadata(payload);
     const message = Browser2IdeMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
-      messageId: this.messageId(),
+      messageId: inspectMessageId,
       sessionId: this.credentials.sessionId,
       source: {
         ...this.connectionSource,
@@ -193,10 +232,15 @@ export class BrowserBridgeClient {
           "Inspect message exceeds protocol limits",
         ),
       );
-      return false;
+      return "invalid-message";
     }
-    this.socket.send(JSON.stringify(message.data));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(message.data));
+      return "sent";
+    } catch {
+      this.report(new Error("WebSocket inspect send failed"));
+      return "transport-error";
+    }
   }
 
   private start(intent: ConnectionIntent): void {
@@ -331,6 +375,27 @@ export class BrowserBridgeClient {
       this.setState("connected");
       return;
     }
+    if (message.type === "resolution" || message.type === "peerState") {
+      if (
+        !this.authenticated ||
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId
+      ) {
+        this.stopForProtocolError(
+          new BrowserProtocolError(
+            "protocol.invalidMessage",
+            "Bridge sent a result for an unexpected session",
+          ),
+        );
+        return;
+      }
+      if (message.type === "resolution") {
+        this.notifyListeners(this.resolutionListeners, message);
+      } else {
+        this.notifyListeners(this.peerStateListeners, message);
+      }
+      return;
+    }
     if (message.type === "ping" && this.authenticated) {
       this.send({
         protocolVersion: PROTOCOL_VERSION,
@@ -390,6 +455,16 @@ export class BrowserBridgeClient {
 
   private report(error: Error): void {
     this.options.onError?.(error);
+  }
+
+  private notifyListeners<T>(listeners: Set<(message: T) => void>, message: T): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener(message);
+      } catch {
+        this.report(new Error("Browser bridge listener failed"));
+      }
+    }
   }
 
   private stopForProtocolError(error: BrowserProtocolError): void {
@@ -473,6 +548,26 @@ export class BrowserBridgeClient {
   }
 }
 
+function subscribe<T>(
+  listeners: Set<(message: T) => void>,
+  listener: (message: T) => void,
+): BrowserBridgeSubscription {
+  if (typeof listener !== "function") {
+    throw new TypeError("Browser bridge listener must be a function");
+  }
+  listeners.add(listener);
+  let disposed = false;
+  return {
+    dispose(): void {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      listeners.delete(listener);
+    },
+  };
+}
+
 export function withoutInternalRoutingMetadata(
   payload: InspectPayload,
 ): InspectPayload {
@@ -480,7 +575,8 @@ export function withoutInternalRoutingMetadata(
   delete metadata.browserWindowId;
   delete metadata.tabId;
   return {
-    ...payload,
+    targets: payload.targets,
+    context: payload.context,
     metadata,
   };
 }
