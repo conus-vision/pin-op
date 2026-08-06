@@ -1,9 +1,16 @@
-import { DomNodeRegistry, type NodeScope } from "./domNodeRegistry.js";
+import {
+  DomNodeRegistry,
+  type NodeScope,
+  type RetentionReason,
+} from "./domNodeRegistry.js";
 import {
   FrameRegistry,
   type FrameContext,
   type FrameDescription,
+  type FrameIdentity,
   type FrameLifecycleEvent,
+  type TopViewportRect,
+  type ViewportRect,
 } from "./frameRegistry.js";
 import {
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
@@ -60,11 +67,41 @@ export interface DomTreeProviderOptions {
   readonly onInvalidated?: (branch: DomInvalidationBranch) => void;
   readonly getSelectedNodeRef?: () => string | undefined;
   readonly onSelectedNodeRemoved?: (event: DomTreeSelectedNodeRemoval) => void;
+  readonly onFrameLifecycle?: (event: FrameLifecycleEvent) => void;
+  readonly onMutationSettled?: () => void;
+  readonly isExcludedNode?: (node: Node) => boolean;
 }
 
 export interface DomTreeSelectedNodeRemoval {
   readonly nodeRef: string;
   readonly documentEpoch: number;
+}
+
+export interface DomTreeElementIdentity extends FrameIdentity {
+  readonly nodeRef: string;
+}
+
+export interface DomTreeRevealedElement extends DomTreeElementIdentity {
+  readonly ancestorPath: readonly DomNodeView[];
+}
+
+export interface DomTreeResolvedElement extends DomTreeElementIdentity {
+  readonly element: Element;
+}
+
+export type DomTreeSessionRetention = Extract<
+  RetentionReason,
+  "selected" | "hovered"
+>;
+
+export interface DomTreeFrameAuthority {
+  getContext(frameRef: string): FrameContext | undefined;
+  getContextForDocument(document: Document): FrameContext | undefined;
+  accessibleContexts(): readonly FrameContext[];
+  toTopViewport(
+    identity: FrameIdentity,
+    rect: ViewportRect,
+  ): TopViewportRect | undefined;
 }
 
 interface NodeRecord {
@@ -189,6 +226,14 @@ export class DomTreeProvider {
   private readonly onSelectedNodeRemoved: (
     (event: DomTreeSelectedNodeRemoval) => void
   ) | undefined;
+  private readonly onFrameLifecycle: (
+    (event: FrameLifecycleEvent) => void
+  ) | undefined;
+  private readonly onMutationSettled: (() => void) | undefined;
+  private readonly isExcludedNodePredicate: (
+    (node: Node) => boolean
+  ) | undefined;
+  private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private mutationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -198,6 +243,7 @@ export class DomTreeProvider {
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   private nextCursor = 1;
+  private frameTracking = false;
   private disposed = false;
 
   public constructor(
@@ -219,6 +265,9 @@ export class DomTreeProvider {
     this.onInvalidated = options.onInvalidated;
     this.getSelectedNodeRef = options.getSelectedNodeRef;
     this.onSelectedNodeRemoved = options.onSelectedNodeRemoved;
+    this.onFrameLifecycle = options.onFrameLifecycle;
+    this.onMutationSettled = options.onMutationSettled;
+    this.isExcludedNodePredicate = options.isExcludedNode;
     this.nodeRegistry = new DomNodeRegistry({
       documentEpoch: this.documentEpoch,
       maxReverseEntries: this.maxRecords,
@@ -227,11 +276,49 @@ export class DomTreeProvider {
       documentEpoch: this.documentEpoch,
       onLifecycle: (event) => this.handleFrameLifecycle(event),
     });
+    this.frameAuthorityView = Object.freeze({
+      getContext: (frameRef: string) => this.frameRegistry.getContext(frameRef),
+      getContextForDocument: (document: Document) => (
+        this.frameRegistry.getContextForDocument(document)
+      ),
+      accessibleContexts: () => this.frameRegistry.accessibleContexts(),
+      toTopViewport: (identity: FrameIdentity, rect: ViewportRect) => (
+        this.frameRegistry.toTopViewport(identity, rect)
+      ),
+    });
     this.createMutationObserver = options.createMutationObserver ?? ((callback) => {
       const observer = new MutationObserver((records) => callback(records));
       return observer;
     });
     this.observeRoot(topDocument);
+  }
+
+  public get currentDocumentEpoch(): number {
+    return this.documentEpoch;
+  }
+
+  public get frameAuthority(): DomTreeFrameAuthority {
+    return this.frameAuthorityView;
+  }
+
+  private isNodeExcluded(node: Node): boolean {
+    try {
+      return this.isExcludedNodePredicate?.(node) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  public startFrameTracking(): void {
+    this.requireActive();
+    if (this.frameTracking) {
+      return;
+    }
+    this.frameTracking = true;
+    for (const context of this.frameRegistry.accessibleContexts()) {
+      this.queueFrameDiscovery(context.document);
+    }
+    this.processFrameMutationScanSlice();
   }
 
   public getRoot(expectedEpoch?: number): DomRootResponse {
@@ -440,6 +527,132 @@ export class DomTreeProvider {
     return Object.freeze(reversed.reverse());
   }
 
+  public lookupElement(element: Element): DomTreeElementIdentity | undefined {
+    this.requireActive();
+    if (!isElementNode(element)) {
+      return undefined;
+    }
+    this.flushMutationBarrier();
+    const nodeRef = this.refsByNode.get(element);
+    const record = nodeRef ? this.records.get(nodeRef) : undefined;
+    if (!nodeRef || record?.kind !== "element") {
+      return undefined;
+    }
+    const context = this.frameRegistry.getContext(record.scope.frameRef);
+    const attachedScope = this.attachedScopeFor(element);
+    if (
+      !context ||
+      !sameNodeScope(context, record.scope) ||
+      !attachedScope ||
+      !sameNodeScope(attachedScope, record.scope) ||
+      this.resolveNode(nodeRef, record.scope) !== element
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      nodeRef,
+      frameRef: context.frameRef,
+      frameEpoch: context.frameEpoch,
+      documentEpoch: context.documentEpoch,
+    });
+  }
+
+  public revealElement(element: Element): DomTreeRevealedElement {
+    this.requireActive();
+    if (!isElementNode(element)) {
+      throwDomTreeError("invalid-request");
+    }
+    this.flushMutationBarrier();
+    const scope = this.attachedScopeFor(element);
+    if (!scope) {
+      throwDomTreeError("node-unavailable");
+    }
+    const parentPath = this.planLogicalParentPath(element, scope);
+    if (!parentPath) {
+      throwDomTreeError("node-unavailable");
+    }
+    const path: readonly LogicalPathEntry[] = Object.freeze([
+      ...parentPath,
+      { kind: "element" as const, node: element, scope },
+    ]);
+    if (path.length > DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH) {
+      throwDomTreeError("node-unavailable");
+    }
+    const ancestorPath = this.materializeLogicalPath(path);
+    const target = ancestorPath?.at(-1);
+    const context = this.frameRegistry.getContext(scope.frameRef);
+    if (!ancestorPath || !target || !context || !sameNodeScope(context, scope)) {
+      throwDomTreeError("node-unavailable");
+    }
+    return Object.freeze({
+      nodeRef: target.nodeRef,
+      frameRef: context.frameRef,
+      frameEpoch: context.frameEpoch,
+      documentEpoch: context.documentEpoch,
+      ancestorPath,
+    });
+  }
+
+  public resolveElement(
+    nodeRef: string,
+    documentEpoch: number,
+  ): DomTreeResolvedElement | undefined {
+    this.requireActive();
+    if (!isIdentifier(nodeRef) || !isNonNegativeSafeInteger(documentEpoch)) {
+      throwDomTreeError("invalid-request");
+    }
+    if (documentEpoch !== this.documentEpoch) {
+      throwDomTreeError("stale-document");
+    }
+    this.flushMutationBarrier();
+    const record = this.records.get(nodeRef);
+    if (record?.kind !== "element") {
+      return undefined;
+    }
+    const element = this.resolveNode(nodeRef, record.scope);
+    const context = this.frameRegistry.getContext(record.scope.frameRef);
+    const attachedScope = isElementNode(element)
+      ? this.attachedScopeFor(element)
+      : undefined;
+    if (
+      !isElementNode(element) ||
+      !context ||
+      !sameNodeScope(context, record.scope) ||
+      !attachedScope ||
+      !sameNodeScope(attachedScope, record.scope)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      element,
+      nodeRef,
+      frameRef: context.frameRef,
+      frameEpoch: context.frameEpoch,
+      documentEpoch: context.documentEpoch,
+    });
+  }
+
+  public retainNode(
+    nodeRef: string,
+    documentEpoch: number,
+    reason: DomTreeSessionRetention,
+  ): boolean {
+    if (!isSessionRetentionReason(reason)) {
+      return false;
+    }
+    return this.resolveElement(nodeRef, documentEpoch) !== undefined &&
+      this.nodeRegistry.retain(nodeRef, reason);
+  }
+
+  public releaseNode(
+    nodeRef: string,
+    reason: DomTreeSessionRetention,
+  ): void {
+    if (isSessionRetentionReason(reason)) {
+      this.nodeRegistry.release(nodeRef, reason);
+    }
+  }
+
   public resetDocument(topDocument: Document, documentEpoch: number): void {
     this.requireActive();
     if (
@@ -476,6 +689,10 @@ export class DomTreeProvider {
     this.topDocument = topDocument;
     this.documentEpoch = documentEpoch;
     this.observeRoot(topDocument);
+    if (this.frameTracking) {
+      this.queueFrameDiscovery(topDocument);
+      this.processFrameMutationScanSlice();
+    }
   }
 
   public collapse(nodeRef: string, documentEpoch: number): void {
@@ -569,6 +786,7 @@ export class DomTreeProvider {
     this.pendingMutations.length = 0;
     this.pendingFrameMutationScans.length = 0;
     this.pendingSelectedRemoval = undefined;
+    this.frameTracking = false;
   }
 
   private viewElement(
@@ -657,6 +875,9 @@ export class DomTreeProvider {
   }
 
   private referenceNode(node: Node, scope: NodeScope): string {
+    if (this.isNodeExcluded(node)) {
+      throwDomTreeError("node-unavailable");
+    }
     const knownRef = this.refsByNode.get(node);
     const knownRecord = knownRef ? this.records.get(knownRef) : undefined;
     if (!knownRecord || !sameNodeScope(knownRecord.scope, scope)) {
@@ -674,10 +895,11 @@ export class DomTreeProvider {
 
   private resolveNode(nodeRef: string, scope: NodeScope): Node | undefined {
     const node = this.nodeRegistry.resolve(nodeRef, scope);
-    if (node) {
+    if (node && !this.isNodeExcluded(node)) {
       this.touchRecord(nodeRef);
+      return node;
     }
-    return node;
+    return undefined;
   }
 
   private storeReferencedRecord(nodeRef: string, record: NodeRecord): void {
@@ -809,7 +1031,11 @@ export class DomTreeProvider {
     if (node.nodeType === 1 && isFrameElement(node as Element)) {
       const description = this.frameDescriptions.get(nodeRef) ??
         this.describeFrame(node as HTMLIFrameElement, scope, nodeRef);
-      if (description?.kind === "accessible" && physicalOffset === 0) {
+      if (
+        description?.kind === "accessible" &&
+        physicalOffset === 0 &&
+        !this.isNodeExcluded(description.document)
+      ) {
         children.push({
           kind: "frame-document",
           node: description.document,
@@ -821,7 +1047,7 @@ export class DomTreeProvider {
     let syntheticChildCount = 0;
     if (node.nodeType === 1) {
       const shadowRoot = getOpenShadowRoot(node as Element);
-      if (shadowRoot) {
+      if (shadowRoot && !this.isNodeExcluded(shadowRoot)) {
         syntheticChildCount = 1;
         if (physicalOffset === 0) {
           children.push({ kind: "shadow-root", node: shadowRoot });
@@ -843,7 +1069,7 @@ export class DomTreeProvider {
       const child = childNodes[childIndex];
       childIndex += 1;
       visitedNodes += 1;
-      if (child?.nodeType === 1) {
+      if (child?.nodeType === 1 && !this.isNodeExcluded(child)) {
         children.push({ kind: "element", node: child as Element });
       }
     }
@@ -918,6 +1144,7 @@ export class DomTreeProvider {
       this.mutationProcessingDepth -= 1;
       if (this.mutationProcessingDepth === 0) {
         this.emitPendingSelectedRemoval();
+        this.emitMutationSettled();
       }
     }
   }
@@ -932,6 +1159,9 @@ export class DomTreeProvider {
         continue;
       }
       const mutation = pending.record;
+      if (this.isNodeExcluded(mutation.target)) {
+        continue;
+      }
       if (mutation.type === "attributes") {
         if (mutation.target.nodeType !== 1) {
           continue;
@@ -973,13 +1203,13 @@ export class DomTreeProvider {
             ...(targetRef ? { parentRef: targetRef } : {}),
             ...(targetScope ? { scope: targetScope } : {}),
           });
-          elementTreeChanged = true;
+          elementTreeChanged ||= !this.isNodeExcluded(removed);
         }
       }
       const addedNodes = mutation.addedNodes;
       for (let index = 0; index < addedNodes.length; index += 1) {
         const added = addedNodes[index];
-        if (added?.nodeType === 1) {
+        if (added?.nodeType === 1 && !this.isNodeExcluded(added)) {
           addedRoots.push({
             node: added,
             ownerRoot: pending.observedRoot,
@@ -1177,7 +1407,12 @@ export class DomTreeProvider {
     scope: NodeScope,
   ): boolean {
     const shadowRoot = getOpenShadowRoot(host);
-    if (!shadowRoot || this.shadowRootRefs.has(hostRef)) {
+    if (
+      this.isNodeExcluded(host) ||
+      !shadowRoot ||
+      this.isNodeExcluded(shadowRoot) ||
+      this.shadowRootRefs.has(hostRef)
+    ) {
       return false;
     }
     const view = this.viewShadowRoot(shadowRoot, scope, hostRef);
@@ -1252,6 +1487,9 @@ export class DomTreeProvider {
         return undefined;
       }
       seen.add(current);
+      if (this.isNodeExcluded(current)) {
+        return undefined;
+      }
       if (current.nodeType === 9) {
         return this.frameRegistry.getContextForDocument(current as Document);
       }
@@ -1267,11 +1505,44 @@ export class DomTreeProvider {
     scope: NodeScope,
   ): string | undefined {
     const path = this.planLogicalParentPath(node, scope);
-    if (!path || path.length + 1 > this.maxRecords) {
+    if (!path) {
+      return undefined;
+    }
+    const views = this.materializeLogicalPath(
+      path,
+      new Set([movedRef]),
+      (parentRef) => {
+        const currentMovedRecord = this.records.get(movedRef);
+        if (
+          currentMovedRecord !== movedRecord ||
+          this.nodeRegistry.resolve(movedRef, movedRecord.scope) !== node
+        ) {
+          return false;
+        }
+        this.records.set(movedRef, {
+          ...movedRecord,
+          parentRef,
+        });
+        return true;
+      },
+    );
+    return views?.at(-1)?.nodeRef;
+  }
+
+  private materializeLogicalPath(
+    path: readonly LogicalPathEntry[],
+    additionallyProtected: ReadonlySet<string> = new Set<string>(),
+    commit?: (finalRef: string) => boolean,
+  ): readonly DomNodeView[] | undefined {
+    if (
+      path.length === 0 ||
+      path.length > this.maxRecords ||
+      path.some(({ node }) => this.isNodeExcluded(node))
+    ) {
       return undefined;
     }
     const existingRefs = new Map<Node, string>();
-    const protectedRefs = new Set<string>([movedRef]);
+    const protectedRefs = new Set<string>(additionallyProtected);
     for (const entry of path) {
       const nodeRef = this.authoritativePathRef(entry);
       if (nodeRef) {
@@ -1280,7 +1551,11 @@ export class DomTreeProvider {
       }
     }
     const fixedRefs = this.fixedRecordAuthorityOutside(protectedRefs);
-    if (path.length + 1 + fixedRefs.size > this.maxRecords) {
+    const pathRefs = new Set(existingRefs.values());
+    const additionalRecordCount = [...additionallyProtected].filter((nodeRef) => (
+      this.records.has(nodeRef) && !pathRefs.has(nodeRef)
+    )).length;
+    if (path.length + additionalRecordCount + fixedRefs.size > this.maxRecords) {
       return undefined;
     }
     const missingRecords = path.length - existingRefs.size;
@@ -1299,6 +1574,7 @@ export class DomTreeProvider {
     const createdRefs = new Set<string>();
     const originalRecords = new Map<string, NodeRecord>();
     const newlyObservedRoots = new Set<Node>();
+    const views: DomNodeView[] = [];
     let parentRef: string | undefined;
     try {
       for (const entry of path) {
@@ -1325,23 +1601,16 @@ export class DomTreeProvider {
         if (!this.retainPathRecord(view.nodeRef, temporaryRetentions)) {
           throw new Error("path reference could not be retained");
         }
+        views.push(view);
         parentRef = view.nodeRef;
       }
       if (!parentRef || !this.validateMaterializedPath(path, parentRef)) {
         throw new Error("path replacement was not authoritative");
       }
-      const currentMovedRecord = this.records.get(movedRef);
-      if (
-        currentMovedRecord !== movedRecord ||
-        this.nodeRegistry.resolve(movedRef, movedRecord.scope) !== node
-      ) {
-        throw new Error("moved node changed during path replacement");
+      if (commit && !commit(parentRef)) {
+        throw new Error("path commit was not authoritative");
       }
-      this.records.set(movedRef, {
-        ...movedRecord,
-        parentRef,
-      });
-      return parentRef;
+      return Object.freeze(views);
     } catch {
       for (const nodeRef of createdRefs) {
         this.evictRecordMetadata(nodeRef);
@@ -1435,6 +1704,9 @@ export class DomTreeProvider {
   }
 
   private authoritativePathRef(entry: LogicalPathEntry): string | undefined {
+    if (this.isNodeExcluded(entry.node)) {
+      return undefined;
+    }
     const nodeRef = this.refsByNode.get(entry.node);
     const record = nodeRef ? this.records.get(nodeRef) : undefined;
     if (
@@ -1551,6 +1823,7 @@ export class DomTreeProvider {
       const nodeRef = this.refsByNode.get(entry.node);
       const record = nodeRef ? this.records.get(nodeRef) : undefined;
       if (
+        this.isNodeExcluded(entry.node) ||
         !nodeRef ||
         !record ||
         record.kind !== entry.kind ||
@@ -1567,7 +1840,7 @@ export class DomTreeProvider {
   }
 
   private observeRoot(root: Node): void {
-    if (this.rootObservers.has(root)) {
+    if (this.isNodeExcluded(root) || this.rootObservers.has(root)) {
       return;
     }
     try {
@@ -1642,7 +1915,18 @@ export class DomTreeProvider {
     }
   }
 
+  private emitMutationSettled(): void {
+    try {
+      this.onMutationSettled?.();
+    } catch {
+      // Consumer reconciliation cannot disrupt DOM ownership bookkeeping.
+    }
+  }
+
   private registerDiscoveredFrame(frameElement: HTMLIFrameElement): void {
+    if (this.isNodeExcluded(frameElement)) {
+      return;
+    }
     let ownerDocument: Document | undefined;
     try {
       ownerDocument = frameElement.ownerDocument;
@@ -1658,6 +1942,29 @@ export class DomTreeProvider {
     const description = this.frameRegistry.describeFrame(frameElement, parent.frameRef);
     if (description) {
       this.trackFrameDescription(frameElement, description, undefined, false);
+    }
+  }
+
+  private queueFrameDiscovery(document: Document): void {
+    if (
+      this.disposed ||
+      this.pendingFrameMutationScans.some((scan) => (
+        scan.action === "register" && scan.root === document
+      ))
+    ) {
+      return;
+    }
+    this.pendingFrameMutationScans.push({
+      action: "register",
+      ownerRoot: document,
+      root: document,
+      stack: [createFrameTraversalEntry(document)],
+    });
+    if (this.frameMutationScanTimer === undefined) {
+      this.frameMutationScanTimer = this.scheduleTimeout(() => {
+        this.frameMutationScanTimer = undefined;
+        this.processFrameMutationScanSlice();
+      }, 0);
     }
   }
 
@@ -1692,6 +1999,13 @@ export class DomTreeProvider {
       if (!entry.entered) {
         entry.entered = true;
         visitedNodes += 1;
+        if (
+          scan.action === "register" &&
+          this.isNodeExcluded(entry.node)
+        ) {
+          scan.stack.pop();
+          continue;
+        }
         if (entry.node.nodeType === 1) {
           const element = entry.node as Element;
           if (isFrameElement(element)) {
@@ -1968,6 +2282,20 @@ export class DomTreeProvider {
     if (this.mutationProcessingDepth === 0) {
       this.emitPendingSelectedRemoval();
     }
+    if (
+      this.frameTracking &&
+      (event.type === "registered" || event.type === "navigated")
+    ) {
+      const context = this.frameRegistry.getContext(event.frameRef);
+      if (context) {
+        this.queueFrameDiscovery(context.document);
+      }
+    }
+    try {
+      this.onFrameLifecycle?.(event);
+    } catch {
+      // Consumer callbacks cannot disrupt frame authority bookkeeping.
+    }
   }
 
   private cancelScheduledWork(): void {
@@ -2085,6 +2413,15 @@ function freezeLogicalChildPage(
 function isFrameElement(element: Element): element is HTMLIFrameElement {
   try {
     return String(element.tagName).toUpperCase() === "IFRAME";
+  } catch {
+    return false;
+  }
+}
+
+function isElementNode(value: unknown): value is Element {
+  try {
+    return typeof value === "object" && value !== null &&
+      (value as { readonly nodeType?: unknown }).nodeType === 1;
   } catch {
     return false;
   }
@@ -2316,6 +2653,12 @@ function isIdentifier(value: unknown): value is string {
   return typeof value === "string" &&
     value.length > 0 &&
     value.length <= DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH;
+}
+
+function isSessionRetentionReason(
+  value: unknown,
+): value is DomTreeSessionRetention {
+  return value === "selected" || value === "hovered";
 }
 
 function sameNodeScope(left: NodeScope, right: NodeScope): boolean {

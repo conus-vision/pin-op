@@ -69,9 +69,14 @@ export {
 } from "./domTreeProvider.js";
 export type {
   DomChildrenRequest,
+  DomTreeElementIdentity,
+  DomTreeFrameAuthority,
   DomTreeMutationObserver,
   DomTreeProviderOptions,
+  DomTreeResolvedElement,
+  DomTreeRevealedElement,
   DomTreeSelectedNodeRemoval,
+  DomTreeSessionRetention,
 } from "./domTreeProvider.js";
 export { FrameRegistry } from "./frameRegistry.js";
 export type {
@@ -159,11 +164,25 @@ export {
 export type { InspectByteBudget } from "./inspectBounds.js";
 export { InspectMode } from "./inspectMode.js";
 export type {
+  InspectEventType,
   InspectableElement,
   InspectClickEvent,
   InspectDocument,
+  InspectListenerOptions,
   InspectModeOptions,
 } from "./inspectMode.js";
+export {
+  PAGE_INSPECTION_SELECTION_INTERVAL_MS,
+  PageInspectionSession,
+} from "./pageInspectionSession.js";
+export type {
+  PageInspectionDocument,
+  PageInspectionMode,
+  PageInspectionOverlay,
+  PageInspectionSelection,
+  PageInspectionSessionOptions,
+  PageInspectionTreeProvider,
+} from "./pageInspectionSession.js";
 export {
   BackgroundInspectLeaseRegistry,
   ContentInspectLease,

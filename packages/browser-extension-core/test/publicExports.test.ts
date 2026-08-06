@@ -22,6 +22,8 @@ import {
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  PAGE_INSPECTION_SELECTION_INTERVAL_MS,
+  PageInspectionSession,
   PageOverlay,
   PanelController,
   PanelInspectTransport,
@@ -62,6 +64,8 @@ describe("browser extension core exports", () => {
     expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
+    expect(PAGE_INSPECTION_SELECTION_INTERVAL_MS).toBe(100);
+    expect(PageInspectionSession).toBeTypeOf("function");
     expect(PageOverlay).toBeTypeOf("function");
     expect(parseLinkCode).toBeTypeOf("function");
     expect(parseDomEvent).toBeTypeOf("function");

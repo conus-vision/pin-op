@@ -870,6 +870,56 @@ describe("DomTreeProvider", () => {
     )).toThrowError("unknown-node");
   });
 
+  it("notifies after retained hovered nodes reach their final moved or detached state", () => {
+    const document = createDocument();
+    const source = createElement("main", document);
+    const destination = createElement("aside", document);
+    const hovered = createElement("button", document);
+    source.append(hovered);
+    document.documentElement.append(source);
+    document.documentElement.append(destination);
+    const attachedAtSettlement: boolean[] = [];
+    const harness = createProviderHarness(document, {
+      onMutationSettled: () => {
+        attachedAtSettlement.push(document.documentElement.contains(
+          hovered as unknown as Node,
+        ));
+      },
+    });
+    const revealed = harness.provider.revealElement(hovered as unknown as Element);
+    expect(harness.provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+
+    source.remove(hovered);
+    destination.append(hovered);
+    harness.observers[0]!.emit([
+      mutationRecord(source, [], [hovered]),
+      mutationRecord(destination, [hovered]),
+    ]);
+    harness.flushTimers();
+
+    expect(attachedAtSettlement).toEqual([true]);
+    expect(harness.provider.resolveElement(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+    )?.element).toBe(hovered);
+
+    destination.remove(hovered);
+    harness.observers[0]!.emit([
+      mutationRecord(destination, [], [hovered]),
+    ]);
+    harness.flushTimers();
+
+    expect(attachedAtSettlement).toEqual([true, false]);
+    expect(harness.provider.resolveElement(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+    )).toBeUndefined();
+  });
+
   it("preserves a selected node ref when it moves within one scope", () => {
     const document = createDocument();
     const oldParent = createElement("main", document);
@@ -3186,6 +3236,237 @@ describe("DomTreeProvider", () => {
       branchRevision: unrelatedShadowView.branchRevision,
     }).nodes).toHaveLength(1);
   });
+
+  it("looks up only already-materialized live elements with their frame identity", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const card = createElement("article", document);
+    body.append(card);
+    document.documentElement.append(body);
+    const provider = createProvider(document);
+
+    const root = provider.getRoot();
+    const records = (provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    }).records;
+    const recordCount = records.size;
+
+    expect(provider.lookupElement(card as unknown as Element)).toBeUndefined();
+    expect(records.size).toBe(recordCount);
+    expect(provider.lookupElement(document.documentElement as unknown as Element))
+      .toEqual({
+        nodeRef: root.node.nodeRef,
+        frameRef: "frame-1",
+        frameEpoch: 1,
+        documentEpoch: root.documentEpoch,
+      });
+  });
+
+  it("reveals an attached element through one bounded materialized ancestor path", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const card = createElement("article", document);
+    body.append(card);
+    document.documentElement.append(body);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const revealed = provider.revealElement(card as unknown as Element);
+
+    expect(revealed).toMatchObject({
+      frameRef: "frame-1",
+      frameEpoch: 1,
+      documentEpoch: root.documentEpoch,
+    });
+    expect(revealed.ancestorPath.map((node) => node.label)).toEqual([
+      "html",
+      "body",
+      "article",
+    ]);
+    expect(revealed.ancestorPath[0]?.nodeRef).toBe(root.node.nodeRef);
+    expect(revealed.ancestorPath.at(-1)?.nodeRef).toBe(revealed.nodeRef);
+    expect(provider.lookupElement(card as unknown as Element)?.nodeRef)
+      .toBe(revealed.nodeRef);
+  });
+
+  it("resolves and retains current element refs for independent session authorities", () => {
+    const document = createDocument();
+    const card = createElement("article", document);
+    document.documentElement.append(card);
+    const provider = createProvider(document);
+    const revealed = provider.revealElement(card as unknown as Element);
+
+    expect(provider.resolveElement(revealed.nodeRef, revealed.documentEpoch))
+      .toEqual({
+        element: card,
+        nodeRef: revealed.nodeRef,
+        frameRef: "frame-1",
+        frameEpoch: 1,
+        documentEpoch: revealed.documentEpoch,
+      });
+    expect(provider.resolveElement("node-999", revealed.documentEpoch))
+      .toBeUndefined();
+    expect(() => provider.resolveElement(revealed.nodeRef, 2))
+      .toThrowError("stale-document");
+
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "selected",
+    )).toBe(true);
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+    const registry = (provider as unknown as {
+      readonly nodeRegistry: {
+        retentionReasons(nodeRef: string): readonly string[];
+      };
+    }).nodeRegistry;
+    expect(registry.retentionReasons(revealed.nodeRef))
+      .toEqual(["selected", "hovered"]);
+
+    provider.releaseNode(revealed.nodeRef, "hovered");
+    expect(registry.retentionReasons(revealed.nodeRef)).toEqual(["selected"]);
+    provider.releaseNode(revealed.nodeRef, "selected");
+    expect(registry.retentionReasons(revealed.nodeRef)).toEqual([]);
+  });
+
+  it("stops resolving a retained element as soon as it detaches", () => {
+    const document = createDocument();
+    const card = createElement("article", document);
+    document.documentElement.append(card);
+    const provider = createProvider(document);
+    const revealed = provider.revealElement(card as unknown as Element);
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+
+    document.documentElement.remove(card);
+
+    expect(provider.lookupElement(card as unknown as Element)).toBeUndefined();
+    expect(provider.resolveElement(revealed.nodeRef, revealed.documentEpoch))
+      .toBeUndefined();
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "selected",
+    )).toBe(false);
+  });
+
+  it("exposes read-only frame authority and forwards tracked frame lifecycle", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const replacementDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const lifecycle: Array<{
+      readonly type: string;
+      readonly frameRef: string;
+      readonly frameEpoch: number;
+    }> = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+
+    expect(Object.isFrozen(harness.provider.frameAuthority)).toBe(true);
+    expect("describeFrame" in harness.provider.frameAuthority).toBe(false);
+    expect(harness.provider.currentDocumentEpoch).toBe(3);
+
+    harness.provider.startFrameTracking();
+
+    const child = harness.provider.frameAuthority
+      .getContextForDocument(childDocument as unknown as Document);
+    expect(child).toMatchObject({
+      frameRef: "frame-2",
+      frameEpoch: 1,
+      documentEpoch: 3,
+    });
+    expect(lifecycle.map(({ type }) => type)).toEqual(["registered"]);
+
+    frame.setFrameDocument(replacementDocument);
+    frame.dispatchLoad();
+    expect(harness.provider.frameAuthority
+      .getContextForDocument(childDocument as unknown as Document))
+      .toBeUndefined();
+    expect(harness.provider.frameAuthority
+      .getContextForDocument(replacementDocument as unknown as Document))
+      .toMatchObject({ frameRef: "frame-2", frameEpoch: 2 });
+
+    document.documentElement.remove(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+    harness.flushTimers();
+
+    expect(lifecycle.map(({ type }) => type)).toEqual([
+      "registered",
+      "navigated",
+      "removed",
+    ]);
+    expect(harness.provider.frameAuthority.getContext("frame-2"))
+      .toBeUndefined();
+  });
+
+  it("excludes overlay-owned nodes from traversal and mutation discovery", () => {
+    const document = createDocument();
+    const pageContent = createElement("main", document);
+    const overlayHost = createElement("browser2ide-overlay", document);
+    const overlayRoot = overlayHost.attachShadow();
+    const overlayArtifact = createElement("div", document);
+    overlayRoot.append(overlayArtifact);
+    document.documentElement.append(pageContent);
+    document.documentElement.append(overlayHost);
+    const overlayNodes = new Set<FakeNode>([
+      overlayHost,
+      overlayRoot,
+      overlayArtifact,
+    ]);
+    const harness = createProviderHarness(document, {
+      isExcludedNode: (node) => overlayNodes.has(node as unknown as FakeNode),
+    });
+
+    const root = harness.provider.getRoot();
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "without-overlay",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["main"]);
+    expect(harness.provider.lookupElement(overlayHost as unknown as Element))
+      .toBeUndefined();
+    expect(() => harness.provider.revealElement(
+      overlayHost as unknown as Element,
+    )).toThrowError("node-unavailable");
+    expect(() => harness.provider.revealElement(
+      overlayArtifact as unknown as Element,
+    )).toThrowError("node-unavailable");
+
+    document.documentElement.remove(overlayHost);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [overlayHost]),
+    ]);
+    document.documentElement.append(overlayHost);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [overlayHost]),
+    ]);
+    harness.flushTimers();
+
+    const refreshedRoot = harness.provider.getRoot();
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "without-reattached-overlay",
+      documentEpoch: refreshedRoot.documentEpoch,
+      nodeRef: refreshedRoot.node.nodeRef,
+      branchRevision: refreshedRoot.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["main"]);
+    expect(harness.provider.lookupElement(overlayHost as unknown as Element))
+      .toBeUndefined();
+  });
 });
 
 function onlyChild(
@@ -3220,8 +3501,16 @@ interface ProviderHarnessOptions {
     readonly nodeRef: string;
     readonly documentEpoch: number;
   }) => void;
+  readonly onFrameLifecycle?: (event: {
+    readonly type: string;
+    readonly frameRef: string;
+    readonly frameEpoch: number;
+    readonly documentEpoch: number;
+  }) => void;
+  readonly onMutationSettled?: () => void;
   readonly maxCursors?: number;
   readonly maxRecords?: number;
+  readonly isExcludedNode?: (node: Node) => boolean;
 }
 
 function createProviderHarness(
@@ -3254,6 +3543,9 @@ function createProviderHarness(
     onInvalidated: options.onInvalidated,
     getSelectedNodeRef: options.getSelectedNodeRef,
     onSelectedNodeRemoved: options.onSelectedNodeRemoved,
+    onFrameLifecycle: options.onFrameLifecycle,
+    onMutationSettled: options.onMutationSettled,
+    isExcludedNode: options.isExcludedNode,
     maxCursors: options.maxCursors,
     maxRecords: options.maxRecords,
   };

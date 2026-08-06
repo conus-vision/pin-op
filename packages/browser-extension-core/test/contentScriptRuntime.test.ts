@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { startContentScriptRuntime } from "../src/contentScriptRuntime.js";
 
 describe("startContentScriptRuntime", () => {
+  const capturedEventTypes = [
+    "keydown",
+    "pointermove",
+    "pointercancel",
+    "pointerdown",
+    "mousedown",
+    "pointerup",
+    "mouseup",
+    "click",
+    "dblclick",
+    "auxclick",
+    "contextmenu",
+    "touchstart",
+    "touchend",
+  ];
+
   it("is idempotent, owns the inspect lease, and cleans up listeners", async () => {
     const runtimeMessages = messageHarness();
     const leasePort = portHarness();
@@ -28,7 +44,7 @@ describe("startContentScriptRuntime", () => {
     expect(options.connectRuntimePort).toHaveBeenCalledWith(
       "browser2ide.inspect.contentLease",
     );
-    expect(document.captureAdds).toEqual([true]);
+    expect(document.captureAdds).toEqual(capturedEventTypes);
 
     document.click(inspectableElement());
     await flushAsync();
@@ -42,7 +58,7 @@ describe("startContentScriptRuntime", () => {
     });
 
     leasePort.disconnect();
-    expect(document.captureRemoves).toEqual([true]);
+    expect(document.captureRemoves).toEqual(capturedEventTypes);
 
     first.dispose();
     first.dispose();
@@ -117,42 +133,66 @@ function portHarness() {
 }
 
 function documentHarness() {
-  let clickListener: ((event: unknown) => void) | undefined;
-  const captureAdds: boolean[] = [];
-  const captureRemoves: boolean[] = [];
+  const listeners = new Map<string, (event: unknown) => void>();
+  const captureAdds: string[] = [];
+  const captureRemoves: string[] = [];
   return {
     document: {
       styleSheets: [],
       addEventListener(
-        _type: string,
+        type: string,
         listener: (event: unknown) => void,
-        capture: boolean,
+        options: boolean | { readonly capture?: boolean; readonly passive?: boolean },
       ) {
-        clickListener = listener;
-        captureAdds.push(capture);
+        expect(readCapture(options)).toBe(true);
+        if (type === "touchstart" || type === "touchend") {
+          expect(options).toEqual({ capture: true, passive: false });
+        }
+        listeners.set(type, listener);
+        captureAdds.push(type);
       },
       removeEventListener(
-        _type: string,
+        type: string,
         listener: (event: unknown) => void,
-        capture: boolean,
+        options: boolean | { readonly capture?: boolean; readonly passive?: boolean },
       ) {
-        if (clickListener === listener) {
-          clickListener = undefined;
+        expect(readCapture(options)).toBe(true);
+        if (listeners.get(type) === listener) {
+          listeners.delete(type);
         }
-        captureRemoves.push(capture);
+        captureRemoves.push(type);
       },
     },
     captureAdds,
     captureRemoves,
     click(target: unknown) {
-      clickListener?.({
-        target,
-        preventDefault() {},
-        stopPropagation() {},
-        stopImmediatePropagation() {},
-      });
+      for (const type of [
+        "pointerdown",
+        "pointerup",
+        "click",
+      ]) {
+        listeners.get(type)?.({
+          type,
+          target,
+          isTrusted: true,
+          button: 0,
+          isPrimary: true,
+          pointerId: 1,
+          pointerType: "mouse",
+          composedPath: () => [target],
+          preventDefault() {},
+          stopPropagation() {},
+          stopImmediatePropagation() {},
+        });
+      }
     },
   };
+}
+
+function readCapture(
+  options: boolean | { readonly capture?: boolean },
+): boolean {
+  return typeof options === "boolean" ? options : options.capture === true;
 }
 
 function inspectableElement() {

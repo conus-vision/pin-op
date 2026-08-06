@@ -22,6 +22,8 @@ import {
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  PAGE_INSPECTION_SELECTION_INTERVAL_MS,
+  PageInspectionSession,
   PageOverlay,
   PanelController,
   parseLinkCode,
@@ -60,6 +62,8 @@ assert.equal(typeof DomTreeProviderError, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
+assert.equal(PAGE_INSPECTION_SELECTION_INTERVAL_MS, 100);
+assert.equal(typeof PageInspectionSession, "function");
 assert.equal(typeof PageOverlay, "function");
 assert.equal(typeof PanelController, "function");
 assert.equal(typeof parseLinkCode, "function");
