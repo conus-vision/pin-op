@@ -581,6 +581,46 @@ export function describeBrowserPackageContract(
       );
     });
 
+    it("emits exact structured protocol metadata without live marker logic", () => {
+      const metadata = JSON.parse(
+        packagedText(packaged, "dist/runtime-metadata.json"),
+      ) as unknown;
+      expect(metadata).toEqual({
+        schemaVersion: 1,
+        protocolVersion: 4,
+      });
+
+      const adapter = readFileSync(
+        new URL("src/panel.ts", contract.extensionRoot),
+        "utf8",
+      );
+      expect(adapter).not.toContain("PROTOCOL_VERSION");
+      expect(adapter).not.toContain("browser2ide.protocolVersion");
+      expect(adapter).not.toContain("document.documentElement");
+      const sharedRuntime = readFileSync(
+        new URL(
+          "../../packages/browser-extension-core/src/panelRuntime.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const sharedView = readFileSync(
+        new URL(
+          "../../packages/browser-extension-core/src/panelView.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      expect(sharedRuntime).not.toContain("setProtocolVersionMarker");
+      expect(sharedView).not.toContain("setProtocolVersionMarker");
+      const build = readFileSync(
+        new URL("esbuild.mjs", contract.extensionRoot),
+        "utf8",
+      );
+      expect(build).toContain("PROTOCOL_VERSION");
+      expect(build).toContain("serializeRuntimeMetadata(PROTOCOL_VERSION)");
+    });
+
     it("builds and packages without changing checkout artifacts", () => {
       const checkoutRoot = fileURLToPath(contract.extensionRoot);
 
@@ -604,6 +644,7 @@ export function describeBrowserPackageContract(
         "dist/panel.html",
         "dist/panel.css",
         "dist/browser2ide.svg",
+        "dist/runtime-metadata.json",
         "LICENSE",
         "THIRD_PARTY_NOTICES",
       ]) {
@@ -1093,6 +1134,11 @@ function stageBrowserExtensionProject(
     workspaceRoot,
     stagedWorkspace,
     join("tools", "browser-bundle-notices.mjs"),
+  );
+  copyWorkspacePath(
+    workspaceRoot,
+    stagedWorkspace,
+    join("tools", "runtime-metadata.mjs"),
   );
   copyWorkspacePath(
     workspaceRoot,

@@ -3,6 +3,8 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { startExampleServers } from "../examples/basic-css/server.mjs";
+import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 import {
   BROWSER_ARCHIVE_FILES,
   assertExactArchivePaths,
@@ -14,6 +16,111 @@ const START_TIMEOUT_MS = 20_000;
 const CDP_TIMEOUT_MS = 5_000;
 const STOP_TIMEOUT_MS = 3_000;
 const POLL_INTERVAL_MS = 100;
+
+const PANEL_HTML_MARKERS = Object.freeze([
+  ["DOM tree asset", 'id="dom-tree"'],
+  ["DOM tree asset", 'id="dom-tree-spacer"'],
+  ["DOM tree asset", 'id="dom-tree-empty"'],
+  ["DOM tree asset", 'role="tree"'],
+  ["linked code asset", 'id="linked-code"'],
+  ["panel asset", 'id="disconnect-button"'],
+  ["panel asset", "Disconnect"],
+  ["picker asset", 'id="inspect-mode"'],
+  ["picker asset", 'aria-label="Select an element"'],
+  ["resolution footer", 'class="panel-footer"'],
+  ["resolution footer", 'id="resolution-status"'],
+]);
+const PANEL_CSS_MARKERS = Object.freeze([
+  ["DOM tree style", ".dom-tree-row"],
+  ["DOM tree style", ".is-shadow-root"],
+  ["DOM tree style", ".is-frame-document"],
+  ["DOM tree style", ".is-inaccessible"],
+  ["resolution footer style", ".panel-footer"],
+  ["resolution footer style", '.resolution-status[data-tone="success"]'],
+  ["resolution footer style", '.resolution-status[data-tone="warning"]'],
+  ["resolution footer style", '.resolution-status[data-tone="error"]'],
+]);
+const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
+  if (document.readyState !== "complete") {
+    return { ready: false, locationHref: location.href };
+  }
+
+  const stylesheetByPath = (pathname) => Array.from(document.styleSheets)
+    .find((sheet) => {
+      try {
+        return sheet.href && new URL(sheet.href).pathname === pathname;
+      } catch {
+        return false;
+      }
+    });
+  const inspectSheet = (pathname) => {
+    const sheet = stylesheetByPath(pathname);
+    if (!sheet) return { found: false, readable: false };
+    try {
+      return { found: true, readable: true, ruleCount: sheet.cssRules.length };
+    } catch (error) {
+      return {
+        found: true,
+        readable: false,
+        errorName: error instanceof Error ? error.name : String(error),
+      };
+    }
+  };
+  const findStyleRule = (rules, selector) => {
+    for (const rule of Array.from(rules)) {
+      if (rule.selectorText === selector) return rule;
+      try {
+        if (rule.cssRules) {
+          const nested = findStyleRule(rule.cssRules, selector);
+          if (nested) return nested;
+        }
+      } catch {
+        // Inaccessible stylesheets are asserted separately.
+      }
+    }
+    return undefined;
+  };
+  const linkByPath = (pathname) => Array.from(
+    document.querySelectorAll('link[rel="stylesheet"]'),
+  ).find((link) => {
+    try {
+      return new URL(link.href).pathname === pathname;
+    } catch {
+      return false;
+    }
+  });
+
+  const fallback = stylesheetByPath("/fallback.css");
+  let pathMiss;
+  try {
+    const rule = fallback && findStyleRule(
+      fallback.cssRules,
+      ".browser2ide-path-miss",
+    );
+    if (rule) {
+      pathMiss = {
+        property: "outline-style",
+        value: rule.style.getPropertyValue("outline-style"),
+      };
+    }
+  } catch {
+    pathMiss = undefined;
+  }
+  const multiline = document.querySelector(".multiline-inline");
+  const vendorLink = linkByPath("/vendor.css");
+  const inaccessibleLink = linkByPath("/inaccessible.css");
+
+  return {
+    ready: true,
+    locationHref: location.href,
+    vendor: inspectSheet("/vendor.css"),
+    inaccessible: inspectSheet("/inaccessible.css"),
+    vendorCrossOrigin: vendorLink?.getAttribute("crossorigin") ?? null,
+    inaccessibleHasCrossOrigin: inaccessibleLink?.hasAttribute("crossorigin") ?? null,
+    multilineRectCount: multiline?.getClientRects().length ?? 0,
+    pathMiss,
+  };
+})()`;
 
 export const CHROME_ARCHIVE_FILES = BROWSER_ARCHIVE_FILES;
 
@@ -57,7 +164,30 @@ export function validatePackagedChromeArchive(archive) {
   if (!isBrowser2IDEManifest(manifest)) {
     throw new Error("Chrome artifact does not declare the expected MV3 service worker");
   }
+  assertPackagedInspectorRuntime(archive);
   return manifest;
+}
+
+function assertPackagedInspectorRuntime(archive) {
+  assertTextMarkers(archive, "dist/panel.html", PANEL_HTML_MARKERS);
+  assertTextMarkers(archive, "dist/panel.css", PANEL_CSS_MARKERS);
+  parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
+    expectedProtocolVersion: 4,
+    label: "Packaged Chrome runtime metadata",
+  });
+}
+
+function assertTextMarkers(archive, path, markers) {
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`packaged Chrome smoke artifact is missing ${path}`);
+  }
+  const text = bytes.toString("utf8");
+  for (const [label, marker] of markers) {
+    if (!text.includes(marker)) {
+      throw new Error(`Packaged Chrome ${label} is missing ${marker} in ${path}`);
+    }
+  }
 }
 
 export function buildChromeArguments(profileDirectory) {
@@ -170,6 +300,124 @@ function describeError(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+export async function verifyFixturePageInChrome(
+  cdp,
+  pageUrl,
+  {
+    timeoutMs = START_TIMEOUT_MS,
+    pollIntervalMs = POLL_INTERVAL_MS,
+  } = {},
+) {
+  const parsedPageUrl = new URL(pageUrl);
+  if (
+    parsedPageUrl.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(parsedPageUrl.hostname)
+  ) {
+    throw new Error("Chrome fixture verification requires a loopback HTTP URL");
+  }
+
+  const { targetId } = await cdp.send("Target.createTarget", {
+    url: "about:blank",
+  });
+  if (typeof targetId !== "string" || targetId.length === 0) {
+    throw new Error("Chrome did not create the fixture page target");
+  }
+
+  try {
+    const { sessionId } = await cdp.send("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+      throw new Error("Chrome did not attach to the fixture page target");
+    }
+    await cdp.send("Page.enable", {}, sessionId);
+    await cdp.send("Runtime.enable", {}, sessionId);
+    const navigation = await cdp.send(
+      "Page.navigate",
+      { url: parsedPageUrl.href },
+      sessionId,
+    );
+    if (navigation.errorText) {
+      throw new Error(`Chrome could not navigate to the fixture: ${navigation.errorText}`);
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let lastResult;
+    while (Date.now() < deadline) {
+      const evaluation = await cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: FIXTURE_RUNTIME_EXPRESSION,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      if (evaluation.exceptionDetails) {
+        throw new Error(
+          `Chrome fixture evaluation failed: ${evaluation.exceptionDetails.text ?? "unknown exception"}`,
+        );
+      }
+      lastResult = evaluation.result?.value;
+      if (
+        lastResult?.ready === true &&
+        lastResult.locationHref === parsedPageUrl.href
+      ) {
+        return assertFixtureRuntimeResult(lastResult);
+      }
+      await delay(pollIntervalMs);
+    }
+    throw new Error(
+      `Timed out waiting for the fixture page; last result: ${JSON.stringify(lastResult)}`,
+    );
+  } finally {
+    await cdp.send("Target.closeTarget", { targetId });
+  }
+}
+
+function assertFixtureRuntimeResult(result) {
+  if (result.vendorCrossOrigin !== "anonymous") {
+    throw new Error("Fixture vendor stylesheet link must use crossorigin=anonymous");
+  }
+  if (result.inaccessibleHasCrossOrigin !== false) {
+    throw new Error("Fixture inaccessible stylesheet link must omit crossorigin");
+  }
+  if (!result.vendor?.found || !result.vendor.readable) {
+    throw new Error("Fixture vendor stylesheet cssRules must be readable");
+  }
+  if (!Number.isInteger(result.vendor.ruleCount) || result.vendor.ruleCount < 1) {
+    throw new Error("Fixture vendor stylesheet must expose at least one CSS rule");
+  }
+  if (result.inaccessible?.readable) {
+    throw new Error("Fixture inaccessible stylesheet cssRules unexpectedly readable");
+  }
+  if (
+    !result.inaccessible?.found ||
+    result.inaccessible.errorName !== "SecurityError"
+  ) {
+    throw new Error(
+      `Fixture inaccessible stylesheet must throw SecurityError, found ${result.inaccessible?.errorName ?? "no stylesheet"}`,
+    );
+  }
+  if (
+    !Number.isInteger(result.multilineRectCount) ||
+    result.multilineRectCount !== 2
+  ) {
+    throw new Error(
+      `Fixture multiline inline must expose exactly 2 client rects, found ${String(result.multilineRectCount)}`,
+    );
+  }
+  if (
+    result.pathMiss?.property !== "outline-style" ||
+    result.pathMiss.value !== "dashed"
+  ) {
+    throw new Error(
+      `Fixture path-miss CSSOM evidence expected outline-style:dashed, found ${JSON.stringify(result.pathMiss)}`,
+    );
+  }
+  return result;
+}
+
 export async function smokePackagedChrome(artifactArgument) {
   if (!artifactArgument) {
     throw new Error(
@@ -186,6 +434,7 @@ export async function smokePackagedChrome(artifactArgument) {
   let smokeRoot;
   let chrome;
   let cdp;
+  let fixtureServers;
   let spawnError;
   let stderr = "";
   return runSmokeOperationWithCleanup(
@@ -249,8 +498,19 @@ export async function smokePackagedChrome(artifactArgument) {
           );
         }
         await waitForServiceWorker(cdp, chrome, extensionId);
+        fixtureServers = await startExampleServers({
+          pagePort: 0,
+          vendorPort: 0,
+        });
+        const fixtureResult = await verifyFixturePageInChrome(
+          cdp,
+          fixtureServers.pageUrl,
+        );
         console.log(
           `PACKAGED_CHROME_MV3_OK ${product} ${manifest.name} ${manifest.version} ${extensionId}${SERVICE_WORKER_PATH}`,
+        );
+        console.log(
+          `PACKAGED_CHROME_FIXTURE_OK vendor=${fixtureResult.vendor.ruleCount} inaccessible=${fixtureResult.inaccessible.errorName} rects=${fixtureResult.multilineRectCount}`,
         );
       } catch (error) {
         const primaryError = error instanceof Error ? error : new Error(String(error));
@@ -272,6 +532,11 @@ export async function smokePackagedChrome(artifactArgument) {
         errors.push(error);
       }
       try {
+        await fixtureServers?.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
         if (smokeRoot) {
           await rm(smokeRoot, {
             recursive: true,
@@ -287,7 +552,7 @@ export async function smokePackagedChrome(artifactArgument) {
       if (errors.length > 1) {
         throw new AggregateError(
           errors,
-          "Chrome process and temporary data cleanup both failed",
+          "Packaged Chrome smoke cleanup had multiple failures",
         );
       }
     },

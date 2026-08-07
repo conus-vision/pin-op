@@ -1,0 +1,10 @@
+.cross-origin-frame-document {
+  padding: 0.75rem;
+  font-family: system-ui, sans-serif;
+}
+
+.cross-origin-frame-target {
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #b42318;
+  background: #fff1f0;
+}

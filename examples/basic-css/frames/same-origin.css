@@ -1,0 +1,10 @@
+.same-origin-frame-document {
+  padding: 0.75rem;
+  font-family: system-ui, sans-serif;
+}
+
+.same-origin-frame-target {
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #1769aa;
+  background: #eef6fc;
+}

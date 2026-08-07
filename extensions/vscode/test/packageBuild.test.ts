@@ -9,6 +9,10 @@ const extensionRoot = fileURLToPath(new URL("..", import.meta.url));
 const bundleUrl = new URL("../dist/extension.cjs", import.meta.url);
 const metafileUrl = new URL("../dist/extension-meta.json", import.meta.url);
 const wasmUrl = new URL("../dist/mappings.wasm", import.meta.url);
+const runtimeMetadataUrl = new URL(
+  "../dist/runtime-metadata.json",
+  import.meta.url,
+);
 const sourceWasmUrl = new URL(
   "../node_modules/source-map/lib/mappings.wasm",
   import.meta.url,
@@ -16,6 +20,11 @@ const sourceWasmUrl = new URL(
 const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
 const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
 const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
+const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
+const installedSmokeUrl = new URL(
+  "../smoke-installed-vsix.mjs",
+  import.meta.url,
+);
 const builtins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -47,6 +56,29 @@ describe("VS Code package build", () => {
     if (!existsSync(wasmUrl)) return;
 
     expect(readFileSync(wasmUrl)).toEqual(readFileSync(sourceWasmUrl));
+  });
+
+  it("writes exact structured runtime protocol metadata", () => {
+    expect(existsSync(runtimeMetadataUrl)).toBe(true);
+    if (!existsSync(runtimeMetadataUrl)) return;
+
+    expect(JSON.parse(readFileSync(runtimeMetadataUrl, "utf8"))).toEqual({
+      schemaVersion: 1,
+      protocolVersion: 4,
+    });
+    const buildScript = readFileSync(buildScriptUrl, "utf8");
+    expect(buildScript).toContain("PROTOCOL_VERSION");
+    expect(buildScript).toContain(
+      "serializeRuntimeMetadata(PROTOCOL_VERSION)",
+    );
+  });
+
+  it("uses structured metadata in the installed smoke without bundle probes", () => {
+    const smoke = readFileSync(installedSmokeUrl, "utf8");
+
+    expect(smoke).toContain('"runtime-metadata.json"');
+    expect(smoke).not.toContain("requiredRuntimeMarkers");
+    expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
   });
 
   it("covers every bundled third-party package with full notices", () => {
@@ -109,6 +141,7 @@ describe("VS Code package build", () => {
 
     expect(patterns).toContain("!dist/extension.cjs");
     expect(patterns).toContain("!dist/mappings.wasm");
+    expect(patterns).toContain("!dist/runtime-metadata.json");
     expect(patterns).toContain("package-vsix.mjs");
     expect(patterns).toContain("verify-vsix.mjs");
   });

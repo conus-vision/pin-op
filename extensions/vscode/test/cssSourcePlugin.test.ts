@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type {
   SelectionSnapshot,
@@ -850,6 +851,78 @@ describe("CssSourcePlugin", () => {
     expect(findMatchingCssRules(collided, fact, parsed.document)).toHaveLength(1);
   });
 
+  it("uses fixture fallback for a nested browser path and preserves duplicate ambiguity", async () => {
+    const text = (await readFile(
+      new URL("../../../examples/basic-css/fallback.css", import.meta.url),
+      "utf8",
+    )).replace(/\r\n/g, "\n");
+    const collected = collectCssFacts(
+      { matches: (selector) => selector === ".browser2ide-path-miss" },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/fallback.css",
+          cssRules: [
+            collectorStyleRule(".browser2ide-cssom-only", "--fixture", "cssom"),
+            {
+              cssRules: [
+                collectorStyleRule(".card", "background-color", "rgb(245, 247, 250)"),
+                collectorStyleRule(
+                  ".browser2ide-path-miss",
+                  "outline-style",
+                  "dashed",
+                ),
+                collectorStyleRule(
+                  ".duplicate-selector",
+                  "text-decoration-line",
+                  "underline",
+                ),
+              ],
+            },
+          ],
+        }],
+      },
+    );
+    expect(collected.facts).toEqual([
+      expect.objectContaining({
+        selector: ".browser2ide-path-miss",
+        property: "outline-style",
+        value: "dashed",
+        metadata: expect.objectContaining({ rulePath: "0.1.1" }),
+      }),
+    ]);
+
+    const fallback = await resolveCss(
+      text,
+      selection([collectedTarget(collected.facts, null)]),
+    );
+
+    expect(fallback.status).toBe("matched");
+    expect(fallback.matches).toHaveLength(1);
+    expect(fallback.matches[0]?.confidence).toBe("heuristic");
+    expect(snippets(text, fallback.matches)).toEqual([
+      [
+        ".browser2ide-path-miss {",
+        "  outline-style: dashed;",
+        "}",
+      ].join("\n"),
+    ]);
+
+    const duplicate = cssTarget(
+      "selected",
+      ".duplicate-selector",
+      "/fallback.css",
+    );
+    duplicate.facts[0]!.property = "text-decoration";
+    duplicate.facts[0]!.value = "underline";
+    duplicate.facts[0]!.metadata.rulePath = "0.1.2";
+
+    const ambiguous = await resolveCss(text, selection([duplicate]));
+
+    expect(ambiguous.status).toBe("rule-match-ambiguous");
+    expect(ambiguous.matches).toEqual([]);
+  });
+
   it("reports bounded indistinguishable duplicates and refuses oversized buckets", async () => {
     const boundedText = [
       ".duplicate { color: red; }",
@@ -1688,26 +1761,36 @@ function cssTargetWithDeclarations(
   return target;
 }
 
-function collectedTarget(facts: readonly CssRuleFact[]): InspectTarget {
+function collectedTarget(
+  facts: readonly CssRuleFact[],
+  rulePath: string | null = "0.99",
+): InspectTarget {
   return {
     role: "selected",
     depth: 0,
-    subject: { selector: ".card", metadata: {} },
+    subject: { selector: facts[0]?.selector ?? ".card", metadata: {} },
     facts: facts.map((fact) => ({
       ...fact,
-      metadata: { ...fact.metadata, rulePath: "0.99" },
+      metadata: {
+        ...fact.metadata,
+        ...(rulePath === null ? {} : { rulePath }),
+      },
     })),
     metadata: {},
   };
 }
 
-function collectorStyleRule() {
+function collectorStyleRule(
+  selector = ".card",
+  property = "color",
+  value = "red",
+) {
   return {
-    selectorText: ".card",
+    selectorText: selector,
     style: {
       length: 1,
-      item: () => "color",
-      getPropertyValue: () => "red",
+      item: () => property,
+      getPropertyValue: () => value,
       getPropertyPriority: () => "",
     },
   };

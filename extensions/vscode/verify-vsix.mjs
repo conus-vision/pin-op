@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseRuntimeMetadata } from "../../tools/runtime-metadata.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const artifactPath = process.argv[2]
@@ -23,6 +24,7 @@ const requiredPaths = [
   "extension/THIRD_PARTY_NOTICES",
   "extension/dist/extension.cjs",
   "extension/dist/mappings.wasm",
+  "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
   "extension/resources/browser2ide.svg",
@@ -45,6 +47,10 @@ const manifest = JSON.parse(
 if (manifest.main !== "./dist/extension.cjs") {
   throw new Error(`VSIX manifest has unexpected main: ${manifest.main}`);
 }
+parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
+  expectedProtocolVersion: 4,
+  label: "VSIX runtime metadata",
+});
 
 const bundle = entries.get("extension/dist/extension.cjs").toString("utf8");
 const runtimeRequires = [

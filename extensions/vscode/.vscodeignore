@@ -7,6 +7,7 @@ node_modules/**
 dist/**
 !dist/extension.cjs
 !dist/mappings.wasm
+!dist/runtime-metadata.json
 **/*.map
 tsconfig.json
 esbuild.mjs

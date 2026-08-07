@@ -1,3 +1,19 @@
 .card {
   background-color: #f5f7fa;
 }
+
+.browser2ide-path-miss {
+  outline-style: dashed;
+}
+
+.duplicate-selector {
+  text-decoration: underline;
+}
+
+.duplicate-selector {
+  text-decoration: underline;
+}
+
+.local-fallback {
+  background-color: #e8f5e9;
+}

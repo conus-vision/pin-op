@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import { createHeadArchiveBuffer } from "./archive-firefox-source.mjs";
+import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 import {
   assertTextEqual,
   assertVersion,
@@ -33,6 +34,7 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "dist/panel.css",
   "dist/panel.html",
   "dist/panel.js",
+  "dist/runtime-metadata.json",
 ]);
 const VSIX_ARCHIVE_FILES = [
   "[Content_Types].xml",
@@ -41,6 +43,7 @@ const VSIX_ARCHIVE_FILES = [
   "extension/THIRD_PARTY_NOTICES",
   "extension/dist/extension.cjs",
   "extension/dist/mappings.wasm",
+  "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
   "extension/resources/browser2ide.svg",
@@ -418,6 +421,10 @@ async function verifyBrowser(archive, filename, browser) {
     filename,
     browser,
   );
+  parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
+    expectedProtocolVersion: 4,
+    label: `${filename} runtime metadata`,
+  });
 }
 
 function verifyBrowserManifest(manifest, filename, browser) {
@@ -460,6 +467,13 @@ async function verifyVsix(archive, filename) {
   if (manifest.main !== "./dist/extension.cjs") {
     throw new Error(`${filename} has unexpected extension main: ${manifest.main}`);
   }
+  parseRuntimeMetadata(
+    archive.files.get("extension/dist/runtime-metadata.json"),
+    {
+      expectedProtocolVersion: 4,
+      label: `${filename} runtime metadata`,
+    },
+  );
 
   const bundle = archive.files.get("extension/dist/extension.cjs").toString("utf8");
   const runtimeRequires = [

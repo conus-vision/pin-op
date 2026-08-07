@@ -144,6 +144,16 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("does not expose package metadata through the live panel DOM", () => {
+    const runtime = createRuntime();
+
+    expect(
+      dom.element("connection-status").dataset.browser2ideProtocolVersion,
+    ).toBeUndefined();
+
+    runtime.dispose();
+  });
+
   it("loads the DOM root through the shared port only after the window is linked", async () => {
     const runtime = createRuntime();
     await runtime.ready;
