@@ -15,7 +15,7 @@ import {
   rejectSensitivePath,
 } from "./release-policy.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const EXPECTED_ARTIFACTS = new Map([
   [`browser2ide-vscode-${VERSION}.vsix`, "vscode"],
   [`browser2ide-chrome-${VERSION}.zip`, "chrome"],

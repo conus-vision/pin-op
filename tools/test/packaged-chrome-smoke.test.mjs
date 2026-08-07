@@ -52,7 +52,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
     Buffer.from(
       JSON.stringify({
         name: "Browser2IDE",
-        version: "0.2.0",
+        version: "0.3.0",
         manifest_version: 3,
         background: { service_worker: "dist/background.js" },
       }),
@@ -683,7 +683,7 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
   assert.equal(
     isBrowser2IDEManifest({
       name: "Browser2IDE",
-      version: "0.2.0",
+      version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),
@@ -692,7 +692,7 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
   assert.equal(
     isBrowser2IDEManifest({
       name: "Unrelated extension",
-      version: "0.2.0",
+      version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),

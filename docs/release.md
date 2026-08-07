@@ -1,8 +1,9 @@
 # Browser2IDE Release Guide
 
-This is the owner runbook for signed public releases. Version `0.2.0` is still
-unreleased. Do not create its release tag or publish a GitHub release until AMO
-signing and the installed-product verification are complete.
+This is the owner runbook for signed public releases. Version `0.3.0` is the
+current release candidate. Its external signing and installed-product evidence is
+pending. Do not create its release tag or publish a GitHub release until AMO
+signing and installed-product verification are complete.
 
 ## One-Time Security Setup
 
@@ -100,16 +101,51 @@ Update the version in all six product files:
 - `extensions/chrome/package.json` and `manifest.json`.
 
 Also update versioned artifact names and expectations in package scripts, smoke
-scripts, release tools, tests, and documentation. Search for the previous version:
+scripts, release tools, tests, and documentation. Confirm that every current
+release-owned reference agrees with the candidate version. This explicit list avoids
+dependency versions and excludes historical material under `docs/superpowers/`:
 
 ```powershell
-rg -n '0\.2\.0' package.json extensions tools docs .github
+$releaseFiles = @(
+  'package.json'
+  'packages/browser-extension-core/package.json'
+  'extensions/vscode/package.json'
+  'extensions/vscode/package-vsix.mjs'
+  'extensions/vscode/README.md'
+  'extensions/vscode/test/manifest.test.ts'
+  'extensions/chrome/package.json'
+  'extensions/chrome/manifest.json'
+  'extensions/chrome/test/manifest.test.ts'
+  'extensions/firefox/package.json'
+  'extensions/firefox/manifest.json'
+  'tools/archive-firefox-source.mjs'
+  'tools/prepare-artifacts.mjs'
+  'tools/smoke-packaged-chrome.mjs'
+  'tools/verify-artifacts.mjs'
+  'tools/test'
+  '.github/ISSUE_TEMPLATE/bug-report.yml'
+  'README.md'
+  'CHANGELOG.md'
+  'PRIVACY.md'
+  'SECURITY.md'
+  'docs/architecture.md'
+  'docs/firefox-source-submission.md'
+  'docs/installed-verification.md'
+  'docs/mvp-usage.md'
+  'docs/mvp-verification.md'
+  'docs/protocol.md'
+  'docs/release.md'
+  'docs/security.md'
+)
+rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|browser2ide-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|Browser2IDE\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
+node tools/verify-release-version.mjs v0.3.0
 ```
 
 Keep the changelog entry under `Unreleased` until the signed XPI passes installed
 verification. From a clean checkout, run:
 
 ```powershell
+corepack pnpm install --lockfile-only
 corepack pnpm install --frozen-lockfile
 corepack pnpm build
 corepack pnpm test
@@ -138,14 +174,14 @@ that the protected `amo-signing` environment and its required reviewer are ready
 Create and inspect an annotated tag:
 
 ```powershell
-git tag -a v0.2.0 -m "Browser2IDE 0.2.0"
-git cat-file -t refs/tags/v0.2.0
+git tag -a v0.3.0 -m "Browser2IDE 0.3.0"
+git cat-file -t refs/tags/v0.3.0
 git push origin master
-git push origin v0.2.0
+git push origin v0.3.0
 ```
 
 `git cat-file` must print `tag`; a lightweight tag is rejected. Cryptographic tag
-signing is not configured for the `0.2.0` alpha, and this runbook does not claim GPG
+signing is not configured for the `0.3.0` release, and this runbook does not claim GPG
 verification. Both release workflows require the annotated tag commit to be an
 ancestor of `origin/master`, and all package and manifest versions must match the
 `vX.Y.Z` tag.
@@ -233,24 +269,29 @@ the draft identity, and the later manual Firefox Stable test.
 Download all six draft assets and validate `SHA256SUMS`. Complete
 `docs/installed-verification.md` without development launchers. In particular:
 
-1. install `browser2ide-firefox-X.Y.Z.xpi` in Firefox Stable;
-2. restart Firefox and confirm the signed extension remains installed;
-3. install the VSIX and load the Chrome ZIP using the documented release flow;
-4. verify linking and DOM selection, then verify CSS/SCSS resolution in the active document
-   and selected/parent highlighting without automatic source-file opening;
-5. complete the two VS Code window and two browser window isolation checks;
-6. preserve the verification record with the sign run ID and exact XPI SHA-256.
+1. install `browser2ide-firefox-X.Y.Z.xpi` in Firefox Stable and restart Firefox;
+2. install the VSIX and load the Chrome ZIP in current Chrome or Chromium;
+3. open a project and confirm that the VS Code service starts without a terminal;
+4. click the VS Code status item to copy the port and two-digit PIN, then paste it
+   into Browser2IDE DevTools in one browser window and confirm the same display code;
+5. in the active document, which must be the intended CSS or SCSS file, verify the
+   visual picker and box-model overlay, lazy DOM tree boundaries, and
+   selected-element plus immediate-parent multi-range highlighting;
+6. record the exact footer outcome, including `No active editor` and SCSS source-map
+   failures, and confirm that **Disconnect** unlinks only that browser window;
+7. complete the two VS Code window and two browser window isolation checks;
+8. preserve the verification record with the sign run ID and exact XPI SHA-256.
 
 Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
 
 ```powershell
-(Get-FileHash .\browser2ide-firefox-0.2.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\browser2ide-firefox-0.3.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
 Linux or Git Bash:
 
 ```bash
-sha256sum browser2ide-firefox-0.2.0.xpi
+sha256sum browser2ide-firefox-0.3.0.xpi
 ```
 
 The value must exactly match the digest in the signing workflow summary and

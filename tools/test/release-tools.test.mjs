@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,6 +19,67 @@ const repositoryRoot = resolve(
   "../..",
 );
 
+test("prepackage removes only regular Browser2IDE release outputs", async () => {
+  const rootPackage = JSON.parse(
+    await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
+  );
+  assert.equal(
+    rootPackage.scripts.prepackage,
+    "node tools/prepare-artifacts.mjs",
+  );
+
+  const root = await mkdtemp(resolve(tmpdir(), "browser2ide-prepare-"));
+  const artifactDirectory = resolve(root, "artifacts");
+  const lookalikeDirectory = "browser2ide-chrome-9.9.9.zip";
+  const preservedFiles = ["browser2ide-chrome-latest.zip", "release-notes.txt"];
+  const generatedFiles = [
+    "SHA256SUMS",
+    "browser2ide-chrome-0.2.0.zip",
+    "browser2ide-firefox-0.2.0.xpi",
+    "browser2ide-firefox-0.2.0.zip",
+    "browser2ide-firefox-source-0.2.0.zip",
+    "browser2ide-vscode-0.2.0.vsix",
+  ];
+  const outsideArtifactDirectory = resolve(
+    root,
+    "browser2ide-chrome-0.2.0.zip",
+  );
+
+  try {
+    await mkdir(resolve(artifactDirectory, lookalikeDirectory), {
+      recursive: true,
+    });
+    await writeFile(
+      resolve(artifactDirectory, lookalikeDirectory, "keep.txt"),
+      "directory contents\n",
+    );
+    for (const filename of [...generatedFiles, ...preservedFiles]) {
+      await writeFile(resolve(artifactDirectory, filename), `${filename}\n`);
+    }
+    await writeFile(outsideArtifactDirectory, "outside artifacts\n");
+
+    const { prepareArtifactDirectory } = await import(
+      "../prepare-artifacts.mjs"
+    );
+    await prepareArtifactDirectory(root);
+
+    assert.deepEqual(
+      (await readdir(artifactDirectory)).sort(),
+      [...preservedFiles, lookalikeDirectory].sort(),
+    );
+    assert.equal(
+      await readFile(
+        resolve(artifactDirectory, lookalikeDirectory, "keep.txt"),
+        "utf8",
+      ),
+      "directory contents\n",
+    );
+    assert.equal(await readFile(outsideArtifactDirectory, "utf8"), "outside artifacts\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("artifact verifier rejects a directory missing required release artifacts", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-verify-"));
   try {
@@ -20,7 +88,7 @@ test("artifact verifier rejects a directory missing required release artifacts",
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /Missing required release artifacts: .*browser2ide-vscode-0\.2\.0\.vsix/,
+      /Missing required release artifacts: .*browser2ide-vscode-0\.3\.0\.vsix/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

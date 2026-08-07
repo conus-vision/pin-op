@@ -1,12 +1,12 @@
 {
   "name": "browser2ide-chrome",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build:deps": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/browser-extension-core build",
     "build": "pnpm run build:deps && tsc --noEmit -p tsconfig.json && node ./esbuild.mjs",
-    "package": "pnpm run build && web-ext build --overwrite-dest --artifacts-dir ../../artifacts --filename browser2ide-chrome-0.2.0.zip --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs src test \"src/**\" \"test/**\" && node ../../tools/normalize-browser-archive.mjs ../../artifacts/browser2ide-chrome-0.2.0.zip",
+    "package": "pnpm run build && web-ext build --overwrite-dest --artifacts-dir ../../artifacts --filename browser2ide-chrome-0.3.0.zip --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs src test \"src/**\" \"test/**\" && node ../../tools/normalize-browser-archive.mjs ../../artifacts/browser2ide-chrome-0.3.0.zip",
     "test": "pnpm run build:deps && vitest run",
     "typecheck": "pnpm run build:deps && tsc --noEmit -p tsconfig.json",
     "lint": "pnpm run build:deps && tsc --noEmit -p tsconfig.json"

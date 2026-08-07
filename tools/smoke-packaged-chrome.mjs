@@ -143,7 +143,7 @@ export function findBrowser2IDEServiceWorker(targets, extensionId) {
 export function isBrowser2IDEManifest(manifest) {
   return (
     manifest?.name === "Browser2IDE" &&
-    manifest?.version === "0.2.0" &&
+    manifest?.version === "0.3.0" &&
     manifest?.manifest_version === 3 &&
     manifest?.background?.service_worker === "dist/background.js"
   );

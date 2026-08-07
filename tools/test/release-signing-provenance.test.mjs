@@ -21,7 +21,7 @@ function provenanceInput(overrides = {}) {
     repository: "conus-vision/Browser2IDE",
     workflowPath: ".github/workflows/firefox-sign.yml",
     eventName: "workflow_dispatch",
-    releaseTag: "v0.2.0",
+    releaseTag: "v0.3.0",
     releaseCommit,
     workflowCommit,
     signRunId: "12345",
@@ -46,22 +46,22 @@ function completedRun(overrides = {}) {
 
 test("signed XPI artifact names are tag and run specific", () => {
   assert.equal(
-    createSignedXpiArtifactName("v0.2.0", "12345"),
-    "browser2ide-signed-xpi-v0.2.0-run-12345",
+    createSignedXpiArtifactName("v0.3.0", "12345"),
+    "browser2ide-signed-xpi-v0.3.0-run-12345",
   );
-  assert.throws(() => createSignedXpiArtifactName("0.2.0", "12345"), /release tag/i);
-  assert.throws(() => createSignedXpiArtifactName("v0.2.0", "0"), /run id/i);
+  assert.throws(() => createSignedXpiArtifactName("0.3.0", "12345"), /release tag/i);
+  assert.throws(() => createSignedXpiArtifactName("v0.3.0", "0"), /run id/i);
 });
 
 test("signed XPI bundle records and validates the exact AMO-returned bytes", async () => {
   await withTemporaryDirectory("browser2ide-signed-provenance-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.2.0.xpi");
+    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
 
     const created = await createSignedXpiBundle(sourcePath, bundlePath, provenanceInput());
     assert.match(created.xpiSha256, /^[0-9a-f]{64}$/);
-    assert.equal(created.xpiFilename, "browser2ide-firefox-0.2.0.xpi");
+    assert.equal(created.xpiFilename, "browser2ide-firefox-0.3.0.xpi");
 
     const validated = await validateSignedXpiBundle(
       bundlePath,
@@ -70,7 +70,7 @@ test("signed XPI bundle records and validates the exact AMO-returned bytes", asy
         repository: "conus-vision/Browser2IDE",
         workflowPath: ".github/workflows/firefox-sign.yml",
         eventName: "workflow_dispatch",
-        releaseTag: "v0.2.0",
+        releaseTag: "v0.3.0",
         releaseCommit,
         signRunId: "12345",
         verifiedXpiSha256: created.xpiSha256,
@@ -88,7 +88,7 @@ test("signed XPI bundle records and validates the exact AMO-returned bytes", asy
 
 test("publication rejects an unverified digest, a tampered XPI, and extra bundle files", async () => {
   await withTemporaryDirectory("browser2ide-signed-tamper-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.2.0.xpi");
+    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
     const provenance = await createSignedXpiBundle(
@@ -100,7 +100,7 @@ test("publication rejects an unverified digest, a tampered XPI, and extra bundle
       repository: "conus-vision/Browser2IDE",
       workflowPath: ".github/workflows/firefox-sign.yml",
       eventName: "workflow_dispatch",
-      releaseTag: "v0.2.0",
+      releaseTag: "v0.3.0",
       releaseCommit,
       signRunId: "12345",
       verifiedXpiSha256: provenance.xpiSha256,
@@ -131,7 +131,7 @@ test("publication rejects an unverified digest, a tampered XPI, and extra bundle
 
 test("publication accepts only a completed successful master workflow run", async () => {
   await withTemporaryDirectory("browser2ide-signed-run-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.2.0.xpi");
+    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
     const provenance = await createSignedXpiBundle(
@@ -143,7 +143,7 @@ test("publication accepts only a completed successful master workflow run", asyn
       repository: "conus-vision/Browser2IDE",
       workflowPath: ".github/workflows/firefox-sign.yml",
       eventName: "workflow_dispatch",
-      releaseTag: "v0.2.0",
+      releaseTag: "v0.3.0",
       releaseCommit,
       signRunId: "12345",
       verifiedXpiSha256: provenance.xpiSha256,

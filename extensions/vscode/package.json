@@ -2,7 +2,7 @@
   "name": "browser2ide-vscode",
   "publisher": "browser2ide",
   "displayName": "Browser2IDE",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "repository": "https://github.com/conus-vision/Browser2IDE.git",
   "homepage": "https://github.com/conus-vision/Browser2IDE#readme",
@@ -121,7 +121,7 @@
   "scripts": {
     "vscode:prepublish": "pnpm run build",
     "package": "node ./package-vsix.mjs",
-    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/browser2ide-vscode-0.2.0.vsix",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/browser2ide-vscode-0.3.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",

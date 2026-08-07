@@ -1,301 +1,253 @@
 # Browser2IDE Development Host Verification
 
-For installation and terminal-free acceptance of packaged release candidates,
-start with the [installed artifact verification guide](installed-verification.md).
+For terminal-free acceptance of packaged `0.3.0` candidates, use the
+[installed artifact verification guide](installed-verification.md). This
+runbook uses development hosts and unpacked extensions to verify a source
+checkout.
 
-This contributor runbook verifies Firefox and Chrome/Chromium against the same
-browser-window linking and document-first source workflow. HTTP serves only the
-fixture and its CSS resources; Browser2IDE product traffic remains WebSocket.
-
-Normal use with installed extensions is terminal-free. This contributor runbook uses an
-Extension Development Host and development-loaded browser extensions because
-it tests a source checkout.
+HTTP in this runbook serves only the fixture and stylesheet/frame resources.
+Browser2IDE product traffic remains a loopback WebSocket.
 
 ## Prerequisites
 
-- Node.js 22 or newer;
+- Node.js 22;
 - pnpm through Corepack;
 - VS Code;
 - Firefox Stable 142 or newer;
-- Chrome or Chromium 116 or newer.
+- current Chrome or Chromium 116 or newer.
 
-Run commands from the repository root unless a step says otherwise.
+Run commands from the repository root unless stated otherwise.
 
-## Automated Gate
+## Automated Gates
 
 Run each command separately and require exit code 0:
 
 ```powershell
-corepack pnpm install
+corepack pnpm install --frozen-lockfile
 corepack pnpm build
 corepack pnpm test
 corepack pnpm test:integration
 corepack pnpm typecheck
 corepack pnpm lint
-corepack pnpm dlx web-ext@10.4.0 lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
+corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
+corepack pnpm --filter browser2ide-chrome test -- manifest.test.ts adapter.test.ts
+corepack pnpm package
 git diff --check
 ```
 
-`web-ext` must report zero errors, warnings, and notices. The root test command
-includes the shared browser core plus both Firefox and Chrome adapter suites.
-The focused two-window workflow can also be run alone:
+The package command creates and verifies the `0.3.0` VSIX, Chrome ZIP,
+unsigned Firefox ZIP, Firefox source ZIP, and `SHA256SUMS`.
 
-```powershell
-corepack pnpm --filter @browser2ide/protocol build
-corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/windowWorkflow.test.ts
-```
-
-On Windows, an active VS Code installer can temporarily hold the stable-channel
-update mutex. Let the update finish before rerunning the integration suite.
-
-The packaged Chrome artifact smoke is a separate contributor check:
+The packaged Chrome artifact smoke is separate:
 
 ```powershell
 corepack pnpm smoke:chrome-package
 ```
 
-On Linux it requires a graphical session or Xvfb. Run it from an existing
-session with `DISPLAY` or `WAYLAND_DISPLAY` set, or use the repository command
-under `xvfb-run -a`. The smoke script refuses to spawn Chrome when neither
-display variable is available.
+On Linux, `smoke:chrome-package` requires a graphical session or Xvfb. Set
+`DISPLAY` or `WAYLAND_DISPLAY`, or run it under `xvfb-run -a`; the script refuses
+to launch Chrome without one of those display paths.
 
-## Build The Development Extensions
+The focused browser-core suite can be useful while iterating:
 
-Build the workspace once:
+```powershell
+corepack pnpm --filter @browser2ide/protocol build
+corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/windowWorkflow.test.ts test/pageOverlay.test.ts test/domTreeProvider.test.ts test/domTreeController.test.ts
+```
+
+## Build And Serve The Fixture
+
+Build once:
 
 ```powershell
 corepack pnpm build
 ```
 
-The build creates Firefox and Chrome assets in each extension's `dist`
-directory. After browser-source changes, rebuild the affected adapter:
-
-```powershell
-corepack pnpm --filter browser2ide-firefox build
-corepack pnpm --filter browser2ide-chrome build
-```
-
-## Start The Fixture
-
-In terminal 1:
+Start the fixture in terminal 1:
 
 ```powershell
 node examples/basic-css/server.mjs
 ```
 
-Keep it running at `http://127.0.0.1:4173/`. The fixture includes source-mapped
-rules from `src/card.scss` and `src/layout.scss`, generated `dist/app.css`, CSS
-without a source map, and inaccessible stylesheet cases.
+Keep `http://127.0.0.1:4173/` running. The fixture contains:
 
-## Start Two VS Code Windows
+- source-mapped `src/card.scss` and `src/layout.scss`;
+- generated `dist/app.css`;
+- a CSSOM path-miss fingerprint case and duplicate-selector ambiguity;
+- inline, runtime-injected, virtual, CORS-readable, and inaccessible styles;
+- multiline overlay geometry;
+- dynamic DOM mutation controls;
+- an open shadow root;
+- same-origin and cross-origin frames.
 
-In terminals 2 and 3, launch two Extension Development Hosts:
+## Start Two VS Code Development Windows
+
+In terminals 2 and 3:
 
 ```powershell
 code --new-window --extensionDevelopmentPath="$PWD/extensions/vscode" "$PWD"
 ```
 
-Call the first window IDE A and the second IDE B. In both windows:
+Call them IDE A and IDE B. In both:
 
-1. Wait for startup; Browser2IDE must start without a command.
-2. Confirm the status bar shows a grouped seven-digit code and a stop control.
-3. Confirm the two windows use different managed ports and therefore different
-   codes.
-4. Click each code and record which clipboard value belongs to A and B.
+1. Confirm Browser2IDE starts automatically.
+2. Confirm the status item shows a grouped port and two-digit PIN.
+3. Confirm the windows show different current codes.
+4. Click each status item and associate its clipboard value with A or B.
+5. Open `examples/basic-css/src/layout.scss` and keep Applicable Sources open.
 
-Open `examples/basic-css/src/layout.scss` in IDE A and IDE B. Keep `Applicable
-Sources` visible. Do not start Browser2IDE from a terminal.
+Do not run a separate bridge process.
 
 ## Load Firefox For Development
 
-In terminal 4, choose one new disposable profile path for this verification
-run, then start Firefox Stable. Keep the same `$firefoxProfile` value for every
-Firefox restart in this run:
+In terminal 4, create one disposable profile and preserve it for restarts in
+this verification run:
 
 ```powershell
-$firefoxProfile = Join-Path $env:TEMP ("browser2ide-plan2-" + [guid]::NewGuid().ToString("N"))
-corepack pnpm dlx web-ext@10.4.0 run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --firefox-profile "$firefoxProfile" --profile-create-if-missing --keep-profile-changes --start-url http://127.0.0.1:4173/
+$firefoxProfile = Join-Path $env:TEMP ("browser2ide-0.3.0-" + [guid]::NewGuid().ToString("N"))
+corepack pnpm exec web-ext run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --firefox-profile "$firefoxProfile" --profile-create-if-missing --keep-profile-changes --start-url http://127.0.0.1:4173/
 ```
 
-When `firefox` is on `PATH`, omit only the `--firefox` option and its path. The
-explicit profile flags are required: a default temporary profile would make a
-restart unable to distinguish session-only cleanup from replacement of the
-whole profile. Use two normal Firefox windows, not private windows, for the
-matrix below.
+If `firefox` is on `PATH`, omit only the explicit executable option. Use normal,
+non-private windows.
 
 ## Load Chrome For Development
 
-1. Open `chrome://extensions` in Chrome/Chromium 116+.
+1. Open `chrome://extensions`.
 2. Enable Developer mode.
-3. Choose `Load unpacked` and select the repository's `extensions/chrome`
-   directory.
+3. Choose **Load unpacked** and select `extensions/chrome`.
 4. Open the fixture in two normal browser windows.
-5. After rebuilding, use the extension card's Reload action before retesting.
-
-The manifest intentionally requires inspected-page host access. Browser2IDE
-still injects nothing until a DevTools panel is open, its window is linked, and
-Inspect mode is explicitly enabled.
+5. After rebuilding, use the extension card's Reload action.
 
 ## Browser Parity Matrix
 
-Run this complete matrix once in Firefox and once in Chrome. Start each browser
-run with two normal windows, Browser A and Browser B, and two fixture tabs in
-each window.
+Run the complete matrix once in Firefox Stable and once in current
+Chrome/Chromium.
 
 ### Link Explicit Windows
 
-1. In Browser A's first tab, open DevTools and the Browser2IDE panel. Confirm
-   `Not linked`; no IDE is chosen automatically.
-2. Click Paste while IDE A's code is in the clipboard, or enter it manually,
-   then click Link. Confirm `Connected`.
-3. In Browser B's first tab, explicitly link IDE B's code in the same way.
-4. Confirm a new third browser window starts `Not linked` and close it.
-5. Confirm no code or PIN remains in either linked panel's input.
+1. Open the Browser2IDE DevTools panel in Browser Window A. Confirm `Not linked`.
+2. Paste or enter IDE A's code and select **Link**.
+3. Confirm `Connected` and the same grouped code displayed by IDE A.
+4. Link Browser Window B independently to IDE B.
+5. Open a third browser window and confirm it starts `Not linked`.
+6. Open a second fixture tab and panel in each linked window. Confirm it reuses
+   that window's link and displayed code.
+7. Confirm each IDE reports one browser-window client, not one per tab.
 
-For the manual check, confirm a Paste click reads the current code and links the
-window. Clipboard rejection cannot be induced consistently across supported
-browsers; the injected-error test verifies that it leaves manual entry enabled
-without linking or enabling inspection:
+Close every panel in Window A and confirm its active socket closes. Reopen one
+panel and confirm it reconnects from session credentials without scanning ports
+or reading the clipboard.
 
-```powershell
-corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/panelController.test.ts
-```
+### Page Picker And Box Model
 
-### Reuse Tabs In The Same Window
+1. Select the mouse-pointer button in Window A.
+2. Hover `#fixture-card`. Confirm the overlay label and separate margin, border,
+   padding, and content layers track the element.
+3. Hover `.multiline-inline`. Confirm each client rect is represented without
+   blocking pointer input.
+4. Click `#fixture-card`. Confirm the element is selected and the fixture's
+   normal-click counter does not increment while the picker owns the gesture.
+5. Scroll and resize while hovering. Confirm the overlay updates without stale
+   geometry.
+6. Press Escape once to clear preview and again to turn off the picker.
+7. Repeat inside the same-origin frame and open shadow root.
+8. Confirm cross-origin frame contents and unsafe geometry fail closed.
 
-1. Open DevTools and Browser2IDE in Browser A's second tab. It must become
-   connected through Browser A's existing window mapping without code entry.
-2. Repeat in Browser B's second tab.
-3. Confirm each VS Code window reports one connected browser client, not one
-   client per tab. This proves one WebSocket is multiplexed by all panels in a
-   linked browser window.
-4. Close and reopen DevTools in one second tab. It must reuse the same window
-   link, while Inspect mode returns off.
-5. Close every Browser2IDE panel in Browser A. IDE A's connected-browser count
-   must become zero while Browser A's `storage.session` mapping remains.
-6. Reopen one Browser A panel. It must authenticate a new socket from the saved
-   window credentials without another code; the count returns to one and
-   Inspect mode remains off.
+### Lazy DOM Tree
 
-### Prove Cross-Window Isolation
+1. Confirm the tree initially loads only its root.
+2. Expand `html`, `body`, `main.layout`, and the fixture sections. Confirm child
+   requests occur only on expansion and `Load more` pages a large branch.
+3. Hover `article#fixture-card.card.featured` and confirm the same overlay.
+4. Select it from the tree and confirm the same source-selection path as the
+   picker.
+5. Use Arrow keys and Enter to navigate, disclose, and select.
+6. Select a page element whose branch is collapsed and confirm the bounded
+   ancestor path is revealed and focused.
+7. Expand the explicit open-shadow row and select `.shadow-action`.
+8. Expand the same-origin iframe and its frame-document row.
+9. Confirm the cross-origin frame is a locked leaf with no disclosure action.
+10. Add a dynamic card and confirm only the affected expanded branch refreshes.
+11. Navigate/reload a frame and confirm old document epochs, node refs, cursors,
+    and branch revisions are rejected.
 
-1. Enable Inspect mode in both Browser A tabs and select an element in each.
-   Only IDE A may update.
-2. Enable Inspect mode in both Browser B tabs and select an element in each.
-   Only IDE B may update.
-3. Repeat selections in alternating A/B order and confirm no source update
-   crosses the browser-window boundary.
-4. Leave the Chrome panels connected for at least 45 seconds, then select
-   again. Chrome's Manifest V3 service worker must remain usable through the
-   bridge's 15-second heartbeat.
+Tree labels must remain plain text and show no DOM text or approved-attribute
+values. The extension's own overlay must never appear in the tree.
 
-### Verify Change IDE And Unlink
+### Active-Document Resolution
 
-1. In Browser A, click Change IDE and link IDE B's code. Browser B must stay
-   connected to IDE B throughout; only Browser A's mapping changes.
-2. Change Browser A back to IDE A. Browser B must still route to IDE B.
-3. Click Unlink in Browser A. Its tabs must become unlinked and Inspect mode
-   must turn off, while Browser B continues routing to IDE B.
-4. Re-link Browser A to IDE A for the cleanup checks.
+Select `.card.featured` while `src/layout.scss` is active. Confirm:
 
-### Verify Window And Browser Cleanup
+- the footer first reports `Resolving in VS Code`;
+- the complete `.layout > .card` block is Selected;
+- the immediate parent's `.layout` block is Parent;
+- all ranges include closing braces and appear in Applicable Sources;
+- the final footer uses
+  `<N> rules highlighted · Selected <S> · Parent <P>`;
+- selecting an Applicable Sources item reveals within the already active editor.
 
-Open the extension background tools before closing a window:
+Without another browser selection:
 
-- Firefox: open `about:debugging#/runtime/this-firefox`, find Browser2IDE, and
-  select Inspect;
-- Chrome: open `chrome://extensions`, find Browser2IDE, and inspect its service
-  worker.
+1. Switch to `src/card.scss` and confirm multiple Selected ranges.
+2. Switch to `dist/app.css` and confirm CSS ranges with Selected/Parent roles.
+3. Activate `index.html` and confirm `Unsupported active file: html`.
+4. Close every editor and select again; confirm `No active editor`.
 
-In Firefox's background console, list the fixture tabs and session-record keys
-only. Do not print record values because they contain the browser auth token:
+Exercise `.browser2ide-path-miss` with CSS active. Confirm the unique CSS
+fingerprint fallback resolves. Select `.duplicate-selector` and confirm
+`Ambiguous rule match` rather than an arbitrary range.
+
+For SCSS, temporarily test missing, unreadable/invalid, and unmapped source-map
+variants. Confirm `SCSS source map missing`, `SCSS source map invalid`, or
+`No matching rules in active file`, with no guessed highlight. Restore the
+fixture after the checks.
+
+### Window Isolation And Peer State
+
+1. Alternate selections in Windows A and B. Only their explicitly linked IDE
+   may update.
+2. Stop IDE A. Confirm Window A reports `Linked IDE offline` or
+   `VS Code disconnected`, while Window B remains usable.
+3. Restart IDE A. Confirm it has a fresh code and old credentials do not attach.
+4. Link Window A with the new code and confirm resolution resumes.
+5. Select **Disconnect** in Window A. Confirm only Window A returns to
+   `Not linked`; Window B and IDE B continue unchanged.
+6. Reconnect A for cleanup checks.
+
+Leave Chrome panels active for at least 45 seconds and select again to cover the
+Manifest V3 service-worker heartbeat path.
+
+## Verify Session Storage Cleanup
+
+Inspect extension background tools:
+
+- Firefox: `about:debugging#/runtime/this-firefox` > Browser2IDE > Inspect;
+- Chrome: `chrome://extensions` > Browser2IDE > service worker.
+
+List keys only, never values containing tokens:
 
 ```js
-await browser.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
 Object.keys(await browser.storage.session.get(null))
-```
-
-In Chrome's service-worker console, use the corresponding APIs:
-
-```js
-await chrome.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
 Object.keys(await chrome.storage.session.get(null))
 ```
 
-Use the tab list to record Browser A's and Browser B's numeric window IDs.
-Before cleanup, confirm both exact keys exist:
-`browser2ide.windowLink.<BrowserAWindowId>` and
-`browser2ide.windowLink.<BrowserBWindowId>`.
-
-1. Run `Browser2IDE: Open Diagnostics` in both IDE windows and confirm each has
-   one connected browser client.
-2. Close Browser A's entire browser window, then repeat the corresponding
-   key-only `Object.keys(...)` query. Confirm the exact old Browser A key is
-   absent and Browser B's key remains.
-3. Confirm IDE A now has zero connected browser clients while IDE B still has
-   one, and verify Browser B continues routing selections to IDE B.
-4. Open a replacement browser window. Its Browser2IDE panel must start
-   `Not linked`, and its new window ID must have no link key.
-5. Before restarting the browser, repeat the key-only query and record every
-   remaining `browser2ide.windowLink.*` key.
-6. For Firefox, close all Firefox windows, stop `web-ext`, and rerun the exact
-   launch command with the unchanged `$firefoxProfile` and all three profile
-   flags. For Chrome, close the complete browser process and reopen the same
-   browser profile.
-7. Reopen the extension background tools and repeat the key-only query. None
-   of the previously recorded window-link keys may remain, proving credentials
-   were session-only rather than removed by replacing the profile.
-8. Reopen a Browser2IDE panel without linking. It must show `Not linked`,
-   Inspect mode must remain off, and no source update may be sent.
-
-## Verify Document-First Highlighting
-
-Perform these checks while a browser window is linked to IDE A. Enable Inspect
-mode and select the padding or background of the fixture's `.card.featured`
-article.
-
-With `src/layout.scss` active in IDE A, verify:
-
-- no editor tab opens or switches automatically;
-- the complete `.layout > .card` block is highlighted as Selected;
-- the complete `.layout` block for the immediate DOM parent uses the distinct
-  Parent decoration;
-- both ranges include their closing braces and appear in `Applicable Sources`;
-- selecting a result reveals the range in the already active editor.
-
-Without selecting the page again:
-
-1. Switch to `src/card.scss`; complete `.card` and `.featured` blocks must be
-   highlighted as Selected.
-2. Switch to `dist/app.css`; generated CSS blocks must be highlighted with
-   selected and immediate-parent decorations kept distinct.
-3. Switch to `index.html`; built-in plugins do not support the document, so
-   decorations and matches must clear.
-
-This proves document-first dispatch, multiple ranges in one CSS/SCSS file,
-source-map preference for SCSS, and stale-highlight cleanup.
-
-## Verify VS Code Stop And Start
-
-1. Click IDE A's stop control and confirm its status becomes offline.
-2. Browser A must lose its usable connection, turn Inspect mode off, and never
-   attach to IDE B.
-3. Click play in IDE A. Confirm it receives a fresh code and bridge instance.
-4. Enter the new code explicitly and confirm Browser A reconnects.
-5. Confirm an old code or saved credential cannot authenticate to the restarted
-   bridge.
+Confirm one `browser2ide.windowLink.<windowId>` key per linked browser window.
+Disconnect or close Window A and confirm only its key disappears. Restart the
+complete browser profile and confirm no prior window-link key survives. A newly
+opened panel must start `Not linked`.
 
 ## Cleanup
 
-1. Disable Inspect mode and unlink remaining browser windows.
-2. Stop Browser2IDE in both VS Code development windows.
-3. Close the Extension Development Hosts and development-loaded browsers.
-4. Stop `web-ext` and the fixture server with `Ctrl+C`.
+1. Turn off page pickers and select **Disconnect** in each browser window.
+2. Stop Browser2IDE in both VS Code windows.
+3. Close the development hosts and development-loaded browsers.
+4. Stop the fixture and Firefox development process with `Ctrl+C`.
 
-## Regenerate CSS
+## Regenerate The CSS Fixture
 
-After changing the SCSS fixture:
+After changing SCSS fixture source:
 
 ```powershell
-corepack pnpm dlx sass@1.89.2 examples/basic-css/src/app.scss examples/basic-css/dist/app.css --style=expanded --source-map --no-error-css
+corepack pnpm exec sass examples/basic-css/src/app.scss examples/basic-css/dist/app.css --style=expanded --source-map --no-error-css
 ```

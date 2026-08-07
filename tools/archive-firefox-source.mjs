@@ -7,7 +7,7 @@ const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(
   repositoryRoot,
-  "artifacts/browser2ide-firefox-source-0.2.0.zip",
+  "artifacts/browser2ide-firefox-source-0.3.0.zip",
 );
 
 export function archiveArguments(root) {

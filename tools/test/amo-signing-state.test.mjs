@@ -24,7 +24,7 @@ const validProvenanceInput = {
   repository: "conus-vision/Browser2IDE",
   workflowPath: ".github/workflows/firefox-sign.yml",
   eventName: "workflow_dispatch",
-  releaseTag: "v0.2.0",
+  releaseTag: "v0.3.0",
   releaseCommit,
   workflowCommit,
   runId: "123456789",
@@ -42,18 +42,18 @@ const validRun = {
 
 test("AMO state artifact names use only a validated tag and positive run id", () => {
   assert.equal(
-    createAmoStateArtifactName("v0.2.0", "123456789"),
-    "browser2ide-amo-state-v0.2.0-run-123456789",
+    createAmoStateArtifactName("v0.3.0", "123456789"),
+    "browser2ide-amo-state-v0.3.0-run-123456789",
   );
 
   for (const runId of ["", "0", "01", "-1", "1.5", "12x", " 12", "12\n"] ) {
     assert.throws(
-      () => createAmoStateArtifactName("v0.2.0", runId),
+      () => createAmoStateArtifactName("v0.3.0", runId),
       /run id must be a positive integer/,
     );
   }
   assert.throws(
-    () => createAmoStateArtifactName("v0.2.0;echo unsafe", "12"),
+    () => createAmoStateArtifactName("v0.3.0;echo unsafe", "12"),
     /must match vX\.Y\.Z/,
   );
 });

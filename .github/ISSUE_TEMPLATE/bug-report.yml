@@ -12,7 +12,7 @@ body:
     attributes:
       label: Browser2IDE version
       description: Enter the installed Browser2IDE extension version.
-      placeholder: 0.2.0
+      placeholder: 0.3.0
     validations:
       required: true
   - type: input

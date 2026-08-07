@@ -4,29 +4,36 @@
 
 | Version | Status |
 | --- | --- |
-| 0.2.x | Support begins when 0.2.0 is published. |
+| 0.3.x | Supported when the `0.3.0` release is published. |
 | Earlier versions | Unsupported. |
 
-No `0.2.x` release is available yet. Until 0.2.0 is published, use the current
-reviewed repository source at a known commit when reporting or reproducing a
-security issue.
+No public `0.3.0` release is claimed yet. Until publication, identify the exact
+reviewed source commit when reporting or reproducing an issue.
 
 ## Report A Vulnerability
 
 Report vulnerabilities privately through
 [GitHub private vulnerability reporting](https://github.com/conus-vision/Browser2IDE/security/advisories/new).
-Include the affected version, browser and VS Code versions, reproduction steps,
-impact, and any suggested mitigation.
+Include the affected product version, protocol version, browser and VS Code
+versions, reproduction steps, impact, and any suggested mitigation.
 
 Do not open a public issue, discussion, or pull request for an unpatched
-vulnerability. Public disclosure should wait until a fix or coordinated
-mitigation is available.
+vulnerability. Coordinate public disclosure after a fix or mitigation exists.
 
 ## Security Model
 
-Browser2IDE uses an explicitly authorized, loopback-only WebSocket connection
-between a browser window and local VS Code. It does not auto-discover IDE
-instances. The browser extensions require broad page access for inspected
-pages, so reports involving injection conditions, link authentication, message
-validation, source plugins, or sensitive inspection values are in scope. See
-the detailed [security model](docs/security.md) and [privacy policy](PRIVACY.md).
+Browser2IDE is a local, read-only tool. Product traffic is an authenticated
+loopback WebSocket; there is no product HTTP service. Linking is an explicit
+browser-window action. The two-digit PIN provides accidental-cross-link
+protection, not strong authentication against another process running as the
+same desktop user.
+
+Browser credentials and the displayed code use session storage. Browser2IDE
+sends bounded facts but does not upload source, write files, edit the DOM, or
+execute commands. The DOM tree stays browser-local; cross-origin frames and
+closed shadow roots fail closed. Reports involving link/session handling,
+extension origins, inspected-page injection, node-ref boundaries, message
+validation, source plugins, or sensitive inspection values are in scope.
+
+See the detailed [security model](docs/security.md) and
+[privacy policy](PRIVACY.md).
