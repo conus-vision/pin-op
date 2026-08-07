@@ -46,24 +46,6 @@ const simulatorInspectMessage = {
   source: { role: "simulator", id: "simulator-source", metadata: {} },
 } as const;
 
-const referencesMessage = {
-  protocolVersion: PROTOCOL_VERSION,
-  type: "references",
-  messageId: "references-1",
-  subject: { selector: "#submit", metadata: {} },
-  references: [],
-  metadata: {},
-} as const;
-
-const commandMessage = {
-  protocolVersion: PROTOCOL_VERSION,
-  type: "command",
-  messageId: "command-1",
-  command: "highlightElement",
-  arguments: { selector: "#submit", metadata: {} },
-  metadata: {},
-} as const;
-
 describe("bridge router and registry", () => {
   it("stores clients by protocol sessionId and role", () => {
     const registry = new ClientRegistry();
@@ -118,59 +100,6 @@ describe("bridge router and registry", () => {
         code: "bridge.noIdeClient",
       }),
     ]);
-  });
-
-  it("routes command from IDE clients to browser clients in the same session", () => {
-    const registry = new ClientRegistry();
-    const ide = registry.add(client("ide", "session-1"));
-    const browserSame = client("browser", "session-1");
-    const browserOther = client("browser", "session-2");
-    registry.add(browserSame);
-    registry.add(browserOther);
-
-    routeMessage(registry, new ReplyRouteRegistry(), ide, commandMessage);
-
-    expect(browserSame.sent).toEqual([commandMessage]);
-    expect(browserOther.sent).toEqual([]);
-  });
-
-  it("reports when an IDE message has no browser recipient", () => {
-    const registry = new ClientRegistry();
-    const ideConnection = client("ide", "session-1");
-    const ide = registry.add(ideConnection);
-
-    routeMessage(registry, new ReplyRouteRegistry(), ide, commandMessage);
-
-    expect(ideConnection.sent).toEqual([
-      expect.objectContaining({
-        type: "error",
-        code: "bridge.noBrowserClient",
-      }),
-    ]);
-  });
-
-  it("routes references to browser clients in the same session", () => {
-    const registry = new ClientRegistry();
-    const ide = registry.add(client("ide", "session-1"));
-    const browser = client("browser", "session-1");
-    registry.add(browser);
-
-    routeMessage(registry, new ReplyRouteRegistry(), ide, referencesMessage);
-
-    expect(browser.sent).toEqual([referencesMessage]);
-  });
-
-  it("does not route references from browser or simulator clients", () => {
-    const registry = new ClientRegistry();
-    const browserSender = registry.add(client("browser", "session-1"));
-    const simulatorSender = registry.add(client("simulator", "session-1"));
-    const browserRecipient = client("browser", "session-1");
-    registry.add(browserRecipient);
-
-    routeMessage(registry, new ReplyRouteRegistry(), browserSender, referencesMessage);
-    routeMessage(registry, new ReplyRouteRegistry(), simulatorSender, referencesMessage);
-
-    expect(browserRecipient.sent).toEqual([]);
   });
 
   it("contains recipient send failures", () => {

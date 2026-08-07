@@ -75,28 +75,6 @@ export function routeMessage(
 
       routeResolution(registry, replyRoutes, sender, message);
       return;
-    case "references":
-      if (sender.source.role === "ide") {
-        if (sendToRoles(registry, sender.sessionId, ["browser"], message) === 0) {
-          sendError(
-            sender,
-            "bridge.noBrowserClient",
-            "No browser client is connected to this session",
-          );
-        }
-      }
-      return;
-    case "command":
-      if (sender.source.role === "ide") {
-        if (sendToRoles(registry, sender.sessionId, ["browser"], message) === 0) {
-          sendError(
-            sender,
-            "bridge.noBrowserClient",
-            "No browser client is connected to this session",
-          );
-        }
-      }
-      return;
     case "error":
       sendMessage(sender, message);
       return;

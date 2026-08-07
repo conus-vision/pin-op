@@ -1450,15 +1450,10 @@ describe("bridge server authenticated envelope identity", () => {
         browserB,
         (message) => message.type === "resolution",
       );
-      const browserBCommands = listenForJsonMessages(
-        browserB,
-        (message) => message.type === "command",
-      );
       queues.push(
         ideInspects,
         browserAResolutions,
         browserBResolutions,
-        browserBCommands,
       );
 
       browserA.send(JSON.stringify(inspectMessage("browser-a")));
@@ -1473,14 +1468,7 @@ describe("bridge server authenticated envelope identity", () => {
       });
 
       ide.send(JSON.stringify(resolutionMessage("inspect-browser-a")));
-      ide.send(JSON.stringify({
-        protocolVersion: PROTOCOL_VERSION,
-        type: "command",
-        messageId: "resolution-barrier-command",
-        command: "highlightElement",
-        arguments: { selector: "#barrier", metadata: {} },
-        metadata: {},
-      }));
+      ide.send(JSON.stringify(resolutionMessage("inspect-browser-b")));
       await eventually(() =>
         expect(browserAResolutions.messages).toContainEqual(
           expect.objectContaining({
@@ -1490,11 +1478,15 @@ describe("bridge server authenticated envelope identity", () => {
         ),
       );
       await eventually(() =>
-        expect(browserBCommands.messages).toContainEqual(
-          expect.objectContaining({ messageId: "resolution-barrier-command" }),
+        expect(browserBResolutions.messages).toContainEqual(
+          expect.objectContaining({
+            type: "resolution",
+            inspectMessageId: "inspect-browser-b",
+          }),
         ),
       );
-      expect(browserBResolutions.messages).toEqual([]);
+      expect(browserAResolutions.messages).toHaveLength(1);
+      expect(browserBResolutions.messages).toHaveLength(1);
 
       await Promise.all([closeSocket(browserA), closeSocket(browserB), closeSocket(ide)]);
     } finally {
@@ -1799,30 +1791,6 @@ describe("bridge server authenticated envelope identity", () => {
         source: source("browser"),
       });
 
-      const command = {
-        protocolVersion: PROTOCOL_VERSION,
-        type: "command",
-        messageId: "allowed-command",
-        command: "highlightElement",
-        arguments: { selector: "#submit", metadata: {} },
-        metadata: {},
-      };
-      const routedCommand = nextJsonMessageOfType(browser, "command");
-      ide.send(JSON.stringify(command));
-      await expect(routedCommand).resolves.toMatchObject(command);
-
-      const references = {
-        protocolVersion: PROTOCOL_VERSION,
-        type: "references",
-        messageId: "allowed-references",
-        subject: { selector: "#submit", metadata: {} },
-        references: [],
-        metadata: {},
-      };
-      const routedReferences = nextJsonMessageOfType(browser, "references");
-      ide.send(JSON.stringify(references));
-      await expect(routedReferences).resolves.toMatchObject(references);
-
       const browserEntry = server.registry
         .all()
         .find((client) => client.source.role === "browser");
@@ -1845,6 +1813,107 @@ describe("bridge server authenticated envelope identity", () => {
 
       await Promise.all([closeSocket(browser), closeSocket(ide)]);
     } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    [
+      "references",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "references",
+        messageId: "legacy-references",
+        subject: { selector: "#submit", metadata: {} },
+        references: [
+          {
+            kind: "component",
+            relation: "renders",
+            label: "Submit",
+            source: {
+              uri: "file:///C:/private/workspace/src/App.tsx",
+              line: 12,
+              column: 3,
+              metadata: {},
+            },
+            confidence: "exact",
+            status: "active",
+            metadata: {},
+          },
+        ],
+        metadata: {},
+      },
+    ],
+    [
+      "openSource command",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "command",
+        messageId: "legacy-open-source",
+        command: "openSource",
+        arguments: {
+          source: {
+            uri: "file:///C:/private/workspace/src/App.tsx",
+            line: 12,
+            column: 3,
+            metadata: {},
+          },
+          metadata: {},
+        },
+        metadata: {},
+      },
+    ],
+    [
+      "highlightElement command",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "command",
+        messageId: "legacy-highlight-element",
+        command: "highlightElement",
+        arguments: { selector: "#submit", metadata: {} },
+        metadata: {},
+      },
+    ],
+  ])("rejects and does not route the legacy %s envelope", async (_name, message) => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    let ideErrors: MessageQueue | undefined;
+    let browserLegacyMessages: MessageQueue | undefined;
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        ide,
+        { ...hello(ideToken.value, "ide"), capabilities: [] },
+        "authenticated",
+      );
+      const browser = await connect(server.getUrl());
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      ideErrors = listenForJsonMessages(ide, (candidate) => candidate.type === "error");
+      browserLegacyMessages = listenForJsonMessages(
+        browser,
+        (candidate) => candidate.type === "references" || candidate.type === "command",
+      );
+
+      const closed = expectSocketCloses(ide);
+      ide.send(JSON.stringify(message));
+      await closed;
+
+      expect(ideErrors.messages).toEqual([
+        expect.objectContaining({
+          type: "error",
+          code: "protocol.invalidMessage",
+          message: "Message does not match protocol",
+        }),
+      ]);
+      expect(browserLegacyMessages.messages).toEqual([]);
+      await closeSocket(browser);
+    } finally {
+      ideErrors?.dispose();
+      browserLegacyMessages?.dispose();
       await server.stop();
     }
   });
@@ -2153,7 +2222,7 @@ function hello(
     authToken,
     bridgeInstanceId,
     source: source(role),
-    capabilities: role === "ide" ? ["references"] : ["inspect"],
+    capabilities: role === "ide" ? ["resolution"] : ["inspect"],
     metadata: {},
   };
 }

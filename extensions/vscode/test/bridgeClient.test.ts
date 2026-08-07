@@ -123,6 +123,7 @@ describe("BridgeClient", () => {
       bridgeInstanceId: INSTANCE_ID,
       authToken: "ide-token",
       source: { role: "ide" },
+      capabilities: ["resolution"],
     });
     expect(harness.states).toEqual(["connecting"]);
 

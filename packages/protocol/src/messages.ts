@@ -1,9 +1,5 @@
 import { z } from "zod";
-import {
-  metadataSchema,
-  SourceLocationSchema,
-  SourceReferenceSchema,
-} from "./references.js";
+import { metadataSchema, SourceLocationSchema } from "./references.js";
 import { ProtocolCapabilitySchema } from "./capabilities.js";
 import { JsonObjectSchema, utf8ByteLength } from "./json.js";
 import {
@@ -385,49 +381,6 @@ export const PeerStateMessageSchema = peerStateObjectSchema.transform(
   (message): DeepReadonly<z.infer<typeof peerStateObjectSchema>> => message,
 );
 
-export const ReferencesMessageSchema = baseMessageSchema
-  .extend({
-    type: z.literal("references"),
-    subject: InspectSubjectSchema,
-    references: z.array(SourceReferenceSchema),
-  })
-  .strict();
-
-const OpenSourceArgumentsSchema = z
-  .object({
-    source: SourceLocationSchema,
-    metadata: metadataSchema,
-  })
-  .strict();
-
-const HighlightElementArgumentsSchema = z
-  .object({
-    selector: z.string().min(1).max(INSPECT_LIMITS.selectorLength),
-    metadata: metadataSchema,
-  })
-  .strict();
-
-export const OpenSourceCommandMessageSchema = baseMessageSchema
-  .extend({
-    type: z.literal("command"),
-    command: z.literal("openSource"),
-    arguments: OpenSourceArgumentsSchema,
-  })
-  .strict();
-
-export const HighlightElementCommandMessageSchema = baseMessageSchema
-  .extend({
-    type: z.literal("command"),
-    command: z.literal("highlightElement"),
-    arguments: HighlightElementArgumentsSchema,
-  })
-  .strict();
-
-export const CommandMessageSchema = z.discriminatedUnion("command", [
-  OpenSourceCommandMessageSchema,
-  HighlightElementCommandMessageSchema,
-]);
-
 export const ProtocolErrorCodeSchema = z.enum([
   "link.invalidCode",
   "link.unreachable",
@@ -477,8 +430,6 @@ export const Browser2IdeMessageSchema = z.union([
   InspectMessageSchema,
   ResolutionMessageSchema,
   PeerStateMessageSchema,
-  ReferencesMessageSchema,
-  CommandMessageSchema,
   ErrorMessageSchema,
   PingMessageSchema,
   PongMessageSchema,
@@ -509,14 +460,6 @@ export type ResolutionDiagnosticCode = z.infer<
 export type ResolutionStatus = z.infer<typeof ResolutionStatusSchema>;
 export type ResolutionMessage = z.infer<typeof ResolutionMessageSchema>;
 export type PeerStateMessage = z.infer<typeof PeerStateMessageSchema>;
-export type ReferencesMessage = z.infer<typeof ReferencesMessageSchema>;
-export type OpenSourceCommandMessage = z.infer<
-  typeof OpenSourceCommandMessageSchema
->;
-export type HighlightElementCommandMessage = z.infer<
-  typeof HighlightElementCommandMessageSchema
->;
-export type CommandMessage = z.infer<typeof CommandMessageSchema>;
 export type ProtocolErrorCode = z.infer<typeof ProtocolErrorCodeSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type PingMessage = z.infer<typeof PingMessageSchema>;

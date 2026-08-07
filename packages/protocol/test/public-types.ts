@@ -5,6 +5,17 @@ import type {
   ResolutionMessage,
 } from "@browser2ide/protocol";
 
+// @ts-expect-error Legacy reference envelopes are not part of protocol v4.
+type RemovedReferencesMessage = import("@browser2ide/protocol").ReferencesMessage;
+// @ts-expect-error Legacy command envelopes are not part of protocol v4.
+type RemovedCommandMessage = import("@browser2ide/protocol").CommandMessage;
+// @ts-expect-error Legacy open-source commands are not part of protocol v4.
+type RemovedOpenSourceCommandMessage = import("@browser2ide/protocol").OpenSourceCommandMessage;
+// @ts-expect-error Legacy highlight commands are not part of protocol v4.
+type RemovedHighlightCommandMessage = import("@browser2ide/protocol").HighlightElementCommandMessage;
+// @ts-expect-error Legacy source references are not publicly exported.
+type RemovedSourceReference = import("@browser2ide/protocol").SourceReference;
+
 const emptyMetadata: EmptyMetadata = {};
 
 // @ts-expect-error EmptyMetadata is intentionally a zero-key type.

@@ -4,6 +4,8 @@ import {
   INSPECT_LIMITS,
   InspectMessageSchema,
   PROTOCOL_VERSION,
+  ProtocolCapability,
+  ProtocolCapabilitySchema,
   parseMessage,
 } from "../src/index.js";
 
@@ -27,18 +29,6 @@ const sourceLocation = {
   endColumn: 8,
   metadata: {
     loader: "vite",
-  },
-};
-
-const reference = {
-  kind: "component",
-  relation: "renders",
-  label: "App",
-  source: sourceLocation,
-  confidence: "sourcemap",
-  status: "active",
-  metadata: {
-    exportName: "App",
   },
 };
 
@@ -99,7 +89,7 @@ describe("Browser2IDE protocol schemas", () => {
         authToken: "token-1",
         bridgeInstanceId,
         source,
-        capabilities: ["inspect", "references"],
+        capabilities: ["inspect", "link"],
         metadata: {
           userAgent: "Vitest",
         },
@@ -191,52 +181,6 @@ describe("Browser2IDE protocol schemas", () => {
       },
     ],
     [
-      "references",
-      {
-        protocolVersion: PROTOCOL_VERSION,
-        type: "references",
-        messageId: "msg-references",
-        subject: {
-          selector: "#root > button",
-          metadata: {},
-        },
-        references: [reference],
-        metadata: {},
-      },
-    ],
-    [
-      "openSource command",
-      {
-        protocolVersion: PROTOCOL_VERSION,
-        type: "command",
-        messageId: "msg-open-source-command",
-        command: "openSource",
-        arguments: {
-          source: sourceLocation,
-          metadata: {
-            origin: "inspect-panel",
-          },
-        },
-        metadata: {},
-      },
-    ],
-    [
-      "highlightElement command",
-      {
-        protocolVersion: PROTOCOL_VERSION,
-        type: "command",
-        messageId: "msg-highlight-element-command",
-        command: "highlightElement",
-        arguments: {
-          selector: "#root > button",
-          metadata: {
-            durationMs: 500,
-          },
-        },
-        metadata: {},
-      },
-    ],
-    [
       "error",
       {
         protocolVersion: PROTOCOL_VERSION,
@@ -273,6 +217,67 @@ describe("Browser2IDE protocol schemas", () => {
     ],
   ])("parses a valid %s message", (_name, message) => {
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it.each([
+    [
+      "references",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "references",
+        messageId: "legacy-references",
+        subject: { selector: "#root > button", metadata: {} },
+        references: [
+          {
+            kind: "component",
+            relation: "renders",
+            label: "App",
+            source: sourceLocation,
+            confidence: "sourcemap",
+            status: "active",
+            metadata: {},
+          },
+        ],
+        metadata: {},
+      },
+    ],
+    [
+      "openSource command",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "command",
+        messageId: "legacy-open-source",
+        command: "openSource",
+        arguments: { source: sourceLocation, metadata: {} },
+        metadata: {},
+      },
+    ],
+    [
+      "highlightElement command",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "command",
+        messageId: "legacy-highlight-element",
+        command: "highlightElement",
+        arguments: { selector: "#root > button", metadata: {} },
+        metadata: {},
+      },
+    ],
+  ])("rejects the legacy %s public WebSocket envelope", (_name, message) => {
+    expect(() => parseMessage(message)).toThrow();
+  });
+
+  it("advertises only active protocol capabilities", () => {
+    expect(ProtocolCapability).toEqual({
+      Inspect: "inspect",
+      Resolution: "resolution",
+      Link: "link",
+    });
+    expect(ProtocolCapabilitySchema.options).toEqual([
+      "inspect",
+      "resolution",
+      "link",
+    ]);
   });
 
   it.each(["7", "007", "aa"])("rejects invalid PIN %s", (pin) => {
@@ -431,54 +436,6 @@ describe("Browser2IDE protocol schemas", () => {
 
     expect(() => parseMessage(createMessage(limit))).not.toThrow();
     expect(() => parseMessage(createMessage(limit + 1))).toThrow();
-  });
-
-  it.each([
-    ["source URI", "uri", () => INSPECT_LIMITS.urlLength],
-    ["reference label", "label", () => INSPECT_LIMITS.textLength],
-  ])("bounds reference %s length", (_name, field, readLimit) => {
-    const createMessage = (length: number) => ({
-      protocolVersion: PROTOCOL_VERSION,
-      type: "references",
-      messageId: `bounded-reference-${field}`,
-      subject: { selector: ".card", metadata: {} },
-      references: [
-        {
-          ...reference,
-          ...(field === "label" ? { label: "x".repeat(length) } : {}),
-          source: {
-            ...reference.source,
-            ...(field === "uri" ? { uri: "x".repeat(length) } : {}),
-          },
-        },
-      ],
-      metadata: {},
-    });
-    const limit = readLimit();
-
-    expect(() => parseMessage(createMessage(limit))).not.toThrow();
-    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
-  });
-
-  it("bounds highlight selectors", () => {
-    const createMessage = (length: number) => ({
-      protocolVersion: PROTOCOL_VERSION,
-      type: "command",
-      messageId: "bounded-highlight-selector",
-      command: "highlightElement",
-      arguments: {
-        selector: "x".repeat(length),
-        metadata: {},
-      },
-      metadata: {},
-    });
-
-    expect(() =>
-      parseMessage(createMessage(INSPECT_LIMITS.selectorLength)),
-    ).not.toThrow();
-    expect(() =>
-      parseMessage(createMessage(INSPECT_LIMITS.selectorLength + 1)),
-    ).toThrow();
   });
 
   it.each([
@@ -841,78 +798,47 @@ describe("Browser2IDE protocol schemas", () => {
   });
 
   it("rejects source locations with zero-based positions", () => {
+    const invalidFact = {
+      ...runtimeFacts[0],
+      source: { ...sourceLocation, line: 0 },
+    };
+
     expect(() =>
-      parseMessage({
-        protocolVersion: PROTOCOL_VERSION,
-        type: "references",
-        messageId: "msg-bad-location",
-        subject: {
-          selector: "#root",
-          metadata: {},
-        },
-        references: [
-          {
-            ...reference,
-            source: {
-              ...sourceLocation,
-              line: 0,
-            },
-          },
-        ],
-        metadata: {},
-      }),
+      parseMessage(
+        inspectMessage([target("selected", 0, "#root", [invalidFact])]),
+      ),
     ).toThrow();
   });
 
   it("rejects source locations with reversed ranges", () => {
+    const invalidFact = {
+      ...runtimeFacts[0],
+      source: { ...sourceLocation, endLine: 11, endColumn: 8 },
+    };
+
     expect(() =>
-      parseMessage({
-        protocolVersion: PROTOCOL_VERSION,
-        type: "references",
-        messageId: "msg-reversed-location",
-        subject: {
-          selector: "#root",
-          metadata: {},
-        },
-        references: [
-          {
-            ...reference,
-            source: {
-              ...sourceLocation,
-              endLine: 11,
-              endColumn: 8,
-            },
-          },
-        ],
-        metadata: {},
-      }),
+      parseMessage(
+        inspectMessage([target("selected", 0, "#root", [invalidFact])]),
+      ),
     ).toThrow();
   });
 
   it("rejects source locations with only one end position", () => {
-    expect(() =>
-      parseMessage({
-        protocolVersion: PROTOCOL_VERSION,
-        type: "references",
-        messageId: "msg-missing-end-pair",
-        subject: {
-          selector: "#root",
-          metadata: {},
-        },
-        references: [
-          {
-            ...reference,
-            source: {
-              uri: sourceLocation.uri,
-              line: sourceLocation.line,
-              column: sourceLocation.column,
-              endLine: sourceLocation.endLine,
-              metadata: {},
-            },
-          },
-        ],
+    const invalidFact = {
+      ...runtimeFacts[0],
+      source: {
+        uri: sourceLocation.uri,
+        line: sourceLocation.line,
+        column: sourceLocation.column,
+        endLine: sourceLocation.endLine,
         metadata: {},
-      }),
+      },
+    };
+
+    expect(() =>
+      parseMessage(
+        inspectMessage([target("selected", 0, "#root", [invalidFact])]),
+      ),
     ).toThrow();
   });
 
@@ -924,25 +850,6 @@ describe("Browser2IDE protocol schemas", () => {
         messageId: "msg-unknown-command",
         command: "unknownCommand",
         arguments: {
-          metadata: {},
-        },
-        metadata: {},
-      }),
-    ).toThrow();
-  });
-
-  it("rejects openSource commands with invalid source positions", () => {
-    expect(() =>
-      parseMessage({
-        protocolVersion: PROTOCOL_VERSION,
-        type: "command",
-        messageId: "msg-invalid-open-source",
-        command: "openSource",
-        arguments: {
-          source: {
-            ...sourceLocation,
-            line: 0,
-          },
           metadata: {},
         },
         metadata: {},

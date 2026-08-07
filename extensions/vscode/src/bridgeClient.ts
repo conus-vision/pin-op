@@ -2,10 +2,8 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import {
   Browser2IdeMessageSchema,
-  CommandMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
-  type CommandMessage,
   type ErrorMessage,
   type InspectMessage,
   type ResolutionMessage,
@@ -140,14 +138,6 @@ export class BridgeClient {
     return () => this.protocolErrorListeners.delete(listener);
   }
 
-  sendCommand(command: CommandMessage): void {
-    if (!this.socket || this.state !== "connected") {
-      return;
-    }
-
-    this.socket.send(JSON.stringify(CommandMessageSchema.parse(command)));
-  }
-
   sendResolution(resolution: ResolutionInput): void {
     const message = ResolutionMessageSchema.parse({
       ...resolution,
@@ -179,7 +169,7 @@ export class BridgeClient {
           authToken: this.options.authToken,
           bridgeInstanceId: this.options.bridgeInstanceId,
           source: { role: "ide", id: this.sourceId, metadata: {} },
-          capabilities: ["references"],
+          capabilities: ["resolution"],
           metadata: {},
         }),
       );

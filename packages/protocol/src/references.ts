@@ -46,30 +46,4 @@ export const SourceLocationSchema = z
     }
   });
 
-export const SourceReferenceSchema = z
-  .object({
-    kind: z.enum(["style-rule", "component", "template", "script", "unknown"]),
-    relation: z.enum(["styles", "renders", "defines", "listens", "templates"]),
-    label: z.string().max(INSPECT_LIMITS.textLength),
-    source: SourceLocationSchema,
-    confidence: z.enum([
-      "exact",
-      "sourcemap",
-      "instrumented",
-      "heuristic",
-      "unknown",
-    ]),
-    status: z.enum([
-      "active",
-      "matched",
-      "overridden",
-      "external",
-      "unmapped",
-      "error",
-    ]),
-    metadata: metadataSchema,
-  })
-  .strict();
-
 export type SourceLocation = z.infer<typeof SourceLocationSchema>;
-export type SourceReference = z.infer<typeof SourceReferenceSchema>;

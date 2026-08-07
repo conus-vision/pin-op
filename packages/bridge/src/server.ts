@@ -578,9 +578,6 @@ function isAllowedInboundMessage(
         message.sessionId === client.sessionId &&
         message.source.role === client.source.role
       );
-    case "references":
-    case "command":
-      return client.source.role === "ide";
     case "resolution":
       return (
         client.source.role === "ide" &&

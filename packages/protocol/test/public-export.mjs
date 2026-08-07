@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as protocolExports from "@browser2ide/protocol";
 import {
   AuthenticatedMessageSchema,
   BridgeInstanceIdSchema,
@@ -47,3 +48,68 @@ assert.equal(typeof RESOLUTION_LIMITS.languageIdLength, "number");
 assert.equal(typeof RESOLUTION_LIMITS.generation, "number");
 assert.equal(typeof RESOLUTION_LIMITS.count, "number");
 assert.equal(typeof RESOLUTION_LIMITS.diagnosticCodes, "number");
+
+for (const legacyExport of [
+  "ReferencesMessageSchema",
+  "OpenSourceCommandMessageSchema",
+  "HighlightElementCommandMessageSchema",
+  "CommandMessageSchema",
+  "SourceReferenceSchema",
+]) {
+  assert.equal(
+    Object.hasOwn(protocolExports, legacyExport),
+    false,
+    `${legacyExport} must not be publicly exported`,
+  );
+}
+
+const localSource = {
+  uri: "file:///C:/private/workspace/src/App.tsx",
+  line: 12,
+  column: 3,
+  metadata: {},
+};
+const legacyMessages = [
+  {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "references",
+    messageId: "legacy-references",
+    subject: { selector: "#app", metadata: {} },
+    references: [
+      {
+        kind: "component",
+        relation: "renders",
+        label: "App",
+        source: localSource,
+        confidence: "exact",
+        status: "active",
+        metadata: {},
+      },
+    ],
+    metadata: {},
+  },
+  {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "command",
+    messageId: "legacy-open-source",
+    command: "openSource",
+    arguments: { source: localSource, metadata: {} },
+    metadata: {},
+  },
+  {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "command",
+    messageId: "legacy-highlight-element",
+    command: "highlightElement",
+    arguments: { selector: "#app", metadata: {} },
+    metadata: {},
+  },
+];
+
+for (const message of legacyMessages) {
+  assert.equal(
+    Browser2IdeMessageSchema.safeParse(message).success,
+    false,
+    `${message.type}/${message.command ?? "references"} must be rejected`,
+  );
+}
