@@ -89,6 +89,26 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("forwards the session display code only with a linked window state", async () => {
+    const harness = createHarness({ initialPanelState: "notLinked" });
+    const registration = registerMessage("channel-1", 17, "source-17");
+    await harness.router.routeMessage(registration, devtoolsSender());
+    const port = harness.panelPort("channel-1");
+    harness.router.connectPort(port);
+
+    harness.coordinator.registrations[0]?.onStateChanged?.(
+      "linked",
+      "48735 07",
+    );
+    await flushMicrotasks();
+
+    expect(port.sent.at(-1)).toEqual({
+      type: "browser2ide.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+  });
+
   it("coalesces concurrent exact re-announcements", async () => {
     const tabLookup = deferred<{ id: number; windowId: number }>();
     let getTabCalls = 0;
@@ -494,6 +514,45 @@ describe("BackgroundRouter", () => {
         payload: inspectPayload(),
       },
     ]);
+    expect(harness.coordinator.published[0]?.payload).not.toHaveProperty(
+      "inspectMessageId",
+    );
+    expect(harness.coordinator.published[0]?.payload).not.toHaveProperty(
+      "nodeRef",
+    );
+  });
+
+  it("posts the exact local inspect start before publishing over WebSocket", async () => {
+    let panel!: FakePort;
+    let localMessagesAtPublish: unknown[] = [];
+    const harness = createHarness({
+      publishInspect() {
+        localMessagesAtPublish = [...panel.sent];
+        return "sent";
+      },
+    });
+    panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+
+    expect(localMessagesAtPublish).toContainEqual({
+      type: "browser2ide.inspect.started",
+      inspectMessageId: "inspect-1",
+    });
+    expect(harness.coordinator.published[0]).toEqual({
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      sourceId: "source-17",
+      payload: inspectPayload(),
+    });
   });
 
   it("records correlation before send and removes it after send failure", async () => {
@@ -525,12 +584,66 @@ describe("BackgroundRouter", () => {
     harness.resolutions.emit(resolution("inspect-2", 1));
 
     expect(messagesOfType(panel, "resolution")).toHaveLength(1);
+    expect(panel.sent.filter((message) =>
+      isRecord(message) &&
+      (message.type === "browser2ide.inspect.started" ||
+        message.type === "browser2ide.ideState")
+    )).toEqual([
+      {
+        type: "browser2ide.inspect.started",
+        inspectMessageId: "inspect-1",
+      },
+      {
+        type: "browser2ide.inspect.started",
+        inspectMessageId: "inspect-2",
+      },
+      {
+        type: "browser2ide.ideState",
+        status: "ide-disconnected",
+        inspectMessageId: "inspect-2",
+      },
+    ]);
     expect(messagesOfType(panel, "browser2ide.ideState")).toEqual([
       {
         type: "browser2ide.ideState",
         status: "ide-disconnected",
         inspectMessageId: "inspect-2",
       },
+    ]);
+  });
+
+  it("supersedes rapid local inspect starts and rejects the stale resolution", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 9));
+    harness.resolutions.emit(resolution("inspect-2", 1));
+
+    expect(messagesOfType(panel, "browser2ide.inspect.started")).toEqual([
+      {
+        type: "browser2ide.inspect.started",
+        inspectMessageId: "inspect-1",
+      },
+      {
+        type: "browser2ide.inspect.started",
+        inspectMessageId: "inspect-2",
+      },
+    ]);
+    expect(messagesOfType(panel, "resolution")).toEqual([
+      resolution("inspect-2", 1),
     ]);
   });
 

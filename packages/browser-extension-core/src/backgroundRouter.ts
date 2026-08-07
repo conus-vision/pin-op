@@ -758,13 +758,14 @@ export class BackgroundRouter {
         windowId: binding.windowId,
         tabId: binding.tabId,
         sourceId: binding.sourceId,
-        onStateChanged: (state) =>
+        onStateChanged: (state, displayLinkCode) =>
           this.queueWindowState(
             record,
             token,
             binding,
             windowStateQueue,
             state,
+            displayLinkCode,
           ),
       });
     } catch (error) {
@@ -1377,6 +1378,10 @@ export class BackgroundRouter {
         inspectMessageId,
         refreshed.tabId,
       );
+      this.panelSessions.publishInspectStarted(
+        refreshed.channel,
+        inspectMessageId,
+      );
     } catch (error) {
       this.reportError(error);
       return undefined;
@@ -1436,6 +1441,7 @@ export class BackgroundRouter {
     binding: ChannelBinding,
     queue: WindowStateQueue,
     state: BrowserWindowConnectionState,
+    displayLinkCode?: string,
   ): void {
     if (
       record.windowStateQueue !== queue ||
@@ -1492,10 +1498,14 @@ export class BackgroundRouter {
         previousState,
         state,
       );
-      this.postToCurrentPort(record, token, {
+      const windowStateMessage: Record<string, unknown> = {
         type: "browser2ide.windowState",
         state,
-      });
+      };
+      if (displayLinkCode !== undefined) {
+        windowStateMessage.displayLinkCode = displayLinkCode;
+      }
+      this.postToCurrentPort(record, token, windowStateMessage);
     });
     queue.tail = operation.catch((error) =>
       this.reportError(error),

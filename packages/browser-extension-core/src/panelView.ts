@@ -3,6 +3,7 @@ import type {
   PanelView,
   PanelViewModel,
 } from "./panelController.js";
+import type { ResolutionViewModel } from "./resolutionPresenter.js";
 
 export interface PanelDocument {
   getElementById(id: string): unknown;
@@ -14,11 +15,12 @@ export class DomPanelView implements PanelView {
   private readonly linkCode: PanelElement;
   private readonly pasteButton: PanelElement;
   private readonly linkButton: PanelElement;
-  private readonly connectedControls: PanelElement;
-  private readonly changeButton: PanelElement;
-  private readonly unlinkButton: PanelElement;
+  private readonly linkedCode: PanelElement;
+  private readonly disconnectButton: PanelElement;
   private readonly inspectToggle: PanelElement;
   private readonly connectionStatus: PanelElement;
+  private readonly selectedElementSummary: PanelElement;
+  private readonly resolutionStatus: PanelElement;
   private readonly panelError: PanelElement;
 
   public constructor(
@@ -30,11 +32,15 @@ export class DomPanelView implements PanelView {
     this.linkCode = required(document, "link-code");
     this.pasteButton = required(document, "paste-button");
     this.linkButton = required(document, "link-button");
-    this.connectedControls = required(document, "connected-controls");
-    this.changeButton = required(document, "change-button");
-    this.unlinkButton = required(document, "unlink-button");
+    this.linkedCode = required(document, "linked-code");
+    this.disconnectButton = required(document, "disconnect-button");
     this.inspectToggle = required(document, "inspect-mode");
     this.connectionStatus = required(document, "connection-status");
+    this.selectedElementSummary = required(
+      document,
+      "selected-element-summary",
+    );
+    this.resolutionStatus = required(document, "resolution-status");
     this.panelError = required(document, "panel-error");
   }
 
@@ -44,25 +50,26 @@ export class DomPanelView implements PanelView {
       this.run(actions.onLink);
     };
     const paste = (): void => this.run(actions.onPaste);
-    const change = (): void => this.run(actions.onChangeIde);
-    const unlink = (): void => this.run(actions.onUnlink);
+    const disconnect = (): void => this.run(actions.onDisconnect);
     const inspect = (): void =>
-      this.run(() => actions.onInspectChanged(this.inspectToggle.checked));
+      this.run(() =>
+        actions.onInspectChanged(
+          this.inspectToggle.getAttribute("aria-pressed") !== "true",
+        ),
+      );
     const input = (): void => actions.onLinkCodeChanged(this.linkCode.value);
 
     this.linkForm.addEventListener("submit", submit);
     this.pasteButton.addEventListener("click", paste);
-    this.changeButton.addEventListener("click", change);
-    this.unlinkButton.addEventListener("click", unlink);
-    this.inspectToggle.addEventListener("change", inspect);
+    this.disconnectButton.addEventListener("click", disconnect);
+    this.inspectToggle.addEventListener("click", inspect);
     this.linkCode.addEventListener("input", input);
 
     return () => {
       this.linkForm.removeEventListener("submit", submit);
       this.pasteButton.removeEventListener("click", paste);
-      this.changeButton.removeEventListener("click", change);
-      this.unlinkButton.removeEventListener("click", unlink);
-      this.inspectToggle.removeEventListener("change", inspect);
+      this.disconnectButton.removeEventListener("click", disconnect);
+      this.inspectToggle.removeEventListener("click", inspect);
       this.linkCode.removeEventListener("input", input);
     };
   }
@@ -79,16 +86,34 @@ export class DomPanelView implements PanelView {
     this.connectionStatus.value = model.statusLabel;
     this.connectionStatus.dataset.state = model.state;
     this.linkControls.hidden = !model.showLinkControls;
-    this.connectedControls.hidden = !model.showConnectedControls;
+    this.linkedCode.value = model.displayLinkCode ?? "";
+    this.linkedCode.hidden =
+      !model.showDisconnect || model.displayLinkCode === undefined;
+    this.disconnectButton.hidden = !model.showDisconnect;
     this.linkCode.disabled = model.linkInputDisabled;
     this.pasteButton.disabled = model.pasteButtonDisabled;
     this.linkButton.disabled = model.linkButtonDisabled;
-    this.changeButton.disabled = model.changeButtonDisabled;
-    this.unlinkButton.disabled = model.unlinkButtonDisabled;
+    this.disconnectButton.disabled = model.disconnectButtonDisabled;
     this.inspectToggle.disabled = model.inspectDisabled;
-    this.inspectToggle.checked = model.inspectChecked;
+    this.inspectToggle.setAttribute(
+      "aria-pressed",
+      String(model.inspectChecked),
+    );
+    this.inspectToggle.dataset.state = model.inspectChecked ? "active" : "idle";
     this.panelError.value = model.errorText ?? "";
     this.panelError.hidden = model.errorText === undefined;
+  }
+
+  public renderResolution(model: ResolutionViewModel): void {
+    this.selectedElementSummary.value = model.selectedElement
+      ? `Selected: ${model.selectedElement}`
+      : "";
+    this.selectedElementSummary.hidden = model.selectedElement === undefined;
+    this.resolutionStatus.value = model.detailText
+      ? `${model.statusText} · ${model.detailText}`
+      : model.statusText;
+    this.resolutionStatus.dataset.kind = model.kind;
+    this.resolutionStatus.dataset.tone = model.tone;
   }
 
   private run(action: () => void | Promise<void>): void {
@@ -102,6 +127,8 @@ interface PanelElement {
   disabled: boolean;
   hidden: boolean;
   readonly dataset: Record<string, string>;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
   addEventListener(type: string, listener: (event: Event) => void): void;
   removeEventListener(type: string, listener: (event: Event) => void): void;
 }

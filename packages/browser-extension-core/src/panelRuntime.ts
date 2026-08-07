@@ -1,4 +1,8 @@
 import {
+  PeerStateMessageSchema,
+  ResolutionMessageSchema,
+} from "@browser2ide/protocol";
+import {
   createPanelIcons,
   PanelController,
   type PanelCommand,
@@ -7,8 +11,11 @@ import { DomTreeController } from "./domTreeController.js";
 import { parseDomEvent } from "./domProtocol.js";
 import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
 import { PanelInspectController } from "./panelInspectController.js";
+import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
+import type { PanelInspectStartedState } from "./panelSessionTransport.js";
 import { DomPanelView, type PanelDocument } from "./panelView.js";
+import { ResolutionPresenter } from "./resolutionPresenter.js";
 import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
@@ -23,6 +30,7 @@ export interface PanelRuntimeOptions {
   readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
   readonly readClipboard: () => Promise<string>;
   readonly subscribeUnload: (listener: () => void) => () => void;
+  readonly diagnostics?: PanelDiagnostics;
   readonly initializeIcons?: () => void;
   readonly onError?: (error: unknown) => void;
 }
@@ -45,7 +53,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       // Diagnostics cannot break panel ownership.
     }
   };
+  const diagnostics = options.diagnostics ?? new PanelDiagnostics();
   const view = new DomPanelView(options.document, reportError);
+  const resolutionPresenter = new ResolutionPresenter();
+  view.renderResolution(resolutionPresenter.snapshot());
   const stateListeners = new Set<(message: unknown) => void | Promise<void>>();
   let disposed = false;
   let recovery: Promise<void> | undefined;
@@ -94,6 +105,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
     },
+    clearLinkedState: clearLinkedInspectionState,
   });
 
   function ensurePanelPort(): Promise<void> {
@@ -128,9 +140,57 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   }
 
   function routePanelMessage(message: unknown): void {
+    const inspectStarted = validatedInspectStarted(message);
     const domEvent = validatedDomEvent(message);
-    if (domEvent) {
+    if (inspectStarted) {
+      const model = resolutionPresenter.beginCorrelatedInspect(
+        inspectStarted.inspectMessageId,
+      );
+      if (model) {
+        diagnostics.recordResolving();
+        view.renderResolution(model);
+      }
+    } else if (domEvent) {
       treeController.handleEvent(domEvent);
+      if (domEvent.type === "dom.selectionChanged") {
+        const selected = domEvent.ancestorPath.at(-1);
+        if (selected) {
+          const model = resolutionPresenter.updateSelectedElement(
+            selected.label,
+          );
+          view.renderResolution(model);
+        }
+      }
+    } else if (validatedResolution(message)) {
+      const resolution = ResolutionMessageSchema.parse(message);
+      const model = resolutionPresenter.acceptResolution(resolution);
+      if (model) {
+        diagnostics.recordResolution(resolution);
+        view.renderResolution(model);
+      }
+    } else if (validatedPeerState(message)) {
+      const peer = PeerStateMessageSchema.parse(message);
+      const model = peer.connected
+        ? resolutionPresenter.restartResolution()
+        : resolutionPresenter.ideDisconnected();
+      if (model) {
+        if (model.kind === "resolving") {
+          diagnostics.recordResolving();
+        } else if (model.kind === "ide-disconnected") {
+          diagnostics.recordIdeDisconnected();
+        } else if (model.kind === "idle") {
+          diagnostics.clearResolution();
+        }
+        view.renderResolution(model);
+      }
+    } else if (isIdeDisconnected(message)) {
+      const model = resolutionPresenter.ideDisconnected(
+        message.inspectMessageId,
+      );
+      if (model) {
+        diagnostics.recordIdeDisconnected();
+        view.renderResolution(model);
+      }
     } else if (
       isWindowState(message, "linked") ||
       isWindowState(message, "offline") ||
@@ -141,6 +201,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     } else if (parseInspectPortInvalidated(message)) {
       const shouldRecover = treeSessionActive;
       treeController.reset();
+      resetResolutionState();
       if (shouldRecover) {
         queueMicrotask(() => {
           if (!disposed && treeSessionActive) {
@@ -152,9 +213,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       isWindowState(message, "notLinked") ||
       isWindowState(message, "linking") ||
       isWindowState(message, "rateLimited") ||
-      isWindowState(message, "error")
+      (isWindowState(message, "error") && !hasDisplayLinkCode(message))
     ) {
-      deactivateTreeSession();
+      clearLinkedInspectionState();
     }
     for (const listener of [...stateListeners]) {
       void Promise.resolve(listener(message)).catch(reportError);
@@ -171,6 +232,16 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     treeController.reset();
   }
 
+  function clearLinkedInspectionState(): void {
+    deactivateTreeSession();
+    resetResolutionState();
+  }
+
+  function resetResolutionState(): void {
+    diagnostics.clearResolution();
+    view.renderResolution(resolutionPresenter.reset());
+  }
+
   function dispose(): void {
     if (closePromise) {
       return;
@@ -180,6 +251,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     removeUnload = undefined;
     remove?.();
     stateListeners.clear();
+    diagnostics.clearResolution();
     treeView.dispose();
     treeController.dispose();
     closePromise = controller
@@ -219,6 +291,47 @@ function validatedDomEvent(message: unknown) {
   }
 }
 
+function validatedInspectStarted(
+  message: unknown,
+): PanelInspectStartedState | undefined {
+  if (
+    !isRecord(message) ||
+    !hasOnlyKeys(message, ["type", "inspectMessageId"]) ||
+    message.type !== "browser2ide.inspect.started" ||
+    !isOpaqueId(message.inspectMessageId)
+  ) {
+    return undefined;
+  }
+  return {
+    type: message.type,
+    inspectMessageId: message.inspectMessageId,
+  };
+}
+
+function validatedResolution(message: unknown): boolean {
+  return ResolutionMessageSchema.safeParse(message).success;
+}
+
+function validatedPeerState(message: unknown): boolean {
+  return PeerStateMessageSchema.safeParse(message).success;
+}
+
+function isIdeDisconnected(
+  message: unknown,
+): message is {
+  readonly type: "browser2ide.ideState";
+  readonly status: "ide-disconnected";
+  readonly inspectMessageId: string;
+} {
+  return Boolean(
+    isRecord(message) &&
+    hasOnlyKeys(message, ["type", "status", "inspectMessageId"]) &&
+    message.type === "browser2ide.ideState" &&
+    message.status === "ide-disconnected" &&
+    isOpaqueId(message.inspectMessageId),
+  );
+}
+
 function isWindowState(message: unknown, state: string): boolean {
   return Boolean(
     message &&
@@ -226,4 +339,31 @@ function isWindowState(message: unknown, state: string): boolean {
     (message as Record<string, unknown>).type === "browser2ide.windowState" &&
     (message as Record<string, unknown>).state === state,
   );
+}
+
+function hasDisplayLinkCode(message: unknown): boolean {
+  return Boolean(
+    message &&
+    typeof message === "object" &&
+    typeof (message as Record<string, unknown>).displayLinkCode === "string",
+  );
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const actual = Object.keys(value);
+  return (
+    actual.length === keys.length &&
+    actual.every((key) => keys.includes(key))
+  );
+}
+
+function isOpaqueId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

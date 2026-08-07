@@ -410,6 +410,7 @@ function savedLink(instance: FakeBridgeInstance): BrowserWindowLink {
   return {
     url: instance.url,
     port: Number(new URL(instance.url).port),
+    displayLinkCode: `${new URL(instance.url).port} ${instance.pin}`,
     ...instance.credentials,
   };
 }

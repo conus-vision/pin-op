@@ -150,6 +150,30 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{ channel: "panel-a", message: peerState }]);
   });
 
+  it("publishes a bounded correlated inspect start only to its bound panel", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+
+    transport.publishInspectStarted("panel-a", "inspect-1");
+    transport.publishInspectStarted("panel-missing", "inspect-2");
+    transport.publishInspectStarted("panel-a", "");
+    transport.publishInspectStarted("panel-a", "x".repeat(129));
+
+    expect(published).toEqual([{
+      channel: "panel-a",
+      message: {
+        type: "browser2ide.inspect.started",
+        inspectMessageId: "inspect-1",
+      },
+    }]);
+  });
+
   it("bounds channels and releases them through their handles", () => {
     const transport = new PanelSessionTransport({
       maxChannels: 1,

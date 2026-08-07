@@ -70,18 +70,29 @@ describe("BrowserWindowLinkStore", () => {
     expect(storage.values).toEqual({});
   });
 
-  it("never persists the PIN or raw link code", async () => {
+  it("retains only the formatted code in extension session storage", async () => {
     const storage = new MemorySessionStorage();
     const store = new BrowserWindowLinkStore(storage);
 
     await store.save(10, link());
 
     const serialized = JSON.stringify(storage.values);
+    expect(serialized).toContain('"displayLinkCode":"48735 07"');
     expect(serialized).not.toContain("4873507");
-    expect(serialized).not.toContain("07");
     expect(serialized).not.toContain('"pin"');
     expect(serialized).not.toContain('"value"');
-    expect(serialized).not.toContain('"code"');
+    expect(serialized).not.toContain('"rawCode"');
+  });
+
+  it("does not survive a new browser session storage instance", async () => {
+    const firstSession = new BrowserWindowLinkStore(new MemorySessionStorage());
+    await firstSession.save(10, link());
+
+    const restartedSession = new BrowserWindowLinkStore(
+      new MemorySessionStorage(),
+    );
+
+    await expect(restartedSession.load(10)).resolves.toBeUndefined();
   });
 
   it.each([
@@ -93,6 +104,8 @@ describe("BrowserWindowLinkStore", () => {
     ["empty session ID", { sessionId: "" }],
     ["invalid bridge instance ID", { bridgeInstanceId: "instance-a" }],
     ["short auth token", { authToken: "short" }],
+    ["unformatted display code", { displayLinkCode: "4873507" }],
+    ["display code for another port", { displayLinkCode: "48736 07" }],
     ["unknown field", { pin: "07" }],
   ])("rejects a saved link with %s", async (_label, override) => {
     const storage = new MemorySessionStorage();
@@ -198,5 +211,6 @@ function link(
     sessionId: override.sessionId ?? "session-10",
     bridgeInstanceId: override.bridgeInstanceId ?? INSTANCE_A,
     authToken: override.authToken ?? AUTH_TOKEN,
+    displayLinkCode: override.displayLinkCode ?? `${port} 07`,
   };
 }

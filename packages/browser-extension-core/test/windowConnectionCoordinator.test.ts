@@ -184,6 +184,52 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.coordinator.state(10)).toBe("linked");
   });
 
+  it("publishes the exact session display code to every panel in the window", async () => {
+    const harness = coordinatorHarness();
+    const firstSnapshots: Array<readonly [string, string | undefined]> = [];
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state, displayLinkCode) => {
+        firstSnapshots.push([state, displayLinkCode]);
+      },
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+
+    const secondSnapshots: Array<readonly [string, string | undefined]> = [];
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 102,
+      sourceId: "panel-102",
+      onStateChanged: (state, displayLinkCode) => {
+        secondSnapshots.push([state, displayLinkCode]);
+      },
+    });
+
+    expect(firstSnapshots).toContainEqual(["linked", "48735 07"]);
+    expect(secondSnapshots.at(-1)).toEqual(["linked", "48735 07"]);
+  });
+
+  it("does not present an unauthenticated pending code as a linked transport error", async () => {
+    const harness = coordinatorHarness();
+    const snapshots: Array<readonly [string, string | undefined]> = [];
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state, displayLinkCode) => {
+        snapshots.push([state, displayLinkCode]);
+      },
+    });
+    const client = await harness.link(10, "4873507");
+
+    client.emitState("error");
+
+    expect(snapshots.at(-1)).toEqual(["error", undefined]);
+  });
+
   it.each(["auth.instanceChanged", "auth.tokenRejected"] as const)(
     "deletes the mapping and never retries after %s",
     async (code) => {
@@ -202,7 +248,7 @@ describe("WindowConnectionCoordinator", () => {
       await harness.flush();
 
       await expect(harness.store.load(10)).resolves.toBeUndefined();
-      expect(harness.coordinator.state(10)).toBe("offline");
+      expect(harness.coordinator.state(10)).toBe("notLinked");
       expect(client.disconnectCalls).toBe(1);
       expect(harness.createdClients).toHaveLength(1);
       expect(harness.timers.pendingCount()).toBe(0);
@@ -419,6 +465,46 @@ describe("WindowConnectionCoordinator", () => {
     await expect(harness.store.load(20)).resolves.toBeUndefined();
     expect(harness.coordinator.state(10)).toBe("notLinked");
     expect(harness.coordinator.state(20)).toBe("notLinked");
+  });
+
+  it("disconnects and clears only the requested browser window", async () => {
+    const harness = coordinatorHarness();
+    const firstStates: Array<readonly [string, string | undefined]> = [];
+    const secondStates: Array<readonly [string, string | undefined]> = [];
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state, code) => firstStates.push([state, code]),
+    });
+    harness.coordinator.registerPanel({
+      windowId: 20,
+      tabId: 201,
+      sourceId: "panel-201",
+      onStateChanged: (state, code) => secondStates.push([state, code]),
+    });
+    const first = await harness.link(10, "4873507");
+    const second = await harness.link(20, "4873608");
+    await harness.authenticate(first, windowLink());
+    await harness.authenticate(
+      second,
+      windowLink({
+        port: 48_736,
+        sessionId: "session-20",
+        bridgeInstanceId: INSTANCE_B,
+        authToken: AUTH_TOKEN_B,
+        displayLinkCode: "48736 08",
+      }),
+    );
+
+    await harness.coordinator.unlinkWindow(10);
+
+    expect(firstStates.at(-1)).toEqual(["notLinked", undefined]);
+    expect(secondStates.at(-1)).toEqual(["linked", "48736 08"]);
+    expect(harness.coordinator.state(20)).toBe("linked");
+    await expect(harness.store.load(20)).resolves.toMatchObject({
+      displayLinkCode: "48736 08",
+    });
   });
 
   it("preserves sources without exposing internal routing metadata", async () => {
@@ -1070,6 +1156,7 @@ function windowLink(
     sessionId: override.sessionId ?? "session-10",
     bridgeInstanceId: override.bridgeInstanceId ?? INSTANCE_A,
     authToken: override.authToken ?? AUTH_TOKEN_A,
+    displayLinkCode: override.displayLinkCode ?? `${port} 07`,
   };
 }
 

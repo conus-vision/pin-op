@@ -31,6 +31,11 @@ export interface PanelIdeDisconnectedState {
   readonly inspectMessageId: string;
 }
 
+export interface PanelInspectStartedState {
+  readonly type: "browser2ide.inspect.started";
+  readonly inspectMessageId: string;
+}
+
 interface PanelSessionBinding {
   readonly tabId: number;
   republish?: Promise<boolean>;
@@ -193,6 +198,24 @@ export class PanelSessionTransport {
     const state: PanelIdeDisconnectedState = Object.freeze({
       type: "browser2ide.ideState",
       status: "ide-disconnected",
+      inspectMessageId,
+    });
+    try {
+      this.options.postPanelMessage(channel, state);
+    } catch {
+      // A panel disconnect owns channel disposal.
+    }
+  }
+
+  public publishInspectStarted(
+    channel: string,
+    inspectMessageId: string,
+  ): void {
+    if (!this.channels.has(channel) || !isOpaqueId(inspectMessageId)) {
+      return;
+    }
+    const state: PanelInspectStartedState = Object.freeze({
+      type: "browser2ide.inspect.started",
       inspectMessageId,
     });
     try {

@@ -29,6 +29,9 @@ import {
   PageInspectionSession,
   PageOverlay,
   PanelController,
+  ResolutionPresenter,
+  formatResolutionFooter,
+  presentResolution,
   PanelInspectTransport,
   parseLinkCode,
   parseDomEvent,
@@ -79,6 +82,9 @@ describe("browser extension core exports", () => {
     expect(parseDomRequest).toBeTypeOf("function");
     expect(parseDomResponse).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
+    expect(ResolutionPresenter).toBeTypeOf("function");
+    expect(formatResolutionFooter).toBeTypeOf("function");
+    expect(presentResolution).toBeTypeOf("function");
     expect(PanelInspectTransport).toBeTypeOf("function");
     expect(registerDevtoolsPanel).toBeTypeOf("function");
     expect(sanitizeErrorMessage).toBeTypeOf("function");

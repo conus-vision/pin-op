@@ -3,8 +3,6 @@ import { parseInspectPortInvalidated } from "./inspectPortProtocol.js";
 import {
   ClipboardPaste,
   MousePointer2,
-  RefreshCw,
-  Unlink,
   createIcons,
 } from "lucide";
 
@@ -31,8 +29,7 @@ export type PanelCommand =
 export interface PanelActions {
   readonly onPaste: () => void | Promise<void>;
   readonly onLink: () => void | Promise<void>;
-  readonly onChangeIde: () => void | Promise<void>;
-  readonly onUnlink: () => void | Promise<void>;
+  readonly onDisconnect: () => void | Promise<void>;
   readonly onInspectChanged: (enabled: boolean) => void | Promise<void>;
   readonly onLinkCodeChanged: (value: string) => void;
 }
@@ -41,13 +38,13 @@ export interface PanelViewModel {
   readonly state: PanelOperationalState;
   readonly statusLabel: string;
   readonly errorText?: string;
+  readonly displayLinkCode?: string;
   readonly showLinkControls: boolean;
-  readonly showConnectedControls: boolean;
+  readonly showDisconnect: boolean;
   readonly linkInputDisabled: boolean;
   readonly linkButtonDisabled: boolean;
   readonly pasteButtonDisabled: boolean;
-  readonly changeButtonDisabled: boolean;
-  readonly unlinkButtonDisabled: boolean;
+  readonly disconnectButtonDisabled: boolean;
   readonly inspectDisabled: boolean;
   readonly inspectChecked: boolean;
 }
@@ -75,6 +72,7 @@ export interface PanelControllerOptions {
   readonly subscribeWindowState: (
     listener: (message: unknown) => void | Promise<void>,
   ) => () => void;
+  readonly clearLinkedState: () => void;
 }
 
 type PanelCommandError =
@@ -87,6 +85,11 @@ type PanelCommandError =
 type PanelCommandResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: PanelCommandError };
+
+interface DisconnectRollback {
+  readonly generation: number;
+  readonly displayLinkCode?: string;
+}
 
 const statusLabels: Readonly<Record<PanelOperationalState, string>> = {
   notLinked: "Not linked",
@@ -103,8 +106,6 @@ export function createPanelIcons(): void {
     icons: {
       ClipboardPaste,
       MousePointer2,
-      RefreshCw,
-      Unlink,
     },
     attrs: {
       width: "15",
@@ -121,15 +122,17 @@ export class PanelController {
   private readonly readClipboard: () => Promise<string>;
   private readonly sendCommand: (message: PanelCommand) => Promise<unknown>;
   private readonly subscribeWindowState: PanelControllerOptions["subscribeWindowState"];
+  private readonly clearLinkedState: () => void;
   private removeViewBindings: (() => void) | undefined;
   private removeStateSubscription: (() => void) | undefined;
   private state: PanelOperationalState = "notLinked";
   private errorText: string | undefined;
+  private displayLinkCode: string | undefined;
   private hasLinkIntent = false;
-  private changingIde = false;
   private busy = false;
   private operationGeneration = 0;
   private pendingLinkGeneration: number | undefined;
+  private disconnectRollback: DisconnectRollback | undefined;
   private initialized = false;
   private disposed = false;
 
@@ -143,6 +146,7 @@ export class PanelController {
     this.readClipboard = options.readClipboard;
     this.sendCommand = options.sendCommand;
     this.subscribeWindowState = options.subscribeWindowState;
+    this.clearLinkedState = options.clearLinkedState;
   }
 
   public async initialize(): Promise<void> {
@@ -153,8 +157,7 @@ export class PanelController {
     this.removeViewBindings = this.view.bind({
       onPaste: () => this.pasteAndLink(),
       onLink: () => this.link(this.view.readLinkCode()),
-      onChangeIde: () => this.changeIde(),
-      onUnlink: () => this.unlink(),
+      onDisconnect: () => this.disconnect(),
       onInspectChanged: (enabled) => this.setInspectEnabled(enabled),
       onLinkCodeChanged: () => {
         this.errorText = undefined;
@@ -171,11 +174,16 @@ export class PanelController {
     if (this.disposed) {
       return;
     }
+    const disconnectRollback = this.disconnectRollback;
+    this.disconnectRollback = undefined;
     this.operationGeneration += 1;
     this.pendingLinkGeneration = undefined;
     this.busy = false;
-    this.changingIde = false;
     this.inspectController.handleTransportDisconnect();
+    if (disconnectRollback) {
+      this.hasLinkIntent = true;
+      this.displayLinkCode = disconnectRollback.displayLinkCode;
+    }
     if (this.hasLinkIntent) {
       this.state = "offline";
     }
@@ -189,6 +197,7 @@ export class PanelController {
     this.disposed = true;
     this.operationGeneration += 1;
     this.pendingLinkGeneration = undefined;
+    this.disconnectRollback = undefined;
     this.view.writeLinkCode("");
     this.removeStateSubscription?.();
     this.removeStateSubscription = undefined;
@@ -241,6 +250,7 @@ export class PanelController {
     }
 
     const generation = ++this.operationGeneration;
+    this.disconnectRollback = undefined;
     this.pendingLinkGeneration = generation;
     await this.disableInspect();
     if (!this.isCurrent(generation)) {
@@ -249,7 +259,7 @@ export class PanelController {
     if (this.pendingLinkGeneration === generation) {
       this.view.writeLinkCode(code);
     }
-    this.changingIde = false;
+    this.displayLinkCode = formatDisplayLinkCode(code);
     this.hasLinkIntent = true;
     this.busy = true;
     this.state = "linking";
@@ -265,33 +275,28 @@ export class PanelController {
     );
   }
 
-  private async changeIde(): Promise<void> {
-    if (this.disposed) {
+  private async disconnect(): Promise<void> {
+    if (this.disposed || !this.hasLinkIntent) {
       return;
     }
     const generation = ++this.operationGeneration;
     this.pendingLinkGeneration = undefined;
     this.busy = false;
+    this.disconnectRollback = {
+      generation,
+      displayLinkCode: this.displayLinkCode,
+    };
     await this.disableInspect();
     if (!this.isCurrent(generation)) {
       return;
     }
-    this.changingIde = true;
-    this.errorText = undefined;
-    this.view.writeLinkCode("");
-    this.render();
-  }
-
-  private async unlink(): Promise<void> {
-    if (this.disposed || this.busy) {
+    if (!this.disconnectRollback && this.state === "notLinked") {
+      this.render();
       return;
     }
-    const generation = ++this.operationGeneration;
-    this.pendingLinkGeneration = undefined;
-    await this.disableInspect();
-    if (!this.isCurrent(generation)) {
-      return;
-    }
+    this.clearLinkedState();
+    this.displayLinkCode = undefined;
+    this.hasLinkIntent = false;
     this.busy = true;
     this.errorText = undefined;
     this.render();
@@ -306,7 +311,6 @@ export class PanelController {
       return;
     }
     if (this.state === "notLinked") {
-      this.changingIde = false;
       this.view.writeLinkCode("");
       this.render();
     }
@@ -325,6 +329,15 @@ export class PanelController {
       }
       if (command.type === "browser2ide.linkWindow") {
         this.pendingLinkGeneration = undefined;
+        this.displayLinkCode = undefined;
+        this.hasLinkIntent = false;
+      } else if (
+        !this.restoreDisconnect(generation) &&
+        this.state === "notLinked"
+      ) {
+        this.busy = false;
+        this.render();
+        return;
       }
       this.busy = false;
       this.state = "error";
@@ -341,6 +354,14 @@ export class PanelController {
     this.busy = false;
     const result = parseCommandResult(response);
     if (!result) {
+      if (
+        command.type === "browser2ide.unlinkWindow" &&
+        !this.restoreDisconnect(generation) &&
+        this.state === "notLinked"
+      ) {
+        this.render();
+        return;
+      }
       this.state = "error";
       this.errorText = "Browser2IDE background returned an invalid response";
     } else if (!result.ok) {
@@ -350,14 +371,24 @@ export class PanelController {
         result.error !== "stalePanel"
       ) {
         this.hasLinkIntent = false;
+        this.displayLinkCode = undefined;
+      }
+      if (
+        command.type === "browser2ide.unlinkWindow" &&
+        !this.restoreDisconnect(generation) &&
+        this.state === "notLinked"
+      ) {
+        this.render();
+        return;
       }
       this.applyCommandError(result.error);
     } else if (command.type === "browser2ide.linkWindow") {
       this.view.writeLinkCode("");
     } else {
+      this.disconnectRollback = undefined;
       this.state = "notLinked";
       this.hasLinkIntent = false;
-      this.changingIde = false;
+      this.displayLinkCode = undefined;
       this.view.writeLinkCode("");
     }
     this.render();
@@ -372,20 +403,29 @@ export class PanelController {
       }
       return;
     }
-    const nextState = parseWindowState(message);
-    if (!nextState || this.disposed) {
+    const windowState = parseWindowState(message);
+    if (!windowState || this.disposed) {
       return;
     }
+    const nextState = windowState.state;
     this.state = nextState;
     if (nextState === "notLinked") {
+      this.disconnectRollback = undefined;
       this.hasLinkIntent = false;
+      this.displayLinkCode = undefined;
+      this.clearLinkedState();
     } else if (
-      nextState === "linking" ||
-      nextState === "connected" ||
-      nextState === "reconnecting" ||
-      nextState === "offline"
+      retainsLinkIntent(nextState, windowState.displayLinkCode)
     ) {
       this.hasLinkIntent = true;
+      if (windowState.displayLinkCode) {
+        this.displayLinkCode = windowState.displayLinkCode;
+      } else if (nextState === "linking") {
+        this.displayLinkCode = undefined;
+      }
+    } else if (!windowState.displayLinkCode) {
+      this.hasLinkIntent = false;
+      this.displayLinkCode = undefined;
     }
     if (nextState === "connected") {
       if (this.pendingLinkGeneration === this.operationGeneration) {
@@ -403,7 +443,7 @@ export class PanelController {
     if (
       this.disposed ||
       (enabled &&
-        (this.state !== "connected" || this.busy || this.changingIde))
+        (this.state !== "connected" || this.busy))
     ) {
       this.render();
       return;
@@ -455,24 +495,24 @@ export class PanelController {
       return;
     }
     const showLinkControls =
-      this.changingIde ||
-      this.state === "notLinked" ||
-      this.state === "rateLimited" ||
-      this.state === "error";
+      !this.hasLinkIntent &&
+      (this.state === "notLinked" ||
+        this.state === "rateLimited" ||
+        this.state === "error");
     const validCode = validNormalizedCode(this.view.readLinkCode());
     const inspectDisabled =
-      this.busy || this.changingIde || this.state !== "connected";
+      this.busy || this.state !== "connected";
     this.view.render({
       state: this.state,
       statusLabel: statusLabels[this.state],
       errorText: this.errorText,
+      displayLinkCode: this.displayLinkCode,
       showLinkControls,
-      showConnectedControls: this.hasLinkIntent,
+      showDisconnect: this.hasLinkIntent,
       linkInputDisabled: this.busy,
       linkButtonDisabled: this.busy || !validCode,
       pasteButtonDisabled: this.busy,
-      changeButtonDisabled: this.busy,
-      unlinkButtonDisabled: this.busy || this.state === "notLinked",
+      disconnectButtonDisabled: this.busy,
       inspectDisabled,
       inspectChecked: !inspectDisabled && this.inspectController.enabled,
     });
@@ -480,6 +520,17 @@ export class PanelController {
 
   private isCurrent(generation: number): boolean {
     return !this.disposed && this.operationGeneration === generation;
+  }
+
+  private restoreDisconnect(generation: number): boolean {
+    const rollback = this.disconnectRollback;
+    if (!rollback || rollback.generation !== generation) {
+      return false;
+    }
+    this.disconnectRollback = undefined;
+    this.hasLinkIntent = true;
+    this.displayLinkCode = rollback.displayLinkCode;
+    return true;
   }
 }
 
@@ -492,14 +543,21 @@ function validNormalizedCode(value: string): boolean {
   }
 }
 
-function parseWindowState(value: unknown): PanelOperationalState | undefined {
+interface ParsedWindowState {
+  readonly state: PanelOperationalState;
+  readonly displayLinkCode?: string;
+}
+
+function parseWindowState(value: unknown): ParsedWindowState | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["type", "state"]) ||
+    (!hasOnlyKeys(value, ["type", "state"]) &&
+      !hasOnlyKeys(value, ["type", "state", "displayLinkCode"])) ||
     value.type !== "browser2ide.windowState"
   ) {
     return undefined;
   }
+  let state: PanelOperationalState;
   switch (value.state) {
     case "notLinked":
     case "linking":
@@ -507,12 +565,25 @@ function parseWindowState(value: unknown): PanelOperationalState | undefined {
     case "offline":
     case "rateLimited":
     case "error":
-      return value.state;
+      state = value.state;
+      break;
     case "linked":
-      return "connected";
+      state = "connected";
+      break;
     default:
       return undefined;
   }
+  if (value.displayLinkCode === undefined) {
+    return { state };
+  }
+  if (
+    typeof value.displayLinkCode !== "string" ||
+    !canCarryDisplayLinkCode(state) ||
+    !isFormattedLinkCode(value.displayLinkCode)
+  ) {
+    return undefined;
+  }
+  return { state, displayLinkCode: value.displayLinkCode };
 }
 
 function parseCommandResult(value: unknown): PanelCommandResult | undefined {
@@ -555,4 +626,39 @@ function hasOnlyKeys(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function canCarryDisplayLinkCode(state: PanelOperationalState): boolean {
+  return (
+    state === "linking" ||
+    state === "connected" ||
+    state === "reconnecting" ||
+    state === "offline" ||
+    state === "error"
+  );
+}
+
+function retainsLinkIntent(
+  state: PanelOperationalState,
+  displayLinkCode: string | undefined,
+): boolean {
+  return (
+    state === "linking" ||
+    state === "connected" ||
+    state === "reconnecting" ||
+    state === "offline" ||
+    (state === "error" && displayLinkCode !== undefined)
+  );
+}
+
+function isFormattedLinkCode(value: string): boolean {
+  try {
+    return formatDisplayLinkCode(parseLinkCode(value).value) === value;
+  } catch {
+    return false;
+  }
+}
+
+function formatDisplayLinkCode(value: string): string {
+  return `${value.slice(0, 5)} ${value.slice(5)}`;
 }

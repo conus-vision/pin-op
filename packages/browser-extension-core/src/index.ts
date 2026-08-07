@@ -254,6 +254,7 @@ export type {
   PanelDiagnosticsSnapshot,
   PanelErrorSummary,
   PanelLinkDetails,
+  PanelResolutionSummary,
 } from "./panelDiagnostics.js";
 export {
   createPanelIcons,
@@ -268,6 +269,19 @@ export type {
   PanelView,
   PanelViewModel,
 } from "./panelController.js";
+export {
+  ResolutionPresenter,
+  formatResolutionFooter,
+  presentResolution,
+} from "./resolutionPresenter.js";
+export type {
+  IdeDisconnectedPresentation,
+  ResolutionPresentation,
+  ResolutionPresentationKind,
+  ResolutionTone,
+  ResolutionViewModel,
+  ResolvingPresentation,
+} from "./resolutionPresenter.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { DomPanelView } from "./panelView.js";

@@ -34,7 +34,10 @@ export interface PanelRegistration {
   readonly windowId: number;
   readonly tabId: number;
   readonly sourceId: string;
-  readonly onStateChanged?: (state: BrowserWindowConnectionState) => void;
+  readonly onStateChanged?: (
+    state: BrowserWindowConnectionState,
+    displayLinkCode?: string,
+  ) => void;
 }
 
 export interface WindowConnectionClient {
@@ -78,6 +81,7 @@ interface PendingCodeLink {
   readonly url: string;
   readonly port: number;
   readonly pin: string;
+  readonly displayLinkCode: string;
   readonly source: ClientSource;
 }
 
@@ -186,6 +190,7 @@ export class WindowConnectionCoordinator {
       url: parsedCode.url,
       port: parsedCode.port,
       pin: parsedCode.pin,
+      displayLinkCode: formatDisplayLinkCode(parsedCode.value),
       source: connectionSource,
     };
     record.pendingLink = pendingLink;
@@ -264,7 +269,7 @@ export class WindowConnectionCoordinator {
     record.registrations.set(snapshot.sourceId, entry);
     this.sourceOwners.set(snapshot.sourceId, entry);
     this.tabOwners.set(snapshot.tabId, entry);
-    notifyRegistration(entry, record.state);
+    notifyRegistration(entry, record.state, displayLinkCodeFor(record));
 
     if (record.registrations.size === 1) {
       this.activateFirstPanel(record, entry);
@@ -554,6 +559,7 @@ export class WindowConnectionCoordinator {
       sessionId: credentials.sessionId,
       bridgeInstanceId: credentials.bridgeInstanceId,
       authToken: credentials.authToken,
+      displayLinkCode: pendingCode.displayLinkCode,
     };
     record.pendingLink = {
       kind: "credentials",
@@ -692,7 +698,7 @@ export class WindowConnectionCoordinator {
     record.connectionSource = undefined;
     record.credentialsWritePending = false;
     record.reconnectAttempts = 0;
-    this.setState(record, "offline");
+    this.setState(record, "notLinked");
     void this.enqueueStore(record.windowId, () =>
       this.store.remove(record.windowId),
     ).catch(() => {
@@ -970,8 +976,9 @@ export class WindowConnectionCoordinator {
       return;
     }
     record.state = state;
+    const displayLinkCode = displayLinkCodeFor(record);
     for (const entry of [...record.registrations.values()]) {
-      notifyRegistration(entry, state);
+      notifyRegistration(entry, state, displayLinkCode);
     }
   }
 
@@ -1077,12 +1084,30 @@ function isWindowId(value: number): boolean {
 function notifyRegistration(
   entry: RegistrationEntry,
   state: BrowserWindowConnectionState,
+  displayLinkCode?: string,
 ): void {
   try {
-    entry.registration.onStateChanged?.(state);
+    entry.registration.onStateChanged?.(state, displayLinkCode);
   } catch {
     // A panel callback cannot break connection ownership for other panels.
   }
+}
+
+function displayLinkCodeFor(record: WindowRecord): string | undefined {
+  if (record.link) {
+    return record.link.displayLinkCode;
+  }
+  if (record.state === "error") {
+    return undefined;
+  }
+  if (record.pendingLink?.kind === "code") {
+    return record.pendingLink.displayLinkCode;
+  }
+  return record.pendingLink?.link.displayLinkCode;
+}
+
+function formatDisplayLinkCode(value: string): string {
+  return `${value.slice(0, 5)} ${value.slice(5)}`;
 }
 
 function subscribeWindowEvent<T>(

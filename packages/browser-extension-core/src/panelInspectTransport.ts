@@ -16,6 +16,7 @@ import {
   type InspectPortRequest,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
+import { parseLinkCode } from "./linkCode.js";
 
 export class PanelInspectTransport {
   private readonly pendingInspect = new Map<
@@ -306,14 +307,41 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
   }
   const keys = Object.keys(message).sort();
   if (
-    keys.length === 2 &&
-    keys[0] === "state" &&
-    keys[1] === "type" &&
+    (keys.length === 2 || keys.length === 3) &&
+    keys.includes("state") &&
+    keys.includes("type") &&
     message.type === "browser2ide.windowState" &&
     typeof message.state === "string" &&
     WINDOW_STATES.has(message.state)
   ) {
-    return { type: message.type, state: message.state };
+    if (keys.length === 2) {
+      return { type: message.type, state: message.state };
+    }
+    if (
+      keys[0] !== "displayLinkCode" ||
+      typeof message.displayLinkCode !== "string" ||
+      !LINKED_WINDOW_STATES.has(message.state) ||
+      !isFormattedLinkCode(message.displayLinkCode)
+    ) {
+      return undefined;
+    }
+    return {
+      type: message.type,
+      state: message.state,
+      displayLinkCode: message.displayLinkCode,
+    };
+  }
+  if (
+    keys.length === 2 &&
+    keys[0] === "inspectMessageId" &&
+    keys[1] === "type" &&
+    message.type === "browser2ide.inspect.started" &&
+    isOpaqueId(message.inspectMessageId)
+  ) {
+    return {
+      type: message.type,
+      inspectMessageId: message.inspectMessageId,
+    };
   }
   if (
     keys.length === 3 &&
@@ -322,9 +350,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     keys[2] === "type" &&
     message.type === "browser2ide.ideState" &&
     message.status === "ide-disconnected" &&
-    typeof message.inspectMessageId === "string" &&
-    message.inspectMessageId.length > 0 &&
-    message.inspectMessageId.length <= 128
+    isOpaqueId(message.inspectMessageId)
   ) {
     return {
       type: message.type,
@@ -345,6 +371,27 @@ const WINDOW_STATES = new Set([
   "error",
 ]);
 
+const LINKED_WINDOW_STATES = new Set([
+  "linking",
+  "linked",
+  "reconnecting",
+  "offline",
+  "error",
+]);
+
+function isFormattedLinkCode(value: string): boolean {
+  try {
+    const parsed = parseLinkCode(value);
+    return value === `${parsed.value.slice(0, 5)} ${parsed.value.slice(5)}`;
+  } catch {
+    return false;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isOpaqueId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
 }

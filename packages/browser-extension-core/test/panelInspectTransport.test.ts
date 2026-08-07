@@ -79,7 +79,7 @@ describe("PanelInspectTransport DOM integration", () => {
     await expect(next).resolves.toEqual(rootResponse("root-new-session"));
   });
 
-  it("forwards only validated DOM and public protocol push messages", () => {
+  it("forwards only validated DOM, protocol, and browser-local push messages", () => {
     const port = new FakePort();
     const received: unknown[] = [];
     const transport = new PanelInspectTransport(
@@ -91,15 +91,24 @@ describe("PanelInspectTransport DOM integration", () => {
     const selection = selectionChanged();
     const currentResolution = resolution("inspect-1", 1);
     const currentPeerState = peerState(true, 2);
+    const inspectStarted = {
+      type: "browser2ide.inspect.started",
+      inspectMessageId: "inspect-1",
+    } as const;
 
+    port.emitMessage(inspectStarted);
     port.emitMessage(selection);
     port.emitMessage(currentResolution);
     port.emitMessage(currentPeerState);
+    port.emitMessage({ ...inspectStarted, inspectMessageId: "" });
+    port.emitMessage({ ...inspectStarted, inspectMessageId: "x".repeat(129) });
+    port.emitMessage({ ...inspectStarted, extra: true });
     port.emitMessage({ ...selection, tabId: 999 });
     port.emitMessage({ ...currentResolution, resolutionGeneration: -1 });
     port.emitMessage({ ...currentPeerState, connected: "yes" });
 
     expect(received).toEqual([
+      inspectStarted,
       selection,
       currentResolution,
       currentPeerState,

@@ -12,9 +12,20 @@
         <img src="./browser2ide.svg" alt="" width="20" height="20" />
         <h1>Browser2IDE</h1>
       </div>
-      <output id="connection-status" class="status" data-state="notLinked">
-        Not linked
-      </output>
+      <div class="connection-summary">
+        <output id="connection-status" class="status" data-state="notLinked">
+          Not linked
+        </output>
+        <output id="linked-code" class="linked-code" hidden></output>
+        <button
+          id="disconnect-button"
+          class="disconnect-button"
+          type="button"
+          hidden
+        >
+          Disconnect
+        </button>
+      </div>
     </header>
 
     <main class="panel-layout">
@@ -46,35 +57,20 @@
             </div>
           </form>
         </section>
-
-        <section
-          id="connected-controls"
-          class="connected-controls"
-          aria-label="Linked IDE"
-          hidden
-        >
-          <button id="change-button" class="command-button" type="button">
-            <i data-lucide="refresh-cw" aria-hidden="true"></i>
-            <span>Change IDE</span>
-          </button>
-          <button
-            id="unlink-button"
-            class="icon-button"
-            type="button"
-            aria-label="Unlink"
-            title="Unlink"
-          >
-            <i data-lucide="unlink" aria-hidden="true"></i>
-          </button>
-        </section>
       </div>
 
       <section class="inspect-toolbar" aria-label="Inspect mode">
-        <label class="inspect-toggle" for="inspect-mode">
+        <button
+          id="inspect-mode"
+          class="icon-button picker-button"
+          type="button"
+          aria-label="Select an element"
+          aria-pressed="false"
+          title="Select an element"
+          disabled
+        >
           <i data-lucide="mouse-pointer-2" aria-hidden="true"></i>
-          <span>Inspect mode</span>
-          <input id="inspect-mode" type="checkbox" disabled />
-        </label>
+        </button>
       </section>
 
       <section class="dom-tree-section" aria-label="Document structure">
@@ -89,6 +85,14 @@
       </section>
 
       <footer class="panel-footer">
+        <output
+          id="selected-element-summary"
+          class="selected-element-summary"
+          hidden
+        ></output>
+        <output id="resolution-status" class="resolution-status" role="status">
+          Select an element to inspect
+        </output>
         <output id="panel-error" class="panel-error" role="status" hidden></output>
       </footer>
     </main>

@@ -10,6 +10,7 @@ export interface BrowserWindowLink {
   readonly sessionId: string;
   readonly bridgeInstanceId: string;
   readonly authToken: string;
+  readonly displayLinkCode: string;
 }
 
 export interface SessionStorage {
@@ -25,6 +26,7 @@ const browserWindowLinkFields = [
   "sessionId",
   "bridgeInstanceId",
   "authToken",
+  "displayLinkCode",
 ] as const;
 const browserWindowLinkSchema = z
   .object({
@@ -37,11 +39,18 @@ const browserWindowLinkSchema = z
     sessionId: z.string().min(1),
     bridgeInstanceId: z.string().uuid(),
     authToken: z.string().min(32),
+    displayLinkCode: z.string().regex(/^[0-9]{5} [0-9]{2}$/),
   })
   .strict()
   .refine(({ url, port }) => url === loopbackUrl(port), {
     message: "URL must be the loopback endpoint for the saved port",
     path: ["url"],
+  })
+  .refine(({ displayLinkCode, port }) => {
+    return displayLinkCode.slice(0, 5) === String(port);
+  }, {
+    message: "Display link code must use the saved port",
+    path: ["displayLinkCode"],
   });
 
 export class BrowserWindowLinkStore {

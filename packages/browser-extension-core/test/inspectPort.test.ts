@@ -157,6 +157,17 @@ describe("panel inspect transport", () => {
     ports[1].emitMessage({
       type: "browser2ide.windowState",
       state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    ports[1].emitMessage({
+      type: "browser2ide.windowState",
+      state: "notLinked",
+      displayLinkCode: "48735 07",
+    });
+    ports[1].emitMessage({
+      type: "browser2ide.windowState",
+      state: "error",
+      displayLinkCode: "48735 07",
     });
     ports[0].emitMessage({
       type: "browser2ide.windowState",
@@ -165,7 +176,16 @@ describe("panel inspect transport", () => {
 
     expect(received).toEqual([
       { type: "browser2ide.windowState", state: "notLinked" },
-      { type: "browser2ide.windowState", state: "linked" },
+      {
+        type: "browser2ide.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      },
+      {
+        type: "browser2ide.windowState",
+        state: "error",
+        displayLinkCode: "48735 07",
+      },
     ]);
   });
 });
