@@ -36,7 +36,7 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "dist/panel.js",
   "dist/runtime-metadata.json",
 ]);
-const VSIX_ARCHIVE_FILES = [
+export const VSIX_ARCHIVE_FILES = Object.freeze([
   "[Content_Types].xml",
   "extension.vsixmanifest",
   "extension/LICENSE.txt",
@@ -47,7 +47,7 @@ const VSIX_ARCHIVE_FILES = [
   "extension/package.json",
   "extension/readme.md",
   "extension/resources/browser2ide.svg",
-];
+]);
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 4096;
@@ -61,6 +61,26 @@ const EOCD_MIN_BYTES = 22;
 const MAX_ZIP_COMMENT_BYTES = 0xffff;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const extensionRequire = createRequire(
+  resolve(repositoryRoot, "extensions/vscode/package.json"),
+);
+const vsceRequire = createRequire(
+  extensionRequire.resolve("@vscode/vsce/package.json"),
+);
+const { Parser: XmlParser } = vsceRequire("xml2js");
+const VSIX_MANIFEST_NAMESPACE =
+  "http://schemas.microsoft.com/developer/vsx-schema/2011";
+const VSIX_CONTENT_TYPES_NAMESPACE =
+  "http://schemas.openxmlformats.org/package/2006/content-types";
+const REQUIRED_VSIX_CONTENT_TYPES = Object.freeze([
+  Object.freeze([".cjs", "application/octet-stream"]),
+  Object.freeze([".json", "application/json"]),
+  Object.freeze([".md", "text/markdown"]),
+  Object.freeze([".svg", "image/svg+xml"]),
+  Object.freeze([".txt", "text/plain"]),
+  Object.freeze([".vsixmanifest", "text/xml"]),
+  Object.freeze([".wasm", "application/wasm"]),
+]);
 
 export async function verifyArtifacts(arguments_) {
   const artifacts = await collectArtifacts(arguments_);
@@ -456,10 +476,34 @@ function verifyBrowserManifest(manifest, filename, browser) {
 }
 
 async function verifyVsix(archive, filename) {
+  validateVsixArchive(archive, filename);
+
+  const require = createRequire(import.meta.url);
+  const sourceMapRoot = dirname(require.resolve("source-map/package.json", {
+    paths: [resolve(repositoryRoot, "extensions/vscode")],
+  }));
+  assertEqualFile(
+    archive,
+    filename,
+    "extension/dist/mappings.wasm",
+    await readFile(resolve(sourceMapRoot, "lib/mappings.wasm")),
+  );
+  assertEqualFile(
+    archive,
+    filename,
+    "extension/THIRD_PARTY_NOTICES",
+    await readFile(resolve(repositoryRoot, "extensions/vscode/THIRD_PARTY_NOTICES")),
+  );
+}
+
+export function validateVsixArchive(archive, filename) {
   assertExactArchivePaths(archive, filename, VSIX_ARCHIVE_FILES);
   assertProjectLicense(archive, filename, "extension/LICENSE.txt");
 
   const manifest = parseJsonFile(archive, filename, "extension/package.json");
+  if (manifest.publisher !== "browser2ide") {
+    throw new Error(`${filename} has unexpected extension publisher`);
+  }
   if (manifest.name !== "browser2ide-vscode") {
     throw new Error(`${filename} has unexpected extension name`);
   }
@@ -467,6 +511,7 @@ async function verifyVsix(archive, filename) {
   if (manifest.main !== "./dist/extension.cjs") {
     throw new Error(`${filename} has unexpected extension main: ${manifest.main}`);
   }
+  validateVsixXmlMetadata(archive, filename, manifest);
   parseRuntimeMetadata(
     archive.files.get("extension/dist/runtime-metadata.json"),
     {
@@ -492,23 +537,198 @@ async function verifyVsix(archive, filename) {
   if (!runtimeRequires.includes("vscode")) {
     throw new Error(`${filename} does not declare the vscode runtime external`);
   }
+  return manifest;
+}
 
-  const require = createRequire(import.meta.url);
-  const sourceMapRoot = dirname(require.resolve("source-map/package.json", {
-    paths: [resolve(repositoryRoot, "extensions/vscode")],
-  }));
-  assertEqualFile(
+function validateVsixXmlMetadata(archive, filename, manifest) {
+  const manifestDocument = parseXmlFile(
     archive,
     filename,
-    "extension/dist/mappings.wasm",
-    await readFile(resolve(sourceMapRoot, "lib/mappings.wasm")),
+    "extension.vsixmanifest",
   );
-  assertEqualFile(
+  const packageManifest = requireXmlRoot(
+    manifestDocument,
+    "PackageManifest",
+    filename,
+    "extension.vsixmanifest",
+  );
+  assertXmlAttribute(
+    packageManifest,
+    "xmlns",
+    VSIX_MANIFEST_NAMESPACE,
+    filename,
+    "extension.vsixmanifest",
+  );
+  assertXmlAttribute(
+    packageManifest,
+    "Version",
+    "2.0.0",
+    filename,
+    "extension.vsixmanifest",
+  );
+  const metadata = requireSingleXmlChild(
+    packageManifest,
+    "Metadata",
+    filename,
+    "extension.vsixmanifest",
+  );
+  const identity = requireSingleXmlChild(
+    metadata,
+    "Identity",
+    filename,
+    "extension.vsixmanifest",
+  );
+  for (const [attribute, field, label] of [
+    ["Publisher", "publisher", "publisher"],
+    ["Id", "name", "name"],
+    ["Version", "version", "version"],
+  ]) {
+    const value = requireXmlAttribute(
+      identity,
+      attribute,
+      filename,
+      "extension.vsixmanifest",
+    );
+    if (value !== manifest[field]) {
+      throw new Error(
+        `${filename} extension.vsixmanifest ${label} ${value} does not match ` +
+          "extension/package.json",
+      );
+    }
+  }
+
+  const contentTypesDocument = parseXmlFile(
     archive,
     filename,
-    "extension/THIRD_PARTY_NOTICES",
-    await readFile(resolve(repositoryRoot, "extensions/vscode/THIRD_PARTY_NOTICES")),
+    "[Content_Types].xml",
   );
+  const types = requireXmlRoot(
+    contentTypesDocument,
+    "Types",
+    filename,
+    "[Content_Types].xml",
+  );
+  assertXmlAttribute(
+    types,
+    "xmlns",
+    VSIX_CONTENT_TYPES_NAMESPACE,
+    filename,
+    "[Content_Types].xml",
+  );
+  const declarations = new Map();
+  for (const declaration of types.Default ?? []) {
+    const extension = requireXmlAttribute(
+      declaration,
+      "Extension",
+      filename,
+      "[Content_Types].xml Default",
+    );
+    const contentType = requireXmlAttribute(
+      declaration,
+      "ContentType",
+      filename,
+      "[Content_Types].xml Default",
+    );
+    if (declarations.has(extension)) {
+      throw new Error(
+        `${filename} [Content_Types].xml has duplicate declaration for ${extension}`,
+      );
+    }
+    declarations.set(extension, contentType);
+  }
+  for (const [extension, expectedContentType] of REQUIRED_VSIX_CONTENT_TYPES) {
+    const actualContentType = declarations.get(extension);
+    if (actualContentType === undefined) {
+      throw new Error(
+        `${filename} [Content_Types].xml is missing required ${extension} ` +
+          `content type ${expectedContentType}`,
+      );
+    }
+    if (actualContentType !== expectedContentType) {
+      throw new Error(
+        `${filename} [Content_Types].xml declares ${extension} as ${actualContentType}; ` +
+          `expected ${expectedContentType}`,
+      );
+    }
+  }
+}
+
+function parseXmlFile(archive, filename, path) {
+  const parser = new XmlParser({
+    async: false,
+    explicitArray: true,
+    explicitRoot: true,
+    strict: true,
+  });
+  const doctypeError = new Error(
+    `${filename} ${path} must not contain a DOCTYPE declaration`,
+  );
+  parser.saxParser.ondoctype = () => {
+    throw doctypeError;
+  };
+
+  let parseError;
+  let document;
+  parser.parseString(archive.files.get(path), (error, result) => {
+    parseError = error;
+    document = result;
+  });
+  if (parseError === doctypeError) throw doctypeError;
+  if (parseError !== undefined && parseError !== null) {
+    throw new Error(
+      `${filename} contains invalid XML in ${path}: ${parseError.message}`,
+    );
+  }
+  if (document === undefined || document === null) {
+    throw new Error(`${filename} contains invalid XML in ${path}: empty document`);
+  }
+  return document;
+}
+
+function requireXmlRoot(document, name, filename, path) {
+  if (
+    typeof document !== "object" ||
+    document === null ||
+    Array.isArray(document) ||
+    Object.keys(document).length !== 1 ||
+    typeof document[name] !== "object" ||
+    document[name] === null ||
+    Array.isArray(document[name])
+  ) {
+    throw new Error(`${filename} ${path} must contain one ${name} root element`);
+  }
+  return document[name];
+}
+
+function requireSingleXmlChild(element, name, filename, path) {
+  const children = element?.[name];
+  if (
+    !Array.isArray(children) ||
+    children.length !== 1 ||
+    typeof children[0] !== "object" ||
+    children[0] === null ||
+    Array.isArray(children[0])
+  ) {
+    throw new Error(`${filename} ${path} must contain one ${name} element`);
+  }
+  return children[0];
+}
+
+function requireXmlAttribute(element, name, filename, path) {
+  const value = element?.$?.[name];
+  if (typeof value !== "string") {
+    throw new Error(`${filename} ${path} is missing ${name} attribute`);
+  }
+  return value;
+}
+
+function assertXmlAttribute(element, name, expected, filename, path) {
+  const actual = requireXmlAttribute(element, name, filename, path);
+  if (actual !== expected) {
+    throw new Error(
+      `${filename} ${path} has unexpected ${name} attribute: ${actual}`,
+    );
+  }
 }
 
 async function verifySource(archive, filename) {

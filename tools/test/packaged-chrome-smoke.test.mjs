@@ -253,6 +253,7 @@ test("launch arguments always isolate Chrome in the supplied temporary profile",
 
   assert.ok(args.includes(`--user-data-dir=${profile}`));
   assert.ok(args.includes("--remote-debugging-port=0"));
+  assert.ok(args.includes("--disable-gpu"));
   assert.equal(args.some((argument) => argument.startsWith("--profile-directory")), false);
   assert.equal(args.some((argument) => argument.includes("User Data")), false);
 });

@@ -200,6 +200,7 @@ export function buildChromeArguments(profileDirectory) {
     "--disable-component-update",
     "--disable-crash-reporter",
     "--disable-default-apps",
+    "--disable-gpu",
     "--disable-sync",
     "--enable-unsafe-extension-debugging",
     "--metrics-recording-only",
