@@ -4,8 +4,13 @@ import type {
   PluginDiagnostic,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import type { RawSourceMap } from "source-map";
+import {
+  SourceMapConsumer,
+  type RawSourceMap,
+} from "source-map";
 import { BoundedLruCache } from "./boundedLruCache.js";
+import type { StylesheetRule } from "./stylesheetAst.js";
+import type { SourceMapResolution } from "./types.js";
 
 export type LoadedRawSourceMap = Omit<RawSourceMap, "file"> & {
   readonly file?: string;
@@ -17,12 +22,92 @@ export interface SourceMapLoadResult {
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 
+interface GeneratedMapping {
+  readonly generatedLine: number;
+  readonly generatedColumn: number;
+  readonly source: string;
+  readonly line: number;
+  readonly column: number;
+}
+
+interface CachedSourceMap {
+  readonly rawMap: LoadedRawSourceMap;
+  mappingIndex?: Promise<readonly GeneratedMapping[]>;
+}
+
+interface CachedSourceMapLoadResult {
+  readonly mapUri?: string;
+  readonly cachedMap?: CachedSourceMap;
+  readonly diagnostics: readonly PluginDiagnostic[];
+}
+
 export const SOURCE_MAP_CACHE_LIMIT = 32;
 
 export class SourceMapLoader {
-  private readonly cache = new BoundedLruCache<string, LoadedRawSourceMap>(
+  private readonly cache = new BoundedLruCache<string, CachedSourceMap>(
     SOURCE_MAP_CACHE_LIMIT,
   );
+
+  public async resolve(
+    generatedUri: string,
+    generatedText: string,
+    generatedRule: StylesheetRule,
+    workspace: SourceWorkspace,
+    generatedSourceUrl: string,
+    signal?: AbortSignal,
+  ): Promise<SourceMapResolution> {
+    const loaded = await this.loadCached(
+      generatedUri,
+      generatedText,
+      workspace,
+      signal,
+    );
+    if (!loaded.cachedMap || !loaded.mapUri) {
+      return loaded.diagnostics.some(
+          (entry) => entry.code === "scss.sourceMapMissing",
+        )
+        ? { kind: "missing", diagnostics: loaded.diagnostics }
+        : invalidResolution(loaded.diagnostics);
+    }
+
+    try {
+      throwIfAborted(signal);
+      const mappingIndex = await this.mappingIndex(
+        loaded.cachedMap,
+        signal,
+      );
+      const mapped = mappingWithinRule(mappingIndex, generatedRule);
+      throwIfAborted(signal);
+      if (!mapped) {
+        return {
+          kind: "unmapped",
+          mapUri: loaded.mapUri,
+          diagnostics: [],
+        };
+      }
+      return {
+        kind: "mapped",
+        mapUri: loaded.mapUri,
+        sourceUrl: resolveMappedSourceUrl(
+          mapped.source,
+          generatedSourceUrl,
+          lastSourceMapReference(generatedText),
+        ),
+        line: mapped.line,
+        column: mapped.column,
+        diagnostics: [],
+      };
+    } catch (error) {
+      if (signal?.aborted) throw abortError();
+      return invalidResolution([
+        {
+          code: "scss.sourceMapInvalid",
+          message: `SCSS source map is invalid: ${messageOf(error)}`,
+          severity: "warning",
+        },
+      ]);
+    }
+  }
 
   public async load(
     generatedUri: string,
@@ -30,6 +115,27 @@ export class SourceMapLoader {
     workspace: SourceWorkspace,
     signal?: AbortSignal,
   ): Promise<SourceMapLoadResult> {
+    const loaded = await this.loadCached(
+      generatedUri,
+      generatedText,
+      workspace,
+      signal,
+    );
+    return loaded.cachedMap && loaded.mapUri
+      ? {
+        mapUri: loaded.mapUri,
+        rawMap: loaded.cachedMap.rawMap,
+        diagnostics: loaded.diagnostics,
+      }
+      : { diagnostics: loaded.diagnostics };
+  }
+
+  private async loadCached(
+    generatedUri: string,
+    generatedText: string,
+    workspace: SourceWorkspace,
+    signal?: AbortSignal,
+  ): Promise<CachedSourceMapLoadResult> {
     throwIfAborted(signal);
     const reference = lastSourceMapReference(generatedText);
     if (!reference) {
@@ -59,7 +165,7 @@ export class SourceMapLoader {
     throwIfAborted(signal);
     const cacheKey = `${mapUri}:${createHash("sha256").update(rawJson).digest("hex")}`;
     const cached = this.cache.get(cacheKey);
-    if (cached) return { mapUri, rawMap: cached, diagnostics: [] };
+    if (cached) return { mapUri, cachedMap: cached, diagnostics: [] };
 
     try {
       throwIfAborted(signal);
@@ -68,8 +174,9 @@ export class SourceMapLoader {
       if (!isRawSourceMap(parsed)) {
         throw new Error("source map has an invalid shape");
       }
-      this.cache.set(cacheKey, parsed);
-      return { mapUri, rawMap: parsed, diagnostics: [] };
+      const cachedMap = { rawMap: parsed };
+      this.cache.set(cacheKey, cachedMap);
+      return { mapUri, cachedMap, diagnostics: [] };
     } catch (error) {
       if (signal?.aborted) throw abortError();
       return failed(
@@ -78,6 +185,101 @@ export class SourceMapLoader {
       );
     }
   }
+
+  private async mappingIndex(
+    cachedMap: CachedSourceMap,
+    signal: AbortSignal | undefined,
+  ): Promise<readonly GeneratedMapping[]> {
+    throwIfAborted(signal);
+    cachedMap.mappingIndex ??= buildMappingIndex(cachedMap.rawMap);
+    const mappings = await cachedMap.mappingIndex;
+    throwIfAborted(signal);
+    return mappings;
+  }
+}
+
+async function buildMappingIndex(
+  rawMap: LoadedRawSourceMap,
+): Promise<readonly GeneratedMapping[]> {
+  return SourceMapConsumer.with(
+    rawMap as RawSourceMap,
+    null,
+    (consumer) => {
+      const mappings: GeneratedMapping[] = [];
+      consumer.eachMapping((mapping) => {
+        if (
+          !mapping.source ||
+          mapping.originalLine === null ||
+          mapping.originalColumn === null
+        ) {
+          return;
+        }
+        mappings.push({
+          generatedLine: mapping.generatedLine,
+          generatedColumn: mapping.generatedColumn,
+          source: mapping.source,
+          line: mapping.originalLine,
+          column: mapping.originalColumn,
+        });
+      }, null, SourceMapConsumer.GENERATED_ORDER);
+      return mappings;
+    },
+  );
+}
+
+function mappingWithinRule(
+  mappings: readonly GeneratedMapping[],
+  generatedRule: StylesheetRule,
+): GeneratedMapping | undefined {
+  let low = 0;
+  let high = mappings.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const mapping = mappings[middle]!;
+    const line = mapping.generatedLine - 1;
+    if (
+      line < generatedRule.range.start.line ||
+      (line === generatedRule.range.start.line &&
+        mapping.generatedColumn < generatedRule.range.start.character)
+    ) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+
+  const candidate = mappings[low];
+  return candidate && generatedMappingIsWithinRule(
+      candidate.generatedLine,
+      candidate.generatedColumn,
+      generatedRule,
+    )
+    ? candidate
+    : undefined;
+}
+
+function generatedMappingIsWithinRule(
+  generatedLine: number,
+  generatedColumn: number,
+  generatedRule: StylesheetRule,
+): boolean {
+  const line = generatedLine - 1;
+  const { start, end } = generatedRule.range;
+  if (line < start.line || line > end.line) return false;
+  if (line === start.line && generatedColumn < start.character) return false;
+  if (line === end.line && generatedColumn >= end.character) return false;
+  return true;
+}
+
+function resolveMappedSourceUrl(
+  mappedSource: string,
+  generatedSourceUrl: string,
+  mapReference: string | undefined,
+): string {
+  const sourceBaseUrl = mapReference && !mapReference.startsWith("data:")
+    ? new URL(mapReference, generatedSourceUrl).toString()
+    : generatedSourceUrl;
+  return new URL(mappedSource, sourceBaseUrl).toString();
 }
 
 function lastSourceMapReference(generatedText: string): string | undefined {
@@ -119,6 +321,16 @@ function isRawSourceMap(value: unknown): value is LoadedRawSourceMap {
 function failed(code: string, message: string): SourceMapLoadResult {
   return {
     diagnostics: [{ code, message, severity: "warning" }],
+  };
+}
+
+function invalidResolution(
+  diagnostics: readonly PluginDiagnostic[],
+): SourceMapResolution {
+  return {
+    kind: "invalid",
+    diagnosticCode: "resolver.source-read-failed",
+    diagnostics,
   };
 }
 

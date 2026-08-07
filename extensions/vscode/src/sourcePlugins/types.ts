@@ -42,6 +42,30 @@ export interface StatusAwareSourcePluginResult extends SourcePluginResult {
   readonly status: ResolutionStatus;
 }
 
+interface SourceMapResolutionBase {
+  readonly diagnostics: readonly PluginDiagnostic[];
+}
+
+export type SourceMapResolution =
+  | SourceMapResolutionBase & {
+      readonly kind: "mapped";
+      readonly mapUri: string;
+      readonly sourceUrl: string;
+      readonly line: number;
+      readonly column: number;
+    }
+  | SourceMapResolutionBase & {
+      readonly kind: "missing";
+    }
+  | SourceMapResolutionBase & {
+      readonly kind: "invalid";
+      readonly diagnosticCode: "resolver.source-read-failed";
+    }
+  | SourceMapResolutionBase & {
+      readonly kind: "unmapped";
+      readonly mapUri: string;
+    };
+
 export interface SourceResolution {
   readonly selectionMessageId: string;
   readonly documentUri: string;
