@@ -7,11 +7,13 @@ import type {
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
 import type { InspectMessage } from "@browser2ide/protocol";
+import type { ResolutionInput } from "../bridgeClient.js";
 import type { DiagnosticsTracker } from "../diagnostics.js";
 import { createBrowser2IDEApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
 import { ScssSourcePlugin } from "../sourcePlugins/scssSourcePlugin.js";
+import { toProtocolResolution } from "../sourcePlugins/resolutionOutcome.js";
 import {
   VsCodeSourceWorkspace,
   type WorkspaceHost,
@@ -60,7 +62,11 @@ export interface PresenterRuntimeOptions {
   readonly host: PresenterRuntimeHost;
   readonly registry?: SourcePluginRegistry;
   readonly workspace?: SourceWorkspace;
-  readonly diagnostics?: Pick<DiagnosticsTracker, "recordResolution">;
+  readonly diagnostics?: Pick<
+    DiagnosticsTracker,
+    "recordResolution" | "clearResolution"
+  >;
+  readonly sendResolution?: (resolution: ResolutionInput) => void;
 }
 
 export interface PresenterRuntime extends DisposableLike {
@@ -99,20 +105,22 @@ export function createPresenterRuntime(
         host.selectRangeStart(editor as PresenterEditorLike, start),
     },
     tree,
-    (error) => host.reportError(error),
+    (error) => reportSafely(host, error),
   );
   const store = new SelectionStore();
   const publish = (
     editor: ActiveEditorLike,
     resolution: SourceResolution,
   ): void => {
-    tree.update(resolution);
-    decorations.update(editor as PresenterEditorLike, resolution);
-    options.diagnostics?.recordResolution(resolution);
+    runSink(host, () => tree.update(resolution));
+    runSink(host, () =>
+      decorations.update(editor as PresenterEditorLike, resolution)
+    );
   };
   const clear = (): void => {
-    tree.clear();
-    decorations.clear();
+    runSink(host, () => tree.clear());
+    runSink(host, () => decorations.clear());
+    runSink(host, () => options.diagnostics?.clearResolution());
   };
   const coordinator = new ActiveEditorCoordinator({
     host,
@@ -120,8 +128,24 @@ export function createPresenterRuntime(
     workspace,
     store,
     publish,
+    onOutcome(publication) {
+      runSink(host, () => {
+        options.diagnostics?.recordResolution(
+          publication.outcome,
+          publication.resolutionGeneration,
+          publication.resolution,
+        );
+      });
+      runSink(host, () => {
+        options.sendResolution?.({
+          inspectMessageId: publication.inspectMessageId,
+          resolutionGeneration: publication.resolutionGeneration,
+          ...toProtocolResolution(publication.outcome),
+        });
+      });
+    },
     clear,
-    onError: (error) => host.reportError(error),
+    onError: (error) => reportSafely(host, error),
   });
   let disposed = false;
 
@@ -147,6 +171,22 @@ export function createPresenterRuntime(
       }
     },
   };
+}
+
+function runSink(host: PresenterRuntimeHost, sink: () => void): void {
+  try {
+    sink();
+  } catch (error) {
+    reportSafely(host, error);
+  }
+}
+
+function reportSafely(host: PresenterRuntimeHost, error: unknown): void {
+  try {
+    host.reportError(error);
+  } catch {
+    // Error reporting must not suppress the independent resolution sinks.
+  }
 }
 
 function createHostRange(

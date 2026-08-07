@@ -8,17 +8,24 @@ import {
   type SourcePlugin,
   type SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import { JsonObjectSchema } from "@browser2ide/protocol";
+import {
+  JsonObjectSchema,
+  type ResolutionStatus,
+} from "@browser2ide/protocol";
 import type {
+  PluginResolutionCandidate,
   ResolvedPluginDiagnostic,
   ResolvedSourceMatch,
+  SourcePluginDispatch,
   SourceResolution,
 } from "./types.js";
 
-interface PluginResolution {
+interface PluginPayload {
   readonly matches: readonly ResolvedSourceMatch[];
   readonly diagnostics: readonly ResolvedPluginDiagnostic[];
 }
+
+interface PluginResolution extends PluginPayload, PluginResolutionCandidate {}
 
 const CONFIDENCE_PRIORITY: Record<SourceMatch["confidence"], number> = {
   exact: 0,
@@ -65,36 +72,46 @@ export class SourcePluginRegistry {
     document: SourceDocument,
     workspace: SourceWorkspace,
     signal: AbortSignal,
-  ): Promise<SourceResolution> {
+  ): Promise<SourcePluginDispatch> {
     const factKinds = new Set(
       selection.targets.flatMap((target) =>
         target.facts.map((fact) => fact.type),
       ),
     );
-    const plugins = [...this.plugins.values()].filter(
-      (plugin) =>
-        matchesDocument(plugin, document) &&
-        plugin.supportedFactKinds.some((kind) => factKinds.has(kind)),
+    const documentPlugins = [...this.plugins.values()].filter((plugin) =>
+      matchesDocument(plugin, document),
+    );
+    if (documentPlugins.length === 0) {
+      return {
+        kind: "unsupported-document",
+        documentUri: document.uri,
+        documentVersion: document.version,
+      };
+    }
+    const plugins = documentPlugins.filter((plugin) =>
+      plugin.supportedFactKinds.some((kind) => factKinds.has(kind)),
     );
     const settled = await Promise.all(
       plugins.map((plugin) =>
         this.resolvePlugin(plugin, selection, document, workspace, signal),
       ),
     );
-    const validated = validateMatches(
-      settled.flatMap((entry) => entry.matches),
-      selection,
-      document,
+    const candidates = settled.map((entry) =>
+      validateCandidate(entry, selection, document),
     );
-    return {
+    const resolution: SourceResolution = {
       selectionMessageId: selection.messageId,
       documentUri: document.uri,
       documentVersion: document.version,
-      matches: deduplicateMatches(validated.matches),
-      diagnostics: [
-        ...settled.flatMap((entry) => entry.diagnostics),
-        ...validated.diagnostics,
-      ],
+      matches: deduplicateMatches(
+        candidates.flatMap((entry) => entry.matches),
+      ),
+      diagnostics: candidates.flatMap((entry) => entry.diagnostics),
+    };
+    return {
+      kind: "resolved",
+      resolution,
+      candidates,
     };
   }
 
@@ -105,7 +122,7 @@ export class SourcePluginRegistry {
     workspace: SourceWorkspace,
     signal: AbortSignal,
   ): Promise<PluginResolution> {
-    if (signal.aborted) return emptyResolution();
+    if (signal.aborted) return emptyResolution(plugin.id);
 
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -150,7 +167,7 @@ export class SourcePluginRegistry {
         });
       }
       if (outcome.kind === "cancelled" || signal.aborted) {
-        return emptyResolution();
+        return emptyResolution(plugin.id);
       }
       if (outcome.kind === "timeout") {
         return diagnosticResolution(plugin.id, {
@@ -196,7 +213,7 @@ function validateMatches(
   matches: readonly ResolvedSourceMatch[],
   selection: SelectionSnapshot,
   document: SourceDocument,
-): PluginResolution {
+): PluginPayload {
   const roles = new Set(selection.targets.map((target) => target.role));
   const valid: ResolvedSourceMatch[] = [];
   const diagnostics: ResolvedPluginDiagnostic[] = [];
@@ -215,6 +232,26 @@ function validateMatches(
   }
 
   return { matches: valid, diagnostics };
+}
+
+function validateCandidate(
+  candidate: PluginResolution,
+  selection: SelectionSnapshot,
+  document: SourceDocument,
+): PluginResolutionCandidate {
+  const validated = validateMatches(candidate.matches, selection, document);
+  const matches = deduplicateMatches(validated.matches);
+  const diagnostics = [...candidate.diagnostics, ...validated.diagnostics];
+  return {
+    pluginId: candidate.pluginId,
+    status: matches.length > 0
+      ? "matched"
+      : candidate.matches.length > 0 && validated.matches.length === 0
+        ? "error"
+        : candidate.status,
+    matches,
+    diagnostics,
+  };
 }
 
 function validRange(
@@ -280,9 +317,9 @@ function compareMatches(
   right: ResolvedSourceMatch,
 ): number {
   return (
+    rolePriority(left.targetRole) - rolePriority(right.targetRole) ||
     CONFIDENCE_PRIORITY[left.confidence] -
       CONFIDENCE_PRIORITY[right.confidence] ||
-    rolePriority(left.targetRole) - rolePriority(right.targetRole) ||
     left.pluginId.localeCompare(right.pluginId)
   );
 }
@@ -304,8 +341,13 @@ function rolePriority(role: SourceMatch["targetRole"]): number {
   return role === "selected" ? 0 : 1;
 }
 
-function emptyResolution(): PluginResolution {
-  return { matches: [], diagnostics: [] };
+function emptyResolution(pluginId: string): PluginResolution {
+  return {
+    pluginId,
+    status: "error",
+    matches: [],
+    diagnostics: [],
+  };
 }
 
 function diagnosticResolution(
@@ -313,6 +355,8 @@ function diagnosticResolution(
   diagnostic: Omit<ResolvedPluginDiagnostic, "pluginId">,
 ): PluginResolution {
   return {
+    pluginId,
+    status: "error",
     matches: [],
     diagnostics: [{ ...diagnostic, pluginId }],
   };
@@ -333,17 +377,29 @@ function normalizePluginResult(
   if (!value.matches.every(isSourceMatch)) {
     return invalidResultResolution(pluginId);
   }
+  if (value.status !== undefined && !isPluginResolutionStatus(value.status)) {
+    return invalidResultResolution(pluginId);
+  }
   const diagnostics = value.diagnostics ?? [];
   if (!diagnostics.every(isPluginDiagnostic)) {
     return invalidResultResolution(pluginId);
   }
 
-  return {
-    matches: value.matches.map((match) => ({ ...match, pluginId })),
-    diagnostics: diagnostics.map((diagnostic) => ({
+  const matches = value.matches.map((match) => ({ ...match, pluginId }));
+  const resolvedDiagnostics = diagnostics.map((diagnostic) => ({
       ...diagnostic,
       pluginId,
-    })),
+    }));
+  if (value.status === "matched" && matches.length === 0) {
+    return invalidResultResolution(pluginId);
+  }
+  return {
+    pluginId,
+    status: matches.length > 0
+      ? "matched"
+      : value.status ?? inferPluginStatus(resolvedDiagnostics),
+    matches,
+    diagnostics: resolvedDiagnostics,
   };
 }
 
@@ -401,6 +457,44 @@ function isConfidence(value: unknown): value is SourceMatch["confidence"] {
     value === "instrumented" ||
     value === "heuristic" ||
     value === "unknown";
+}
+
+function isPluginResolutionStatus(value: unknown): value is ResolutionStatus {
+  return value === "matched" ||
+    value === "source-not-found" ||
+    value === "source-not-active-document" ||
+    value === "source-ambiguous" ||
+    value === "source-map-missing" ||
+    value === "source-map-invalid" ||
+    value === "no-rule-match" ||
+    value === "rule-match-ambiguous" ||
+    value === "error";
+}
+
+function inferPluginStatus(
+  diagnostics: readonly ResolvedPluginDiagnostic[],
+): ResolutionStatus {
+  const codes = new Set(diagnostics.map((entry) => entry.code));
+  if (
+    codes.has("css.sourceAmbiguous") ||
+    codes.has("scss.generatedSourceAmbiguous") ||
+    codes.has("scss.sourceAmbiguous")
+  ) {
+    return "source-ambiguous";
+  }
+  if (codes.has("scss.originalSourceNotFound")) return "source-not-found";
+  if (codes.has("scss.sourceMapInvalid")) return "source-map-invalid";
+  if (codes.has("scss.sourceMapMissing")) return "source-map-missing";
+  if (codes.has("scss.mappingMissing")) return "no-rule-match";
+  if (
+    diagnostics.some(
+      (entry) =>
+        entry.severity === "error" || entry.code.startsWith("plugin."),
+    )
+  ) {
+    return "error";
+  }
+  return "no-rule-match";
 }
 
 function isOptionalJsonObject(value: unknown): boolean {

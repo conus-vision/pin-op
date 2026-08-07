@@ -1,6 +1,10 @@
 import * as vscode from "vscode";
 import type { Browser2IDEApi } from "@browser2ide/plugin-api";
-import { BridgeClient, type ConnectionState } from "./bridgeClient.js";
+import {
+  BridgeClient,
+  ResolutionClientRouter,
+  type ConnectionState,
+} from "./bridgeClient.js";
 import { BridgeManager } from "./bridgeManager.js";
 import { readBridgeConfiguration } from "./config.js";
 import {
@@ -31,10 +35,13 @@ export async function activate(
 ): Promise<Browser2IDEApi> {
   output = vscode.window.createOutputChannel("Browser2IDE");
   diagnostics = new DiagnosticsTracker();
+  const resolutionClients = new ResolutionClientRouter();
 
   const runtime = createPresenterRuntime({
     host: createPresenterHost(),
     diagnostics,
+    sendResolution: (resolution) =>
+      resolutionClients.sendResolution(resolution),
   });
   presenterRuntime = runtime;
 
@@ -77,9 +84,11 @@ export async function activate(
         output?.appendLine(`inspect ${message.messageId}`);
         runtime.select(message);
       });
+      resolutionClients.bind(nextClient);
       return {
         connect: () => nextClient.connect(),
         dispose() {
+          resolutionClients.unbind(nextClient);
           runtime.clear();
           nextClient.dispose();
         },
