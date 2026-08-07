@@ -4,6 +4,7 @@ import {
   BackgroundInspectCoordinator,
   BrowserBridgeClient,
   BrowserWindowLinkStore,
+  collectCssFacts,
   ContentInspectLease,
   createPanelIcons,
   createBackgroundRouter,
@@ -51,6 +52,7 @@ assert.equal(typeof BrowserBridgeClient, "function");
 assert.equal(typeof BackgroundInspectCoordinator, "function");
 assert.equal(typeof BackgroundRouter, "function");
 assert.equal(typeof BrowserWindowLinkStore, "function");
+assert.equal(typeof collectCssFacts, "function");
 assert.equal(typeof ContentInspectLease, "function");
 assert.equal(typeof createPanelIcons, "function");
 assert.equal(typeof createBackgroundRouter, "function");

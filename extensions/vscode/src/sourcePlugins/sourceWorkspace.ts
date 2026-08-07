@@ -2,6 +2,7 @@ import type {
   SourceUriResolution,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
+import type { ActiveDocumentSourceKind } from "./types.js";
 
 export interface UriLike {
   toString(): string;
@@ -15,6 +16,34 @@ export interface WorkspaceHost {
 }
 
 const EXCLUDED_WORKSPACE_PATHS = "**/{node_modules,.git}/**";
+
+export function classifyActiveDocumentSource(
+  resolution: SourceUriResolution,
+  activeDocumentUri: string,
+): ActiveDocumentSourceKind {
+  if (resolution.status === "ambiguous") return "ambiguous";
+  if (resolution.uris.length > 1) return "ambiguous";
+  if (resolution.status === "not-found") {
+    return resolution.uris.length === 0 ? "not-found" : "other-document";
+  }
+  const candidate = resolution.uris[0];
+  if (resolution.status === "unique-basename") {
+    return candidate !== undefined && sameCanonicalUri(
+        candidate,
+        activeDocumentUri,
+      )
+      ? "not-found"
+      : "other-document";
+  }
+  if (
+    resolution.status === "exact" &&
+    candidate !== undefined &&
+    sameCanonicalUri(candidate, activeDocumentUri)
+  ) {
+    return "active-document";
+  }
+  return "other-document";
+}
 
 export class VsCodeSourceWorkspace implements SourceWorkspace {
   public constructor(private readonly host: WorkspaceHost) {}
@@ -92,14 +121,29 @@ function escapeGlob(value: string): string {
 function normalizedUri(value: string): string | undefined {
   try {
     const uri = new URL(value);
-    let pathname = decodeURIComponent(uri.pathname)
+    let pathname = decodeURI(uri.pathname)
       .replace(/\\/g, "/")
-      .replace(/\/+$/, "");
-    if (process.platform === "win32" && uri.protocol === "file:") {
+      .replace(/\/+$/, "")
+      .replace(/%[0-9a-f]{2}/gi, (escape) => escape.toUpperCase());
+    if (isWindowsFileUri(uri, pathname)) {
       pathname = pathname.toLowerCase();
     }
-    return `${uri.protocol.toLowerCase()}//${uri.host.toLowerCase()}${pathname}`;
+    return `${uri.protocol.toLowerCase()}//${uri.host.toLowerCase()}${pathname}${uri.search}${uri.hash}`;
   } catch {
     return undefined;
   }
+}
+
+function sameCanonicalUri(left: string, right: string): boolean {
+  const normalizedLeft = normalizedUri(left);
+  return normalizedLeft !== undefined && normalizedLeft === normalizedUri(right);
+}
+
+function isWindowsFileUri(uri: URL, pathname: string): boolean {
+  return uri.protocol === "file:" &&
+    (
+      process.platform === "win32" ||
+      uri.host !== "" ||
+      /^\/[a-z]:\//i.test(pathname)
+    );
 }

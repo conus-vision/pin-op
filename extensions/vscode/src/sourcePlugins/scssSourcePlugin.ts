@@ -17,6 +17,7 @@ import {
   StylesheetAstCache,
   type StylesheetRule,
 } from "./stylesheetAst.js";
+import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
 import {
   SourceMapLoader,
   type LoadedRawSourceMap,
@@ -70,11 +71,20 @@ export class ScssSourcePlugin implements SourcePlugin {
         context.selection.context.url,
       );
       if (context.signal.aborted) break;
-      if (generatedResolution.status === "ambiguous") {
+      if (
+        generatedResolution.status === "ambiguous" ||
+        generatedResolution.uris.length > 1
+      ) {
         diagnostics.push(diagnostic(
           "scss.generatedSourceAmbiguous",
           `Generated CSS maps to more than one workspace file: ${entry.sourceUrl}`,
         ));
+      }
+      if (
+        generatedResolution.status !== "exact" ||
+        generatedResolution.uris.length !== 1
+      ) {
+        continue;
       }
       for (const generatedUri of generatedResolution.uris) {
         if (context.signal.aborted) break;
@@ -150,6 +160,7 @@ export class ScssSourcePlugin implements SourcePlugin {
       generated,
       entry.fact,
       generated.document,
+      entry.declarations,
     );
     let mapped: readonly (MappedPosition | undefined)[];
     try {
@@ -180,21 +191,25 @@ export class ScssSourcePlugin implements SourcePlugin {
         mapResult.mapUri,
       );
       if (context.signal.aborted) return;
-      if (sourceResolution.status === "ambiguous") {
+      const sourceKind = classifyActiveDocumentSource(
+        sourceResolution,
+        context.document.uri,
+      );
+      if (sourceKind === "ambiguous") {
         diagnostics.push(diagnostic(
           "scss.sourceAmbiguous",
           `Mapped SCSS source is ambiguous: ${position.source}`,
         ));
         continue;
       }
-      if (sourceResolution.status === "not-found") {
+      if (sourceKind === "not-found") {
         diagnostics.push(diagnostic(
           "scss.originalSourceNotFound",
           `Mapped SCSS source is not in the workspace: ${position.source}`,
         ));
         continue;
       }
-      if (!sourceResolution.uris.includes(context.document.uri)) continue;
+      if (sourceKind !== "active-document") continue;
 
       const rule = smallestContainingRule(
         originalRules,

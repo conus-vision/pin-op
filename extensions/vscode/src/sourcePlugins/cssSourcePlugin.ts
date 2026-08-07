@@ -4,13 +4,17 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourcePluginContext,
-  type SourcePluginResult,
 } from "@browser2ide/plugin-api";
+import type { ResolutionStatus } from "@browser2ide/protocol";
 import { targetCssFacts } from "./cssFacts.js";
 import {
-  findMatchingCssRules,
+  canFingerprintFallback,
+  findExactCssRules,
+  findRulesByFingerprint,
   StylesheetAstCache,
 } from "./stylesheetAst.js";
+import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
+import type { StatusAwareSourcePluginResult } from "./types.js";
 
 export class CssSourcePlugin implements SourcePlugin {
   public readonly id = "browser2ide.css";
@@ -25,12 +29,13 @@ export class CssSourcePlugin implements SourcePlugin {
 
   public async resolve(
     context: SourcePluginContext,
-  ): Promise<SourcePluginResult> {
+  ): Promise<StatusAwareSourcePluginResult> {
     let parsed;
     try {
       parsed = this.ast.parseDocument(context.document, "css");
     } catch (error) {
       return {
+        status: "error",
         matches: [],
         diagnostics: [parseDiagnostic(error)],
       };
@@ -39,39 +44,105 @@ export class CssSourcePlugin implements SourcePlugin {
     const matches: SourceMatch[] = [];
     const diagnostics: PluginDiagnostic[] = [];
     const ambiguousUrls = new Set<string>();
+    const otherDocumentUrls = new Set<string>();
+    const missingUrls = new Set<string>();
+    const ambiguousRules = new Set<string>();
+    const failures = new Set<ResolutionStatus>();
     for (const entry of targetCssFacts(context.selection)) {
       if (context.signal.aborted) break;
       const resolution = await context.workspace.resolveSourceUri(
         entry.sourceUrl,
         context.selection.context.url,
       );
-      if (
-        resolution.status === "ambiguous" &&
-        !ambiguousUrls.has(entry.sourceUrl)
-      ) {
-        ambiguousUrls.add(entry.sourceUrl);
-        diagnostics.push(ambiguousSourceDiagnostic(entry.sourceUrl));
+      const sourceKind = classifyActiveDocumentSource(
+        resolution,
+        context.document.uri,
+      );
+      if (sourceKind === "ambiguous") {
+        failures.add("source-ambiguous");
+        addOnce(
+          ambiguousUrls,
+          entry.sourceUrl,
+          diagnostics,
+          ambiguousSourceDiagnostic,
+        );
+        continue;
       }
-      if (!resolution.uris.includes(context.document.uri)) continue;
+      if (sourceKind === "other-document") {
+        failures.add("source-not-active-document");
+        addOnce(
+          otherDocumentUrls,
+          entry.sourceUrl,
+          diagnostics,
+          otherDocumentDiagnostic,
+        );
+        continue;
+      }
 
-      for (const rule of findMatchingCssRules(
-        parsed,
-        entry.fact,
-        context.document,
-      )) {
-        matches.push({
-          targetRole: entry.targetRole,
-          range: rule.range,
-          label: entry.fact.selector,
-          kind: "style-rule",
-          relation: "styles",
-          confidence: entry.fact.source ? "exact" : "heuristic",
-          metadata: { sourceUrl: entry.sourceUrl },
-        });
+      const exactRules = sourceKind === "active-document"
+        ? findExactCssRules(parsed, entry.fact, context.document)
+        : [];
+      const canFallback = sourceKind === "not-found"
+        ? canFingerprintFallback(entry.fact)
+        : canFingerprintFallback(entry.fact, context.document);
+      const rules = exactRules.length > 0
+        ? exactRules
+        : canFallback
+          ? findRulesByFingerprint(parsed, entry.fact, entry.declarations)
+          : [];
+      if (rules.length > 1) {
+        failures.add("rule-match-ambiguous");
+        addOnce(
+          ambiguousRules,
+          entry.fact.selector,
+          diagnostics,
+          ambiguousRuleDiagnostic,
+        );
+        continue;
+      }
+      const rule = rules[0];
+      if (rule) {
+        matches.push(sourceMatch(
+          entry,
+          rule.range,
+          exactRules.length > 0 ? "exact" : "heuristic",
+        ));
+        continue;
+      }
+      if (sourceKind === "not-found") {
+        failures.add("source-not-found");
+        addOnce(
+          missingUrls,
+          entry.sourceUrl,
+          diagnostics,
+          missingSourceDiagnostic,
+        );
+      } else {
+        failures.add("no-rule-match");
       }
     }
-    return { matches, diagnostics };
+    return {
+      status: matches.length > 0 ? "matched" : failureStatus(failures),
+      matches,
+      diagnostics,
+    };
   }
+}
+
+function sourceMatch(
+  entry: ReturnType<typeof targetCssFacts>[number],
+  range: SourceMatch["range"],
+  confidence: "exact" | "heuristic",
+): SourceMatch {
+  return {
+    targetRole: entry.targetRole,
+    range,
+    label: entry.fact.selector,
+    kind: "style-rule",
+    relation: "styles",
+    confidence,
+    metadata: { sourceUrl: entry.sourceUrl },
+  };
 }
 
 function parseDiagnostic(error: unknown): PluginDiagnostic {
@@ -89,6 +160,56 @@ function ambiguousSourceDiagnostic(sourceUrl: string): PluginDiagnostic {
     severity: "warning",
     metadata: { sourceUrl },
   };
+}
+
+function otherDocumentDiagnostic(sourceUrl: string): PluginDiagnostic {
+  return {
+    code: "css.sourceNotActiveDocument",
+    message: `CSS source resolves outside the active document: ${sourceUrl}`,
+    severity: "info",
+    metadata: { sourceUrl },
+  };
+}
+
+function missingSourceDiagnostic(sourceUrl: string): PluginDiagnostic {
+  return {
+    code: "css.sourceNotFound",
+    message: `CSS source is not in the workspace: ${sourceUrl}`,
+    severity: "info",
+    metadata: { sourceUrl },
+  };
+}
+
+function ambiguousRuleDiagnostic(selector: string): PluginDiagnostic {
+  return {
+    code: "css.ruleMatchAmbiguous",
+    message: `More than one CSS rule matches the available evidence: ${selector}`,
+    severity: "warning",
+  };
+}
+
+function addOnce(
+  seen: Set<string>,
+  key: string,
+  diagnostics: PluginDiagnostic[],
+  create: (value: string) => PluginDiagnostic,
+): void {
+  if (seen.has(key)) return;
+  seen.add(key);
+  diagnostics.push(create(key));
+}
+
+function failureStatus(failures: ReadonlySet<ResolutionStatus>): ResolutionStatus {
+  for (const status of [
+    "source-ambiguous",
+    "source-not-active-document",
+    "source-not-found",
+    "rule-match-ambiguous",
+    "no-rule-match",
+  ] as const) {
+    if (failures.has(status)) return status;
+  }
+  return "no-rule-match";
 }
 
 function messageOf(error: unknown): string {

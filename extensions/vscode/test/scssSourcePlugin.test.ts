@@ -19,8 +19,16 @@ describe("ScssSourcePlugin", () => {
       fixture[activeUri]!,
       fixture,
       selection([
-        cssTarget("selected", ".layout > .card", "/dist/app.css"),
-        cssTarget("parent", ".layout", "/dist/app.css"),
+        cssTarget("selected", ".layout > .card", "/dist/app.css", {
+          property: "max-width",
+          value: "32rem",
+          rulePath: "0.4",
+        }),
+        cssTarget("parent", ".layout", "/dist/app.css", {
+          property: "display",
+          value: "grid",
+          rulePath: "0.3",
+        }),
       ]),
     );
 
@@ -74,13 +82,99 @@ describe("ScssSourcePlugin", () => {
         [mapUri]: generator.toString(),
       },
       selection([
-        cssTarget("selected", ".other.featured", "/dist/app.css"),
+        cssTarget("selected", ".other.featured", "/dist/app.css", {
+          property: "color",
+          value: "blue",
+          rulePath: "0.1",
+        }),
       ]),
     );
 
     expect(result.matches).toHaveLength(1);
     expect(snippets(original, result.matches)[0]).toContain("&.featured");
     expect(snippets(original, result.matches)[0]).toContain("color: blue");
+  });
+
+  it("does not trust a unique-basename source-map target as active", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = ".card { color: red; }";
+    const generated = [
+      ".card { color: red; }",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/card.scss",
+    });
+    const files = {
+      [activeUri]: original,
+      [generatedUri]: generated,
+      [mapUri]: generator.toString(),
+    };
+    const baseWorkspace = memoryWorkspace(files);
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+      )]),
+      document: document(activeUri, original),
+      workspace: {
+        ...baseWorkspace,
+        async resolveSourceUri(sourceUrl, baseUrl) {
+          if (sourceUrl.endsWith("card.scss")) {
+            return { uris: [activeUri], status: "unique-basename" };
+          }
+          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result.matches).toEqual([]);
+    expect(result.diagnostics?.map((entry) => entry.code)).toContain(
+      "scss.originalSourceNotFound",
+    );
+  });
+
+  it("does not trust a unique-basename generated stylesheet path", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const files = {
+      [activeUri]: ".card { color: red; }",
+      [generatedUri]: ".card { color: red; }",
+    };
+    const baseWorkspace = memoryWorkspace(files);
+    const reads: string[] = [];
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+      )]),
+      document: document(activeUri, files[activeUri]),
+      workspace: {
+        ...baseWorkspace,
+        async readText(uri) {
+          reads.push(uri);
+          return baseWorkspace.readText(uri);
+        },
+        async resolveSourceUri(sourceUrl, baseUrl) {
+          if (sourceUrl === "/dist/app.css") {
+            return { uris: [generatedUri], status: "unique-basename" };
+          }
+          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result.matches).toEqual([]);
+    expect(reads).toEqual([]);
   });
 
   it.each([
@@ -264,6 +358,11 @@ function cssTarget(
   role: "selected" | "parent",
   selector: string,
   sourceUrl: string,
+  options: {
+    readonly property?: string;
+    readonly value?: string;
+    readonly rulePath?: string;
+  } = {},
 ): InspectTarget & { facts: CssRuleFact[] } {
   return {
     role,
@@ -273,9 +372,16 @@ function cssTarget(
       {
         type: "css-rule",
         selector,
-        property: "color",
-        value: "red",
-        metadata: { sourceUrl },
+        property: options.property ?? "color",
+        value: options.value ?? "red",
+        metadata: {
+          sourceUrl,
+          media: [],
+          mediaTruncated: false,
+          rulePath: options.rulePath ?? "0.0",
+          valueTruncated: false,
+          important: false,
+        },
       },
     ],
     metadata: {},

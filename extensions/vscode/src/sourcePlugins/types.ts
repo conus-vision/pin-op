@@ -1,6 +1,7 @@
 import type {
   PluginDiagnostic,
   SourceMatch,
+  SourcePluginResult,
 } from "@browser2ide/plugin-api";
 import type { ResolutionStatus } from "@browser2ide/protocol";
 
@@ -10,6 +11,35 @@ export interface ResolvedSourceMatch extends SourceMatch {
 
 export interface ResolvedPluginDiagnostic extends PluginDiagnostic {
   readonly pluginId: string;
+}
+
+export type ActiveDocumentSourceKind =
+  | "active-document"
+  | "not-found"
+  | "other-document"
+  | "ambiguous";
+
+export interface CssDeclarationEvidence {
+  readonly property: string;
+  readonly value: string;
+  readonly important?: boolean;
+  readonly valueComplete?: boolean;
+}
+
+export interface NormalizedDeclaration {
+  readonly property: string;
+  readonly value: string;
+  readonly important: boolean;
+}
+
+export interface RuleFingerprint {
+  readonly selector: string | undefined;
+  readonly declarations: readonly NormalizedDeclaration[];
+  readonly conditions: readonly string[];
+}
+
+export interface StatusAwareSourcePluginResult extends SourcePluginResult {
+  readonly status: ResolutionStatus;
 }
 
 export interface SourceResolution {
