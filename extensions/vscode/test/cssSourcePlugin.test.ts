@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type {
   SelectionSnapshot,
@@ -9,6 +10,7 @@ import {
   type CssRuleFact,
   type InspectTarget,
 } from "@browser2ide/protocol";
+import { collectCssFacts } from "../../../packages/browser-extension-core/src/collectCssFacts.js";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
 import {
   DOCUMENT_STYLESHEET_CACHE_LIMIT,
@@ -27,24 +29,28 @@ describe("CssSourcePlugin", () => {
       "  .card { color: blue; }",
       "}",
     ].join("\n");
+    const parent = cssTarget("parent", ".layout", "/dist/app.css");
+    parent.facts[0] = {
+      ...parent.facts[0]!,
+      property: "display",
+      value: "grid",
+    };
     const result = await resolveCss(
       text,
       selection([
         cssTarget("selected", ".card", "/dist/app.css"),
-        cssTarget("parent", ".layout", "/dist/app.css"),
+        parent,
       ]),
     );
 
     expect(result.matches.map((match) => [match.targetRole, match.label])).toEqual(
       [
         ["selected", ".card"],
-        ["selected", ".card"],
         ["parent", ".layout"],
       ],
     );
     expect(snippets(text, result.matches)).toEqual([
       ".card { color: red; }",
-      ".card { color: blue; }",
       ".layout { display: grid; }",
     ]);
   });
@@ -72,8 +78,11 @@ describe("CssSourcePlugin", () => {
     expect(snippets(text, exact.matches)).toEqual([
       ".card { color: blue; }",
     ]);
-    expect(fallback.matches).toHaveLength(2);
+    expect(fallback.matches).toHaveLength(1);
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
+    expect(snippets(text, fallback.matches)).toEqual([
+      ".card { color: red; }",
+    ]);
   });
 
   it.each([
@@ -798,7 +807,7 @@ describe("CssSourcePlugin", () => {
     );
   });
 
-  it("never falls back when a rule path is malformed, excessive, or unresolved", async () => {
+  it("rejects malformed paths but falls back after a valid unresolved path", async () => {
     const malformed = cssTarget("selected", ".card", "/dist/app.css");
     malformed.facts[0]!.metadata.rulePath = "0.not-an-index";
     const excessive = cssTarget("parent", ".layout", "/dist/app.css");
@@ -811,10 +820,13 @@ describe("CssSourcePlugin", () => {
       selection([malformed, excessive, unresolved]),
     );
 
-    expect(result.matches).toEqual([]);
+    expect(snippets(
+      ".layout { display: grid; }\n.card { color: red; }",
+      result.matches,
+    )).toEqual([".card { color: red; }"]);
   });
 
-  it("does not use selector fallback for an invalidated path collision", () => {
+  it("uses a fingerprint fallback for an invalidated path collision", () => {
     const ast = new StylesheetAstCache();
     const parsed = ast.parseText(
       "file:///workspace/dist/app.css",
@@ -836,13 +848,85 @@ describe("CssSourcePlugin", () => {
     expect(() =>
       findMatchingCssRules(collided, fact, parsed.document)
     ).not.toThrow();
-    expect(findMatchingCssRules(collided, fact, parsed.document)).toEqual([]);
+    expect(findMatchingCssRules(collided, fact, parsed.document)).toHaveLength(1);
   });
 
-  it("returns bounded exact duplicates only when rulePath is absent", async () => {
+  it("uses fixture fallback for a nested browser path and preserves duplicate ambiguity", async () => {
+    const text = (await readFile(
+      new URL("../../../examples/basic-css/fallback.css", import.meta.url),
+      "utf8",
+    )).replace(/\r\n/g, "\n");
+    const collected = collectCssFacts(
+      { matches: (selector) => selector === ".browser2ide-path-miss" },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/fallback.css",
+          cssRules: [
+            collectorStyleRule(".browser2ide-cssom-only", "--fixture", "cssom"),
+            {
+              cssRules: [
+                collectorStyleRule(".card", "background-color", "rgb(245, 247, 250)"),
+                collectorStyleRule(
+                  ".browser2ide-path-miss",
+                  "outline-style",
+                  "dashed",
+                ),
+                collectorStyleRule(
+                  ".duplicate-selector",
+                  "text-decoration-line",
+                  "underline",
+                ),
+              ],
+            },
+          ],
+        }],
+      },
+    );
+    expect(collected.facts).toEqual([
+      expect.objectContaining({
+        selector: ".browser2ide-path-miss",
+        property: "outline-style",
+        value: "dashed",
+        metadata: expect.objectContaining({ rulePath: "0.1.1" }),
+      }),
+    ]);
+
+    const fallback = await resolveCss(
+      text,
+      selection([collectedTarget(collected.facts, null)]),
+    );
+
+    expect(fallback.status).toBe("matched");
+    expect(fallback.matches).toHaveLength(1);
+    expect(fallback.matches[0]?.confidence).toBe("heuristic");
+    expect(snippets(text, fallback.matches)).toEqual([
+      [
+        ".browser2ide-path-miss {",
+        "  outline-style: dashed;",
+        "}",
+      ].join("\n"),
+    ]);
+
+    const duplicate = cssTarget(
+      "selected",
+      ".duplicate-selector",
+      "/fallback.css",
+    );
+    duplicate.facts[0]!.property = "text-decoration";
+    duplicate.facts[0]!.value = "underline";
+    duplicate.facts[0]!.metadata.rulePath = "0.1.2";
+
+    const ambiguous = await resolveCss(text, selection([duplicate]));
+
+    expect(ambiguous.status).toBe("rule-match-ambiguous");
+    expect(ambiguous.matches).toEqual([]);
+  });
+
+  it("reports bounded indistinguishable duplicates and refuses oversized buckets", async () => {
     const boundedText = [
       ".duplicate { color: red; }",
-      ".duplicate { color: blue; }",
+      ".duplicate { color: red; }",
     ].join("\n");
     const bounded = await resolveCss(
       boundedText,
@@ -857,7 +941,8 @@ describe("CssSourcePlugin", () => {
       selection([cssTarget("selected", ".duplicate", "/dist/app.css")]),
     );
 
-    expect(bounded.matches).toHaveLength(2);
+    expect(bounded.matches).toEqual([]);
+    expect(bounded.status).toBe("rule-match-ambiguous");
     expect(oversized.matches).toEqual([]);
   });
 
@@ -887,7 +972,10 @@ describe("CssSourcePlugin", () => {
     const bySelector: CssRuleFact = {
       ...byPath,
       selector: ".rule-512",
-      metadata: { sourceUrl: "/dist/app.css" },
+      value: "512",
+      metadata: completeRuntimeMetadata("/dist/app.css", {
+        rulePath: "0.2048",
+      }),
     };
 
     expect(findMatchingCssRules(parsed, byPath, source).map(
@@ -1012,8 +1100,323 @@ describe("CssSourcePlugin", () => {
     );
 
     expect(ambiguous.matches).toEqual([]);
+    expect(ambiguous.status).toBe("source-ambiguous");
     expect(ambiguous.diagnostics?.[0]?.code).toBe("css.sourceAmbiguous");
     expect(different.matches).toEqual([]);
+    expect(different.status).toBe("source-not-active-document");
+    expect(JSON.stringify(different)).not.toContain(
+      "file:///workspace/other.css",
+    );
+  });
+
+  it("does not grant CSSOM path authority to a unique basename", async () => {
+    const target = cssTarget("selected", ".card", "/assets/app.css");
+    target.facts[0]!.metadata = {
+      sourceUrl: "/assets/app.css",
+      rulePath: "0.0",
+      media: [],
+      mediaTruncated: false,
+      valueTruncated: false,
+      important: false,
+    };
+    const text = [
+      ".wrong { color: blue; }",
+      ".card { color: red; }",
+    ].join("\n");
+
+    const result = await resolveCss(
+      text,
+      selection([target]),
+      {
+        uris: ["file:///workspace/dist/app.css"],
+        status: "unique-basename",
+      },
+    );
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".card { color: red; }",
+    ]);
+    expect(result.matches[0]?.confidence).toBe("heuristic");
+  });
+
+  it("does not heuristic-resolve a fact without stable rule identity", async () => {
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata = {
+      sourceUrl: "/dist/app.css",
+      media: [],
+      mediaTruncated: false,
+      valueTruncated: false,
+      important: false,
+    };
+
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([target]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("no-rule-match");
+  });
+
+  it("does not combine pathless declarations into synthetic rule evidence", async () => {
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts.splice(0, target.facts.length,
+      {
+        ...target.facts[0]!,
+        property: "color",
+        value: "red",
+        metadata: {
+          sourceUrl: "/dist/app.css",
+          media: [],
+          mediaTruncated: false,
+          valueTruncated: false,
+          important: false,
+        },
+      },
+      {
+        ...target.facts[0]!,
+        property: "display",
+        value: "grid",
+        metadata: {
+          sourceUrl: "/dist/app.css",
+          media: [],
+          mediaTruncated: false,
+          valueTruncated: false,
+          important: false,
+        },
+      },
+    );
+
+    const result = await resolveCss(
+      ".card { color: red; display: grid; }",
+      selection([target]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("no-rule-match");
+  });
+
+  it("falls back to a unique fingerprint after an active-source path miss", async () => {
+    const text = [
+      ".card {",
+      "  color: red;",
+      "  display: grid;",
+      "}",
+      ".card { color: blue; display: flex; }",
+    ].join("\n");
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/dist/app.css",
+      [["display", "grid"], ["color", "red"]],
+    );
+    target.facts.forEach((fact) => {
+      fact.metadata.rulePath = "0.99";
+    });
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        confidence: "heuristic",
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 3, character: 1 },
+        },
+      }),
+    ]);
+    expect(snippets(text, result.matches)).toEqual([
+      [
+        ".card {",
+        "  color: red;",
+        "  display: grid;",
+        "}",
+      ].join("\n"),
+    ]);
+  });
+
+  it("matches CSSOM selector-list whitespace after a path miss", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".a,.b",
+      "/dist/app.css",
+      [["display", "grid"]],
+    );
+    target.facts[0]!.metadata.rulePath = "0.99";
+
+    const result = await resolveCss(
+      ".a, .b { display: grid; }",
+      selection([target]),
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({ confidence: "heuristic" }),
+    ]);
+  });
+
+  it("uses explicit empty media context only for top-level rules", async () => {
+    const target = completeCssTarget(".card", {
+      rulePath: "0.99",
+      media: [],
+    });
+    const text = [
+      "@media screen { .card { color: red; } }",
+      ".card { color: red; }",
+    ].join("\n");
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".card { color: red; }",
+    ]);
+  });
+
+  it.each([
+    ["media", ["media"]],
+    ["media completion", ["mediaTruncated"]],
+    ["value completion", ["valueTruncated"]],
+    ["priority", ["important"]],
+  ] as const)("rejects heuristic facts missing explicit %s evidence", async (
+    _name,
+    omitted,
+  ) => {
+    const target = completeCssTarget(".card", { rulePath: "0.99" });
+    for (const key of omitted) delete target.facts[0]!.metadata[key];
+
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([target]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("no-rule-match");
+  });
+
+  it("keeps exact CSSOM path resolution independent of fingerprint metadata", async () => {
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([target]),
+    );
+
+    expect(result.matches).toEqual([
+      expect.objectContaining({ confidence: "exact" }),
+    ]);
+  });
+
+  it("allows active-document fallback only when source is wholly not found", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/missing/app.css",
+      [["display", "grid"]],
+    );
+    target.facts[0]!.source = {
+      uri: "http://localhost:4173/missing/app.css",
+      line: 999,
+      column: 1,
+      metadata: {},
+    };
+    const result = await resolveCss(
+      ".card { display: grid; }",
+      selection([target]),
+      { uris: [], status: "not-found" },
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({ confidence: "heuristic" }),
+    ]);
+  });
+
+  it.each([
+    ["other-document", { uris: ["file:///workspace/other.css"], status: "exact" } as const, "source-not-active-document"],
+    ["ambiguous", { uris: [], status: "ambiguous" } as const, "source-ambiguous"],
+  ])("does not fingerprint-fallback for %s source resolution", async (
+    _name,
+    resolution,
+    status,
+  ) => {
+    const result = await resolveCss(
+      ".card { display: grid; }",
+      selection([cssTargetWithDeclarations(
+        "selected",
+        ".card",
+        "/app.css",
+        [["display", "grid"]],
+      )]),
+      resolution,
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe(status);
+  });
+
+  it("reports ambiguity instead of choosing duplicate strong candidates", async () => {
+    const result = await resolveCss(
+      [
+        ".card { color: red; display: grid; }",
+        ".card { display: grid; color: red; }",
+      ].join("\n"),
+      selection([cssTargetWithDeclarations(
+        "selected",
+        ".card",
+        "/dist/app.css",
+        [["color", "red"], ["display", "grid"]],
+      )]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("rule-match-ambiguous");
+  });
+
+  it("does not displace an exact path result with a stronger fingerprint", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/dist/app.css",
+      [["color", "blue"], ["display", "grid"]],
+    );
+    target.facts.forEach((fact) => {
+      fact.metadata.rulePath = "0.0";
+    });
+    const text = [
+      ".card { color: red; }",
+      ".card { color: blue; display: grid; }",
+    ].join("\n");
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".card { color: red; }",
+    ]);
+    expect(result.matches[0]?.confidence).toBe("exact");
+  });
+
+  it("uses available media evidence and fails conservatively on mismatch", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/dist/app.css",
+      [["color", "red"]],
+    );
+    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+    const text = [
+      "@media (min-width:40rem) { .card { color: red; } }",
+      "@media (min-width:60rem) { .card { color: red; } }",
+    ].join("\n");
+
+    const matched = await resolveCss(text, selection([target]));
+    target.facts[0]!.metadata.media = ["(orientation: landscape)"];
+    const mismatched = await resolveCss(text, selection([target]));
+
+    expect(matched.matches).toHaveLength(1);
+    expect(mismatched.matches).toEqual([]);
+    expect(mismatched.status).toBe("no-rule-match");
   });
 
   it("coalesces declaration facts from the same rule", async () => {
@@ -1029,6 +1432,204 @@ describe("CssSourcePlugin", () => {
     expect(result.matches).toHaveLength(1);
   });
 
+  it("does not merge media-incomplete facts into complete rule evidence", async () => {
+    const target = completeCssTarget(".card", { rulePath: "0.99" });
+    target.facts.push({
+      ...target.facts[0]!,
+      property: "display",
+      value: "grid",
+      metadata: {
+        ...target.facts[0]!.metadata,
+        mediaTruncated: true,
+      },
+    });
+
+    const result = await resolveCss(
+      [
+        ".card { color: red; display: block; }",
+        ".card { color: red; display: grid; }",
+      ].join("\n"),
+      selection([target]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("rule-match-ambiguous");
+  });
+
+  it("uses priority evidence emitted by the browser collector", async () => {
+    const collected = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/dist/app.css",
+          cssRules: [{
+            selectorText: ".card",
+            style: {
+              length: 1,
+              item: () => "color",
+              getPropertyValue: () => "red",
+              getPropertyPriority: () => "important",
+            },
+          }],
+        }],
+      },
+    );
+    const target: InspectTarget = {
+      role: "selected",
+      depth: 0,
+      subject: { selector: ".card", metadata: {} },
+      facts: collected.facts.map((fact) => ({
+        ...fact,
+        metadata: { ...fact.metadata, rulePath: "0.99" },
+      })),
+      metadata: {},
+    };
+    const text = [
+      ".card { color: red; }",
+      ".card { color: red !important; }",
+    ].join("\n");
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(collected.facts[0]?.metadata.important).toBe(true);
+    expect(snippets(text, result.matches)).toEqual([
+      ".card { color: red !important; }",
+    ]);
+  });
+
+  it("rejects pre-trim value truncation reported by the collector", async () => {
+    const prefix = "x".repeat(INSPECT_LIMITS.valueLength - 1);
+    const collected = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/dist/app.css",
+          cssRules: [{
+            selectorText: ".card",
+            style: {
+              length: 1,
+              item: () => "--payload",
+              getPropertyValue: () => `${prefix} tail`,
+              getPropertyPriority: () => "",
+            },
+          }],
+        }],
+      },
+    );
+
+    const result = await resolveCss(
+      `.card { --payload: ${prefix}; }`,
+      selection([collectedTarget(collected.facts)]),
+    );
+
+    expect(collected.facts[0]?.metadata.valueTruncated).toBe(true);
+    expect(result.matches).toEqual([]);
+  });
+
+  it("rejects pre-trim media truncation reported by the collector", async () => {
+    const condition = "screen-" + "x".repeat(
+      INSPECT_LIMITS.valueLength - "screen-".length - 1,
+    );
+    const collected = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/dist/app.css",
+          cssRules: [{
+            conditionText: `${condition} tail`,
+            media: { mediaText: `${condition} tail` },
+            cssRules: [{
+              selectorText: ".card",
+              style: {
+                length: 1,
+                item: () => "color",
+                getPropertyValue: () => "red",
+                getPropertyPriority: () => "",
+              },
+            }],
+          }],
+        }],
+      },
+    );
+
+    const result = await resolveCss(
+      `@media ${condition} { .card { color: red; } }`,
+      selection([collectedTarget(collected.facts)]),
+    );
+
+    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(result.matches).toEqual([]);
+  });
+
+  it("rejects nested media count overflow reported by the collector", async () => {
+    const conditions = Array.from(
+      { length: INSPECT_LIMITS.mediaConditions + 1 },
+      (_, index) => `(min-width: ${index + 1}px)`,
+    );
+    const collected = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/dist/app.css",
+          cssRules: [collectorMediaRules(
+            conditions,
+            collectorStyleRule(),
+          )],
+        }],
+      },
+    );
+    const text = mediaCss(
+      conditions.slice(0, INSPECT_LIMITS.mediaConditions),
+      ".card { color: red; }",
+    );
+
+    const result = await resolveCss(
+      text,
+      selection([collectedTarget(collected.facts)]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+  });
+
+  it("rejects imported media count overflow reported by the collector", async () => {
+    const conditions = Array.from(
+      { length: INSPECT_LIMITS.mediaConditions },
+      (_, index) => `(min-width: ${index + 1}px)`,
+    );
+    const importedUrl = "http://localhost:4173/imported.css";
+    const collected = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:4173/",
+        styleSheets: [{
+          href: "/dist/app.css",
+          cssRules: [collectorMediaRules(conditions, {
+            href: importedUrl,
+            media: { mediaText: "print" },
+            styleSheet: {
+              href: importedUrl,
+              cssRules: [collectorStyleRule()],
+            },
+          })],
+        }],
+      },
+    );
+    const text = mediaCss(conditions, ".card { color: red; }");
+
+    const result = await resolveCss(
+      text,
+      selection([collectedTarget(collected.facts)]),
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+  });
+
   it("filters media evidence and returns parse diagnostics without stale ranges", async () => {
     const plugin = new CssSourcePlugin();
     const text = [
@@ -1036,6 +1637,7 @@ describe("CssSourcePlugin", () => {
       "@media (min-width: 40rem) { .card { color: blue; } }",
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.value = "blue";
     (target.facts[0] as CssRuleFact).metadata.media = ["(min-width: 40rem)"];
     const first = await resolveCss(text, selection([target]), undefined, plugin);
 
@@ -1115,11 +1717,101 @@ function cssTarget(
         property: "color",
         value: "red",
         source,
-        metadata: { sourceUrl },
+        metadata: completeRuntimeMetadata(sourceUrl, {
+          rulePath: "0.99",
+        }),
       },
     ],
     metadata: {},
   };
+}
+
+function completeCssTarget(
+  selector: string,
+  metadata: Readonly<Record<string, unknown>> = {},
+): InspectTarget & { facts: CssRuleFact[] } {
+  const target = cssTarget("selected", selector, "/dist/app.css");
+  target.facts[0]!.metadata = completeRuntimeMetadata(
+    "/dist/app.css",
+    metadata,
+  );
+  return target;
+}
+
+function cssTargetWithDeclarations(
+  role: "selected" | "parent",
+  selector: string,
+  sourceUrl: string,
+  declarations: readonly (readonly [string, string])[],
+): InspectTarget & { facts: CssRuleFact[] } {
+  const target = cssTarget(role, selector, sourceUrl);
+  target.facts.splice(
+    0,
+    target.facts.length,
+    ...declarations.map(([property, value]) => ({
+      type: "css-rule" as const,
+      selector,
+      property,
+      value,
+      metadata: completeRuntimeMetadata(sourceUrl, {
+        rulePath: "0.99",
+      }),
+    })),
+  );
+  return target;
+}
+
+function collectedTarget(
+  facts: readonly CssRuleFact[],
+  rulePath: string | null = "0.99",
+): InspectTarget {
+  return {
+    role: "selected",
+    depth: 0,
+    subject: { selector: facts[0]?.selector ?? ".card", metadata: {} },
+    facts: facts.map((fact) => ({
+      ...fact,
+      metadata: {
+        ...fact.metadata,
+        ...(rulePath === null ? {} : { rulePath }),
+      },
+    })),
+    metadata: {},
+  };
+}
+
+function collectorStyleRule(
+  selector = ".card",
+  property = "color",
+  value = "red",
+) {
+  return {
+    selectorText: selector,
+    style: {
+      length: 1,
+      item: () => property,
+      getPropertyValue: () => value,
+      getPropertyPriority: () => "",
+    },
+  };
+}
+
+function collectorMediaRules(
+  conditions: readonly string[],
+  leaf: unknown,
+): unknown {
+  return conditions.reduceRight<unknown>((nested, condition) => ({
+    conditionText: condition,
+    media: { mediaText: condition },
+    cssRules: [nested],
+  }), leaf);
+}
+
+function mediaCss(conditions: readonly string[], rule: string): string {
+  return conditions.reduceRight(
+    (nested, condition) => `@media ${condition} { ${nested} }`,
+    rule,
+  );
 }
 
 function cssFact(
@@ -1134,7 +1826,21 @@ function cssFact(
     selector,
     property,
     value,
-    metadata: { sourceUrl, rulePath },
+    metadata: completeRuntimeMetadata(sourceUrl, { rulePath }),
+  };
+}
+
+function completeRuntimeMetadata(
+  sourceUrl: string,
+  overrides: Readonly<Record<string, unknown>> = {},
+): CssRuleFact["metadata"] {
+  return {
+    sourceUrl,
+    media: [],
+    mediaTruncated: false,
+    valueTruncated: false,
+    important: false,
+    ...overrides,
   };
 }
 

@@ -1,15 +1,19 @@
 import {
   ClientSourceSchema,
   type ClientSource,
+  type PeerStateMessage,
+  type ResolutionMessage,
 } from "@browser2ide/protocol";
 import {
   BrowserBridgeClient,
   BrowserProtocolError,
   withoutInternalRoutingMetadata,
   type BrowserBridgeClientOptions,
+  type BrowserBridgeSubscription,
   type BrowserConnectionState,
   type BrowserCredentials,
   type InspectPayload,
+  type InspectSendOutcome,
 } from "./bridgeClient.js";
 import {
   BrowserWindowLinkStore,
@@ -30,7 +34,10 @@ export interface PanelRegistration {
   readonly windowId: number;
   readonly tabId: number;
   readonly sourceId: string;
-  readonly onStateChanged?: (state: BrowserWindowConnectionState) => void;
+  readonly onStateChanged?: (
+    state: BrowserWindowConnectionState,
+    displayLinkCode?: string,
+  ) => void;
 }
 
 export interface WindowConnectionClient {
@@ -38,7 +45,17 @@ export interface WindowConnectionClient {
   connect(credentials: BrowserCredentials): void;
   disconnect(): void;
   unlink(): void;
-  sendInspect(payload: InspectPayload, sourceId?: string): boolean;
+  sendInspect(
+    inspectMessageId: string,
+    payload: InspectPayload,
+    sourceId: string,
+  ): InspectSendOutcome;
+  onResolution(
+    listener: (message: ResolutionMessage) => void,
+  ): BrowserBridgeSubscription;
+  onPeerState(
+    listener: (message: PeerStateMessage) => void,
+  ): BrowserBridgeSubscription;
 }
 
 export type WindowConnectionClientFactory = (
@@ -64,6 +81,7 @@ interface PendingCodeLink {
   readonly url: string;
   readonly port: number;
   readonly pin: string;
+  readonly displayLinkCode: string;
   readonly source: ClientSource;
 }
 
@@ -82,6 +100,7 @@ interface WindowRecord {
   state: BrowserWindowConnectionState;
   client?: WindowConnectionClient;
   clientToken?: object;
+  clientSubscriptions?: readonly BrowserBridgeSubscription[];
   clientConnected: boolean;
   connectionSource?: ClientSource;
   link?: BrowserWindowLink;
@@ -109,6 +128,12 @@ export class WindowConnectionCoordinator {
   private readonly sourceOwners = new Map<string, RegistrationEntry>();
   private readonly tabOwners = new Map<number, RegistrationEntry>();
   private readonly storeTails = new Map<number, Promise<void>>();
+  private readonly resolutionListeners = new Set<
+    (windowId: number, message: ResolutionMessage) => void
+  >();
+  private readonly peerStateListeners = new Set<
+    (windowId: number, message: PeerStateMessage) => void
+  >();
   private disposed = false;
 
   public constructor(options: WindowConnectionCoordinatorOptions) {
@@ -165,6 +190,7 @@ export class WindowConnectionCoordinator {
       url: parsedCode.url,
       port: parsedCode.port,
       pin: parsedCode.pin,
+      displayLinkCode: formatDisplayLinkCode(parsedCode.value),
       source: connectionSource,
     };
     record.pendingLink = pendingLink;
@@ -243,7 +269,7 @@ export class WindowConnectionCoordinator {
     record.registrations.set(snapshot.sourceId, entry);
     this.sourceOwners.set(snapshot.sourceId, entry);
     this.tabOwners.set(snapshot.tabId, entry);
-    notifyRegistration(entry, record.state);
+    notifyRegistration(entry, record.state, displayLinkCodeFor(record));
 
     if (record.registrations.size === 1) {
       this.activateFirstPanel(record, entry);
@@ -256,9 +282,10 @@ export class WindowConnectionCoordinator {
 
   public publishInspect(
     windowId: number,
+    inspectMessageId: string,
     sourceId: string,
     payload: InspectPayload,
-  ): boolean {
+  ): InspectSendOutcome {
     const record = this.records.get(windowId);
     const entry = record?.registrations.get(sourceId);
     if (
@@ -269,18 +296,31 @@ export class WindowConnectionCoordinator {
       !record.client ||
       !entry
     ) {
-      return false;
+      return "not-connected";
     }
 
     try {
       return record.client.sendInspect(
+        inspectMessageId,
         withoutInternalRoutingMetadata(payload),
         sourceId,
       );
     } catch {
       this.setState(record, "error");
-      return false;
+      return "transport-error";
     }
+  }
+
+  public onResolution(
+    listener: (windowId: number, message: ResolutionMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.resolutionListeners, listener);
+  }
+
+  public onPeerState(
+    listener: (windowId: number, message: PeerStateMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.peerStateListeners, listener);
   }
 
   public state(windowId: number): BrowserWindowConnectionState {
@@ -326,6 +366,8 @@ export class WindowConnectionCoordinator {
     this.records.clear();
     this.sourceOwners.clear();
     this.tabOwners.clear();
+    this.resolutionListeners.clear();
+    this.peerStateListeners.clear();
   }
 
   private activateFirstPanel(
@@ -470,6 +512,22 @@ export class WindowConnectionCoordinator {
       return;
     }
     record.client = client;
+    const subscriptions: BrowserBridgeSubscription[] = [];
+    record.clientSubscriptions = subscriptions;
+    try {
+      subscriptions.push(client.onResolution((message) =>
+        this.forwardResolution(record, generation, token, message),
+      ));
+      subscriptions.push(client.onPeerState((message) =>
+        this.forwardPeerState(record, generation, token, message),
+      ));
+    } catch {
+      if (this.isCurrentToken(record, generation, token)) {
+        this.disconnectClient(record);
+        this.setState(record, "error");
+      }
+      return;
+    }
     try {
       start(client);
     } catch {
@@ -501,6 +559,7 @@ export class WindowConnectionCoordinator {
       sessionId: credentials.sessionId,
       bridgeInstanceId: credentials.bridgeInstanceId,
       authToken: credentials.authToken,
+      displayLinkCode: pendingCode.displayLinkCode,
     };
     record.pendingLink = {
       kind: "credentials",
@@ -639,7 +698,7 @@ export class WindowConnectionCoordinator {
     record.connectionSource = undefined;
     record.credentialsWritePending = false;
     record.reconnectAttempts = 0;
-    this.setState(record, "offline");
+    this.setState(record, "notLinked");
     void this.enqueueStore(record.windowId, () =>
       this.store.remove(record.windowId),
     ).catch(() => {
@@ -789,6 +848,7 @@ export class WindowConnectionCoordinator {
 
   private revokeClient(record: WindowRecord): void {
     const client = record.client;
+    this.disposeClientSubscriptions(record);
     record.client = undefined;
     record.clientToken = undefined;
     record.clientConnected = false;
@@ -804,6 +864,7 @@ export class WindowConnectionCoordinator {
 
   private disconnectClient(record: WindowRecord): void {
     const client = record.client;
+    this.disposeClientSubscriptions(record);
     record.client = undefined;
     record.clientToken = undefined;
     record.clientConnected = false;
@@ -868,6 +929,45 @@ export class WindowConnectionCoordinator {
     );
   }
 
+  private forwardResolution(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    message: ResolutionMessage,
+  ): void {
+    if (!this.isCurrentToken(record, generation, token)) {
+      return;
+    }
+    notifyWindowEvent(this.resolutionListeners, record.windowId, message);
+  }
+
+  private forwardPeerState(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    message: PeerStateMessage,
+  ): void {
+    if (!this.isCurrentToken(record, generation, token)) {
+      return;
+    }
+    notifyWindowEvent(this.peerStateListeners, record.windowId, message);
+  }
+
+  private disposeClientSubscriptions(record: WindowRecord): void {
+    const subscriptions = record.clientSubscriptions;
+    record.clientSubscriptions = undefined;
+    if (!subscriptions) {
+      return;
+    }
+    for (const subscription of subscriptions) {
+      try {
+        subscription.dispose();
+      } catch {
+        // Client listener cleanup must not prevent connection teardown.
+      }
+    }
+  }
+
   private setState(
     record: WindowRecord,
     state: BrowserWindowConnectionState,
@@ -876,8 +976,9 @@ export class WindowConnectionCoordinator {
       return;
     }
     record.state = state;
+    const displayLinkCode = displayLinkCodeFor(record);
     for (const entry of [...record.registrations.values()]) {
-      notifyRegistration(entry, state);
+      notifyRegistration(entry, state, displayLinkCode);
     }
   }
 
@@ -983,11 +1084,60 @@ function isWindowId(value: number): boolean {
 function notifyRegistration(
   entry: RegistrationEntry,
   state: BrowserWindowConnectionState,
+  displayLinkCode?: string,
 ): void {
   try {
-    entry.registration.onStateChanged?.(state);
+    entry.registration.onStateChanged?.(state, displayLinkCode);
   } catch {
     // A panel callback cannot break connection ownership for other panels.
+  }
+}
+
+function displayLinkCodeFor(record: WindowRecord): string | undefined {
+  if (record.link) {
+    return record.link.displayLinkCode;
+  }
+  if (record.state === "error") {
+    return undefined;
+  }
+  if (record.pendingLink?.kind === "code") {
+    return record.pendingLink.displayLinkCode;
+  }
+  return record.pendingLink?.link.displayLinkCode;
+}
+
+function formatDisplayLinkCode(value: string): string {
+  return `${value.slice(0, 5)} ${value.slice(5)}`;
+}
+
+function subscribeWindowEvent<T>(
+  listeners: Set<(windowId: number, message: T) => void>,
+  listener: (windowId: number, message: T) => void,
+): BrowserBridgeSubscription {
+  listeners.add(listener);
+  let disposed = false;
+  return {
+    dispose(): void {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      listeners.delete(listener);
+    },
+  };
+}
+
+function notifyWindowEvent<T>(
+  listeners: Set<(windowId: number, message: T) => void>,
+  windowId: number,
+  message: T,
+): void {
+  for (const listener of [...listeners]) {
+    try {
+      listener(windowId, message);
+    } catch {
+      // One router listener cannot interrupt delivery to another listener.
+    }
   }
 }
 

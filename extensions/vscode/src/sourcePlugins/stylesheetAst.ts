@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import postcss, {
   type AtRule,
   type Container,
+  type Declaration,
   type Document,
   type Root,
   type Rule,
@@ -18,6 +19,20 @@ import {
   type CssRuleFact,
 } from "@browser2ide/protocol";
 import { BoundedLruCache } from "./boundedLruCache.js";
+import {
+  parseBrowserRulePath,
+  stableCssRuleIdentity,
+} from "./cssFacts.js";
+import {
+  declarationEvidenceFromFact,
+  declarationFingerprint,
+  declarationsContainEvidence,
+  normalizeCondition,
+} from "./declarationFingerprint.js";
+import type {
+  CssDeclarationEvidence,
+  RuleFingerprint,
+} from "./types.js";
 
 export type StylesheetSyntax = "css" | "scss";
 
@@ -26,6 +41,7 @@ export interface StylesheetRule {
   readonly range: SourceRange;
   readonly startOffset: number;
   readonly endOffset: number;
+  readonly fingerprint: RuleFingerprint;
 }
 
 type RuleIndex = ReadonlyMap<string, StylesheetRule | null>;
@@ -48,6 +64,7 @@ export const GENERATED_STYLESHEET_CACHE_LIMIT = 32;
 
 interface CachedDocumentStylesheet {
   readonly version: number;
+  readonly contentHash: string;
   readonly parsed: ParsedStylesheet;
 }
 
@@ -65,11 +82,18 @@ export class StylesheetAstCache {
     syntax: StylesheetSyntax,
   ): ParsedStylesheet {
     const key = `${syntax}:${document.uri}`;
+    const text = document.getText();
+    const contentHash = hashText(text);
     const cached = this.documents.get(key);
-    if (cached?.version === document.version) return cached.parsed;
+    if (
+      cached?.version === document.version &&
+      cached.contentHash === contentHash
+    ) {
+      return cached.parsed;
+    }
 
-    const parsed = parseStylesheet(document, syntax);
-    this.documents.set(key, { version: document.version, parsed });
+    const parsed = parseStylesheet(document, syntax, text);
+    this.documents.set(key, { version: document.version, contentHash, parsed });
     return parsed;
   }
 
@@ -78,18 +102,30 @@ export class StylesheetAstCache {
     syntax: StylesheetSyntax,
     text: string,
   ): ParsedStylesheet {
-    const hash = createHash("sha256").update(text).digest("hex");
+    const hash = hashText(text);
     const key = `${syntax}:${uri}:${hash}`;
     const cached = this.generated.get(key);
     if (cached) return cached;
 
-    const parsed = parseStylesheet(textDocument(uri, text), syntax);
+    const parsed = parseStylesheet(textDocument(uri, text), syntax, text);
     this.generated.set(key, parsed);
     return parsed;
   }
 }
 
 export function findMatchingCssRules(
+  stylesheet: ParsedStylesheet,
+  fact: CssRuleFact,
+  document: SourceDocument,
+  declarations?: readonly CssDeclarationEvidence[],
+): StylesheetRule[] {
+  const exact = findExactCssRules(stylesheet, fact, document);
+  if (exact.length > 0) return exact;
+  if (!canFingerprintFallback(fact, document)) return [];
+  return [...findRulesByFingerprint(stylesheet, fact, declarations)];
+}
+
+export function findExactCssRules(
   stylesheet: ParsedStylesheet,
   fact: CssRuleFact,
   document: SourceDocument,
@@ -115,14 +151,63 @@ export function findMatchingCssRules(
     return rule ? [rule] : [];
   }
 
+  return [];
+}
+
+export function canFingerprintFallback(
+  fact: CssRuleFact,
+  document?: SourceDocument,
+): boolean {
+  if (stableCssRuleIdentity(fact) === undefined) return false;
+  if (factMedia(fact) === null) return false;
+  if (fact.source !== undefined) {
+    if (!validSourcePosition(fact.source.line, fact.source.column)) return false;
+    if (!document) return true;
+    const requested = {
+      line: fact.source.line - 1,
+      character: fact.source.column - 1,
+    };
+    return samePosition(
+      document.positionAt(document.offsetAt(requested)),
+      requested,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(fact.metadata, "rulePath")) {
+    return parseBrowserRulePath(fact.metadata.rulePath) !== undefined;
+  }
+  return true;
+}
+
+export function findRulesByFingerprint(
+  stylesheet: ParsedStylesheet,
+  fact: CssRuleFact,
+  declarations?: readonly CssDeclarationEvidence[],
+): readonly StylesheetRule[] {
+  if (!canFingerprintFallback(fact)) return [];
+  const bucket = fingerprintBucket(stylesheet, fact);
+  if (!bucket) return [];
+  const factDeclaration = declarationEvidenceFromFact(fact);
+  const evidence = declarationFingerprint(
+    declarations ?? (factDeclaration ? [factDeclaration] : []),
+  );
+  if (evidence.length === 0) return [];
+  return bucket.filter((rule) =>
+    declarationsContainEvidence(rule.fingerprint.declarations, evidence)
+  );
+}
+
+function fingerprintBucket(
+  stylesheet: ParsedStylesheet,
+  fact: CssRuleFact,
+): readonly StylesheetRule[] {
   const selector = fallbackSelectorKey(fact.selector);
   if (selector === undefined) return [];
   const media = factMedia(fact);
   if (media === null) return [];
-  const bucket = media === undefined
-    ? stylesheet.fallbackIndex.get(selector)
-    : stylesheet.fallbackMediaIndex.get(fallbackMediaKey(selector, media));
-  return bucket ? [...bucket] : [];
+  const bucket = stylesheet.fallbackMediaIndex.get(
+    fallbackMediaKey(selector, media),
+  );
+  return bucket ?? [];
 }
 
 export function smallestContainingRule(
@@ -134,15 +219,21 @@ export function smallestContainingRule(
   ));
 }
 
-export function normalizeSelector(selector: string): string {
-  return selector.trim();
+export function normalizeSelector(selector: string): string | undefined {
+  const trimmed = selector.trim();
+  if (!trimmed) return undefined;
+  try {
+    return selectorParser().processSync(trimmed, { lossless: false }).trim();
+  } catch {
+    return undefined;
+  }
 }
 
 function parseStylesheet(
   document: SourceDocument,
   syntax: StylesheetSyntax,
+  text = document.getText(),
 ): ParsedStylesheet {
-  const text = document.getText();
   const root = syntax === "scss"
     ? parseScss(text, { from: document.uri })
     : postcss.parse(text, { from: document.uri });
@@ -205,7 +296,26 @@ function ruleFromNode(
     },
     startOffset: start,
     endOffset: end,
+    fingerprint: {
+      selector: normalizeSelector(node.selector),
+      declarations: declarationFingerprint(directDeclarations(node)),
+      conditions: containingMedia(node).map(normalizeCondition),
+    },
   };
+}
+
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function directDeclarations(node: Rule): CssDeclarationEvidence[] {
+  return (node.nodes ?? [])
+    .filter((child): child is Declaration => child.type === "decl")
+    .map((declaration) => ({
+      property: declaration.prop,
+      value: declaration.value,
+      important: declaration.important,
+    }));
 }
 
 type ContainerContext = "rules" | "keyframes";
@@ -292,7 +402,11 @@ class CssomIndexBuilder {
       }
       const rule = this.rulesByNode.get(owner);
       if (rule) {
-        this.fallback.add(rule, containingMediaFrom(container));
+        this.fallback.add(
+          rule,
+          containingMediaFrom(container),
+          pathTrusted && withinBudget,
+        );
       }
       cssomIndex += 1;
       declarationsPending = false;
@@ -331,7 +445,11 @@ class CssomIndexBuilder {
         const withinBudget = this.visitRule();
         const rule = this.rulesByNode.get(node);
         if (rule) {
-          this.fallback.add(rule, containingMedia(node));
+          this.fallback.add(
+            rule,
+            containingMedia(node),
+            pathTrusted && withinBudget,
+          );
           if (pathTrusted && withinBudget) this.addPath(path, node);
         } else {
           pathTrusted = false;
@@ -445,14 +563,20 @@ class FallbackIndexBuilder {
   private entries = 0;
   private disabled = false;
 
-  public add(rule: StylesheetRule, media: readonly string[]): void {
-    if (this.disabled) return;
-    const selector = fallbackSelectorKey(rule.selector);
+  public add(
+    rule: StylesheetRule,
+    media: readonly string[],
+    trusted: boolean,
+  ): void {
+    if (this.disabled || !trusted) return;
+    const normalizedSelector = rule.fingerprint.selector;
+    if (normalizedSelector === undefined) return;
+    const selector = fallbackSelectorKey(normalizedSelector);
     if (selector === undefined) return;
     this.addToIndex(this.selectorIndex, selector, rule);
     this.addToIndex(
       this.mediaIndex,
-      fallbackMediaKey(selector, media.map(normalizeMedia)),
+      fallbackMediaKey(selector, media.map(normalizeCondition)),
       rule,
     );
   }
@@ -802,58 +926,31 @@ function samePosition(left: SourcePosition, right: SourcePosition): boolean {
   return left.line === right.line && left.character === right.character;
 }
 
-function parseBrowserRulePath(value: unknown): string | undefined {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > INSPECT_LIMITS.selectorLength
-  ) {
-    return undefined;
-  }
-  const segments = value.split(".");
-  if (
-    segments.length < 2 ||
-    segments.length > INSPECT_LIMITS.cssRuleDepth + 2
-  ) {
-    return undefined;
-  }
-  for (const [index, segment] of segments.entries()) {
-    if (!/^(?:0|[1-9]\d*)$/.test(segment)) return undefined;
-    const numeric = Number(segment);
-    const upperBound = index === 0
-      ? INSPECT_LIMITS.stylesheets
-      : INSPECT_LIMITS.cssRules;
-    if (!Number.isSafeInteger(numeric) || numeric >= upperBound) {
-      return undefined;
-    }
-  }
-  return segments.slice(1).join(".");
-}
-
 function fallbackSelectorKey(selector: string): string | undefined {
   if (selector.length === 0 || selector.length > INSPECT_LIMITS.selectorLength) {
     return undefined;
   }
-  const key = normalizeSelector(selector);
-  return key.length > 0 ? key : undefined;
+  return normalizeSelector(selector);
 }
 
 function factMedia(
   fact: CssRuleFact,
-): readonly string[] | undefined | null {
+): readonly string[] | null {
+  const mediaTruncated = fact.metadata.mediaTruncated;
+  if (typeof mediaTruncated !== "boolean" || mediaTruncated) return null;
   const value = fact.metadata.media;
-  if (value === undefined) return undefined;
   if (
     !Array.isArray(value) ||
     value.length > INSPECT_LIMITS.mediaConditions ||
     !value.every((entry) =>
       typeof entry === "string" &&
+      entry.trim().length > 0 &&
       entry.length <= INSPECT_LIMITS.valueLength
     )
   ) {
     return null;
   }
-  return value.map(normalizeMedia);
+  return value.map(normalizeCondition);
 }
 
 function fallbackMediaKey(
@@ -885,7 +982,7 @@ function containingMediaFrom(
 }
 
 function normalizeMedia(value: string): string {
-  return value.trim();
+  return normalizeCondition(value);
 }
 
 function smallestRule(

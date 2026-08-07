@@ -1,2 +1,84 @@
 @use "card";
 @use "layout";
+
+.source-mapped-app {
+  color: #202124;
+}
+
+.dynamic-card {
+  max-width: 20rem;
+  margin-block-start: 0.5rem;
+  padding: 0.75rem;
+  border: 2px solid #1769aa;
+  background: #eef6fc;
+}
+
+#open-shadow-host {
+  min-height: 2.5rem;
+}
+
+.layout {
+  width: min(100% - 2rem, 56rem);
+  margin: 1rem auto;
+}
+
+.fixture-section {
+  padding-block: 0.75rem;
+  border-block-start: 1px solid #c7ccd1;
+}
+
+.fixture-section > h2 {
+  margin-block: 0 0.75rem;
+  font-size: 1rem;
+}
+
+.fixture-section > div {
+  margin-block: 0.35rem;
+  padding: 0.35rem;
+}
+
+.inline-style-case {
+  border-inline-start: 4px solid var(--inline-accent);
+}
+
+.multiline-wrap {
+  width: 16rem;
+  margin: 0;
+  font-family: Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.multiline-inline {
+  background: #fff3bf;
+  box-decoration-break: clone;
+}
+
+.frame-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.frame-grid > h2 {
+  grid-column: 1 / -1;
+}
+
+.frame-grid iframe {
+  width: 100%;
+  min-height: 10rem;
+  border: 1px solid #7f8c8d;
+}
+
+@media (min-width: 1px) {
+  .active-media-rule {
+    outline: 2px solid #267a4b;
+  }
+}
+
+@media (max-width: 44rem) {
+  .frame-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

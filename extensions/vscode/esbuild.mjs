@@ -3,6 +3,11 @@ import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import {
+  RUNTIME_METADATA_FILENAME,
+  serializeRuntimeMetadata,
+} from "../../tools/runtime-metadata.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const distDirectory = resolve(extensionRoot, "dist");
@@ -52,6 +57,11 @@ await Promise.all([
   writeFile(
     resolve(distDirectory, "extension-meta.json"),
     `${JSON.stringify(extensionBuild.metafile, null, 2)}\n`,
+    "utf8",
+  ),
+  writeFile(
+    resolve(distDirectory, RUNTIME_METADATA_FILENAME),
+    serializeRuntimeMetadata(PROTOCOL_VERSION),
     "utf8",
   ),
   writeThirdPartyNotices(extensionBuild.metafile),

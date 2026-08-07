@@ -1,196 +1,196 @@
 # Browser2IDE Security
 
-Browser2IDE is a local, read-only development tool. Its current model assumes
-that the browser extensions and VS Code extension run under the same trusted
-desktop user account.
+Browser2IDE is a local, read-only development tool. Its model assumes the
+browser and VS Code extensions run under one trusted desktop user account. It
+does not treat every other process under that account as trusted.
 
 ## Transport Boundary
 
-Browser2IDE exposes no HTTP product API. Firefox and Chrome/Chromium use
-WebSocket product traffic:
+Browser2IDE has no product HTTP API. Product traffic uses a loopback WebSocket:
 
 ```text
 browser extension -> ws://127.0.0.1:<managed-port> -> VS Code extension
 ```
 
-The bridge binds only to `127.0.0.1` and tries ports `48735..48834`; it never
-listens on a LAN or public interface. When an Origin header is present, the
-bridge accepts supported Firefox and Chromium extension origins and rejects
-ordinary webpage origins. Originless local clients are limited to the IDE and
-development tooling. This blocks an inspected webpage from opening the bridge
-directly, but it does not defend against a malicious process already running as
-the same desktop user.
+The bridge binds only to `127.0.0.1` on ports `48735..48834`; it never listens
+on a LAN or public interface. When a WebSocket Origin is present, the bridge
+accepts supported Firefox and Chromium extension origins and rejects webpage
+origins. Originless clients still have to satisfy protocol role, token, session,
+and bridge-instance checks.
 
-Chrome/Chromium requires version 116 or newer. Browser2IDE's 15-second bridge
-heartbeat both detects dead clients and keeps an authenticated Manifest V3
-service-worker WebSocket active under Chrome's supported lifecycle behavior.
+Loopback binding prevents network peers from connecting directly. It does not
+protect against a malicious process already running as the same desktop user.
 
-## Explicit Browser-Window Selection
+## Explicit Browser-Window Linking
 
-Browser2IDE never discovers an IDE automatically. The user copies a seven-digit
-code from the intended VS Code window and enters it in a specific browser
-window's DevTools panel. The first five digits select one exact loopback port;
-the final two digits are that running bridge's PIN.
+Browser2IDE never discovers an IDE. The user clicks the intended VS Code
+window's status item and enters that exact code in one browser window. The first
+five digits identify one loopback port and the final two digits are that bridge
+instance's PIN.
 
-The browser background owns the mapping. It accepts panel commands only from
-the expected extension page, resolves the sender's tab and window itself, and
-does not trust panel-supplied window or tab identity. Each linked browser window
-owns one mapping and, while one or more panels are active, at most one active
-WebSocket shared by those panels. A different browser window starts unlinked
-and cannot reuse that mapping.
+The extension background derives tab and browser-window identity from browser
+APIs rather than trusting values supplied by a panel or webpage. One browser
+window owns one session link and at most one active authenticated socket while
+panels are active. Another window does not inherit it.
 
-`Change IDE` and `Unlink` affect only the current browser window. Closing that
-window removes its mapping, credentials, registrations, and socket while other
-windows continue independently.
+**Disconnect** affects only the current browser window: it disables inspection,
+revokes the browser token, removes the session record, and closes the socket.
 
-## Code, PIN, And Rate Limit
+## PIN And Authentication
 
-Every bridge start creates a fresh random two-digit PIN and bridge instance
-UUID. Leading zeroes are significant. The PIN remains valid only for that
-running bridge instance.
+Every bridge start creates a random two-digit PIN, bridge instance UUID, and
+role-bound token set. The two-digit PIN is accidental cross-link protection,
+not strong authentication. It is intentionally not presented as protection
+against a hostile same-user process.
 
-Five failed PIN attempts trigger a bridge-wide 60-second cooldown. The limit is
-shared across sockets, so parallel attempts cannot bypass it. Rejection is
-generic and does not disclose whether a PIN was close or correct.
+Five failed PIN attempts trigger a bridge-wide 60-second cooldown. Parallel
+sockets share the limit. Errors do not disclose whether the PIN was correct.
+Unauthenticated connections have ten seconds to finish one valid handshake.
 
-The raw code and PIN are ephemeral. The browser does not persist them, and the
-panel clears the code field after a successful link and during teardown. The
-intentional user-facing exposures are the VS Code status item, the clipboard
-after clicking it, and the panel field while linking. Clipboard contents remain
-under operating-system control until replaced by the user or another program.
+The read-only scope is essential to this risk decision. Browser2IDE does not
+write or edit page/workspace source and does not execute shell, page, workspace,
+or user-supplied commands. Stronger authentication is required before any write,
+remote transport, command execution, or multi-user host is considered.
 
-A two-digit PIN is acceptable only for the localhost, read-only MVP:
+## Credentials And Session Storage
 
-- the browser exports bounded inspection facts;
-- VS Code decorates and reveals source ranges;
-- Browser2IDE does not write project or page source;
-- Browser2IDE does not execute arbitrary workspace or page commands.
+Server tokens and IDE credentials live only in the running VS Code extension
+host. Tokens are bound to role, session, and bridge instance. Stopping the bridge
+revokes them and discards its identity.
 
-Authentication must be strengthened before enabling writes, arbitrary command
-execution, remote transport, or multi-user hosts.
-
-## Credentials And Lifetime
-
-Every bridge start creates a fresh `bridgeInstanceId` and random role-bound
-token set. Tokens are bound to a protocol session and bridge instance. Browser,
-IDE, and simulator roles cannot exchange tokens. The server-side token registry
-and IDE credentials exist only in extension-host memory; stopping the bridge
-revokes them and discards the instance identity.
-
-After linking, the browser stores one record per linked browser window in
+After linking, the browser stores one record for that browser window in
 `browser.storage.session`:
 
-- the exact loopback WebSocket endpoint and port;
-- the session ID;
-- the bridge instance ID;
-- the authenticated browser token.
+- exact loopback WebSocket endpoint and port;
+- session ID and bridge instance ID;
+- authenticated browser token;
+- formatted display code used to confirm the linked VS Code window.
 
-No browser credential is written to persistent local storage. While at least
-one panel is active, all panels in the same browser window share at most one
-active socket. Closing the final panel disconnects that socket but retains the
-session record. Reopening a panel authenticates a new socket from the saved
-session credentials and never restores Inspect mode. Closing the browser window
-removes its record; restarting the browser clears all session records.
+This is session storage, not durable local storage. The original input field is
+cleared. Closing the final panel closes the active socket but can retain the
+window session record; reopening a panel authenticates from it. Closing the
+window, ending the browser session, or selecting Disconnect removes the record.
+Credentials from a restarted, expired, or different bridge fail closed and are
+discarded.
 
-If saved credentials reach a different bridge instance, expire, or are revoked,
-the browser deletes that window's record, disables inspection, and requires a
-new explicit code. `Unlink` also revokes the browser token before removing the
-record. Merely closing a panel releases that tab's inspect lease but leaves the
-window link available to its other tabs.
+## Targeted Replies And Peer State
 
-Authenticated messages retain the session and role identity. Per-tab source
-IDs are multiplexed over the browser window's socket and are created and bound
-to tab/window registrations by the extension background, not by inspected page
-data. Invalid, stale, cross-window, and unregistered source routes are rejected
-before an inspect message is sent.
+Protocol version `4` binds each accepted inspect ID to the exact browser
+connection that sent it. IDE resolution replies are routed only to that
+connection. Cross-connection inspect-ID collisions, stale routes, wrong roles,
+and wrong sessions fail closed. Routes are bounded and removed with the client.
+
+Bridge-generated peer state reports IDE availability with an increasing
+generation. A stale peer update or source-resolution generation cannot replace
+newer panel state.
 
 ## Clipboard Access
 
-The browser extension requests clipboard-read permission for the Paste control.
-It calls the clipboard API only in direct response to that explicit user
-action. Opening DevTools, opening the panel, linking another tab, or enabling
-Inspect mode does not read the clipboard. Clipboard denial leaves manual code
-entry available and does not create a link.
+VS Code writes the code to the operating-system clipboard only after its status
+item is clicked. The browser reads the clipboard only after Paste is clicked.
+Opening DevTools, linking another tab, browsing the tree, or enabling the picker
+does not read it. Manual entry remains available on denial.
 
-## Inspected-Page Host Access
+The operating system controls clipboard retention after a copy. The browser's
+session-only formatted display code includes the PIN, so users should Disconnect
+or end the browser session on shared machines.
 
-Firefox and Chrome require `<all_urls>` host access because the background must
-inject the inspect content script into the arbitrary page currently being
-debugged. `activeTab` is not granted merely by opening DevTools, and optional
-host declarations would leave ordinary inspected sites unavailable without a
-separate permission flow.
+## Inspected-Page Access
 
-The broad match pattern is an injection capability, not automatic activation.
-Browser2IDE injects into a tab only when all of these are true:
+Firefox and Chrome request `<all_urls>` because the background must inject the
+Inspector runtime into the arbitrary page being debugged. Opening DevTools does
+not grant `activeTab` access by itself.
 
-- its Browser2IDE DevTools panel is open;
-- that browser window has been explicitly linked;
-- the user has explicitly enabled Inspect mode for the tab.
+Injection requires all of these conditions:
 
-Turning Inspect off or closing the panel releases the content-script lease.
-Browser-protected pages can still deny injection. The extension has no feature
-that navigates pages, submits forms, edits DOM/source, calls browser cookie
-APIs, or executes user-supplied commands.
+- the Browser2IDE DevTools panel is open for the tab;
+- its browser window has an explicit link;
+- the user enables the page picker or requests the tab's DOM tree.
 
-## Browser Data Collection
+Browser-protected pages can reject injection. Browser2IDE has no feature that
+navigates a page, submits forms, edits DOM or source, reads cookies, or invokes
+user-supplied code.
 
-The MVP inspects only the selected DOM element and its immediate DOM parent. It
-does not collect DOM text content by default. Allowed bounded facts include:
+## Browser-Local DOM Tree
 
-- page URL and origin;
-- tag, ID, classes, selector candidates, and permitted `data-*`, `aria-*`, or
-  role attributes;
-- stylesheet URLs and accessibility status;
-- matched selectors and CSS declarations needed for source resolution;
-- generated positions and development-only namespaced source metadata.
+The DOM tree stays browser-local. Its node refs, labels, child pages, cursors,
+selection path, document/frame epochs, branch revisions, hover state, and
+box-model geometry do not travel over the product WebSocket.
 
-The collector does not deliberately read cookies, request or response headers,
-form-control values, or DOM text. This is not a content-classification or
-redaction guarantee: the complete page URL and route, and permitted `data-*`
-and `aria-*` attribute values, are bounded by size but may themselves contain
-API keys, nonces, framework state, personal data, or other sensitive values.
-CSS and development source metadata can carry application-chosen values too.
-Do not enable Browser2IDE inspection on sensitive pages or elements whose URLs,
-routes, attributes, or development metadata contain information that must not
-leave the browser process.
+The panel talks to the inspected tab through a background-bound opaque channel.
+Node refs are useful only within that channel and current document/frame
+authority. Navigation, mutation, collapse, frame lifecycle changes, record
+pressure, and disposal invalidate stale refs and cursors.
 
-## Sensitive Output
+Tree labels are bounded plain text. They include tag, ID, classes, and approved
+attribute names but not DOM text or attribute values. The tree renders only
+element nodes plus explicit open-shadow and frame-document boundaries.
 
-Browser2IDE components do not deliberately add their own link code, PIN, or
-bridge auth token to extension logs, source-plugin metadata, protocol error
-details, or inspection facts. Page-controlled values forwarded as bounded facts
-are not scanned for lookalike secrets. User-facing errors use a closed,
-sanitized vocabulary and do not include raw exception text.
+- Open shadow roots are traversed only when the platform exposes them.
+- Same-origin frame documents are registered under bounded frame authority.
+- A cross-origin frame becomes an inaccessible locked leaf and must fail closed.
+- A closed shadow root cannot be inspected and must fail closed.
+
+The overlay is extension-owned, `aria-hidden`, pointer-inert, style-isolated,
+and excluded from tree traversal. Unsafe transformed or fragmented geometry is
+omitted rather than approximated.
+
+## Bounded Facts Sent To VS Code
+
+Only a valid selection creates protocol facts. Browser2IDE sends bounded facts
+for the selected element and its immediate parent:
+
+- page URL and route;
+- tag, ID, classes, selectors, and permitted `data-*`, `aria-*`, and `role`
+  names and values;
+- stylesheet URL/accessibility, selectors, declarations, media conditions, and
+  CSSOM rule-path or source-position evidence;
+- namespaced development metadata when explicitly produced by the application.
+
+These bounded inspection facts are not content-redacted. URLs, routes,
+identifiers, attributes, CSS values, and application metadata can contain
+sensitive data. Avoid sensitive pages unless sending these values to the linked
+local VS Code window is acceptable.
+
+The browser does not deliberately collect cookies, headers, form-control values,
+DOM text, workspace files, source maps, or source text. Local VS Code plugins
+read workspace source and source maps only for local resolution. Browser2IDE
+does not upload source or maps to a remote service.
 
 ## Resource Bounds
 
-The bridge rejects WebSocket messages larger than 1 MiB before schema
-processing. Protocol v3 further limits each inspect envelope to 768 KiB, at
-most two targets, 256 facts per target, and bounded strings, attributes, URLs,
-routes, selectors, and metadata.
+The bridge rejects WebSocket messages over 1 MiB. Protocol version `4` limits an
+inspect envelope to 768 KiB, two targets, 256 facts per target, and bounded
+strings, arrays, metadata, selectors, declarations, URLs, and routes. Resolution
+replies are limited to 16 KiB and closed status/diagnostic vocabularies.
 
-Browser collection reserves 512 KiB for page-controlled facts across the
-selected element and parent. Per target it examines at most 256 stylesheets and
-4,096 CSS rules, descends at most 32 group-rule levels, reads at most 128
-declarations per rule, retains at most 16 media conditions and 64 inaccessible
-stylesheet records, and records at most 128 class names. Collection stops when
-the fact or byte budget is exhausted.
+Browser collection has byte, stylesheet, rule, nesting, declaration, class,
+attribute, and inaccessible-stylesheet budgets. The browser-local tree limits
+message size, channel count, node/page/path/invalidation counts, provider and
+cursor records, scan slices, and rendered virtual rows. Work stops or fails
+closed when a bound is reached.
 
-## Source Plugin Trust Boundary
+## Source Resolution
 
-Browser2IDE never loads executable plugins, npm packages, or configuration from
-an inspected workspace. It does not evaluate project code to discover source
-mappings.
+The IDE resolves only the active document. Exact CSS evidence wins. The CSS
+fingerprint fallback requires stable selector/media/declaration evidence and a
+unique result; ambiguity produces no highlight. SCSS requires one generated
+rule, a valid source map, and a mapping into the active SCSS document. Missing,
+invalid, unmapped, ambiguous, or other-document cases fail closed and produce a
+bounded footer status.
 
-A source plugin is a separately installed VS Code extension that depends on the
-Browser2IDE core and registers through the versioned source-plugin API. It
-follows VS Code's extension installation and trust model. Browser2IDE host
-services expose constrained document/workspace reads and source resolution;
-they do not fetch arbitrary URLs, load workspace modules, or execute workspace
-programs. Third-party extensions remain responsible for behavior performed
-through their own normal extension-host permissions.
+Browser2IDE does not load executable code from an inspected workspace. A
+separately installed source plugin is independently trusted VS Code extension
+code. It receives the validated selection, active document, cancellation, and
+bounded workspace discovery/read services. Review third-party plugins and their
+privacy behavior separately.
 
-Framework, template, PHP, WordPress, or ACF mappings may eventually require
-development-only build/server instrumentation. Such instrumentation must emit
-only stable source identity and must never change production responses or
-include secrets and user data.
+## Sensitive Output
+
+Browser2IDE does not deliberately place auth tokens or raw credentials in
+diagnostics, protocol errors, source-plugin metadata, or inspection facts.
+User-facing errors use bounded, sanitized vocabularies. Page-controlled values
+are not scanned for secret-looking content.
+
+See [../PRIVACY.md](../PRIVACY.md) for data handling and
+[../SECURITY.md](../SECURITY.md) for private reporting.

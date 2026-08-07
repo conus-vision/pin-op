@@ -1,4 +1,8 @@
-import type { ClientSource } from "@browser2ide/protocol";
+import type {
+  ClientSource,
+  PeerStateMessage,
+  ResolutionMessage,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserWindowLinkStore,
@@ -11,6 +15,7 @@ import {
   type SessionStorage,
   type WindowConnectionClient,
 } from "../src/index.js";
+import type { InspectSendOutcome } from "../src/bridgeClient.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -89,10 +94,11 @@ describe("browser-window workflow", () => {
       expect(
         coordinator.publishInspect(
           windowId,
+          `inspect-${tabId}`,
           `panel-${tabId}`,
           selection(tabId),
         ),
-      ).toBe(true);
+      ).toBe("sent");
     }
 
     expect(instanceA.sourceIds).toEqual(["panel-101", "panel-102"]);
@@ -108,14 +114,29 @@ describe("browser-window workflow", () => {
       {},
     ]);
     expect(
-      coordinator.publishInspect(10, "panel-201", selection(201)),
-    ).toBe(false);
+      coordinator.publishInspect(
+        10,
+        "inspect-wrong-window-a",
+        "panel-201",
+        selection(201),
+      ),
+    ).toBe("not-connected");
     expect(
-      coordinator.publishInspect(20, "panel-101", selection(101)),
-    ).toBe(false);
+      coordinator.publishInspect(
+        20,
+        "inspect-wrong-window-b",
+        "panel-101",
+        selection(101),
+      ),
+    ).toBe("not-connected");
     expect(
-      coordinator.publishInspect(10, "unknown-source", selection(101)),
-    ).toBe(false);
+      coordinator.publishInspect(
+        10,
+        "inspect-unknown-source",
+        "unknown-source",
+        selection(101),
+      ),
+    ).toBe("not-connected");
 
     panel102.dispose();
     panel102 = coordinator.registerPanel({
@@ -124,8 +145,13 @@ describe("browser-window workflow", () => {
       sourceId: "panel-102",
     });
     expect(
-      coordinator.publishInspect(10, "panel-102", selection(102)),
-    ).toBe(true);
+      coordinator.publishInspect(
+        10,
+        "inspect-panel-102-reused",
+        "panel-102",
+        selection(102),
+      ),
+    ).toBe("sent");
 
     expect(instanceA.clients).toHaveLength(1);
     expect(instanceA.linkPins).toEqual(["07"]);
@@ -150,8 +176,13 @@ describe("browser-window workflow", () => {
     expect(instanceA.linkPins).toEqual(["07"]);
     expect(instanceA.connectCredentials).toEqual([instanceA.credentials]);
     expect(
-      coordinator.publishInspect(10, "panel-102", selection(102)),
-    ).toBe(true);
+      coordinator.publishInspect(
+        10,
+        "inspect-panel-102-reconnected",
+        "panel-102",
+        selection(102),
+      ),
+    ).toBe("sent");
 
     await coordinator.removeWindow(10);
 
@@ -160,11 +191,21 @@ describe("browser-window workflow", () => {
     expect(instanceA.clients[1]?.unlinkCalls).toBe(1);
     expect(coordinator.state(10)).toBe("notLinked");
     expect(
-      coordinator.publishInspect(10, "panel-101", selection(101)),
-    ).toBe(false);
+      coordinator.publishInspect(
+        10,
+        "inspect-removed-panel-101",
+        "panel-101",
+        selection(101),
+      ),
+    ).toBe("not-connected");
     expect(
-      coordinator.publishInspect(10, "panel-102", selection(102)),
-    ).toBe(false);
+      coordinator.publishInspect(
+        10,
+        "inspect-removed-panel-102",
+        "panel-102",
+        selection(102),
+      ),
+    ).toBe("not-connected");
     await expect(store.load(10)).resolves.toBeUndefined();
 
     const reusedRegistrationStates: string[] = [];
@@ -182,8 +223,13 @@ describe("browser-window workflow", () => {
     expect(coordinator.state(20)).toBe("linked");
     expect(instanceB.activeClientCount).toBe(1);
     expect(
-      coordinator.publishInspect(20, "panel-202", selection(202)),
-    ).toBe(true);
+      coordinator.publishInspect(
+        20,
+        "inspect-panel-202-final",
+        "panel-202",
+        selection(202),
+      ),
+    ).toBe("sent");
     await expect(store.load(20)).resolves.toEqual(savedLink(instanceB));
     expect(storage.values).toEqual({
       "browser2ide.windowLink.20": savedLink(instanceB),
@@ -210,6 +256,7 @@ class FakeBridgeInstance {
   public readonly linkPins: string[] = [];
   public readonly connectCredentials: BrowserCredentials[] = [];
   public readonly received: Array<{
+    inspectMessageId: string;
     payload: InspectPayload;
     sourceId: string;
   }> = [];
@@ -258,14 +305,15 @@ class FakeBridgeInstance {
 
   public receive(
     client: FakeWindowClient,
+    inspectMessageId: string,
     payload: InspectPayload,
-    sourceId: string | undefined,
-  ): boolean {
-    if (!client.active || !sourceId) {
-      return false;
+    sourceId: string,
+  ): InspectSendOutcome {
+    if (!client.active) {
+      return "not-connected";
     }
-    this.received.push({ payload, sourceId });
-    return true;
+    this.received.push({ inspectMessageId, payload, sourceId });
+    return "sent";
   }
 }
 
@@ -297,8 +345,20 @@ class FakeWindowClient implements WindowConnectionClient {
     this.active = false;
   }
 
-  public sendInspect(payload: InspectPayload, sourceId?: string): boolean {
-    return this.instance.receive(this, payload, sourceId);
+  public sendInspect(
+    inspectMessageId: string,
+    payload: InspectPayload,
+    sourceId: string,
+  ): InspectSendOutcome {
+    return this.instance.receive(this, inspectMessageId, payload, sourceId);
+  }
+
+  public onResolution(_listener: (message: ResolutionMessage) => void) {
+    return { dispose(): void {} };
+  }
+
+  public onPeerState(_listener: (message: PeerStateMessage) => void) {
+    return { dispose(): void {} };
   }
 
   public activate(): void {
@@ -350,6 +410,7 @@ function savedLink(instance: FakeBridgeInstance): BrowserWindowLink {
   return {
     url: instance.url,
     port: Number(new URL(instance.url).port),
+    displayLinkCode: `${new URL(instance.url).port} ${instance.pin}`,
     ...instance.credentials,
   };
 }

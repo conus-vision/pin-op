@@ -1,4 +1,9 @@
-import type { ProtocolErrorCode } from "@browser2ide/protocol";
+import type {
+  ProtocolErrorCode,
+  ResolutionDiagnosticCode,
+  ResolutionMessage,
+  ResolutionStatus,
+} from "@browser2ide/protocol";
 import type { BrowserConnectionState } from "./bridgeClient.js";
 
 export interface PanelErrorSummary {
@@ -19,7 +24,19 @@ export interface PanelDiagnosticsSnapshot {
   readonly lastError?: PanelErrorSummary;
   readonly inaccessibleStylesheetCount: number;
   readonly matchedCssFactCount: number;
+  readonly resolution?: PanelResolutionSummary;
 }
+
+export type PanelResolutionSummary =
+  | { readonly status: "resolving" | "ide-disconnected" }
+  | {
+      readonly status: ResolutionStatus;
+      readonly resolutionGeneration: number;
+      readonly selectedMatchCount: number;
+      readonly parentMatchCount: number;
+      readonly inaccessibleStylesheetCount: number;
+      readonly diagnosticCodes: readonly ResolutionDiagnosticCode[];
+    };
 
 export class PanelDiagnostics {
   private connectionState: BrowserConnectionState = "disconnected";
@@ -28,6 +45,7 @@ export class PanelDiagnostics {
   private lastError: PanelErrorSummary | undefined;
   private inaccessibleStylesheetCount = 0;
   private matchedCssFactCount = 0;
+  private resolution: PanelResolutionSummary | undefined;
 
   public setConnectionState(state: BrowserConnectionState): void {
     this.connectionState = state;
@@ -53,6 +71,29 @@ export class PanelDiagnostics {
     this.lastMessageSentAt = at;
   }
 
+  public recordResolving(): void {
+    this.resolution = { status: "resolving" };
+  }
+
+  public recordIdeDisconnected(): void {
+    this.resolution = { status: "ide-disconnected" };
+  }
+
+  public recordResolution(message: ResolutionMessage): void {
+    this.resolution = {
+      status: message.status,
+      resolutionGeneration: message.resolutionGeneration,
+      selectedMatchCount: message.selectedMatchCount,
+      parentMatchCount: message.parentMatchCount,
+      inaccessibleStylesheetCount: message.inaccessibleStylesheetCount,
+      diagnosticCodes: [...message.diagnosticCodes],
+    };
+  }
+
+  public clearResolution(): void {
+    this.resolution = undefined;
+  }
+
   public recordError(error: PanelErrorSummary): void {
     this.lastError = {
       ...error,
@@ -67,6 +108,7 @@ export class PanelDiagnostics {
     this.lastError = undefined;
     this.inaccessibleStylesheetCount = 0;
     this.matchedCssFactCount = 0;
+    this.resolution = undefined;
   }
 
   public snapshot(): PanelDiagnosticsSnapshot {
@@ -77,6 +119,7 @@ export class PanelDiagnostics {
       lastError: this.lastError,
       inaccessibleStylesheetCount: this.inaccessibleStylesheetCount,
       matchedCssFactCount: this.matchedCssFactCount,
+      resolution: cloneResolution(this.resolution),
     };
   }
 }
@@ -108,3 +151,15 @@ const PROTOCOL_ERROR_MESSAGES: Readonly<
   "browser.stylesheetInaccessible":
     "A stylesheet could not be inspected",
 };
+
+function cloneResolution(
+  resolution: PanelResolutionSummary | undefined,
+): PanelResolutionSummary | undefined {
+  if (!resolution || !("diagnosticCodes" in resolution)) {
+    return resolution ? { ...resolution } : undefined;
+  }
+  return {
+    ...resolution,
+    diagnosticCodes: [...resolution.diagnosticCodes],
+  };
+}

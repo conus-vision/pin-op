@@ -1,109 +1,159 @@
 # Architecture
 
 Browser2IDE is a local, read-only bridge from browser DevTools inspection to
-source highlighting in VS Code. Protocol v3 carries bounded facts; it does not
-carry edit or reverse-sync commands.
+source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
+protocol version is `4`.
 
 ## Components
 
-### Browser DevTools Adapters
+### DevTools Panel
 
-Firefox and Chrome/Chromium expose a Browser2IDE DevTools panel. A panel owns
-the explicit Inspect toggle for its tab and collects bounded page, DOM, and CSS
-facts only while inspection is active. Built-in CSS facts carry a stylesheet
-`sourceUrl`, selector, property/value declaration, optional media conditions,
-and CSSOM `rulePath`. The browser does not read or send `sourceMappingURL`
-directives, source-map references, source maps, or generated CSS positions.
-Browser adapters collect facts but do not resolve workspace files.
+Firefox and Chrome/Chromium build the same Browser2IDE panel from the shared
+browser core. The panel owns:
+
+- explicit browser-window link controls and the displayed port-plus-PIN code;
+- a visual page picker;
+- a virtualized, lazy DOM tree;
+- the selected-element summary and exact IDE resolution footer.
+
+Each panel receives an opaque browser-extension channel. DOM requests and events
+are routed through that channel to the inspected tab, never through the product
+WebSocket.
+
+### Inspected-Page Runtime
+
+The content runtime owns the browser-local Inspector session. One selection
+authority serves both page clicks and DOM-tree commands. It:
+
+- renders a style-isolated, pointer-inert box-model overlay;
+- exposes element-only tree pages on demand;
+- traverses the top document, open shadow roots, and same-origin frame
+  documents;
+- represents cross-origin frames as inaccessible locked leaves and ignores
+  closed shadow roots;
+- collects bounded page, DOM, and CSS facts only for a valid selection;
+- emits one selected target and, when present, its immediate DOM parent.
+
+Browser-local node refs are scoped by panel channel, document epoch, frame
+identity/epoch, and branch revision. Cursors are also bound to their node,
+epoch, and revision. Mutation, navigation, collapse, frame lifecycle changes,
+and session disposal invalidate stale authority instead of guessing.
 
 ### Browser-Window Coordinator
 
-The background coordinator owns links at browser-window scope. An explicitly
-linked window stores one session mapping. All active Browser2IDE panels in tabs
-of that window multiplex through at most one authenticated WebSocket; a panel
-registers and unregisters its tab with the coordinator. When the final panel
-closes, the socket closes but the session mapping can be reused when a panel is
-opened again. Other browser windows remain separate and unlinked.
+The extension background owns one session link per browser window in
+`browser.storage.session`. The record contains the exact loopback endpoint,
+session and bridge identities, browser token, and formatted display code. Panels
+in one window share at most one active authenticated WebSocket. A different
+browser window has independent state.
 
-### Protocol
+Disconnect revokes and removes only the current browser window's record. Closing
+the final panel closes its socket without converting session storage into
+durable storage.
 
-Protocol v3 defines versioned hello, link, authenticated, unlink, inspection,
-and health messages. Messages use bounded schemas and carry selected-element
-and immediate-parent facts unchanged through the bridge. The complete message
-contract is in [protocol.md](protocol.md).
+### Protocol And Bridge
 
-### Local Bridge
+Protocol version `4` defines strict handshake, inspection, targeted resolution
+reply, peer state, error, and heartbeat messages. Every product message is
+validated before routing.
 
-Each local VS Code window starts one bridge automatically and binds it to
-`127.0.0.1` on a managed port. The bridge creates a seven-digit code from its
-port and short PIN, authenticates the explicit link request, and routes messages
-between the linked browser window and that VS Code extension runtime. It does
-not scan for browsers, IDEs, or network peers.
+The bridge binds one managed port on `127.0.0.1`. A link request to that exact
+port exchanges the two-digit PIN for a role-bound browser token. The bridge does
+not scan ports or discover clients.
+
+For each accepted inspect message, the bridge records a bounded reply route from
+`sessionId` plus `inspectMessageId` to the originating browser connection. IDE
+resolution messages return only through that route, so another linked browser
+connection cannot receive the reply. The bridge also publishes monotonically
+generated IDE peer state when IDE availability changes.
 
 ### VS Code Presenter
 
-The presenter retains the latest valid browser selection and asks plugins to
-resolve it against the document currently active in VS Code. It renders
-selected-element and immediate-parent decorations and applicable-source
-results. It does not open, close, or switch documents, and it exposes no edit
-or reverse-sync operation.
+Each local VS Code window starts its bridge automatically. The status bar shows
+the managed port and two-digit PIN and copies the ungrouped code on click.
 
-### Source-Plugin API
+The presenter retains the latest valid selection and resolves it against only
+the active text document. It never switches editors. It owns Selected and Parent
+decorations, validates and deduplicates plugin ranges, updates Applicable
+Sources, and sends a bounded protocol-v4 resolution outcome back to the
+originating panel.
 
-The versioned source-plugin API lets built-in and separately installed VS Code
-extensions register resolvers by active document language and URI. The built-in
-CSS plugin resolves CSS facts directly. The SCSS plugin uses the stylesheet
-`sourceUrl` to discover and read generated CSS in the workspace, matches a
-generated rule to obtain its local CSS position, discovers `sourceMappingURL`
-from that local file, and then reads and applies the inline or external source
-map locally. Plugins return semantic source ranges while the core presenter owns
-UI and decoration behavior. API details and examples are in the [source plugin
-authoring guide](source-plugin-authoring.md).
+### Source Plugins
+
+Built-in CSS and SCSS resolvers use the same versioned API available to
+separately installed VS Code extensions.
+
+The CSS resolver prefers exact source position or CSSOM rule-path evidence. If
+exact evidence misses but remains structurally valid, CSS fingerprint fallback
+uses normalized selector, media conditions, and declaration evidence; zero or
+multiple candidates fail closed.
+
+The SCSS resolver reads generated CSS from the workspace, identifies one
+generated rule, loads its local inline or external source map, and accepts only
+a mapping into the active SCSS document. Missing, invalid, ambiguous, unmapped,
+and other-document outcomes fail closed.
+
+Plugins return semantic ranges. Core owns all editor UI. The authoring contract
+is in [source-plugin-authoring.md](source-plugin-authoring.md).
 
 ## Data Flow
 
-1. VS Code starts its local bridge and displays a seven-digit link code.
-2. The user copies the code and explicitly submits it in one browser window.
-3. The coordinator opens and authenticates the window's loopback WebSocket.
-4. The user explicitly enables Inspect in a DevTools panel and selects an
-   element.
-5. The browser sends bounded facts for the element and its immediate parent.
-6. The bridge validates and forwards the protocol v3 inspection message.
-7. The presenter dispatches the latest selection to source plugins compatible
-   with the active VS Code document and renders their ranges.
+### Link
 
-There is no automatic discovery. Browser2IDE does not enumerate VS Code
-windows, probe localhost ports, infer a target IDE, or link a new browser
-window from another window's mapping.
+1. VS Code starts a loopback bridge and displays `<port> <PIN>`.
+2. The user copies that code and submits it in one DevTools panel.
+3. The browser connects only to the encoded endpoint and exchanges the PIN for
+   session credentials.
+4. The panel displays the same grouped code stored in that browser window's
+   session record.
+
+### Browse And Select
+
+1. The panel asks the inspected tab for the root through its private channel.
+2. Expanding a row requests one bounded child page for the current document
+   epoch and branch revision.
+3. Picker hover or tree-row hover updates the browser-local overlay.
+4. Picker click or tree selection resolves a live element through the same
+   authority and updates the tree ancestor path.
+5. Only then does the browser collect and publish bounded selected/immediate-
+   parent facts as a protocol-v4 inspect message.
+
+### Resolve And Present
+
+1. The bridge validates the inspect envelope, registers its targeted reply
+   route, and sends it to the IDE peer.
+2. The presenter asks compatible source plugins to resolve the active document.
+3. Core renders all accepted Selected and Parent ranges.
+4. The IDE sends one bounded resolution status and counts.
+5. The bridge routes that reply only to the browser connection that originated
+   the inspect message; the panel renders the exact footer outcome.
+
+## Data Separation
+
+The DOM tree, node refs, expansion state, ancestor paths used for tree reveal,
+and box-model geometry stay inside the browser extension. They are not protocol
+facts and are not available to VS Code.
+
+The product WebSocket receives only the bounded selection snapshot needed for
+source resolution: page context, selected/immediate-parent subjects, CSS facts,
+and inaccessible-stylesheet diagnostics. Workspace source and source maps stay
+inside the VS Code extension host.
 
 ## Trust Boundaries
 
-The inspected page is untrusted. Browser content scripts collect a narrow,
-bounded fact set and communicate with the privileged extension runtime. The
-browser extension is trusted to enforce the panel-open, linked-window, and
-explicit-Inspect conditions before injection and collection.
+The inspected page is untrusted. The content runtime bounds reads, renders
+labels as text, excludes its own overlay, rejects stale identities, and fails
+closed across inaccessible DOM boundaries.
 
-The loopback boundary is authenticated but remains a security boundary. The
-bridge accepts only supported extension origins and protocol messages, rate
-limits link attempts, bounds message size, and revokes credentials when the
-bridge stops or the user unlinks. Loopback binding prevents network peers from
-connecting directly, but it does not make every local process trusted.
+The loopback bridge is authenticated but not a defense against every process
+running as the same desktop user. The two-digit PIN prevents accidental local
+cross-linking; it is not strong authentication. The bridge checks extension
+origins, handshake order, roles, session identity, message size, and schemas.
 
-The VS Code extension and installed source plugins can read local workspace
-documents. Source plugins are separately installed trusted code. The plugin API
-gives each dispatched plugin the full validated selection snapshot, including
-all selected/parent targets, subjects, facts, page context, and metadata; the
-active document and its full text; and workspace discovery/read services. Those
-services allow a plugin to find files, read text from workspace URIs, resolve
-source and relative URIs, and check workspace membership. Plugins also receive
-a cancellation signal. Browser2IDE has no analytics or remote service.
+VS Code and installed source plugins can read workspace documents. Separately
+installed plugins are independently trusted extension code. Browser2IDE itself
+has no remote service and exposes no write, page mutation, source edit, or
+arbitrary command path.
 
-URLs and permitted DOM attribute values are bounded but not content-redacted
-and may contain sensitive application data. The detailed permission, origin,
-credential, and data-handling rules are documented in [security.md](security.md).
-
-## Contracts
-
-- [Protocol v3](protocol.md)
-- [Security model](security.md)
-- [Source plugin authoring](source-plugin-authoring.md)
+See [protocol.md](protocol.md), [security.md](security.md), and
+[../PRIVACY.md](../PRIVACY.md) for the complete contracts.

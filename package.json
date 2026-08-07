@@ -1,8 +1,8 @@
 {
   "name": "browser2ide",
   "private": true,
-  "version": "0.2.0",
-  "description": "Connect browser DevTools to your IDE and highlight the source code related to a selected DOM element.",
+  "version": "0.3.0",
+  "description": "Highlights source code in the IDE that relates to a DOM element selected in browser DevTools.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,13 +18,13 @@
     "test:integration": "pnpm --filter browser2ide-vscode test:integration",
     "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
     "lint": "pnpm -r --workspace-concurrency=1 lint",
-    "prepackage": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\"",
+    "prepackage": "node tools/prepare-artifacts.mjs",
     "package": "pnpm package:vscode && pnpm package:chrome && pnpm package:firefox && pnpm package:firefox-source && pnpm artifacts:verify && pnpm artifacts:checksums",
     "package:vscode": "pnpm --filter browser2ide-vscode run package",
     "package:chrome": "pnpm --filter browser2ide-chrome run package",
     "package:firefox": "pnpm --filter browser2ide-firefox run package",
     "package:firefox-source": "node tools/archive-firefox-source.mjs",
-    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/browser2ide-chrome-0.2.0.zip",
+    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/browser2ide-chrome-0.3.0.zip",
     "smoke:vscode-package": "pnpm --filter browser2ide-vscode run smoke:vsix",
     "artifacts:verify": "node tools/verify-artifacts.mjs artifacts",
     "artifacts:checksums": "node tools/write-checksums.mjs artifacts"

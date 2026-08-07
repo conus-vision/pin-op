@@ -1,84 +1,95 @@
 # Privacy
 
 Browser2IDE has no analytics, telemetry pipeline, account system, or remote
-Browser2IDE service. Browser-to-IDE product traffic from Browser2IDE-operated
-components travels only over a loopback WebSocket to the local VS Code window
-that the user explicitly linked with a seven-digit code.
+Browser2IDE service. It exposes no product HTTP endpoint. Product traffic uses
+only a loopback WebSocket between an explicitly linked browser window and the
+local VS Code window selected by the user.
 
-## Data Sent To Linked VS Code
+## Data Sent To VS Code
 
-For the selected element and its immediate DOM parent, Browser2IDE can send:
+For a selected element and its immediate DOM parent, Browser2IDE can send these
+bounded inspection facts:
 
-- a bounded full page URL, including its route;
-- bounded DOM IDs and classes;
-- bounded permitted `data-*`, `aria-*`, and `role` names and values;
-- bounded CSS rule facts, including the stylesheet `sourceUrl`, selector,
-  property/value declaration, optional media conditions, and CSSOM `rulePath`.
+- the full page URL and route;
+- tag, ID, classes, selector candidates, and permitted `data-*`, `aria-*`, and
+  `role` names and values;
+- CSS selectors and declarations, stylesheet source URLs, media conditions,
+  CSSOM rule paths, and inaccessible-stylesheet counts;
+- bounded development source metadata supplied by the inspected application.
 
-These values are size-bounded but not content-redacted. URLs, identifiers,
-classes, permitted attribute values, CSS facts, and development source metadata
-are application-controlled and may contain secrets, personal data, or other
-sensitive application data. Do not enable Inspect on sensitive pages unless
-sending those values to the linked local VS Code window is acceptable.
+These values are size-bounded but not content-redacted. Application-controlled
+URLs, routes, identifiers, attributes, CSS, and source metadata may contain
+personal data, secrets, or framework state. Do not inspect sensitive pages
+unless sending those values to the linked local VS Code window is acceptable.
 
-Browser2IDE does not deliberately read or send cookies, request or response
-headers, form values, DOM text, or general page content. The browser extension
-does not collect or send workspace source-code or text contents, `sourceMappingURL`
-directives, source-map references, source maps, or generated CSS line/column
-positions. Linked local VS Code uses the stylesheet `sourceUrl` and CSS facts to
-discover and read the generated CSS in the workspace, determine matching
-generated rule positions, discover its `sourceMappingURL`, and read any inline
-or external source map locally. Workspace and source-map contents remain in the
-VS Code process. Clipboard contents are read only after the user clicks Paste
-in the DevTools panel, and are used only to fill the link-code field.
+Browser2IDE does not deliberately collect cookies, request or response headers,
+form values, DOM text, source-map contents, or workspace source text. The
+browser side sends stylesheet identity and rule evidence. Local VS Code source
+plugins may then read relevant workspace files and source maps to resolve the
+active document. Browser2IDE does not upload workspace source or source maps to
+a remote service.
+
+## Browser-Local Inspector Data
+
+The DOM tree stays browser-local. Element labels, browser-local node refs,
+expansion pages, selection paths, document epochs, branch revisions, and the
+box-model overlay are exchanged only among the DevTools panel, extension
+background, and inspected-tab content runtime. They are not sent over the
+Browser2IDE product WebSocket.
+
+DOM tree labels show bounded tag, ID, class, and approved attribute names; they
+do not include attribute values or DOM text. Open shadow roots and same-origin
+frame documents can be traversed. Cross-origin frames become locked leaves and
+fail closed. Closed shadow roots are not traversed and fail closed.
+
+## Clipboard And Session Storage
+
+VS Code places the link code on the operating-system clipboard only after the
+user clicks its status item. The browser reads the clipboard only after the user
+clicks Paste. Manual entry remains available when clipboard access is denied.
+
+After a successful link, the browser stores one record per linked browser
+window in `browser.storage.session`. It contains the exact loopback endpoint,
+session and bridge identities, browser token, and formatted display code. This
+session storage lets a reopened panel confirm the same displayed code; it is not
+durable local storage. Disconnect removes only that browser window's record and
+revokes its token. Closing the window or ending the browser session removes the
+session-only record.
+
+The two-digit PIN reduces accidental cross-linking between local VS Code
+windows. It is not strong authentication and must not be treated as protection
+against a malicious process running as the same desktop user.
 
 ## Browser Permissions
 
-The browser extensions require these permissions:
-
 | Permission | Purpose |
 | --- | --- |
-| `<all_urls>` | Required so Browser2IDE can inject its bounded inspect content script into the page the user is debugging. |
-| `activeTab` | Declares the browser's temporary user-gesture tab capability; opening DevTools alone does not grant it, so `<all_urls>` remains required for inspected-page injection. |
-| `clipboardRead` | Reads a copied seven-digit link code only after the user clicks Paste. |
-| `scripting` | Injects the inspect content script when needed. Turning Inspect off or releasing the panel lease disables the Inspect click listener; the injected runtime may remain loaded until the page lifecycle ends. |
-| `storage` | Keeps the browser-window link mapping in session storage. |
-| `tabs` | Associates DevTools panels and inspected tabs with the correct browser window. |
-| `http://127.0.0.1/*` and `http://localhost/*` | Declares local HTTP resource host access. These host permissions do not authorize WebSocket connections. |
+| `<all_urls>` | Inject the bounded Inspector runtime into the page being debugged. |
+| `activeTab` | Declare the browser's temporary user-gesture capability; it does not replace required inspected-page access. |
+| `clipboardRead` | Read a link code only after Paste is clicked. |
+| `scripting` | Inject the inspected-page runtime. |
+| `storage` | Keep browser-window links in session storage. |
+| `tabs` | Bind DevTools panels and inspected tabs to the correct browser window. |
+| `http://127.0.0.1/*`, `http://localhost/*` | Declare local resource host access; product traffic still does not use HTTP. |
 
-Separately, the extension-page Content Security Policy allows `connect-src`
-WebSocket connections to `ws://127.0.0.1:*` and `ws://localhost:*`. This CSP
-allowance controls access to the loopback bridge; product traffic does not use
-a loopback HTTP API.
+The extension Content Security Policy separately permits loopback WebSocket
+connections. Opening DevTools does not begin collection. Page picking starts
+only after the panel is open, its browser window is linked, and the user enables
+the picker. Browser-protected pages can still reject injection.
 
-`<all_urls>` is required rather than optional inspected-page access in the
-current alpha. It does not activate inspection by itself. Script injection
-occurs only while the inspected tab's Browser2IDE panel is open, its browser
-window is linked, and the user has explicitly enabled Inspect. Browser-protected
-pages may still deny injection.
+## Read-Only Design
 
-## Separately Installed Source Plugins
+Browser2IDE does not write or edit page or workspace source and does not execute
+page, shell, workspace, or user-supplied commands. It highlights source ranges
+in the document already active in VS Code. These commitments apply to
+Browser2IDE-operated components, not to separately installed source plugins.
 
-After Browser2IDE validates a selection, it passes the full selection snapshot
-locally to each compatible registered source plugin, including compatible
-separately installed plugins. The snapshot includes all selected and parent
-targets, subjects, facts, page context, and metadata. Plugins also receive the
-active document and workspace discovery/read services.
+## Source Plugins
 
-Separately installed source plugins are trusted third-party VS Code extension
-code. They may have their own data handling, network behavior, retention, and
-privacy policy. Browser2IDE does not control their behavior or make privacy
-commitments on their behalf. Review a plugin and its policy before installing
-or enabling it for sensitive workspaces or inspected applications.
-
-## Retention And Sharing
-
-Browser-window mappings use session storage and clear when the window or
-browser session ends. The VS Code presenter retains the latest selection for
-local source resolution during the current extension runtime. Browser2IDE-operated
-components do not sell, upload, share with a remote service, or remotely retain
-inspection data, and the Browser2IDE project operates no remote service. These
-commitments do not cover separately installed source plugins.
+Compatible source plugins receive the validated selection, active document, and
+bounded workspace discovery/read services inside VS Code. A separately installed
+source plugin is trusted third-party extension code and may have its own network,
+retention, and privacy behavior. Review it independently before use.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting and
 [docs/security.md](docs/security.md) for the implementation trust model.

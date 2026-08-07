@@ -71,15 +71,15 @@ test("release archives reject sensitive path segments", () => {
 });
 
 test("release versions must match the expected product version", () => {
-  assert.doesNotThrow(() => assertVersion("0.2.0", "manifest", "0.2.0"));
+  assert.doesNotThrow(() => assertVersion("0.3.0", "manifest", "0.3.0"));
   assert.throws(
-    () => assertVersion("0.1.0", "manifest", "0.2.0"),
-    /manifest version must be 0\.2\.0, received 0\.1\.0/,
+    () => assertVersion("0.3.1", "manifest", "0.3.0"),
+    /manifest version must be 0\.3\.0, received 0\.3\.1/,
   );
 });
 
 test("checksum artifact names must be printable ASCII", () => {
-  assert.doesNotThrow(() => assertAsciiFilename("browser2ide-firefox-0.2.0.zip"));
+  assert.doesNotThrow(() => assertAsciiFilename("browser2ide-firefox-0.3.0.zip"));
   assert.throws(() => assertAsciiFilename("bröwser.zip"), /printable ASCII/);
   assert.throws(() => assertAsciiFilename("line\nbreak.zip"), /printable ASCII/);
 });

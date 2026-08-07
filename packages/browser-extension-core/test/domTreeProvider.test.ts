@@ -1,0 +1,3823 @@
+import { describe, expect, it } from "vitest";
+import {
+  DomTreeProvider,
+  DomTreeProviderError,
+} from "../src/domTreeProvider.js";
+
+describe("DomTreeProvider", () => {
+  it("returns only element children in fixed-size pages", () => {
+    const document = createDocument();
+    for (let index = 0; index < 51; index += 1) {
+      document.documentElement.append(createText(`before-${index}`));
+      document.documentElement.append(createElement("section", document));
+      document.documentElement.append(createComment(`after-${index}`));
+    }
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const first = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "children-1",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    expect(first.nodes).toHaveLength(50);
+    expect(first.nodes.every((node) => node.kind === "element")).toBe(true);
+    expect(first.nextCursor).toBeDefined();
+
+    const second = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "children-2",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: first.branchRevision,
+      cursor: first.nextCursor,
+    });
+    expect(second.nodes).toHaveLength(1);
+  });
+
+  it("serializes an explicit expandable open-shadow-root container", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    document.documentElement.append(host);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const hostView = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes[0]!;
+
+    const children = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "host-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    });
+
+    expect(hostView.expandable).toBe(true);
+    expect(children.nodes).toContainEqual(expect.objectContaining({
+      kind: "shadow-root",
+      expandable: true,
+    }));
+  });
+
+  it("invalidates an expanded branch before serving revision two", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    parent.append(createElement("p", document));
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes[0]!;
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "initial-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+
+    const added = createElement("aside", document);
+    parent.append(added);
+    harness.observers[0]!.emit([mutationRecord(parent, [added])]);
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([{
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }]);
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revised-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }).branchRevision).toBe(2);
+  });
+
+  it("revisions every affected branch before invalidation callbacks re-enter", () => {
+    const document = createDocument();
+    const firstParent = createElement("main", document);
+    const secondParent = createElement("aside", document);
+    firstParent.append(createElement("p", document));
+    secondParent.append(createElement("p", document));
+    document.documentElement.append(firstParent);
+    document.documentElement.append(secondParent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    let provider: DomTreeProvider | undefined;
+    let documentEpoch = 0;
+    let firstRef: string | undefined;
+    let secondRef: string | undefined;
+    let reentryResult: string | undefined;
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => {
+        invalidated.push(branch);
+        if (branch.nodeRef !== firstRef || !provider || !secondRef) {
+          return;
+        }
+        try {
+          provider.getChildren({
+            type: "dom.getChildren",
+            requestId: "reentrant-second-parent",
+            documentEpoch,
+            nodeRef: secondRef,
+            branchRevision: 1,
+          });
+          reentryResult = "served";
+        } catch (error) {
+          reentryResult = error instanceof DomTreeProviderError
+            ? error.code
+            : "unexpected-error";
+        }
+      },
+    });
+    provider = harness.provider;
+    const root = provider.getRoot();
+    documentEpoch = root.documentEpoch;
+    const parents = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    firstRef = parents[0]!.nodeRef;
+    secondRef = parents[1]!.nodeRef;
+    provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "first-parent",
+      documentEpoch,
+      nodeRef: firstRef,
+      branchRevision: 1,
+    });
+    provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "second-parent",
+      documentEpoch,
+      nodeRef: secondRef,
+      branchRevision: 1,
+    });
+
+    const firstAdded = createElement("section", document);
+    const secondAdded = createElement("section", document);
+    firstParent.append(firstAdded);
+    secondParent.append(secondAdded);
+    harness.observers[0]!.emit([
+      mutationRecord(firstParent, [firstAdded]),
+      mutationRecord(secondParent, [secondAdded]),
+    ]);
+    harness.flushTimers();
+
+    expect(reentryResult).toBe("stale-branch");
+    expect(invalidated).toEqual([
+      { nodeRef: firstRef, branchRevision: 2 },
+      { nodeRef: secondRef, branchRevision: 2 },
+    ]);
+  });
+
+  it("ignores text-only mutations in an element-only branch", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    parent.append(createElement("p", document));
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "parent-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    const text = createText("changed");
+
+    parent.append(text);
+    harness.observers[0]!.emit([mutationRecord(parent, [text])]);
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([]);
+  });
+
+  it("invalidates a parent page when a visible child becomes expandable", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const child = createElement("article", document);
+    parent.append(child);
+    for (let index = 0; index < 50; index += 1) {
+      parent.append(createElement("section", document));
+    }
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const firstPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "first-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    expect(firstPage.nodes[0]).toMatchObject({ expandable: false });
+
+    const grandchild = createElement("button", document);
+    child.append(grandchild);
+    harness.observers[0]!.emit([mutationRecord(child, [grandchild])]);
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    });
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+      cursor: firstPage.nextCursor,
+    })).toThrowError("stale-branch");
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revised-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]).toMatchObject({ expandable: true });
+  });
+
+  it("invalidates a parent page when a visible child label changes", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const child = createElement("article", document);
+    child.setAttribute("id", "before");
+    parent.append(child);
+    for (let index = 0; index < 50; index += 1) {
+      parent.append(createElement("section", document));
+    }
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const firstPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "first-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    expect(firstPage.nodes[0]?.label).toBe("article#before");
+
+    child.setAttribute("id", "after");
+    harness.observers[0]!.emit([attributeMutationRecord(child, "id")]);
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    });
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+      cursor: firstPage.nextCursor,
+    })).toThrowError("stale-branch");
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revised-parent-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]?.label).toBe("article#after");
+  });
+
+  it("invalidates when an unapproved attribute shifts role into the label window", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const child = createElement("div", document);
+    for (let index = 0; index < 32; index += 1) {
+      child.setAttribute(`title-${index}`, `private-${index}`);
+    }
+    child.setAttribute("role", "region");
+    parent.append(child);
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    expect(onlyChild(
+      harness.provider,
+      parentView,
+      root.documentEpoch,
+      "initial-parent",
+    ).label).toBe("div");
+
+    child.removeAttribute("title-0");
+    harness.observers[0]!.emit([attributeMutationRecord(child, "title-0")]);
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    });
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revised-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]?.label).toBe("div [role]");
+  });
+
+  it("does not invalidate when an attribute mutation leaves the label unchanged", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const child = createElement("div", document);
+    child.setAttribute("title", "private-before");
+    parent.append(child);
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    expect(onlyChild(
+      harness.provider,
+      parentView,
+      root.documentEpoch,
+      "initial-parent",
+    ).label).toBe("div");
+
+    child.setAttribute("title", "private-after");
+    harness.observers[0]!.emit([attributeMutationRecord(child, "title")]);
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([]);
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "unchanged-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+    }).nodes[0]?.label).toBe("div");
+  });
+
+  it("rejects a cursor from an older branch revision as stale-branch", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    for (let index = 0; index < 51; index += 1) {
+      parent.append(createElement("p", document));
+    }
+    document.documentElement.append(parent);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const parentView = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes[0]!;
+    const first = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "first-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    const added = createElement("aside", document);
+    parent.append(added);
+    harness.observers[0]!.emit([mutationRecord(parent, [added])]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+      cursor: first.nextCursor,
+    })).toThrowError("stale-branch");
+  });
+
+  it("rejects a stale first expansion without acquiring branch ownership", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    host.attachShadow().append(createElement("button", document));
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-first-expansion",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: 2,
+    })).toThrowError("stale-branch");
+    expect(harness.observers).toHaveLength(1);
+
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "current-first-expansion",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: 1,
+    });
+    expect(harness.observers).toHaveLength(2);
+  });
+
+  it("rejects an unknown first cursor without acquiring branch ownership", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    host.attachShadow().append(createElement("button", document));
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "unknown-first-cursor",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+      cursor: "missing-cursor",
+    })).toThrowError("invalid-cursor");
+    expect(harness.observers).toHaveLength(1);
+  });
+
+  it("returns the full root-to-node path across a shadow boundary", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    body.append(host);
+    document.documentElement.append(body);
+    const provider = createProvider(document);
+    const root = provider.getRoot(3);
+    const bodyView = onlyChild(provider, root.node, root.documentEpoch, "body");
+    const hostView = onlyChild(provider, bodyView, root.documentEpoch, "host");
+    const shadowView = onlyChild(provider, hostView, root.documentEpoch, "shadow");
+    const buttonView = onlyChild(provider, shadowView, root.documentEpoch, "button");
+
+    const path = provider.ancestorPath(buttonView.nodeRef, root.documentEpoch);
+
+    expect(path.map((node) => node.nodeRef)).toEqual([
+      root.node.nodeRef,
+      bodyView.nodeRef,
+      hostView.nodeRef,
+      shadowView.nodeRef,
+      buttonView.nodeRef,
+    ]);
+    expect(path.map((node) => node.kind)).toEqual([
+      "element",
+      "element",
+      "element",
+      "shadow-root",
+      "element",
+    ]);
+    expect(Object.isFrozen(path)).toBe(true);
+  });
+
+  it("discovers an open shadow root created after host expansion", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    host.append(createElement("span", document));
+    document.documentElement.append(host);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "host-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    });
+
+    host.attachShadow().append(createElement("button", document));
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: hostView.nodeRef,
+      branchRevision: 2,
+    });
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revised-host-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]).toMatchObject({
+      kind: "shadow-root",
+      expandable: true,
+    });
+  });
+
+  it("observes each discovered open shadow root independently", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    document.documentElement.append(host);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const shadowView = onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "host-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "shadow-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: shadowView.nodeRef,
+      branchRevision: shadowView.branchRevision,
+    });
+
+    expect(harness.observers).toHaveLength(2);
+    expect(harness.observers[1]!.observedTargets).toEqual([shadowRoot]);
+    const added = createElement("span", document);
+    shadowRoot.append(added);
+    harness.observers[1]!.emit([mutationRecord(shadowRoot, [added])]);
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: shadowView.nodeRef,
+      branchRevision: 2,
+    });
+  });
+
+  it("disconnects observers across nested shadow boundaries on removal", () => {
+    const document = createDocument();
+    const outerHost = createElement("article", document);
+    const outerShadow = outerHost.attachShadow();
+    const innerHost = createElement("section", document);
+    const innerShadow = innerHost.attachShadow();
+    innerShadow.append(createElement("button", document));
+    outerShadow.append(innerHost);
+    document.documentElement.append(outerHost);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const outerHostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const outerShadowView = onlyChild(
+      harness.provider,
+      outerHostView,
+      root.documentEpoch,
+      "outer-host-children",
+    );
+    const innerHostView = onlyChild(
+      harness.provider,
+      outerShadowView,
+      root.documentEpoch,
+      "outer-shadow-children",
+    );
+    onlyChild(
+      harness.provider,
+      innerHostView,
+      root.documentEpoch,
+      "inner-host-children",
+    );
+    const outerObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(outerShadow)
+    ))!;
+    const innerObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(innerShadow)
+    ))!;
+
+    document.documentElement.remove(outerHost);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [outerHost]),
+    ]);
+    harness.flushTimers();
+
+    expect(outerObserver.disconnectCount).toBe(1);
+    expect(innerObserver.disconnectCount).toBe(1);
+    expect(harness.observers[0]!.disconnectCount).toBe(0);
+  });
+
+  it("retains shadow cleanup ownership through record pressure", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    const unrelatedHost = createElement("aside", document);
+    const unrelatedShadow = unrelatedHost.attachShadow();
+    unrelatedShadow.append(createElement("span", document));
+    const pressureParent = createElement("main", document);
+    for (let index = 0; index < 100; index += 1) {
+      pressureParent.append(createElement("p", document));
+    }
+    document.documentElement.append(host);
+    document.documentElement.append(unrelatedHost);
+    document.documentElement.append(pressureParent);
+    const harness = createProviderHarness(document, { maxRecords: 64 });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const shadowView = onlyChild(
+      harness.provider,
+      topChildren[0]!,
+      root.documentEpoch,
+      "host-shadow",
+    );
+    const unrelatedShadowView = onlyChild(
+      harness.provider,
+      topChildren[1]!,
+      root.documentEpoch,
+      "unrelated-shadow",
+    );
+    const firstPressurePage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "pressure-one",
+      documentEpoch: root.documentEpoch,
+      nodeRef: topChildren[2]!.nodeRef,
+      branchRevision: topChildren[2]!.branchRevision,
+    });
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "pressure-two",
+      documentEpoch: root.documentEpoch,
+      nodeRef: topChildren[2]!.nodeRef,
+      branchRevision: topChildren[2]!.branchRevision,
+      cursor: firstPressurePage.nextCursor,
+    });
+    const hostObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(shadowRoot)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedShadow)
+    ))!;
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    };
+
+    expect(internals.records.has(shadowView.nodeRef)).toBe(true);
+    expect(internals.records.has(unrelatedShadowView.nodeRef)).toBe(true);
+    harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
+
+    expect([
+      hostObserver.disconnectCount,
+      unrelatedObserver.disconnectCount,
+      harness.observers[0]!.disconnectCount,
+    ]).toEqual([1, 0, 0]);
+  });
+
+  it("serializes and observes an accessible same-origin frame document", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      frameView,
+      root.documentEpoch,
+      "frame-children",
+    );
+    const childRootView = onlyChild(
+      harness.provider,
+      frameDocumentView,
+      root.documentEpoch,
+      "document-children",
+    );
+
+    expect(frameView).toMatchObject({ kind: "element", expandable: true });
+    expect(frameDocumentView).toMatchObject({
+      kind: "frame-document",
+      expandable: true,
+    });
+    expect(harness.observers[1]!.observedTargets).toEqual([childDocument]);
+    expect(harness.provider.ancestorPath(childRootView.nodeRef, root.documentEpoch)
+      .map((node) => node.kind)).toEqual([
+      "element",
+      "element",
+      "frame-document",
+      "element",
+    ]);
+  });
+
+  it("serializes a cross-origin frame as an inaccessible locked leaf", () => {
+    const document = createDocument();
+    const frame = createFrameElement(
+      document,
+      null,
+      new Error("cross-origin"),
+    );
+    document.documentElement.append(frame);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const frameView = onlyChild(
+      provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    expect(frameView).toMatchObject({
+      kind: "element",
+      expandable: false,
+      inaccessible: true,
+    });
+    expect(frame.contentDocumentReads).toBe(1);
+    expect(frame.contentWindowReads).toBe(0);
+  });
+
+  it("notifies when the selected node is removed", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const selected = createElement("button", document);
+    parent.append(selected);
+    document.documentElement.append(parent);
+    let selectedRef: string | undefined;
+    const removed: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removed.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const selectedView = onlyChild(
+      harness.provider,
+      parentView,
+      root.documentEpoch,
+      "parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+
+    parent.remove(selected);
+    harness.observers[0]!.emit([mutationRecord(parent, [], [selected])]);
+    harness.flushTimers();
+
+    expect(removed).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(() => harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("notifies after retained hovered nodes reach their final moved or detached state", () => {
+    const document = createDocument();
+    const source = createElement("main", document);
+    const destination = createElement("aside", document);
+    const hovered = createElement("button", document);
+    source.append(hovered);
+    document.documentElement.append(source);
+    document.documentElement.append(destination);
+    const attachedAtSettlement: boolean[] = [];
+    const harness = createProviderHarness(document, {
+      onMutationSettled: () => {
+        attachedAtSettlement.push(document.documentElement.contains(
+          hovered as unknown as Node,
+        ));
+      },
+    });
+    const revealed = harness.provider.revealElement(hovered as unknown as Element);
+    expect(harness.provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+
+    source.remove(hovered);
+    destination.append(hovered);
+    harness.observers[0]!.emit([
+      mutationRecord(source, [], [hovered]),
+      mutationRecord(destination, [hovered]),
+    ]);
+    harness.flushTimers();
+
+    expect(attachedAtSettlement).toEqual([true]);
+    expect(harness.provider.resolveElement(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+    )?.element).toBe(hovered);
+
+    destination.remove(hovered);
+    harness.observers[0]!.emit([
+      mutationRecord(destination, [], [hovered]),
+    ]);
+    harness.flushTimers();
+
+    expect(attachedAtSettlement).toEqual([true, false]);
+    expect(harness.provider.resolveElement(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+    )).toBeUndefined();
+  });
+
+  it("preserves a selected node ref when it moves within one scope", () => {
+    const document = createDocument();
+    const oldParent = createElement("main", document);
+    const newParent = createElement("aside", document);
+    const selected = createElement("button", document);
+    oldParent.append(selected);
+    document.documentElement.append(oldParent);
+    document.documentElement.append(newParent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const parents = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const selectedView = onlyChild(
+      harness.provider,
+      parents[0]!,
+      root.documentEpoch,
+      "old-parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "new-parent-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parents[1]!.nodeRef,
+      branchRevision: parents[1]!.branchRevision,
+    });
+
+    oldParent.remove(selected);
+    newParent.append(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(oldParent, [], [selected]),
+      mutationRecord(newParent, [selected]),
+    ]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([]);
+    expect(invalidated).toEqual(expect.arrayContaining([
+      { nodeRef: parents[0]!.nodeRef, branchRevision: 2 },
+      { nodeRef: parents[1]!.nodeRef, branchRevision: 2 },
+    ]));
+    const path = harness.provider.ancestorPath(selectedView.nodeRef, root.documentEpoch);
+    expect(path.map((node) => node.nodeRef)).toEqual([
+      root.node.nodeRef,
+      parents[1]!.nodeRef,
+      selectedView.nodeRef,
+    ]);
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "moved-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parents[1]!.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]?.nodeRef).toBe(selectedView.nodeRef);
+  });
+
+  it("preserves a selected ref moved beneath an unmaterialized parent", () => {
+    const document = createDocument();
+    const oldParent = createElement("main", document);
+    const destinationContainer = createElement("section", document);
+    const destinationParent = createElement("aside", document);
+    const selected = createElement("button", document);
+    oldParent.append(selected);
+    destinationContainer.append(destinationParent);
+    document.documentElement.append(oldParent);
+    document.documentElement.append(destinationContainer);
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const selectedView = onlyChild(
+      harness.provider,
+      topChildren[0]!,
+      root.documentEpoch,
+      "old-parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+
+    oldParent.remove(selected);
+    destinationParent.append(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(oldParent, [], [selected]),
+      mutationRecord(destinationParent, [selected]),
+    ]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([]);
+    const path = harness.provider.ancestorPath(selectedView.nodeRef, root.documentEpoch);
+    expect(path.map((node) => node.label)).toEqual([
+      "html",
+      "section",
+      "aside",
+      "button",
+    ]);
+    expect(path[1]?.nodeRef).toBe(topChildren[1]!.nodeRef);
+    expect(path.at(-1)?.nodeRef).toBe(selectedView.nodeRef);
+  });
+
+  it("atomically replaces a selected path at record capacity", () => {
+    const document = createDocument();
+    const unrelated = createElement("nav", document);
+    const sourceRoot = createElement("main", document);
+    let sourceParent = sourceRoot;
+    for (let depth = 0; depth < 34; depth += 1) {
+      const child = createElement("section", document);
+      sourceParent.append(child);
+      sourceParent = child;
+    }
+    const selected = createElement("button", document);
+    sourceParent.append(selected);
+    const destinationRoot = createElement("aside", document);
+    let destinationParent = destinationRoot;
+    for (let depth = 0; depth < 34; depth += 1) {
+      const child = createElement("div", document);
+      destinationParent.append(child);
+      destinationParent = child;
+    }
+    document.documentElement.append(unrelated);
+    document.documentElement.append(sourceRoot);
+    document.documentElement.append(destinationRoot);
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      maxRecords: 64,
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const unrelatedView = topChildren.find((node) => node.label === "nav")!;
+    const sourceView = topChildren.find((node) => node.label === "main")!;
+    const destinationView = topChildren.find((node) => node.label === "aside")!;
+    let selectedView = sourceView;
+    for (let depth = 0; depth < 35; depth += 1) {
+      selectedView = onlyChild(
+        harness.provider,
+        selectedView,
+        root.documentEpoch,
+        `source-depth-${depth}`,
+      );
+    }
+    selectedRef = selectedView.nodeRef;
+    harness.provider.collapse(sourceView.nodeRef, root.documentEpoch);
+
+    sourceParent.remove(selected);
+    destinationParent.append(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(sourceParent, [], [selected]),
+      mutationRecord(destinationParent, [selected]),
+    ]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([]);
+    const path = harness.provider.ancestorPath(selectedView.nodeRef, root.documentEpoch);
+    expect(path).toHaveLength(37);
+    expect(path[0]?.nodeRef).toBe(root.node.nodeRef);
+    expect(path[1]?.nodeRef).toBe(destinationView.nodeRef);
+    expect(path.at(-1)?.nodeRef).toBe(selectedView.nodeRef);
+    expect(() => harness.provider.ancestorPath(
+      unrelatedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    };
+    expect(internals.records.size).toBeLessThanOrEqual(64);
+  });
+
+  it("fails closed when a moved selected path cannot fit record capacity", () => {
+    const document = createDocument();
+    const unrelated = createElement("nav", document);
+    let unrelatedParent = unrelated;
+    for (let depth = 0; depth < 4; depth += 1) {
+      const child = createElement("article", document);
+      unrelatedParent.append(child);
+      unrelatedParent = child;
+    }
+    const source = createElement("main", document);
+    const selected = createElement("button", document);
+    source.append(selected);
+    const destinationRoot = createElement("aside", document);
+    const destinationNodes: FakeElement[] = [];
+    let destinationParent = destinationRoot;
+    for (let depth = 0; depth < 10; depth += 1) {
+      const child = createElement("section", document);
+      destinationNodes.push(child);
+      destinationParent.append(child);
+      destinationParent = child;
+    }
+    document.documentElement.append(unrelated);
+    document.documentElement.append(source);
+    document.documentElement.append(destinationRoot);
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      maxRecords: 16,
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const unrelatedView = topChildren.find((node) => node.label === "nav")!;
+    const sourceView = topChildren.find((node) => node.label === "main")!;
+    let unrelatedProtectedView = unrelatedView;
+    for (let depth = 0; depth < 4; depth += 1) {
+      unrelatedProtectedView = onlyChild(
+        harness.provider,
+        unrelatedProtectedView,
+        root.documentEpoch,
+        `unrelated-depth-${depth}`,
+      );
+    }
+    const selectedView = onlyChild(
+      harness.provider,
+      sourceView,
+      root.documentEpoch,
+      "selected",
+    );
+    selectedRef = selectedView.nodeRef;
+    harness.provider.collapse(sourceView.nodeRef, root.documentEpoch);
+
+    source.remove(selected);
+    destinationParent.append(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(source, [], [selected]),
+      mutationRecord(destinationParent, [selected]),
+    ]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(() => harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+    expect(harness.provider.ancestorPath(
+      unrelatedProtectedView.nodeRef,
+      root.documentEpoch,
+    ).at(-1)?.nodeRef).toBe(unrelatedProtectedView.nodeRef);
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly refsByNode: WeakMap<FakeNode, string>;
+    };
+    for (const node of destinationNodes) {
+      const nodeRef = internals.refsByNode.get(node);
+      expect(nodeRef ? internals.records.has(nodeRef) : false).toBe(false);
+    }
+  });
+
+  it("invalidates a selected ref after a remove-add-remove batch", () => {
+    const document = createDocument();
+    const oldParent = createElement("main", document);
+    const temporaryParent = createElement("aside", document);
+    const selected = createElement("button", document);
+    oldParent.append(selected);
+    document.documentElement.append(oldParent);
+    document.documentElement.append(temporaryParent);
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const parents = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const selectedView = onlyChild(
+      harness.provider,
+      parents[0]!,
+      root.documentEpoch,
+      "old-parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+
+    oldParent.remove(selected);
+    temporaryParent.append(selected);
+    temporaryParent.remove(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(oldParent, [], [selected]),
+      mutationRecord(temporaryParent, [selected]),
+      mutationRecord(temporaryParent, [], [selected]),
+    ]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(() => harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("invalidates a selected ref when a node moves across frame scopes", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const oldParent = createElement("main", document);
+    const newParent = createElement("aside", childDocument);
+    const selected = createElement("button", document);
+    oldParent.append(selected);
+    childDocument.documentElement.append(newParent);
+    document.documentElement.append(oldParent);
+    document.documentElement.append(createFrameElement(document, childDocument));
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const selectedView = onlyChild(
+      harness.provider,
+      topChildren[0]!,
+      root.documentEpoch,
+      "old-parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      topChildren[1]!,
+      root.documentEpoch,
+      "frame-children",
+    );
+    const frameRootView = onlyChild(
+      harness.provider,
+      frameDocumentView,
+      root.documentEpoch,
+      "frame-document-children",
+    );
+    const newParentView = onlyChild(
+      harness.provider,
+      frameRootView,
+      root.documentEpoch,
+      "frame-root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "new-parent-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: newParentView.nodeRef,
+      branchRevision: newParentView.branchRevision,
+    });
+
+    oldParent.remove(selected);
+    newParent.append(selected);
+    harness.observers[0]!.emit([
+      mutationRecord(oldParent, [], [selected]),
+    ]);
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))!;
+    childObserver.emit([mutationRecord(newParent, [selected])]);
+    harness.flushTimers();
+
+    expect(removals).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(() => harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+    const movedView = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "cross-scope-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: newParentView.nodeRef,
+      branchRevision: 2,
+    }).nodes[0]!;
+    expect(movedView.nodeRef).not.toBe(selectedView.nodeRef);
+  });
+
+  it("invalidates affected branches before selected-removal callbacks re-enter", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const selected = createElement("button", document);
+    parent.append(selected);
+    document.documentElement.append(parent);
+    let selectedRef: string | undefined;
+    let parentRef = "";
+    let provider: DomTreeProvider;
+    let reentrantError: unknown;
+    const events: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: () => events.push("invalidated"),
+      onSelectedNodeRemoved: () => {
+        events.push("removed");
+        try {
+          provider.getChildren({
+            type: "dom.getChildren",
+            requestId: "reentrant-parent-children",
+            documentEpoch: 3,
+            nodeRef: parentRef,
+            branchRevision: 1,
+          });
+        } catch (error) {
+          reentrantError = error;
+        }
+      },
+    });
+    provider = harness.provider;
+    const root = provider.getRoot();
+    const parentView = onlyChild(
+      provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    parentRef = parentView.nodeRef;
+    const selectedView = onlyChild(
+      provider,
+      parentView,
+      root.documentEpoch,
+      "parent-children",
+    );
+    selectedRef = selectedView.nodeRef;
+
+    parent.remove(selected);
+    harness.observers[0]!.emit([mutationRecord(parent, [], [selected])]);
+    harness.flushTimers();
+
+    expect(events).toEqual(["invalidated", "invalidated", "removed"]);
+    expect(reentrantError).toMatchObject({ code: "stale-branch" });
+  });
+
+  it("notifies when the selected node is inside a removed frame", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const selected = createElement("button", childDocument);
+    childDocument.documentElement.append(selected);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let selectedRef: string | undefined;
+    const removed: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removed.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      frameView,
+      root.documentEpoch,
+      "frame-children",
+    );
+    const childRootView = onlyChild(
+      harness.provider,
+      frameDocumentView,
+      root.documentEpoch,
+      "document-children",
+    );
+    const selectedView = onlyChild(
+      harness.provider,
+      childRootView,
+      root.documentEpoch,
+      "child-root-children",
+    );
+    selectedRef = selectedView.nodeRef;
+
+    document.documentElement.remove(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+    harness.flushTimers();
+
+    expect(removed).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+  });
+
+  it("invalidates all old state when the top document epoch resets", () => {
+    const document = createDocument();
+    for (let index = 0; index < 51; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    const harness = createProviderHarness(document);
+    const oldRoot = harness.provider.getRoot();
+    const oldPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "old-page",
+      documentEpoch: oldRoot.documentEpoch,
+      nodeRef: oldRoot.node.nodeRef,
+      branchRevision: oldRoot.node.branchRevision,
+    });
+    const nextDocument = createDocument();
+
+    harness.provider.resetDocument(nextDocument as unknown as Document, 4);
+
+    expect(() => harness.provider.getRoot(3)).toThrowError("stale-document");
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-page",
+      documentEpoch: 3,
+      nodeRef: oldRoot.node.nodeRef,
+      branchRevision: oldPage.branchRevision,
+      cursor: oldPage.nextCursor,
+    })).toThrowError("stale-document");
+    const nextRoot = harness.provider.getRoot(4);
+    expect(nextRoot.documentEpoch).toBe(4);
+    expect(nextRoot.node.nodeRef).not.toBe(oldRoot.node.nodeRef);
+    expect(harness.observers[0]!.disconnectCount).toBe(1);
+    expect(harness.observers.at(-1)!.observedTargets).toEqual([nextDocument]);
+  });
+
+  it("disposes all ownership and fails closed afterward", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    document.documentElement.append(host);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "host-children",
+    );
+
+    harness.provider.dispose();
+    expect(() => harness.provider.dispose()).not.toThrow();
+
+    expect(harness.observers.every((observer) => observer.disconnectCount === 1)).toBe(true);
+    harness.observers[0]!.emit([mutationRecord(document.documentElement)]);
+    harness.flushTimers();
+    expect(invalidated).toEqual([]);
+    expect(() => harness.provider.getRoot()).toThrowError("session-disposed");
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "disposed-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("session-disposed");
+    expect(() => harness.provider.ancestorPath(
+      root.node.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("session-disposed");
+    expect(() => harness.provider.resetDocument(
+      createDocument() as unknown as Document,
+      4,
+    )).toThrowError("session-disposed");
+  });
+
+  it("releases document and registry ownership when disposed at the maximum epoch", () => {
+    const document = createDocument();
+    document.documentElement.append(createElement("main", document));
+    const harness = createProviderHarness(document, {
+      documentEpoch: Number.MAX_SAFE_INTEGER,
+    });
+    const root = harness.provider.getRoot();
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "retain-root",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+    const before = harness.provider as unknown as {
+      readonly nodeRegistry: { readonly size: number; readonly retainedSize: number };
+      readonly topDocument?: Document;
+    };
+    const oldRegistry = before.nodeRegistry;
+    expect(oldRegistry.size).toBeGreaterThan(0);
+    expect(oldRegistry.retainedSize).toBeGreaterThan(0);
+
+    harness.provider.dispose();
+
+    const after = harness.provider as unknown as {
+      readonly nodeRegistry: { readonly size: number; readonly retainedSize: number };
+      readonly topDocument?: Document;
+    };
+    expect([
+      after.topDocument === undefined,
+      after.nodeRegistry !== oldRegistry,
+      after.nodeRegistry.size,
+      after.nodeRegistry.retainedSize,
+    ]).toEqual([true, true, 0, 0]);
+    expect(() => harness.provider.getRoot()).toThrowError("session-disposed");
+  });
+
+  it("binds each cursor exactly to its node, epoch, and branch revision", () => {
+    const document = createDocument();
+    const firstParent = createElement("main", document);
+    const secondParent = createElement("aside", document);
+    for (let index = 0; index < 51; index += 1) {
+      firstParent.append(createElement("p", document));
+      secondParent.append(createElement("span", document));
+    }
+    document.documentElement.append(firstParent);
+    document.documentElement.append(secondParent);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const parents = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const firstPage = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "first-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parents[0]!.nodeRef,
+      branchRevision: parents[0]!.branchRevision,
+    });
+
+    expect(() => provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "mismatched-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parents[1]!.nodeRef,
+      branchRevision: parents[1]!.branchRevision,
+      cursor: firstPage.nextCursor,
+    })).toThrowError("invalid-request");
+  });
+
+  it("bounds cursor storage and evicts the oldest record", () => {
+    const document = createDocument();
+    for (let index = 0; index < 51; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    const harness = createProviderHarness(document, { maxCursors: 2 });
+    const root = harness.provider.getRoot();
+    const request = {
+      type: "dom.getChildren" as const,
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    };
+    const oldest = harness.provider.getChildren({
+      ...request,
+      requestId: "page-1",
+    }).nextCursor!;
+    const middle = harness.provider.getChildren({
+      ...request,
+      requestId: "page-2",
+    }).nextCursor!;
+    harness.provider.getChildren({
+      ...request,
+      requestId: "page-3",
+    });
+
+    expect(() => harness.provider.getChildren({
+      ...request,
+      requestId: "evicted-page",
+      cursor: oldest,
+    })).toThrowError("invalid-cursor");
+    expect(harness.provider.getChildren({
+      ...request,
+      requestId: "live-page",
+      cursor: middle,
+    }).nodes).toHaveLength(1);
+  });
+
+  it("releases descendant cursors and shadow observation on collapse", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    for (let index = 0; index < 51; index += 1) {
+      shadowRoot.append(createElement("button", document));
+    }
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const shadowView = onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "host-children",
+    );
+    const shadowPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "shadow-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: shadowView.nodeRef,
+      branchRevision: shadowView.branchRevision,
+    });
+
+    harness.provider.collapse(hostView.nodeRef, root.documentEpoch);
+
+    expect(harness.observers[0]!.disconnectCount).toBe(0);
+    expect(harness.observers[1]!.disconnectCount).toBe(1);
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "released-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: shadowView.nodeRef,
+      branchRevision: shadowView.branchRevision,
+      cursor: shadowPage.nextCursor,
+    })).toThrowError("invalid-cursor");
+  });
+
+  it("flushes pending selected removal before collapsing its observed host", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    const selected = createElement("button", document);
+    shadowRoot.append(selected);
+    document.documentElement.append(host);
+    const removals: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onSelectedNodeRemoved: (event) => removals.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const shadowView = onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "host-children",
+    );
+    const selectedView = onlyChild(
+      harness.provider,
+      shadowView,
+      root.documentEpoch,
+      "shadow-children",
+    );
+    selectedRef = selectedView.nodeRef;
+    const shadowObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(shadowRoot)
+    ))!;
+
+    shadowRoot.remove(selected);
+    shadowObserver.emit([mutationRecord(shadowRoot, [], [selected])]);
+    harness.provider.collapse(hostView.nodeRef, root.documentEpoch);
+
+    expect(removals).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(() => harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("preserves a branch generation across collapse and re-expansion", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    for (let index = 0; index < 51; index += 1) {
+      parent.append(createElement("p", document));
+    }
+    document.documentElement.append(parent);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const firstPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "initial-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+    });
+    const added = createElement("p", document);
+    parent.append(added);
+    harness.observers[0]!.emit([mutationRecord(parent, [added])]);
+    harness.flushTimers();
+    harness.provider.collapse(parentView.nodeRef, root.documentEpoch);
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "delayed-revision-one",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+    })).toThrowError("stale-branch");
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "delayed-cursor",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+      cursor: firstPage.nextCursor,
+    })).toThrowError("stale-branch");
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "revision-two-re-expansion",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }).branchRevision).toBe(2);
+  });
+
+  it("fails a branch closed when its revision space is exhausted", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    parent.append(createElement("p", document));
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "expand-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    const internals = harness.provider as unknown as {
+      readonly expandedBranches: Map<string, { revision: number }>;
+    };
+    internals.expandedBranches.get(parentView.nodeRef)!.revision =
+      Number.MAX_SAFE_INTEGER;
+    const added = createElement("aside", document);
+    parent.append(added);
+    harness.observers[0]!.emit([mutationRecord(parent, [added])]);
+
+    expect(() => harness.flushTimers()).toThrowError("internal-error");
+    expect(invalidated).toEqual([]);
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "exhausted-branch",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: Number.MAX_SAFE_INTEGER,
+    })).toThrowError("internal-error");
+  });
+
+  it("disconnects an expanded frame-document observer on ancestor collapse", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      frameView,
+      root.documentEpoch,
+      "frame-children",
+    );
+    onlyChild(
+      harness.provider,
+      frameDocumentView,
+      root.documentEpoch,
+      "document-children",
+    );
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))!;
+
+    harness.provider.collapse(frameView.nodeRef, root.documentEpoch);
+
+    expect(childObserver.disconnectCount).toBe(1);
+    expect(harness.observers[0]!.disconnectCount).toBe(0);
+  });
+
+  it("releases a discovered unexpanded frame document on iframe collapse", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    document.documentElement.append(createFrameElement(document, childDocument));
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "root-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    expect(frameViews).toHaveLength(2);
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "discover-frame-document",
+    );
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+
+    harness.provider.collapse(frameViews[0]!.nodeRef, root.documentEpoch);
+
+    expect(childObserver.disconnectCount).toBe(1);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+    expect(() => harness.provider.ancestorPath(
+      frameDocumentView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("releases an unmaterialized nested frame document on outer iframe collapse", () => {
+    const document = createDocument();
+    const outerDocument = createDocument();
+    const nestedDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    const nestedFrame = createFrameElement(outerDocument, nestedDocument);
+    outerDocument.documentElement.append(nestedFrame);
+    document.documentElement.append(createFrameElement(document, outerDocument));
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const outerDocumentView = onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "outer-frame-children",
+    );
+    const outerRootView = onlyChild(
+      harness.provider,
+      outerDocumentView,
+      root.documentEpoch,
+      "outer-document-children",
+    );
+    const nestedFrameView = onlyChild(
+      harness.provider,
+      outerRootView,
+      root.documentEpoch,
+      "outer-root-children",
+    );
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+      readonly refsByNode: WeakMap<FakeNode, string>;
+    };
+    expect(internals.refsByNode.get(nestedDocument)).toBeUndefined();
+    const outerObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(outerDocument)
+    ))!;
+    const nestedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(nestedDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+
+    harness.provider.collapse(frameViews[0]!.nodeRef, root.documentEpoch);
+
+    expect([
+      outerObserver.disconnectCount,
+      nestedObserver.disconnectCount,
+      harness.observers[0]!.disconnectCount,
+      unrelatedObserver.disconnectCount,
+    ]).toEqual([1, 1, 0, 0]);
+    expect([...internals.frameDocumentsByRef.values()]).toEqual([
+      unrelatedDocument,
+    ]);
+    expect(() => harness.provider.ancestorPath(
+      nestedFrameView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("releases an unmaterialized frame discovered below an ordinary ancestor", () => {
+    const document = createDocument();
+    const ancestor = createElement("main", document);
+    const nestedDocument = createDocument();
+    const nestedFrame = createFrameElement(document, nestedDocument);
+    const unrelatedDocument = createDocument();
+    document.documentElement.append(ancestor);
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+
+    ancestor.append(nestedFrame);
+    harness.observers[0]!.emit([mutationRecord(ancestor, [nestedFrame])]);
+    harness.flushTimers();
+    const nestedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(nestedDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+      readonly refsByNode: WeakMap<FakeNode, string>;
+    };
+    expect(internals.refsByNode.get(nestedFrame)).toBeUndefined();
+
+    harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
+
+    expect([
+      nestedObserver.disconnectCount,
+      unrelatedObserver.disconnectCount,
+      harness.observers[0]!.disconnectCount,
+    ]).toEqual([1, 0, 0]);
+    expect([...internals.frameDocumentsByRef.values()]).toEqual([
+      unrelatedDocument,
+    ]);
+  });
+
+  it("does not observe a collapsed iframe navigation until re-expansion", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const nextDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    document.documentElement.append(frame);
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "first-frame-document",
+    );
+    const firstObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(firstDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    harness.provider.collapse(frameViews[0]!.nodeRef, root.documentEpoch);
+    expect(firstObserver.disconnectCount).toBe(1);
+
+    frame.setFrameDocument(nextDocument);
+    frame.dispatchLoad();
+
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+    };
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(false);
+    expect([...internals.frameDocumentsByRef.values()]).not.toContain(nextDocument);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+
+    const nextFrameDocumentView = onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "reexpanded-frame-document",
+    );
+    expect(nextFrameDocumentView.kind).toBe("frame-document");
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(true);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+  });
+
+  it("keeps a collapsed frame inactive while refreshing its parent row", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const nextDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    const unrelatedFrame = createFrameElement(document, unrelatedDocument);
+    document.documentElement.append(frame);
+    document.documentElement.append(unrelatedFrame);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "first-frame-document",
+    );
+    const firstObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(firstDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    harness.provider.collapse(frameViews[0]!.nodeRef, root.documentEpoch);
+
+    frame.setFrameDocument(nextDocument);
+    frame.dispatchLoad();
+
+    expect(firstObserver.disconnectCount).toBe(1);
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(false);
+    const parentRevision = [...invalidated].reverse().find((branch) => (
+      branch.nodeRef === root.node.nodeRef
+    ))?.branchRevision;
+    expect(parentRevision).toBe(2);
+
+    const refreshedFrames = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "refreshed-top-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: parentRevision!,
+    }).nodes;
+
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(false);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+
+    const currentDocumentView = onlyChild(
+      harness.provider,
+      refreshedFrames[0]!,
+      root.documentEpoch,
+      "current-frame-document",
+    );
+    expect(currentDocumentView.kind).toBe("frame-document");
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(true);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+  });
+
+  it("does not resurrect frames from a collapsed queued scan", () => {
+    const document = createDocument();
+    const collapsedDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    document.documentElement.append(createFrameElement(document, collapsedDocument));
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    onlyChild(
+      harness.provider,
+      frameViews[0]!,
+      root.documentEpoch,
+      "collapsed-frame-children",
+    );
+    onlyChild(
+      harness.provider,
+      frameViews[1]!,
+      root.documentEpoch,
+      "unrelated-frame-children",
+    );
+    const collapsedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(collapsedDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    const collapsedContainer = createElement("main", collapsedDocument);
+    const unrelatedContainer = createElement("main", unrelatedDocument);
+    for (let index = 0; index < 1_100; index += 1) {
+      collapsedContainer.append(createElement("span", collapsedDocument));
+      unrelatedContainer.append(createElement("span", unrelatedDocument));
+    }
+    const collapsedLateDocument = createDocument();
+    const unrelatedLateDocument = createDocument();
+    const collapsedLateFrame = createFrameElement(
+      collapsedDocument,
+      collapsedLateDocument,
+    );
+    const unrelatedLateFrame = createFrameElement(
+      unrelatedDocument,
+      unrelatedLateDocument,
+    );
+    collapsedContainer.append(collapsedLateFrame);
+    unrelatedContainer.append(unrelatedLateFrame);
+    collapsedDocument.documentElement.append(collapsedContainer);
+    unrelatedDocument.documentElement.append(unrelatedContainer);
+    collapsedObserver.emit([
+      mutationRecord(collapsedDocument.documentElement, [collapsedContainer]),
+    ]);
+    unrelatedObserver.emit([
+      mutationRecord(unrelatedDocument.documentElement, [unrelatedContainer]),
+    ]);
+    harness.flushTimers();
+    expect([
+      collapsedLateFrame.loadListenerCount,
+      unrelatedLateFrame.loadListenerCount,
+    ]).toEqual([0, 0]);
+
+    harness.provider.collapse(frameViews[0]!.nodeRef, root.documentEpoch);
+    harness.flushTimers();
+    harness.flushTimers();
+
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+    };
+    const ownedDocuments = [...internals.frameDocumentsByRef.values()];
+    expect([
+      collapsedLateFrame.loadListenerCount,
+      harness.observers.some((observer) => (
+        observer.observedTargets.includes(collapsedLateDocument)
+      )),
+      ownedDocuments.includes(collapsedLateDocument),
+      unrelatedLateFrame.loadListenerCount,
+      harness.observers.some((observer) => (
+        observer.observedTargets.includes(unrelatedLateDocument)
+      )),
+      ownedDocuments.includes(unrelatedLateDocument),
+      collapsedObserver.disconnectCount,
+      unrelatedObserver.disconnectCount,
+      harness.observers[0]!.disconnectCount,
+    ]).toEqual([0, false, false, 1, true, true, 1, 0, 0]);
+  });
+
+  it("does not reactivate a collapsed frame from a discovery continuation", () => {
+    const document = createDocument();
+    const scannedContainer = createElement("main", document);
+    const unrelatedContainer = createElement("aside", document);
+    for (let index = 0; index < 1_100; index += 1) {
+      scannedContainer.append(createElement("span", document));
+      unrelatedContainer.append(createElement("span", document));
+    }
+    const firstDocument = createDocument();
+    const nextDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    const unrelatedFrame = createFrameElement(document, unrelatedDocument);
+    scannedContainer.append(frame);
+    unrelatedContainer.append(unrelatedFrame);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "empty-root",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    document.documentElement.append(scannedContainer);
+    document.documentElement.append(unrelatedContainer);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [
+        scannedContainer,
+        unrelatedContainer,
+      ]),
+    ]);
+    harness.flushTimers();
+    expect([frame.loadListenerCount, unrelatedFrame.loadListenerCount]).toEqual([
+      0,
+      0,
+    ]);
+    const rootRevision = [...invalidated].reverse().find((branch) => (
+      branch.nodeRef === root.node.nodeRef
+    ))?.branchRevision;
+    expect(rootRevision).toBe(2);
+    const containers = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "containers",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: rootRevision!,
+    }).nodes;
+    const scannedContainerView = containers.find((node) => node.label === "main")!;
+    let frameView: typeof scannedContainerView | undefined;
+    let cursor: string | undefined;
+    let pageIndex = 0;
+    do {
+      const page = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `scanned-page-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: scannedContainerView.nodeRef,
+        branchRevision: scannedContainerView.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+      frameView ??= page.nodes.find((node) => node.label === "iframe");
+      cursor = page.nextCursor;
+      pageIndex += 1;
+    } while (cursor);
+    expect(frameView).toBeDefined();
+    expect(frame.loadListenerCount).toBe(1);
+    const firstObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(firstDocument)
+    ))!;
+
+    harness.provider.collapse(frameView!.nodeRef, root.documentEpoch);
+    expect(firstObserver.disconnectCount).toBe(1);
+    frame.setFrameDocument(nextDocument);
+    frame.dispatchLoad();
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(false);
+
+    harness.flushTimers();
+    harness.flushTimers();
+
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+    };
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(false);
+    expect([...internals.frameDocumentsByRef.values()]).not.toContain(nextDocument);
+    expect(unrelatedFrame.loadListenerCount).toBe(1);
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+
+    const currentFrameDocument = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "direct-frame-expansion",
+      documentEpoch: root.documentEpoch,
+      nodeRef: frameView!.nodeRef,
+      branchRevision: frameView!.branchRevision,
+    });
+    expect(currentFrameDocument.nodes).toHaveLength(1);
+    expect(currentFrameDocument.nodes[0]?.kind).toBe("frame-document");
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextDocument)
+    ))).toBe(true);
+    expect(unrelatedObserver.disconnectCount).toBe(0);
+  });
+
+  it("does not register a queued frame after its scan root is detached", () => {
+    const document = createDocument();
+    const detachedContainer = createElement("main", document);
+    const unrelatedContainer = createElement("aside", document);
+    for (let index = 0; index < 1_100; index += 1) {
+      detachedContainer.append(createElement("span", document));
+      unrelatedContainer.append(createElement("span", document));
+    }
+    const detachedDocument = createDocument();
+    const unrelatedDocument = createDocument();
+    const detachedFrame = createFrameElement(document, detachedDocument);
+    const unrelatedFrame = createFrameElement(document, unrelatedDocument);
+    detachedContainer.append(detachedFrame);
+    unrelatedContainer.append(unrelatedFrame);
+    const harness = createProviderHarness(document);
+
+    document.documentElement.append(detachedContainer);
+    document.documentElement.append(unrelatedContainer);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [
+        detachedContainer,
+        unrelatedContainer,
+      ]),
+    ]);
+    harness.flushTimers();
+    expect([
+      detachedFrame.loadListenerCount,
+      unrelatedFrame.loadListenerCount,
+    ]).toEqual([0, 0]);
+
+    document.documentElement.remove(detachedContainer);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [detachedContainer]),
+    ]);
+    harness.flushTimers();
+
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+    };
+    expect([
+      detachedFrame.loadListenerCount,
+      harness.observers.some((observer) => (
+        observer.observedTargets.includes(detachedDocument)
+      )),
+      [...internals.frameDocumentsByRef.values()].includes(detachedDocument),
+    ]).toEqual([0, false, false]);
+
+    harness.flushTimers();
+    expect([
+      unrelatedFrame.loadListenerCount,
+      harness.observers.some((observer) => (
+        observer.observedTargets.includes(unrelatedDocument)
+      )),
+      [...internals.frameDocumentsByRef.values()].includes(unrelatedDocument),
+    ]).toEqual([1, true, true]);
+  });
+
+  it("registers and unregisters frame contexts from document mutations", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "initial-root",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+    const frame = createFrameElement(document, childDocument);
+
+    document.documentElement.append(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [frame]),
+    ]);
+    harness.flushTimers();
+
+    expect(frame.loadListenerCount).toBe(1);
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))).toBe(true);
+
+    document.documentElement.remove(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+    harness.flushTimers();
+
+    expect(frame.loadListenerCount).toBe(0);
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ));
+    expect(childObserver?.disconnectCount).toBe(1);
+  });
+
+  it("continues a bounded scan to register a late frame in an added subtree", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    for (let index = 0; index < 1_100; index += 1) {
+      container.append(createElement("span", document));
+    }
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    const harness = createProviderHarness(document);
+
+    document.documentElement.append(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [container]),
+    ]);
+    harness.flushTimers();
+
+    expect(frame.loadListenerCount).toBe(0);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))).toBe(true);
+  });
+
+  it("continues a bounded scan to unregister a late frame in a removed subtree", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    for (let index = 0; index < 1_100; index += 1) {
+      container.append(createElement("span", document));
+    }
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [container]),
+    ]);
+    harness.flushTimers();
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))!;
+
+    document.documentElement.remove(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+    harness.flushTimers();
+
+    expect(frame.loadListenerCount).toBe(1);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(0);
+    expect(childObserver.disconnectCount).toBe(1);
+  });
+
+  it("replaces observed frame documents when a frame navigates", () => {
+    const document = createDocument();
+    const firstChildDocument = createDocument();
+    const frame = createFrameElement(document, firstChildDocument);
+    document.documentElement.append(frame);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const documentView = onlyChild(
+      harness.provider,
+      frameView,
+      root.documentEpoch,
+      "frame-children",
+    );
+    const firstChildRoot = onlyChild(
+      harness.provider,
+      documentView,
+      root.documentEpoch,
+      "document-children",
+    );
+    const nextChildDocument = createDocument();
+
+    frame.setFrameDocument(nextChildDocument);
+    frame.dispatchLoad();
+
+    const oldObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(firstChildDocument)
+    ));
+    expect(oldObserver?.disconnectCount).toBe(1);
+    expect(harness.observers.some((observer) => (
+      observer.observedTargets.includes(nextChildDocument)
+    ))).toBe(true);
+    expect(invalidated).toContainEqual({
+      nodeRef: frameView.nodeRef,
+      branchRevision: 2,
+    });
+    expect(() => harness.provider.ancestorPath(
+      firstChildRoot.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("disconnects nested shadow observers when a frame navigates", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("article", childDocument);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", childDocument));
+    childDocument.documentElement.append(host);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    const frameDocumentView = onlyChild(
+      harness.provider,
+      frameView,
+      root.documentEpoch,
+      "frame-children",
+    );
+    const childRootView = onlyChild(
+      harness.provider,
+      frameDocumentView,
+      root.documentEpoch,
+      "document-children",
+    );
+    const hostView = onlyChild(
+      harness.provider,
+      childRootView,
+      root.documentEpoch,
+      "child-root-children",
+    );
+    onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "host-children",
+    );
+    const childObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(childDocument)
+    ))!;
+    const shadowObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(shadowRoot)
+    ))!;
+
+    frame.setFrameDocument(createDocument());
+    frame.dispatchLoad();
+
+    expect(childObserver.disconnectCount).toBe(1);
+    expect(shadowObserver.disconnectCount).toBe(1);
+    expect(harness.observers[0]!.disconnectCount).toBe(0);
+  });
+
+  it("invalidates queued mutations before serving any child data", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    parent.append(createElement("p", document));
+    document.documentElement.append(parent);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "initial-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    const added = createElement("aside", document);
+    parent.append(added);
+    harness.observers[0]!.emit([mutationRecord(parent, [added])]);
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "old-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: 1,
+    })).toThrowError("stale-branch");
+    expect(invalidated).toContainEqual({
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    });
+  });
+
+  it("bounds element labels as plain display text rather than HTML", () => {
+    const document = createDocument();
+    const hostileTagName = `<SCRIPT>${"x".repeat(600)}</SCRIPT>`;
+    document.documentElement.append(new FakeElement(hostileTagName, document));
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const child = onlyChild(
+      provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    expect(child.label.length).toBeGreaterThan(0);
+    expect(child.label.length).toBeLessThanOrEqual(512);
+    expect(child.label).not.toMatch(/[<>]/);
+  });
+
+  it("includes approved identity and attribute names without private values", () => {
+    const document = createDocument();
+    const element = createElement("div", document);
+    element.setAttribute("id", "hero");
+    element.setAttribute("class", "card featured");
+    element.setAttribute("role", "region");
+    element.setAttribute("data-state", "secret-ready");
+    element.setAttribute("aria-label", "Private account name");
+    element.setAttribute("value", "private form value");
+    element.setAttribute("onclick", "sendPrivateData() <script>");
+    element.setAttribute("style", "background:url(private)");
+    document.documentElement.append(element);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const child = onlyChild(
+      provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+
+    expect(child.label).toBe(
+      "div#hero.card.featured [role] [data-state] [aria-label]",
+    );
+    expect(child.label).not.toMatch(
+      /region|secret-ready|Private account|private form|sendPrivateData|style|onclick|[<>]/,
+    );
+  });
+
+  it("rejects malformed child requests with a typed invalid-request error", () => {
+    const document = createDocument();
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    let error: unknown;
+    try {
+      provider.getChildren({
+        type: "dom.getChildren",
+        requestId: "malformed",
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: Number.NaN,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(DomTreeProviderError);
+    expect(error).toMatchObject({
+      code: "invalid-request",
+      message: "invalid-request",
+    });
+  });
+
+  it("rechecks a late shadow root before a direct child response", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    host.append(createElement("span", document));
+    document.documentElement.append(host);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-children",
+    );
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "initial-host",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    });
+    host.attachShadow().append(createElement("button", document));
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "stale-host",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: 1,
+    })).toThrowError("stale-branch");
+    expect(invalidated).toContainEqual({
+      nodeRef: hostView.nodeRef,
+      branchRevision: 2,
+    });
+  });
+
+  it("resumes physical traversal without rescanning earlier child pages", () => {
+    const document = createDocument();
+    for (let index = 0; index < 200; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    const childNodes = document.documentElement.childNodes;
+    let indexedReads = 0;
+    Object.defineProperty(document.documentElement, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(childNodes, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/.test(property)) {
+            indexedReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    indexedReads = 0;
+
+    let cursor: string | undefined;
+    for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
+      const readsBeforePage = indexedReads;
+      const page = provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `page-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+
+      expect(page.nodes).toHaveLength(50);
+      expect(page.nextCursor).toBeDefined();
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(51);
+      cursor = page.nextCursor;
+    }
+  });
+
+  it("bounds physical traversal through non-element children", () => {
+    const document = createDocument();
+    for (let index = 0; index < 1_000; index += 1) {
+      document.documentElement.append(createText(`text-${index}`));
+    }
+    document.documentElement.append(createElement("section", document));
+    const childNodes = document.documentElement.childNodes;
+    let indexedReads = 0;
+    Object.defineProperty(document.documentElement, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(childNodes, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/.test(property)) {
+            indexedReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    indexedReads = 0;
+    let cursor: string | undefined;
+    const found = [];
+
+    for (let pageIndex = 0; pageIndex < 5 && found.length === 0; pageIndex += 1) {
+      const readsBeforePage = indexedReads;
+      const page = provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `text-page-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+      found.push(...page.nodes);
+
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(256);
+      if (found.length === 0) {
+        expect(page.nextCursor).toBeDefined();
+      }
+      cursor = page.nextCursor;
+    }
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ kind: "element", label: "section" });
+  });
+
+  it("probes root and row expandability without scanning text-heavy children", () => {
+    const rootDocument = createDocument();
+    for (let index = 0; index < 10_000; index += 1) {
+      rootDocument.documentElement.append(createText(`root-text-${index}`));
+    }
+    const rootChild = createElement("main", rootDocument);
+    rootDocument.documentElement.append(rootChild);
+    const rootChildNodes = rootDocument.documentElement.childNodes;
+    let rootIndexedReads = 0;
+    Object.defineProperty(rootDocument.documentElement, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(rootChildNodes, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/.test(property)) {
+            rootIndexedReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    Object.defineProperty(rootDocument.documentElement, "childElementCount", {
+      configurable: true,
+      get: () => 1,
+    });
+    Object.defineProperty(rootDocument.documentElement, "firstElementChild", {
+      configurable: true,
+      get: () => rootChild,
+    });
+
+    const rootView = createProvider(rootDocument).getRoot();
+    expect(rootView.node.expandable).toBe(true);
+    expect(rootIndexedReads).toBe(0);
+
+    const rowDocument = createDocument();
+    const row = createElement("article", rowDocument);
+    for (let index = 0; index < 10_000; index += 1) {
+      row.append(createText(`row-text-${index}`));
+    }
+    const rowChild = createElement("button", rowDocument);
+    row.append(rowChild);
+    rowDocument.documentElement.append(row);
+    const rowChildNodes = row.childNodes;
+    let rowIndexedReads = 0;
+    Object.defineProperty(row, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(rowChildNodes, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/.test(property)) {
+            rowIndexedReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    Object.defineProperty(row, "childElementCount", {
+      configurable: true,
+      get: () => 1,
+    });
+    Object.defineProperty(row, "firstElementChild", {
+      configurable: true,
+      get: () => rowChild,
+    });
+    const rowProvider = createProvider(rowDocument);
+    const rowRoot = rowProvider.getRoot();
+    rowIndexedReads = 0;
+
+    const rowView = onlyChild(
+      rowProvider,
+      rowRoot.node,
+      rowRoot.documentEpoch,
+      "row",
+    );
+    expect(rowView.expandable).toBe(true);
+    expect(rowIndexedReads).toBe(0);
+  });
+
+  it("keeps an invalid expandable primitive conservative and constant-time", () => {
+    const document = createDocument();
+    for (let index = 0; index < 10_000; index += 1) {
+      document.documentElement.append(createText(`text-${index}`));
+    }
+    document.documentElement.append(createElement("main", document));
+    const childNodes = document.documentElement.childNodes;
+    let indexedReads = 0;
+    Object.defineProperty(document.documentElement, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(childNodes, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/.test(property)) {
+            indexedReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    Object.defineProperty(document.documentElement, "childElementCount", {
+      configurable: true,
+      get: () => "invalid",
+    });
+    Object.defineProperty(document.documentElement, "firstElementChild", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile getter");
+      },
+    });
+
+    const root = createProvider(document).getRoot();
+
+    expect(root.node.expandable).toBe(true);
+    expect(indexedReads).toBe(0);
+  });
+
+  it("bounds provider records while retaining selected and expanded authority", () => {
+    const document = createDocument();
+    for (let index = 0; index < 5_000; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      maxRecords: 64,
+      getSelectedNodeRef: () => selectedRef,
+    });
+    const root = harness.provider.getRoot();
+    let cursor: string | undefined;
+    let evictedRef: string | undefined;
+    let lastRef: string | undefined;
+
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `materialize-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(page.nodes).toHaveLength(50);
+      if (pageIndex === 0) {
+        selectedRef = page.nodes[0]!.nodeRef;
+        evictedRef = page.nodes[1]!.nodeRef;
+      }
+      lastRef = page.nodes.at(-1)!.nodeRef;
+      cursor = page.nextCursor;
+    }
+
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    };
+    expect(cursor).toBeUndefined();
+    expect(internals.records.size).toBeLessThanOrEqual(64);
+    expect(internals.records.has(root.node.nodeRef)).toBe(true);
+    expect(internals.records.has(selectedRef!)).toBe(true);
+    expect(internals.records.has(lastRef!)).toBe(true);
+    expect(() => harness.provider.ancestorPath(
+      selectedRef!,
+      root.documentEpoch,
+    )).not.toThrow();
+    expect(() => harness.provider.ancestorPath(
+      evictedRef!,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+  });
+
+  it("protects the complete selected ancestor path under record pressure", () => {
+    const document = createDocument();
+    const selectedRoot = createElement("main", document);
+    let selectedParent = selectedRoot;
+    for (let depth = 0; depth < 8; depth += 1) {
+      const child = createElement("section", document);
+      selectedParent.append(child);
+      selectedParent = child;
+    }
+    const selected = createElement("button", document);
+    selectedParent.append(selected);
+    const unrelatedParent = createElement("aside", document);
+    for (let index = 0; index < 200; index += 1) {
+      unrelatedParent.append(createElement("p", document));
+    }
+    document.documentElement.append(selectedRoot);
+    document.documentElement.append(unrelatedParent);
+    let selectedRef: string | undefined;
+    const harness = createProviderHarness(document, {
+      maxRecords: 64,
+      getSelectedNodeRef: () => selectedRef,
+    });
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    let selectedView = topChildren[0]!;
+    for (let depth = 0; depth < 9; depth += 1) {
+      selectedView = onlyChild(
+        harness.provider,
+        selectedView,
+        root.documentEpoch,
+        `selected-depth-${depth}`,
+      );
+    }
+    selectedRef = selectedView.nodeRef;
+    harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
+
+    let cursor: string | undefined;
+    let staleUnrelatedRef: string | undefined;
+    for (let pageIndex = 0; pageIndex < 4; pageIndex += 1) {
+      const page = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `unrelated-page-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: topChildren[1]!.nodeRef,
+        branchRevision: topChildren[1]!.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+      staleUnrelatedRef ??= page.nodes[0]!.nodeRef;
+      cursor = page.nextCursor;
+    }
+
+    const selectedPath = harness.provider.ancestorPath(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    );
+    expect(selectedPath).toHaveLength(11);
+    expect(selectedPath[0]?.nodeRef).toBe(root.node.nodeRef);
+    expect(selectedPath.at(-1)?.nodeRef).toBe(selectedView.nodeRef);
+    expect(() => harness.provider.ancestorPath(
+      staleUnrelatedRef!,
+      root.documentEpoch,
+    )).toThrowError("unknown-node");
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    };
+    expect(internals.records.size).toBeLessThanOrEqual(64);
+  });
+
+  it("fails closed when the record capacity is fully retained", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    parent.append(createElement("button", document));
+    document.documentElement.append(parent);
+    const harness = createProviderHarness(document, { maxRecords: 2 });
+    const root = harness.provider.getRoot();
+    const parentView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "root-child",
+    );
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "capacity-exhausted",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    })).toThrowError("node-unavailable");
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { readonly size: number };
+    };
+    expect([internals.records.size, internals.nodeRegistry.size]).toEqual([2, 2]);
+  });
+
+  it("does not evict rows while assembling the same child page", () => {
+    const document = createDocument();
+    for (let index = 0; index < 10; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    const harness = createProviderHarness(document, { maxRecords: 8 });
+    const root = harness.provider.getRoot();
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "oversized-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    const internals = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { readonly size: number };
+    };
+    expect(internals.records.size).toBeLessThanOrEqual(8);
+    expect(internals.nodeRegistry.size).toBeLessThanOrEqual(8);
+  });
+
+  it("cleans branches and observers beyond the wire path depth on collapse", () => {
+    const document = createDocument();
+    const collapsedRoot = createElement("main", document);
+    let current = collapsedRoot;
+    for (let depth = 0; depth < 72; depth += 1) {
+      const child = createElement("section", document);
+      current.append(child);
+      current = child;
+    }
+    const deepShadow = current.attachShadow();
+    for (let index = 0; index < 51; index += 1) {
+      deepShadow.append(createElement("button", document));
+    }
+    const unrelatedHost = createElement("aside", document);
+    const unrelatedShadow = unrelatedHost.attachShadow();
+    unrelatedShadow.append(createElement("span", document));
+    document.documentElement.append(collapsedRoot);
+    document.documentElement.append(unrelatedHost);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    let deepView = topChildren[0]!;
+    for (let depth = 0; depth < 72; depth += 1) {
+      deepView = onlyChild(
+        harness.provider,
+        deepView,
+        root.documentEpoch,
+        `depth-${depth}`,
+      );
+    }
+    const deepShadowView = onlyChild(
+      harness.provider,
+      deepView,
+      root.documentEpoch,
+      "deep-shadow",
+    );
+    const deepPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "deep-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: deepShadowView.nodeRef,
+      branchRevision: deepShadowView.branchRevision,
+    });
+    const unrelatedShadowView = onlyChild(
+      harness.provider,
+      topChildren[1]!,
+      root.documentEpoch,
+      "unrelated-shadow",
+    );
+    onlyChild(
+      harness.provider,
+      unrelatedShadowView,
+      root.documentEpoch,
+      "unrelated-child",
+    );
+    const deepObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(deepShadow)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedShadow)
+    ))!;
+
+    expect(() => harness.provider.ancestorPath(
+      deepShadowView.nodeRef,
+      root.documentEpoch,
+    )).toThrowError("node-unavailable");
+
+    harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
+
+    expect([
+      deepObserver.disconnectCount,
+      unrelatedObserver.disconnectCount,
+      harness.observers[0]!.disconnectCount,
+    ]).toEqual([1, 0, 0]);
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "released-deep-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: deepShadowView.nodeRef,
+      branchRevision: deepShadowView.branchRevision,
+      cursor: deepPage.nextCursor,
+    })).toThrowError("invalid-cursor");
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "unrelated-still-live",
+      documentEpoch: root.documentEpoch,
+      nodeRef: unrelatedShadowView.nodeRef,
+      branchRevision: unrelatedShadowView.branchRevision,
+    }).nodes).toHaveLength(1);
+  });
+
+  it("looks up only already-materialized live elements with their frame identity", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const card = createElement("article", document);
+    body.append(card);
+    document.documentElement.append(body);
+    const provider = createProvider(document);
+
+    const root = provider.getRoot();
+    const records = (provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+    }).records;
+    const recordCount = records.size;
+
+    expect(provider.lookupElement(card as unknown as Element)).toBeUndefined();
+    expect(records.size).toBe(recordCount);
+    expect(provider.lookupElement(document.documentElement as unknown as Element))
+      .toEqual({
+        nodeRef: root.node.nodeRef,
+        frameRef: "frame-1",
+        frameEpoch: 1,
+        documentEpoch: root.documentEpoch,
+      });
+  });
+
+  it("reveals an attached element through one bounded materialized ancestor path", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const card = createElement("article", document);
+    body.append(card);
+    document.documentElement.append(body);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const revealed = provider.revealElement(card as unknown as Element);
+
+    expect(revealed).toMatchObject({
+      frameRef: "frame-1",
+      frameEpoch: 1,
+      documentEpoch: root.documentEpoch,
+    });
+    expect(revealed.ancestorPath.map((node) => node.label)).toEqual([
+      "html",
+      "body",
+      "article",
+    ]);
+    expect(revealed.ancestorPath[0]?.nodeRef).toBe(root.node.nodeRef);
+    expect(revealed.ancestorPath.at(-1)?.nodeRef).toBe(revealed.nodeRef);
+    expect(provider.lookupElement(card as unknown as Element)?.nodeRef)
+      .toBe(revealed.nodeRef);
+  });
+
+  it("resolves and retains current element refs for independent session authorities", () => {
+    const document = createDocument();
+    const card = createElement("article", document);
+    document.documentElement.append(card);
+    const provider = createProvider(document);
+    const revealed = provider.revealElement(card as unknown as Element);
+
+    expect(provider.resolveElement(revealed.nodeRef, revealed.documentEpoch))
+      .toEqual({
+        element: card,
+        nodeRef: revealed.nodeRef,
+        frameRef: "frame-1",
+        frameEpoch: 1,
+        documentEpoch: revealed.documentEpoch,
+      });
+    expect(provider.resolveElement("node-999", revealed.documentEpoch))
+      .toBeUndefined();
+    expect(() => provider.resolveElement(revealed.nodeRef, 2))
+      .toThrowError("stale-document");
+
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "selected",
+    )).toBe(true);
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+    const registry = (provider as unknown as {
+      readonly nodeRegistry: {
+        retentionReasons(nodeRef: string): readonly string[];
+      };
+    }).nodeRegistry;
+    expect(registry.retentionReasons(revealed.nodeRef))
+      .toEqual(["selected", "hovered"]);
+
+    provider.releaseNode(revealed.nodeRef, "hovered");
+    expect(registry.retentionReasons(revealed.nodeRef)).toEqual(["selected"]);
+    provider.releaseNode(revealed.nodeRef, "selected");
+    expect(registry.retentionReasons(revealed.nodeRef)).toEqual([]);
+  });
+
+  it("stops resolving a retained element as soon as it detaches", () => {
+    const document = createDocument();
+    const card = createElement("article", document);
+    document.documentElement.append(card);
+    const provider = createProvider(document);
+    const revealed = provider.revealElement(card as unknown as Element);
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "hovered",
+    )).toBe(true);
+
+    document.documentElement.remove(card);
+
+    expect(provider.lookupElement(card as unknown as Element)).toBeUndefined();
+    expect(provider.resolveElement(revealed.nodeRef, revealed.documentEpoch))
+      .toBeUndefined();
+    expect(provider.retainNode(
+      revealed.nodeRef,
+      revealed.documentEpoch,
+      "selected",
+    )).toBe(false);
+  });
+
+  it("exposes read-only frame authority and forwards tracked frame lifecycle", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const replacementDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const lifecycle: Array<{
+      readonly type: string;
+      readonly frameRef: string;
+      readonly frameEpoch: number;
+    }> = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+
+    expect(Object.isFrozen(harness.provider.frameAuthority)).toBe(true);
+    expect("describeFrame" in harness.provider.frameAuthority).toBe(false);
+    expect(harness.provider.currentDocumentEpoch).toBe(3);
+
+    harness.provider.startFrameTracking();
+
+    const child = harness.provider.frameAuthority
+      .getContextForDocument(childDocument as unknown as Document);
+    expect(child).toMatchObject({
+      frameRef: "frame-2",
+      frameEpoch: 1,
+      documentEpoch: 3,
+    });
+    expect(lifecycle.map(({ type }) => type)).toEqual(["registered"]);
+
+    frame.setFrameDocument(replacementDocument);
+    frame.dispatchLoad();
+    expect(harness.provider.frameAuthority
+      .getContextForDocument(childDocument as unknown as Document))
+      .toBeUndefined();
+    expect(harness.provider.frameAuthority
+      .getContextForDocument(replacementDocument as unknown as Document))
+      .toMatchObject({ frameRef: "frame-2", frameEpoch: 2 });
+
+    document.documentElement.remove(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+    harness.flushTimers();
+
+    expect(lifecycle.map(({ type }) => type)).toEqual([
+      "registered",
+      "navigated",
+      "removed",
+    ]);
+    expect(harness.provider.frameAuthority.getContext("frame-2"))
+      .toBeUndefined();
+  });
+
+  it("excludes overlay-owned nodes from traversal and mutation discovery", () => {
+    const document = createDocument();
+    const pageContent = createElement("main", document);
+    const overlayHost = createElement("browser2ide-overlay", document);
+    const overlayRoot = overlayHost.attachShadow();
+    const overlayArtifact = createElement("div", document);
+    overlayRoot.append(overlayArtifact);
+    document.documentElement.append(pageContent);
+    document.documentElement.append(overlayHost);
+    const overlayNodes = new Set<FakeNode>([
+      overlayHost,
+      overlayRoot,
+      overlayArtifact,
+    ]);
+    const harness = createProviderHarness(document, {
+      isExcludedNode: (node) => overlayNodes.has(node as unknown as FakeNode),
+    });
+
+    const root = harness.provider.getRoot();
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "without-overlay",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["main"]);
+    expect(harness.provider.lookupElement(overlayHost as unknown as Element))
+      .toBeUndefined();
+    expect(() => harness.provider.revealElement(
+      overlayHost as unknown as Element,
+    )).toThrowError("node-unavailable");
+    expect(() => harness.provider.revealElement(
+      overlayArtifact as unknown as Element,
+    )).toThrowError("node-unavailable");
+
+    document.documentElement.remove(overlayHost);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [overlayHost]),
+    ]);
+    document.documentElement.append(overlayHost);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [overlayHost]),
+    ]);
+    harness.flushTimers();
+
+    const refreshedRoot = harness.provider.getRoot();
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "without-reattached-overlay",
+      documentEpoch: refreshedRoot.documentEpoch,
+      nodeRef: refreshedRoot.node.nodeRef,
+      branchRevision: refreshedRoot.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["main"]);
+    expect(harness.provider.lookupElement(overlayHost as unknown as Element))
+      .toBeUndefined();
+  });
+});
+
+function onlyChild(
+  provider: DomTreeProvider,
+  parent: { readonly nodeRef: string; readonly branchRevision: number },
+  documentEpoch: number,
+  requestId: string,
+) {
+  const children = provider.getChildren({
+    type: "dom.getChildren",
+    requestId,
+    documentEpoch,
+    nodeRef: parent.nodeRef,
+    branchRevision: parent.branchRevision,
+  }).nodes;
+  expect(children).toHaveLength(1);
+  return children[0]!;
+}
+
+function createProvider(document: FakeDocument): DomTreeProvider {
+  return createProviderHarness(document).provider;
+}
+
+interface ProviderHarnessOptions {
+  readonly documentEpoch?: number;
+  readonly onInvalidated?: (branch: {
+    readonly nodeRef: string;
+    readonly branchRevision: number;
+  }) => void;
+  readonly getSelectedNodeRef?: () => string | undefined;
+  readonly onSelectedNodeRemoved?: (event: {
+    readonly nodeRef: string;
+    readonly documentEpoch: number;
+  }) => void;
+  readonly onFrameLifecycle?: (event: {
+    readonly type: string;
+    readonly frameRef: string;
+    readonly frameEpoch: number;
+    readonly documentEpoch: number;
+  }) => void;
+  readonly onMutationSettled?: () => void;
+  readonly maxCursors?: number;
+  readonly maxRecords?: number;
+  readonly isExcludedNode?: (node: Node) => boolean;
+}
+
+function createProviderHarness(
+  document: FakeDocument,
+  options: ProviderHarnessOptions = {},
+): {
+  readonly provider: DomTreeProvider;
+  readonly observers: TestMutationObserver[];
+  readonly flushTimers: () => void;
+} {
+  const observers: TestMutationObserver[] = [];
+  const timers = new Map<number, () => void>();
+  let nextTimer = 1;
+  const providerOptions = {
+    documentEpoch: options.documentEpoch ?? 3,
+    createMutationObserver: (callback) => {
+      const observer = new TestMutationObserver(callback);
+      observers.push(observer);
+      return observer;
+    },
+    setTimeout: (callback) => {
+      const timer = nextTimer;
+      nextTimer += 1;
+      timers.set(timer, callback);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      timers.delete(timer as unknown as number);
+    },
+    onInvalidated: options.onInvalidated,
+    getSelectedNodeRef: options.getSelectedNodeRef,
+    onSelectedNodeRemoved: options.onSelectedNodeRemoved,
+    onFrameLifecycle: options.onFrameLifecycle,
+    onMutationSettled: options.onMutationSettled,
+    isExcludedNode: options.isExcludedNode,
+    maxCursors: options.maxCursors,
+    maxRecords: options.maxRecords,
+  };
+  const provider = new DomTreeProvider(
+    document as unknown as Document,
+    providerOptions,
+  );
+  return {
+    provider,
+    observers,
+    flushTimers: () => {
+      const pending = [...timers.values()];
+      timers.clear();
+      for (const callback of pending) callback();
+    },
+  };
+}
+
+class TestMutationObserver {
+  private records: MutationRecord[] = [];
+  public readonly observedTargets: FakeNode[] = [];
+  public disconnectCount = 0;
+
+  public constructor(
+    private readonly callback: (records: readonly MutationRecord[]) => void,
+  ) {}
+
+  public observe(target: Node, _options: MutationObserverInit): void {
+    this.observedTargets.push(target as unknown as FakeNode);
+  }
+
+  public disconnect(): void {
+    this.disconnectCount += 1;
+    this.records = [];
+  }
+
+  public takeRecords(): readonly MutationRecord[] {
+    const records = this.records;
+    this.records = [];
+    return records;
+  }
+
+  public emit(records: readonly MutationRecord[]): void {
+    this.callback(records);
+  }
+}
+
+function mutationRecord(
+  target: FakeNode,
+  addedNodes: readonly FakeNode[] = [],
+  removedNodes: readonly FakeNode[] = [],
+): MutationRecord {
+  return {
+    type: "childList",
+    target,
+    addedNodes,
+    removedNodes,
+  } as unknown as MutationRecord;
+}
+
+function attributeMutationRecord(
+  target: FakeElement,
+  attributeName: string,
+): MutationRecord {
+  return {
+    type: "attributes",
+    target,
+    attributeName,
+  } as unknown as MutationRecord;
+}
+
+class FakeNode {
+  public parentNode: FakeNode | null = null;
+  public readonly childNodes: FakeNode[] = [];
+
+  public constructor(public readonly nodeType: number) {}
+
+  public append(child: FakeNode): void {
+    child.parentNode = this;
+    this.childNodes.push(child);
+  }
+
+  public remove(child: FakeNode): void {
+    const index = this.childNodes.indexOf(child);
+    if (index < 0) return;
+    this.childNodes.splice(index, 1);
+    child.parentNode = null;
+  }
+
+  public contains(candidate: Node): boolean {
+    let current: FakeNode | null = candidate as unknown as FakeNode;
+    while (current) {
+      if (current === this) return true;
+      current = current.parentNode;
+    }
+    return false;
+  }
+}
+
+class FakeElement extends FakeNode {
+  public id = "";
+  public className = "";
+  public readonly attributes: Array<{ name: string; value: string }> = [];
+  public shadowRoot: FakeShadowRoot | null = null;
+
+  public constructor(
+    public readonly tagName: string,
+    public readonly ownerDocument: FakeDocument,
+  ) {
+    super(1);
+  }
+
+  public attachShadow(): FakeShadowRoot {
+    const shadowRoot = new FakeShadowRoot(this);
+    this.shadowRoot = shadowRoot;
+    return shadowRoot;
+  }
+
+  public get childElementCount(): number {
+    let count = 0;
+    for (const child of this.childNodes) {
+      if (child.nodeType === 1) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  public get firstElementChild(): FakeElement | null {
+    return (this.childNodes.find((child) => child.nodeType === 1) as
+      | FakeElement
+      | undefined) ?? null;
+  }
+
+  public get classList(): readonly string[] {
+    return this.className.split(/\s+/).filter(Boolean);
+  }
+
+  public setAttribute(name: string, value: string): void {
+    const normalized = name.toLowerCase();
+    const existing = this.attributes.find((attribute) => (
+      attribute.name === normalized
+    ));
+    if (existing) {
+      existing.value = value;
+    } else {
+      this.attributes.push({ name: normalized, value });
+    }
+    if (normalized === "id") {
+      this.id = value;
+    } else if (normalized === "class") {
+      this.className = value;
+    }
+  }
+
+  public removeAttribute(name: string): void {
+    const normalized = name.toLowerCase();
+    const index = this.attributes.findIndex((attribute) => (
+      attribute.name === normalized
+    ));
+    if (index >= 0) {
+      this.attributes.splice(index, 1);
+    }
+    if (normalized === "id") {
+      this.id = "";
+    } else if (normalized === "class") {
+      this.className = "";
+    }
+  }
+}
+
+class FakeFrameElement extends FakeElement {
+  private readonly loadListeners = new Set<EventListener>();
+  public contentDocumentReads = 0;
+  public contentWindowReads = 0;
+
+  public constructor(
+    ownerDocument: FakeDocument,
+    private frameDocument: FakeDocument | null,
+    private readonly accessError?: Error,
+  ) {
+    super("IFRAME", ownerDocument);
+  }
+
+  public get contentDocument(): Document | null {
+    this.contentDocumentReads += 1;
+    if (this.accessError) throw this.accessError;
+    return this.frameDocument as unknown as Document | null;
+  }
+
+  public get contentWindow(): Window | null {
+    this.contentWindowReads += 1;
+    return this.frameDocument
+      ? ({ document: this.frameDocument } as unknown as Window)
+      : null;
+  }
+
+  public addEventListener(type: string, listener: EventListener): void {
+    if (type === "load") this.loadListeners.add(listener);
+  }
+
+  public removeEventListener(type: string, listener: EventListener): void {
+    if (type === "load") this.loadListeners.delete(listener);
+  }
+
+  public getBoundingClientRect(): DOMRect {
+    return {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 10,
+      bottom: 10,
+      width: 10,
+      height: 10,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  public get loadListenerCount(): number {
+    return this.loadListeners.size;
+  }
+
+  public setFrameDocument(document: FakeDocument | null): void {
+    this.frameDocument = document;
+  }
+
+  public dispatchLoad(): void {
+    for (const listener of [...this.loadListeners]) {
+      listener(new Event("load"));
+    }
+  }
+}
+
+class FakeShadowRoot extends FakeNode {
+  public readonly mode = "open";
+
+  public constructor(public readonly host: FakeElement) {
+    super(11);
+  }
+}
+
+class FakeDocument extends FakeNode {
+  public readonly documentElement: FakeElement;
+
+  public constructor() {
+    super(9);
+    this.documentElement = new FakeElement("HTML", this);
+    this.append(this.documentElement);
+  }
+}
+
+function createDocument(): FakeDocument {
+  return new FakeDocument();
+}
+
+function createElement(tagName: string, document: FakeDocument): FakeElement {
+  return new FakeElement(tagName.toUpperCase(), document);
+}
+
+function createFrameElement(
+  document: FakeDocument,
+  frameDocument: FakeDocument | null,
+  accessError?: Error,
+): FakeFrameElement {
+  return new FakeFrameElement(document, frameDocument, accessError);
+}
+
+function createText(_text: string): FakeNode {
+  return new FakeNode(3);
+}
+
+function createComment(_text: string): FakeNode {
+  return new FakeNode(8);
+}

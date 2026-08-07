@@ -1,6 +1,9 @@
 import { PROTOCOL_VERSION } from "@browser2ide/protocol";
-import { describe, expect, it } from "vitest";
-import { BridgeClient } from "../src/bridgeClient.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  BridgeClient,
+  ResolutionClientRouter,
+} from "../src/bridgeClient.js";
 
 const SESSION_ID = "session-1";
 const INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
@@ -38,6 +41,75 @@ class FakeSocket {
 }
 
 describe("BridgeClient", () => {
+  it("routes presenter outcomes only to the current bridge client", () => {
+    const router = new ResolutionClientRouter();
+    const first = { sendResolution: vi.fn() };
+    const second = { sendResolution: vi.fn() };
+    const input = resolutionInput();
+
+    router.sendResolution(input);
+    router.bind(first);
+    router.sendResolution(input);
+    router.bind(second);
+    router.unbind(first);
+    router.sendResolution(input);
+    router.unbind(second);
+    router.sendResolution(input);
+
+    expect(first.sendResolution).toHaveBeenCalledTimes(1);
+    expect(second.sendResolution).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a strict protocol-v4 resolution through the authenticated IDE route", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendResolution(resolutionInput());
+
+    expect(JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}")).toMatchObject({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "resolution",
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: hello.source.id },
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      document: { label: "card.scss", languageId: "scss" },
+      status: "matched",
+      selectedMatchCount: 2,
+      parentMatchCount: 1,
+      inaccessibleStylesheetCount: 0,
+      diagnosticCodes: [],
+      metadata: {},
+    });
+  });
+
+  it("does not send resolutions before authentication", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    harness.client.sendResolution(resolutionInput());
+
+    expect(harness.sockets[0].sent).toHaveLength(1);
+  });
+
+  it("rejects malformed resolution input with the strict protocol schema", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    expect(() => harness.client.sendResolution({
+      ...resolutionInput(),
+      selectedMatchCount: -1,
+      localPath: "C:/private/card.scss",
+    } as never)).toThrow();
+    expect(harness.sockets[0].sent).toHaveLength(1);
+  });
+
   it("sends hello on open and connects only after matching authentication", () => {
     const harness = createHarness();
 
@@ -51,6 +123,7 @@ describe("BridgeClient", () => {
       bridgeInstanceId: INSTANCE_ID,
       authToken: "ide-token",
       source: { role: "ide" },
+      capabilities: ["resolution"],
     });
     expect(harness.states).toEqual(["connecting"]);
 
@@ -306,5 +379,18 @@ function inspectMessage() {
     ],
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
+  };
+}
+
+function resolutionInput() {
+  return {
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    document: { label: "card.scss", languageId: "scss" },
+    status: "matched" as const,
+    selectedMatchCount: 2,
+    parentMatchCount: 1,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
   };
 }

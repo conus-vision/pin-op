@@ -2,10 +2,61 @@ import { describe, expect, it } from "vitest";
 import {
   INSPECT_LIMITS,
   RuntimeFactSchema,
+  type CssRuleFact,
 } from "@browser2ide/protocol";
 import { collectCssFacts } from "../src/collectCssFacts.js";
 
 describe("collectCssFacts", () => {
+  it("emits complete fingerprint metadata for every declaration", () => {
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{
+          href: "/complete.css",
+          cssRules: [styleRule(".card", {
+            color: "red",
+            display: "grid !important",
+          })],
+        }],
+      },
+    );
+
+    expect(result.facts).toEqual([
+      {
+        type: "css-rule",
+        selector: ".card",
+        property: "color",
+        value: "red",
+        metadata: {
+          sourceUrl: "/complete.css",
+          media: [],
+          mediaTruncated: false,
+          rulePath: "0.0",
+          valueTruncated: false,
+          important: false,
+        },
+      },
+      {
+        type: "css-rule",
+        selector: ".card",
+        property: "display",
+        value: "grid",
+        metadata: {
+          sourceUrl: "/complete.css",
+          media: [],
+          mediaTruncated: false,
+          rulePath: "0.0",
+          valueTruncated: false,
+          important: true,
+        },
+      },
+    ]);
+    result.facts.forEach((fact) => {
+      expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
+    });
+  });
+
   it("collects matched declarations through nested media rules", () => {
     const result = collectCssFacts(
       {
@@ -42,27 +93,115 @@ describe("collectCssFacts", () => {
         selector: ".card",
         property: "display",
         value: "flex",
-        metadata: {
-          sourceUrl: "http://localhost:3000/dist/app.css",
-          media: ["(min-width: 40rem)"],
-          rulePath: "0.0.0",
-        },
+        metadata: completeFactMetadata(
+          "http://localhost:3000/dist/app.css",
+          "0.0.0",
+          ["(min-width: 40rem)"],
+        ),
       },
       {
         type: "css-rule",
         selector: ".card",
         property: "padding",
         value: "1rem",
-        metadata: {
-          sourceUrl: "http://localhost:3000/dist/app.css",
-          media: ["(min-width: 40rem)"],
-          rulePath: "0.0.0",
-        },
+        metadata: completeFactMetadata(
+          "http://localhost:3000/dist/app.css",
+          "0.0.0",
+          ["(min-width: 40rem)"],
+          { important: true },
+        ),
       },
     ]);
     for (const fact of result.facts) {
       expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
     }
+  });
+
+  it("marks value and media truncation before trimming transmitted text", () => {
+    const valuePrefix = "v".repeat(INSPECT_LIMITS.valueLength - 1);
+    const mediaPrefix = "screen-" + "m".repeat(
+      INSPECT_LIMITS.valueLength - "screen-".length - 1,
+    );
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{
+          href: "/truncated.css",
+          cssRules: [mediaRule(`${mediaPrefix} tail`, [
+            styleRule(".card", { payload: `${valuePrefix} tail` }),
+          ])],
+        }],
+      },
+    );
+
+    expect(result.facts).toEqual([{
+      type: "css-rule",
+      selector: ".card",
+      property: "payload",
+      value: valuePrefix,
+      metadata: completeFactMetadata(
+        "/truncated.css",
+        "0.0.0",
+        [mediaPrefix],
+        { mediaTruncated: true, valueTruncated: true },
+      ),
+    }]);
+    expect(RuntimeFactSchema.parse(result.facts[0])).toEqual(result.facts[0]);
+  });
+
+  it("marks nested media condition count overflow as truncated", () => {
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{
+          href: "/nested-overflow.css",
+          cssRules: [nestedMediaRules(
+            INSPECT_LIMITS.mediaConditions + 1,
+            styleRule(".card", { color: "red" }),
+          )],
+        }],
+      },
+    );
+
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.metadata.media).toHaveLength(
+      INSPECT_LIMITS.mediaConditions,
+    );
+    expect(result.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(RuntimeFactSchema.parse(result.facts[0])).toEqual(result.facts[0]);
+  });
+
+  it("marks imported media condition count overflow as truncated", () => {
+    const importedUrl = "http://localhost:3000/imported.css";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{
+          href: "/root.css",
+          cssRules: [nestedMediaRules(
+            INSPECT_LIMITS.mediaConditions,
+            importRule(
+              importedUrl,
+              {
+                href: importedUrl,
+                cssRules: [styleRule(".card", { color: "red" })],
+              },
+              "print",
+            ),
+          )],
+        }],
+      },
+    );
+
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.metadata.media).toHaveLength(
+      INSPECT_LIMITS.mediaConditions,
+    );
+    expect(result.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(RuntimeFactSchema.parse(result.facts[0])).toEqual(result.facts[0]);
   });
 
   it("traverses native nested style rules when the outer rule does not match", () => {
@@ -102,10 +241,7 @@ describe("collectCssFacts", () => {
         selector: "& > .title",
         property: "color",
         value: "red",
-        metadata: {
-          sourceUrl: "/nested.css",
-          rulePath: "0.0.0",
-        },
+        metadata: completeFactMetadata("/nested.css", "0.0.0"),
       },
     ]);
   });
@@ -148,11 +284,11 @@ describe("collectCssFacts", () => {
       selector: "& .icon",
       property: "display",
       value: "block",
-      metadata: {
-        sourceUrl: "/nested-media.css",
-        media: ["(width >= 40rem)"],
-        rulePath: "0.0.0.0",
-      },
+      metadata: completeFactMetadata(
+        "/nested-media.css",
+        "0.0.0.0",
+        ["(width >= 40rem)"],
+      ),
     });
   });
 
@@ -273,11 +409,11 @@ describe("collectCssFacts", () => {
         selector: ".card",
         property: "background",
         value: "silver",
-        metadata: {
-          sourceUrl: "/nested-declarations.css",
-          media: ["(prefers-color-scheme: dark)"],
-          rulePath: "0.0.0.0",
-        },
+        metadata: completeFactMetadata(
+          "/nested-declarations.css",
+          "0.0.0.0",
+          ["(prefers-color-scheme: dark)"],
+        ),
       },
     ]);
   });
@@ -338,7 +474,8 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts[0]?.metadata).not.toHaveProperty("media");
+    expect(result.facts[0]?.metadata.media).toEqual([]);
+    expect(result.facts[0]?.metadata.mediaTruncated).toBe(false);
   });
 
   it("does not let a trailing escape cross the resolved selector limit", () => {
@@ -435,20 +572,17 @@ describe("collectCssFacts", () => {
         selector: ".imported",
         property: "color",
         value: "red",
-        metadata: {
-          sourceUrl: importedUrl,
-          rulePath: "1.0",
-        },
+        metadata: completeFactMetadata(importedUrl, "1.0"),
       },
       {
         type: "css-rule",
         selector: ".root",
         property: "display",
         value: "block",
-        metadata: {
-          sourceUrl: "https://example.test/styles/root.css",
-          rulePath: "0.1",
-        },
+        metadata: completeFactMetadata(
+          "https://example.test/styles/root.css",
+          "0.1",
+        ),
       },
     ]);
   });
@@ -496,11 +630,11 @@ describe("collectCssFacts", () => {
       selector: ".nested-import",
       property: "color",
       value: "green",
-      metadata: {
-        sourceUrl: leafUrl,
-        media: ["screen", "print", "(min-width: 40rem)"],
-        rulePath: "2.0",
-      },
+      metadata: completeFactMetadata(
+        leafUrl,
+        "2.0",
+        ["screen", "print", "(min-width: 40rem)"],
+      ),
     });
   });
 
@@ -877,7 +1011,7 @@ describe("collectCssFacts", () => {
     expect(valueReads).toBe(0);
   });
 
-  it("omits repeated declaration metadata while retaining source evidence", () => {
+  it("bounds priority reads while retaining compact source evidence", () => {
     const declarationCount = INSPECT_LIMITS.declarationsPerRule + 1;
     let cssTextReads = 0;
     let priorityReads = 0;
@@ -906,7 +1040,7 @@ describe("collectCssFacts", () => {
                   getPropertyValue: () => "value",
                   getPropertyPriority() {
                     priorityReads += 1;
-                    return "p".repeat(INSPECT_LIMITS.propertyNameLength + 1);
+                    return "";
                   },
                 },
               },
@@ -918,12 +1052,11 @@ describe("collectCssFacts", () => {
 
     expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
     expect(cssTextReads).toBe(0);
-    expect(priorityReads).toBe(0);
+    expect(priorityReads).toBe(INSPECT_LIMITS.declarationsPerRule);
     for (const fact of result.facts) {
-      expect(fact.metadata).toEqual({
-        sourceUrl: "/metadata.css",
-        rulePath: "0.0",
-      });
+      expect(fact.metadata).toEqual(
+        completeFactMetadata("/metadata.css", "0.0"),
+      );
     }
   });
 
@@ -1198,6 +1331,23 @@ describe("collectCssFacts", () => {
   });
 });
 
+function completeFactMetadata(
+  sourceUrl: string,
+  rulePath: string,
+  media: readonly string[] = [],
+  overrides: Readonly<Record<string, unknown>> = {},
+): CssRuleFact["metadata"] {
+  return {
+    sourceUrl,
+    media: [...media],
+    mediaTruncated: false,
+    rulePath,
+    valueTruncated: false,
+    important: false,
+    ...overrides,
+  };
+}
+
 function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
   let nested: unknown = styleRule(".card", {
     color: "x".repeat(
@@ -1228,6 +1378,14 @@ function mediaRule(conditionText: string, cssRules: readonly unknown[]) {
     media: { mediaText: conditionText },
     cssRules,
   };
+}
+
+function nestedMediaRules(count: number, leaf: unknown): unknown {
+  let nested = leaf;
+  for (let index = count - 1; index >= 0; index -= 1) {
+    nested = mediaRule(`screen-${index}`, [nested]);
+  }
+  return nested;
 }
 
 function importRule(

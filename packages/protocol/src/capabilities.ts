@@ -2,15 +2,13 @@ import { z } from "zod";
 
 export const ProtocolCapability = {
   Inspect: "inspect",
-  References: "references",
-  OpenSource: "openSource",
+  Resolution: "resolution",
   Link: "link",
 } as const;
 
 export const ProtocolCapabilitySchema = z.enum([
   ProtocolCapability.Inspect,
-  ProtocolCapability.References,
-  ProtocolCapability.OpenSource,
+  ProtocolCapability.Resolution,
   ProtocolCapability.Link,
 ]);
 

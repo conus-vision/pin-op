@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Browser2IDE",
   "description": "Bridge inspected browser elements to their project sources.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "devtools_page": "dist/devtools.html",
   "background": {
     "scripts": ["dist/background.js"]

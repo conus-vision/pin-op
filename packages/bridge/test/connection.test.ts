@@ -39,13 +39,42 @@ describe("guarded WebSocket connection", () => {
     };
     const connection = createConnection(socket);
 
-    expect(() => connection.send("first")).not.toThrow();
+    expect(connection.send("first")).toBe(false);
     mode = "callback";
-    expect(() => connection.send("second")).not.toThrow();
+    expect(connection.send("second")).toBe(true);
     socket.readyState = 2;
-    expect(() => connection.send("closing")).not.toThrow();
+    expect(connection.send("closing")).toBe(false);
 
     expect(sends).toBe(2);
     expect(terminations).toBe(2);
+  });
+
+  it("reports safe send acceptance and contains throwing connections", () => {
+    const sendSafely = registryModule.sendConnectionSafely as (
+      connection: { send(payload: string): boolean; terminate(): void },
+      payload: string,
+    ) => boolean;
+    const sent: string[] = [];
+    const connection = {
+      send(payload: string) {
+        sent.push(payload);
+        return true;
+      },
+      terminate() {},
+    };
+
+    expect(sendSafely(connection, "accepted")).toBe(true);
+    expect(sent).toEqual(["accepted"]);
+    expect(
+      sendSafely(
+        {
+          send() {
+            throw new Error("send failed");
+          },
+          terminate() {},
+        },
+        "rejected",
+      ),
+    ).toBe(false);
   });
 });

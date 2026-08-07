@@ -19,8 +19,16 @@ describe("ScssSourcePlugin", () => {
       fixture[activeUri]!,
       fixture,
       selection([
-        cssTarget("selected", ".layout > .card", "/dist/app.css"),
-        cssTarget("parent", ".layout", "/dist/app.css"),
+        cssTarget("selected", ".layout > .card", "/dist/app.css", {
+          property: "max-width",
+          value: "32rem",
+          rulePath: "0.4",
+        }),
+        cssTarget("parent", ".layout", "/dist/app.css", {
+          property: "display",
+          value: "grid",
+          rulePath: "0.3",
+        }),
       ]),
     );
 
@@ -35,6 +43,7 @@ describe("ScssSourcePlugin", () => {
     expect(
       result.matches.every((match) => match.confidence === "sourcemap"),
     ).toBe(true);
+    expect(result.status).toBe("matched");
   });
 
   it("uses the mapped position for repeated and nested SCSS rules", async () => {
@@ -74,25 +83,278 @@ describe("ScssSourcePlugin", () => {
         [mapUri]: generator.toString(),
       },
       selection([
-        cssTarget("selected", ".other.featured", "/dist/app.css"),
+        cssTarget("selected", ".other.featured", "/dist/app.css", {
+          property: "color",
+          value: "blue",
+          rulePath: "0.1",
+        }),
       ]),
     );
 
     expect(result.matches).toHaveLength(1);
     expect(snippets(original, result.matches)[0]).toContain("&.featured");
     expect(snippets(original, result.matches)[0]).toContain("color: blue");
+    expect(result.status).toBe("matched");
+  });
+
+  it("uses the conservative fingerprint fallback before source-map mapping", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = [
+      ".card {",
+      "  &.featured {",
+      "    color: blue;",
+      "  }",
+      "}",
+    ].join("\n");
+    const generated = [
+      ".card.featured { color: blue; }",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 2, column: 2 },
+      source: "../src/card.scss",
+    });
+
+    const result = await resolveScss(
+      activeUri,
+      original,
+      {
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: generator.toString(),
+      },
+      selection([cssTarget(
+        "selected",
+        ".card.featured",
+        "/dist/app.css",
+        { property: "color", value: "blue", rulePath: "9.9" },
+      )]),
+    );
+
+    expect(result.status).toBe("matched");
+    expect(snippets(original, result.matches)).toEqual([
+      "&.featured {\n    color: blue;\n  }",
+    ]);
+  });
+
+  it("rejects a mapped SCSS column that the document would clamp", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = [
+      ".card {",
+      "  color: red;",
+      "}",
+    ].join("\n");
+    const generated = [
+      ".card { color: red; }",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 2, column: 999 },
+      source: "../src/card.scss",
+    });
+
+    const result = await resolveScss(
+      activeUri,
+      original,
+      {
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: generator.toString(),
+      },
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+    );
+
+    expect(result.status).toBe("no-rule-match");
+    expect(result.matches).toEqual([]);
+    expect(result.diagnostics?.map((entry) => entry.code)).toContain(
+      "scss.mappingMissing",
+    );
+  });
+
+  it("rejects ambiguous generated fingerprint matches before loading a map", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const original = ".card { color: red; }";
+    const generated = [
+      ".card { color: red; }",
+      ".card { color: red; }",
+    ].join("\n");
+
+    const result = await resolveScss(
+      activeUri,
+      original,
+      { [activeUri]: original, [generatedUri]: generated },
+      selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+        { rulePath: "9.9" },
+      )]),
+    );
+
+    expect(result.status).toBe("rule-match-ambiguous");
+    expect(result.matches).toEqual([]);
+    expect(result.diagnostics?.map((entry) => entry.code)).not.toContain(
+      "scss.sourceMapMissing",
+    );
+  });
+
+  it("does not load a source map when generated CSS has no eligible rule", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const result = await resolveScss(
+      activeUri,
+      ".card { color: red; }",
+      {
+        [activeUri]: ".card { color: red; }",
+        [generatedUri]: ".other { color: blue; }",
+      },
+      selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+        { rulePath: "9.9" },
+      )]),
+    );
+
+    expect(result.status).toBe("no-rule-match");
+    expect(result.matches).toEqual([]);
+    expect(result.diagnostics?.map((entry) => entry.code)).not.toContain(
+      "scss.sourceMapMissing",
+    );
+  });
+
+  it("does not guess a nested SCSS selector when mapping is absent", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const original = [
+      ".card {",
+      "  &.featured { color: red; }",
+      "}",
+    ].join("\n");
+    const result = await resolveScss(
+      activeUri,
+      original,
+      {
+        [activeUri]: original,
+        [generatedUri]: ".card.featured { color: red; }",
+      },
+      selection([cssTarget(
+        "selected",
+        ".card.featured",
+        "/dist/app.css",
+        { rulePath: "9.9" },
+      )]),
+    );
+
+    expect(result.status).toBe("source-map-missing");
+    expect(result.matches).toEqual([]);
+  });
+
+  it("does not trust a unique-basename source-map target as active", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = ".card { color: red; }";
+    const generated = [
+      ".card { color: red; }",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/card.scss",
+    });
+    const files = {
+      [activeUri]: original,
+      [generatedUri]: generated,
+      [mapUri]: generator.toString(),
+    };
+    const baseWorkspace = memoryWorkspace(files);
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+      )]),
+      document: document(activeUri, original),
+      workspace: {
+        ...baseWorkspace,
+        async resolveSourceUri(sourceUrl, baseUrl) {
+          if (sourceUrl.endsWith("card.scss")) {
+            return { uris: [activeUri], status: "unique-basename" };
+          }
+          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("source-not-found");
+    expect(result.diagnostics?.map((entry) => entry.code)).toContain(
+      "scss.originalSourceNotFound",
+    );
+  });
+
+  it("does not trust a unique-basename generated stylesheet path", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const files = {
+      [activeUri]: ".card { color: red; }",
+      [generatedUri]: ".card { color: red; }",
+    };
+    const baseWorkspace = memoryWorkspace(files);
+    const reads: string[] = [];
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+      )]),
+      document: document(activeUri, files[activeUri]),
+      workspace: {
+        ...baseWorkspace,
+        async readText(uri) {
+          reads.push(uri);
+          return baseWorkspace.readText(uri);
+        },
+        async resolveSourceUri(sourceUrl, baseUrl) {
+          if (sourceUrl === "/dist/app.css") {
+            return { uris: [generatedUri], status: "unique-basename" };
+          }
+          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result.matches).toEqual([]);
+    expect(reads).toEqual([]);
   });
 
   it.each([
-    ["missing", "scss.sourceMapMissing"],
-    ["unreadable", "scss.sourceMapReadFailed"],
-    ["invalid", "scss.sourceMapInvalid"],
-    ["unmapped", "scss.mappingMissing"],
-    ["source-not-found", "scss.originalSourceNotFound"],
+    ["missing-map", "source-map-missing", "scss.sourceMapMissing"],
+    ["unreadable-map", "source-map-invalid", "scss.sourceMapReadFailed"],
+    ["invalid-map", "source-map-invalid", "scss.sourceMapInvalid"],
+    ["unmapped", "no-rule-match", "scss.mappingMissing"],
+    ["missing-original", "source-not-found", "scss.originalSourceNotFound"],
+    ["other-original", "source-not-active-document", "scss.sourceNotActiveDocument"],
+    ["ambiguous-original", "source-ambiguous", "scss.sourceAmbiguous"],
   ] as const)(
-    "returns diagnostics and no heuristic for a %s map",
-    async (kind, code) => {
+    "reduces %s to %s without a match",
+    async (kind, status, code) => {
       const result = await resolveBrokenMap(kind);
+      expect(result.status).toBe(status);
       expect(result.matches).toEqual([]);
       expect(result.diagnostics?.map((entry) => entry.code)).toContain(code);
     },
@@ -146,7 +408,11 @@ describe("ScssSourcePlugin", () => {
     const result = await pending;
 
     expect(reads).toEqual([generatedUri]);
-    expect(result).toEqual({ matches: [], diagnostics: [] });
+    expect(result).toEqual({
+      status: "no-rule-match",
+      matches: [],
+      diagnostics: [],
+    });
   });
 });
 
@@ -165,7 +431,14 @@ async function fixtureFiles(): Promise<Record<string, string>> {
 }
 
 async function resolveBrokenMap(
-  kind: "missing" | "unreadable" | "invalid" | "unmapped" | "source-not-found",
+  kind:
+    | "missing-map"
+    | "unreadable-map"
+    | "invalid-map"
+    | "unmapped"
+    | "missing-original"
+    | "other-original"
+    | "ambiguous-original",
 ) {
   const activeUri = "file:///workspace/src/card.scss";
   const generatedUri = "file:///workspace/dist/app.css";
@@ -173,13 +446,17 @@ async function resolveBrokenMap(
   const map = {
     version: 3,
     file: "app.css",
-    sources: [kind === "source-not-found"
+    sources: [kind === "missing-original"
       ? "../src/missing.scss"
-      : "../src/card.scss"],
+      : kind === "other-original"
+        ? "../src/other.scss"
+        : kind === "ambiguous-original"
+          ? "shared.scss"
+          : "../src/card.scss"],
     names: [],
     mappings: kind === "unmapped" ? "" : "AAAA",
   };
-  const directive = kind === "missing"
+  const directive = kind === "missing-map"
     ? ""
     : "\n/*# sourceMappingURL=app.css.map */";
   return resolveScss(
@@ -188,11 +465,23 @@ async function resolveBrokenMap(
     {
       [activeUri]: ".card {}",
       [generatedUri]: `.card {}${directive}`,
-      ...(kind === "invalid"
+      ...(kind === "invalid-map"
         ? { [mapUri]: "{invalid" }
-        : kind === "unmapped" || kind === "source-not-found"
+        : kind === "unmapped" ||
+            kind === "missing-original" ||
+            kind === "other-original" ||
+            kind === "ambiguous-original"
           ? { [mapUri]: JSON.stringify(map) }
           : {}),
+      ...(kind === "other-original"
+        ? { "file:///workspace/src/other.scss": ".card {}" }
+        : {}),
+      ...(kind === "ambiguous-original"
+        ? {
+          "file:///workspace/packages/a/shared.scss": ".card {}",
+          "file:///workspace/packages/b/shared.scss": ".card {}",
+        }
+        : {}),
     },
     selection([cssTarget("selected", ".card", "/dist/app.css")]),
   );
@@ -224,7 +513,10 @@ function memoryWorkspace(
     },
     async resolveSourceUri(sourceUrl, baseUrl) {
       const resolved = new URL(sourceUrl, baseUrl);
-      if (resolved.protocol === "file:" && files[resolved.toString()] !== undefined) {
+      if (
+        resolved.protocol === "file:" &&
+        resolved.toString().startsWith("file:///workspace/")
+      ) {
         return { uris: [resolved.toString()], status: "exact" };
       }
       const pathname = decodeURIComponent(resolved.pathname);
@@ -264,6 +556,11 @@ function cssTarget(
   role: "selected" | "parent",
   selector: string,
   sourceUrl: string,
+  options: {
+    readonly property?: string;
+    readonly value?: string;
+    readonly rulePath?: string;
+  } = {},
 ): InspectTarget & { facts: CssRuleFact[] } {
   return {
     role,
@@ -273,9 +570,16 @@ function cssTarget(
       {
         type: "css-rule",
         selector,
-        property: "color",
-        value: "red",
-        metadata: { sourceUrl },
+        property: options.property ?? "color",
+        value: options.value ?? "red",
+        metadata: {
+          sourceUrl,
+          media: [],
+          mediaTruncated: false,
+          rulePath: options.rulePath ?? "0.0",
+          valueTruncated: false,
+          important: false,
+        },
       },
     ],
     metadata: {},

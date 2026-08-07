@@ -4,12 +4,8 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourcePluginContext,
-  type SourcePluginResult,
 } from "@browser2ide/plugin-api";
-import {
-  SourceMapConsumer,
-  type RawSourceMap,
-} from "source-map";
+import type { ResolutionStatus } from "@browser2ide/protocol";
 import { targetCssFacts, type TargetCssFact } from "./cssFacts.js";
 import {
   findMatchingCssRules,
@@ -17,16 +13,9 @@ import {
   StylesheetAstCache,
   type StylesheetRule,
 } from "./stylesheetAst.js";
-import {
-  SourceMapLoader,
-  type LoadedRawSourceMap,
-} from "./sourceMapLoader.js";
-
-interface MappedPosition {
-  readonly source: string;
-  readonly line: number;
-  readonly column: number;
-}
+import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
+import { SourceMapLoader } from "./sourceMapLoader.js";
+import type { StatusAwareSourcePluginResult } from "./types.js";
 
 export class ScssSourcePlugin implements SourcePlugin {
   public readonly id = "browser2ide.scss";
@@ -44,13 +33,14 @@ export class ScssSourcePlugin implements SourcePlugin {
 
   public async resolve(
     context: SourcePluginContext,
-  ): Promise<SourcePluginResult> {
+  ): Promise<StatusAwareSourcePluginResult> {
     if (context.signal.aborted) return abortedResult();
     let original;
     try {
       original = this.ast.parseDocument(context.document, "scss");
     } catch (error) {
       return {
+        status: "error",
         matches: [],
         diagnostics: [diagnostic(
           "scss.parseFailed",
@@ -63,6 +53,7 @@ export class ScssSourcePlugin implements SourcePlugin {
 
     const matches: SourceMatch[] = [];
     const diagnostics: PluginDiagnostic[] = [];
+    const failures = new Set<ResolutionStatus>();
     for (const entry of targetCssFacts(context.selection)) {
       if (context.signal.aborted) break;
       const generatedResolution = await context.workspace.resolveSourceUri(
@@ -70,29 +61,46 @@ export class ScssSourcePlugin implements SourcePlugin {
         context.selection.context.url,
       );
       if (context.signal.aborted) break;
-      if (generatedResolution.status === "ambiguous") {
+      if (
+        generatedResolution.status === "ambiguous" ||
+        generatedResolution.uris.length > 1
+      ) {
+        failures.add("source-ambiguous");
         diagnostics.push(diagnostic(
           "scss.generatedSourceAmbiguous",
           `Generated CSS maps to more than one workspace file: ${entry.sourceUrl}`,
         ));
+        continue;
       }
-      for (const generatedUri of generatedResolution.uris) {
-        if (context.signal.aborted) break;
-        await this.resolveGenerated(
-          context,
-          entry,
-          generatedUri,
-          original.rules,
-          matches,
-          diagnostics,
-        );
+      if (
+        generatedResolution.status !== "exact" ||
+        generatedResolution.uris.length !== 1
+      ) {
+        failures.add("source-not-found");
+        diagnostics.push(diagnostic(
+          "scss.generatedSourceNotFound",
+          `Generated CSS is not in the workspace: ${entry.sourceUrl}`,
+          "info",
+        ));
+        continue;
       }
+      await this.resolveGenerated(
+        context,
+        entry,
+        generatedResolution.uris[0]!,
+        original.rules,
+        matches,
+        diagnostics,
+        failures,
+      );
     }
 
     if (context.signal.aborted) return abortedResult();
 
+    const uniqueMatches = deduplicate(matches).sort(compareByRange);
     return {
-      matches: deduplicate(matches).sort(compareByRange),
+      status: uniqueMatches.length > 0 ? "matched" : failureStatus(failures),
+      matches: uniqueMatches,
       diagnostics: deduplicateDiagnostics(diagnostics),
     };
   }
@@ -104,6 +112,7 @@ export class ScssSourcePlugin implements SourcePlugin {
     originalRules: readonly StylesheetRule[],
     matches: SourceMatch[],
     diagnostics: PluginDiagnostic[],
+    failures: Set<ResolutionStatus>,
   ): Promise<void> {
     if (context.signal.aborted) return;
     let generatedText: string;
@@ -115,6 +124,7 @@ export class ScssSourcePlugin implements SourcePlugin {
       if (context.signal.aborted) return;
     } catch (error) {
       if (context.signal.aborted) return;
+      failures.add("error");
       diagnostics.push(diagnostic(
         "scss.generatedReadFailed",
         `Generated CSS could not be read or parsed: ${messageOf(error)}`,
@@ -123,16 +133,42 @@ export class ScssSourcePlugin implements SourcePlugin {
       return;
     }
 
-    let mapResult: Awaited<ReturnType<SourceMapLoader["load"]>>;
+    const generatedRules = findMatchingCssRules(
+      generated,
+      entry.fact,
+      generated.document,
+      entry.declarations,
+    );
+    if (generatedRules.length > 1) {
+      failures.add("rule-match-ambiguous");
+      diagnostics.push(diagnostic(
+        "scss.generatedRuleAmbiguous",
+        `More than one generated CSS rule matches the available evidence: ${entry.fact.selector}`,
+      ));
+      return;
+    }
+    const generatedRule = generatedRules[0];
+    if (!generatedRule) {
+      failures.add("no-rule-match");
+      return;
+    }
+
+    let mapResult: Awaited<ReturnType<SourceMapLoader["resolve"]>>;
     try {
-      mapResult = await this.maps.load(
+      mapResult = await this.maps.resolve(
         generatedUri,
         generatedText,
+        generatedRule,
         context.workspace,
+        new URL(
+          entry.sourceUrl,
+          context.selection.context.url,
+        ).toString(),
         context.signal,
       );
     } catch (error) {
       if (context.signal.aborted) return;
+      failures.add("source-map-invalid");
       diagnostics.push(diagnostic(
         "scss.sourceMapReadFailed",
         `SCSS source map could not be loaded: ${messageOf(error)}`,
@@ -141,109 +177,84 @@ export class ScssSourcePlugin implements SourcePlugin {
       return;
     }
     if (context.signal.aborted) return;
-    if (!mapResult.rawMap || !mapResult.mapUri) {
-      diagnostics.push(...mapResult.diagnostics);
+    diagnostics.push(...mapResult.diagnostics);
+    if (mapResult.kind === "missing") {
+      failures.add("source-map-missing");
+      return;
+    }
+    if (mapResult.kind === "invalid") {
+      failures.add("source-map-invalid");
+      return;
+    }
+    if (mapResult.kind === "unmapped") {
+      failures.add("no-rule-match");
+      diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
       return;
     }
 
-    const generatedRules = findMatchingCssRules(
-      generated,
-      entry.fact,
-      generated.document,
+    const sourceResolution = await context.workspace.resolveSourceUri(
+      mapResult.sourceUrl,
+      context.selection.context.url,
     );
-    let mapped: readonly (MappedPosition | undefined)[];
-    try {
-      mapped = await mapGeneratedStarts(
-        mapResult.rawMap,
-        generatedRules,
-        context.signal,
-      );
-    } catch (error) {
-      if (context.signal.aborted) return;
+    if (context.signal.aborted) return;
+    const sourceKind = classifyActiveDocumentSource(
+      sourceResolution,
+      context.document.uri,
+    );
+    if (sourceKind === "ambiguous") {
+      failures.add("source-ambiguous");
       diagnostics.push(diagnostic(
-        "scss.sourceMapInvalid",
-        `SCSS source map is invalid: ${messageOf(error)}`,
+        "scss.sourceAmbiguous",
+        `Mapped SCSS source is ambiguous: ${mapResult.sourceUrl}`,
       ));
       return;
     }
-    if (context.signal.aborted) return;
-
-    for (const [index, generatedRule] of generatedRules.entries()) {
-      if (context.signal.aborted) return;
-      const position = mapped[index];
-      if (!position) {
-        diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
-        continue;
-      }
-      const sourceResolution = await context.workspace.resolveSourceUri(
-        position.source,
-        mapResult.mapUri,
-      );
-      if (context.signal.aborted) return;
-      if (sourceResolution.status === "ambiguous") {
-        diagnostics.push(diagnostic(
-          "scss.sourceAmbiguous",
-          `Mapped SCSS source is ambiguous: ${position.source}`,
-        ));
-        continue;
-      }
-      if (sourceResolution.status === "not-found") {
-        diagnostics.push(diagnostic(
-          "scss.originalSourceNotFound",
-          `Mapped SCSS source is not in the workspace: ${position.source}`,
-        ));
-        continue;
-      }
-      if (!sourceResolution.uris.includes(context.document.uri)) continue;
-
-      const rule = smallestContainingRule(
-        originalRules,
-        context.document.offsetAt({
-          line: position.line - 1,
-          character: position.column,
-        }),
-      );
-      if (!rule) {
-        diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
-        continue;
-      }
-      matches.push(sourceMappedMatch(
-        entry,
-        rule,
-        generatedUri,
-        mapResult.mapUri,
+    if (sourceKind === "not-found") {
+      failures.add("source-not-found");
+      diagnostics.push(diagnostic(
+        "scss.originalSourceNotFound",
+        `Mapped SCSS source is not in the workspace: ${mapResult.sourceUrl}`,
       ));
+      return;
     }
-  }
-}
+    if (sourceKind === "other-document") {
+      failures.add("source-not-active-document");
+      diagnostics.push(diagnostic(
+        "scss.sourceNotActiveDocument",
+        `Mapped SCSS source resolves outside the active document: ${mapResult.sourceUrl}`,
+        "info",
+      ));
+      return;
+    }
 
-async function mapGeneratedStarts(
-  rawMap: LoadedRawSourceMap,
-  rules: readonly StylesheetRule[],
-  signal: AbortSignal,
-): Promise<readonly (MappedPosition | undefined)[]> {
-  if (signal.aborted) throw abortError();
-  const mapped = await SourceMapConsumer.with(
-    rawMap as RawSourceMap,
-    null,
-    (consumer) => rules.map((rule) => {
-      if (signal.aborted) throw abortError();
-      const mapped = consumer.originalPositionFor({
-        line: rule.range.start.line + 1,
-        column: rule.range.start.character,
-      });
-      if (!mapped.source || mapped.line === null || mapped.column === null) {
-        return undefined;
-      }
-      return {
-        source: mapped.source,
-        line: mapped.line,
-        column: mapped.column,
-      };
-    }),
-  );
-  if (signal.aborted) throw abortError();
-  return mapped;
+    const mappedPosition = {
+      line: mapResult.line - 1,
+      character: mapResult.column,
+    };
+    const mappedOffset = context.document.offsetAt(mappedPosition);
+    const roundTrippedPosition = context.document.positionAt(mappedOffset);
+    if (
+      roundTrippedPosition.line !== mappedPosition.line ||
+      roundTrippedPosition.character !== mappedPosition.character
+    ) {
+      failures.add("no-rule-match");
+      diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
+      return;
+    }
+
+    const rule = smallestContainingRule(originalRules, mappedOffset);
+    if (!rule) {
+      failures.add("no-rule-match");
+      diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
+      return;
+    }
+    matches.push(sourceMappedMatch(
+      entry,
+      rule,
+      generatedUri,
+      mapResult.mapUri,
+    ));
+  }
 }
 
 function sourceMappedMatch(
@@ -310,16 +321,26 @@ function compareByRange(left: SourceMatch, right: SourceMatch): number {
     left.range.end.character - right.range.end.character;
 }
 
+function failureStatus(failures: ReadonlySet<ResolutionStatus>): ResolutionStatus {
+  for (const status of [
+    "source-ambiguous",
+    "source-not-active-document",
+    "source-not-found",
+    "source-map-invalid",
+    "source-map-missing",
+    "rule-match-ambiguous",
+    "no-rule-match",
+    "error",
+  ] as const) {
+    if (failures.has(status)) return status;
+  }
+  return "no-rule-match";
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function abortedResult(): SourcePluginResult {
-  return { matches: [], diagnostics: [] };
-}
-
-function abortError(): Error {
-  const error = new Error("SCSS source resolution was aborted");
-  error.name = "AbortError";
-  return error;
+function abortedResult(): StatusAwareSourcePluginResult {
+  return { status: "no-rule-match", matches: [], diagnostics: [] };
 }

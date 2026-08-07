@@ -1,12 +1,17 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { PROTOCOL_VERSION } from "@browser2ide/protocol";
 import {
   normalizeBrowserPackageTimestamps,
   writeBrowserBundleNotices,
   writeBrowserProjectLicense,
 } from "../../tools/browser-bundle-notices.mjs";
+import {
+  RUNTIME_METADATA_FILENAME,
+  serializeRuntimeMetadata,
+} from "../../tools/runtime-metadata.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const outdir = resolve(extensionRoot, "dist");
@@ -39,6 +44,12 @@ for (const asset of ["panel.html", "panel.css", "browser2ide.svg"]) {
     resolve(outdir, asset),
   );
 }
+
+await writeFile(
+  resolve(outdir, RUNTIME_METADATA_FILENAME),
+  serializeRuntimeMetadata(PROTOCOL_VERSION),
+  "utf8",
+);
 
 await writeBrowserProjectLicense(extensionRoot);
 await writeBrowserBundleNotices(result.metafile, extensionRoot);

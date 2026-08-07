@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
   createDevtoolsPanelPortName,
+  createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
+  parseInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
 describe("panel inspect transport", () => {
+  it("creates and parses strict document-scoped content lease names", () => {
+    expect(createInspectContentLeasePortName("content-session-1")).toBe(
+      "browser2ide.inspect.contentLease.content-session-1",
+    );
+    expect(
+      parseInspectContentLeasePortName(
+        "browser2ide.inspect.contentLease.content-session-1",
+      ),
+    ).toBe("content-session-1");
+    expect(
+      parseInspectContentLeasePortName("browser2ide.inspect.contentLease"),
+    ).toBeUndefined();
+    expect(
+      parseInspectContentLeasePortName(
+        "browser2ide.inspect.contentLease.content/session",
+      ),
+    ).toBeUndefined();
+    expect(() => createInspectContentLeasePortName("content/session"))
+      .toThrow(/session/i);
+  });
+
   it("creates and validates canonical channel-only port names", () => {
     expect(createDevtoolsPanelPortName("channel-1")).toBe(
       "browser2ide.devtools.channel-1",
@@ -134,6 +157,17 @@ describe("panel inspect transport", () => {
     ports[1].emitMessage({
       type: "browser2ide.windowState",
       state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    ports[1].emitMessage({
+      type: "browser2ide.windowState",
+      state: "notLinked",
+      displayLinkCode: "48735 07",
+    });
+    ports[1].emitMessage({
+      type: "browser2ide.windowState",
+      state: "error",
+      displayLinkCode: "48735 07",
     });
     ports[0].emitMessage({
       type: "browser2ide.windowState",
@@ -142,7 +176,16 @@ describe("panel inspect transport", () => {
 
     expect(received).toEqual([
       { type: "browser2ide.windowState", state: "notLinked" },
-      { type: "browser2ide.windowState", state: "linked" },
+      {
+        type: "browser2ide.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      },
+      {
+        type: "browser2ide.windowState",
+        state: "error",
+        displayLinkCode: "48735 07",
+      },
     ]);
   });
 });

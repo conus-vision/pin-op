@@ -9,7 +9,7 @@ const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const artifactPath = resolve(
   extensionRoot,
-  "../../artifacts/browser2ide-vscode-0.2.0.vsix",
+  "../../artifacts/browser2ide-vscode-0.3.0.vsix",
 );
 const require = createRequire(import.meta.url);
 const vsceCli = require.resolve("@vscode/vsce/vsce");

@@ -55,6 +55,16 @@ interface StyleSelectorContext {
   readonly resolvedSelector: string;
 }
 
+interface MediaConditions {
+  readonly values: readonly string[];
+  readonly truncated: boolean;
+}
+
+interface MediaCondition {
+  readonly value: string;
+  readonly truncated: boolean;
+}
+
 export interface StylesheetSource {
   readonly href: string | null;
   readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
@@ -128,7 +138,7 @@ export function collectCssFacts(
         stylesheet.cssRules,
         sourceUrl,
         `${stylesheetIndex}`,
-        [],
+        { values: [], truncated: false },
         undefined,
         0,
         facts,
@@ -149,7 +159,7 @@ function collectRules(
   rules: ArrayLike<RuleSource> | Iterable<RuleSource>,
   sourceUrl: string,
   parentPath: string,
-  media: readonly string[],
+  media: MediaConditions,
   parentSelector: StyleSelectorContext | undefined,
   depth: number,
   facts: CssRuleFact[],
@@ -302,7 +312,7 @@ function collectDeclarations(
   selector: string,
   sourceUrl: string,
   rulePath: string,
-  media: readonly string[],
+  media: MediaConditions,
   facts: CssRuleFact[],
   budget: InspectByteBudget,
 ): void {
@@ -336,18 +346,25 @@ function collectDeclarations(
     }
 
     try {
+      const important = readImportantPriority(style, property);
+      if (important === undefined) continue;
+      const rawValue = style.getPropertyValue(property);
+      const valueTruncated = rawValue.length > INSPECT_LIMITS.valueLength;
       const fact: CssRuleFact = {
         type: "css-rule",
         selector,
         property,
         value: truncate(
-          style.getPropertyValue(property),
+          rawValue,
           INSPECT_LIMITS.valueLength,
         ).trim(),
         metadata: {
           sourceUrl,
-          ...(media.length > 0 ? { media: [...media] } : {}),
+          media: [...media.values],
+          mediaTruncated: media.truncated,
           rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
+          valueTruncated,
+          important,
         },
       };
       if (!consumeJsonBudget(budget, fact)) {
@@ -360,11 +377,21 @@ function collectDeclarations(
   }
 }
 
+function readImportantPriority(
+  style: StyleDeclarationSource,
+  property: string,
+): boolean | undefined {
+  const priority = style.getPropertyPriority(property);
+  if (priority === "") return false;
+  if (priority === "important") return true;
+  return undefined;
+}
+
 function collectImportedStylesheet(
   element: MatchableElement,
   rule: RuleSource,
   containingSourceUrl: string,
-  media: readonly string[],
+  media: MediaConditions,
   depth: number,
   facts: CssRuleFact[],
   state: CollectionState,
@@ -656,7 +683,7 @@ function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
   return hasProperty(rule, "cssRules");
 }
 
-function readMediaCondition(rule: MediaConditionSource): string {
+function readMediaCondition(rule: MediaConditionSource): MediaCondition {
   try {
     const media = rule.media;
     if (
@@ -664,25 +691,35 @@ function readMediaCondition(rule: MediaConditionSource): string {
       media === null ||
       typeof media.mediaText !== "string"
     ) {
-      return "";
+      return { value: "", truncated: false };
     }
     const condition =
       typeof rule.conditionText === "string"
         ? rule.conditionText
         : media.mediaText;
-    return truncate(condition, INSPECT_LIMITS.valueLength).trim();
+    return {
+      value: truncate(condition, INSPECT_LIMITS.valueLength).trim(),
+      truncated: condition.length > INSPECT_LIMITS.valueLength,
+    };
   } catch {
-    return "";
+    return { value: "", truncated: false };
   }
 }
 
 function appendMediaCondition(
-  media: readonly string[],
-  condition: string,
-): readonly string[] {
-  return condition && media.length < INSPECT_LIMITS.mediaConditions
-    ? [...media, condition]
-    : media;
+  media: MediaConditions,
+  condition: MediaCondition,
+): MediaConditions {
+  const conditionDropped = condition.value !== "" &&
+    media.values.length >= INSPECT_LIMITS.mediaConditions;
+  const values = condition.value &&
+      media.values.length < INSPECT_LIMITS.mediaConditions
+    ? [...media.values, condition.value]
+    : media.values;
+  const truncated = media.truncated || condition.truncated || conditionDropped;
+  return values === media.values && truncated === media.truncated
+    ? media
+    : { values, truncated };
 }
 
 function exactImportRuleUrl(rule: RuleSource): string | undefined {

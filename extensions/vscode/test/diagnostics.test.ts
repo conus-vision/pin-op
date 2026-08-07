@@ -10,6 +10,7 @@ import {
 } from "../src/diagnostics.js";
 import type { BridgeSnapshot } from "../src/bridgeManager.js";
 import type { SourceResolution } from "../src/sourcePlugins/types.js";
+import type { PresenterOutcome } from "../src/sourcePlugins/resolutionOutcome.js";
 
 const INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -19,7 +20,7 @@ describe("DiagnosticsTracker", () => {
     const tracker = new DiagnosticsTracker({ now: () => now });
 
     tracker.recordInspect(inspectMessage());
-    tracker.recordResolution(resolution());
+    tracker.recordResolution(outcome(), 2, resolution());
     tracker.recordProtocolError(protocolError());
 
     expect(tracker.snapshot(bridgeSnapshot(), "connected")).toEqual({
@@ -34,7 +35,15 @@ describe("DiagnosticsTracker", () => {
       targetsReceived: 2,
       factsReceived: 3,
       matchesResolved: 2,
+      selectedMatchesResolved: 1,
+      parentMatchesResolved: 1,
       pluginDiagnostics: 1,
+      lastResolutionStatus: "matched",
+      lastResolutionGeneration: 2,
+      inaccessibleStylesheetCount: 1,
+      resolutionDiagnosticCodes: ["resolver.source-read-failed"],
+      sourceDocumentUri: "file:///workspace/card.scss",
+      pluginDiagnosticDetails: resolution().diagnostics,
       lastProtocolError: {
         code: "bridge.noBrowserClient",
         message: "No browser client is connected",
@@ -46,7 +55,7 @@ describe("DiagnosticsTracker", () => {
     const lines: string[] = [];
     const tracker = new DiagnosticsTracker();
     tracker.recordInspect(inspectMessage());
-    tracker.recordResolution(resolution());
+    tracker.recordResolution(outcome(), 2, resolution());
 
     writeBridgeDiagnostics(
       { appendLine: (value) => lines.push(value), show() {} },
@@ -56,9 +65,65 @@ describe("DiagnosticsTracker", () => {
     expect(lines).toEqual([
       `bridge=running client=connected url=ws://127.0.0.1:48735 port=48735 session=session-1 instance=${INSTANCE_ID} browsers=1`,
       expect.stringMatching(/^lastInspect=.+ targets=2 facts=3$/),
+      "resolution status=matched generation=2 document=card.scss selected=1 parent=1 inaccessible=1 codes=resolver.source-read-failed",
       "sources matches=2 pluginDiagnostics=1",
+      "sourceDiagnostic browser2ide.scss scss.sourceMapMissing warning: SCSS source map was not found",
       "protocolError=none",
     ]);
+  });
+
+  it("retains detailed source failures only in local VS Code diagnostics", () => {
+    const tracker = new DiagnosticsTracker();
+    const localPath = "C:/private/workspace/card.scss";
+    const localResolution: SourceResolution = {
+      ...resolution(),
+      matches: [],
+      diagnostics: [{
+        pluginId: "browser2ide.scss",
+        code: "scss.generatedReadFailed",
+        message: `Could not read ${localPath}`,
+        severity: "error",
+      }],
+    };
+    tracker.recordResolution(
+      {
+        ...outcome(),
+        status: "error",
+        matches: [],
+        selectedMatchCount: 0,
+        parentMatchCount: 0,
+        diagnosticCodes: ["resolver.source-read-failed"],
+        localDiagnostics: localResolution.diagnostics,
+      },
+      4,
+      localResolution,
+    );
+
+    const snapshot = tracker.snapshot(bridgeSnapshot(), "connected");
+    expect(JSON.stringify(snapshot.pluginDiagnosticDetails)).toContain(localPath);
+    expect(snapshot.resolutionDiagnosticCodes).toEqual([
+      "resolver.source-read-failed",
+    ]);
+  });
+
+  it("clears retained resolution details with the presenter lifecycle", () => {
+    const tracker = new DiagnosticsTracker();
+    tracker.recordResolution(outcome(), 2, resolution());
+
+    tracker.clearResolution();
+
+    expect(tracker.snapshot(bridgeSnapshot(), "connected")).toMatchObject({
+      matchesResolved: 0,
+      selectedMatchesResolved: 0,
+      parentMatchesResolved: 0,
+      pluginDiagnostics: 0,
+      inaccessibleStylesheetCount: 0,
+      resolutionDiagnosticCodes: [],
+      pluginDiagnosticDetails: [],
+    });
+    expect(tracker.snapshot(bridgeSnapshot(), "connected")).not.toHaveProperty(
+      "lastResolutionStatus",
+    );
   });
 
   it("whitelists diagnostics so link secrets and token-like values are absent", () => {
@@ -157,6 +222,20 @@ function resolution(): SourceResolution {
         severity: "warning",
       },
     ],
+  };
+}
+
+function outcome(): PresenterOutcome {
+  const localResolution = resolution();
+  return {
+    status: "matched",
+    document: { label: "card.scss", languageId: "scss" },
+    matches: localResolution.matches,
+    selectedMatchCount: 1,
+    parentMatchCount: 1,
+    inaccessibleStylesheetCount: 1,
+    diagnosticCodes: ["resolver.source-read-failed"],
+    localDiagnostics: localResolution.diagnostics,
   };
 }
 

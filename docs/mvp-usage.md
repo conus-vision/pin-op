@@ -1,63 +1,41 @@
-# Browser2IDE MVP Usage
+# Browser2IDE Usage
 
-Normal use with the installed VS Code and browser extensions is terminal-free.
-The commands in `docs/mvp-verification.md` are only for contributors running an
-unpackaged source checkout.
+Normal use with installed Browser2IDE extensions is terminal-free. Contributor
+commands belong in [development-host verification](mvp-verification.md), not in
+the installed workflow.
 
-## Link A Browser Window
+## Link One Browser Window
 
-1. Open the project in the VS Code window that should receive selections.
-2. Wait for Browser2IDE to start automatically after VS Code startup.
-3. Find the status item, for example `Browser2IDE: 48735 07`.
-4. Click the status item to copy its seven-digit code, `4873507` in this
-   example.
-5. In Firefox 142+ or Chrome/Chromium 116+, open DevTools on the page and open
-   the `Browser2IDE` panel.
-6. Click the Paste icon, or enter the code manually, and select `Link`.
-7. Wait for `Connected`, then turn on `Inspect mode`.
-8. Select an element in the page.
+1. Open the project in the local VS Code window that should receive selections.
+   Browser2IDE starts automatically.
+2. Find a status item such as `Browser2IDE: 48735 07` and click it. VS Code
+   copies the ungrouped code, `4873507` in this example.
+3. Open DevTools for the page in Firefox Stable or current Chrome/Chromium, then
+   open the **Browser2IDE** DevTools panel in that browser window.
+4. Select Paste, or enter the code manually, and select **Link**.
+5. Confirm the panel reports `Connected` and shows the same displayed code as
+   the VS Code status item.
+6. Keep the intended CSS or SCSS document active in VS Code.
+7. Select an element with the page picker or DOM tree and read the exact footer
+   outcome.
 
-The displayed space separates the five-digit port from the two-digit PIN. The
-field accepts the grouped or ungrouped form, and leading zeroes in the PIN are
-significant. Clipboard contents are read only when Paste is clicked. If the
-browser denies clipboard access, the field remains available for manual entry.
+The visual space separates the five-digit port from the two-digit PIN. Leading
+zeroes in the PIN matter. Clipboard access occurs only after Paste is selected;
+manual entry remains available when it is denied.
 
-Entering a code explicitly links one browser window to one VS Code window.
-Browser2IDE does not discover IDE instances or probe localhost ports. A newly
-opened browser window starts unlinked, even when another window in the same
-browser is already connected.
+Browser2IDE does not discover IDEs or scan localhost ports. A code links exactly
+one browser window to the VS Code window that displayed it. Tabs in that browser
+window can reuse its session link; another browser window must be linked
+separately.
 
-## Window Scope
+**Disconnect** unlinks only the current browser window. It turns off the picker,
+closes that window's socket, revokes its browser token, and removes its
+session-storage record. Other browser windows and VS Code windows continue
+independently.
 
-Each linked browser window owns one session-storage record. While one or more
-Browser2IDE DevTools panels are active in that window, they share at most one
-active WebSocket, so opening DevTools in additional tabs does not require
-another code or socket. Tabs in a different browser window never inherit that
-link.
+## Connection And Session Behavior
 
-The panel actions are scoped to the current browser window:
-
-- `Change IDE` returns to code entry and lets that window select another VS
-  Code window;
-- `Unlink` revokes that window's browser token, removes its session record,
-  closes its socket, and turns inspect mode off;
-- closing a browser window removes its mapping without affecting other windows;
-- restarting the browser clears all session-only browser mappings.
-
-Closing or reloading DevTools releases inspect ownership for that tab. When the
-last panel in the browser window closes, Browser2IDE disconnects the WebSocket
-but retains the session mapping. Reopening a panel authenticates a new socket
-from those session credentials without another code. `Inspect mode` stays off;
-inspection is always explicit and never resumes automatically.
-
-Firefox Stable 142+ and Chrome/Chromium 116+ use the same shared runtime and
-window-linking behavior. Chrome uses a Manifest V3 service worker; the bridge's
-15-second heartbeat keeps its authenticated WebSocket active on supported
-Chrome versions.
-
-## Panel Controls
-
-The compact DevTools panel reports these operational states:
+The DevTools header reports one of these states:
 
 - `Not linked`;
 - `Linking`;
@@ -67,71 +45,126 @@ The compact DevTools panel reports these operational states:
 - `Rate limited`;
 - `Error`.
 
-Before linking, it shows code entry, Paste, and Link. After linking, it shows
-Change IDE, Unlink, and the Inspect mode toggle. Inspect is enabled only while
-the current panel is connected and is reset when the panel closes, the window
-changes IDE, the link is removed, or the connection becomes unusable.
+After a successful link, code entry is replaced by the linked display code and
+**Disconnect**. DevTools panels in the same browser window share at most one
+authenticated WebSocket while panels are active. Closing the final panel closes
+the socket but leaves that window's `browser.storage.session` link available.
+Reopening the panel reconnects without scanning or asking for another code.
+
+The session record contains the endpoint, bridge and session identities,
+browser token, and formatted display code. It is cleared when that browser
+window or browser session ends. Stopping or restarting the VS Code bridge creates
+a new bridge instance and invalidates old credentials.
+
+Firefox Stable and current Chrome/Chromium have feature parity. Chrome uses a
+Manifest V3 service worker; bridge heartbeat and reconnection preserve the same
+window-scoped behavior while a panel is active.
+
+## Select From The Page
+
+Select the mouse-pointer button to enable the visual page picker. Hovering an
+eligible page element draws a noninteractive box-model overlay with separate
+margin, border, padding, and content geometry plus a bounded element label.
+Clicking selects the element and sends its bounded inspection facts to the
+linked IDE. While the picker is active, its trusted selection gesture is
+suppressed before page handlers run.
+
+The overlay is isolated inside an extension-owned shadow root, ignores pointer
+events, and is excluded from the DOM tree. Press Escape once to clear a hover
+preview and again to turn off the picker. The selected element remains selected
+until another valid selection, navigation, removal, disconnect, or session
+reset replaces it.
+
+## Select From The DOM Tree
+
+The virtualized, lazy DOM tree is available without enabling the page picker.
+It requests only the root and branches that are expanded. Large branches use a
+bounded page followed by `Load more`; they are not scanned into the panel all at
+once.
+
+- Hover an element row to show the same box-model overlay.
+- Select a row, or press Enter, to use the same selection path as a page click.
+- Use Arrow keys for standard tree navigation and disclosure.
+- Page selection reveals the bounded ancestor path in the tree.
+- Open shadow roots appear as explicit expandable rows.
+- Same-origin frame documents appear as expandable frame rows.
+- A cross-origin frame is a locked leaf and cannot be selected or expanded.
+- A closed shadow root is not traversed and fails closed.
+
+Tree labels are plain bounded text containing tag, ID, classes, and approved
+attribute names. Attribute values and DOM text do not appear in tree labels.
+Browser-local node refs are valid only inside their panel channel, document
+epoch, frame epoch, and branch revision. Navigation, mutation, collapse, and
+session disposal invalidate stale work rather than reusing it.
+
+## Source Highlighting
+
+Browser2IDE sends one selected target and, when available, its immediate DOM
+parent. VS Code retains the latest valid selection and resolves it only against
+the active document. It does not open, close, or switch editor tabs.
+
+- CSS first uses exact generated source positions or CSSOM paths. A conservative
+  CSS fingerprint fallback can use normalized selector, media conditions, and
+  declaration evidence only when the result is unique.
+- SCSS resolves the generated CSS in the workspace, finds one generated rule,
+  loads its inline or external source map, and requires the mapped source to be
+  the active SCSS document. SCSS fails closed on a missing, invalid, ambiguous,
+  unmapped, or other-document result.
+- Compatible separately installed source plugins can resolve other active
+  document types through the versioned source-plugin API.
+
+Every applicable complete block can be highlighted. The selected element uses
+the Selected decoration; only its immediate parent uses Parent. A single
+selection can create multiple source ranges for either role. `Applicable
+Sources` lists the same ranges without changing the active editor.
+
+## Footer Outcomes
+
+The DevTools footer is the authoritative result for the latest selection. Read
+the exact footer outcome rather than inferring success from the tree or overlay.
+Current text is:
+
+| Condition | Exact footer text |
+| --- | --- |
+| Nothing selected | `Select an element to inspect` |
+| IDE is resolving | `Resolving in VS Code` |
+| IDE connection is lost | `VS Code disconnected` |
+| Matches | `<N> rule(s) highlighted · Selected <S> · Parent <P>` |
+| No editor tab is active | `No active editor` |
+| Active language has no plugin | `Unsupported active file: <languageId>` |
+| Selection contains no CSS facts | `No CSS facts` |
+| Generated CSS is absent | `CSS source not found in workspace` |
+| CSS resolves to another file | `Stylesheet resolves to a different workspace file` |
+| Source path is ambiguous | `Ambiguous source path` |
+| SCSS map is absent | `SCSS source map missing` |
+| SCSS map is unreadable or invalid | `SCSS source map invalid` |
+| No safe rule result | `No matching rules in active file` |
+| More than one safe rule result | `Ambiguous rule match` |
+| Resolver contract failure | `Resolution failed (<diagnostic code>)` |
+
+When stylesheets were inaccessible, the footer appends
+`<N> inaccessible stylesheet(s)`. A later editor change can rerun resolution for
+the retained selection, so read the footer again after changing the active file.
 
 ## VS Code Controls
 
-The VS Code status bar has two adjacent Browser2IDE controls:
+The status bar has the code item and an adjacent stop/start icon:
 
-- click `Browser2IDE: <port> <PIN>` to copy the ungrouped seven-digit code;
-- click the stop icon to stop the bridge;
-- while offline, click the play icon to start a fresh bridge.
+- click `Browser2IDE: <port> <PIN>` to copy the code;
+- click Stop to shut down that VS Code window's bridge;
+- click Start while offline to create a fresh bridge and code.
 
-The bridge tries the first free port from `48735` through `48834`. Every start
-creates a new PIN, bridge instance, and server-side token set. Saved browser
-credentials cannot authenticate to a restarted bridge, even if it reuses the
-same port.
-
-`Browser2IDE: Start`, `Browser2IDE: Stop`, and
-`Browser2IDE: Copy Link Code` remain available in the Command Palette, but
-normal startup does not require running a command.
-
-## Page Access
-
-The browser extension requests `<all_urls>` host access so its background can
-inject the bounded inspect content script into whichever page the user is
-debugging. The permission does not activate Browser2IDE by itself. Injection
-occurs for an inspected tab only after its DevTools panel is open, its browser
-window is linked, and the user enables Inspect mode.
-
-The MVP is read-only. It cannot edit page or workspace source, execute arbitrary
-commands, or send general page content. It exports bounded inspection facts for
-the selected element and its immediate DOM parent. Browser-protected pages can
-still reject extension script injection. Full page URLs/routes and permitted
-attribute values are size-bounded but not classified or redacted for sensitive
-content; see `docs/security.md` before inspecting sensitive pages.
-
-## Document-First Results
-
-Browser2IDE retains the latest browser selection and resolves it against the
-document currently active in VS Code. It does not open, close, or switch editor
-tabs after a selection.
-
-- CSS documents use the built-in `CssSourcePlugin`.
-- SCSS documents use the built-in `ScssSourcePlugin` and available source maps.
-- Other language IDs remain unhighlighted until a compatible source plugin is
-  installed.
-
-Every applicable complete block in the active document is highlighted. Rules
-for the selected DOM element use the Selected decoration; rules for its
-immediate DOM parent use the distinct Parent decoration. Several related blocks
-in the same file can be highlighted at once.
-
-`Applicable Sources` contains matches and source-plugin diagnostics for the
-active document. Switching editors reuses the latest selection. Switching to
-an unsupported document clears Browser2IDE decorations and matches. Selecting
-a match reveals its complete range in the already active editor and never
-opens another file.
+Command Palette equivalents exist, but normal startup and use require no
+command. If all 100 managed ports (`48735` through `48834`) are occupied, the
+status remains offline until a port becomes available.
 
 ## Known Limits
 
-- Cross-origin stylesheets may be inaccessible through browser CSSOM rules.
-- Duplicate CSS selectors use generated positions or CSSOM rule paths when
-  available and a selector heuristic otherwise.
-- SCSS resolution requires an external or inline source map; it does not guess
-  nested SCSS selectors when mapping is unavailable.
-- If all 100 managed ports are occupied, VS Code remains offline until a port
-  becomes available and the bridge is started again.
+- Browser-protected pages can deny content-script injection.
+- Cross-origin stylesheets may be inaccessible through CSSOM; the footer reports
+  their bounded count.
+- Cross-origin frame contents and closed shadow roots cannot be traversed.
+- Transformed or unsafe overlay geometry can be omitted rather than guessed.
+- SCSS requires generated CSS and a usable source map in the workspace.
+- Remote SSH and WSL extension hosts, editing, reverse sync, and arbitrary
+  command execution are not supported.

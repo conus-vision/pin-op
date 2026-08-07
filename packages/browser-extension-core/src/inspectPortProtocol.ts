@@ -1,5 +1,20 @@
-export const INSPECT_CONTENT_LEASE_PORT_NAME =
-  "browser2ide.inspect.contentLease";
+import type {
+  DomEvent,
+  DomRequest,
+  DomResponse,
+} from "./domProtocol.js";
+
+const CONTENT_SESSION_ID_BRAND: unique symbol = Symbol(
+  "browser2ide.contentSessionId",
+);
+
+export type ContentSessionId = string & {
+  readonly [CONTENT_SESSION_ID_BRAND]: true;
+};
+
+export const INSPECT_CONTENT_LEASE_PORT_PREFIX =
+  "browser2ide.inspect.contentLease.";
+export const CONTENT_SESSION_ID_MAX_LENGTH = 128;
 export const DEVTOOLS_PANEL_PORT_PREFIX = "browser2ide.devtools.";
 export const DEVTOOLS_CHANNEL_MAX_LENGTH = 128;
 
@@ -27,6 +42,30 @@ export interface InspectPortInvalidated {
   readonly reason: "documentDisconnected";
 }
 
+/** Messages sent from the DevTools panel to its trusted background port. */
+export type PanelToBackgroundInspectPortMessage =
+  | InspectPortRequest
+  | DomRequest;
+
+/** Messages sent from the trusted background port to the DevTools panel. */
+export type BackgroundToPanelInspectPortMessage =
+  | InspectPortResult
+  | InspectPortInvalidated
+  | DomResponse
+  | DomEvent;
+
+/** Messages sent from the trusted background port to the content-script lease. */
+export type BackgroundToContentInspectPortMessage =
+  | InspectPortRequest
+  | DomRequest;
+
+/** Messages sent from the content-script lease to its trusted background port. */
+export type ContentToBackgroundInspectPortMessage =
+  | InspectPortResult
+  | InspectPortInvalidated
+  | DomResponse
+  | DomEvent;
+
 export interface InspectPortEvent<T> {
   addListener(listener: T): void;
   removeListener(listener: T): void;
@@ -46,6 +85,42 @@ export interface PanelInspectPort extends BackgroundInspectPort {
 export interface ContentInspectPort {
   readonly onDisconnect: InspectPortEvent<() => void>;
   disconnect(): void;
+}
+
+export function createInspectContentLeasePortName(
+  contentSessionId: string,
+): string {
+  if (!isValidContentSessionId(contentSessionId)) {
+    throw new Error("Invalid content session ID");
+  }
+  return `${INSPECT_CONTENT_LEASE_PORT_PREFIX}${contentSessionId}`;
+}
+
+export function parseInspectContentLeasePortName(
+  value: unknown,
+): ContentSessionId | undefined {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith(INSPECT_CONTENT_LEASE_PORT_PREFIX)
+  ) {
+    return undefined;
+  }
+  const contentSessionId = value.slice(
+    INSPECT_CONTENT_LEASE_PORT_PREFIX.length,
+  );
+  return isValidContentSessionId(contentSessionId) &&
+      value === createInspectContentLeasePortName(contentSessionId)
+    ? contentSessionId
+    : undefined;
+}
+
+export function isValidContentSessionId(
+  value: unknown,
+): value is ContentSessionId {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= CONTENT_SESSION_ID_MAX_LENGTH &&
+    /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 export function createDevtoolsPanelPortName(channel: string): string {

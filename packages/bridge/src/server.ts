@@ -16,6 +16,12 @@ import {
 } from "./clientRegistry.js";
 import { startHeartbeat, type Heartbeat } from "./heartbeat.js";
 import { LinkAuthenticator } from "./linkAuthenticator.js";
+import {
+  PeerStateRegistry,
+  type PeerStateSnapshot,
+  type PeerStateTransition,
+} from "./peerStateRegistry.js";
+import { ReplyRouteRegistry } from "./replyRouteRegistry.js";
 import { routeMessage } from "./router.js";
 
 export interface BridgeServerOptions {
@@ -24,6 +30,8 @@ export interface BridgeServerOptions {
   readonly sessionId?: string;
   readonly authenticator?: LinkAuthenticator;
   readonly registry?: ClientRegistry;
+  readonly peerStateRegistry?: PeerStateRegistry;
+  readonly replyRoutes?: ReplyRouteRegistry;
   readonly handshakeTimeoutMs?: number;
   readonly heartbeatIntervalMs?: number;
   readonly maxPayloadBytes?: number;
@@ -93,6 +101,8 @@ export function createBridgeServer(
 
   const defaultSessionId = options.sessionId ?? "default";
   const registry = options.registry ?? new ClientRegistry();
+  const peerStateRegistry = options.peerStateRegistry ?? new PeerStateRegistry();
+  const replyRoutes = options.replyRoutes ?? new ReplyRouteRegistry();
   const authenticator =
     options.authenticator ?? new LinkAuthenticator({ sessionId: defaultSessionId });
   const activeSockets = new Map<WebSocket, BridgeConnection>();
@@ -120,6 +130,55 @@ export function createBridgeServer(
         // One consumer must not prevent other listeners or server cleanup.
       }
     }
+  };
+
+  const publishPeerState = (
+    transition: PeerStateTransition,
+    excludedClientId?: string,
+  ): void => {
+    const message = createPeerStateMessage(transition.sessionId, transition);
+    for (const client of [
+      ...registry.findBySessionAndRole(transition.sessionId, "browser"),
+      ...registry.findBySessionAndRole(transition.sessionId, "simulator"),
+    ]) {
+      if (client.id === excludedClientId) {
+        continue;
+      }
+      sendSocketMessage(client.connection, message);
+    }
+  };
+
+  const updatePeerState = (sessionId: string): void => {
+    const transition = peerStateRegistry.updateIdeCount(
+      sessionId,
+      registry.countBySessionAndRole(sessionId, "ide"),
+    );
+    if (transition) {
+      publishPeerState(transition);
+    }
+  };
+
+  const sendCurrentPeerState = (client: RegisteredClient): void => {
+    const transition = peerStateRegistry.updateIdeCount(
+      client.sessionId,
+      registry.countBySessionAndRole(client.sessionId, "ide"),
+    );
+    if (transition) {
+      publishPeerState(transition, client.id);
+    }
+    const snapshot = peerStateRegistry.get(client.sessionId);
+    sendSocketMessage(
+      client.connection,
+      createPeerStateMessage(client.sessionId, snapshot),
+    );
+  };
+
+  const onClientRemoved = (client: RegisteredClient): void => {
+    replyRoutes.removeClient(client.id);
+    if (client.source.role === "ide") {
+      updatePeerState(client.sessionId);
+    }
+    notifyClientCounts();
   };
 
   const clearHandshakeTimer = (socket: WebSocket): void => {
@@ -189,8 +248,12 @@ export function createBridgeServer(
             socket,
             connection,
             registry,
+            replyRoutes,
             authenticator,
             notifyClientCounts,
+            onClientRemoved,
+            updatePeerState,
+            sendCurrentPeerState,
             () => clearHandshakeTimer(socket),
           );
         });
@@ -210,7 +273,7 @@ export function createBridgeServer(
         heartbeat = startHeartbeat(
           registry,
           heartbeatIntervalMs,
-          notifyClientCounts,
+          onClientRemoved,
         );
         startedSuccessfully = true;
       })();
@@ -240,6 +303,8 @@ export function createBridgeServer(
         heartbeat = undefined;
 
         registry.clear();
+        peerStateRegistry.clear();
+        replyRoutes.clear();
         authenticator.revokeAll();
         notifyClientCounts();
 
@@ -302,8 +367,12 @@ function handleConnection(
   socket: WebSocket,
   connection: BridgeConnection,
   registry: ClientRegistry,
+  replyRoutes: ReplyRouteRegistry,
   authenticator: LinkAuthenticator,
   notifyClientCounts: () => void,
+  onClientRemoved: (client: RegisteredClient) => void,
+  updatePeerState: (sessionId: string) => void,
+  sendCurrentPeerState: (client: RegisteredClient) => void,
   clearHandshakeTimer: () => void,
 ): void {
   let registered: RegisteredClient | undefined;
@@ -313,8 +382,12 @@ function handleConnection(
   const removeRegistration = (): RegisteredClient | undefined => {
     const client = registered;
     registered = undefined;
-    if (client && registry.remove(client.id)) {
-      notifyClientCounts();
+    if (client) {
+      if (registry.remove(client.id)) {
+        onClientRemoved(client);
+      } else {
+        replyRoutes.removeClient(client.id);
+      }
     }
     return client;
   };
@@ -425,6 +498,14 @@ function handleConnection(
         bridgeInstanceId,
         metadata: {},
       });
+      if (
+        registered.source.role === "browser" ||
+        registered.source.role === "simulator"
+      ) {
+        sendCurrentPeerState(registered);
+      } else {
+        updatePeerState(registered.sessionId);
+      }
       return;
     }
 
@@ -460,7 +541,9 @@ function handleConnection(
         authenticator.revokeToken(client.authToken);
       }
       if (removed) {
-        notifyClientCounts();
+        onClientRemoved(client);
+      } else if (client) {
+        replyRoutes.removeClient(client.id);
       }
       connection.close?.();
       return;
@@ -471,7 +554,7 @@ function handleConnection(
       return;
     }
 
-    routeMessage(registry, registered, message);
+    routeMessage(registry, replyRoutes, registered, message);
   });
 
   socket.on("close", () => {
@@ -495,9 +578,12 @@ function isAllowedInboundMessage(
         message.sessionId === client.sessionId &&
         message.source.role === client.source.role
       );
-    case "references":
-    case "command":
-      return client.source.role === "ide";
+    case "resolution":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id
+      );
     case "pong":
       return true;
     default:
@@ -557,6 +643,22 @@ function sendSocketMessage(
 ): void {
   const parsed = Browser2IdeMessageSchema.parse(message);
   sendConnectionSafely(connection, JSON.stringify(parsed));
+}
+
+function createPeerStateMessage(
+  sessionId: string,
+  snapshot: PeerStateSnapshot,
+): Browser2IdeMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: randomUUID(),
+    sessionId,
+    role: "ide",
+    connected: snapshot.connected,
+    peerGeneration: snapshot.peerGeneration,
+    metadata: {},
+  };
 }
 
 function sendSocketError(

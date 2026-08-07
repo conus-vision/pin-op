@@ -1,267 +1,220 @@
 # Browser2IDE Installed Artifact Verification
 
-This is the primary installation and acceptance runbook for Browser2IDE release
-candidates. Normal use does not require a Browser2IDE terminal process. Version
-`0.2.0` is not published yet, so obtain all candidate files from the repository
-owner or a trusted draft release and keep them together with its `SHA256SUMS`.
+This is the terminal-free installation and acceptance runbook for the
+Browser2IDE `0.3.0` release candidate. Normal use has no separate Browser2IDE
+process: open a local project and the VS Code extension starts automatically.
 
 ## Candidate Files
 
-- `browser2ide-vscode-0.2.0.vsix`;
-- `browser2ide-chrome-0.2.0.zip`;
-- `browser2ide-firefox-0.2.0.xpi`, signed by Mozilla.
+Obtain all files from the repository owner or one trusted draft release and
+keep them with that draft's `SHA256SUMS`:
 
-The similarly named Firefox ZIP is an unsigned reproducible-build input. It
-cannot be persistently installed in Firefox Stable and must not be substituted
-for the signed XPI.
+- `browser2ide-vscode-0.3.0.vsix`;
+- `browser2ide-chrome-0.3.0.zip`;
+- `browser2ide-firefox-0.3.0.xpi`, signed by Mozilla.
+
+The unsigned `browser2ide-firefox-0.3.0.zip` is build and Mozilla-review input.
+It is not a persistent Firefox Stable add-on and cannot replace the signed XPI.
 
 ## Privacy And Security Before Testing
 
-Browser2IDE is a read-only bridge. Product traffic uses only a loopback
-WebSocket between the explicitly linked browser window and local VS Code; it
-does not use a remote Browser2IDE service. The browser extension requires
-`<all_urls>` so it can inject the bounded inspection content script into the
-page being debugged. Injection occurs only while that tab's Browser2IDE DevTools
-panel is open, its browser window is linked, and Inspect mode is explicitly
-enabled.
+Browser2IDE is read-only. Product traffic uses a loopback WebSocket between one
+explicitly linked browser window and local VS Code; there is no product HTTP or
+remote Browser2IDE service. The two-digit PIN protects against accidental local
+cross-linking, not a malicious process running as the same desktop user.
 
-The full page URL, including its route, permitted DOM IDs and classes, permitted
-`data-*`, `aria-*`, and `role` names and values, plus CSS and development source
-metadata may be sent to the linked VS Code window. These
-values are bounded but not content-redacted and may contain sensitive
-application data. Browser2IDE does not deliberately read cookies, request or
-response headers, form values, or DOM text. The browser side does not collect or
-send workspace source text. After the inspection metadata reaches local VS Code,
-the built-in and any separately installed local VS Code source plugins read
-relevant workspace source files and source maps to resolve and highlight source
-ranges. Browser2IDE-operated components process those files locally; they are not
-uploaded to a remote Browser2IDE service. Separately installed source plugins may
-have their own network and data-handling behavior.
+One selection can send bounded facts for the selected element and its immediate
+parent: full page URL/route, IDs, classes, permitted `data-*`, `aria-*`, and
+`role` names and values, CSS declarations and stylesheet identity, and bounded
+development metadata. These values are not content-redacted. Browser2IDE does
+not deliberately read cookies, headers, form values, DOM text, workspace source
+text, or source-map contents in the browser.
 
-Avoid sensitive or private pages unless sending those inspection values to the
-linked local VS Code window is acceptable. Trust separately installed
-third-party source plugins separately: they receive the validated selection and
-run as independent VS Code extension code with their own data-handling behavior.
-Read the full [privacy policy](../PRIVACY.md) and
-[security policy](../SECURITY.md) before testing sensitive applications.
+The DOM tree, browser-local node refs, child pages, and box-model geometry stay
+inside the browser extension. Cross-origin frames are locked, and closed shadow
+roots are not traversed. Local VS Code source plugins can read relevant
+workspace files and source maps to resolve the active document; Browser2IDE does
+not upload them. Separately installed source plugins are independent trusted VS
+Code extensions and may have their own data behavior.
 
-Use local VS Code, normal non-private browser windows, and a page from a project
-whose source is open in VS Code. For SCSS verification, the page's generated CSS
-must expose an inline or external source map.
+Avoid private pages unless sending the bounded selection values to the linked
+local VS Code window is acceptable. Read the [privacy policy](../PRIVACY.md),
+[security policy](../SECURITY.md), and [security model](security.md).
 
 ## Install VS Code
 
 1. Open VS Code and choose **Manage > Profiles > Create Profile**.
-2. Name the profile `Browser2IDE 0.2.0 Candidate`, create it as an empty profile
-   instead of copying an existing profile, and select it. If VS Code does not
-   switch automatically, choose it from **Manage > Profiles**.
-3. In the dedicated candidate profile, open **Extensions** and confirm no other
-   user-installed extensions are enabled.
-4. Open the Extensions view menu, choose **Install from VSIX...**, and select
-   `browser2ide-vscode-0.2.0.vsix`.
-5. Accept the installation prompt and restart VS Code with
-   `Browser2IDE 0.2.0 Candidate` still selected.
-6. Open a local project folder. Browser2IDE starts automatically after startup.
-7. Confirm the status bar shows a radio-tower item such as
-   `Browser2IDE: 48735 07` and a separate stop icon.
-8. Click the code item. VS Code must report `Browser2IDE link code copied.` The
-   clipboard value is the seven digits without the visual space, for example
-   `4873507`.
+2. Create an empty profile named `Browser2IDE 0.3.0 Candidate` and select it.
+3. Open Extensions, confirm no unrelated user extension is enabled, open the
+   view menu, and choose **Install from VSIX...**.
+4. Select `browser2ide-vscode-0.3.0.vsix`, accept the prompt, and restart VS Code
+   in the same profile.
+5. Open a local project folder. Confirm Browser2IDE starts automatically and
+   shows a status item such as `Browser2IDE: 48735 07` plus a stop icon.
+6. Click the Browser2IDE status item. Confirm VS Code reports
+   `Browser2IDE link code copied.`
 
-Each VS Code window owns an independent bridge instance and code. Open a second
-VS Code window with **File > New Window**, open a local project there, and confirm
-its code differs from the first window's code.
+The status item shows a five-digit port followed by a two-digit PIN. Its copied
+value has no space, for example `4873507`. Each local VS Code window owns a
+different bridge instance and current code.
 
-## Install Chrome
+## Install Chrome Or Chromium
 
-1. Extract `browser2ide-chrome-0.2.0.zip` into a permanent candidate folder.
-   Keep that folder in place while the extension is installed.
-2. Open `chrome://extensions` in Chrome or Chromium 116 or newer.
-3. Enable **Developer mode**.
-4. Select **Load unpacked** and choose the extracted folder containing
-   `manifest.json`.
-5. Confirm the Browser2IDE card reports version `0.2.0` with no errors.
-6. Close every Chrome window, reopen Chrome, and confirm the Browser2IDE card is
-   still present before opening DevTools.
+1. Extract `browser2ide-chrome-0.3.0.zip` into a permanent candidate folder.
+2. Open `chrome://extensions` in current Chrome/Chromium 116 or newer.
+3. Enable **Developer mode** and choose **Load unpacked**.
+4. Select the extracted folder containing `manifest.json`.
+5. Confirm the Browser2IDE card reports version `0.3.0` with no errors.
+6. Restart the complete browser and confirm the extension remains installed.
 
 ## Install Firefox Stable
 
-This path requires the Mozilla-signed XPI. The unsigned Firefox ZIP is not an
-installable substitute.
+This path requires the Mozilla-signed XPI. Leave Firefox acceptance pending
+until that exact file exists.
 
-1. Open Firefox Stable 142 or newer and open the Add-ons Manager.
+1. Open Firefox Stable 142 or newer and open Add-ons Manager.
 2. Open its tools menu and choose **Install Add-on From File...**.
-3. Select `browser2ide-firefox-0.2.0.xpi` and approve the requested permissions.
-4. Confirm Browser2IDE version `0.2.0` appears as enabled.
-5. Close every Firefox window, reopen Firefox Stable, and confirm Browser2IDE is
-   still enabled before opening DevTools.
+3. Select `browser2ide-firefox-0.3.0.xpi` and approve its permissions.
+4. Confirm Browser2IDE `0.3.0` is enabled.
+5. Restart every Firefox process and confirm the signed add-on remains enabled.
 
-## Link Browser Windows
+## Normal Inspector Flow
 
-Create two normal browser windows, Browser A and Browser B. A link belongs to a
-browser window; it is not chosen automatically and it is not shared with another
-browser window.
+Run this flow once in Firefox Stable and once in current Chrome/Chromium:
 
-1. In VS Code A, click the Browser2IDE status code to copy it.
-2. In a tab in Browser A, open DevTools and select **Browser2IDE**. The initial
-   state must be `Not linked`, and **Inspect mode** must be disabled.
-3. Select the clipboard-paste icon. When browser clipboard permission is not
-   available, enter the seven-digit code manually. Select **Link**.
-4. Confirm the code input is cleared, the panel shows `Connected`, and
-   **Inspect mode** becomes available but remains off.
-5. Copy the code from VS Code B and explicitly link Browser B to it in the same
-   way.
-6. Hover each VS Code status item. Each tooltip must report one linked browser
-   window. A new third browser window must still begin as `Not linked`.
+1. Open the project in the intended local VS Code window and keep its intended
+   CSS or SCSS document active.
+2. Click the Browser2IDE status item to copy its port and PIN.
+3. Open one normal browser window, open DevTools for the test page, and select
+   the **Browser2IDE** DevTools panel.
+4. Confirm `Not linked`, choose Paste or enter the code, then select **Link**.
+5. Confirm `Connected` and confirm the same displayed code appears in the panel
+   and VS Code.
+6. Use either the visual page picker or the lazy DOM tree to select an element.
+7. Confirm VS Code highlights the expected source ranges without opening or
+   switching editor tabs.
+8. Read and record the exact footer outcome in DevTools.
 
-Open a second tab in each linked browser window and open its Browser2IDE DevTools
-panel. It must reuse that window's link without another code. Closing all panels
-disconnects the active socket, but reopening a panel in the same browser window
-reuses the session link. Inspect mode always returns off.
+The page picker is the mouse-pointer button. Hover a normal element and verify a
+noninteractive box-model overlay with distinct margin, border, padding, and
+content geometry. Click to select it. While the picker is active, its selection
+gesture must not invoke the page's own handler. Press Escape to clear hover and
+then turn off the picker.
 
-Use **Change IDE** in Browser A, enter VS Code B's code, and confirm Browser B is
-not interrupted. Change Browser A back to VS Code A. Then use the unlink icon in
-Browser A: every panel in Browser A must become unlinked and stop inspection,
-while Browser B remains connected.
+## Lazy DOM Tree
 
-## Inspect Source
+Verify that the DOM tree requests content on demand:
 
-Relink Browser A to VS Code A. Keep the relevant CSS or source-mapped SCSS file
-active in the editor before selecting an element.
+1. Open the panel and confirm only the root and expanded rows are materialized.
+2. Expand ordinary element rows and use `Load more` when a branch is paged.
+3. Hover an element row and confirm it uses the same box-model overlay as the
+   picker.
+4. Select a tree row and confirm the same selection/source flow runs.
+5. Use Arrow keys and Enter to verify standard tree focus and selection.
+6. Select an element with the page picker and confirm its bounded ancestor path
+   is revealed in the tree.
 
-1. Enable **Inspect mode** manually in Browser A and select an element on the
-   inspected page.
-2. Confirm VS Code does not open or switch editor tabs. Browser2IDE dispatches
-   the selection to the source plugin for the current open document.
-3. In a CSS file, confirm every applicable complete rule block for the selected
-   element is highlighted, including closing braces.
-4. In a source-mapped SCSS file, confirm all applicable original SCSS blocks can
-   be highlighted in multiple locations.
-5. Confirm rules for the selected element use the **Selected** decoration and
-   rules for only its immediate DOM parent use the visually distinct **Parent**
-   decoration. The default theme uses green for Selected and blue for Parent.
-6. Open the Browser2IDE Activity Bar view. **Applicable Sources** must label each
-   result `Selected` or `Parent`; selecting a result reveals its complete range
-   in the already active editor.
-7. Switch between related CSS and SCSS files without selecting the page again.
-   The built-in `CssSourcePlugin` or `ScssSourcePlugin` must resolve the active
-   document and refresh its ranges.
-8. Switch to an unsupported file such as HTML. Decorations and source matches
-   must clear. Another installed source plugin may handle its own declared file
-   types through the public plugin API.
+Using a page with the release fixture boundaries, confirm:
 
-Alternate selections between Browser A and Browser B. Only the VS Code window
-explicitly linked to that browser window may update.
+- an open shadow root appears as an explicit expandable row;
+- its element descendants can be hovered and selected;
+- a same-origin frame appears with an expandable frame-document row;
+- a cross-origin frame appears as a locked leaf and cannot be expanded;
+- a closed shadow root is not traversed and fails closed;
+- navigation or mutation refreshes affected branches without accepting stale
+  node refs or branch pages.
 
-## Start, Stop, And Stale Links
+The DOM tree must never show attribute values or DOM text in its labels.
 
-1. Select the stop icon beside VS Code A's status code. The status must pass
-   through `Stopping` to `Browser2IDE: Offline`, and the icon becomes Start.
-2. Browser A must stop sending selections and show `Linked IDE offline`.
-   Browser B and VS Code B must remain connected.
-3. Select Start in VS Code A. A new bridge instance and link code must appear.
-4. The old browser credential must be rejected rather than silently attaching
-   to the new instance. Use **Change IDE** and try the old seven-digit code; the
-   link request must fail.
-5. Copy the new code from VS Code A and link again. The panel must return to
-   `Connected`, with Inspect mode still off until enabled manually.
+## CSS And SCSS Results
 
-If all managed ports are unavailable, VS Code remains `Offline`. Use the
-Command Palette action **Browser2IDE: Open Diagnostics** to identify the bridge
-state; no separate bridge process should be started.
+Keep the intended source document active before each selection.
+
+1. In CSS, confirm exact source evidence identifies complete rule blocks,
+   including closing braces.
+2. Exercise the fixture's CSSOM path-miss case. The conservative CSS fingerprint
+   fallback may highlight only when selector, media, and declaration evidence
+   identify one rule; duplicate candidates must report `Ambiguous rule match`.
+3. Confirm every applicable selected-element block uses Selected and every
+   applicable immediate-parent block uses Parent.
+4. Confirm one selection can highlight multiple source ranges for either role.
+5. In source-mapped SCSS, confirm generated CSS maps to complete ranges in the
+   active original SCSS document.
+6. Remove or invalidate the test map and confirm SCSS fails closed with
+   `SCSS source map missing` or `SCSS source map invalid`, with no guessed range.
+7. Close every editor and select again. Confirm the exact footer outcome is
+   `No active editor`.
+8. Activate an unsupported file and confirm
+   `Unsupported active file: <languageId>`.
+
+For a match, the footer format is
+`<N> rule(s) highlighted · Selected <S> · Parent <P>`. It can append an
+inaccessible-stylesheet count. Other exact outcomes are listed in the
+[usage guide](mvp-usage.md).
+
+## Window Isolation And Disconnect
+
+1. Link Browser Window A to VS Code Window A.
+2. Link Browser Window B independently to VS Code Window B.
+3. Select alternating elements and confirm only the explicitly linked IDE
+   updates.
+4. Open a second tab in Window A. Confirm its panel reuses Window A's displayed
+   link while maintaining independent tree and picker state for that tab.
+5. Close every panel in Window A, reopen one, and confirm its session-only link
+   reconnects without port scanning.
+6. Select **Disconnect** in Window A. Confirm Disconnect unlinks only the current
+   browser window: every Window A panel returns to `Not linked`, while Window B
+   remains connected and continues resolving selections.
+7. Open a third browser window and confirm it begins `Not linked`.
+
+## Stop, Restart, And Session Cleanup
+
+1. Select the stop icon in VS Code A. Confirm its status becomes
+   `Browser2IDE: Offline` and Browser A reports `Linked IDE offline`.
+2. Start Browser2IDE again from the adjacent icon. Confirm a fresh code appears
+   and stale browser credentials do not attach to the new bridge instance.
+3. Enter the new code to reconnect explicitly.
+4. End the complete browser session, reopen it, and confirm previous browser
+   windows do not regain their session-only links.
+5. Confirm another VS Code window and its browser link were not affected.
 
 ## Cleanup
 
-1. Turn off Inspect mode in every open panel.
-2. Select **Unlink** in each browser window and confirm `Not linked`.
-3. Close DevTools, then close the browser windows. Browser link credentials are
-   session-only and do not survive a complete browser restart.
-4. Stop Browser2IDE from each VS Code status item if the test is finished.
-5. Remove the candidate extensions from the browser Add-ons/Extensions pages
-   and uninstall Browser2IDE from VS Code when the candidate should not remain.
-
-## Expected States
-
-| Action | VS Code | DevTools panel |
-| --- | --- | --- |
-| Installed VS Code startup | `Browser2IDE: <port> <PIN>` | No automatic link |
-| New browser window | Linked count unchanged | `Not linked`; Inspect disabled |
-| Successful Link | Tooltip count increases | `Connected`; Inspect available and off |
-| Same-window second tab | One browser-window connection | Reuses link; Inspect off initially |
-| Different browser window | Only its chosen IDE updates | Requires its own code |
-| Stop IDE bridge | `Browser2IDE: Offline` | `Linked IDE offline`; Inspect off |
-| Restart IDE bridge | New instance/code | Stale credential rejected; relink required |
-| Unlink | Tooltip count decreases | `Not linked`; Inspect disabled |
+1. Turn off the picker and select **Disconnect** in each linked browser window.
+2. Close DevTools and browser windows.
+3. Stop each test VS Code bridge if desired.
+4. Remove the candidate browser extensions and VS Code extension from their
+   normal extension-management UIs.
 
 ## Troubleshooting
 
-- **No VS Code code:** confirm Browser2IDE 0.2.0 is enabled, restart VS Code, and
-  select the Start icon if the status is `Offline`.
-- **Paste does not work:** browser clipboard permission can be denied. Enter the
-  same seven digits manually; spaces are optional.
-- **Link is rejected:** copy the current code from the intended VS Code window.
-  Codes and credentials from a stopped or closed instance are intentionally
-  invalid.
-- **Wrong VS Code updates:** select **Change IDE** in that browser window and
-  explicitly enter the intended window's current code.
-- **No Browser2IDE DevTools tab:** verify the browser extension is enabled,
-  restart the browser, and reopen DevTools for a normal web page.
-- **No highlights:** enable Inspect mode, keep the expected source document
-  active, and confirm SCSS has a usable source map. Browser2IDE does not switch
-  files automatically.
-- **Chrome shows extension errors:** remove the unpacked extension, extract a
-  clean candidate ZIP into a stable folder, and use **Load unpacked** again.
-- **Firefox rejects the file:** verify the filename ends in `.xpi` and came from
-  Mozilla signing. The unsigned `.zip` is expected to be rejected for persistent
-  Firefox Stable installation.
+- **No status code:** confirm Browser2IDE `0.3.0` is enabled in the candidate
+  profile, reopen the local project, and select the start icon if offline.
+- **Paste denied:** enter the same seven digits manually; spaces are optional.
+- **Link rejected:** copy the current code again from the intended VS Code
+  window. Old bridge codes and credentials are intentionally invalid.
+- **No DevTools panel:** confirm the browser extension is enabled, restart the
+  browser, and open DevTools on a normal page.
+- **No overlay:** confirm the panel is connected, enable the picker, and use an
+  ordinary page element. Unsafe geometry can fail closed.
+- **No highlights:** keep the expected CSS/SCSS document active and read the
+  footer. Browser2IDE never switches source files automatically.
+- **Firefox rejects the file:** verify it is Mozilla's signed `.xpi`; the
+  unsigned `.zip` cannot be installed persistently in Firefox Stable.
 
-## 0.2.0 Candidate Verification Record
-
-Prepared on 2026-07-31. This section distinguishes checks that can run against
-packaged artifacts from the terminal-free manual acceptance matrix above. A
-marker is evidence only after the exact command exits successfully in the
-candidate checkout; expected output is not recorded as an observed result.
-
-Candidate source commit: `dd8e41f6b65b1fb889727d08a1c4e7fe5cbf31cd`.
-
-- `browser2ide-vscode-0.2.0.vsix` SHA-256:
-  `ce9b480cac8819027b0a271eecbdbb6aadbc8a76ee82638f019e363aee9067c8`.
-- `browser2ide-chrome-0.2.0.zip` SHA-256:
-  `15cf32e6e9a873f6739335a25641fdd7970801b20f4046955aaaa279c0a56b4b`.
-
-Observed artifact smoke evidence:
-
-- `corepack pnpm smoke:vscode-package` exited with code 0 on 2026-07-31. It
-  installed the actual VSIX into isolated extension and user-data directories,
-  activated Browser2IDE 0.2.0, and emitted
-  `INSTALLED_VSIX_ACTIVATION_OK browser2ide.browser2ide-vscode`.
-- `corepack pnpm smoke:chrome-package` exited with code 0 on 2026-07-31. It
-  validated and extracted only the exact Chrome runtime allowlist, launched
-  Chrome Stable 150.0.7871.187 with a disposable user-data directory, loaded
-  Browser2IDE 0.2.0 through CDP, observed its MV3 service worker, and emitted
-  `PACKAGED_CHROME_MV3_OK Chrome/150.0.7871.187 Browser2IDE 0.2.0
-  onikikjlbofeoocjemeiepanccoaempd/dist/background.js`.
-
-On Linux, the packaged Chrome smoke requires a graphical session or Xvfb. The
-script validates that `DISPLAY` or `WAYLAND_DISPLAY` is set before it spawns
-Chrome. This platform requirement does not change the observed Windows result
-above.
-
-The VSIX smoke uses a tiny Extension Development Host only as the test harness;
-Browser2IDE itself is installed from the VSIX under test. The Chrome smoke is
-limited to archive validation, isolated-profile loading, manifest identity, and
-worker startup. Neither command substitutes for the UI installation and
-persistence matrix.
+## 0.3.0 Candidate Verification Record
 
 Pending external release evidence:
 
-- install and restart of the Mozilla-signed XPI in Firefox Stable;
-- the complete manual two-VS-Code-window and two-browser-window matrix in both
-  Firefox Stable and Chrome Stable;
-- UI confirmation of status-code copy, stop/start, stale-link recovery, and all
-  CSS/SCSS decorations from installed candidates;
-- a real privacy-reviewed linking screenshot;
-- a real GIF of linking, DOM selection, and Selected/Parent SCSS highlights.
+- signed-XPI installation and restart in Firefox Stable;
+- installed VSIX activation and restart from the final `0.3.0` artifact;
+- unpacked Chrome/Chromium installation and restart from the final artifact;
+- complete Firefox/Chrome parity, two-window isolation, DOM-tree boundary,
+  box-model overlay, CSS fingerprint, SCSS fail-closed, and footer-outcome
+  acceptance;
+- checksum comparison against the final draft release;
+- privacy-reviewed screenshots and GIF evidence.
 
-No signed `0.2.0` XPI exists in the candidate artifacts yet. Therefore Firefox
-Stable installation is not marked verified, and no screenshot or GIF is present.
+No signed `0.3.0` XPI exists in the candidate evidence. Artifact hashes are
+pending. Screenshots and GIF evidence remain pending. No installed-product or
+external release evidence is claimed by this document yet.

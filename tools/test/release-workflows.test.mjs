@@ -194,7 +194,7 @@ test("write jobs preserve release identity and race checks without AMO secrets",
 test("release guide documents protected tags, stateful resume, and fail-closed recovery", async () => {
   const source = await readFile(resolve(root, "docs/release.md"), "utf8");
 
-  assert.match(source, /git tag -a v0\.2\.0/);
+  assert.match(source, /git tag -a v0\.3\.0/);
   assert.doesNotMatch(source, /git tag -s|git verify-tag/);
   assert.match(source, /cryptographic tag\s+signing is not configured/i);
   assert.match(source, /branch ruleset|branch protection/i);
@@ -219,6 +219,35 @@ test("release guide documents protected tags, stateful resume, and fail-closed r
   assert.match(source, /Do not\s+reconstruct it/i);
   assert.match(source, /fail-closed/i);
   assert.doesNotMatch(source, /Complete the installed verification with this XPI, then use mode `publish`/i);
+});
+
+test("release guide searches every current release-owned document", async () => {
+  const source = await readFile(resolve(root, "docs/release.md"), "utf8");
+  const searchBlock = source.match(
+    /\$releaseFiles = @\([\s\S]*?node tools\/verify-release-version\.mjs v0\.3\.0/,
+  )?.[0];
+
+  assert.ok(searchBlock, "release version-search block is missing");
+  for (const path of [
+    "README.md",
+    "CHANGELOG.md",
+    "PRIVACY.md",
+    "SECURITY.md",
+    "docs/architecture.md",
+    "docs/firefox-source-submission.md",
+    "docs/installed-verification.md",
+    "docs/mvp-usage.md",
+    "docs/mvp-verification.md",
+    "docs/protocol.md",
+    "docs/release.md",
+    "docs/security.md",
+    "extensions/vscode/README.md",
+  ]) {
+    assert.match(searchBlock, new RegExp(`'${path.replaceAll("/", "\\/")}'`));
+  }
+  assert.match(searchBlock, /-g '!docs\/superpowers\/\*\*'/);
+  assert.match(searchBlock, /-g '!\*\*\/node_modules\/\*\*'/);
+  assert.match(searchBlock, /-g '!pnpm-lock\.yaml'/);
 });
 
 function stepIndex(steps, name) {

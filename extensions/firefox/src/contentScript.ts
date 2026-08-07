@@ -14,7 +14,10 @@ startContentScriptRuntime({
     browser.runtime.connect({ name }) as unknown as ContentInspectPort,
   sendRuntimeMessage: (message) => browser.runtime.sendMessage(message),
   subscribeRuntimeMessages(listener) {
-    const wrapped = (message: unknown): void => listener(message);
+    const wrapped = ((message: unknown): Promise<unknown> | undefined => {
+      const response = listener(message);
+      return response === undefined ? undefined : Promise.resolve(response);
+    }) as Parameters<typeof browser.runtime.onMessage.addListener>[0];
     browser.runtime.onMessage.addListener(wrapped);
     return () => browser.runtime.onMessage.removeListener(wrapped);
   },

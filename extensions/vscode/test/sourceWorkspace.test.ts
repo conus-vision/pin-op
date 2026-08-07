@@ -1,11 +1,90 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyActiveDocumentSource,
   VsCodeSourceWorkspace,
   type UriLike,
   type WorkspaceHost,
 } from "../src/sourcePlugins/sourceWorkspace.js";
 
 describe("VsCodeSourceWorkspace", () => {
+  it("classifies source resolution without exposing candidate paths", () => {
+    const activeUri = "file:///workspace/dist/app.css";
+
+    expect(classifyActiveDocumentSource(
+      { uris: [activeUri], status: "exact" },
+      activeUri,
+    )).toBe("active-document");
+    expect(classifyActiveDocumentSource(
+      { uris: [], status: "not-found" },
+      activeUri,
+    )).toBe("not-found");
+    expect(classifyActiveDocumentSource(
+      { uris: ["file:///workspace/other.css"], status: "exact" },
+      activeUri,
+    )).toBe("other-document");
+    expect(classifyActiveDocumentSource(
+      { uris: [], status: "ambiguous" },
+      activeUri,
+    )).toBe("ambiguous");
+    expect(classifyActiveDocumentSource(
+      {
+        uris: [activeUri, "file:///workspace/other.css"],
+        status: "exact",
+      },
+      activeUri,
+    )).toBe("ambiguous");
+  });
+
+  it("does not treat malformed not-found results with candidates as fallback", () => {
+    expect(classifyActiveDocumentSource(
+      {
+        uris: ["file:///workspace/other.css"],
+        status: "not-found",
+      },
+      "file:///workspace/dist/app.css",
+    )).toBe("other-document");
+    expect(classifyActiveDocumentSource(
+      {
+        uris: ["file:///workspace/dist/app.css"],
+        status: "not-found",
+      },
+      "file:///workspace/dist/app.css",
+    )).toBe("other-document");
+  });
+
+  it("uses canonical URI equality for encoded and Windows file paths", () => {
+    expect(classifyActiveDocumentSource(
+      {
+        uris: ["file:///workspace/My%20Card.css"],
+        status: "exact",
+      },
+      "file:///workspace/My Card.css",
+    )).toBe("active-document");
+    expect(classifyActiveDocumentSource(
+      {
+        uris: ["file:///C:/WORKSPACE/My%20Card.css"],
+        status: "exact",
+      },
+      "file:///c:/workspace/my card.css",
+    )).toBe("active-document");
+  });
+
+  it("does not grant exact authority to a unique basename", () => {
+    const activeUri = "file:///workspace/dist/app.css";
+
+    expect(classifyActiveDocumentSource(
+      { uris: [activeUri], status: "unique-basename" },
+      activeUri,
+    )).toBe("not-found");
+    expect(classifyActiveDocumentSource(
+      {
+        uris: ["file:///workspace/other/app.css"],
+        status: "unique-basename",
+      },
+      activeUri,
+    )).toBe("other-document");
+  });
+
   it("resolves an exact URL suffix and rejects ambiguous basenames", async () => {
     const workspace = sourceWorkspace({
       "file:///workspace/public/dist/app.css": "a{}",

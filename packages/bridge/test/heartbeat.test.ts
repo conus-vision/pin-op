@@ -10,6 +10,7 @@ function client() {
     connection: {
       send(payload: string) {
         this.sent.push(JSON.parse(payload));
+        return true;
       },
       sent: [] as unknown[],
       terminate() {
@@ -64,6 +65,25 @@ describe("bridge heartbeat", () => {
 
     try {
       expect(() => vi.advanceTimersByTime(15_000)).not.toThrow();
+    } finally {
+      heartbeat.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes the exact evicted registered client once", () => {
+    vi.useFakeTimers();
+    const registry = new ClientRegistry();
+    const entry = registry.add(client());
+    const evicted: unknown[] = [];
+    const heartbeat = startHeartbeat(registry, 15_000, (client) =>
+      evicted.push(client),
+    );
+
+    try {
+      vi.advanceTimersByTime(45_000);
+      expect(evicted).toEqual([entry]);
+      expect(registry.all()).toEqual([]);
     } finally {
       heartbeat.stop();
       vi.useRealTimers();

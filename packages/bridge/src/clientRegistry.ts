@@ -3,7 +3,7 @@ import type { ClientRole, ClientSource } from "@browser2ide/protocol";
 import WebSocket from "ws";
 
 export interface BridgeConnection {
-  send(payload: string): void;
+  send(payload: string): boolean;
   terminate(): void;
   close?: () => void;
 }
@@ -14,7 +14,7 @@ export function createGuardedWebSocketConnection(
   return {
     send(payload) {
       if (socket.readyState !== WebSocket.OPEN) {
-        return;
+        return false;
       }
 
       try {
@@ -23,8 +23,10 @@ export function createGuardedWebSocketConnection(
             terminateWebSocket(socket);
           }
         });
+        return true;
       } catch {
         terminateWebSocket(socket);
+        return false;
       }
     },
     terminate() {
@@ -50,11 +52,12 @@ export function createGuardedWebSocketConnection(
 export function sendConnectionSafely(
   connection: BridgeConnection,
   payload: string,
-): void {
+): boolean {
   try {
-    connection.send(payload);
+    return connection.send(payload);
   } catch {
     terminateConnectionSafely(connection);
+    return false;
   }
 }
 
@@ -106,10 +109,24 @@ export class ClientRegistry {
     return this.clients.delete(id);
   }
 
+  get(id: string): RegisteredClient | undefined {
+    return this.clients.get(id);
+  }
+
   countByRole(role: ClientRole): number {
     let count = 0;
     for (const client of this.clients.values()) {
       if (client.source.role === role) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  countBySessionAndRole(sessionId: string, role: ClientRole): number {
+    let count = 0;
+    for (const client of this.clients.values()) {
+      if (client.sessionId === sessionId && client.source.role === role) {
         count += 1;
       }
     }

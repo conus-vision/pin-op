@@ -34,7 +34,7 @@ describe("VS Code extension manifest", () => {
     expect((manifest as { publisher?: string }).publisher).toBe("browser2ide");
     expect(manifest.activationEvents).toContain("onStartupFinished");
     expect(manifest).toMatchObject({
-      version: "0.2.0",
+      version: "0.3.0",
       license: "MIT",
       repository: "https://github.com/conus-vision/Browser2IDE.git",
       extensionKind: ["ui"],

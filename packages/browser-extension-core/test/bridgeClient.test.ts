@@ -2,6 +2,8 @@ import {
   Browser2IdeMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
+  type PeerStateMessage,
+  type ResolutionMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +11,8 @@ import {
   InspectPublisher,
   type BrowserBridgeClientOptions,
   type BrowserCredentials,
+  type InspectPayload,
+  type InspectSendOutcome,
 } from "../src/bridgeClient.js";
 
 const SESSION_ID = "session-1";
@@ -195,14 +199,27 @@ describe("BrowserBridgeClient", () => {
       type: "hello",
       bridgeInstanceId: INSTANCE_ID,
     });
-    expect(harness.client.sendInspect(selection(".card"))).toBe(false);
+    expect(
+      harness.client.sendInspect(
+        "inspect-before-auth",
+        selection(".card"),
+        "firefox-test",
+      ),
+    ).toBe("not-connected");
 
     authenticate(harness.sockets[0]);
-    expect(harness.client.sendInspect(selection(".card"))).toBe(true);
+    expect(
+      harness.client.sendInspect(
+        "inspect-card",
+        selection(".card"),
+        "firefox-test",
+      ),
+    ).toBe("sent");
     const inspect = JSON.parse(harness.sockets[0].sent[1]);
     expect(Browser2IdeMessageSchema.parse(inspect)).toEqual(inspect);
     expect(inspect).toMatchObject({
       type: "inspect",
+      messageId: "inspect-card",
       sessionId: SESSION_ID,
       targets: [{ subject: { selector: ".card" } }],
     });
@@ -217,6 +234,78 @@ describe("BrowserBridgeClient", () => {
     expect(JSON.parse(harness.sockets[0].sent[2])).toMatchObject({
       type: "pong",
       pingMessageId: "ping-1",
+    });
+  });
+
+  it("preserves an extensible plugin fact byte-for-byte at the WebSocket boundary", () => {
+    const harness = createHarness();
+    const clean = selection(".card");
+    const pluginFact = {
+      type: "dom.tree",
+      payload: {
+        node: {
+          nodeRef: "plugin-node",
+          tree: [
+            { label: "article.card", children: [] },
+          ],
+        },
+        nextCursor: "plugin-cursor-2",
+      },
+      metadata: {
+        tree: "plugin-owned",
+        nextCursor: "plugin-metadata-cursor",
+      },
+    };
+    const payload = {
+      ...clean,
+      nodeRef: "top-node",
+      ancestorPath: [{ nodeRef: "top-parent" }],
+      targets: clean.targets.map((target) => ({
+        ...target,
+        facts: [...target.facts, pluginFact],
+      })),
+    } as unknown as InspectPayload;
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    expect(
+      harness.client.sendInspect("inspect-plugin", payload, "firefox-test"),
+    ).toBe("sent");
+    const serialized = harness.sockets[0].sent[1] ?? "";
+    const message = JSON.parse(serialized);
+
+    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(message).not.toHaveProperty("nodeRef");
+    expect(message).not.toHaveProperty("ancestorPath");
+    expect(JSON.stringify(message.targets[0].facts[0])).toBe(
+      JSON.stringify(pluginFact),
+    );
+  });
+
+  it("rejects malformed internal fields inside a strict inspect target", () => {
+    const harness = createHarness();
+    const clean = selection(".card");
+    const payload = {
+      ...clean,
+      targets: clean.targets.map((target) => ({
+        ...target,
+        nodeRef: "browser-local-node",
+      })),
+    } as unknown as InspectPayload;
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const sentBeforeInspect = harness.sockets[0].sent.length;
+
+    expect(
+      harness.client.sendInspect("inspect-invalid", payload, "firefox-test"),
+    ).toBe("invalid-message");
+    expect(harness.sockets[0].sent).toHaveLength(sentBeforeInspect);
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
     });
   });
 
@@ -268,7 +357,9 @@ describe("BrowserBridgeClient", () => {
         tabId: 101,
       },
     };
-    expect(harness.client.sendInspect(payload, "panel-101")).toBe(true);
+    expect(
+      harness.client.sendInspect("inspect-panel-101", payload, "panel-101"),
+    ).toBe("sent");
     const message = JSON.parse(harness.sockets[0].sent[1]);
     expect(message).toMatchObject({
       type: "inspect",
@@ -313,14 +404,18 @@ describe("BrowserBridgeClient", () => {
     harness.sockets[0].open();
     authenticate(harness.sockets[0]);
 
-    let sent: boolean | undefined;
+    let sent: InspectSendOutcome | undefined;
     expect(() => {
-      sent = harness.client.sendInspect({
-        ...selection(".card"),
-        metadata: { padding },
-      });
+      sent = harness.client.sendInspect(
+        "inspect-too-large",
+        {
+          ...selection(".card"),
+          metadata: { padding },
+        },
+        "firefox-test",
+      );
     }).not.toThrow();
-    expect(sent).toBe(false);
+    expect(sent).toBe("invalid-message");
     expect(harness.sockets[0].sent).toHaveLength(1);
     expect(harness.errors.at(-1)).toMatchObject({
       code: "protocol.invalidMessage",
@@ -409,7 +504,13 @@ describe("BrowserBridgeClient", () => {
     });
     expect(harness.sockets[0].events.slice(-2)).toEqual(["send:unlink", "close"]);
     expect(harness.states.at(-1)).toBe("disconnected");
-    expect(harness.client.sendInspect(selection(".after-unlink"))).toBe(false);
+    expect(
+      harness.client.sendInspect(
+        "inspect-after-unlink",
+        selection(".after-unlink"),
+        "firefox-test",
+      ),
+    ).toBe("not-connected");
     expect(harness.delays).toEqual([]);
   });
 
@@ -420,7 +521,9 @@ describe("BrowserBridgeClient", () => {
     harness.sockets[0].open();
     authenticate(harness.sockets[0]);
     const payload = selection(".card");
-    expect(harness.client.sendInspect(payload)).toBe(true);
+    expect(
+      harness.client.sendInspect("inspect-before-error", payload, "firefox-test"),
+    ).toBe("sent");
     harness.sockets[0].message({
       protocolVersion: PROTOCOL_VERSION,
       type: "error",
@@ -436,7 +539,9 @@ describe("BrowserBridgeClient", () => {
     });
     expect(harness.states.at(-1)).toBe("connected");
     expect(harness.sockets[0].closed).toBe(false);
-    expect(harness.client.sendInspect(payload)).toBe(true);
+    expect(
+      harness.client.sendInspect("inspect-after-error", payload, "firefox-test"),
+    ).toBe("sent");
     expect(JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}")).toMatchObject({
       type: "inspect",
       targets: [{ subject: { selector: ".card" } }],
@@ -446,6 +551,33 @@ describe("BrowserBridgeClient", () => {
     expect(harness.errors.at(-1)).toMatchObject({
       code: "protocol.invalidMessage",
     });
+  });
+
+  it("delivers authenticated resolution and peer-state messages to disposable listeners", () => {
+    const harness = createHarness();
+    const resolutions: ResolutionMessage[] = [];
+    const peerStates: PeerStateMessage[] = [];
+    const resolutionSubscription = harness.client.onResolution((message) => {
+      resolutions.push(message);
+    });
+    const peerSubscription = harness.client.onPeerState((message) => {
+      peerStates.push(message);
+    });
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.sockets[0].message(resolutionMessage("inspect-a", 1));
+    harness.sockets[0].message(peerStateMessage(true, 1));
+    expect(resolutions).toEqual([resolutionMessage("inspect-a", 1)]);
+    expect(peerStates).toEqual([peerStateMessage(true, 1)]);
+
+    resolutionSubscription.dispose();
+    peerSubscription.dispose();
+    harness.sockets[0].message(resolutionMessage("inspect-a", 2));
+    harness.sockets[0].message(peerStateMessage(false, 2));
+    expect(resolutions).toHaveLength(1);
+    expect(peerStates).toHaveLength(1);
   });
 });
 
@@ -590,6 +722,43 @@ function selection(selector: string) {
       },
     ],
     context: { url: "http://localhost:3000", metadata: {} },
+    metadata: {},
+  };
+}
+
+function resolutionMessage(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: `resolution-${resolutionGeneration}`,
+    sessionId: SESSION_ID,
+    source: { role: "ide", id: "vscode-test" },
+    inspectMessageId,
+    resolutionGeneration,
+    status: "no-active-editor",
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function peerStateMessage(
+  connected: boolean,
+  peerGeneration: number,
+): PeerStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: `peer-${peerGeneration}`,
+    sessionId: SESSION_ID,
+    role: "ide",
+    connected,
+    peerGeneration,
     metadata: {},
   };
 }

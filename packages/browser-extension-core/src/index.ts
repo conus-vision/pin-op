@@ -56,6 +56,47 @@ export type {
   StyleRuleSource,
   StylesheetSource,
 } from "./collectCssFacts.js";
+export { DomNodeRegistry } from "./domNodeRegistry.js";
+export type {
+  DomNodeRegistryOptions,
+  NodeScope,
+  NodeWeakReference,
+  RetentionReason,
+} from "./domNodeRegistry.js";
+export {
+  DomTreeProvider,
+  DomTreeProviderError,
+} from "./domTreeProvider.js";
+export type {
+  DomChildrenRequest,
+  DomTreeElementIdentity,
+  DomTreeFrameAuthority,
+  DomTreeMutationObserver,
+  DomTreeProviderOptions,
+  DomTreeResolvedElement,
+  DomTreeRevealedElement,
+  DomTreeSelectedNodeRemoval,
+  DomTreeSessionRetention,
+} from "./domTreeProvider.js";
+export { FrameRegistry } from "./frameRegistry.js";
+export type {
+  AccessibleFrameDescription,
+  FrameContext,
+  FrameDescription,
+  FrameIdentity,
+  FrameLifecycleEvent,
+  FrameLifecycleType,
+  FrameRegistryOptions,
+  InaccessibleFrameDescription,
+  TopViewportRect,
+  ViewportRect,
+} from "./frameRegistry.js";
+export { PageOverlay } from "./pageOverlay.js";
+export type {
+  PageOverlayFrameRegistry,
+  PageOverlayOptions,
+  PageOverlayViewportSize,
+} from "./pageOverlay.js";
 export { startContentScriptRuntime } from "./contentScriptRuntime.js";
 export type {
   ContentScriptDocument,
@@ -76,6 +117,62 @@ export { sanitizeErrorMessage } from "./errorSanitizer.js";
 export { createElementSnapshot } from "./elementSnapshot.js";
 export type { ElementSnapshotSource } from "./elementSnapshot.js";
 export {
+  DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomProtocolError,
+  parseDomEvent,
+  parseDomRequest,
+  parseDomResponse,
+} from "./domProtocol.js";
+export type {
+  DomClearHoverRequest,
+  DomChildrenResponse,
+  DomErrorCode,
+  DomErrorResponse,
+  DomEvent,
+  DomGetChildrenRequest,
+  DomGetRootRequest,
+  DomHoverChangedEvent,
+  DomHoverRequest,
+  DomInvalidatedEvent,
+  DomInvalidationBranch,
+  DomNodeView,
+  DomRequest,
+  DomResponse,
+  DomRootResponse,
+  DomSelectRequest,
+  DomSelectionChangedEvent,
+} from "./domProtocol.js";
+export { DomTreeController } from "./domTreeController.js";
+export type {
+  DomTreeControllerOptions,
+  DomTreeKey,
+  DomTreeRow,
+  DomTreeSnapshot,
+  DomTreeTransport,
+} from "./domTreeController.js";
+export {
+  DEFAULT_DOM_TREE_OVERSCAN,
+  DEFAULT_DOM_TREE_ROW_HEIGHT,
+  DomTreeView,
+} from "./domTreeView.js";
+export type {
+  DomTreeDocument,
+  DomTreeResizeObserver,
+  DomTreeResizeObserverFactory,
+  DomTreeViewOptions,
+} from "./domTreeView.js";
+export { virtualTreeRows } from "./virtualTreeRows.js";
+export type {
+  VirtualTreeRow,
+  VirtualViewport,
+} from "./virtualTreeRows.js";
+export {
   boundedLength,
   boundedPageUrl,
   consumeJsonBudget,
@@ -91,22 +188,40 @@ export {
 export type { InspectByteBudget } from "./inspectBounds.js";
 export { InspectMode } from "./inspectMode.js";
 export type {
+  InspectEventType,
   InspectableElement,
   InspectClickEvent,
   InspectDocument,
+  InspectListenerOptions,
   InspectModeOptions,
 } from "./inspectMode.js";
+export {
+  PAGE_INSPECTION_SELECTION_INTERVAL_MS,
+  PageInspectionSession,
+} from "./pageInspectionSession.js";
+export type {
+  PageInspectionDocument,
+  PageInspectionMode,
+  PageInspectionOverlay,
+  PageInspectionSelection,
+  PageInspectionSessionOptions,
+  PageInspectionTreeProvider,
+} from "./pageInspectionSession.js";
 export {
   BackgroundInspectLeaseRegistry,
   ContentInspectLease,
 } from "./inspectLease.js";
 export type { InspectLeaseTarget } from "./inspectLease.js";
 export {
+  CONTENT_SESSION_ID_MAX_LENGTH,
+  createInspectContentLeasePortName,
   createDevtoolsPanelPortName,
   DEVTOOLS_CHANNEL_MAX_LENGTH,
   DEVTOOLS_PANEL_PORT_PREFIX,
-  INSPECT_CONTENT_LEASE_PORT_NAME,
+  INSPECT_CONTENT_LEASE_PORT_PREFIX,
+  isValidContentSessionId,
   isValidDevtoolsChannel,
+  parseInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectControllerCommand,
   parseInspectPortInvalidated,
@@ -114,13 +229,18 @@ export {
   parseInspectPortResult,
 } from "./inspectPortProtocol.js";
 export type {
+  BackgroundToContentInspectPortMessage,
+  BackgroundToPanelInspectPortMessage,
   BackgroundInspectPort,
+  ContentSessionId,
+  ContentToBackgroundInspectPortMessage,
   ContentInspectPort,
   InspectPortEvent,
   InspectPortInvalidated,
   InspectPortRequest,
   InspectPortResult,
   PanelInspectPort,
+  PanelToBackgroundInspectPortMessage,
 } from "./inspectPortProtocol.js";
 export { parseLinkCode } from "./linkCode.js";
 export type { ParsedLinkCode } from "./linkCode.js";
@@ -134,6 +254,7 @@ export type {
   PanelDiagnosticsSnapshot,
   PanelErrorSummary,
   PanelLinkDetails,
+  PanelResolutionSummary,
 } from "./panelDiagnostics.js";
 export {
   createPanelIcons,
@@ -148,11 +269,25 @@ export type {
   PanelView,
   PanelViewModel,
 } from "./panelController.js";
+export {
+  ResolutionPresenter,
+  formatResolutionFooter,
+  presentResolution,
+} from "./resolutionPresenter.js";
+export type {
+  IdeDisconnectedPresentation,
+  ResolutionPresentation,
+  ResolutionPresentationKind,
+  ResolutionTone,
+  ResolutionViewModel,
+  ResolvingPresentation,
+} from "./resolutionPresenter.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
+export { DomPanelView } from "./panelView.js";
+export type { PanelDocument } from "./panelView.js";
 export { startPanelRuntime } from "./panelRuntime.js";
 export type {
-  PanelDocument,
   PanelRuntime,
   PanelRuntimeOptions,
 } from "./panelRuntime.js";

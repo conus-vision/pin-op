@@ -16,9 +16,34 @@ import {
   findBrowser2IDEServiceWorker,
   isBrowser2IDEManifest,
   openCdp,
+  verifyFixturePageInChrome,
   shutdownOwnedChildTree,
   validatePackagedChromeArchive,
 } from "../smoke-packaged-chrome.mjs";
+
+const panelHtmlFixture = [
+  '<output id="linked-code"></output>',
+  '<button id="disconnect-button">Disconnect</button>',
+  '<button id="inspect-mode" aria-label="Select an element"></button>',
+  '<div id="dom-tree" role="tree">',
+  '<div id="dom-tree-spacer"></div>',
+  '<div id="dom-tree-empty">No document</div>',
+  "</div>",
+  '<footer class="panel-footer">',
+  '<output id="resolution-status" role="status"></output>',
+  "</footer>",
+].join("\n");
+
+const panelCssFixture = [
+  ".dom-tree-row {}",
+  ".dom-tree-row.is-shadow-root {}",
+  ".dom-tree-row.is-frame-document {}",
+  ".dom-tree-row.is-inaccessible {}",
+  ".panel-footer {}",
+  '.resolution-status[data-tone="success"] {}',
+  '.resolution-status[data-tone="warning"] {}',
+  '.resolution-status[data-tone="error"] {}',
+].join("\n");
 
 function createArchive(paths = CHROME_ARCHIVE_FILES) {
   const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
@@ -27,11 +52,21 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
     Buffer.from(
       JSON.stringify({
         name: "Browser2IDE",
-        version: "0.2.0",
+        version: "0.3.0",
         manifest_version: 3,
         background: { service_worker: "dist/background.js" },
       }),
     ),
+  );
+  files.set("dist/panel.html", Buffer.from(panelHtmlFixture));
+  files.set("dist/panel.css", Buffer.from(panelCssFixture));
+  files.set("dist/panel.js", Buffer.from("packaged panel runtime"));
+  files.set("dist/background.js", Buffer.from("packaged background runtime"));
+  files.set("dist/contentScript.js", Buffer.from("packaged content runtime"));
+  files.set("dist/devtools.js", Buffer.from("packaged DevTools runtime"));
+  files.set(
+    "dist/runtime-metadata.json",
+    Buffer.from('{"schemaVersion":1,"protocolVersion":4}\n'),
   );
   return { files, paths: [...paths] };
 }
@@ -50,12 +85,175 @@ test("accepts only the exact validated Chrome runtime archive", () => {
   );
 });
 
+test("rejects a packaged runtime downgraded to protocol version 3", () => {
+  const archive = createArchive();
+  archive.files.set(
+    "dist/runtime-metadata.json",
+    Buffer.from('{"schemaVersion":1,"protocolVersion":3}\n'),
+  );
+
+  assert.throws(
+    () => validatePackagedChromeArchive(archive),
+    /runtime metadata protocolVersion expected 4 but found 3/i,
+  );
+});
+
+test("rejects malformed or extended packaged runtime metadata", () => {
+  for (const [metadata, expectedError] of [
+    ["not-json", /runtime metadata is not valid JSON/i],
+    [
+      '{"schemaVersion":1,"protocolVersion":4,"marker":"test"}',
+      /runtime metadata has unexpected keys: marker/i,
+    ],
+  ]) {
+    const archive = createArchive();
+    archive.files.set("dist/runtime-metadata.json", Buffer.from(metadata));
+    assert.throws(() => validatePackagedChromeArchive(archive), expectedError);
+  }
+});
+
+test("requires packaged inspector assets and semantic static markers", () => {
+  const cases = [
+    ["dist/panel.html", 'id="dom-tree"', /DOM tree asset.*dom-tree/i],
+    ["dist/panel.html", "Disconnect", /panel asset.*Disconnect/i],
+    ["dist/panel.html", 'id="linked-code"', /linked code/i],
+    ["dist/panel.html", 'id="inspect-mode"', /picker/i],
+    ["dist/panel.html", 'class="panel-footer"', /resolution footer/i],
+    ["dist/panel.css", ".dom-tree-row", /DOM tree style.*dom-tree-row/i],
+  ];
+
+  for (const [path, marker, expectedError] of cases) {
+    const archive = createArchive();
+    const original = archive.files.get(path).toString("utf8");
+    archive.files.set(path, Buffer.from(original.replaceAll(marker, "")));
+
+    assert.throws(
+      () => validatePackagedChromeArchive(archive),
+      expectedError,
+      `${path} must retain ${marker}`,
+    );
+  }
+});
+
+test("verifies fixture CSSOM access and multiline geometry through CDP", async () => {
+  const calls = [];
+  let runtimeEvaluations = 0;
+  const cdp = {
+    async send(method, params, sessionId) {
+      calls.push([method, params, sessionId]);
+      if (method === "Target.createTarget") return { targetId: "fixture-page" };
+      if (method === "Target.attachToTarget") return { sessionId: "fixture-session" };
+      if (method === "Page.navigate") return { frameId: "fixture-frame" };
+      if (method === "Runtime.evaluate") {
+        runtimeEvaluations += 1;
+        return {
+          result: {
+            value: {
+              ready: true,
+              locationHref: runtimeEvaluations === 1
+                ? "about:blank"
+                : "http://127.0.0.1:4173/",
+              vendor: { found: true, readable: true, ruleCount: 1 },
+              inaccessible: {
+                found: true,
+                readable: false,
+                errorName: "SecurityError",
+              },
+              vendorCrossOrigin: "anonymous",
+              inaccessibleHasCrossOrigin: false,
+              multilineRectCount: 2,
+              pathMiss: { property: "outline-style", value: "dashed" },
+            },
+          },
+        };
+      }
+      if (method === "Target.closeTarget") return { success: true };
+      return {};
+    },
+  };
+
+  const result = await verifyFixturePageInChrome(
+    cdp,
+    "http://127.0.0.1:4173/",
+  );
+
+  assert.equal(result.multilineRectCount, 2);
+  assert.equal(result.locationHref, "http://127.0.0.1:4173/");
+  assert.equal(runtimeEvaluations, 2);
+  assert.ok(calls.some(([method]) => method === "Page.navigate"));
+  assert.deepEqual(calls.at(-1)?.slice(0, 2), [
+    "Target.closeTarget",
+    { targetId: "fixture-page" },
+  ]);
+});
+
+test("rejects fixture CSSOM access or single-line geometry and closes the target", async () => {
+  for (const [overrides, expectedError] of [
+    [
+      { vendor: { found: true, readable: false, errorName: "SecurityError" } },
+      /vendor stylesheet cssRules must be readable/i,
+    ],
+    [
+      { inaccessible: { found: true, readable: true, ruleCount: 1 } },
+      /inaccessible stylesheet cssRules unexpectedly readable/i,
+    ],
+    [{ multilineRectCount: 1 }, /exactly 2 client rects/i],
+    [{ multilineRectCount: 3 }, /exactly 2 client rects/i],
+    [
+      { pathMiss: { property: "outline-style", value: "rgb(217, 119, 6)" } },
+      /path-miss CSSOM evidence/i,
+    ],
+  ]) {
+    let closed = false;
+    const cdp = {
+      async send(method) {
+        if (method === "Target.createTarget") return { targetId: "fixture-page" };
+        if (method === "Target.attachToTarget") return { sessionId: "fixture-session" };
+        if (method === "Page.navigate") return { frameId: "fixture-frame" };
+        if (method === "Runtime.evaluate") {
+          return {
+            result: {
+              value: {
+                ready: true,
+                locationHref: "http://127.0.0.1:4173/",
+                vendor: { found: true, readable: true, ruleCount: 1 },
+                inaccessible: {
+                  found: true,
+                  readable: false,
+                  errorName: "SecurityError",
+                },
+                vendorCrossOrigin: "anonymous",
+                inaccessibleHasCrossOrigin: false,
+                multilineRectCount: 2,
+                pathMiss: { property: "outline-style", value: "dashed" },
+                ...overrides,
+              },
+            },
+          };
+        }
+        if (method === "Target.closeTarget") {
+          closed = true;
+          return { success: true };
+        }
+        return {};
+      },
+    };
+
+    await assert.rejects(
+      verifyFixturePageInChrome(cdp, "http://127.0.0.1:4173/"),
+      expectedError,
+    );
+    assert.equal(closed, true);
+  }
+});
+
 test("launch arguments always isolate Chrome in the supplied temporary profile", () => {
   const profile = resolve("tmp/browser2ide-smoke/profile");
   const args = buildChromeArguments(profile);
 
   assert.ok(args.includes(`--user-data-dir=${profile}`));
   assert.ok(args.includes("--remote-debugging-port=0"));
+  assert.ok(args.includes("--disable-gpu"));
   assert.equal(args.some((argument) => argument.startsWith("--profile-directory")), false);
   assert.equal(args.some((argument) => argument.includes("User Data")), false);
 });
@@ -486,7 +684,7 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
   assert.equal(
     isBrowser2IDEManifest({
       name: "Browser2IDE",
-      version: "0.2.0",
+      version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),
@@ -495,7 +693,7 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
   assert.equal(
     isBrowser2IDEManifest({
       name: "Unrelated extension",
-      version: "0.2.0",
+      version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),

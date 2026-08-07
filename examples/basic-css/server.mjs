@@ -4,37 +4,100 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
-const virtualCss = ".card { border-style: solid; border-width: 2px; }\n";
-const vendorCss = ".card { box-sizing: border-box; }\n";
-const staticFiles = new Map([
+const virtualCss = [
+  ".browser2ide-virtual-unmapped {",
+  "  border: 2px dashed #1769aa;",
+  "}",
+  "",
+].join("\n");
+const vendorCss = [
+  ".browser2ide-external-readable {",
+  "  box-sizing: border-box;",
+  "  border-inline-end: 4px solid #267a4b;",
+  "}",
+  "",
+].join("\n");
+const inaccessibleCss = [
+  ".browser2ide-inaccessible-external {",
+  "  text-decoration: underline wavy #b42318;",
+  "}",
+  "",
+].join("\n");
+const cssomOnlyPrelude = [
+  ".browser2ide-cssom-only {",
+  "  --browser2ide-fixture-source: cssom;",
+  "}",
+  "",
+].join("\n");
+const pageStaticFiles = new Map([
   ["/dist/app.css", ["dist/app.css", "text/css; charset=utf-8"]],
   ["/dist/app.css.map", ["dist/app.css.map", "application/json; charset=utf-8"]],
-  ["/fallback.css", ["fallback.css", "text/css; charset=utf-8"]],
+  ["/src/app.scss", ["src/app.scss", "text/x-scss; charset=utf-8"]],
+  ["/src/card.scss", ["src/card.scss", "text/x-scss; charset=utf-8"]],
+  ["/src/layout.scss", ["src/layout.scss", "text/x-scss; charset=utf-8"]],
+  [
+    "/frames/same-origin.html",
+    ["frames/same-origin.html", "text/html; charset=utf-8"],
+  ],
+  [
+    "/frames/same-origin.css",
+    ["frames/same-origin.css", "text/css; charset=utf-8"],
+  ],
+]);
+const externalStaticFiles = new Map([
+  [
+    "/frames/cross-origin.html",
+    ["frames/cross-origin.html", "text/html; charset=utf-8"],
+  ],
+  [
+    "/frames/cross-origin.css",
+    ["frames/cross-origin.css", "text/css; charset=utf-8"],
+  ],
 ]);
 
 export async function startExampleServers(options = {}) {
   const host = options.host ?? "127.0.0.1";
-  const vendorServer = createServer((request, response) => {
-    if (request.url !== "/vendor.css") {
-      send(response, 404, "Not found\n", "text/plain; charset=utf-8");
-      return;
+  const vendorServer = createServer(async (request, response) => {
+    try {
+      const pathname = requestPathname(request);
+      if (pathname === "/vendor.css") {
+        send(response, 200, vendorCss, "text/css; charset=utf-8", {
+          "Access-Control-Allow-Origin": "*",
+        });
+        return;
+      }
+      if (pathname === "/inaccessible.css") {
+        send(response, 200, inaccessibleCss, "text/css; charset=utf-8");
+        return;
+      }
+      const staticFile = externalStaticFiles.get(pathname);
+      if (!staticFile) {
+        send(response, 404, "Not found\n", "text/plain; charset=utf-8");
+        return;
+      }
+      await sendFixtureFile(response, staticFile);
+    } catch (error) {
+      sendServerError(response, error);
     }
-    send(response, 200, vendorCss, "text/css; charset=utf-8", {
-      "Access-Control-Allow-Origin": "*",
-    });
   });
   await listen(vendorServer, host, options.vendorPort ?? 4_174);
-  const vendorCssUrl = `http://${host}:${listeningPort(vendorServer)}/vendor.css`;
+  const externalOrigin = `http://${host}:${listeningPort(vendorServer)}`;
+  const vendorCssUrl = `${externalOrigin}/vendor.css`;
+  const inaccessibleCssUrl = `${externalOrigin}/inaccessible.css`;
+  const crossOriginFrameUrl = `${externalOrigin}/frames/cross-origin.html`;
 
   const pageServer = createServer(async (request, response) => {
     try {
-      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      const pathname = requestPathname(request);
       if (pathname === "/" || pathname === "/index.html") {
         const template = await readFile(resolve(fixtureRoot, "index.html"), "utf8");
         send(
           response,
           200,
-          template.replace("__VENDOR_CSS_URL__", vendorCssUrl),
+          template
+            .replaceAll("__VENDOR_CSS_URL__", vendorCssUrl)
+            .replaceAll("__INACCESSIBLE_CSS_URL__", inaccessibleCssUrl)
+            .replaceAll("__CROSS_ORIGIN_FRAME_URL__", crossOriginFrameUrl),
           "text/html; charset=utf-8",
         );
         return;
@@ -43,21 +106,27 @@ export async function startExampleServers(options = {}) {
         send(response, 200, virtualCss, "text/css; charset=utf-8");
         return;
       }
-      const staticFile = staticFiles.get(pathname);
+      if (pathname === "/fallback.css") {
+        const fallbackCss = await readFile(
+          resolve(fixtureRoot, "fallback.css"),
+          "utf8",
+        );
+        send(
+          response,
+          200,
+          `${cssomOnlyPrelude}\n@layer browser2ide-cssom-fixture {\n${fallbackCss}\n}\n`,
+          "text/css; charset=utf-8",
+        );
+        return;
+      }
+      const staticFile = pageStaticFiles.get(pathname);
       if (!staticFile) {
         send(response, 404, "Not found\n", "text/plain; charset=utf-8");
         return;
       }
-      const [relativePath, contentType] = staticFile;
-      const body = await readFile(resolve(fixtureRoot, relativePath));
-      send(response, 200, body, contentType);
+      await sendFixtureFile(response, staticFile);
     } catch (error) {
-      send(
-        response,
-        500,
-        `${error instanceof Error ? error.message : String(error)}\n`,
-        "text/plain; charset=utf-8",
-      );
+      sendServerError(response, error);
     }
   });
 
@@ -80,6 +149,25 @@ export async function startExampleServers(options = {}) {
       await Promise.all([close(pageServer), close(vendorServer)]);
     },
   };
+}
+
+async function sendFixtureFile(response, staticFile) {
+  const [relativePath, contentType] = staticFile;
+  const body = await readFile(resolve(fixtureRoot, relativePath));
+  send(response, 200, body, contentType);
+}
+
+function sendServerError(response, error) {
+  send(
+    response,
+    500,
+    `${error instanceof Error ? error.message : String(error)}\n`,
+    "text/plain; charset=utf-8",
+  );
+}
+
+function requestPathname(request) {
+  return new URL(request.url ?? "/", "http://localhost").pathname;
 }
 
 function send(response, status, body, contentType, headers = {}) {

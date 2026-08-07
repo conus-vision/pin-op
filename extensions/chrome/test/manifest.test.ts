@@ -8,7 +8,7 @@ describe("Chrome extension manifest", () => {
     expect(manifest).toMatchObject({
       manifest_version: 3,
       name: "Browser2IDE",
-      version: "0.2.0",
+      version: "0.3.0",
       minimum_chrome_version: "116",
       devtools_page: "dist/devtools.html",
       background: { service_worker: "dist/background.js" },

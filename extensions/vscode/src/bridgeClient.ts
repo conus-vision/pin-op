@@ -2,12 +2,44 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import {
   Browser2IdeMessageSchema,
-  CommandMessageSchema,
   PROTOCOL_VERSION,
-  type CommandMessage,
+  ResolutionMessageSchema,
   type ErrorMessage,
   type InspectMessage,
+  type ResolutionMessage,
 } from "@browser2ide/protocol";
+
+export type ResolutionInput = Pick<
+  ResolutionMessage,
+  | "inspectMessageId"
+  | "resolutionGeneration"
+  | "document"
+  | "status"
+  | "selectedMatchCount"
+  | "parentMatchCount"
+  | "inaccessibleStylesheetCount"
+  | "diagnosticCodes"
+>;
+
+export interface ResolutionSender {
+  sendResolution(resolution: ResolutionInput): void;
+}
+
+export class ResolutionClientRouter implements ResolutionSender {
+  private client: ResolutionSender | undefined;
+
+  public bind(client: ResolutionSender): void {
+    this.client = client;
+  }
+
+  public unbind(client: ResolutionSender): void {
+    if (this.client === client) this.client = undefined;
+  }
+
+  public sendResolution(resolution: ResolutionInput): void {
+    this.client?.sendResolution(resolution);
+  }
+}
 
 export type ConnectionState =
   | "disconnected"
@@ -44,6 +76,7 @@ export class BridgeClient {
     (message: ErrorMessage) => void
   >();
   private readonly stateListeners = new Set<(state: ConnectionState) => void>();
+  private readonly sourceId = `vscode-${randomUUID()}`;
   private socket: SocketLike | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempts = 0;
@@ -105,12 +138,18 @@ export class BridgeClient {
     return () => this.protocolErrorListeners.delete(listener);
   }
 
-  sendCommand(command: CommandMessage): void {
-    if (!this.socket || this.state !== "connected") {
-      return;
-    }
-
-    this.socket.send(JSON.stringify(CommandMessageSchema.parse(command)));
+  sendResolution(resolution: ResolutionInput): void {
+    const message = ResolutionMessageSchema.parse({
+      ...resolution,
+      protocolVersion: PROTOCOL_VERSION,
+      type: "resolution",
+      messageId: randomUUID(),
+      sessionId: this.options.sessionId,
+      source: { role: "ide", id: this.sourceId },
+      metadata: {},
+    });
+    if (!this.socket || this.state !== "connected") return;
+    this.socket.send(JSON.stringify(message));
   }
 
   private openSocket(): void {
@@ -129,8 +168,8 @@ export class BridgeClient {
           sessionId: this.options.sessionId,
           authToken: this.options.authToken,
           bridgeInstanceId: this.options.bridgeInstanceId,
-          source: { role: "ide", id: `vscode-${randomUUID()}`, metadata: {} },
-          capabilities: ["references"],
+          source: { role: "ide", id: this.sourceId, metadata: {} },
+          capabilities: ["resolution"],
           metadata: {},
         }),
       );

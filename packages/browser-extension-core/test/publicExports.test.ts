@@ -9,16 +9,41 @@ import {
   createBackgroundRouter,
   createDevtoolsPanelPortName,
   createInspectPayload,
+  DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
+  DomNodeRegistry,
+  DomPanelView,
+  DomTreeController,
+  DomTreeProvider,
+  DomTreeProviderError,
+  DomTreeView,
+  DomProtocolError,
+  FrameRegistry,
   InspectMode,
+  PAGE_INSPECTION_SELECTION_INTERVAL_MS,
+  PageInspectionSession,
+  PageOverlay,
   PanelController,
+  ResolutionPresenter,
+  formatResolutionFooter,
+  presentResolution,
   PanelInspectTransport,
   parseLinkCode,
+  parseDomEvent,
+  parseDomRequest,
+  parseDomResponse,
   registerDevtoolsPanel,
   sanitizeErrorMessage,
   startBackgroundRuntime,
   startContentScriptRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
+  virtualTreeRows,
   WindowConnectionCoordinator,
 } from "../src/index.js";
 
@@ -32,10 +57,34 @@ describe("browser extension core exports", () => {
     expect(createBackgroundRouter).toBeTypeOf("function");
     expect(createDevtoolsPanelPortName).toBeTypeOf("function");
     expect(createInspectPayload).toBeTypeOf("function");
+    expect(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH).toBe(64);
+    expect(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH).toBe(100);
+    expect(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH).toBe(128);
+    expect(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES).toBe(128);
+    expect(DOM_PROTOCOL_MAX_LABEL_LENGTH).toBe(512);
+    expect(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES).toBe(64 * 1024);
+    expect(DOM_PROTOCOL_MAX_SUMMARY_LENGTH).toBe(512);
+    expect(DomNodeRegistry).toBeTypeOf("function");
+    expect(DomPanelView).toBeTypeOf("function");
+    expect(DomTreeController).toBeTypeOf("function");
+    expect(DomTreeProvider).toBeTypeOf("function");
+    expect(DomTreeProviderError).toBeTypeOf("function");
+    expect(DomTreeView).toBeTypeOf("function");
+    expect(DomProtocolError).toBeTypeOf("function");
+    expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
+    expect(PAGE_INSPECTION_SELECTION_INTERVAL_MS).toBe(100);
+    expect(PageInspectionSession).toBeTypeOf("function");
+    expect(PageOverlay).toBeTypeOf("function");
     expect(parseLinkCode).toBeTypeOf("function");
+    expect(parseDomEvent).toBeTypeOf("function");
+    expect(parseDomRequest).toBeTypeOf("function");
+    expect(parseDomResponse).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
+    expect(ResolutionPresenter).toBeTypeOf("function");
+    expect(formatResolutionFooter).toBeTypeOf("function");
+    expect(presentResolution).toBeTypeOf("function");
     expect(PanelInspectTransport).toBeTypeOf("function");
     expect(registerDevtoolsPanel).toBeTypeOf("function");
     expect(sanitizeErrorMessage).toBeTypeOf("function");
@@ -43,6 +92,7 @@ describe("browser extension core exports", () => {
     expect(startContentScriptRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
     expect(startPanelRuntime).toBeTypeOf("function");
+    expect(virtualTreeRows).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
 });

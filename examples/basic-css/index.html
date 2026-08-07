@@ -9,12 +9,18 @@
       href="__VENDOR_CSS_URL__"
       crossorigin="anonymous"
     />
+    <link rel="stylesheet" href="__INACCESSIBLE_CSS_URL__" />
     <link rel="stylesheet" href="./dist/app.css" />
     <link rel="stylesheet" href="./fallback.css" />
     <link rel="stylesheet" href="./virtual.css" />
+    <style id="inline-stylesheet">
+      .inline-stylesheet-case {
+        outline: 2px dotted #7c3aed;
+      }
+    </style>
   </head>
   <body>
-    <main class="layout">
+    <main class="layout source-mapped-app">
       <article id="fixture-card" class="card featured">
         <h1>Browser2IDE fixture</h1>
         <p>Inspect this card.</p>
@@ -23,8 +29,97 @@
           <output id="normal-click-count" aria-live="polite">0</output>
         </p>
       </article>
+
+      <section class="fixture-section" aria-labelledby="style-cases-heading">
+        <h2 id="style-cases-heading">Stylesheet cases</h2>
+        <div class="browser2ide-path-miss">CSSOM path mismatch</div>
+        <div class="duplicate-selector">Duplicate selector</div>
+        <div class="active-media-rule">Active media rule</div>
+        <div class="inline-style-case" style="--inline-accent: #b42318">
+          Inline style attribute
+        </div>
+        <div class="inline-stylesheet-case">Inline stylesheet</div>
+        <div class="runtime-injected-style">Runtime-injected stylesheet</div>
+        <div class="local-fallback">Local fallback stylesheet</div>
+        <div class="browser2ide-virtual-unmapped">
+          Same-origin virtual stylesheet
+        </div>
+        <div class="browser2ide-external-readable">
+          CORS-readable external stylesheet
+        </div>
+        <div class="browser2ide-inaccessible-external">
+          Inaccessible external stylesheet
+        </div>
+      </section>
+
+      <section class="fixture-section" aria-labelledby="geometry-heading">
+        <h2 id="geometry-heading">Geometry</h2>
+        <p class="multiline-wrap">
+          <span class="multiline-inline">First deterministic line.<br />Second deterministic line.</span>
+        </p>
+      </section>
+
+      <section class="fixture-section" aria-labelledby="mutation-heading">
+        <h2 id="mutation-heading">DOM mutations</h2>
+        <button id="add-dynamic-node" type="button">Add dynamic card</button>
+        <div id="dynamic-root" aria-live="polite"></div>
+      </section>
+
+      <section class="fixture-section" aria-labelledby="shadow-heading">
+        <h2 id="shadow-heading">Open shadow root</h2>
+        <div id="open-shadow-host"></div>
+      </section>
+
+      <section class="fixture-section frame-grid" aria-labelledby="frames-heading">
+        <h2 id="frames-heading">Frame boundaries</h2>
+        <iframe
+          id="same-origin-frame"
+          src="/frames/same-origin.html"
+          title="Same-origin fixture"
+        ></iframe>
+        <iframe
+          id="cross-origin-frame"
+          src="__CROSS_ORIGIN_FRAME_URL__"
+          title="Cross-origin fixture"
+        ></iframe>
+      </section>
     </main>
     <script>
+      const runtimeStyle = document.createElement("style");
+      runtimeStyle.id = "runtime-injected-style";
+      runtimeStyle.textContent = `
+        .runtime-injected-style {
+          border-inline-start: 4px solid #00796b;
+        }
+      `;
+      document.head.append(runtimeStyle);
+
+      const shadowHost = document.getElementById("open-shadow-host");
+      const root = shadowHost.attachShadow({ mode: "open" });
+      const shadowStyle = document.createElement("style");
+      shadowStyle.textContent = `
+        .shadow-action {
+          padding: 0.5rem 0.75rem;
+          border: 2px solid #7c3aed;
+        }
+      `;
+      const shadowAction = Object.assign(document.createElement("button"), {
+        className: "shadow-action",
+        textContent: "Shadow action",
+        type: "button",
+      });
+      root.replaceChildren(shadowStyle, shadowAction);
+
+      let dynamicCardCount = 0;
+      document.getElementById("add-dynamic-node").addEventListener("click", () => {
+        dynamicCardCount += 1;
+        const item = document.createElement("div");
+        item.className = "dynamic-card";
+        item.dataset.fixtureIndex = String(dynamicCardCount);
+        item.textContent = `Dynamic card ${dynamicCardCount}`;
+        document.getElementById("dynamic-root").append(item);
+      });
+
       const fixtureCard = document.getElementById("fixture-card");
       const clickCount = document.getElementById("normal-click-count");
       let normalClicks = 0;

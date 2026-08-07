@@ -2,13 +2,19 @@ import type {
   ErrorMessage,
   InspectMessage,
   ProtocolErrorCode,
+  ResolutionDiagnosticCode,
+  ResolutionStatus,
 } from "@browser2ide/protocol";
 import type { ConnectionState } from "./bridgeClient.js";
 import type {
   BridgeManagerState,
   BridgeSnapshot,
 } from "./bridgeManager.js";
-import type { SourceResolution } from "./sourcePlugins/types.js";
+import type { PresenterOutcome } from "./sourcePlugins/resolutionOutcome.js";
+import type {
+  ResolvedPluginDiagnostic,
+  SourceResolution,
+} from "./sourcePlugins/types.js";
 
 export interface OutputChannelLike {
   appendLine(value: string): void;
@@ -32,7 +38,15 @@ export interface DiagnosticsSnapshot {
   readonly targetsReceived: number;
   readonly factsReceived: number;
   readonly matchesResolved: number;
+  readonly selectedMatchesResolved: number;
+  readonly parentMatchesResolved: number;
   readonly pluginDiagnostics: number;
+  readonly lastResolutionStatus?: ResolutionStatus;
+  readonly lastResolutionGeneration?: number;
+  readonly inaccessibleStylesheetCount: number;
+  readonly resolutionDiagnosticCodes: readonly ResolutionDiagnosticCode[];
+  readonly sourceDocumentUri?: string;
+  readonly pluginDiagnosticDetails: readonly ResolvedPluginDiagnostic[];
   readonly lastProtocolError?: ProtocolErrorSummary;
 }
 
@@ -46,7 +60,15 @@ export class DiagnosticsTracker {
   private targetsReceived = 0;
   private factsReceived = 0;
   private matchesResolved = 0;
+  private selectedMatchesResolved = 0;
+  private parentMatchesResolved = 0;
   private pluginDiagnostics = 0;
+  private lastResolutionStatus: ResolutionStatus | undefined;
+  private lastResolutionGeneration: number | undefined;
+  private inaccessibleStylesheetCount = 0;
+  private resolutionDiagnosticCodes: ResolutionDiagnosticCode[] = [];
+  private sourceDocumentUri: string | undefined;
+  private pluginDiagnosticDetails: ResolvedPluginDiagnostic[] = [];
   private lastProtocolError: ProtocolErrorSummary | undefined;
 
   public constructor(options: DiagnosticsTrackerOptions = {}) {
@@ -60,13 +82,26 @@ export class DiagnosticsTracker {
       (total, target) => total + target.facts.length,
       0,
     );
-    this.matchesResolved = 0;
-    this.pluginDiagnostics = 0;
+    this.clearResolution();
   }
 
-  public recordResolution(resolution: SourceResolution): void {
-    this.matchesResolved = resolution.matches.length;
-    this.pluginDiagnostics = resolution.diagnostics.length;
+  public recordResolution(
+    outcome: PresenterOutcome,
+    resolutionGeneration: number,
+    resolution?: SourceResolution,
+  ): void {
+    this.matchesResolved =
+      outcome.selectedMatchCount + outcome.parentMatchCount;
+    this.selectedMatchesResolved = outcome.selectedMatchCount;
+    this.parentMatchesResolved = outcome.parentMatchCount;
+    this.pluginDiagnosticDetails = (resolution?.diagnostics ??
+      outcome.localDiagnostics).map((entry) => ({ ...entry }));
+    this.pluginDiagnostics = this.pluginDiagnosticDetails.length;
+    this.lastResolutionStatus = outcome.status;
+    this.lastResolutionGeneration = resolutionGeneration;
+    this.inaccessibleStylesheetCount = outcome.inaccessibleStylesheetCount;
+    this.resolutionDiagnosticCodes = [...outcome.diagnosticCodes];
+    this.sourceDocumentUri = resolution?.documentUri;
   }
 
   public recordProtocolError(error: ErrorMessage): void {
@@ -93,11 +128,40 @@ export class DiagnosticsTracker {
       targetsReceived: this.targetsReceived,
       factsReceived: this.factsReceived,
       matchesResolved: this.matchesResolved,
+      selectedMatchesResolved: this.selectedMatchesResolved,
+      parentMatchesResolved: this.parentMatchesResolved,
       pluginDiagnostics: this.pluginDiagnostics,
+      ...(this.lastResolutionStatus === undefined
+        ? {}
+        : { lastResolutionStatus: this.lastResolutionStatus }),
+      ...(this.lastResolutionGeneration === undefined
+        ? {}
+        : { lastResolutionGeneration: this.lastResolutionGeneration }),
+      inaccessibleStylesheetCount: this.inaccessibleStylesheetCount,
+      resolutionDiagnosticCodes: [...this.resolutionDiagnosticCodes],
+      ...(this.sourceDocumentUri === undefined
+        ? {}
+        : { sourceDocumentUri: this.sourceDocumentUri }),
+      pluginDiagnosticDetails: this.pluginDiagnosticDetails.map((entry) => ({
+        ...entry,
+      })),
       ...(this.lastProtocolError === undefined
         ? {}
         : { lastProtocolError: { ...this.lastProtocolError } }),
     };
+  }
+
+  public clearResolution(): void {
+    this.matchesResolved = 0;
+    this.selectedMatchesResolved = 0;
+    this.parentMatchesResolved = 0;
+    this.pluginDiagnostics = 0;
+    this.lastResolutionStatus = undefined;
+    this.lastResolutionGeneration = undefined;
+    this.inaccessibleStylesheetCount = 0;
+    this.resolutionDiagnosticCodes = [];
+    this.sourceDocumentUri = undefined;
+    this.pluginDiagnosticDetails = [];
   }
 }
 
@@ -112,11 +176,38 @@ export function writeBridgeDiagnostics(
     `lastInspect=${formatDate(snapshot.lastInspectAt)} targets=${snapshot.targetsReceived} facts=${snapshot.factsReceived}`,
   );
   output.appendLine(
+    `resolution status=${snapshot.lastResolutionStatus ?? "unavailable"} generation=${snapshot.lastResolutionGeneration ?? "unavailable"} document=${documentLabel(snapshot)} selected=${snapshot.selectedMatchesResolved} parent=${snapshot.parentMatchesResolved} inaccessible=${snapshot.inaccessibleStylesheetCount} codes=${snapshot.resolutionDiagnosticCodes.join(",") || "none"}`,
+  );
+  output.appendLine(
     `sources matches=${snapshot.matchesResolved} pluginDiagnostics=${snapshot.pluginDiagnostics}`,
   );
+  for (const diagnostic of snapshot.pluginDiagnosticDetails) {
+    output.appendLine(
+      `sourceDiagnostic ${singleLine(diagnostic.pluginId)} ${singleLine(diagnostic.code)} ${diagnostic.severity}: ${singleLine(diagnostic.message)}`,
+    );
+  }
   output.appendLine(
     `protocolError=${snapshot.lastProtocolError ? `${snapshot.lastProtocolError.code}: ${snapshot.lastProtocolError.message}` : "none"}`,
   );
+}
+
+function documentLabel(snapshot: DiagnosticsSnapshot): string {
+  if (snapshot.sourceDocumentUri) {
+    try {
+      return decodeURIComponent(
+        new URL(snapshot.sourceDocumentUri).pathname.split("/").filter(Boolean)
+          .at(-1) ?? "unavailable",
+      );
+    } catch {
+      return snapshot.sourceDocumentUri.split(/[\\/]/).filter(Boolean).at(-1) ??
+        "unavailable";
+    }
+  }
+  return "unavailable";
+}
+
+function singleLine(value: string): string {
+  return value.replace(/[\r\n\u2028\u2029]+/g, " ");
 }
 
 function formatDate(value: Date | undefined): string {
