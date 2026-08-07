@@ -1,25 +1,24 @@
 import {
   createPanelIcons,
   PanelController,
-  type PanelActions,
-  type PanelView,
-  type PanelViewModel,
+  type PanelCommand,
 } from "./panelController.js";
+import { DomTreeController } from "./domTreeController.js";
+import { parseDomEvent } from "./domProtocol.js";
+import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
 import { PanelInspectController } from "./panelInspectController.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
+import { DomPanelView, type PanelDocument } from "./panelView.js";
 import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
+  parseInspectPortInvalidated,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
 
-export interface PanelDocument {
-  getElementById(id: string): unknown;
-}
-
 export interface PanelRuntimeOptions {
   readonly locationSearch: string;
-  readonly document: PanelDocument;
+  readonly document: PanelDocument & DomTreeDocument;
   readonly connectRuntimePort: (name: string) => PanelInspectPort;
   readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
   readonly readClipboard: () => Promise<string>;
@@ -57,19 +56,31 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   });
   let closePromise: Promise<void> | undefined;
   let controller: PanelController;
+  let treeController: DomTreeController;
+  let treeSessionActive = false;
 
   const inspectTransport = new PanelInspectTransport(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
+      deactivateTreeSession();
       void controller.handleTransportDisconnect().catch(reportError);
       void ensurePanelPort();
     },
-    (message) => {
-      for (const listener of [...stateListeners]) {
-        void Promise.resolve(listener(message)).catch(reportError);
-      }
-    },
+    (message) => routePanelMessage(message),
   );
+  treeController = new DomTreeController({
+    transport: {
+      request: (request) => inspectTransport.requestDom(request),
+      dispatch: (request) => inspectTransport.dispatchDom(request),
+      cancelPending: (reason) => inspectTransport.cancelDomRequests(reason),
+    },
+    onError: reportError,
+  });
+  const treeView = new DomTreeView({
+    document: options.document,
+    controller: treeController,
+    onError: reportError,
+  });
   const inspectController = new PanelInspectController((message) =>
     inspectTransport.send(message),
   );
@@ -78,7 +89,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     view,
     inspectController,
     readClipboard: options.readClipboard,
-    sendCommand: options.sendRuntimeMessage,
+    sendCommand: sendPanelCommand,
     subscribeWindowState(listener) {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
@@ -116,6 +127,50 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     return tracked;
   }
 
+  function routePanelMessage(message: unknown): void {
+    const domEvent = validatedDomEvent(message);
+    if (domEvent) {
+      treeController.handleEvent(domEvent);
+    } else if (
+      isWindowState(message, "linked") ||
+      isWindowState(message, "offline") ||
+      isWindowState(message, "reconnecting")
+    ) {
+      treeSessionActive = true;
+      void treeController.loadRoot();
+    } else if (parseInspectPortInvalidated(message)) {
+      const shouldRecover = treeSessionActive;
+      treeController.reset();
+      if (shouldRecover) {
+        queueMicrotask(() => {
+          if (!disposed && treeSessionActive) {
+            void treeController.loadRoot();
+          }
+        });
+      }
+    } else if (
+      isWindowState(message, "notLinked") ||
+      isWindowState(message, "linking") ||
+      isWindowState(message, "rateLimited") ||
+      isWindowState(message, "error")
+    ) {
+      deactivateTreeSession();
+    }
+    for (const listener of [...stateListeners]) {
+      void Promise.resolve(listener(message)).catch(reportError);
+    }
+  }
+
+  async function sendPanelCommand(message: PanelCommand): Promise<unknown> {
+    deactivateTreeSession();
+    return options.sendRuntimeMessage(message);
+  }
+
+  function deactivateTreeSession(): void {
+    treeSessionActive = false;
+    treeController.reset();
+  }
+
   function dispose(): void {
     if (closePromise) {
       return;
@@ -125,6 +180,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     removeUnload = undefined;
     remove?.();
     stateListeners.clear();
+    treeView.dispose();
+    treeController.dispose();
     closePromise = controller
       .dispose()
       .catch(reportError)
@@ -154,108 +211,19 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   return { ready, closed, dispose };
 }
 
-class DomPanelView implements PanelView {
-  private readonly linkControls: PanelElement;
-  private readonly linkForm: PanelElement;
-  private readonly linkCode: PanelElement;
-  private readonly pasteButton: PanelElement;
-  private readonly linkButton: PanelElement;
-  private readonly connectedControls: PanelElement;
-  private readonly changeButton: PanelElement;
-  private readonly unlinkButton: PanelElement;
-  private readonly inspectToggle: PanelElement;
-  private readonly connectionStatus: PanelElement;
-  private readonly panelError: PanelElement;
-
-  public constructor(
-    document: PanelDocument,
-    private readonly onError: (error: unknown) => void,
-  ) {
-    this.linkControls = required(document, "link-controls");
-    this.linkForm = required(document, "link-form");
-    this.linkCode = required(document, "link-code");
-    this.pasteButton = required(document, "paste-button");
-    this.linkButton = required(document, "link-button");
-    this.connectedControls = required(document, "connected-controls");
-    this.changeButton = required(document, "change-button");
-    this.unlinkButton = required(document, "unlink-button");
-    this.inspectToggle = required(document, "inspect-mode");
-    this.connectionStatus = required(document, "connection-status");
-    this.panelError = required(document, "panel-error");
-  }
-
-  public bind(actions: PanelActions): () => void {
-    const submit = (event: Event): void => {
-      event.preventDefault();
-      this.run(actions.onLink);
-    };
-    const paste = (): void => this.run(actions.onPaste);
-    const change = (): void => this.run(actions.onChangeIde);
-    const unlink = (): void => this.run(actions.onUnlink);
-    const inspect = (): void =>
-      this.run(() => actions.onInspectChanged(this.inspectToggle.checked));
-    const input = (): void => actions.onLinkCodeChanged(this.linkCode.value);
-
-    this.linkForm.addEventListener("submit", submit);
-    this.pasteButton.addEventListener("click", paste);
-    this.changeButton.addEventListener("click", change);
-    this.unlinkButton.addEventListener("click", unlink);
-    this.inspectToggle.addEventListener("change", inspect);
-    this.linkCode.addEventListener("input", input);
-
-    return () => {
-      this.linkForm.removeEventListener("submit", submit);
-      this.pasteButton.removeEventListener("click", paste);
-      this.changeButton.removeEventListener("click", change);
-      this.unlinkButton.removeEventListener("click", unlink);
-      this.inspectToggle.removeEventListener("change", inspect);
-      this.linkCode.removeEventListener("input", input);
-    };
-  }
-
-  public readLinkCode(): string {
-    return this.linkCode.value;
-  }
-
-  public writeLinkCode(value: string): void {
-    this.linkCode.value = value;
-  }
-
-  public render(model: PanelViewModel): void {
-    this.connectionStatus.value = model.statusLabel;
-    this.connectionStatus.dataset.state = model.state;
-    this.linkControls.hidden = !model.showLinkControls;
-    this.connectedControls.hidden = !model.showConnectedControls;
-    this.linkCode.disabled = model.linkInputDisabled;
-    this.pasteButton.disabled = model.pasteButtonDisabled;
-    this.linkButton.disabled = model.linkButtonDisabled;
-    this.changeButton.disabled = model.changeButtonDisabled;
-    this.unlinkButton.disabled = model.unlinkButtonDisabled;
-    this.inspectToggle.disabled = model.inspectDisabled;
-    this.inspectToggle.checked = model.inspectChecked;
-    this.panelError.value = model.errorText ?? "";
-    this.panelError.hidden = model.errorText === undefined;
-  }
-
-  private run(action: () => void | Promise<void>): void {
-    void Promise.resolve(action()).catch(this.onError);
+function validatedDomEvent(message: unknown) {
+  try {
+    return parseDomEvent(message);
+  } catch {
+    return undefined;
   }
 }
 
-interface PanelElement {
-  value: string;
-  checked: boolean;
-  disabled: boolean;
-  hidden: boolean;
-  readonly dataset: Record<string, string>;
-  addEventListener(type: string, listener: (event: Event) => void): void;
-  removeEventListener(type: string, listener: (event: Event) => void): void;
-}
-
-function required(document: PanelDocument, id: string): PanelElement {
-  const element = document.getElementById(id);
-  if (!element || typeof element !== "object") {
-    throw new Error(`Missing panel element: ${id}`);
-  }
-  return element as PanelElement;
+function isWindowState(message: unknown, state: string): boolean {
+  return Boolean(
+    message &&
+    typeof message === "object" &&
+    (message as Record<string, unknown>).type === "browser2ide.windowState" &&
+    (message as Record<string, unknown>).state === state,
+  );
 }

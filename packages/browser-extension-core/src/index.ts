@@ -148,6 +148,30 @@ export type {
   DomSelectRequest,
   DomSelectionChangedEvent,
 } from "./domProtocol.js";
+export { DomTreeController } from "./domTreeController.js";
+export type {
+  DomTreeControllerOptions,
+  DomTreeKey,
+  DomTreeRow,
+  DomTreeSnapshot,
+  DomTreeTransport,
+} from "./domTreeController.js";
+export {
+  DEFAULT_DOM_TREE_OVERSCAN,
+  DEFAULT_DOM_TREE_ROW_HEIGHT,
+  DomTreeView,
+} from "./domTreeView.js";
+export type {
+  DomTreeDocument,
+  DomTreeResizeObserver,
+  DomTreeResizeObserverFactory,
+  DomTreeViewOptions,
+} from "./domTreeView.js";
+export { virtualTreeRows } from "./virtualTreeRows.js";
+export type {
+  VirtualTreeRow,
+  VirtualViewport,
+} from "./virtualTreeRows.js";
 export {
   boundedLength,
   boundedPageUrl,
@@ -246,9 +270,10 @@ export type {
 } from "./panelController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
+export { DomPanelView } from "./panelView.js";
+export type { PanelDocument } from "./panelView.js";
 export { startPanelRuntime } from "./panelRuntime.js";
 export type {
-  PanelDocument,
   PanelRuntime,
   PanelRuntimeOptions,
 } from "./panelRuntime.js";

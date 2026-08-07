@@ -17,8 +17,11 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
+  DomPanelView,
+  DomTreeController,
   DomTreeProvider,
   DomTreeProviderError,
+  DomTreeView,
   DomProtocolError,
   FrameRegistry,
   InspectMode,
@@ -37,6 +40,7 @@ import {
   startContentScriptRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
+  virtualTreeRows,
   WindowConnectionCoordinator,
 } from "@browser2ide/browser-extension-core";
 
@@ -57,8 +61,11 @@ assert.equal(DOM_PROTOCOL_MAX_LABEL_LENGTH, 512);
 assert.equal(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES, 64 * 1024);
 assert.equal(DOM_PROTOCOL_MAX_SUMMARY_LENGTH, 512);
 assert.equal(typeof DomNodeRegistry, "function");
+assert.equal(typeof DomPanelView, "function");
+assert.equal(typeof DomTreeController, "function");
 assert.equal(typeof DomTreeProvider, "function");
 assert.equal(typeof DomTreeProviderError, "function");
+assert.equal(typeof DomTreeView, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
@@ -77,4 +84,5 @@ assert.equal(typeof startBackgroundRuntime, "function");
 assert.equal(typeof startContentScriptRuntime, "function");
 assert.equal(typeof startDevtoolsRuntime, "function");
 assert.equal(typeof startPanelRuntime, "function");
+assert.equal(typeof virtualTreeRows, "function");
 assert.equal(typeof WindowConnectionCoordinator, "function");

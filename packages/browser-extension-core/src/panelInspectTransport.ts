@@ -132,6 +132,14 @@ export class PanelInspectTransport {
     }
   }
 
+  public cancelDomRequests(reason = "DOM session changed"): void {
+    const error = new Error(reason);
+    for (const pending of this.pendingDom.values()) {
+      pending.reject(error);
+    }
+    this.pendingDom.clear();
+  }
+
   public dispose(): void {
     if (this.disposed) {
       return;
@@ -239,10 +247,7 @@ export class PanelInspectTransport {
       pending.reject(new Error("Inspect connection is closed"));
     }
     this.pendingInspect.clear();
-    for (const pending of this.pendingDom.values()) {
-      pending.reject(new Error("Inspect connection is closed"));
-    }
-    this.pendingDom.clear();
+    this.cancelDomRequests("Inspect connection is closed");
   }
 }
 

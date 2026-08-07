@@ -17,8 +17,11 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
+  DomPanelView,
+  DomTreeController,
   DomTreeProvider,
   DomTreeProviderError,
+  DomTreeView,
   DomProtocolError,
   FrameRegistry,
   InspectMode,
@@ -37,6 +40,7 @@ import {
   startContentScriptRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
+  virtualTreeRows,
   WindowConnectionCoordinator,
 } from "../src/index.js";
 
@@ -58,8 +62,11 @@ describe("browser extension core exports", () => {
     expect(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES).toBe(64 * 1024);
     expect(DOM_PROTOCOL_MAX_SUMMARY_LENGTH).toBe(512);
     expect(DomNodeRegistry).toBeTypeOf("function");
+    expect(DomPanelView).toBeTypeOf("function");
+    expect(DomTreeController).toBeTypeOf("function");
     expect(DomTreeProvider).toBeTypeOf("function");
     expect(DomTreeProviderError).toBeTypeOf("function");
+    expect(DomTreeView).toBeTypeOf("function");
     expect(DomProtocolError).toBeTypeOf("function");
     expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
@@ -79,6 +86,7 @@ describe("browser extension core exports", () => {
     expect(startContentScriptRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
     expect(startPanelRuntime).toBeTypeOf("function");
+    expect(virtualTreeRows).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
 });

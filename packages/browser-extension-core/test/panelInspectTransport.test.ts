@@ -58,6 +58,27 @@ describe("PanelInspectTransport DOM integration", () => {
     await expect(pending).rejects.toThrow("Inspect connection is closed");
   });
 
+  it("cancels pending DOM queries without closing the shared panel port", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-old-session",
+    });
+
+    transport.cancelDomRequests("DOM session changed");
+
+    await expect(pending).rejects.toThrow("DOM session changed");
+    expect(port.disconnected).toBe(false);
+    const next = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-new-session",
+    });
+    port.emitMessage(rootResponse("root-old-session"));
+    port.emitMessage(rootResponse("root-new-session"));
+    await expect(next).resolves.toEqual(rootResponse("root-new-session"));
+  });
+
   it("forwards only validated DOM and public protocol push messages", () => {
     const port = new FakePort();
     const received: unknown[] = [];
