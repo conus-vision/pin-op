@@ -74,6 +74,20 @@ describe("VsCodeSourceWorkspace", () => {
     )).toBe("active-document");
   });
 
+  it("ignores file query and fragment in active-document equality", () => {
+    const activeUri = "file:///workspace/src/app.css";
+
+    expect(classifyActiveDocumentSource(
+      {
+        uris: [`${activeUri}?v=7#rule`],
+        status: "exact",
+        strategy: "workspace-bound",
+        workspaceFolderUri: "file:///workspace",
+      },
+      activeUri,
+    )).toBe("active-document");
+  });
+
   it("does not grant exact authority to a unique basename", () => {
     const activeUri = "file:///workspace/dist/app.css";
 
@@ -138,6 +152,23 @@ describe("VsCodeSourceWorkspace", () => {
     )).resolves.toEqual({
       uris: [intended],
       status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
+  it("isolates basename fallback to the workspace-bound root", async () => {
+    const workspace = memorySourceWorkspace(
+      { "file:///D:/sites/OTHER/assets/style.css": "a {}" },
+      ["file:///D:/sites/_ORB", "file:///D:/sites/OTHER"],
+    );
+
+    await expect(workspace.resolveSourceUri(
+      "/_ORB/missing/style.css",
+      "http://localhost/_ORB/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
       strategy: "workspace-bound",
       workspaceFolderUri: "file:///D:/sites/_ORB",
     });
@@ -249,6 +280,53 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("ignores memory files with a different workspace URI scheme", async () => {
+    const workspace = memorySourceWorkspace({
+      "vscode-remote://host/workspace/src/app.css": "a {}",
+    });
+
+    await expect(workspace.resolveSourceUri(
+      "/src/app.css",
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
+    });
+  });
+
+  it("ignores memory files with a different workspace URI authority", async () => {
+    const workspace = memorySourceWorkspace(
+      { "vscode-remote://host-b/workspace/src/app.css": "a {}" },
+      ["vscode-remote://host-a/workspace"],
+    );
+
+    await expect(workspace.resolveSourceUri(
+      "/src/app.css",
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
+    });
+  });
+
+  it("excludes memory files inside .git and node_modules", async () => {
+    const workspace = memorySourceWorkspace({
+      "file:///workspace/.git/cache/app.css": "a {}",
+      "file:///workspace/node_modules/package/app.css": "b {}",
+    });
+
+    await expect(workspace.resolveSourceUri(
+      "/app.css",
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
+    });
+  });
+
   it("decodes URL paths and uses automatic unique basename fallback", async () => {
     const workspace = memorySourceWorkspace({
       "file:///workspace/src/My%20Card.scss": ".card {}",
@@ -308,6 +386,21 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("ignores query and fragment when resolving a direct file URI", async () => {
+    const sourceUri = "file:///workspace/src/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" });
+
+    await expect(workspace.resolveSourceUri(
+      `${sourceUri}?v=7#rule`,
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///workspace",
+    });
+  });
+
   it("rejects file URIs outside the workspace-bound root", async () => {
     const otherSource = "file:///D:/sites/OTHER/styles/app.css";
     const workspace = memorySourceWorkspace({ [otherSource]: "a {}" }, [
@@ -323,6 +416,60 @@ describe("VsCodeSourceWorkspace", () => {
       status: "not-found",
       strategy: "workspace-bound",
       workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
+  it("preserves a file base URL workspace binding for relative sources", async () => {
+    const otherSource = "file:///D:/sites/OTHER/styles/app.css";
+    const workspace = memorySourceWorkspace({ [otherSource]: "a {}" }, [
+      "file:///D:/sites/_ORB",
+      "file:///D:/sites/OTHER",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      "../../OTHER/styles/app.css",
+      "file:///D:/sites/_ORB/dist/app.css",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
+  it("uses the most-specific workspace owner for a file base URL", async () => {
+    const sourceUri = "file:///D:/sites/_ORB/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///D:/sites",
+      "file:///D:/sites/_ORB",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      "../styles/app.css",
+      "file:///D:/sites/_ORB/dist/app.css",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
+  it("rejects duplicate equal owners for a file base URL", async () => {
+    const root = "file:///D:/sites/_ORB";
+    const sourceUri = `${root}/styles/app.css`;
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      root,
+      root,
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      "../styles/app.css",
+      `${root}/dist/app.css`,
+    )).resolves.toEqual({
+      uris: [],
+      status: "ambiguous",
+      strategy: "workspace-bound",
     });
   });
 
@@ -345,6 +492,53 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("contains children under uppercase Windows drive roots", async () => {
+    const sourceUri = "file:///c:/sites/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///C:/",
+    ]);
+
+    expect(workspace.isWorkspaceUri(sourceUri)).toBe(true);
+    await expect(workspace.readText(sourceUri)).resolves.toBe("a {}");
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///C:/",
+    });
+  });
+
+  it("rejects encoded path separators at the workspace read boundary", async () => {
+    const escaped = "file:///C:/sites/_ORB%5C..%5COTHER/private.scss";
+    const workspace = memorySourceWorkspace({ [escaped]: "secret" }, [
+      "file:///C:/sites/_ORB",
+    ]);
+
+    expect(workspace.isWorkspaceUri(escaped)).toBe(false);
+    await expect(workspace.readText(escaped)).rejects.toThrow(
+      /outside the workspace/,
+    );
+  });
+
+  it("rejects encoded separators before automatic basename fallback", async () => {
+    const sourceUri = "file:///C:/sites/_ORB/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///C:/sites/_ORB",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      "/_ORB%2fstyles/app.css",
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
+    });
+  });
+
   it("returns bound not-found for malformed encoded paths", async () => {
     const workspace = memorySourceWorkspace({}, ["file:///sites/_ORB"]);
 
@@ -364,6 +558,20 @@ describe("VsCodeSourceWorkspace", () => {
 
     await expect(workspace.resolveSourceUri(
       "app.css",
+      "not a URL",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
+    });
+  });
+
+  it("rejects a valid absolute source when the base URL is invalid", async () => {
+    const sourceUri = "file:///workspace/src/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" });
+
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
       "not a URL",
     )).resolves.toEqual({
       uris: [],

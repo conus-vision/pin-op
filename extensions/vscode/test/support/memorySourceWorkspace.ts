@@ -38,19 +38,54 @@ function workspaceRelativePath(
   candidate: string,
   folder: string,
 ): string | undefined {
-  const candidatePath = decodedPath(candidate);
-  const folderPath = decodedPath(folder).replace(/\/+$/, "");
+  const candidateUri = new URL(candidate);
+  const folderUri = new URL(folder);
+  if (!sameSchemeAndAuthority(candidateUri, folderUri)) return undefined;
+  if (
+    hasEncodedPathSeparator(candidateUri) ||
+    hasEncodedPathSeparator(folderUri)
+  ) {
+    return undefined;
+  }
+
+  const candidatePath = decodedPath(candidateUri);
+  const folderPath = decodedPath(folderUri).replace(/\/+$/, "");
   const windows = /^\/[a-z]:\//i.test(candidatePath) ||
     /^\/[a-z]:\//i.test(folderPath);
   const comparableCandidate = windows ? candidatePath.toLowerCase() : candidatePath;
   const comparableFolder = windows ? folderPath.toLowerCase() : folderPath;
-  if (comparableCandidate === comparableFolder) return "";
-  if (!comparableCandidate.startsWith(`${comparableFolder}/`)) return undefined;
-  return candidatePath.slice(folderPath.length + 1);
+  let relative: string;
+  if (comparableCandidate === comparableFolder) {
+    relative = "";
+  } else {
+    if (!comparableCandidate.startsWith(`${comparableFolder}/`)) {
+      return undefined;
+    }
+    relative = candidatePath.slice(folderPath.length + 1);
+  }
+  return isExcludedWorkspacePath(relative, windows) ? undefined : relative;
 }
 
-function decodedPath(value: string): string {
-  return decodeURIComponent(new URL(value).pathname).replace(/\\/g, "/");
+function sameSchemeAndAuthority(left: URL, right: URL): boolean {
+  return left.protocol === right.protocol &&
+    left.username === right.username &&
+    left.password === right.password &&
+    left.host === right.host;
+}
+
+function hasEncodedPathSeparator(url: URL): boolean {
+  return /%(?:2f|5c)/i.test(url.pathname);
+}
+
+function isExcludedWorkspacePath(relative: string, windows: boolean): boolean {
+  return relative.split("/").some((segment) => {
+    const comparable = windows ? segment.toLowerCase() : segment;
+    return comparable === ".git" || comparable === "node_modules";
+  });
+}
+
+function decodedPath(value: URL): string {
+  return decodeURIComponent(value.pathname).replace(/\\/g, "/");
 }
 
 function uri(value: string): UriLike {

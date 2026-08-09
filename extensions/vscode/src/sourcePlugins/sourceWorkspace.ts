@@ -28,6 +28,11 @@ interface ResolutionScope {
   readonly ambiguous: boolean;
 }
 
+interface WorkspaceFolderSelection {
+  readonly folder?: WorkspaceFolderIdentity;
+  readonly ambiguous: boolean;
+}
+
 const EXCLUDED_WORKSPACE_PATHS = "**/{node_modules,.git}/**";
 
 export function classifyActiveDocumentSource(
@@ -68,10 +73,10 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
   }
 
   public async readText(uri: string): Promise<string> {
-    const parsed = this.host.parseUri(uri);
     if (!this.isWorkspaceUri(uri)) {
       throw new Error(`URI is outside the workspace: ${uri}`);
     }
+    const parsed = this.host.parseUri(filePathUri(uri) ?? uri);
     return new TextDecoder().decode(await this.host.readFile(parsed));
   }
 
@@ -79,9 +84,19 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     sourceUrl: string,
     baseUrl: string,
   ): Promise<SourceUriResolution> {
-    const absolute = safeUrl(sourceUrl, baseUrl);
+    const documentUrl = safeUrl(baseUrl);
+    if (!documentUrl) {
+      return { uris: [], status: "not-found", strategy: "automatic" };
+    }
+    const absolute = safeUrl(sourceUrl, documentUrl);
+    if (
+      hasEncodedPathSeparator(documentUrl) ||
+      hasEncodedPathSeparator(absolute)
+    ) {
+      return { uris: [], status: "not-found", strategy: "automatic" };
+    }
     const folders = this.workspaceFolders();
-    const scope = resolutionScope(folders, safeUrl(baseUrl), absolute);
+    const scope = resolutionScope(folders, documentUrl, absolute);
     const baseResult = scope.folder === undefined
       ? { strategy: scope.strategy } as const
       : {
@@ -96,17 +111,26 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
       return { uris: [], status: "not-found", ...baseResult };
     }
     if (absolute.protocol === "file:") {
-      const canonical = this.host.parseUri(absolute.toString()).toString();
-      const owner = scope.folder ??
-        folders.find((folder) => uriWithin(canonical, folder.uri));
-      if (!owner || !uriWithin(canonical, owner.uri)) {
+      const canonical = this.host.parseUri(filePathUrl(absolute).toString())
+        .toString();
+      const owner = scope.folder === undefined
+        ? fileWorkspaceOwner(folders, absolute)
+        : { folder: scope.folder, ambiguous: false };
+      if (owner.ambiguous) {
+        return {
+          uris: [],
+          status: "ambiguous",
+          strategy: "workspace-bound",
+        };
+      }
+      if (!owner.folder || !uriWithin(canonical, owner.folder.uri)) {
         return { uris: [], status: "not-found", ...baseResult };
       }
       return {
         uris: [canonical],
         status: "exact",
         strategy: "workspace-bound",
-        workspaceFolderUri: owner.uri,
+        workspaceFolderUri: owner.folder.uri,
       };
     }
     const pathname = safeDecodedPathname(absolute);
@@ -164,7 +188,8 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     const candidates: string[] = [];
     for (const candidate of matches) {
       if (folder && !uriWithin(candidate, folder.uri)) continue;
-      const key = normalizedUri(candidate) ?? candidate;
+      const key = normalizedUri(candidate);
+      if (key === undefined) continue;
       if (seen.has(key)) continue;
       seen.add(key);
       candidates.push(candidate);
@@ -202,13 +227,13 @@ function resolutionScope(
   documentUrl: URL | undefined,
   sourceUrl: URL | undefined,
 ): ResolutionScope {
-  const documentMatches = matchingFolders(folders, documentUrl);
+  const document = documentWorkspaceFolder(folders, documentUrl);
   const sourceMatches = matchingFolders(folders, sourceUrl);
-  if (documentMatches.length > 1 || sourceMatches.length > 1) {
+  if (document.ambiguous || sourceMatches.length > 1) {
     return { strategy: "workspace-bound", ambiguous: true };
   }
 
-  const documentFolder = documentMatches[0];
+  const documentFolder = document.folder;
   const sourceFolder = sourceMatches[0];
   if (
     documentFolder !== undefined &&
@@ -224,6 +249,50 @@ function resolutionScope(
     : { strategy: "workspace-bound", folder, ambiguous: false };
 }
 
+function documentWorkspaceFolder(
+  folders: readonly WorkspaceFolderIdentity[],
+  documentUrl: URL | undefined,
+): WorkspaceFolderSelection {
+  const nameMatches = matchingFolders(folders, documentUrl);
+  const owner = fileWorkspaceOwner(folders, documentUrl);
+  if (nameMatches.length > 1 || owner.ambiguous) {
+    return { ambiguous: true };
+  }
+
+  const nameMatch = nameMatches[0];
+  if (
+    nameMatch !== undefined &&
+    owner.folder !== undefined &&
+    nameMatch !== owner.folder
+  ) {
+    return { ambiguous: true };
+  }
+  return {
+    folder: owner.folder ?? nameMatch,
+    ambiguous: false,
+  };
+}
+
+function fileWorkspaceOwner(
+  folders: readonly WorkspaceFolderIdentity[],
+  url: URL | undefined,
+): WorkspaceFolderSelection {
+  if (url?.protocol !== "file:") return { ambiguous: false };
+  const owners = folders
+    .map((folder) => ({ folder, key: normalizedUri(folder.uri) }))
+    .filter((owner): owner is {
+      readonly folder: WorkspaceFolderIdentity;
+      readonly key: string;
+    } => owner.key !== undefined && uriWithin(url.toString(), owner.folder.uri));
+  if (owners.length === 0) return { ambiguous: false };
+
+  const longest = Math.max(...owners.map((owner) => owner.key.length));
+  const mostSpecific = owners.filter((owner) => owner.key.length === longest);
+  return mostSpecific.length === 1
+    ? { folder: mostSpecific[0]?.folder, ambiguous: false }
+    : { ambiguous: true };
+}
+
 function matchingFolders(
   folders: readonly WorkspaceFolderIdentity[],
   url: URL | undefined,
@@ -235,6 +304,7 @@ function matchingFolders(
 }
 
 function firstDecodedPathSegment(url: URL | undefined): string | undefined {
+  if (hasEncodedPathSeparator(url)) return undefined;
   const encoded = url?.pathname.split("/").find(Boolean);
   if (!encoded) return undefined;
   try {
@@ -266,21 +336,33 @@ function sameFolderName(
     : candidate === folder.name;
 }
 
-function safeUrl(value: string, baseUrl?: string): URL | undefined {
+function safeUrl(value: string, baseUrl?: string | URL): URL | undefined {
   try {
     return baseUrl === undefined ? new URL(value) : new URL(value, baseUrl);
   } catch {
-    if (baseUrl !== undefined) return safeUrl(value);
     return undefined;
   }
 }
 
 function safeDecodedPathname(url: URL): string | undefined {
+  if (hasEncodedPathSeparator(url)) return undefined;
   try {
     return decodeURIComponent(url.pathname).replace(/\\/g, "/");
   } catch {
     return undefined;
   }
+}
+
+function filePathUri(value: string): string | undefined {
+  const url = safeUrl(value);
+  return url?.protocol === "file:" ? filePathUrl(url).toString() : undefined;
+}
+
+function filePathUrl(url: URL): URL {
+  const pathUrl = new URL(url.toString());
+  pathUrl.search = "";
+  pathUrl.hash = "";
+  return pathUrl;
 }
 
 function escapeGlob(value: string): string {
@@ -290,17 +372,25 @@ function escapeGlob(value: string): string {
 function normalizedUri(value: string): string | undefined {
   try {
     const uri = new URL(value);
+    if (hasEncodedPathSeparator(uri)) return undefined;
     let pathname = decodeURI(uri.pathname)
-      .replace(/\\/g, "/")
+      .replace(/\\/g, "/");
+    const windows = isWindowsFileUri(uri, pathname);
+    pathname = pathname
       .replace(/\/+$/, "")
       .replace(/%[0-9a-f]{2}/gi, (escape) => escape.toUpperCase());
-    if (isWindowsFileUri(uri, pathname)) {
+    if (windows) {
       pathname = pathname.toLowerCase();
     }
-    return `${uri.protocol.toLowerCase()}//${uri.host.toLowerCase()}${pathname}${uri.search}${uri.hash}`;
+    const suffix = uri.protocol === "file:" ? "" : `${uri.search}${uri.hash}`;
+    return `${uri.protocol.toLowerCase()}//${uri.host.toLowerCase()}${pathname}${suffix}`;
   } catch {
     return undefined;
   }
+}
+
+function hasEncodedPathSeparator(url: URL | undefined): boolean {
+  return url !== undefined && /%(?:2f|5c)/i.test(url.pathname);
 }
 
 function sameCanonicalUri(left: string, right: string): boolean {
