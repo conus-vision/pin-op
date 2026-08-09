@@ -4,6 +4,7 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourcePluginContext,
+  type SourceUriResolution,
 } from "@browser2ide/plugin-api";
 import type { ResolutionStatus } from "@browser2ide/protocol";
 import { targetCssFacts } from "./cssFacts.js";
@@ -48,12 +49,22 @@ export class CssSourcePlugin implements SourcePlugin {
     const missingUrls = new Set<string>();
     const ambiguousRules = new Set<string>();
     const failures = new Set<ResolutionStatus>();
+    const strategyDiagnostics = new Map<
+      SourceUriResolution["strategy"],
+      PluginDiagnostic
+    >();
     for (const entry of targetCssFacts(context.selection)) {
       if (context.signal.aborted) break;
       const resolution = await context.workspace.resolveSourceUri(
         entry.sourceUrl,
         context.selection.context.url,
       );
+      if (!strategyDiagnostics.has(resolution.strategy)) {
+        strategyDiagnostics.set(
+          resolution.strategy,
+          sourceStrategyDiagnostic(resolution),
+        );
+      }
       const sourceKind = classifyActiveDocumentSource(
         resolution,
         context.document.uri,
@@ -83,7 +94,8 @@ export class CssSourcePlugin implements SourcePlugin {
         ? findExactCssRules(parsed, entry.fact, context.document)
         : [];
       const canFallback = sourceKind === "not-found"
-        ? canFingerprintFallback(entry.fact)
+        ? resolution.strategy === "automatic" &&
+          canFingerprintFallback(entry.fact)
         : canFingerprintFallback(entry.fact, context.document);
       const rules = exactRules.length > 0
         ? exactRules
@@ -124,7 +136,7 @@ export class CssSourcePlugin implements SourcePlugin {
     return {
       status: matches.length > 0 ? "matched" : failureStatus(failures),
       matches,
-      diagnostics,
+      diagnostics: [...diagnostics, ...strategyDiagnostics.values()],
     };
   }
 }
@@ -186,6 +198,46 @@ function ambiguousRuleDiagnostic(selector: string): PluginDiagnostic {
     message: `More than one CSS rule matches the available evidence: ${selector}`,
     severity: "warning",
   };
+}
+
+function sourceStrategyDiagnostic(
+  resolution: SourceUriResolution,
+): PluginDiagnostic {
+  if (resolution.strategy === "automatic") {
+    return {
+      code: "css.sourceAutomatic",
+      message: "Automatic source matching",
+      severity: "info",
+    };
+  }
+  return {
+    code: "css.sourceWorkspaceBound",
+    message: `Workspace-bound: ${workspaceFolderLabel(resolution)}`,
+    severity: "info",
+  };
+}
+
+function workspaceFolderLabel(resolution: SourceUriResolution): string {
+  const fallback = resolution.status === "ambiguous"
+    ? "ambiguous workspace"
+    : "workspace";
+  if (resolution.workspaceFolderUri === undefined) return fallback;
+  try {
+    const pathname = new URL(resolution.workspaceFolderUri).pathname
+      .replace(/\/+$/, "");
+    const segment = pathname.slice(pathname.lastIndexOf("/") + 1);
+    const label = decodeURIComponent(segment);
+    if (
+      label.trim().length === 0 ||
+      /^[a-z]:$/i.test(label) ||
+      /[/\\\u0000-\u001f\u007f]/.test(label)
+    ) {
+      return fallback;
+    }
+    return label;
+  } catch {
+    return fallback;
+  }
 }
 
 function addOnce(

@@ -1091,12 +1091,16 @@ describe("CssSourcePlugin", () => {
     const ambiguous = await resolveCss(
       ".card {}",
       selection([cssTarget("selected", ".card", "/app.css")]),
-      { uris: [], status: "ambiguous" },
+      { uris: [], status: "ambiguous", strategy: "automatic" },
     );
     const different = await resolveCss(
       ".card {}",
       selection([cssTarget("selected", ".card", "/app.css")]),
-      { uris: ["file:///workspace/other.css"], status: "exact" },
+      {
+        uris: ["file:///workspace/other.css"],
+        status: "exact",
+        strategy: "automatic",
+      },
     );
 
     expect(ambiguous.matches).toEqual([]);
@@ -1130,6 +1134,7 @@ describe("CssSourcePlugin", () => {
       {
         uris: ["file:///workspace/dist/app.css"],
         status: "unique-basename",
+        strategy: "automatic",
       },
     );
 
@@ -1308,7 +1313,7 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
-  it("allows active-document fallback only when source is wholly not found", async () => {
+  it("does not search the active document for a workspace-bound missing source", async () => {
     const target = cssTargetWithDeclarations(
       "selected",
       ".card",
@@ -1324,18 +1329,154 @@ describe("CssSourcePlugin", () => {
     const result = await resolveCss(
       ".card { display: grid; }",
       selection([target]),
-      { uris: [], status: "not-found" },
+      {
+        uris: [],
+        status: "not-found",
+        strategy: "workspace-bound",
+        workspaceFolderUri: "file:///workspaces/_ORB",
+      },
+    );
+
+    expect(result.matches).toEqual([]);
+    expect(result.status).toBe("source-not-found");
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: "css.sourceNotFound" }),
+      {
+        code: "css.sourceWorkspaceBound",
+        message: "Workspace-bound: _ORB",
+        severity: "info",
+      },
+    ]);
+  });
+
+  it("allows automatic fingerprint fallback when source is wholly not found", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/missing/app.css",
+      [["display", "grid"]],
+    );
+    target.facts[0]!.source = {
+      uri: "http://localhost:4173/missing/app.css",
+      line: 999,
+      column: 1,
+      metadata: {},
+    };
+    const result = await resolveCss(
+      ".card { display: grid; }",
+      selection([target]),
+      { uris: [], status: "not-found", strategy: "automatic" },
     );
 
     expect(result.status).toBe("matched");
     expect(result.matches).toEqual([
       expect.objectContaining({ confidence: "heuristic" }),
     ]);
+    expect(result.diagnostics).toEqual([{
+      code: "css.sourceAutomatic",
+      message: "Automatic source matching",
+      severity: "info",
+    }]);
+  });
+
+  it("retains bound fingerprint fallback after an active-source path miss", async () => {
+    const target = cssTargetWithDeclarations(
+      "selected",
+      ".card",
+      "/dist/app.css",
+      [["display", "grid"]],
+    );
+
+    const result = await resolveCss(
+      ".card { display: grid; }",
+      selection([target]),
+      {
+        uris: ["file:///workspace/dist/app.css"],
+        status: "exact",
+        strategy: "workspace-bound",
+      },
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({ confidence: "heuristic" }),
+    ]);
+    expect(result.diagnostics).toEqual([{
+      code: "css.sourceWorkspaceBound",
+      message: "Workspace-bound: workspace",
+      severity: "info",
+    }]);
+  });
+
+  it("deduplicates strategy diagnostics across source resolutions", async () => {
+    const result = await resolveCss(
+      [
+        ".card { color: red; }",
+        ".layout { color: red; }",
+      ].join("\n"),
+      selection([
+        cssTarget("selected", ".card", "/dist/app.css"),
+        cssTarget("parent", ".layout", "/dist/layout.css"),
+      ]),
+      {
+        uris: [],
+        status: "ambiguous",
+        strategy: "workspace-bound",
+      },
+    );
+
+    expect(result.status).toBe("source-ambiguous");
+    expect(result.diagnostics?.map((diagnostic) => diagnostic.code)).toEqual([
+      "css.sourceAmbiguous",
+      "css.sourceAmbiguous",
+      "css.sourceWorkspaceBound",
+    ]);
+    expect(result.diagnostics?.at(-1)).toEqual({
+      code: "css.sourceWorkspaceBound",
+      message: "Workspace-bound: ambiguous workspace",
+      severity: "info",
+    });
+  });
+
+  it("does not expose the workspace URI in a bound strategy diagnostic", async () => {
+    const result = await resolveCss(
+      ".card { display: grid; }",
+      selection([cssTargetWithDeclarations(
+        "selected",
+        ".card",
+        "/missing/app.css",
+        [["display", "grid"]],
+      )]),
+      {
+        uris: [],
+        status: "not-found",
+        strategy: "workspace-bound",
+        workspaceFolderUri:
+          "file:///C:/Users/alice/private-project/_ORB%20Workspace/",
+      },
+    );
+
+    expect(result.diagnostics).toContainEqual({
+      code: "css.sourceWorkspaceBound",
+      message: "Workspace-bound: _ORB Workspace",
+      severity: "info",
+    });
+    const serialized = JSON.stringify(result.diagnostics);
+    expect(serialized).not.toContain("file:///");
+    expect(serialized).not.toContain("C:/Users/alice/private-project");
   });
 
   it.each([
-    ["other-document", { uris: ["file:///workspace/other.css"], status: "exact" } as const, "source-not-active-document"],
-    ["ambiguous", { uris: [], status: "ambiguous" } as const, "source-ambiguous"],
+    ["other-document", {
+      uris: ["file:///workspace/other.css"],
+      status: "exact",
+      strategy: "automatic",
+    } as const, "source-not-active-document"],
+    ["ambiguous", {
+      uris: [],
+      status: "ambiguous",
+      strategy: "automatic",
+    } as const, "source-ambiguous"],
   ])("does not fingerprint-fallback for %s source resolution", async (
     _name,
     resolution,
@@ -1667,6 +1808,7 @@ async function resolveCss(
   resolution: Resolution = {
     uris: ["file:///workspace/dist/app.css"],
     status: "exact",
+    strategy: "automatic",
   },
   plugin = new CssSourcePlugin(),
   version = 1,
