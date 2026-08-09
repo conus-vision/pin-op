@@ -1,4 +1,5 @@
 import type {
+  SourceResolutionStrategy,
   SourceUriResolution,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
@@ -13,6 +14,18 @@ export interface WorkspaceHost {
   findFiles(pattern: string, exclude: string): PromiseLike<readonly UriLike[]>;
   parseUri(value: string): UriLike;
   readFile(uri: UriLike): PromiseLike<Uint8Array>;
+}
+
+interface WorkspaceFolderIdentity {
+  readonly uri: string;
+  readonly name: string;
+  readonly windows: boolean;
+}
+
+interface ResolutionScope {
+  readonly strategy: SourceResolutionStrategy;
+  readonly folder?: WorkspaceFolderIdentity;
+  readonly ambiguous: boolean;
 }
 
 const EXCLUDED_WORKSPACE_PATHS = "**/{node_modules,.git}/**";
@@ -66,29 +79,67 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     sourceUrl: string,
     baseUrl: string,
   ): Promise<SourceUriResolution> {
-    const absolute = new URL(sourceUrl, baseUrl);
+    const absolute = safeUrl(sourceUrl, baseUrl);
+    const folders = this.workspaceFolders();
+    const scope = resolutionScope(folders, safeUrl(baseUrl), absolute);
+    const baseResult = scope.folder === undefined
+      ? { strategy: scope.strategy } as const
+      : {
+        strategy: scope.strategy,
+        workspaceFolderUri: scope.folder.uri,
+      } as const;
+
+    if (scope.ambiguous) {
+      return { uris: [], status: "ambiguous", ...baseResult };
+    }
+    if (!absolute) {
+      return { uris: [], status: "not-found", ...baseResult };
+    }
     if (absolute.protocol === "file:") {
       const canonical = this.host.parseUri(absolute.toString()).toString();
-      if (this.isWorkspaceUri(canonical)) {
-        return { uris: [canonical], status: "exact" };
-      }
+      const owner = folders.find((folder) => uriWithin(canonical, folder.uri));
+      return owner
+        ? {
+          uris: [canonical],
+          status: "exact",
+          strategy: "workspace-bound",
+          workspaceFolderUri: owner.uri,
+        }
+        : { uris: [], status: "not-found", ...baseResult };
     }
-    const pathname = decodedPathname(sourceUrl, baseUrl);
-    const relativePath = pathname.replace(/^\/+/, "");
-    if (!relativePath) return { uris: [], status: "not-found" };
+    const pathname = safeDecodedPathname(absolute);
+    if (!pathname) {
+      return { uris: [], status: "not-found", ...baseResult };
+    }
+    let relativePath = pathname.replace(/^\/+/, "");
+    if (scope.folder) {
+      relativePath = stripLeadingFolder(relativePath, scope.folder);
+    }
+    if (!relativePath) {
+      return { uris: [], status: "not-found", ...baseResult };
+    }
 
-    const exact = await this.findFiles(`**/${escapeGlob(relativePath)}`);
-    if (exact.length === 1) return { uris: exact, status: "exact" };
-    if (exact.length > 1) return { uris: [], status: "ambiguous" };
+    const exact = await this.findCandidates(relativePath, scope.folder);
+    if (exact.length === 1) {
+      return { uris: exact, status: "exact", ...baseResult };
+    }
+    if (exact.length > 1) {
+      return { uris: [], status: "ambiguous", ...baseResult };
+    }
 
     const basename = relativePath.slice(relativePath.lastIndexOf("/") + 1);
-    const fallback = await this.findFiles(`**/${escapeGlob(basename)}`);
+    const fallback = await this.findCandidates(basename, scope.folder);
     if (fallback.length === 1) {
-      return { uris: fallback, status: "unique-basename" };
+      return {
+        uris: fallback,
+        status: "unique-basename",
+        ...baseResult,
+      };
     }
     return {
       uris: [],
       status: fallback.length > 1 ? "ambiguous" : "not-found",
+      ...baseResult,
     };
   }
 
@@ -97,21 +148,136 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
   }
 
   public isWorkspaceUri(uri: string): boolean {
-    const candidate = normalizedUri(uri);
-    if (!candidate) return false;
-    return this.host.workspaceFolders.some((folder) => {
-      const root = normalizedUri(folder.uri.toString());
-      return root !== undefined &&
-        (candidate === root || candidate.startsWith(`${root}/`));
-    });
+    return this.host.workspaceFolders.some((folder) =>
+      uriWithin(uri, folder.uri.toString())
+    );
+  }
+
+  private async findCandidates(
+    relativePath: string,
+    folder?: WorkspaceFolderIdentity,
+  ): Promise<readonly string[]> {
+    const matches = await this.findFiles(`**/${escapeGlob(relativePath)}`);
+    const seen = new Set<string>();
+    const candidates: string[] = [];
+    for (const candidate of matches) {
+      if (folder && !uriWithin(candidate, folder.uri)) continue;
+      const key = normalizedUri(candidate) ?? candidate;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(candidate);
+    }
+    return candidates;
+  }
+
+  private workspaceFolders(): readonly WorkspaceFolderIdentity[] {
+    return this.host.workspaceFolders
+      .map((folder) => workspaceFolderIdentity(folder.uri.toString()))
+      .filter((folder): folder is WorkspaceFolderIdentity =>
+        folder !== undefined
+      );
   }
 }
 
-function decodedPathname(sourceUrl: string, baseUrl: string): string {
-  return decodeURIComponent(new URL(sourceUrl, baseUrl).pathname).replace(
-    /\\/g,
-    "/",
-  );
+function workspaceFolderIdentity(
+  value: string,
+): WorkspaceFolderIdentity | undefined {
+  const uri = safeUrl(value);
+  const pathname = uri && safeDecodedPathname(uri)?.replace(/\/+$/, "");
+  if (!uri || !pathname) return undefined;
+  const segments = pathname.split("/").filter(Boolean);
+  const name = segments[segments.length - 1];
+  if (!name) return undefined;
+  return {
+    uri: value,
+    name,
+    windows: isWindowsFileUri(uri, pathname),
+  };
+}
+
+function resolutionScope(
+  folders: readonly WorkspaceFolderIdentity[],
+  documentUrl: URL | undefined,
+  sourceUrl: URL | undefined,
+): ResolutionScope {
+  const documentMatches = matchingFolders(folders, documentUrl);
+  const sourceMatches = matchingFolders(folders, sourceUrl);
+  if (documentMatches.length > 1 || sourceMatches.length > 1) {
+    return { strategy: "workspace-bound", ambiguous: true };
+  }
+
+  const documentFolder = documentMatches[0];
+  const sourceFolder = sourceMatches[0];
+  if (
+    documentFolder !== undefined &&
+    sourceFolder !== undefined &&
+    documentFolder !== sourceFolder
+  ) {
+    return { strategy: "workspace-bound", ambiguous: true };
+  }
+
+  const folder = sourceFolder ?? documentFolder;
+  return folder === undefined
+    ? { strategy: "automatic", ambiguous: false }
+    : { strategy: "workspace-bound", folder, ambiguous: false };
+}
+
+function matchingFolders(
+  folders: readonly WorkspaceFolderIdentity[],
+  url: URL | undefined,
+): readonly WorkspaceFolderIdentity[] {
+  const segment = firstDecodedPathSegment(url);
+  return segment === undefined
+    ? []
+    : folders.filter((folder) => sameFolderName(segment, folder));
+}
+
+function firstDecodedPathSegment(url: URL | undefined): string | undefined {
+  const encoded = url?.pathname.split("/").find(Boolean);
+  if (!encoded) return undefined;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
+}
+
+function stripLeadingFolder(
+  relativePath: string,
+  folder: WorkspaceFolderIdentity,
+): string {
+  const separator = relativePath.indexOf("/");
+  const firstSegment = separator === -1
+    ? relativePath
+    : relativePath.slice(0, separator);
+  if (!sameFolderName(firstSegment, folder)) return relativePath;
+  return separator === -1 ? "" : relativePath.slice(separator + 1);
+}
+
+function sameFolderName(
+  candidate: string,
+  folder: WorkspaceFolderIdentity,
+): boolean {
+  return folder.windows
+    ? candidate.toLowerCase() === folder.name.toLowerCase()
+    : candidate === folder.name;
+}
+
+function safeUrl(value: string, baseUrl?: string): URL | undefined {
+  try {
+    return baseUrl === undefined ? new URL(value) : new URL(value, baseUrl);
+  } catch {
+    if (baseUrl !== undefined) return safeUrl(value);
+    return undefined;
+  }
+}
+
+function safeDecodedPathname(url: URL): string | undefined {
+  try {
+    return decodeURIComponent(url.pathname).replace(/\\/g, "/");
+  } catch {
+    return undefined;
+  }
 }
 
 function escapeGlob(value: string): string {
@@ -139,10 +305,16 @@ function sameCanonicalUri(left: string, right: string): boolean {
   return normalizedLeft !== undefined && normalizedLeft === normalizedUri(right);
 }
 
+function uriWithin(candidateUri: string, rootUri: string): boolean {
+  const candidate = normalizedUri(candidateUri);
+  const root = normalizedUri(rootUri);
+  return candidate !== undefined && root !== undefined &&
+    (candidate === root || candidate.startsWith(`${root}/`));
+}
+
 function isWindowsFileUri(uri: URL, pathname: string): boolean {
   return uri.protocol === "file:" &&
     (
-      process.platform === "win32" ||
       uri.host !== "" ||
       /^\/[a-z]:\//i.test(pathname)
     );
