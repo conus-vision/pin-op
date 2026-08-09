@@ -55,6 +55,13 @@ export interface DomTreeMutationObserver {
   takeRecords?(): readonly MutationRecord[];
 }
 
+type DomTreeTimerHandle = number | ReturnType<typeof globalThis.setTimeout>;
+type DomTreeScheduleTimeout = (
+  callback: () => void,
+  delay: number,
+) => DomTreeTimerHandle;
+type DomTreeCancelTimeout = (timer: DomTreeTimerHandle) => void;
+
 export interface DomTreeProviderOptions {
   readonly documentEpoch?: number;
   readonly maxCursors?: number;
@@ -62,8 +69,8 @@ export interface DomTreeProviderOptions {
   readonly createMutationObserver?: (
     callback: (records: readonly MutationRecord[]) => void,
   ) => DomTreeMutationObserver;
-  readonly setTimeout?: typeof setTimeout;
-  readonly clearTimeout?: typeof clearTimeout;
+  readonly setTimeout?: DomTreeScheduleTimeout;
+  readonly clearTimeout?: DomTreeCancelTimeout;
   readonly onInvalidated?: (branch: DomInvalidationBranch) => void;
   readonly getSelectedNodeRef?: () => string | undefined;
   readonly onSelectedNodeRemoved?: (event: DomTreeSelectedNodeRemoval) => void;
@@ -219,8 +226,8 @@ export class DomTreeProvider {
   private readonly createMutationObserver: NonNullable<
     DomTreeProviderOptions["createMutationObserver"]
   >;
-  private readonly scheduleTimeout: typeof setTimeout;
-  private readonly cancelTimeout: typeof clearTimeout;
+  private readonly scheduleTimeout: DomTreeScheduleTimeout;
+  private readonly cancelTimeout: DomTreeCancelTimeout;
   private readonly onInvalidated: ((branch: DomInvalidationBranch) => void) | undefined;
   private readonly getSelectedNodeRef: (() => string | undefined) | undefined;
   private readonly onSelectedNodeRemoved: (
@@ -236,9 +243,9 @@ export class DomTreeProvider {
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
-  private mutationTimer: ReturnType<typeof setTimeout> | undefined;
-  private frameMutationScanTimer: ReturnType<typeof setTimeout> | undefined;
-  private shadowScanTimer: ReturnType<typeof setTimeout> | undefined;
+  private mutationTimer: DomTreeTimerHandle | undefined;
+  private frameMutationScanTimer: DomTreeTimerHandle | undefined;
+  private shadowScanTimer: DomTreeTimerHandle | undefined;
   private shadowScanOffset = 0;
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
@@ -260,8 +267,20 @@ export class DomTreeProvider {
       options.maxRecords ?? DEFAULT_MAX_RECORDS,
       "maxRecords",
     );
-    this.scheduleTimeout = options.setTimeout ?? setTimeout;
-    this.cancelTimeout = options.clearTimeout ?? clearTimeout;
+    this.scheduleTimeout = options.setTimeout ?? ((handler, timeout) => {
+      const view = this.topDocument?.defaultView;
+      return view
+        ? view.setTimeout(handler, timeout)
+        : globalThis.setTimeout(handler, timeout);
+    });
+    this.cancelTimeout = options.clearTimeout ?? ((timer) => {
+      const view = this.topDocument?.defaultView;
+      if (view) {
+        view.clearTimeout(timer as number);
+        return;
+      }
+      globalThis.clearTimeout(timer);
+    });
     this.onInvalidated = options.onInvalidated;
     this.getSelectedNodeRef = options.getSelectedNodeRef;
     this.onSelectedNodeRemoved = options.onSelectedNodeRemoved;

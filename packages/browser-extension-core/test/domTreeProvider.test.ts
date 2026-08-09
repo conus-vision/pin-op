@@ -1,10 +1,57 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DomTreeProvider,
   DomTreeProviderError,
 } from "../src/domTreeProvider.js";
 
 describe("DomTreeProvider", () => {
+  it("binds default timers to the inspected document window", () => {
+    const document = createDocument();
+    const pendingTimers = new Map<number, TimerHandler>();
+    let nextTimer = 1;
+    const timerWindow = {
+      setTimeout(this: unknown, handler: TimerHandler): number {
+        if (this !== timerWindow) {
+          throw new TypeError(
+            "'setTimeout' called on an object that does not implement interface Window.",
+          );
+        }
+        const timer = nextTimer;
+        nextTimer += 1;
+        pendingTimers.set(timer, handler);
+        return timer;
+      },
+      clearTimeout(this: unknown, timer?: number): void {
+        if (this !== timerWindow) {
+          throw new TypeError(
+            "'clearTimeout' called on an object that does not implement interface Window.",
+          );
+        }
+        if (timer !== undefined) pendingTimers.delete(timer);
+      },
+    };
+    Object.defineProperty(document, "defaultView", {
+      configurable: true,
+      value: timerWindow as unknown as Window,
+    });
+    vi.stubGlobal("setTimeout", timerWindow.setTimeout);
+    vi.stubGlobal("clearTimeout", timerWindow.clearTimeout);
+
+    try {
+      const provider = new DomTreeProvider(document as unknown as Document, {
+        createMutationObserver: (callback) => new TestMutationObserver(callback),
+      });
+
+      expect(() => provider.startFrameTracking()).not.toThrow();
+      expect(pendingTimers.size).toBe(1);
+
+      provider.dispose();
+      expect(pendingTimers.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("returns only element children in fixed-size pages", () => {
     const document = createDocument();
     for (let index = 0; index < 51; index += 1) {

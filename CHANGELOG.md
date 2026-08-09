@@ -33,6 +33,11 @@ All notable changes to Browser2IDE will be documented in this file.
 - Kept Firefox Stable and current Chrome/Chromium on the shared Inspector
   behavior and read-only resolution path.
 
+### Fixed
+
+- Bound DOM-tree timers to the inspected page window in Firefox, restoring
+  content-script startup, the page picker, the DOM tree, and source highlights.
+
 ### Security And Privacy
 
 - Kept product traffic on a loopback-only WebSocket with explicit window
