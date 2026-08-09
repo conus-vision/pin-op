@@ -354,6 +354,21 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("matches every escaped glob character as a literal filename", async () => {
+    const sourceUri =
+      "file:///workspace/src/literal%3F%2A%5B%5D%7B%7D.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" });
+
+    await expect(workspace.resolveSourceUri(
+      "/src/literal%3F%2A%5B%5D%7B%7D.css",
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "automatic",
+    });
+  });
+
   it("deduplicates canonical candidate URIs", async () => {
     const encoded = "file:///workspace/src/My%20Card.css";
     const workspace = memorySourceWorkspace({
@@ -383,6 +398,42 @@ describe("VsCodeSourceWorkspace", () => {
       status: "exact",
       strategy: "workspace-bound",
       workspaceFolderUri: "file:///workspace",
+    });
+  });
+
+  it("chooses a file document workspace only by containment", async () => {
+    const sourceUri = "file:///home/project/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///home/project",
+      "file:///else/home",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      "../styles/app.css",
+      "file:///home/project/dist/app.css",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///home/project",
+    });
+  });
+
+  it("chooses a direct file source workspace only by containment", async () => {
+    const sourceUri = "file:///home/project/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///home/project",
+      "file:///else/home",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///home/project",
     });
   });
 
@@ -539,6 +590,20 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("preserves document scope when encoded separators invalidate the source", async () => {
+    const workspace = memorySourceWorkspace({}, ["file:///sites/_ORB"]);
+
+    await expect(workspace.resolveSourceUri(
+      "/assets%2Fapp.css",
+      "http://localhost/_ORB/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///sites/_ORB",
+    });
+  });
+
   it("returns bound not-found for malformed encoded paths", async () => {
     const workspace = memorySourceWorkspace({}, ["file:///sites/_ORB"]);
 
@@ -550,6 +615,39 @@ describe("VsCodeSourceWorkspace", () => {
       status: "not-found",
       strategy: "workspace-bound",
       workspaceFolderUri: "file:///sites/_ORB",
+    });
+  });
+
+  it("retains a safe document root before rejecting its malformed path", async () => {
+    const workspace = memorySourceWorkspace(
+      { "file:///sites/_ORB/styles/app.css": "a {}" },
+      ["file:///sites/_ORB"],
+    );
+
+    await expect(workspace.resolveSourceUri(
+      "http://cdn.example/styles/app.css",
+      "http://localhost/_ORB/%E0%A4%A/page",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///sites/_ORB",
+    });
+  });
+
+  it("rejects malformed document paths without a safe root identity", async () => {
+    const workspace = memorySourceWorkspace(
+      { "file:///sites/_ORB/styles/app.css": "a {}" },
+      ["file:///sites/_ORB"],
+    );
+
+    await expect(workspace.resolveSourceUri(
+      "http://cdn.example/styles/app.css",
+      "http://localhost/%E0%A4%A/_ORB/page",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "automatic",
     });
   });
 

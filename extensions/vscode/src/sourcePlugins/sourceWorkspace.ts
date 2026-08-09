@@ -88,15 +88,35 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     if (!documentUrl) {
       return { uris: [], status: "not-found", strategy: "automatic" };
     }
-    const absolute = safeUrl(sourceUrl, documentUrl);
-    if (
-      hasEncodedPathSeparator(documentUrl) ||
-      hasEncodedPathSeparator(absolute)
-    ) {
-      return { uris: [], status: "not-found", strategy: "automatic" };
-    }
     const folders = this.workspaceFolders();
-    const scope = resolutionScope(folders, documentUrl, absolute);
+    const document = documentWorkspaceFolder(folders, documentUrl);
+    if (document.ambiguous) {
+      return {
+        uris: [],
+        status: "ambiguous",
+        strategy: "workspace-bound",
+      };
+    }
+    const documentBaseResult = document.folder === undefined
+      ? { strategy: "automatic" } as const
+      : {
+        strategy: "workspace-bound",
+        workspaceFolderUri: document.folder.uri,
+      } as const;
+    if (safeDecodedPathname(documentUrl) === undefined) {
+      return { uris: [], status: "not-found", ...documentBaseResult };
+    }
+
+    const absolute = safeUrl(sourceUrl, documentUrl);
+    if (!absolute) {
+      return { uris: [], status: "not-found", ...documentBaseResult };
+    }
+    const pathname = safeDecodedPathname(absolute);
+    if (pathname === undefined) {
+      return { uris: [], status: "not-found", ...documentBaseResult };
+    }
+
+    const scope = resolutionScope(folders, document, absolute);
     const baseResult = scope.folder === undefined
       ? { strategy: scope.strategy } as const
       : {
@@ -106,9 +126,6 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
 
     if (scope.ambiguous) {
       return { uris: [], status: "ambiguous", ...baseResult };
-    }
-    if (!absolute) {
-      return { uris: [], status: "not-found", ...baseResult };
     }
     if (absolute.protocol === "file:") {
       const canonical = this.host.parseUri(filePathUrl(absolute).toString())
@@ -133,7 +150,6 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
         workspaceFolderUri: owner.folder.uri,
       };
     }
-    const pathname = safeDecodedPathname(absolute);
     if (!pathname) {
       return { uris: [], status: "not-found", ...baseResult };
     }
@@ -224,10 +240,9 @@ function workspaceFolderIdentity(
 
 function resolutionScope(
   folders: readonly WorkspaceFolderIdentity[],
-  documentUrl: URL | undefined,
+  document: WorkspaceFolderSelection,
   sourceUrl: URL | undefined,
 ): ResolutionScope {
-  const document = documentWorkspaceFolder(folders, documentUrl);
   const sourceMatches = matchingFolders(folders, sourceUrl);
   if (document.ambiguous || sourceMatches.length > 1) {
     return { strategy: "workspace-bound", ambiguous: true };
@@ -297,6 +312,7 @@ function matchingFolders(
   folders: readonly WorkspaceFolderIdentity[],
   url: URL | undefined,
 ): readonly WorkspaceFolderIdentity[] {
+  if (url?.protocol === "file:") return [];
   const segment = firstDecodedPathSegment(url);
   return segment === undefined
     ? []

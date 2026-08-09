@@ -93,5 +93,5 @@ function uri(value: string): UriLike {
 }
 
 function unescapeGlob(value: string): string {
-  return value.replace(/\[([^\]])\]/g, "$1");
+  return value.replace(/\[([?*[\]{}])\]/g, "$1");
 }
