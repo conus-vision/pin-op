@@ -308,6 +308,43 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("rejects file URIs outside the workspace-bound root", async () => {
+    const otherSource = "file:///D:/sites/OTHER/styles/app.css";
+    const workspace = memorySourceWorkspace({ [otherSource]: "a {}" }, [
+      "file:///D:/sites/_ORB",
+      "file:///D:/sites/OTHER",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      otherSource,
+      "http://localhost/_ORB/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
+  it("keeps filesystem-root workspaces available for file containment", async () => {
+    const sourceUri = "file:///project/src/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///",
+    ]);
+
+    expect(workspace.isWorkspaceUri(sourceUri)).toBe(true);
+    await expect(workspace.readText(sourceUri)).resolves.toBe("a {}");
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///",
+    });
+  });
+
   it("returns bound not-found for malformed encoded paths", async () => {
     const workspace = memorySourceWorkspace({}, ["file:///sites/_ORB"]);
 

@@ -18,7 +18,7 @@ export interface WorkspaceHost {
 
 interface WorkspaceFolderIdentity {
   readonly uri: string;
-  readonly name: string;
+  readonly name: string | undefined;
   readonly windows: boolean;
 }
 
@@ -97,15 +97,17 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     }
     if (absolute.protocol === "file:") {
       const canonical = this.host.parseUri(absolute.toString()).toString();
-      const owner = folders.find((folder) => uriWithin(canonical, folder.uri));
-      return owner
-        ? {
-          uris: [canonical],
-          status: "exact",
-          strategy: "workspace-bound",
-          workspaceFolderUri: owner.uri,
-        }
-        : { uris: [], status: "not-found", ...baseResult };
+      const owner = scope.folder ??
+        folders.find((folder) => uriWithin(canonical, folder.uri));
+      if (!owner || !uriWithin(canonical, owner.uri)) {
+        return { uris: [], status: "not-found", ...baseResult };
+      }
+      return {
+        uris: [canonical],
+        status: "exact",
+        strategy: "workspace-bound",
+        workspaceFolderUri: owner.uri,
+      };
     }
     const pathname = safeDecodedPathname(absolute);
     if (!pathname) {
@@ -183,15 +185,15 @@ function workspaceFolderIdentity(
   value: string,
 ): WorkspaceFolderIdentity | undefined {
   const uri = safeUrl(value);
-  const pathname = uri && safeDecodedPathname(uri)?.replace(/\/+$/, "");
-  if (!uri || !pathname) return undefined;
+  const decodedPathname = uri && safeDecodedPathname(uri);
+  if (!uri || decodedPathname === undefined) return undefined;
+  const pathname = decodedPathname.replace(/\/+$/, "");
   const segments = pathname.split("/").filter(Boolean);
   const name = segments[segments.length - 1];
-  if (!name) return undefined;
   return {
     uri: value,
     name,
-    windows: isWindowsFileUri(uri, pathname),
+    windows: isWindowsFileUri(uri, decodedPathname),
   };
 }
 
@@ -258,6 +260,7 @@ function sameFolderName(
   candidate: string,
   folder: WorkspaceFolderIdentity,
 ): boolean {
+  if (folder.name === undefined) return false;
   return folder.windows
     ? candidate.toLowerCase() === folder.name.toLowerCase()
     : candidate === folder.name;
