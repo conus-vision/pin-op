@@ -437,6 +437,42 @@ describe("VsCodeSourceWorkspace", () => {
     });
   });
 
+  it("rejects a nested-root file when the document is bound to its parent", async () => {
+    const sourceUri = "file:///D:/sites/_ORB/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///D:/sites",
+      "file:///D:/sites/_ORB",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
+      "http://localhost/sites/",
+    )).resolves.toEqual({
+      uris: [],
+      status: "not-found",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites",
+    });
+  });
+
+  it("uses the most-specific direct file owner without document identity", async () => {
+    const sourceUri = "file:///D:/sites/_ORB/styles/app.css";
+    const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" }, [
+      "file:///D:/sites",
+      "file:///D:/sites/_ORB",
+    ]);
+
+    await expect(workspace.resolveSourceUri(
+      sourceUri,
+      "http://localhost/",
+    )).resolves.toEqual({
+      uris: [sourceUri],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///D:/sites/_ORB",
+    });
+  });
+
   it("ignores query and fragment when resolving a direct file URI", async () => {
     const sourceUri = "file:///workspace/src/app.css";
     const workspace = memorySourceWorkspace({ [sourceUri]: "a {}" });

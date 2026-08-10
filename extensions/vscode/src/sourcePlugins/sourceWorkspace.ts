@@ -130,9 +130,7 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     if (absolute.protocol === "file:") {
       const canonical = this.host.parseUri(filePathUrl(absolute).toString())
         .toString();
-      const owner = scope.folder === undefined
-        ? fileWorkspaceOwner(folders, absolute)
-        : { folder: scope.folder, ambiguous: false };
+      const owner = fileWorkspaceOwner(folders, absolute);
       if (owner.ambiguous) {
         return {
           uris: [],
@@ -141,6 +139,12 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
         };
       }
       if (!owner.folder || !uriWithin(canonical, owner.folder.uri)) {
+        return { uris: [], status: "not-found", ...baseResult };
+      }
+      if (
+        scope.folder !== undefined &&
+        !sameCanonicalUri(scope.folder.uri, owner.folder.uri)
+      ) {
         return { uris: [], status: "not-found", ...baseResult };
       }
       return {

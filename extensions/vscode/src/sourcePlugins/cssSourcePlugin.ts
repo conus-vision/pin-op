@@ -33,6 +33,7 @@ export class CssSourcePlugin implements SourcePlugin {
   public async resolve(
     context: SourcePluginContext,
   ): Promise<StatusAwareSourcePluginResult> {
+    if (context.signal.aborted) return abortedResult();
     let parsed;
     try {
       parsed = this.ast.parseDocument(context.document, "css");

@@ -1446,6 +1446,33 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
+  it("does not parse a pre-aborted document", async () => {
+    let parseCalls = 0;
+    const ast = new StylesheetAstCache();
+    ast.parseDocument = () => {
+      parseCalls += 1;
+      throw new Error("parser should not be called");
+    };
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      undefined,
+      new CssSourcePlugin(ast),
+      1,
+      controller.signal,
+    );
+
+    expect(parseCalls).toBe(0);
+    expect(result).toEqual({
+      status: "no-rule-match",
+      matches: [],
+      diagnostics: [],
+    });
+  });
+
   it("returns an empty aborted result when source resolution is cancelled", async () => {
     let finishResolution: ((resolution: Resolution) => void) | undefined;
     let resolutionStarted = false;
