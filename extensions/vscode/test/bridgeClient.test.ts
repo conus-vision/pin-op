@@ -1,8 +1,13 @@
-import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  SourceNavigationStateMessageSchema,
+  type SourceNavigateMessage,
+} from "@browser2ide/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeClient,
   ResolutionClientRouter,
+  SourceNavigationClientRouter,
 } from "../src/bridgeClient.js";
 
 const SESSION_ID = "session-1";
@@ -16,8 +21,10 @@ class FakeSocket {
   onerror: (() => void) | null | undefined;
   readonly sent: string[] = [];
   closed = false;
+  sendError: Error | undefined;
 
   send(payload: string): void {
+    if (this.sendError) throw this.sendError;
     this.sent.push(payload);
   }
 
@@ -60,7 +67,26 @@ describe("BridgeClient", () => {
     expect(second.sendResolution).toHaveBeenCalledTimes(1);
   });
 
-  it("sends a strict protocol-v4 resolution through the authenticated IDE route", () => {
+  it("routes source navigation state only to the current bridge client", () => {
+    const router = new SourceNavigationClientRouter();
+    const first = { sendSourceNavigationState: vi.fn() };
+    const second = { sendSourceNavigationState: vi.fn() };
+    const input = sourceNavigationStateInput();
+
+    router.sendSourceNavigationState(input);
+    router.bind(first);
+    router.sendSourceNavigationState(input);
+    router.bind(second);
+    router.unbind(first);
+    router.sendSourceNavigationState(input);
+    router.unbind(second);
+    router.sendSourceNavigationState(input);
+
+    expect(first.sendSourceNavigationState).toHaveBeenCalledTimes(1);
+    expect(second.sendSourceNavigationState).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a strict protocol-v5 resolution through the authenticated IDE route", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();
@@ -96,6 +122,105 @@ describe("BridgeClient", () => {
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
 
+  it("sends a strict protocol-v5 source navigation state through the authenticated IDE route", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendSourceNavigationState({
+      ...sourceNavigationStateInput(),
+      messageId: "caller-message",
+      sessionId: "caller-session",
+      source: { role: "browser", id: "caller-source" },
+      metadata: { caller: true },
+    } as never);
+
+    const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
+    expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
+    expect(message).toEqual({
+      protocolVersion: 5,
+      type: "source.navigationState",
+      messageId: expect.any(String),
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: hello.source.id },
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 4,
+      selectedMatchCount: 3,
+      activeMatchIndex: 1,
+      metadata: {},
+    });
+    expect(message.messageId).not.toBe("caller-message");
+  });
+
+  it("does not send source navigation state before authentication", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    harness.client.sendSourceNavigationState(sourceNavigationStateInput());
+
+    expect(harness.sockets[0].sent).toHaveLength(1);
+  });
+
+  it.each([
+    ["omits an absent index", sourceNavigationStateInput(false), false, undefined],
+    ["preserves index zero", sourceNavigationStateInput(true, 0), true, 0],
+  ])("%s in source navigation state", (_name, input, present, expected) => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendSourceNavigationState(input);
+
+    const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
+    expect(Object.hasOwn(message, "activeMatchIndex")).toBe(present);
+    expect(message.activeMatchIndex).toBe(expected);
+  });
+
+  it("rejects malformed source navigation state without sending wire data", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    let thrown: unknown;
+    try {
+      harness.client.sendSourceNavigationState({
+        ...sourceNavigationStateInput(),
+        selectedMatchCount: -1,
+        localPath: "C:/private/card.scss",
+      } as never);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ name: "ZodError" });
+    expect(harness.sockets[0].sent).toHaveLength(1);
+  });
+
+  it("follows existing socket and send error handling for source navigation state", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].sendError = new Error("socket send failed");
+
+    expect(() =>
+      harness.client.sendSourceNavigationState(sourceNavigationStateInput()),
+    ).toThrow("socket send failed");
+    expect(harness.states.at(-1)).toBe("connected");
+
+    harness.sockets[0].sendError = undefined;
+    harness.sockets[0].onerror?.();
+    harness.client.sendSourceNavigationState(sourceNavigationStateInput());
+
+    expect(harness.states.at(-1)).toBe("error");
+    expect(harness.sockets[0].sent).toHaveLength(1);
+  });
+
   it("rejects malformed resolution input with the strict protocol schema", () => {
     const harness = createHarness();
     harness.client.connect();
@@ -116,20 +241,104 @@ describe("BridgeClient", () => {
     harness.client.connect();
     harness.sockets[0].open();
 
-    expect(JSON.parse(harness.sockets[0].sent[0])).toMatchObject({
+    const hello = JSON.parse(harness.sockets[0].sent[0]);
+    expect(hello).toMatchObject({
       protocolVersion: PROTOCOL_VERSION,
       type: "hello",
       sessionId: SESSION_ID,
       bridgeInstanceId: INSTANCE_ID,
       authToken: "ide-token",
       source: { role: "ide" },
-      capabilities: ["resolution"],
     });
+    expect(hello.capabilities).toEqual(["resolution", "source-navigation"]);
     expect(harness.states).toEqual(["connecting"]);
 
     authenticate(harness.sockets[0]);
 
     expect(harness.states).toEqual(["connecting", "connected"]);
+  });
+
+  it("publishes authenticated same-session source navigation", () => {
+    const harness = createHarness();
+    const navigated: SourceNavigateMessage[] = [];
+    harness.client.onSourceNavigate((message) => navigated.push(message));
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const message = sourceNavigateMessage();
+
+    harness.sockets[0].message(message);
+
+    expect(navigated).toEqual([message]);
+    expect(navigated[0]).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 4,
+      direction: "next",
+    });
+  });
+
+  it("ignores source navigation before authentication", () => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    harness.client.onSourceNavigate(listener);
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    harness.sockets[0].message(sourceNavigateMessage());
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("ignores source navigation for a stale session", () => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    harness.client.onSourceNavigate(listener);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.sockets[0].message(sourceNavigateMessage("stale-session"));
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("stops source navigation notifications after listener disposal", () => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    const dispose = harness.client.onSourceNavigate(listener);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(sourceNavigateMessage());
+
+    dispose();
+    harness.sockets[0].message(sourceNavigateMessage());
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one source navigation listener across reconnect and clears it on dispose", () => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    harness.client.onSourceNavigate(listener);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(sourceNavigateMessage());
+
+    harness.sockets[0].serverClose();
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    authenticate(harness.sockets[1]);
+    harness.sockets[1].message(sourceNavigateMessage());
+    harness.sockets[0].message(sourceNavigateMessage());
+
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    harness.client.dispose();
+    harness.sockets[1].message(sourceNavigateMessage());
+
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("ignores inspect and heartbeat traffic before authentication", () => {
@@ -392,5 +601,32 @@ function resolutionInput() {
     parentMatchCount: 1,
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
+  };
+}
+
+function sourceNavigateMessage(
+  sessionId = SESSION_ID,
+): SourceNavigateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigate",
+    messageId: "source-navigate-1",
+    sessionId,
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 4,
+    direction: "next",
+    metadata: {},
+  };
+}
+
+function sourceNavigationStateInput(
+  includeActiveMatchIndex = true,
+  activeMatchIndex = 1,
+) {
+  return {
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 4,
+    selectedMatchCount: 3,
+    ...(includeActiveMatchIndex ? { activeMatchIndex } : {}),
   };
 }

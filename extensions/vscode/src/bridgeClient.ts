@@ -4,9 +4,12 @@ import {
   Browser2IdeMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
   type ErrorMessage,
   type InspectMessage,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 
 export type ResolutionInput = Pick<
@@ -41,6 +44,36 @@ export class ResolutionClientRouter implements ResolutionSender {
   }
 }
 
+export type SourceNavigationStateInput = Pick<
+  SourceNavigationStateMessage,
+  | "inspectMessageId"
+  | "resolutionGeneration"
+  | "selectedMatchCount"
+  | "activeMatchIndex"
+>;
+
+export interface SourceNavigationStateSender {
+  sendSourceNavigationState(state: SourceNavigationStateInput): void;
+}
+
+export class SourceNavigationClientRouter
+  implements SourceNavigationStateSender
+{
+  private client: SourceNavigationStateSender | undefined;
+
+  public bind(client: SourceNavigationStateSender): void {
+    this.client = client;
+  }
+
+  public unbind(client: SourceNavigationStateSender): void {
+    if (this.client === client) this.client = undefined;
+  }
+
+  public sendSourceNavigationState(state: SourceNavigationStateInput): void {
+    this.client?.sendSourceNavigationState(state);
+  }
+}
+
 export type ConnectionState =
   | "disconnected"
   | "connecting"
@@ -72,6 +105,9 @@ export class BridgeClient {
   private readonly scheduleTimer: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
   private readonly cancelTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly inspectListeners = new Set<(message: InspectMessage) => void>();
+  private readonly sourceNavigateListeners = new Set<
+    (message: SourceNavigateMessage) => void
+  >();
   private readonly protocolErrorListeners = new Set<
     (message: ErrorMessage) => void
   >();
@@ -119,6 +155,7 @@ export class BridgeClient {
   dispose(): void {
     this.disconnect();
     this.inspectListeners.clear();
+    this.sourceNavigateListeners.clear();
     this.protocolErrorListeners.clear();
     this.stateListeners.clear();
   }
@@ -126,6 +163,11 @@ export class BridgeClient {
   onInspect(listener: (message: InspectMessage) => void): () => void {
     this.inspectListeners.add(listener);
     return () => this.inspectListeners.delete(listener);
+  }
+
+  onSourceNavigate(listener: (message: SourceNavigateMessage) => void): () => void {
+    this.sourceNavigateListeners.add(listener);
+    return () => this.sourceNavigateListeners.delete(listener);
   }
 
   onConnectionStateChanged(listener: (state: ConnectionState) => void): () => void {
@@ -152,6 +194,20 @@ export class BridgeClient {
     this.socket.send(JSON.stringify(message));
   }
 
+  sendSourceNavigationState(state: SourceNavigationStateInput): void {
+    const message = SourceNavigationStateMessageSchema.parse({
+      ...state,
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: randomUUID(),
+      sessionId: this.options.sessionId,
+      source: { role: "ide", id: this.sourceId },
+      metadata: {},
+    });
+    if (!this.socket || this.state !== "connected") return;
+    this.socket.send(JSON.stringify(message));
+  }
+
   private openSocket(): void {
     this.setState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
     const socket = this.socketFactory(this.options.url);
@@ -169,7 +225,7 @@ export class BridgeClient {
           authToken: this.options.authToken,
           bridgeInstanceId: this.options.bridgeInstanceId,
           source: { role: "ide", id: this.sourceId, metadata: {} },
-          capabilities: ["resolution"],
+          capabilities: ["resolution", "source-navigation"],
           metadata: {},
         }),
       );
@@ -219,6 +275,15 @@ export class BridgeClient {
     }
     if (parsed.data.type === "inspect" && this.state === "connected") {
       for (const listener of this.inspectListeners) {
+        listener(parsed.data);
+      }
+    }
+    if (
+      parsed.data.type === "source.navigate" &&
+      this.state === "connected" &&
+      parsed.data.sessionId === this.options.sessionId
+    ) {
+      for (const listener of this.sourceNavigateListeners) {
         listener(parsed.data);
       }
     }
