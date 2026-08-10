@@ -30,7 +30,10 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   ) => BackgroundWindowCoordinator &
     Pick<
       WindowConnectionCoordinator,
-      "onResolution" | "onPeerState" | "dispose"
+      | "onResolution"
+      | "onPeerState"
+      | "onSourceNavigationState"
+      | "dispose"
     >;
   readonly onError?: (error: unknown) => void;
 }
@@ -64,6 +67,15 @@ export function startBackgroundRuntime(
     subscribePeerStates: (listener) => {
       const subscription = coordinator.onPeerState((windowId, message) =>
         listener(windowId, message),
+      );
+      return () => subscription.dispose();
+    },
+    subscribeSourceNavigationStates: (listener) => {
+      if (typeof coordinator.onSourceNavigationState !== "function") {
+        return () => {};
+      }
+      const subscription = coordinator.onSourceNavigationState(
+        (_windowId, message) => listener(message),
       );
       return () => subscription.dispose();
     },

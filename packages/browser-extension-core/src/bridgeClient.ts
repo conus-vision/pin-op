@@ -2,11 +2,14 @@ import {
   Browser2IdeMessageSchema,
   ClientSourceSchema,
   PROTOCOL_VERSION,
+  SourceNavigateMessageSchema,
   type ClientSource,
   type InspectMessage,
   type PeerStateMessage,
   type ProtocolErrorCode,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 
 export class BrowserProtocolError extends Error {
@@ -72,6 +75,8 @@ export type InspectSendOutcome =
   | "invalid-message"
   | "transport-error";
 
+export type SourceNavigationSendOutcome = InspectSendOutcome;
+
 export interface BrowserBridgeSubscription {
   dispose(): void;
 }
@@ -114,6 +119,9 @@ export class BrowserBridgeClient {
   >();
   private readonly peerStateListeners = new Set<
     (message: PeerStateMessage) => void
+  >();
+  private readonly sourceNavigationStateListeners = new Set<
+    (message: SourceNavigationStateMessage) => void
   >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
@@ -186,6 +194,54 @@ export class BrowserBridgeClient {
     return this.sendInspectMessage(inspectMessageId, payload, sourceId);
   }
 
+  public sendSourceNavigation(
+    input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome {
+    if (
+      !this.socket ||
+      !this.credentials ||
+      !this.authenticated ||
+      this.state !== "connected"
+    ) {
+      return "not-connected";
+    }
+    let message: SourceNavigateMessage | undefined;
+    try {
+      const parsed = SourceNavigateMessageSchema.safeParse({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "source.navigate",
+        messageId: this.messageId(),
+        sessionId: this.credentials.sessionId,
+        inspectMessageId: input.inspectMessageId,
+        resolutionGeneration: input.resolutionGeneration,
+        direction: input.direction,
+        metadata: {},
+      });
+      message = parsed.success ? parsed.data : undefined;
+    } catch {
+      message = undefined;
+    }
+    if (!message) {
+      this.report(
+        new BrowserProtocolError(
+          "protocol.invalidMessage",
+          "Source navigation message exceeds protocol limits",
+        ),
+      );
+      return "invalid-message";
+    }
+    try {
+      this.socket.send(JSON.stringify(message));
+      return "sent";
+    } catch {
+      this.report(new Error("WebSocket source navigation send failed"));
+      return "transport-error";
+    }
+  }
+
   public onResolution(
     listener: (message: ResolutionMessage) => void,
   ): BrowserBridgeSubscription {
@@ -196,6 +252,12 @@ export class BrowserBridgeClient {
     listener: (message: PeerStateMessage) => void,
   ): BrowserBridgeSubscription {
     return subscribe(this.peerStateListeners, listener);
+  }
+
+  public onSourceNavigationState(
+    listener: (message: SourceNavigationStateMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribe(this.sourceNavigationStateListeners, listener);
   }
 
   private sendInspectMessage(
@@ -375,6 +437,17 @@ export class BrowserBridgeClient {
       this.setState("connected");
       return;
     }
+    if (message.type === "source.navigationState") {
+      if (
+        !this.authenticated ||
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId
+      ) {
+        return;
+      }
+      this.notifyListeners(this.sourceNavigationStateListeners, message);
+      return;
+    }
     if (message.type === "resolution" || message.type === "peerState") {
       if (
         !this.authenticated ||
@@ -439,7 +512,7 @@ export class BrowserBridgeClient {
       authToken: this.credentials.authToken,
       bridgeInstanceId: this.credentials.bridgeInstanceId,
       source: this.connectionSource,
-      capabilities: ["inspect", "link"],
+      capabilities: ["inspect", "link", "source-navigation"],
       metadata: {},
     });
   }

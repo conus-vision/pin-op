@@ -1,6 +1,8 @@
 import {
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
 
@@ -78,6 +80,23 @@ export class InspectCorrelationStore {
     correlation.resolutionGeneration = parsed.resolutionGeneration;
     this.correlations.delete(parsed.inspectMessageId);
     this.correlations.set(parsed.inspectMessageId, correlation);
+    return correlation.channel;
+  }
+
+  public acceptNavigationState(
+    message: SourceNavigationStateMessage,
+  ): string | undefined {
+    const parsed = SourceNavigationStateMessageSchema.safeParse(message);
+    if (!parsed.success) {
+      return undefined;
+    }
+    const correlation = this.correlations.get(parsed.data.inspectMessageId);
+    if (
+      !correlation ||
+      correlation.resolutionGeneration !== parsed.data.resolutionGeneration
+    ) {
+      return undefined;
+    }
     return correlation.channel;
   }
 

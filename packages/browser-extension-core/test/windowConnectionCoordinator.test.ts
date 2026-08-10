@@ -3,6 +3,8 @@ import {
   type ClientSource,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,7 +18,10 @@ import {
   type InspectPayload,
   type SessionStorage,
 } from "../src/index.js";
-import type { InspectSendOutcome } from "../src/bridgeClient.js";
+import type {
+  InspectSendOutcome,
+  SourceNavigationSendOutcome,
+} from "../src/bridgeClient.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -589,6 +594,42 @@ describe("WindowConnectionCoordinator", () => {
     ).toBe("not-connected");
   });
 
+  it("publishes source navigation only through the current linked window client", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const first = await harness.link(10, "4873507");
+    await harness.authenticate(first, windowLink());
+    const previous = {
+      inspectMessageId: "inspect-current",
+      resolutionGeneration: 4,
+      direction: "previous" as const,
+    };
+
+    expect(harness.coordinator.publishSourceNavigation(10, previous)).toBe(
+      "sent",
+    );
+    expect(harness.coordinator.publishSourceNavigation(20, previous)).toBe(
+      "not-connected",
+    );
+    expect(first.sourceNavigationCalls).toEqual([previous]);
+
+    await harness.coordinator.unlinkWindow(10);
+    expect(harness.coordinator.publishSourceNavigation(10, previous)).toBe(
+      "not-connected",
+    );
+
+    const replacement = await harness.link(10, "4873508");
+    await harness.authenticate(replacement, windowLink());
+    const next = { ...previous, direction: "next" as const };
+    expect(harness.coordinator.publishSourceNavigation(10, next)).toBe("sent");
+    expect(first.sourceNavigationCalls).toEqual([previous]);
+    expect(replacement.sourceNavigationCalls).toEqual([next]);
+  });
+
   it("forwards protocol events only from the current window client", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
@@ -598,31 +639,43 @@ describe("WindowConnectionCoordinator", () => {
     });
     const receivedResolutions: Array<[number, ResolutionMessage]> = [];
     const receivedPeerStates: Array<[number, PeerStateMessage]> = [];
+    const receivedNavigationStates: Array<
+      [number, SourceNavigationStateMessage]
+    > = [];
     const resolutionSubscription = harness.coordinator.onResolution(
       (windowId, message) => receivedResolutions.push([windowId, message]),
     );
     const peerSubscription = harness.coordinator.onPeerState(
       (windowId, message) => receivedPeerStates.push([windowId, message]),
     );
+    const navigationSubscription = harness.coordinator.onSourceNavigationState(
+      (windowId, message) => receivedNavigationStates.push([windowId, message]),
+    );
     const client = await harness.link(10, "4873507");
     await harness.authenticate(client, windowLink());
     const currentResolution = resolution("inspect-current", 1);
     const currentPeerState = peerState(true, 1);
+    const currentNavigationState = sourceNavigationState("inspect-current", 1);
 
     client.emitResolution(currentResolution);
     client.emitPeerState(currentPeerState);
+    client.emitSourceNavigationState(currentNavigationState);
 
     expect(receivedResolutions).toEqual([[10, currentResolution]]);
     expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
+    expect(receivedNavigationStates).toEqual([[10, currentNavigationState]]);
 
     await harness.coordinator.unlinkWindow(10);
     client.emitResolution(resolution("inspect-revoked", 2));
     client.emitPeerState(peerState(false, 2));
+    client.emitSourceNavigationState(sourceNavigationState("inspect-revoked", 2));
     expect(receivedResolutions).toEqual([[10, currentResolution]]);
     expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
+    expect(receivedNavigationStates).toEqual([[10, currentNavigationState]]);
 
     resolutionSubscription.dispose();
     peerSubscription.dispose();
+    navigationSubscription.dispose();
   });
 
   it("snapshots registration identity, metadata, callback, and disposal", async () => {
@@ -826,15 +879,25 @@ class FakeWindowClient {
     payload: InspectPayload;
     sourceId: string;
   }> = [];
+  public readonly sourceNavigationCalls: Array<
+    Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >
+  > = [];
   public disconnectCalls = 0;
   public unlinkCalls = 0;
   public inspectResult: InspectSendOutcome = "sent";
+  public sourceNavigationResult: SourceNavigationSendOutcome = "sent";
   public throwOnPeerStateSubscription = false;
   private readonly resolutionListeners = new Set<
     (message: ResolutionMessage) => void
   >();
   private readonly peerStateListeners = new Set<
     (message: PeerStateMessage) => void
+  >();
+  private readonly sourceNavigationStateListeners = new Set<
+    (message: SourceNavigationStateMessage) => void
   >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
@@ -868,6 +931,16 @@ class FakeWindowClient {
     return this.inspectResult;
   }
 
+  public sendSourceNavigation(
+    input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome {
+    this.sourceNavigationCalls.push({ ...input });
+    return this.sourceNavigationResult;
+  }
+
   public onResolution(listener: (message: ResolutionMessage) => void) {
     this.resolutionListeners.add(listener);
     return {
@@ -885,6 +958,15 @@ class FakeWindowClient {
     };
   }
 
+  public onSourceNavigationState(
+    listener: (message: SourceNavigationStateMessage) => void,
+  ) {
+    this.sourceNavigationStateListeners.add(listener);
+    return {
+      dispose: () => this.sourceNavigationStateListeners.delete(listener),
+    };
+  }
+
   public emitResolution(message: ResolutionMessage): void {
     for (const listener of this.resolutionListeners) {
       listener(message);
@@ -897,6 +979,12 @@ class FakeWindowClient {
 
   public emitPeerState(message: PeerStateMessage): void {
     for (const listener of this.peerStateListeners) {
+      listener(message);
+    }
+  }
+
+  public emitSourceNavigationState(message: SourceNavigationStateMessage): void {
+    for (const listener of this.sourceNavigationStateListeners) {
       listener(message);
     }
   }
@@ -1082,6 +1170,24 @@ function peerState(
     role: "ide",
     connected,
     peerGeneration,
+    metadata: {},
+  };
+}
+
+function sourceNavigationState(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    selectedMatchCount: 2,
+    activeMatchIndex: 0,
     metadata: {},
   };
 }

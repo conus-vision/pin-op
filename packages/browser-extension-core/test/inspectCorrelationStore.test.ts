@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import { InspectCorrelationStore } from "../src/inspectCorrelationStore.js";
@@ -65,6 +66,33 @@ describe("InspectCorrelationStore", () => {
     expect(store.accept(resolution("inspect-b", 1))).toBeUndefined();
     expect(store.accept(resolution("inspect-c", 1))).toBe("panel-b");
   });
+
+  it("repeatedly accepts navigation state only at the current resolution generation", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7);
+    expect(store.accept(resolution("inspect-a", 2))).toBe("panel-a");
+    const current = sourceNavigationState("inspect-a", 2, 0);
+
+    expect(store.acceptNavigationState(current)).toBe("panel-a");
+    expect(store.acceptNavigationState(current)).toBe("panel-a");
+    expect(
+      store.acceptNavigationState(sourceNavigationState("inspect-a", 1)),
+    ).toBeUndefined();
+    expect(
+      store.acceptNavigationState(sourceNavigationState("inspect-missing", 2)),
+    ).toBeUndefined();
+    expect(store.acceptNavigationState({
+      ...current,
+      activeMatchIndex: 2,
+    } as SourceNavigationStateMessage)).toBeUndefined();
+
+    expect(store.accept(resolution("inspect-a", 2))).toBeUndefined();
+    expect(store.accept(resolution("inspect-a", 3))).toBe("panel-a");
+    expect(store.acceptNavigationState(current)).toBeUndefined();
+    expect(
+      store.acceptNavigationState(sourceNavigationState("inspect-a", 3)),
+    ).toBe("panel-a");
+  });
 });
 
 function resolution(
@@ -84,6 +112,25 @@ function resolution(
     parentMatchCount: 0,
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function sourceNavigationState(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+  activeMatchIndex?: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    selectedMatchCount: activeMatchIndex === undefined ? 0 : 2,
+    ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
   };
 }

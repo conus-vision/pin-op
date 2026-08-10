@@ -5,11 +5,14 @@ import {
   type ClientSource,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import {
   BrowserProtocolError,
   type InspectPayload,
   type InspectSendOutcome,
+  type SourceNavigationSendOutcome,
 } from "./bridgeClient.js";
 import {
   BackgroundInspectSession,
@@ -31,8 +34,10 @@ import {
   parseInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectPortRequest,
+  parsePanelSourceNavigateCommand,
   type ContentSessionId,
   type PanelInspectPort,
+  type PanelSourceNavigateCommand,
 } from "./inspectPortProtocol.js";
 import { PanelSessionTransport } from "./panelSessionTransport.js";
 import type {
@@ -72,6 +77,13 @@ export interface BackgroundWindowCoordinator {
     sourceId: string,
     payload: InspectPayload,
   ): InspectSendOutcome;
+  publishSourceNavigation(
+    windowId: number,
+    input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome;
   removeWindow(windowId: number): Promise<void>;
 }
 
@@ -120,6 +132,9 @@ export interface BackgroundRouterOptions {
   ) => () => void;
   readonly subscribePeerStates?: (
     listener: (windowId: number, message: PeerStateMessage) => void,
+  ) => () => void;
+  readonly subscribeSourceNavigationStates?: (
+    listener: (message: SourceNavigationStateMessage) => void,
   ) => () => void;
   readonly subscriptions?: BackgroundRouterSubscriptions;
   readonly onError?: (error: unknown) => void;
@@ -268,6 +283,13 @@ export class BackgroundRouter {
       this.removeSubscriptions.push(
         options.subscribePeerStates((windowId, message) =>
           this.receivePeerState(windowId, message),
+        ),
+      );
+    }
+    if (options.subscribeSourceNavigationStates) {
+      this.removeSubscriptions.push(
+        options.subscribeSourceNavigationStates((message) =>
+          this.receiveSourceNavigationState(message),
         ),
       );
     }
@@ -1093,6 +1115,11 @@ export class BackgroundRouter {
   ): void {
     const request = parseInspectPortRequest(message);
     if (!request) {
+      const navigation = parsePanelSourceNavigateCommand(message);
+      if (navigation) {
+        this.publishSourceNavigation(record, activationToken, navigation);
+        return;
+      }
       let domRequest: DomRequest;
       try {
         domRequest = parseDomRequest(message);
@@ -1161,6 +1188,30 @@ export class BackgroundRouter {
       this.reportError(error);
       this.postInspectFailure(record, request.requestId);
     });
+  }
+
+  private publishSourceNavigation(
+    record: PanelPortRecord,
+    activationToken: object,
+    navigation: PanelSourceNavigateCommand,
+  ): void {
+    const binding = this.bindings.get(record.channel);
+    if (
+      !binding ||
+      !record.registration ||
+      !this.isCurrentActivation(record, activationToken, binding)
+    ) {
+      return;
+    }
+    try {
+      this.coordinator.publishSourceNavigation(binding.windowId, {
+        inspectMessageId: navigation.inspectMessageId,
+        resolutionGeneration: navigation.resolutionGeneration,
+        direction: navigation.direction,
+      });
+    } catch (error) {
+      this.reportError(error);
+    }
   }
 
   private queueDomRequest(
@@ -1656,6 +1707,19 @@ export class BackgroundRouter {
       return;
     }
     const channel = this.correlations.accept(message);
+    if (!channel) {
+      return;
+    }
+    this.panelSessions.publish(channel, message);
+  }
+
+  private receiveSourceNavigationState(
+    message: SourceNavigationStateMessage,
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    const channel = this.correlations.acceptNavigationState(message);
     if (!channel) {
       return;
     }

@@ -3,6 +3,8 @@ import {
   type ClientSource,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import {
   BrowserBridgeClient,
@@ -14,6 +16,7 @@ import {
   type BrowserCredentials,
   type InspectPayload,
   type InspectSendOutcome,
+  type SourceNavigationSendOutcome,
 } from "./bridgeClient.js";
 import {
   BrowserWindowLinkStore,
@@ -50,11 +53,20 @@ export interface WindowConnectionClient {
     payload: InspectPayload,
     sourceId: string,
   ): InspectSendOutcome;
+  sendSourceNavigation(
+    input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome;
   onResolution(
     listener: (message: ResolutionMessage) => void,
   ): BrowserBridgeSubscription;
   onPeerState(
     listener: (message: PeerStateMessage) => void,
+  ): BrowserBridgeSubscription;
+  onSourceNavigationState(
+    listener: (message: SourceNavigationStateMessage) => void,
   ): BrowserBridgeSubscription;
 }
 
@@ -133,6 +145,9 @@ export class WindowConnectionCoordinator {
   >();
   private readonly peerStateListeners = new Set<
     (windowId: number, message: PeerStateMessage) => void
+  >();
+  private readonly sourceNavigationStateListeners = new Set<
+    (windowId: number, message: SourceNavigationStateMessage) => void
   >();
   private disposed = false;
 
@@ -311,6 +326,40 @@ export class WindowConnectionCoordinator {
     }
   }
 
+  public publishSourceNavigation(
+    windowId: number,
+    input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome {
+    const record = this.records.get(windowId);
+    const client = record?.client;
+    const token = record?.clientToken;
+    const generation = record?.generation;
+    if (
+      this.disposed ||
+      !record ||
+      record.state !== "linked" ||
+      !record.clientConnected ||
+      !client ||
+      !token ||
+      generation === undefined ||
+      !this.isCurrentToken(record, generation, token)
+    ) {
+      return "not-connected";
+    }
+
+    try {
+      return client.sendSourceNavigation(input);
+    } catch {
+      if (this.isCurrentToken(record, generation, token)) {
+        this.setState(record, "error");
+      }
+      return "transport-error";
+    }
+  }
+
   public onResolution(
     listener: (windowId: number, message: ResolutionMessage) => void,
   ): BrowserBridgeSubscription {
@@ -321,6 +370,12 @@ export class WindowConnectionCoordinator {
     listener: (windowId: number, message: PeerStateMessage) => void,
   ): BrowserBridgeSubscription {
     return subscribeWindowEvent(this.peerStateListeners, listener);
+  }
+
+  public onSourceNavigationState(
+    listener: (windowId: number, message: SourceNavigationStateMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.sourceNavigationStateListeners, listener);
   }
 
   public state(windowId: number): BrowserWindowConnectionState {
@@ -368,6 +423,7 @@ export class WindowConnectionCoordinator {
     this.tabOwners.clear();
     this.resolutionListeners.clear();
     this.peerStateListeners.clear();
+    this.sourceNavigationStateListeners.clear();
   }
 
   private activateFirstPanel(
@@ -521,6 +577,16 @@ export class WindowConnectionCoordinator {
       subscriptions.push(client.onPeerState((message) =>
         this.forwardPeerState(record, generation, token, message),
       ));
+      if (typeof client.onSourceNavigationState === "function") {
+        subscriptions.push(client.onSourceNavigationState((message) =>
+          this.forwardSourceNavigationState(
+            record,
+            generation,
+            token,
+            message,
+          ),
+        ));
+      }
     } catch {
       if (this.isCurrentToken(record, generation, token)) {
         this.disconnectClient(record);
@@ -951,6 +1017,22 @@ export class WindowConnectionCoordinator {
       return;
     }
     notifyWindowEvent(this.peerStateListeners, record.windowId, message);
+  }
+
+  private forwardSourceNavigationState(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    message: SourceNavigationStateMessage,
+  ): void {
+    if (!this.isCurrentToken(record, generation, token)) {
+      return;
+    }
+    notifyWindowEvent(
+      this.sourceNavigationStateListeners,
+      record.windowId,
+      message,
+    );
   }
 
   private disposeClientSubscriptions(record: WindowRecord): void {

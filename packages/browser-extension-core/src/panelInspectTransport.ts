@@ -1,6 +1,7 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
 } from "@browser2ide/protocol";
 import {
   parseDomEvent,
@@ -289,6 +290,11 @@ function validatedPushMessage(message: unknown): unknown | undefined {
   const resolution = ResolutionMessageSchema.safeParse(message);
   if (resolution.success) {
     return resolution.data;
+  }
+  const sourceNavigationState =
+    SourceNavigationStateMessageSchema.safeParse(message);
+  if (sourceNavigationState.success) {
+    return sourceNavigationState.data;
   }
   const peerState = PeerStateMessageSchema.safeParse(message);
   if (peerState.success) {

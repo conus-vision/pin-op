@@ -1,8 +1,10 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import {
   parseDomEvent,
@@ -168,7 +170,11 @@ export class PanelSessionTransport {
 
   public publish(
     channel: string,
-    message: DomEvent | ResolutionMessage | PeerStateMessage,
+    message:
+      | DomEvent
+      | ResolutionMessage
+      | PeerStateMessage
+      | SourceNavigationStateMessage,
   ): void {
     if (!this.channels.has(channel)) {
       return;
@@ -227,8 +233,17 @@ export class PanelSessionTransport {
 }
 
 function parsePublishedMessage(
-  message: DomEvent | ResolutionMessage | PeerStateMessage,
-): DomEvent | ResolutionMessage | PeerStateMessage | undefined {
+  message:
+    | DomEvent
+    | ResolutionMessage
+    | PeerStateMessage
+    | SourceNavigationStateMessage,
+):
+  | DomEvent
+  | ResolutionMessage
+  | PeerStateMessage
+  | SourceNavigationStateMessage
+  | undefined {
   try {
     if (isRecord(message) && typeof message.type === "string") {
       if (message.type.startsWith("dom.")) {
@@ -239,6 +254,9 @@ function parsePublishedMessage(
       }
       if (message.type === "peerState") {
         return PeerStateMessageSchema.parse(message);
+      }
+      if (message.type === "source.navigationState") {
+        return SourceNavigationStateMessageSchema.parse(message);
       }
     }
   } catch {

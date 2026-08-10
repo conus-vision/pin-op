@@ -2,12 +2,15 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,
   type InspectPayload,
   type InspectSendOutcome,
+  type SourceNavigationSendOutcome,
 } from "../src/bridgeClient.js";
 import {
   BackgroundInspectCoordinator,
@@ -772,6 +775,103 @@ describe("BackgroundRouter", () => {
       resolution("inspect-1", 2),
     ]);
     expect(messagesOfType(panelB, "resolution")).toEqual([]);
+  });
+
+  it("forwards strict panel source navigation through the bound window without DOM work", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+    const navigation = panelSourceNavigation("previous");
+
+    panel.emitMessage(navigation);
+    panel.emitMessage({ ...navigation, sessionId: "panel-session" });
+    panel.emitMessage({ ...navigation, messageId: "panel-message" });
+    panel.emitMessage({ ...navigation, direction: "first" });
+
+    expect(harness.coordinator.sourceNavigations).toEqual([{
+      windowId: 10,
+      input: {
+        inspectMessageId: "inspect-1",
+        resolutionGeneration: 2,
+        direction: "previous",
+      },
+    }]);
+    expect(harness.inspectCalls).toEqual([]);
+  });
+
+  it("rejects source navigation from a stale panel activation", async () => {
+    const harness = createHarness();
+    const first = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    const staleListener = first.onMessage.snapshot()[0];
+    expect(staleListener).toBeDefined();
+
+    first.disconnect();
+    const replacement = harness.panelPort("channel-1");
+    harness.router.connectPort(replacement);
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    staleListener?.(panelSourceNavigation("previous"));
+    replacement.emitMessage(panelSourceNavigation("next"));
+
+    expect(harness.coordinator.sourceNavigations).toEqual([{
+      windowId: 10,
+      input: {
+        inspectMessageId: "inspect-1",
+        resolutionGeneration: 2,
+        direction: "next",
+      },
+    }]);
+  });
+
+  it("routes repeated navigation state only to its correlated panel channel", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 10],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
+    const first = sourceNavigationState("inspect-1", 2, 0);
+    const second = sourceNavigationState("inspect-1", 2, 1);
+
+    harness.sourceNavigationStates.emit(first);
+    harness.sourceNavigationStates.emit(second);
+    harness.sourceNavigationStates.emit(sourceNavigationState("inspect-1", 1));
+    harness.sourceNavigationStates.emit(sourceNavigationState("inspect-missing", 2));
+
+    expect(messagesOfType(panelA, "source.navigationState")).toEqual([
+      first,
+      second,
+    ]);
+    expect(messagesOfType(panelB, "source.navigationState")).toEqual([]);
   });
 
   it("rejects stale peer state and republishes selection after IDE reconnect", async () => {
@@ -2915,6 +3015,9 @@ interface HarnessOptions {
   readonly publishInspect?: (
     publication: PublishedInspect,
   ) => InspectSendOutcome;
+  readonly publishSourceNavigation?: (
+    publication: PublishedSourceNavigation,
+  ) => SourceNavigationSendOutcome;
   readonly panelSessionTransport?: PanelSessionTransport;
   readonly initialPanelState?: BrowserWindowConnectionState;
 }
@@ -2928,10 +3031,14 @@ function createHarness(options: HarnessOptions = {}) {
   const peerStates = new FakeEvent<
     (windowId: number, message: PeerStateMessage) => void
   >();
+  const sourceNavigationStates = new FakeEvent<
+    (message: SourceNavigationStateMessage) => void
+  >();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
     options.unlinkWindow,
     options.publishInspect,
+    options.publishSourceNavigation,
     options.initialPanelState ?? "linked",
   );
   const inspectCoordinator = new BackgroundInspectCoordinator({
@@ -2951,6 +3058,7 @@ function createHarness(options: HarnessOptions = {}) {
     reportedErrors,
     resolutions,
     peerStates,
+    sourceNavigationStates,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
     port(
@@ -3019,6 +3127,12 @@ function createHarness(options: HarnessOptions = {}) {
       peerStates.addListener(listener);
       return () => peerStates.removeListener(listener);
     },
+    subscribeSourceNavigationStates: (
+      listener: (message: SourceNavigationStateMessage) => void,
+    ) => {
+      sourceNavigationStates.addListener(listener);
+      return () => sourceNavigationStates.removeListener(listener);
+    },
     inspectMessageId: (() => {
       let sequence = 0;
       return () => `inspect-${++sequence}`;
@@ -3035,9 +3149,18 @@ interface PublishedInspect {
   readonly payload: InspectPayload;
 }
 
+interface PublishedSourceNavigation {
+  readonly windowId: number;
+  readonly input: Pick<
+    SourceNavigateMessage,
+    "inspectMessageId" | "resolutionGeneration" | "direction"
+  >;
+}
+
 class FakeWindowCoordinator {
   public readonly registrations: PanelRegistration[] = [];
   public readonly published: PublishedInspect[] = [];
+  public readonly sourceNavigations: PublishedSourceNavigation[] = [];
   public readonly removedWindows: number[] = [];
   public readonly links: Array<{
     windowId: number;
@@ -3047,6 +3170,7 @@ class FakeWindowCoordinator {
   public readonly unlinks: number[] = [];
   public disposeCalls = 0;
   public publishOutcome: InspectSendOutcome = "sent";
+  public sourceNavigationOutcome: SourceNavigationSendOutcome = "sent";
   public onPublish?: (publication: PublishedInspect) => void;
   private readonly active = new Set<PanelRegistration>();
 
@@ -3064,6 +3188,9 @@ class FakeWindowCoordinator {
     private readonly publishBehavior?: (
       publication: PublishedInspect,
     ) => InspectSendOutcome,
+    private readonly publishSourceNavigationBehavior?: (
+      publication: PublishedSourceNavigation,
+    ) => SourceNavigationSendOutcome,
     private readonly initialPanelState: BrowserWindowConnectionState = "linked",
   ) {}
 
@@ -3112,6 +3239,16 @@ class FakeWindowCoordinator {
     this.published.push(publication);
     this.onPublish?.(publication);
     return this.publishBehavior?.(publication) ?? this.publishOutcome;
+  }
+
+  public publishSourceNavigation(
+    windowId: number,
+    input: PublishedSourceNavigation["input"],
+  ): SourceNavigationSendOutcome {
+    const publication = { windowId, input: { ...input } };
+    this.sourceNavigations.push(publication);
+    return this.publishSourceNavigationBehavior?.(publication) ??
+      this.sourceNavigationOutcome;
   }
 
   public async removeWindow(windowId: number): Promise<void> {
@@ -3359,6 +3496,34 @@ function resolution(
     parentMatchCount: 0,
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function panelSourceNavigation(direction: "previous" | "next") {
+  return {
+    type: "browser2ide.source.navigate" as const,
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    direction,
+  };
+}
+
+function sourceNavigationState(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+  activeMatchIndex?: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${inspectMessageId}-${resolutionGeneration}-${activeMatchIndex ?? "none"}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    selectedMatchCount: activeMatchIndex === undefined ? 0 : 2,
+    ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
   };
 }

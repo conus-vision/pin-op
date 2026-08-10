@@ -4,6 +4,7 @@ import {
   createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectContentLeasePortName,
+  parsePanelSourceNavigateCommand,
 } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
@@ -44,6 +45,55 @@ describe("panel inspect transport", () => {
       parseDevtoolsPanelPortName(`browser2ide.devtools.${"a".repeat(129)}`),
     ).toBeUndefined();
     expect(parseDevtoolsPanelPortName("browser2ide.inspect")).toBeUndefined();
+  });
+
+  it.each(["previous", "next"] as const)(
+    "parses an exact browser-local %s source navigation command",
+    (direction) => {
+      const command = sourceNavigateCommand(direction);
+
+      expect(parsePanelSourceNavigateCommand(command)).toEqual(command);
+    },
+  );
+
+  it("rejects missing, unknown, malformed, and bounded navigation fields", () => {
+    const valid = sourceNavigateCommand("next");
+    const invalid = [
+      { ...valid, sessionId: "session-a" },
+      { ...valid, messageId: "message-a" },
+      { ...valid, unknown: true },
+      { type: valid.type, inspectMessageId: valid.inspectMessageId },
+      { ...valid, inspectMessageId: "" },
+      { ...valid, inspectMessageId: "x".repeat(129) },
+      { ...valid, resolutionGeneration: -1 },
+      { ...valid, resolutionGeneration: 1.5 },
+      { ...valid, resolutionGeneration: 0x80000000 },
+      { ...valid, direction: "first" },
+      null,
+      [],
+    ];
+
+    for (const candidate of invalid) {
+      expect(parsePanelSourceNavigateCommand(candidate)).toBeUndefined();
+    }
+  });
+
+  it("requires own data properties without invoking hostile accessors", () => {
+    const inherited = Object.create(sourceNavigateCommand("next")) as unknown;
+    let getterCalls = 0;
+    const accessor = sourceNavigateCommand("next") as Record<string, unknown>;
+    Object.defineProperty(accessor, "direction", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+
+    expect(parsePanelSourceNavigateCommand(inherited)).toBeUndefined();
+    expect(() => parsePanelSourceNavigateCommand(accessor)).not.toThrow();
+    expect(parsePanelSourceNavigateCommand(accessor)).toBeUndefined();
+    expect(getterCalls).toBe(0);
   });
 
   it("opens its lifetime port explicitly and only once", () => {
@@ -189,6 +239,15 @@ describe("panel inspect transport", () => {
     ]);
   });
 });
+
+function sourceNavigateCommand(direction: "previous" | "next") {
+  return {
+    type: "browser2ide.source.navigate" as const,
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 3,
+    direction,
+  };
+}
 
 class FakePort {
   public readonly name = "test.inspect";

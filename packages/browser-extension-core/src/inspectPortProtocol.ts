@@ -1,3 +1,4 @@
+import { RESOLUTION_LIMITS } from "@browser2ide/protocol";
 import type {
   DomEvent,
   DomRequest,
@@ -42,9 +43,17 @@ export interface InspectPortInvalidated {
   readonly reason: "documentDisconnected";
 }
 
+export interface PanelSourceNavigateCommand {
+  readonly type: "browser2ide.source.navigate";
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+  readonly direction: "previous" | "next";
+}
+
 /** Messages sent from the DevTools panel to its trusted background port. */
 export type PanelToBackgroundInspectPortMessage =
   | InspectPortRequest
+  | PanelSourceNavigateCommand
   | DomRequest;
 
 /** Messages sent from the trusted background port to the DevTools panel. */
@@ -221,6 +230,37 @@ export function parseInspectPortInvalidated(
     : undefined;
 }
 
+export function parsePanelSourceNavigateCommand(
+  value: unknown,
+): PanelSourceNavigateCommand | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "inspectMessageId",
+    "resolutionGeneration",
+    "direction",
+  ]);
+  if (
+    !record ||
+    record.type !== "browser2ide.source.navigate" ||
+    typeof record.inspectMessageId !== "string" ||
+    record.inspectMessageId.length === 0 ||
+    record.inspectMessageId.length > RESOLUTION_LIMITS.opaqueIdLength ||
+    typeof record.resolutionGeneration !== "number" ||
+    !Number.isSafeInteger(record.resolutionGeneration) ||
+    record.resolutionGeneration < 0 ||
+    record.resolutionGeneration > RESOLUTION_LIMITS.generation ||
+    (record.direction !== "previous" && record.direction !== "next")
+  ) {
+    return undefined;
+  }
+  return {
+    type: record.type,
+    inspectMessageId: record.inspectMessageId,
+    resolutionGeneration: record.resolutionGeneration,
+    direction: record.direction,
+  };
+}
+
 export function parseInspectControllerCommand(value: unknown):
   | {
       readonly type: "enableInspectMode" | "disableInspectMode";
@@ -242,6 +282,39 @@ function hasOnlyKeys(
   const actual = Object.keys(value);
   return actual.length === keys.length &&
     actual.every((key) => keys.includes(key));
+}
+
+function snapshotExactDataRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> | undefined {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key) =>
+        typeof key !== "string" || !expectedKeys.includes(key)
+      )
+    ) {
+      return undefined;
+    }
+    const snapshot = Object.create(null) as Record<string, unknown>;
+    for (const key of expectedKeys) {
+      const holder = Reflect.getOwnPropertyDescriptor(descriptors, key);
+      const descriptor = holder?.value as PropertyDescriptor | undefined;
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+        return undefined;
+      }
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

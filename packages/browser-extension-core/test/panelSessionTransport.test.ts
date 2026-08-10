@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DomRequest } from "../src/domProtocol.js";
@@ -150,6 +151,37 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{ channel: "panel-a", message: peerState }]);
   });
 
+  it("publishes only strict navigation state while preserving optional and zero fields", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+    transport.bind("panel-b", 8);
+    const activeZero = sourceNavigationState(2, 0);
+    const noActiveMatch = sourceNavigationState(0);
+
+    transport.publish("panel-a", activeZero);
+    transport.publish("panel-a", noActiveMatch);
+    transport.publish("panel-missing", activeZero);
+    transport.publish("panel-b", {
+      ...activeZero,
+      activeMatchIndex: 2,
+    } as SourceNavigationStateMessage);
+    transport.publish("panel-b", {
+      ...activeZero,
+      sessionId: "",
+    } as SourceNavigationStateMessage);
+
+    expect(published).toEqual([
+      { channel: "panel-a", message: activeZero },
+      { channel: "panel-a", message: noActiveMatch },
+    ]);
+  });
+
   it("publishes a bounded correlated inspect start only to its bound panel", () => {
     const published: Array<{ channel: string; message: unknown }> = [];
     const transport = new PanelSessionTransport({
@@ -228,5 +260,23 @@ function childrenResponse(requestId: string) {
     nodeRef: "node-root",
     branchRevision: 0,
     nodes: [],
+  };
+}
+
+function sourceNavigationState(
+  selectedMatchCount: number,
+  activeMatchIndex?: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${activeMatchIndex ?? "none"}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    selectedMatchCount,
+    ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
+    metadata: {},
   };
 }

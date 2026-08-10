@@ -2,8 +2,10 @@ import {
   Browser2IdeMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
+  SourceNavigateMessageSchema,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -33,8 +35,12 @@ class FakeSocket {
   readonly sent: string[] = [];
   readonly events: string[] = [];
   closed = false;
+  throwOnSend = false;
 
   send(payload: string): void {
+    if (this.throwOnSend) {
+      throw new Error("socket send failed");
+    }
     this.sent.push(payload);
     this.events.push(`send:${JSON.parse(payload).type as string}`);
   }
@@ -85,7 +91,7 @@ describe("BrowserBridgeClient", () => {
       bridgeInstanceId: INSTANCE_ID,
       authToken: AUTH_TOKEN,
       source: { role: "browser", id: "firefox-test" },
-      capabilities: ["inspect", "link"],
+      capabilities: ["inspect", "link", "source-navigation"],
     });
     expect(harness.states).not.toContain("connected");
 
@@ -235,6 +241,70 @@ describe("BrowserBridgeClient", () => {
       type: "pong",
       pingMessageId: "ping-1",
     });
+  });
+
+  it("sends strict previous and next source navigation from authenticated credentials", () => {
+    const harness = createHarness();
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    for (const direction of ["previous", "next"] as const) {
+      expect(harness.client.sendSourceNavigation({
+        inspectMessageId: "inspect-card",
+        resolutionGeneration: 3,
+        direction,
+        sessionId: "panel-supplied-session",
+        messageId: "panel-supplied-message",
+      } as never)).toBe("sent");
+
+      const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
+      expect(SourceNavigateMessageSchema.parse(message)).toEqual(message);
+      expect(message).toEqual({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "source.navigate",
+        messageId: direction === "previous" ? "message-2" : "message-3",
+        sessionId: SESSION_ID,
+        inspectMessageId: "inspect-card",
+        resolutionGeneration: 3,
+        direction,
+        metadata: {},
+      });
+    }
+  });
+
+  it("returns inspect-style outcomes for unavailable, invalid, and failed navigation sends", () => {
+    const harness = createHarness();
+    const navigation = {
+      inspectMessageId: "inspect-card",
+      resolutionGeneration: 3,
+      direction: "next" as const,
+    };
+
+    expect(harness.client.sendSourceNavigation(navigation)).toBe(
+      "not-connected",
+    );
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    expect(harness.client.sendSourceNavigation(navigation)).toBe(
+      "not-connected",
+    );
+    authenticate(harness.sockets[0]);
+
+    expect(harness.client.sendSourceNavigation({
+      ...navigation,
+      inspectMessageId: "",
+    })).toBe("invalid-message");
+    expect(harness.sockets[0].sent).toHaveLength(1);
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
+    });
+
+    harness.sockets[0].throwOnSend = true;
+    expect(harness.client.sendSourceNavigation(navigation)).toBe(
+      "transport-error",
+    );
+    expect(harness.errors.at(-1)?.message).toMatch(/source navigation send/i);
   });
 
   it("preserves an extensible plugin fact byte-for-byte at the WebSocket boundary", () => {
@@ -579,6 +649,30 @@ describe("BrowserBridgeClient", () => {
     expect(resolutions).toHaveLength(1);
     expect(peerStates).toHaveLength(1);
   });
+
+  it("delivers only same-session source navigation state to active listeners", () => {
+    const harness = createHarness();
+    const received: SourceNavigationStateMessage[] = [];
+    const subscription = harness.client.onSourceNavigationState((message) => {
+      received.push(message);
+    });
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.sockets[0].message(sourceNavigationState("other-session", 3));
+    expect(received).toEqual([]);
+    expect(harness.errors).toEqual([]);
+    expect(harness.sockets[0].closed).toBe(false);
+
+    const current = sourceNavigationState(SESSION_ID, 3, 0);
+    harness.sockets[0].message(current);
+    expect(received).toEqual([current]);
+
+    subscription.dispose();
+    harness.sockets[0].message(sourceNavigationState(SESSION_ID, 3));
+    expect(received).toEqual([current]);
+  });
 });
 
 describe("InspectPublisher", () => {
@@ -759,6 +853,25 @@ function peerStateMessage(
     role: "ide",
     connected,
     peerGeneration,
+    metadata: {},
+  };
+}
+
+function sourceNavigationState(
+  sessionId: string,
+  resolutionGeneration: number,
+  activeMatchIndex?: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${resolutionGeneration}-${activeMatchIndex ?? "none"}`,
+    sessionId,
+    source: { role: "ide", id: "vscode-test" },
+    inspectMessageId: "inspect-card",
+    resolutionGeneration,
+    selectedMatchCount: activeMatchIndex === undefined ? 0 : 2,
+    ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
   };
 }

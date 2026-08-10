@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
@@ -91,6 +92,8 @@ describe("PanelInspectTransport DOM integration", () => {
     const selection = selectionChanged();
     const currentResolution = resolution("inspect-1", 1);
     const currentPeerState = peerState(true, 2);
+    const currentNavigationState = sourceNavigationState(2, 0);
+    const navigationStateWithoutActiveMatch = sourceNavigationState(0);
     const inspectStarted = {
       type: "browser2ide.inspect.started",
       inspectMessageId: "inspect-1",
@@ -100,18 +103,25 @@ describe("PanelInspectTransport DOM integration", () => {
     port.emitMessage(selection);
     port.emitMessage(currentResolution);
     port.emitMessage(currentPeerState);
+    port.emitMessage(currentNavigationState);
+    port.emitMessage(navigationStateWithoutActiveMatch);
     port.emitMessage({ ...inspectStarted, inspectMessageId: "" });
     port.emitMessage({ ...inspectStarted, inspectMessageId: "x".repeat(129) });
     port.emitMessage({ ...inspectStarted, extra: true });
     port.emitMessage({ ...selection, tabId: 999 });
     port.emitMessage({ ...currentResolution, resolutionGeneration: -1 });
     port.emitMessage({ ...currentPeerState, connected: "yes" });
+    port.emitMessage({ ...currentNavigationState, activeMatchIndex: 2 });
+    port.emitMessage({ ...currentNavigationState, sessionId: "" });
+    port.emitMessage({ ...currentNavigationState, channel: "panel-b" });
 
     expect(received).toEqual([
       inspectStarted,
       selection,
       currentResolution,
       currentPeerState,
+      currentNavigationState,
+      navigationStateWithoutActiveMatch,
     ]);
   });
 });
@@ -220,6 +230,24 @@ function peerState(
     role: "ide",
     connected,
     peerGeneration,
+    metadata: {},
+  };
+}
+
+function sourceNavigationState(
+  selectedMatchCount: number,
+  activeMatchIndex?: number,
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `source-state-${activeMatchIndex ?? "none"}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 1,
+    selectedMatchCount,
+    ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
   };
 }
