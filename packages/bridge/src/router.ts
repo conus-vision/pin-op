@@ -5,10 +5,12 @@ import {
   type Browser2IdeMessage,
   type ClientRole,
   type ErrorMessage,
+  type ProtocolCapability,
   type ProtocolErrorCode,
 } from "@browser2ide/protocol";
 import {
   sendConnectionSafely,
+  supportsCapability,
   type ClientRegistry,
   type RegisteredClient,
 } from "./clientRegistry.js";
@@ -73,7 +75,81 @@ export function routeMessage(
         return;
       }
 
-      routeResolution(registry, replyRoutes, sender, message);
+      routeBrowserReply(registry, replyRoutes, sender, message);
+      return;
+    case "source.navigate":
+      if (
+        (sender.source.role !== "browser" &&
+          sender.source.role !== "simulator") ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "source-navigation")
+      ) {
+        sendError(
+          sender,
+          "protocol.invalidMessage",
+          "Message does not match protocol",
+        );
+        return;
+      }
+
+      if (
+        replyRoutes.resolve(message.sessionId, message.inspectMessageId) !==
+        sender.id
+      ) {
+        sendError(
+          sender,
+          "protocol.invalidMessage",
+          "Message does not match protocol",
+        );
+        return;
+      }
+
+      if (
+        sendToCapableRole(
+          registry,
+          message.sessionId,
+          "ide",
+          "source-navigation",
+          message,
+        ) === 0
+      ) {
+        sendError(
+          sender,
+          "bridge.noIdeClient",
+          "No IDE client is connected to this session",
+        );
+      }
+      return;
+    case "source.navigationState":
+      if (
+        sender.source.role !== "ide" ||
+        message.source.id !== sender.source.id ||
+        !supportsCapability(sender, "source-navigation")
+      ) {
+        sendError(
+          sender,
+          "protocol.invalidMessage",
+          "Message does not match protocol",
+        );
+        return;
+      }
+
+      if (message.sessionId !== sender.sessionId) {
+        sendError(
+          sender,
+          "bridge.noBrowserClient",
+          "No browser client is connected to this session",
+        );
+        return;
+      }
+
+      routeBrowserReply(
+        registry,
+        replyRoutes,
+        sender,
+        message,
+        "source-navigation",
+      );
       return;
     case "error":
       sendMessage(sender, message);
@@ -83,11 +159,15 @@ export function routeMessage(
   }
 }
 
-function routeResolution(
+function routeBrowserReply(
   registry: ClientRegistry,
   replyRoutes: ReplyRouteRegistry,
   sender: RegisteredClient,
-  message: Extract<Browser2IdeMessage, { type: "resolution" }>,
+  message: Extract<
+    Browser2IdeMessage,
+    { type: "resolution" | "source.navigationState" }
+  >,
+  requiredRecipientCapability?: ProtocolCapability,
 ): void {
   const connectionId = replyRoutes.resolve(
     message.sessionId,
@@ -109,6 +189,18 @@ function routeResolution(
     (recipient.source.role !== "browser" && recipient.source.role !== "simulator")
   ) {
     replyRoutes.remove(message.sessionId, message.inspectMessageId);
+    sendError(
+      sender,
+      "bridge.noBrowserClient",
+      "No browser client is connected to this session",
+    );
+    return;
+  }
+
+  if (
+    requiredRecipientCapability &&
+    !supportsCapability(recipient, requiredRecipientCapability)
+  ) {
     sendError(
       sender,
       "bridge.noBrowserClient",
@@ -164,6 +256,22 @@ function sendToRoles(
       if (sendMessage(client, message)) {
         sent += 1;
       }
+    }
+  }
+  return sent;
+}
+
+function sendToCapableRole(
+  registry: ClientRegistry,
+  sessionId: string,
+  role: ClientRole,
+  capability: ProtocolCapability,
+  message: Browser2IdeMessage,
+): number {
+  let sent = 0;
+  for (const client of registry.findBySessionAndRole(sessionId, role)) {
+    if (supportsCapability(client, capability) && sendMessage(client, message)) {
+      sent += 1;
     }
   }
   return sent;

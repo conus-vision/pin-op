@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { ClientRole, ClientSource } from "@browser2ide/protocol";
+import type {
+  ClientRole,
+  ClientSource,
+  ProtocolCapability,
+} from "@browser2ide/protocol";
 import WebSocket from "ws";
 
 export interface BridgeConnection {
@@ -84,6 +88,7 @@ export interface ClientRegistration {
   readonly source: ClientSource;
   readonly sessionId: string;
   readonly authToken: string;
+  readonly capabilities: readonly ProtocolCapability[];
 }
 
 export interface RegisteredClient extends ClientRegistration {
@@ -97,6 +102,7 @@ export class ClientRegistry {
   add(client: ClientRegistration): RegisteredClient {
     const entry: RegisteredClient = {
       ...client,
+      capabilities: Object.freeze([...(client.capabilities ?? [])]),
       id: randomUUID(),
       missedPongs: 0,
     };
@@ -163,4 +169,11 @@ export class ClientRegistry {
   all(): RegisteredClient[] {
     return [...this.clients.values()];
   }
+}
+
+export function supportsCapability(
+  client: RegisteredClient,
+  capability: ProtocolCapability,
+): boolean {
+  return client.capabilities.includes(capability);
 }

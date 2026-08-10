@@ -11,6 +11,7 @@ import {
   ClientRegistry,
   createGuardedWebSocketConnection,
   sendConnectionSafely,
+  supportsCapability,
   type BridgeConnection,
   type RegisteredClient,
 } from "./clientRegistry.js";
@@ -488,6 +489,7 @@ function handleConnection(
         source: message.source,
         sessionId: message.sessionId,
         authToken: message.authToken,
+        capabilities: message.capabilities,
       });
       notifyClientCounts();
       sendSocketMessage(connection, {
@@ -583,6 +585,20 @@ function isAllowedInboundMessage(
         client.source.role === "ide" &&
         message.sessionId === client.sessionId &&
         message.source.id === client.source.id
+      );
+    case "source.navigate":
+      return (
+        (client.source.role === "browser" ||
+          client.source.role === "simulator") &&
+        message.sessionId === client.sessionId &&
+        supportsCapability(client, "source-navigation")
+      );
+    case "source.navigationState":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id &&
+        supportsCapability(client, "source-navigation")
       );
     case "pong":
       return true;

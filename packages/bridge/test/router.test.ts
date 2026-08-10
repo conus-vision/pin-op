@@ -1,10 +1,20 @@
-import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type ProtocolCapability,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
-import { ClientRegistry } from "../src/clientRegistry.js";
+import * as clientRegistry from "../src/clientRegistry.js";
 import { ReplyRouteRegistry } from "../src/replyRouteRegistry.js";
 import { routeMessage } from "../src/router.js";
 
-function client(role: "browser" | "ide" | "simulator", sessionId: string) {
+const { ClientRegistry } = clientRegistry;
+
+function client(
+  role: "browser" | "ide" | "simulator",
+  sessionId: string,
+  capabilities: readonly ProtocolCapability[] = [],
+  sourceId = `${role}-source`,
+) {
   const sent: unknown[] = [];
   return {
     sent,
@@ -15,9 +25,10 @@ function client(role: "browser" | "ide" | "simulator", sessionId: string) {
       },
       terminate: () => undefined,
     },
-    source: { role, id: `${role}-source`, metadata: {} },
+    source: { role, id: sourceId, metadata: {} },
     sessionId,
     authToken: `${role}-${sessionId}-token`,
+    capabilities,
   };
 }
 
@@ -48,7 +59,7 @@ const simulatorInspectMessage = {
 
 describe("bridge router and registry", () => {
   it("stores clients by protocol sessionId and role", () => {
-    const registry = new ClientRegistry();
+    const registry = new clientRegistry.ClientRegistry();
     const ide = registry.add(client("ide", "session-1"));
     registry.add(client("browser", "session-1"));
     registry.add(client("ide", "session-2"));
@@ -65,6 +76,31 @@ describe("bridge router and registry", () => {
 
     registry.clear();
     expect(registry.all()).toEqual([]);
+  });
+
+  it("stores a frozen copy of authenticated client capabilities", () => {
+    const registry = new clientRegistry.ClientRegistry();
+    const capabilities: ProtocolCapability[] = ["inspect"];
+    const registered = registry.add(
+      client("browser", "session-1", capabilities),
+    );
+
+    capabilities.push("source-navigation");
+
+    expect(registered.capabilities).toEqual(["inspect"]);
+    expect(Object.isFrozen(registered.capabilities)).toBe(true);
+  });
+
+  it("checks capabilities retained by the registry", () => {
+    const registry = new clientRegistry.ClientRegistry();
+    const registered = registry.add(
+      client("browser", "session-1", ["inspect"]),
+    );
+
+    expect(clientRegistry.supportsCapability(registered, "inspect")).toBe(true);
+    expect(
+      clientRegistry.supportsCapability(registered, "source-navigation"),
+    ).toBe(false);
   });
 
   it("routes inspect from browser and simulator clients to IDE clients in the same session", () => {
@@ -170,6 +206,512 @@ describe("bridge router and registry", () => {
       resolution("inspect-simulator-1", "session-2", ideOther.source.id),
     ]);
     expect(ideOther.sent).toEqual([inspectSimulator]);
+  });
+
+  it("routes source navigation only through the exact inspect reply route", () => {
+    const registry = new clientRegistry.ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserAConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+      "browser-a",
+    );
+    const browserBConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+      "browser-b",
+    );
+    const otherBrowserConnection = client(
+      "browser",
+      "session-2",
+      ["source-navigation"],
+      "browser-other",
+    );
+    const simulatorConnection = client(
+      "simulator",
+      "session-1",
+      ["source-navigation"],
+    );
+    const ideAConnection = client(
+      "ide",
+      "session-1",
+      ["source-navigation"],
+      "ide-a",
+    );
+    const ideBConnection = client(
+      "ide",
+      "session-1",
+      ["source-navigation"],
+      "ide-b",
+    );
+    const incapableIdeConnection = client(
+      "ide",
+      "session-1",
+      [],
+      "ide-incapable",
+    );
+    const otherIdeConnection = client(
+      "ide",
+      "session-2",
+      ["source-navigation"],
+      "ide-other",
+    );
+    const browserA = registry.add(browserAConnection);
+    registry.add(browserBConnection);
+    registry.add(otherBrowserConnection);
+    registry.add(simulatorConnection);
+    const ideA = registry.add(ideAConnection);
+    registry.add(ideBConnection);
+    registry.add(incapableIdeConnection);
+    registry.add(otherIdeConnection);
+    routes.register("session-1", "inspect-a", browserA.id).commit();
+
+    const navigate = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate" as const,
+      messageId: "navigate-a",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 4,
+      direction: "next" as const,
+      metadata: {},
+    };
+    routeMessage(registry, routes, browserA, navigate);
+
+    expect(ideAConnection.sent).toEqual([navigate]);
+    expect(ideBConnection.sent).toEqual([navigate]);
+    expect(incapableIdeConnection.sent).toEqual([]);
+    expect(otherIdeConnection.sent).toEqual([]);
+    expect(browserAConnection.sent).toEqual([]);
+    expect(browserBConnection.sent).toEqual([]);
+    expect(otherBrowserConnection.sent).toEqual([]);
+    expect(simulatorConnection.sent).toEqual([]);
+
+    const navigationState = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState" as const,
+      messageId: "navigation-state-a",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide" as const, id: ideA.source.id },
+      resolutionGeneration: 4,
+      selectedMatchCount: 3,
+      activeMatchIndex: 2,
+      metadata: {},
+    };
+    routeMessage(registry, routes, ideA, navigationState);
+
+    expect(browserAConnection.sent).toEqual([navigationState]);
+    expect(browserAConnection.sent[0]).toMatchObject({ activeMatchIndex: 2 });
+    expect(browserBConnection.sent).toEqual([]);
+    expect(otherBrowserConnection.sent).toEqual([]);
+    expect(simulatorConnection.sent).toEqual([]);
+    expect(ideAConnection.sent).toEqual([navigate]);
+    expect(ideBConnection.sent).toEqual([navigate]);
+    expect(incapableIdeConnection.sent).toEqual([]);
+    expect(otherIdeConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigate from the wrong sender role", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browser = registry.add(
+      client("browser", "session-1", ["source-navigation"]),
+    );
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    const ide = registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-wrong-role",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+  });
+
+  it("rejects source.navigate for a different authenticated session", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const otherIdeConnection = client(
+      "ide",
+      "session-2",
+      ["source-navigation"],
+    );
+    registry.add(otherIdeConnection);
+    routes.register("session-2", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, browser, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-wrong-session",
+      sessionId: "session-2",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(otherIdeConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigate when the sender lacks source-navigation", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client("browser", "session-1");
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, browser, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-no-capability",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(ideConnection.sent).toEqual([]);
+  });
+
+  it("reports no IDE when recipients lack source-navigation", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const incapableIdeConnection = client("ide", "session-1");
+    registry.add(incapableIdeConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, browser, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-no-capable-ide",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noIdeClient" }),
+    ]);
+    expect(incapableIdeConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigate without a stored inspect route", () => {
+    const registry = new ClientRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    registry.add(ideConnection);
+
+    routeMessage(registry, new ReplyRouteRegistry(), browser, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-no-route",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(ideConnection.sent).toEqual([]);
+  });
+
+  it("rejects a second browser navigating another browser's inspect route", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserA = registry.add(
+      client("browser", "session-1", ["source-navigation"], "browser-a"),
+    );
+    const browserBConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+      "browser-b",
+    );
+    const browserB = registry.add(browserBConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browserA.id).commit();
+
+    routeMessage(registry, routes, browserB, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-from-browser-b",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      direction: "next",
+      metadata: {},
+    });
+
+    expect(browserBConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(ideConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigationState from the wrong sender role", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const originConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+      "browser-a",
+    );
+    const origin = registry.add(originConnection);
+    const senderConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+      "browser-b",
+    );
+    const sender = registry.add(senderConnection);
+    routes.register("session-1", "inspect-a", origin.id).commit();
+
+    routeMessage(registry, routes, sender, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-wrong-role",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: "ide-source" },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(senderConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(originConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigationState for a different authenticated session", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-2",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    const ide = registry.add(ideConnection);
+    routes.register("session-2", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-wrong-session",
+      sessionId: "session-2",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: ide.source.id },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+    ]);
+    expect(browserConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigationState when the sender lacks source-navigation", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1");
+    const ide = registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-no-capability",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: ide.source.id },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(browserConnection.sent).toEqual([]);
+  });
+
+  it("reports no browser when the inspect recipient lacks source-navigation", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client("browser", "session-1");
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    const ide = registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-incapable-browser",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: ide.source.id },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(browserConnection.sent).toEqual([]);
+  });
+
+  it("reports no browser for source.navigationState without an inspect route", () => {
+    const registry = new ClientRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    registry.add(browserConnection);
+    const ide = registry.add(ideConnection);
+
+    routeMessage(registry, new ReplyRouteRegistry(), ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-no-route",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: ide.source.id },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(browserConnection.sent).toEqual([]);
+  });
+
+  it("rejects source.navigationState with a spoofed IDE source id", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["source-navigation"],
+    );
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", ["source-navigation"]);
+    const ide = registry.add(ideConnection);
+    routes.register("session-1", "inspect-a", browser.id).commit();
+
+    routeMessage(registry, routes, ide, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigationState",
+      messageId: "navigation-state-spoofed-source",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-a",
+      source: { role: "ide", id: "other-ide" },
+      resolutionGeneration: 1,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      metadata: {},
+    });
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(browserConnection.sent).toEqual([]);
   });
 
   it("fails closed for collisions, stale routes, wrong sessions, and browser resolutions", () => {

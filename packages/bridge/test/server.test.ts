@@ -1528,6 +1528,195 @@ describe("bridge server authenticated envelope identity", () => {
     }
   });
 
+  it.each(["browser", "simulator"] as const)(
+    "accepts source.navigate from an authenticated capable %s in the same session",
+    async (role) => {
+      const authenticator = createAuthenticator();
+      const senderToken = acceptedToken(authenticator, role);
+      const ideToken = authenticator.issueTrustedToken("ide");
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+
+      try {
+        const ide = await connect(server.getUrl());
+        await sendJsonAndExpectType(
+          ide,
+          helloWithSourceNavigation(ideToken.value, "ide"),
+          "authenticated",
+        );
+        const sender = await connect(server.getUrl());
+        await sendJsonAndExpectType(
+          sender,
+          helloWithSourceNavigation(senderToken, role),
+          "authenticated",
+        );
+        const routedInspect = nextJsonMessageOfType(ide, "inspect");
+        sender.send(JSON.stringify(inspectMessage("navigation-origin", role)));
+        await expect(routedInspect).resolves.toMatchObject({
+          type: "inspect",
+          messageId: "inspect-navigation-origin",
+        });
+
+        const navigate = sourceNavigateMessage({
+          inspectMessageId: "inspect-navigation-origin",
+        });
+        const routedNavigate = nextJsonMessageOfType(ide, "source.navigate");
+        sender.send(JSON.stringify(navigate));
+
+        await expect(routedNavigate).resolves.toEqual(navigate);
+        expect(sender.readyState).toBe(WebSocket.OPEN);
+        await Promise.all([closeSocket(sender), closeSocket(ide)]);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
+  it("accepts source.navigationState from the exact authenticated capable IDE", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        ide,
+        helloWithSourceNavigation(ideToken.value, "ide"),
+        "authenticated",
+      );
+      const browser = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        browser,
+        helloWithSourceNavigation(browserToken, "browser"),
+        "authenticated",
+      );
+      const routedInspect = nextJsonMessageOfType(ide, "inspect");
+      browser.send(JSON.stringify(inspectMessage("navigation-state-origin")));
+      await expect(routedInspect).resolves.toMatchObject({
+        type: "inspect",
+        messageId: "inspect-navigation-state-origin",
+      });
+
+      const navigationState = sourceNavigationStateMessage({
+        inspectMessageId: "inspect-navigation-state-origin",
+        selectedMatchCount: 4,
+        activeMatchIndex: 3,
+      });
+      const routedState = nextJsonMessageOfType(
+        browser,
+        "source.navigationState",
+      );
+      ide.send(JSON.stringify(navigationState));
+
+      await expect(routedState).resolves.toEqual(navigationState);
+      expect(browser.readyState).toBe(WebSocket.OPEN);
+      await Promise.all([closeSocket(browser), closeSocket(ide)]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    ["an authenticated IDE", "ide" as const, true, {}],
+    [
+      "a different session",
+      "browser" as const,
+      true,
+      { sessionId: "other-session" },
+    ],
+    ["a client without source-navigation", "browser" as const, false, {}],
+  ])(
+    "rejects source.navigate from %s with a bounded protocol error",
+    async (_name, role, advertiseCapability, overrides) => {
+      const authenticator = createAuthenticator();
+      const authToken =
+        role === "ide"
+          ? authenticator.issueTrustedToken("ide").value
+          : acceptedToken(authenticator, role);
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+
+      try {
+        const sender = await connect(server.getUrl());
+        await sendJsonAndExpectType(
+          sender,
+          advertiseCapability
+            ? helloWithSourceNavigation(authToken, role)
+            : hello(authToken, role),
+          "authenticated",
+        );
+
+        const error = await expectSocketErrorAndClose(
+          sender,
+          sourceNavigateMessage(overrides),
+          {
+            code: "protocol.invalidMessage",
+            message: "Message does not match protocol",
+            details: { fatal: true },
+          },
+        );
+        expect(JSON.stringify(error)).not.toContain(authToken);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
+  it.each([
+    ["an authenticated browser", "browser" as const, true, {}],
+    ["an authenticated simulator", "simulator" as const, true, {}],
+    [
+      "a different session",
+      "ide" as const,
+      true,
+      { sessionId: "other-session" },
+    ],
+    [
+      "a spoofed IDE source id",
+      "ide" as const,
+      true,
+      { source: { role: "ide" as const, id: "spoofed-ide" } },
+    ],
+    ["a client without source-navigation", "ide" as const, false, {}],
+  ])(
+    "rejects source.navigationState from %s with a bounded protocol error",
+    async (_name, role, advertiseCapability, overrides) => {
+      const authenticator = createAuthenticator();
+      const authToken =
+        role === "ide"
+          ? authenticator.issueTrustedToken("ide").value
+          : acceptedToken(authenticator, role);
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+
+      try {
+        const sender = await connect(server.getUrl());
+        await sendJsonAndExpectType(
+          sender,
+          advertiseCapability
+            ? helloWithSourceNavigation(authToken, role)
+            : hello(authToken, role),
+          "authenticated",
+        );
+
+        const error = await expectSocketErrorAndClose(
+          sender,
+          sourceNavigationStateMessage(overrides),
+          {
+            code: "protocol.invalidMessage",
+            message: "Message does not match protocol",
+            details: { fatal: true },
+          },
+        );
+        expect(JSON.stringify(error)).not.toContain(authToken);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
   it("removes routes on close, unlink, heartbeat eviction, and stop", async () => {
     const authenticator = createAuthenticator();
     const browserToken = acceptedToken(authenticator);
@@ -2227,6 +2416,19 @@ function hello(
   };
 }
 
+function helloWithSourceNavigation(
+  authToken: string,
+  role: ClientRole,
+) {
+  return {
+    ...hello(authToken, role),
+    capabilities:
+      role === "ide"
+        ? ["resolution", "source-navigation"]
+        : ["inspect", "source-navigation"],
+  };
+}
+
 function unlink(messageId = "unlink-1") {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -2293,6 +2495,38 @@ function resolutionMessage(
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
     metadata: {},
+  };
+}
+
+function sourceNavigateMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigate",
+    messageId: "source-navigate-1",
+    sessionId: SESSION_ID,
+    inspectMessageId: "inspect-navigation-origin",
+    resolutionGeneration: 2,
+    direction: "next",
+    metadata: {},
+    ...overrides,
+  };
+}
+
+function sourceNavigationStateMessage(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: "source-navigation-state-1",
+    sessionId: SESSION_ID,
+    inspectMessageId: "inspect-navigation-state-origin",
+    source: { role: "ide", id: "ide-source" },
+    resolutionGeneration: 2,
+    selectedMatchCount: 3,
+    activeMatchIndex: 1,
+    metadata: {},
+    ...overrides,
   };
 }
 
