@@ -4,6 +4,7 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourcePluginContext,
+  type SourceUriResolution,
 } from "@browser2ide/plugin-api";
 import type { ResolutionStatus } from "@browser2ide/protocol";
 import { targetCssFacts, type TargetCssFact } from "./cssFacts.js";
@@ -16,6 +17,8 @@ import {
 import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
 import { SourceMapLoader } from "./sourceMapLoader.js";
 import type { StatusAwareSourcePluginResult } from "./types.js";
+
+const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class ScssSourcePlugin implements SourcePlugin {
   public readonly id = "browser2ide.scss";
@@ -54,13 +57,15 @@ export class ScssSourcePlugin implements SourcePlugin {
     const matches: SourceMatch[] = [];
     const diagnostics: PluginDiagnostic[] = [];
     const failures = new Set<ResolutionStatus>();
+    const strategyDiagnostics = new Map<string, PluginDiagnostic>();
     for (const entry of targetCssFacts(context.selection)) {
-      if (context.signal.aborted) break;
+      if (context.signal.aborted) return abortedResult();
       const generatedResolution = await context.workspace.resolveSourceUri(
         entry.sourceUrl,
         context.selection.context.url,
       );
-      if (context.signal.aborted) break;
+      if (context.signal.aborted) return abortedResult();
+      addStrategyDiagnostic(strategyDiagnostics, generatedResolution);
       if (
         generatedResolution.status === "ambiguous" ||
         generatedResolution.uris.length > 1
@@ -72,10 +77,13 @@ export class ScssSourcePlugin implements SourcePlugin {
         ));
         continue;
       }
-      if (
-        generatedResolution.status !== "exact" ||
-        generatedResolution.uris.length !== 1
-      ) {
+      const generatedIsExact = generatedResolution.status === "exact" &&
+        generatedResolution.uris.length === 1;
+      const generatedIsAutomaticBasename =
+        generatedResolution.strategy === "automatic" &&
+        generatedResolution.status === "unique-basename" &&
+        generatedResolution.uris.length === 1;
+      if (!generatedIsExact && !generatedIsAutomaticBasename) {
         failures.add("source-not-found");
         diagnostics.push(diagnostic(
           "scss.generatedSourceNotFound",
@@ -83,6 +91,13 @@ export class ScssSourcePlugin implements SourcePlugin {
           "info",
         ));
         continue;
+      }
+      if (generatedIsAutomaticBasename) {
+        diagnostics.push(diagnostic(
+          "scss.generatedSourceHeuristic",
+          `Generated CSS used automatic basename matching: ${entry.sourceUrl}`,
+          "info",
+        ));
       }
       await this.resolveGenerated(
         context,
@@ -92,7 +107,9 @@ export class ScssSourcePlugin implements SourcePlugin {
         matches,
         diagnostics,
         failures,
+        strategyDiagnostics,
       );
+      if (context.signal.aborted) return abortedResult();
     }
 
     if (context.signal.aborted) return abortedResult();
@@ -101,7 +118,10 @@ export class ScssSourcePlugin implements SourcePlugin {
     return {
       status: uniqueMatches.length > 0 ? "matched" : failureStatus(failures),
       matches: uniqueMatches,
-      diagnostics: deduplicateDiagnostics(diagnostics),
+      diagnostics: deduplicateDiagnostics([
+        ...diagnostics,
+        ...strategyDiagnostics.values(),
+      ]),
     };
   }
 
@@ -113,6 +133,7 @@ export class ScssSourcePlugin implements SourcePlugin {
     matches: SourceMatch[],
     diagnostics: PluginDiagnostic[],
     failures: Set<ResolutionStatus>,
+    strategyDiagnostics: Map<string, PluginDiagnostic>,
   ): Promise<void> {
     if (context.signal.aborted) return;
     let generatedText: string;
@@ -197,6 +218,7 @@ export class ScssSourcePlugin implements SourcePlugin {
       context.selection.context.url,
     );
     if (context.signal.aborted) return;
+    addStrategyDiagnostic(strategyDiagnostics, sourceResolution);
     const sourceKind = classifyActiveDocumentSource(
       sourceResolution,
       context.document.uri,
@@ -278,6 +300,74 @@ function mappingMissingDiagnostic(selector: string): PluginDiagnostic {
   return diagnostic(
     "scss.mappingMissing",
     `Source map has no SCSS rule mapping for ${selector}`,
+  );
+}
+
+function addStrategyDiagnostic(
+  diagnostics: Map<string, PluginDiagnostic>,
+  resolution: SourceUriResolution,
+): void {
+  const entry = sourceStrategyDiagnostic(resolution);
+  const key = JSON.stringify([entry.code, entry.message]);
+  if (!diagnostics.has(key)) diagnostics.set(key, entry);
+}
+
+function sourceStrategyDiagnostic(
+  resolution: SourceUriResolution,
+): PluginDiagnostic {
+  const strategy = resolution.strategy;
+  switch (strategy) {
+    case "automatic":
+      return diagnostic(
+        "scss.sourceAutomatic",
+        "Automatic source matching",
+        "info",
+      );
+    case "workspace-bound":
+      return diagnostic(
+        "scss.sourceWorkspaceBound",
+        `Workspace-bound: ${workspaceFolderLabel(resolution)}`,
+        "info",
+      );
+    default:
+      return unsupportedSourceResolutionStrategy(strategy);
+  }
+}
+
+function workspaceFolderLabel(resolution: SourceUriResolution): string {
+  const fallback = resolution.status === "ambiguous"
+    ? "ambiguous workspace"
+    : "workspace";
+  if (resolution.workspaceFolderUri === undefined) return fallback;
+  try {
+    const pathname = new URL(resolution.workspaceFolderUri).pathname
+      .replace(/\/+$/, "");
+    const segment = pathname.slice(pathname.lastIndexOf("/") + 1);
+    const label = decodeURIComponent(segment)
+      .replace(
+        /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+        "",
+      )
+      .trim();
+    if (
+      label.length === 0 ||
+      /^[a-z]:$/i.test(label) ||
+      /[/\\]/.test(label)
+    ) {
+      return fallback;
+    }
+    return [...label]
+      .slice(0, MAX_WORKSPACE_LABEL_LENGTH)
+      .join("")
+      .trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function unsupportedSourceResolutionStrategy(strategy: never): never {
+  throw new Error(
+    `Unsupported SCSS source resolution strategy: ${String(strategy)}`,
   );
 }
 
