@@ -93,6 +93,37 @@ describe("InspectCorrelationStore", () => {
       store.acceptNavigationState(sourceNavigationState("inspect-a", 3)),
     ).toBe("panel-a");
   });
+
+  it("repeatedly authorizes only the exact current navigation correlation", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7);
+    expect(store.accept(resolution("inspect-a", 2))).toBe("panel-a");
+    const current = {
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 2,
+      tabId: 7,
+    };
+
+    expect(store.authorizeNavigation(current)).toBe(true);
+    expect(store.authorizeNavigation(current)).toBe(true);
+    expect(store.authorizeNavigation({
+      ...current,
+      inspectMessageId: "inspect-missing",
+    })).toBe(false);
+    expect(store.authorizeNavigation({
+      ...current,
+      resolutionGeneration: 1,
+    })).toBe(false);
+    expect(store.authorizeNavigation({
+      ...current,
+      channel: "panel-b",
+    })).toBe(false);
+    expect(store.authorizeNavigation({ ...current, tabId: 8 })).toBe(false);
+
+    expect(store.accept(resolution("inspect-a", 2))).toBeUndefined();
+    expect(store.accept(resolution("inspect-a", 3))).toBe("panel-a");
+  });
 });
 
 function resolution(

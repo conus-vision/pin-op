@@ -2,6 +2,8 @@ import type {
   ClientSource,
   PeerStateMessage,
   ResolutionMessage,
+  SourceNavigateMessage,
+  SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -15,7 +17,10 @@ import {
   type SessionStorage,
   type WindowConnectionClient,
 } from "../src/index.js";
-import type { InspectSendOutcome } from "../src/bridgeClient.js";
+import type {
+  InspectSendOutcome,
+  SourceNavigationSendOutcome,
+} from "../src/bridgeClient.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -353,11 +358,26 @@ class FakeWindowClient implements WindowConnectionClient {
     return this.instance.receive(this, inspectMessageId, payload, sourceId);
   }
 
+  public sendSourceNavigation(
+    _input: Pick<
+      SourceNavigateMessage,
+      "inspectMessageId" | "resolutionGeneration" | "direction"
+    >,
+  ): SourceNavigationSendOutcome {
+    return this.active ? "sent" : "not-connected";
+  }
+
   public onResolution(_listener: (message: ResolutionMessage) => void) {
     return { dispose(): void {} };
   }
 
   public onPeerState(_listener: (message: PeerStateMessage) => void) {
+    return { dispose(): void {} };
+  }
+
+  public onSourceNavigationState(
+    _listener: (message: SourceNavigationStateMessage) => void,
+  ) {
     return { dispose(): void {} };
   }
 

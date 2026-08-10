@@ -71,11 +71,8 @@ export function startBackgroundRuntime(
       return () => subscription.dispose();
     },
     subscribeSourceNavigationStates: (listener) => {
-      if (typeof coordinator.onSourceNavigationState !== "function") {
-        return () => {};
-      }
       const subscription = coordinator.onSourceNavigationState(
-        (_windowId, message) => listener(message),
+        (windowId, message) => listener(windowId, message),
       );
       return () => subscription.dispose();
     },

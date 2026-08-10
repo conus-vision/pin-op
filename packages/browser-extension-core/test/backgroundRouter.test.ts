@@ -777,32 +777,102 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panelB, "resolution")).toEqual([]);
   });
 
-  it("forwards strict panel source navigation through the bound window without DOM work", async () => {
+  it("forwards repeated strict source navigation for the current correlation without DOM work", async () => {
     const harness = createHarness();
     const panel = await harness.registerAndConnect(
       "channel-1",
       17,
       "source-17",
     );
-    await flushMicrotasks();
-    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
     harness.inspectCalls.length = 0;
     const navigation = panelSourceNavigation("previous");
 
     panel.emitMessage(navigation);
+    panel.emitMessage(panelSourceNavigation("next"));
     panel.emitMessage({ ...navigation, sessionId: "panel-session" });
     panel.emitMessage({ ...navigation, messageId: "panel-message" });
     panel.emitMessage({ ...navigation, direction: "first" });
+    await flushMicrotasks();
 
-    expect(harness.coordinator.sourceNavigations).toEqual([{
-      windowId: 10,
-      input: {
-        inspectMessageId: "inspect-1",
-        resolutionGeneration: 2,
-        direction: "previous",
+    expect(harness.coordinator.sourceNavigations).toEqual([
+      {
+        windowId: 10,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 2,
+          direction: "previous",
+        },
       },
-    }]);
+      {
+        windowId: 10,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 2,
+          direction: "next",
+        },
+      },
+    ]);
     expect(harness.inspectCalls).toEqual([]);
+  });
+
+  it("rejects unknown, stale-generation, and cross-channel source navigation", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
+
+    panelA.emitMessage(panelSourceNavigation("next", "inspect-missing", 2));
+    panelA.emitMessage(panelSourceNavigation("next", "inspect-1", 1));
+    panelB.emitMessage(panelSourceNavigation("next", "inspect-1", 2));
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceNavigations).toEqual([]);
+  });
+
+  it("rejects source navigation when its tab silently moves windows", async () => {
+    const tabs = new Map([[17, 10]]);
+    const harness = createHarness({ tabs });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
+
+    tabs.set(17, 20);
+    panel.emitMessage(panelSourceNavigation("next"));
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceNavigations).toEqual([]);
   });
 
   it("rejects source navigation from a stale panel activation", async () => {
@@ -812,19 +882,23 @@ describe("BackgroundRouter", () => {
       17,
       "source-17",
     );
-    await flushMicrotasks();
-    await harness.inspectCoordinator.whenIdle(17);
     const staleListener = first.onMessage.snapshot()[0];
     expect(staleListener).toBeDefined();
 
     first.disconnect();
     const replacement = harness.panelPort("channel-1");
     harness.router.connectPort(replacement);
-    await flushMicrotasks();
-    await harness.inspectCoordinator.whenIdle(17);
+    const replacementSessionId = "content-session-replacement";
+    await harness.attachContentSession(17, replacementSessionId);
+    await harness.router.routeMessage(
+      selectedMessage(replacementSessionId),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
 
     staleListener?.(panelSourceNavigation("previous"));
     replacement.emitMessage(panelSourceNavigation("next"));
+    await flushMicrotasks();
 
     expect(harness.coordinator.sourceNavigations).toEqual([{
       windowId: 10,
@@ -840,7 +914,7 @@ describe("BackgroundRouter", () => {
     const harness = createHarness({
       tabs: new Map([
         [17, 10],
-        [18, 10],
+        [18, 20],
       ]),
     });
     const panelA = await harness.registerAndConnect(
@@ -862,16 +936,92 @@ describe("BackgroundRouter", () => {
     const first = sourceNavigationState("inspect-1", 2, 0);
     const second = sourceNavigationState("inspect-1", 2, 1);
 
-    harness.sourceNavigationStates.emit(first);
-    harness.sourceNavigationStates.emit(second);
-    harness.sourceNavigationStates.emit(sourceNavigationState("inspect-1", 1));
-    harness.sourceNavigationStates.emit(sourceNavigationState("inspect-missing", 2));
+    harness.sourceNavigationStates.emit(20, first);
+    harness.sourceNavigationStates.emit(10, first);
+    harness.sourceNavigationStates.emit(10, second);
+    harness.sourceNavigationStates.emit(
+      10,
+      sourceNavigationState("inspect-1", 1),
+    );
+    harness.sourceNavigationStates.emit(
+      10,
+      sourceNavigationState("inspect-missing", 2),
+    );
 
     expect(messagesOfType(panelA, "source.navigationState")).toEqual([
       first,
       second,
     ]);
     expect(messagesOfType(panelB, "source.navigationState")).toEqual([]);
+  });
+
+  it.each<SourceNavigationSendOutcome>([
+    "not-connected",
+    "invalid-message",
+    "transport-error",
+  ])("fails closed when source navigation returns %s", async (outcome) => {
+    const harness = createHarness({
+      publishSourceNavigation: () => outcome,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
+
+    panel.emitMessage(panelSourceNavigation("next"));
+    await flushMicrotasks();
+    harness.sourceNavigationStates.emit(
+      10,
+      sourceNavigationState("inspect-1", 2, 0),
+    );
+
+    expect(messagesOfType(panel, "browser2ide.ideState")).toEqual([{
+      type: "browser2ide.ideState",
+      status: "ide-disconnected",
+      inspectMessageId: "inspect-1",
+    }]);
+    expect(messagesOfType(panel, "source.navigationState")).toEqual([]);
+  });
+
+  it("fails closed and reports a thrown source navigation send", async () => {
+    const harness = createHarness({
+      publishSourceNavigation() {
+        throw new Error("unexpected source navigation failure");
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(resolution("inspect-1", 2));
+
+    panel.emitMessage(panelSourceNavigation("previous"));
+    await flushMicrotasks();
+    harness.sourceNavigationStates.emit(
+      10,
+      sourceNavigationState("inspect-1", 2, 0),
+    );
+
+    expect(messagesOfType(panel, "browser2ide.ideState")).toEqual([{
+      type: "browser2ide.ideState",
+      status: "ide-disconnected",
+      inspectMessageId: "inspect-1",
+    }]);
+    expect(messagesOfType(panel, "source.navigationState")).toEqual([]);
+    expect(harness.reportedErrors).toHaveLength(1);
   });
 
   it("rejects stale peer state and republishes selection after IDE reconnect", async () => {
@@ -3032,7 +3182,7 @@ function createHarness(options: HarnessOptions = {}) {
     (windowId: number, message: PeerStateMessage) => void
   >();
   const sourceNavigationStates = new FakeEvent<
-    (message: SourceNavigationStateMessage) => void
+    (windowId: number, message: SourceNavigationStateMessage) => void
   >();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
@@ -3128,7 +3278,10 @@ function createHarness(options: HarnessOptions = {}) {
       return () => peerStates.removeListener(listener);
     },
     subscribeSourceNavigationStates: (
-      listener: (message: SourceNavigationStateMessage) => void,
+      listener: (
+        windowId: number,
+        message: SourceNavigationStateMessage,
+      ) => void,
     ) => {
       sourceNavigationStates.addListener(listener);
       return () => sourceNavigationStates.removeListener(listener);
@@ -3500,11 +3653,15 @@ function resolution(
   };
 }
 
-function panelSourceNavigation(direction: "previous" | "next") {
+function panelSourceNavigation(
+  direction: "previous" | "next",
+  inspectMessageId = "inspect-1",
+  resolutionGeneration = 2,
+) {
   return {
     type: "browser2ide.source.navigate" as const,
-    inspectMessageId: "inspect-1",
-    resolutionGeneration: 2,
+    inspectMessageId,
+    resolutionGeneration,
     direction,
   };
 }

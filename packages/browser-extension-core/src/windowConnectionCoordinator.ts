@@ -351,7 +351,14 @@ export class WindowConnectionCoordinator {
     }
 
     try {
-      return client.sendSourceNavigation(input);
+      const outcome = client.sendSourceNavigation(input);
+      if (
+        outcome === "transport-error" &&
+        this.isCurrentToken(record, generation, token)
+      ) {
+        this.setState(record, "error");
+      }
+      return outcome;
     } catch {
       if (this.isCurrentToken(record, generation, token)) {
         this.setState(record, "error");
@@ -577,16 +584,14 @@ export class WindowConnectionCoordinator {
       subscriptions.push(client.onPeerState((message) =>
         this.forwardPeerState(record, generation, token, message),
       ));
-      if (typeof client.onSourceNavigationState === "function") {
-        subscriptions.push(client.onSourceNavigationState((message) =>
-          this.forwardSourceNavigationState(
-            record,
-            generation,
-            token,
-            message,
-          ),
-        ));
-      }
+      subscriptions.push(client.onSourceNavigationState((message) =>
+        this.forwardSourceNavigationState(
+          record,
+          generation,
+          token,
+          message,
+        ),
+      ));
     } catch {
       if (this.isCurrentToken(record, generation, token)) {
         this.disconnectClient(record);

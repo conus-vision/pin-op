@@ -96,6 +96,22 @@ describe("panel inspect transport", () => {
     expect(getterCalls).toBe(0);
   });
 
+  it("rejects symbol keys and revoked proxies without throwing", () => {
+    const withSymbol = {
+      ...sourceNavigateCommand("next"),
+      [Symbol("hidden")]: true,
+    };
+    const { proxy, revoke } = Proxy.revocable(
+      sourceNavigateCommand("previous"),
+      {},
+    );
+    revoke();
+
+    expect(parsePanelSourceNavigateCommand(withSymbol)).toBeUndefined();
+    expect(() => parsePanelSourceNavigateCommand(proxy)).not.toThrow();
+    expect(parsePanelSourceNavigateCommand(proxy)).toBeUndefined();
+  });
+
   it("opens its lifetime port explicitly and only once", () => {
     const port = new FakePort();
     let factoryCalls = 0;

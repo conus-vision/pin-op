@@ -134,7 +134,10 @@ export interface BackgroundRouterOptions {
     listener: (windowId: number, message: PeerStateMessage) => void,
   ) => () => void;
   readonly subscribeSourceNavigationStates?: (
-    listener: (message: SourceNavigationStateMessage) => void,
+    listener: (
+      windowId: number,
+      message: SourceNavigationStateMessage,
+    ) => void,
   ) => () => void;
   readonly subscriptions?: BackgroundRouterSubscriptions;
   readonly onError?: (error: unknown) => void;
@@ -288,8 +291,8 @@ export class BackgroundRouter {
     }
     if (options.subscribeSourceNavigationStates) {
       this.removeSubscriptions.push(
-        options.subscribeSourceNavigationStates((message) =>
-          this.receiveSourceNavigationState(message),
+        options.subscribeSourceNavigationStates((windowId, message) =>
+          this.receiveSourceNavigationState(windowId, message),
         ),
       );
     }
@@ -1195,23 +1198,76 @@ export class BackgroundRouter {
     activationToken: object,
     navigation: PanelSourceNavigateCommand,
   ): void {
-    const binding = this.bindings.get(record.channel);
-    if (
-      !binding ||
-      !record.registration ||
-      !this.isCurrentActivation(record, activationToken, binding)
-    ) {
-      return;
-    }
-    try {
-      this.coordinator.publishSourceNavigation(binding.windowId, {
-        inspectMessageId: navigation.inspectMessageId,
-        resolutionGeneration: navigation.resolutionGeneration,
-        direction: navigation.direction,
-      });
-    } catch (error) {
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (
+        !binding ||
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, binding) ||
+        !this.correlations.authorizeNavigation({
+          channel: record.channel,
+          inspectMessageId: navigation.inspectMessageId,
+          resolutionGeneration: navigation.resolutionGeneration,
+          tabId: binding.tabId,
+        })
+      ) {
+        return;
+      }
+
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      if (
+        refreshed !== binding ||
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, binding) ||
+        !this.correlations.authorizeNavigation({
+          channel: record.channel,
+          inspectMessageId: navigation.inspectMessageId,
+          resolutionGeneration: navigation.resolutionGeneration,
+          tabId: binding.tabId,
+        })
+      ) {
+        return;
+      }
+
+      let outcome: SourceNavigationSendOutcome;
+      try {
+        outcome = this.coordinator.publishSourceNavigation(binding.windowId, {
+          inspectMessageId: navigation.inspectMessageId,
+          resolutionGeneration: navigation.resolutionGeneration,
+          direction: navigation.direction,
+        });
+      } catch (error) {
+        this.reportError(error);
+        outcome = "transport-error";
+      }
+      if (outcome === "sent") {
+        return;
+      }
+      if (
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, binding) ||
+        !this.correlations.authorizeNavigation({
+          channel: record.channel,
+          inspectMessageId: navigation.inspectMessageId,
+          resolutionGeneration: navigation.resolutionGeneration,
+          tabId: binding.tabId,
+        })
+      ) {
+        return;
+      }
+      this.correlations.discard(navigation.inspectMessageId);
+      this.panelSessions.publishIdeDisconnected(
+        record.channel,
+        navigation.inspectMessageId,
+      );
+    });
+    record.inspectCommandTail = operation.catch((error) => {
       this.reportError(error);
-    }
+    });
   }
 
   private queueDomRequest(
@@ -1714,13 +1770,33 @@ export class BackgroundRouter {
   }
 
   private receiveSourceNavigationState(
+    windowId: number,
     message: SourceNavigationStateMessage,
   ): void {
-    if (this.disposed) {
+    if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
     const channel = this.correlations.acceptNavigationState(message);
     if (!channel) {
+      return;
+    }
+    const binding = this.bindings.get(channel);
+    const record = this.panelPorts.get(channel);
+    const token = record?.activationToken;
+    if (
+      !binding ||
+      !record ||
+      !token ||
+      !record.registration ||
+      binding.windowId !== windowId ||
+      !this.isCurrentActivation(record, token, binding) ||
+      !this.correlations.authorizeNavigation({
+        channel,
+        inspectMessageId: message.inspectMessageId,
+        resolutionGeneration: message.resolutionGeneration,
+        tabId: binding.tabId,
+      })
+    ) {
       return;
     }
     this.panelSessions.publish(channel, message);

@@ -10,15 +10,20 @@ describe("startBackgroundRuntime", () => {
     const attachedTabs = eventHarness();
     const resolutionDispose = vi.fn();
     const peerStateDispose = vi.fn();
+    const sourceNavigationStateDispose = vi.fn();
     const coordinatorDispose = vi.fn();
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
       unlinkWindow: vi.fn(async () => undefined),
       registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
       publishInspect: vi.fn(() => "sent" as const),
+      publishSourceNavigation: vi.fn(() => "sent" as const),
       removeWindow: vi.fn(async () => undefined),
       onResolution: vi.fn(() => ({ dispose: resolutionDispose })),
       onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
+      onSourceNavigationState: vi.fn(() => ({
+        dispose: sourceNavigationStateDispose,
+      })),
       dispose: coordinatorDispose,
     };
 
@@ -39,12 +44,14 @@ describe("startBackgroundRuntime", () => {
 
     expect(coordinator.onResolution).toHaveBeenCalledOnce();
     expect(coordinator.onPeerState).toHaveBeenCalledOnce();
+    expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
 
     runtime.dispose();
     runtime.dispose();
 
     expect(resolutionDispose).toHaveBeenCalledOnce();
     expect(peerStateDispose).toHaveBeenCalledOnce();
+    expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
     expect(coordinatorDispose).toHaveBeenCalledOnce();
   });
 

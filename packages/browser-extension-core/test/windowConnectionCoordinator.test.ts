@@ -630,6 +630,32 @@ describe("WindowConnectionCoordinator", () => {
     expect(replacement.sourceNavigationCalls).toEqual([next]);
   });
 
+  it.each(["returned", "thrown"] as const)(
+    "moves the current window to error when source navigation transport failure is %s",
+    async (failureMode) => {
+      const harness = coordinatorHarness();
+      harness.coordinator.registerPanel({
+        windowId: 10,
+        tabId: 101,
+        sourceId: "panel-101",
+      });
+      const client = await harness.link(10, "4873507");
+      await harness.authenticate(client, windowLink());
+      if (failureMode === "returned") {
+        client.sourceNavigationResult = "transport-error";
+      } else {
+        client.throwOnSourceNavigation = true;
+      }
+
+      expect(harness.coordinator.publishSourceNavigation(10, {
+        inspectMessageId: "inspect-current",
+        resolutionGeneration: 4,
+        direction: "next",
+      })).toBe("transport-error");
+      expect(harness.coordinator.state(10)).toBe("error");
+    },
+  );
+
   it("forwards protocol events only from the current window client", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
@@ -889,6 +915,7 @@ class FakeWindowClient {
   public unlinkCalls = 0;
   public inspectResult: InspectSendOutcome = "sent";
   public sourceNavigationResult: SourceNavigationSendOutcome = "sent";
+  public throwOnSourceNavigation = false;
   public throwOnPeerStateSubscription = false;
   private readonly resolutionListeners = new Set<
     (message: ResolutionMessage) => void
@@ -938,6 +965,9 @@ class FakeWindowClient {
     >,
   ): SourceNavigationSendOutcome {
     this.sourceNavigationCalls.push({ ...input });
+    if (this.throwOnSourceNavigation) {
+      throw new Error("source navigation send failed");
+    }
     return this.sourceNavigationResult;
   }
 

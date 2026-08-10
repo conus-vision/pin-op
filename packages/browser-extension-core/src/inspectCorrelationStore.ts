@@ -1,4 +1,5 @@
 import {
+  RESOLUTION_LIMITS,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
   type ResolutionMessage,
@@ -100,6 +101,29 @@ export class InspectCorrelationStore {
     return correlation.channel;
   }
 
+  public authorizeNavigation(input: {
+    readonly channel: string;
+    readonly inspectMessageId: string;
+    readonly resolutionGeneration: number;
+    readonly tabId: number;
+  }): boolean {
+    if (
+      !isValidDevtoolsChannel(input.channel) ||
+      !isOpaqueId(input.inspectMessageId) ||
+      !isResolutionGeneration(input.resolutionGeneration) ||
+      !isBrowserId(input.tabId)
+    ) {
+      return false;
+    }
+    const correlation = this.correlations.get(input.inspectMessageId);
+    return Boolean(
+      correlation &&
+        correlation.channel === input.channel &&
+        correlation.resolutionGeneration === input.resolutionGeneration &&
+        correlation.tabId === input.tabId,
+    );
+  }
+
   public discard(inspectMessageId: string): void {
     this.correlations.delete(inspectMessageId);
   }
@@ -119,4 +143,12 @@ function isOpaqueId(value: unknown): value is string {
 
 function isBrowserId(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isResolutionGeneration(value: unknown): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    Number(value) >= 0 &&
+    Number(value) <= RESOLUTION_LIMITS.generation
+  );
 }
