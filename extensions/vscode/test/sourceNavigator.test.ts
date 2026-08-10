@@ -6,6 +6,7 @@ import {
 } from "@browser2ide/protocol";
 import type { SourceNavigationStateInput } from "../src/bridgeClient.js";
 import {
+  replacePrimarySelection,
   SourceNavigator,
   type SourceNavigationEditor,
   type SourceNavigationHost,
@@ -16,15 +17,32 @@ import type { ResolvedSourceMatch } from "../src/sourcePlugins/types.js";
 const DOCUMENT_URI = "file:///workspace/card.scss";
 
 describe("SourceNavigator", () => {
+  it("replaces only the primary selection", () => {
+    const oldPrimary = { id: "old-primary" };
+    const newPrimary = { id: "new-primary" };
+    const secondaryA = { id: "secondary-a" };
+    const secondaryB = { id: "secondary-b" };
+    const selections = [oldPrimary, secondaryA, secondaryB];
+
+    const result = replacePrimarySelection(selections, newPrimary);
+
+    expect(result).toEqual([newPrimary, secondaryA, secondaryB]);
+    expect(result[1]).toBe(secondaryA);
+    expect(result[2]).toBe(secondaryB);
+    expect(selections).toEqual([oldPrimary, secondaryA, secondaryB]);
+  });
+
   it("keeps selected ranges, removes exact duplicates, and retains nested ranges", () => {
-    const harness = navigatorHarness();
+    const harness = navigatorHarness({ emitCursorEventOnSet: true });
     harness.host.movePrimaryCursor({ line: 9, character: 0 });
+    const outer = range(2, 0, 2, 8);
+    const inner = range(2, 2, 2, 5);
 
     harness.navigator.update(resolution([
       match("parent", range(0, 1, 0, 4), "parent"),
-      match("selected", range(2, 0, 2, 8), "outer"),
-      match("selected", range(2, 2, 2, 5), "inner"),
-      match("selected", range(2, 0, 2, 8), "duplicate"),
+      match("selected", outer, "outer"),
+      match("selected", inner, "inner"),
+      match("selected", outer, "duplicate"),
     ]));
 
     expect(harness.states.at(-1)).toEqual({
@@ -34,6 +52,87 @@ describe("SourceNavigator", () => {
     });
     expect(harness.host.cursorSets).toEqual([]);
     expect(harness.host.revealed).toEqual([]);
+
+    harness.navigator.navigate(intent("previous"));
+    expectLastNavigation(harness, inner, 1, 1);
+    harness.navigator.navigate(intent("previous"));
+    expectLastNavigation(harness, outer, 0, 2);
+    harness.navigator.navigate(intent("previous"));
+    expectLastNavigation(harness, inner, 1, 3);
+  });
+
+  it.each([
+    ["next", [0, 1, 2, 3, 4, 0]],
+    ["previous", [4, 3, 2, 1, 0, 4]],
+  ] as const)(
+    "navigates %s without losing explicit identity across overlapping ranges",
+    (direction, expectedIndexes) => {
+      const harness = navigatorHarness({ emitCursorEventOnSet: true });
+      const orderedRanges = [
+        range(1, 0, 1, 4),
+        range(1, 0, 1, 10),
+        range(1, 2, 1, 5),
+        range(1, 4, 1, 12),
+        range(1, 14, 1, 16),
+      ];
+      harness.navigator.update(resolution([
+        match("selected", orderedRanges[3]!, "partial-overlap"),
+        match("selected", orderedRanges[1]!, "same-start-long"),
+        match("selected", orderedRanges[4]!, "last"),
+        match("selected", orderedRanges[2]!, "nested"),
+        match("selected", orderedRanges[0]!, "same-start-short"),
+      ]));
+
+      for (const [commandIndex, expectedIndex] of expectedIndexes.entries()) {
+        harness.navigator.navigate(intent(direction));
+        expectLastNavigation(
+          harness,
+          orderedRanges[expectedIndex]!,
+          expectedIndex,
+          commandIndex + 1,
+        );
+      }
+
+      expect(harness.host.revealed).toEqual(
+        expectedIndexes.map((index) => orderedRanges[index]),
+      );
+    },
+  );
+
+  it("drops explicit identity after genuine cursor movement", () => {
+    const harness = navigatorHarness({ emitCursorEventOnSet: true });
+    harness.navigator.update(resolution([
+      match("selected", range(1, 0, 1, 4), "same-start-short"),
+      match("selected", range(1, 0, 1, 10), "same-start-long"),
+    ]));
+    harness.navigator.navigate(intent("next"));
+    harness.navigator.navigate(intent("next"));
+    expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex: 1 });
+
+    harness.host.changePrimaryCursor(position(1, 1));
+    expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex: 0 });
+    harness.host.changePrimaryCursor(position(1, 0));
+    expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex: 0 });
+  });
+
+  it("does not retain an explicit target when setting the cursor throws", () => {
+    const harness = navigatorHarness({ emitCursorEventOnSet: true });
+    const short = range(1, 0, 1, 4);
+    const long = range(1, 0, 1, 10);
+    harness.navigator.update(resolution([
+      match("selected", short, "same-start-short"),
+      match("selected", long, "same-start-long"),
+    ]));
+    harness.navigator.navigate(intent("next"));
+    const error = new Error("selection failed");
+    harness.host.failNextCursorSet(error);
+
+    expect(() => harness.navigator.navigate(intent("next"))).toThrow(error);
+    harness.host.changePrimaryCursor(position(1, 0));
+    expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex: 0 });
+
+    harness.navigator.navigate(intent("next"));
+    expectLastNavigation(harness, long, 1, 2);
   });
 
   it("sorts ranges deterministically by start and then end", () => {
@@ -243,8 +342,13 @@ describe("SourceNavigator", () => {
   });
 });
 
-function navigatorHarness() {
-  const host = new MemorySourceNavigationHost(DOCUMENT_URI);
+function navigatorHarness(
+  options: { readonly emitCursorEventOnSet?: boolean } = {},
+) {
+  const host = new MemorySourceNavigationHost(
+    DOCUMENT_URI,
+    options.emitCursorEventOnSet ?? false,
+  );
   const states: SourceNavigationStateInput[] = [];
   const navigator = new SourceNavigator(host, {
     sendSourceNavigationState: (state) => states.push(state),
@@ -258,11 +362,15 @@ class MemorySourceNavigationHost implements SourceNavigationHost {
   public readonly cursorSets: SourcePosition[] = [];
   public readonly revealed: SourceRange[] = [];
   public disposals = 0;
+  private nextCursorSetError: Error | undefined;
   private editor: SourceNavigationEditor | undefined;
   private readonly activeEditorListeners = new Set<() => void>();
   private readonly primaryCursorListeners = new Set<() => void>();
 
-  public constructor(documentUri?: string) {
+  public constructor(
+    documentUri?: string,
+    private readonly emitCursorEventOnSet = false,
+  ) {
     this.editor = documentUri ? { documentUri } : undefined;
   }
 
@@ -278,8 +386,12 @@ class MemorySourceNavigationHost implements SourceNavigationHost {
     _editor: SourceNavigationEditor,
     position_: SourcePosition,
   ): void {
+    const error = this.nextCursorSetError;
+    this.nextCursorSetError = undefined;
+    if (error) throw error;
     this.primaryCursor = position_;
     this.cursorSets.push(position_);
+    if (this.emitCursorEventOnSet) this.emitPrimaryCursorChange();
   }
 
   public revealRange(
@@ -321,13 +433,34 @@ class MemorySourceNavigationHost implements SourceNavigationHost {
   ): void {
     this.primaryCursor = primary;
     this.secondaryCursors = secondary;
-    for (const listener of this.primaryCursorListeners) listener();
+    this.emitPrimaryCursorChange();
+  }
+
+  public failNextCursorSet(error: Error): void {
+    this.nextCursorSetError = error;
   }
 
   public changeActiveEditor(documentUri?: string): void {
     this.editor = documentUri ? { documentUri } : undefined;
     for (const listener of this.activeEditorListeners) listener();
   }
+
+  private emitPrimaryCursorChange(): void {
+    for (const listener of this.primaryCursorListeners) listener();
+  }
+}
+
+function expectLastNavigation(
+  harness: ReturnType<typeof navigatorHarness>,
+  expectedRange: SourceRange,
+  activeMatchIndex: number,
+  commandCount: number,
+): void {
+  expect(harness.host.cursorSets).toHaveLength(commandCount);
+  expect(harness.host.cursorSets.at(-1)).toEqual(expectedRange.start);
+  expect(harness.host.revealed).toHaveLength(commandCount);
+  expect(harness.host.revealed.at(-1)).toEqual(expectedRange);
+  expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex });
 }
 
 function threeRangeResolution(

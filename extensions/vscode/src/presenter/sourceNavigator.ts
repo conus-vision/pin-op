@@ -27,12 +27,28 @@ export interface SourceNavigationResolution {
   readonly matches: readonly ResolvedSourceMatch[];
 }
 
+export function replacePrimarySelection<T>(
+  selections: readonly T[],
+  primary: T,
+): readonly T[] {
+  return [primary, ...selections.slice(1)];
+}
+
+interface PreferredNavigationTarget {
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+  readonly documentUri: string;
+  readonly index: number;
+  readonly range: SourceRange;
+}
+
 export class SourceNavigator implements DisposableLike {
   private readonly subscriptions: readonly DisposableLike[];
   private inspectMessageId: string | undefined;
   private resolutionGeneration = 0;
   private documentUri: string | undefined;
   private ranges: readonly SourceRange[] = [];
+  private preferredTarget: PreferredNavigationTarget | undefined;
   private disposed = false;
 
   public constructor(
@@ -47,6 +63,7 @@ export class SourceNavigator implements DisposableLike {
 
   public update(resolution: SourceNavigationResolution): void {
     if (this.disposed) return;
+    this.preferredTarget = undefined;
     this.inspectMessageId = resolution.inspectMessageId;
     this.resolutionGeneration = resolution.resolutionGeneration;
     this.documentUri = resolution.documentUri;
@@ -68,23 +85,39 @@ export class SourceNavigator implements DisposableLike {
     }
 
     const editor = this.host.getActiveEditor();
-    if (!editor || editor.documentUri !== this.documentUri) return;
+    if (!editor || editor.documentUri !== this.documentUri) {
+      this.preferredTarget = undefined;
+      return;
+    }
 
     const cursor = this.host.getPrimaryCursor(editor);
-    const activeIndex = containingRangeIndex(this.ranges, cursor);
+    const activeIndex = this.activeRangeIndex(editor, cursor);
     const targetIndex = activeIndex === undefined
       ? outsideTargetIndex(this.ranges, cursor, message.direction)
       : adjacentIndex(activeIndex, this.ranges.length, message.direction);
     const target = this.ranges[targetIndex];
     if (!target) return;
 
-    this.host.setPrimaryCursor(editor, target.start);
+    this.preferredTarget = {
+      inspectMessageId: this.inspectMessageId,
+      resolutionGeneration: this.resolutionGeneration,
+      documentUri: this.documentUri,
+      index: targetIndex,
+      range: target,
+    };
+    try {
+      this.host.setPrimaryCursor(editor, target.start);
+    } catch (error) {
+      this.preferredTarget = undefined;
+      throw error;
+    }
     this.host.revealRange(editor, target);
     this.publishState();
   }
 
   public beginInspect(inspectMessageId: string): void {
     if (this.disposed) return;
+    this.preferredTarget = undefined;
     this.inspectMessageId = inspectMessageId;
     this.resolutionGeneration = 0;
     this.documentUri = undefined;
@@ -94,6 +127,7 @@ export class SourceNavigator implements DisposableLike {
 
   public invalidate(): void {
     if (this.disposed) return;
+    this.preferredTarget = undefined;
     this.documentUri = undefined;
     this.ranges = [];
     this.publishState();
@@ -102,6 +136,7 @@ export class SourceNavigator implements DisposableLike {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.preferredTarget = undefined;
     for (const subscription of this.subscriptions) subscription.dispose();
   }
 
@@ -115,11 +150,9 @@ export class SourceNavigator implements DisposableLike {
       editor.documentUri === this.documentUri;
     const selectedMatchCount = matchesActiveDocument ? this.ranges.length : 0;
     const activeMatchIndex = matchesActiveDocument
-      ? containingRangeIndex(
-        this.ranges,
-        this.host.getPrimaryCursor(editor),
-      )
+      ? this.activeRangeIndex(editor, this.host.getPrimaryCursor(editor))
       : undefined;
+    if (!matchesActiveDocument) this.preferredTarget = undefined;
 
     this.stateSender.sendSourceNavigationState({
       inspectMessageId: this.inspectMessageId,
@@ -127,6 +160,29 @@ export class SourceNavigator implements DisposableLike {
       selectedMatchCount,
       ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     });
+  }
+
+  private activeRangeIndex(
+    editor: SourceNavigationEditor,
+    cursor: SourcePosition,
+  ): number | undefined {
+    const preferred = this.preferredTarget;
+    if (preferred) {
+      const currentRange = this.ranges[preferred.index];
+      if (
+        preferred.inspectMessageId === this.inspectMessageId &&
+        preferred.resolutionGeneration === this.resolutionGeneration &&
+        preferred.documentUri === this.documentUri &&
+        preferred.documentUri === editor.documentUri &&
+        samePosition(cursor, preferred.range.start) &&
+        currentRange !== undefined &&
+        sameRange(currentRange, preferred.range)
+      ) {
+        return preferred.index;
+      }
+      this.preferredTarget = undefined;
+    }
+    return containingRangeIndex(this.ranges, cursor);
   }
 }
 
@@ -191,6 +247,15 @@ function compareRanges(left: SourceRange, right: SourceRange): number {
 
 function comparePositions(left: SourcePosition, right: SourcePosition): number {
   return left.line - right.line || left.character - right.character;
+}
+
+function sameRange(left: SourceRange, right: SourceRange): boolean {
+  return samePosition(left.start, right.start) &&
+    samePosition(left.end, right.end);
+}
+
+function samePosition(left: SourcePosition, right: SourcePosition): boolean {
+  return left.line === right.line && left.character === right.character;
 }
 
 function rangeKey(documentUri: string, range: SourceRange): string {

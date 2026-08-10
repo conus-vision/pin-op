@@ -18,6 +18,7 @@ import {
   type PresenterRuntime,
   type PresenterRuntimeHost,
 } from "./presenter/runtime.js";
+import { replacePrimarySelection } from "./presenter/sourceNavigator.js";
 import {
   ExtensionRuntimeController,
   registerRuntimeCommands,
@@ -220,7 +221,12 @@ function createPresenterHost(): PresenterRuntimeHost {
     getPrimaryCursor: (editor) => vscodeEditor(editor).selection.active,
     setPrimaryCursor: (editor, position_) => {
       const position = new vscode.Position(position_.line, position_.character);
-      vscodeEditor(editor).selection = new vscode.Selection(position, position);
+      const textEditor = vscodeEditor(editor);
+      const primary = new vscode.Selection(position, position);
+      textEditor.selections = replacePrimarySelection(
+        textEditor.selections,
+        primary,
+      );
     },
     revealRange: (editor, range) =>
       vscodeEditor(editor).revealRange(
