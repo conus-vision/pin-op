@@ -83,15 +83,32 @@ originating panel.
 Built-in CSS and SCSS resolvers use the same versioned API available to
 separately installed VS Code extensions.
 
-The CSS resolver prefers exact source position or CSSOM rule-path evidence. If
-exact evidence misses but remains structurally valid, CSS fingerprint fallback
-uses normalized selector, media conditions, and declaration evidence; zero or
-multiple candidates fail closed.
+Source lookup first chooses a workspace strategy. Workspace-bound resolution is
+selected when the document or stylesheet URL path begins with an open workspace
+folder name. Browser2IDE strips that leading segment once and searches only that
+folder. For example, `http://localhost/_ORB/` and
+`/_ORB/wp-content/themes/orbiter/style.css?v=7` bind source lookup to the open
+`_ORB` folder, so duplicate basenames elsewhere do not create ambiguity. The
+local diagnostic is `Workspace-bound: _ORB` (generally
+`Workspace-bound: <folder>`).
+
+When neither URL supplies a workspace identity, automatic resolution keeps the
+existing exact-path and unique-basename search across all open folders. Its
+local diagnostic is `Automatic source matching`; this convenience means the
+user accepts the risk of a coincidental automatic mapping.
+
+The CSS resolver prefers exact source position or CSSOM rule-path evidence. A
+workspace-bound CSS source miss never fingerprint-matches an unrelated active
+CSS document. Automatic CSS may retain the conservative fingerprint fallback,
+which uses normalized selector, media conditions, and declaration evidence;
+zero or multiple candidates fail closed.
 
 The SCSS resolver reads generated CSS from the workspace, identifies one
 generated rule, loads its local inline or external source map, and accepts only
-a mapping into the active SCSS document. Missing, invalid, ambiguous, unmapped,
-and other-document outcomes fail closed.
+a mapping into the exact active SCSS document. Automatic unique-basename
+matching may locate generated CSS and is diagnosed, but a basename-only match
+can never authorize the original SCSS source. Missing, invalid, ambiguous,
+unmapped, and other-document outcomes fail closed.
 
 Plugins return semantic ranges. Core owns all editor UI. The authoring contract
 is in [source-plugin-authoring.md](source-plugin-authoring.md).

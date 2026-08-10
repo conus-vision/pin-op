@@ -203,6 +203,26 @@ variants. Confirm `SCSS source map missing`, `SCSS source map invalid`, or
 `No matching rules in active file`, with no guessed highlight. Restore the
 fixture after the checks.
 
+### Installed `_ORB` Workspace Check
+
+Repeat this focused check with the packaged `0.3.0` extensions and the normal
+terminal-free link workflow:
+
+1. Open a workspace containing an open folder named `_ORB`.
+2. Load `http://localhost/_ORB/` and confirm the selected element uses
+   `/_ORB/wp-content/themes/orbiter/style.css?v=7`.
+3. Keep the mapped `style.scss` active in VS Code. Leave other `style.css` files
+   in the workspace so duplicate basenames are present.
+4. Select the styled element and confirm complete SCSS blocks, including their
+   closing braces, are highlighted.
+5. Run **Browser2IDE: Open Diagnostics** and confirm the exact local diagnostic
+   `Workspace-bound: _ORB`; it must not report `Ambiguous source path`.
+
+Return to the existing repository-root fixture at `http://127.0.0.1:4173/`,
+select `.card.featured` with `src/layout.scss` active, and open diagnostics.
+Because that fixture URL has no workspace identity, confirm the exact local
+diagnostic `Automatic source matching`.
+
 ### Window Isolation And Peer State
 
 1. Alternate selections in Windows A and B. Only their explicitly linked IDE
