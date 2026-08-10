@@ -7,9 +7,10 @@ import {
   INSPECT_LIMITS,
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
+  SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
 } from "./limits.js";
 
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 
 export type EmptyMetadata = Readonly<Record<string, never>>;
 
@@ -42,6 +43,29 @@ const countSchema = z
   .int()
   .min(0)
   .max(RESOLUTION_LIMITS.count);
+
+function addSerializedBudgetIssue(
+  message: object,
+  context: z.RefinementCtx,
+  envelopeMaxBytes: number,
+  messageType: string,
+) {
+  try {
+    if (utf8ByteLength(JSON.stringify(message)) > envelopeMaxBytes) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: `${messageType} message exceeds serialized byte limit`,
+      });
+    }
+  } catch {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [],
+      message: `${messageType} message must be JSON serializable`,
+    });
+  }
+}
 
 const baseMessageSchema = z
   .object({
@@ -341,21 +365,12 @@ export function createResolutionMessageSchema(
         });
       }
 
-      try {
-        if (utf8ByteLength(JSON.stringify(message)) > envelopeMaxBytes) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: [],
-            message: "resolution message exceeds serialized byte limit",
-          });
-        }
-      } catch {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [],
-          message: "resolution message must be JSON serializable",
-        });
-      }
+      addSerializedBudgetIssue(
+        message,
+        context,
+        envelopeMaxBytes,
+        "resolution",
+      );
     })
     .transform(
       (message): DeepReadonly<z.infer<typeof schema>> => message,
@@ -363,6 +378,87 @@ export function createResolutionMessageSchema(
 }
 
 export const ResolutionMessageSchema = createResolutionMessageSchema();
+
+export const SourceNavigationDirectionSchema = z.enum(["previous", "next"]);
+
+export function createSourceNavigateMessageSchema(
+  envelopeMaxBytes = SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+) {
+  const schema = z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("source.navigate"),
+      messageId: opaqueIdSchema,
+      sessionId: opaqueIdSchema,
+      inspectMessageId: opaqueIdSchema,
+      resolutionGeneration: generationSchema,
+      direction: SourceNavigationDirectionSchema,
+      metadata: EmptyMetadataSchema,
+    })
+    .strict();
+
+  return schema
+    .superRefine((message, context) => {
+      addSerializedBudgetIssue(
+        message,
+        context,
+        envelopeMaxBytes,
+        "source.navigate",
+      );
+    })
+    .transform(
+      (message): DeepReadonly<z.infer<typeof schema>> => message,
+    );
+}
+
+export const SourceNavigateMessageSchema =
+  createSourceNavigateMessageSchema();
+
+export function createSourceNavigationStateMessageSchema(
+  envelopeMaxBytes = SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+) {
+  const schema = z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("source.navigationState"),
+      messageId: opaqueIdSchema,
+      sessionId: opaqueIdSchema,
+      inspectMessageId: opaqueIdSchema,
+      source: ResolutionSourceSchema,
+      resolutionGeneration: generationSchema,
+      selectedMatchCount: countSchema,
+      activeMatchIndex: countSchema.optional(),
+      metadata: EmptyMetadataSchema,
+    })
+    .strict();
+
+  return schema
+    .superRefine((message, context) => {
+      if (
+        message.activeMatchIndex !== undefined &&
+        message.activeMatchIndex >= message.selectedMatchCount
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["activeMatchIndex"],
+          message: "active match index must be less than selected match count",
+        });
+      }
+
+      addSerializedBudgetIssue(
+        message,
+        context,
+        envelopeMaxBytes,
+        "source.navigationState",
+      );
+    })
+    .transform(
+      (message): DeepReadonly<z.infer<typeof schema>> => message,
+    );
+}
+
+export const SourceNavigationStateMessageSchema =
+  createSourceNavigationStateMessageSchema();
 
 const peerStateObjectSchema = z
   .object({
@@ -428,7 +524,9 @@ export const Browser2IdeMessageSchema = z.union([
   AuthenticatedMessageSchema,
   UnlinkMessageSchema,
   InspectMessageSchema,
+  SourceNavigateMessageSchema,
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
   PeerStateMessageSchema,
   ErrorMessageSchema,
   PingMessageSchema,
@@ -459,6 +557,15 @@ export type ResolutionDiagnosticCode = z.infer<
 >;
 export type ResolutionStatus = z.infer<typeof ResolutionStatusSchema>;
 export type ResolutionMessage = z.infer<typeof ResolutionMessageSchema>;
+export type SourceNavigationDirection = z.infer<
+  typeof SourceNavigationDirectionSchema
+>;
+export type SourceNavigateMessage = z.infer<
+  typeof SourceNavigateMessageSchema
+>;
+export type SourceNavigationStateMessage = z.infer<
+  typeof SourceNavigationStateMessageSchema
+>;
 export type PeerStateMessage = z.infer<typeof PeerStateMessageSchema>;
 export type ProtocolErrorCode = z.infer<typeof ProtocolErrorCodeSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;

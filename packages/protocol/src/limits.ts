@@ -1,5 +1,6 @@
 export const INSPECT_ENVELOPE_MAX_BYTES = 768 * 1024;
 export const RESOLUTION_ENVELOPE_MAX_BYTES = 16 * 1024;
+export const SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES = 16 * 1024;
 
 export const INSPECT_LIMITS = {
   targets: 2,

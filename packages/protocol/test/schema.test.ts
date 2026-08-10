@@ -272,11 +272,13 @@ describe("Browser2IDE protocol schemas", () => {
       Inspect: "inspect",
       Resolution: "resolution",
       Link: "link",
+      SourceNavigation: "source-navigation",
     });
     expect(ProtocolCapabilitySchema.options).toEqual([
       "inspect",
       "resolution",
       "link",
+      "source-navigation",
     ]);
   });
 

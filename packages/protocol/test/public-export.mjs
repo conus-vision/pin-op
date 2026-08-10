@@ -9,12 +9,17 @@ import {
   LinkRequestMessageSchema,
   PeerStateMessageSchema,
   PROTOCOL_VERSION,
+  ProtocolCapability,
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
   ResolutionDiagnosticCodeSchema,
   ResolutionMessageSchema,
   ResolutionSourceSchema,
   ResolutionStatusSchema,
+  SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+  SourceNavigateMessageSchema,
+  SourceNavigationDirectionSchema,
+  SourceNavigationStateMessageSchema,
   UnlinkMessageSchema,
   parseMessage,
 } from "@browser2ide/protocol";
@@ -28,7 +33,7 @@ const ping = {
 };
 
 assert.deepEqual(parseMessage(ping), ping);
-assert.equal(PROTOCOL_VERSION, 4);
+assert.equal(PROTOCOL_VERSION, 5);
 assert.equal(typeof Browser2IdeMessageSchema.parse, "function");
 assert.equal(typeof BridgeInstanceIdSchema.parse, "function");
 assert.equal(typeof EmptyMetadataSchema.parse, "function");
@@ -41,7 +46,12 @@ assert.equal(typeof ResolutionDiagnosticCodeSchema.parse, "function");
 assert.equal(typeof ResolutionStatusSchema.parse, "function");
 assert.equal(typeof ResolutionMessageSchema.parse, "function");
 assert.equal(typeof PeerStateMessageSchema.parse, "function");
+assert.equal(typeof SourceNavigationDirectionSchema.parse, "function");
+assert.equal(typeof SourceNavigateMessageSchema.parse, "function");
+assert.equal(typeof SourceNavigationStateMessageSchema.parse, "function");
+assert.equal(ProtocolCapability.SourceNavigation, "source-navigation");
 assert.equal(RESOLUTION_ENVELOPE_MAX_BYTES, 16 * 1024);
+assert.equal(SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES, 16 * 1024);
 assert.equal(typeof RESOLUTION_LIMITS.opaqueIdLength, "number");
 assert.equal(typeof RESOLUTION_LIMITS.labelLength, "number");
 assert.equal(typeof RESOLUTION_LIMITS.languageIdLength, "number");

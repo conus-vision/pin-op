@@ -3,15 +3,18 @@ import type {
   EmptyMetadata,
   PeerStateMessage,
   ResolutionMessage,
+  SourceNavigateMessage,
+  SourceNavigationDirection,
+  SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 
-// @ts-expect-error Legacy reference envelopes are not part of protocol v4.
+// @ts-expect-error Legacy reference envelopes are not part of protocol v5.
 type RemovedReferencesMessage = import("@browser2ide/protocol").ReferencesMessage;
-// @ts-expect-error Legacy command envelopes are not part of protocol v4.
+// @ts-expect-error Legacy command envelopes are not part of protocol v5.
 type RemovedCommandMessage = import("@browser2ide/protocol").CommandMessage;
-// @ts-expect-error Legacy open-source commands are not part of protocol v4.
+// @ts-expect-error Legacy open-source commands are not part of protocol v5.
 type RemovedOpenSourceCommandMessage = import("@browser2ide/protocol").OpenSourceCommandMessage;
-// @ts-expect-error Legacy highlight commands are not part of protocol v4.
+// @ts-expect-error Legacy highlight commands are not part of protocol v5.
 type RemovedHighlightCommandMessage = import("@browser2ide/protocol").HighlightElementCommandMessage;
 // @ts-expect-error Legacy source references are not publicly exported.
 type RemovedSourceReference = import("@browser2ide/protocol").SourceReference;
@@ -22,7 +25,7 @@ const emptyMetadata: EmptyMetadata = {};
 const nonEmptyMetadata: EmptyMetadata = { extra: true };
 
 const resolution: ResolutionMessage = {
-  protocolVersion: 4,
+  protocolVersion: 5,
   type: "resolution",
   messageId: "resolution-1",
   sessionId: "session-1",
@@ -44,7 +47,7 @@ const resolutionWithMetadata: ResolutionMessage = {
 };
 
 const peerState: PeerStateMessage = {
-  protocolVersion: 4,
+  protocolVersion: 5,
   type: "peerState",
   messageId: "peer-state-1",
   sessionId: "session-1",
@@ -60,9 +63,47 @@ const peerStateWithMetadata: PeerStateMessage = {
   metadata: { extra: true },
 };
 
+const previousDirection: SourceNavigationDirection = "previous";
+const nextDirection: SourceNavigationDirection = "next";
+
+// @ts-expect-error SourceNavigationDirection is a closed union.
+const unsupportedDirection: SourceNavigationDirection = "first";
+
+const sourceNavigate: SourceNavigateMessage = {
+  protocolVersion: 5,
+  type: "source.navigate",
+  messageId: "source-navigate-1",
+  sessionId: "session-1",
+  inspectMessageId: "inspect-1",
+  resolutionGeneration: 1,
+  direction: nextDirection,
+  metadata: emptyMetadata,
+};
+
+const sourceNavigationStateWithoutActiveMatch: SourceNavigationStateMessage = {
+  protocolVersion: 5,
+  type: "source.navigationState",
+  messageId: "source-navigation-state-1",
+  sessionId: "session-1",
+  inspectMessageId: "inspect-1",
+  source: { role: "ide", id: "vscode-1" },
+  resolutionGeneration: 1,
+  selectedMatchCount: 4,
+  metadata: emptyMetadata,
+};
+
+const sourceNavigationStateWithActiveMatch: SourceNavigationStateMessage = {
+  ...sourceNavigationStateWithoutActiveMatch,
+  activeMatchIndex: 0,
+};
+
 void nonEmptyMetadata;
 void resolutionWithMetadata;
 void peerStateWithMetadata;
+void previousDirection;
+void unsupportedDirection;
+void sourceNavigate;
+void sourceNavigationStateWithActiveMatch;
 
 declare const readonlyResolution: ResolutionMessage;
 
@@ -80,6 +121,18 @@ declare const readonlyPeerState: PeerStateMessage;
 // @ts-expect-error PeerStateMessage fields are readonly.
 readonlyPeerState.connected = false;
 
+declare const readonlySourceNavigate: SourceNavigateMessage;
+
+// @ts-expect-error SourceNavigateMessage fields are readonly.
+readonlySourceNavigate.direction = "previous";
+
+declare const readonlySourceNavigationState: SourceNavigationStateMessage;
+
+// @ts-expect-error SourceNavigationStateMessage fields are readonly.
+readonlySourceNavigationState.activeMatchIndex = 1;
+// @ts-expect-error SourceNavigationStateMessage source fields are readonly.
+readonlySourceNavigationState.source.id = "other-ide";
+
 declare const readonlyUnionMessage: Browser2IdeMessage;
 
 if (readonlyUnionMessage.type === "resolution") {
@@ -90,4 +143,14 @@ if (readonlyUnionMessage.type === "resolution") {
 if (readonlyUnionMessage.type === "peerState") {
   // @ts-expect-error Browser2IdeMessage peer-state branches are readonly.
   readonlyUnionMessage.connected = false;
+}
+
+if (readonlyUnionMessage.type === "source.navigate") {
+  // @ts-expect-error Browser2IdeMessage source-navigation intents are readonly.
+  readonlyUnionMessage.direction = "previous";
+}
+
+if (readonlyUnionMessage.type === "source.navigationState") {
+  // @ts-expect-error Browser2IdeMessage source-navigation states are deeply readonly.
+  readonlyUnionMessage.source.id = "other-ide";
 }
