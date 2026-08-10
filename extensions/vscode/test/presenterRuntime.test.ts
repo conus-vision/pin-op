@@ -2,14 +2,20 @@ import type * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SOURCE_PLUGIN_API_VERSION,
+  type SourcePosition,
   type SourcePlugin,
+  type SourceRange,
   type SourceWorkspace,
 } from "@browser2ide/plugin-api";
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
+  type SourceNavigateMessage,
 } from "@browser2ide/protocol";
-import type { ResolutionInput } from "../src/bridgeClient.js";
+import type {
+  ResolutionInput,
+  SourceNavigationStateInput,
+} from "../src/bridgeClient.js";
 import { SourceDecorationManager } from "../src/presenter/decorations.js";
 import { createPresenterRuntime } from "../src/presenter/runtime.js";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
@@ -65,6 +71,62 @@ describe("presenter runtime", () => {
     expect(harness.resolutions).toHaveLength(published);
   });
 
+  it("does not move on inspect or resolution and moves once on explicit navigation", async () => {
+    const harness = runtimeHarness({ activeLanguageId: "fixture" });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin());
+    harness.movePrimaryCursor({ line: 0, character: 10 });
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+
+    expect(harness.navigationStates[0]).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 0,
+    });
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
+
+    await harness.flush();
+    expect(harness.navigationStates.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 1,
+    });
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
+
+    harness.runtime.navigate(sourceNavigate("next"));
+
+    expect(harness.cursorSets).toEqual([{ line: 0, character: 0 }]);
+    expect(harness.revealedRanges).toEqual([{
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 7 },
+    }]);
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+  });
+
+  it("invalidates navigable ranges immediately when the active document changes", async () => {
+    const harness = await resolvedRuntimeHarness();
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+    });
+
+    harness.changeTextDocument();
+
+    expect(harness.navigationStates.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 0,
+    });
+    harness.runtime.navigate(sourceNavigate("next"));
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
+    harness.runtime.dispose();
+  });
+
   it("records local diagnostics even when transport publication fails", async () => {
     const transportError = new Error("socket write failed");
     const harness = runtimeHarness({
@@ -78,6 +140,26 @@ describe("presenter runtime", () => {
     expect(harness.errors).toEqual([transportError]);
     expect(harness.diagnosticRecords).toHaveLength(1);
     expect(harness.resolutions).toHaveLength(1);
+  });
+
+  it("keeps every resolution sink running when navigation state publication fails", async () => {
+    const sinkError = new Error("navigation state write failed");
+    const harness = runtimeHarness({
+      activeLanguageId: "fixture",
+      navigationSendError: sinkError,
+    });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin());
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+    await harness.flush();
+
+    expect(harness.runtime.tree.getMatches()).toHaveLength(1);
+    expect(harness.diagnosticRecords).toHaveLength(1);
+    expect(harness.resolutions).toHaveLength(1);
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+    });
+    expect(harness.errors).toContain(sinkError);
   });
 
   it("runs every update sink when tree publication and error reporting fail", async () => {
@@ -176,6 +258,9 @@ describe("presenter runtime", () => {
     expect(decorationUpdate).toHaveBeenCalledTimes(1);
     expect(harness.diagnosticRecords).toHaveLength(1);
     expect(harness.resolutions).toHaveLength(1);
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+    });
     expect(harness.errors).toEqual([sinkError]);
   });
 
@@ -284,6 +369,8 @@ describe("presenter runtime", () => {
     expect(harness.disposed).toEqual([
       "active-editor-listener",
       "document-listener",
+      "active-editor-listener",
+      "primary-cursor-listener",
       "command",
       "tree-registration",
       "primary",
@@ -295,6 +382,7 @@ describe("presenter runtime", () => {
 function runtimeHarness(options: {
   readonly activeLanguageId: string;
   readonly sendError?: Error;
+  readonly navigationSendError?: Error;
   readonly diagnosticRecordError?: Error;
   readonly reporterError?: Error;
 }) {
@@ -316,12 +404,17 @@ function runtimeHarness(options: {
     (editor: ReturnType<typeof createEditor> | undefined) => void
   >();
   const documentListeners = new Set<(document: ReturnType<typeof textDocument>) => void>();
+  const primaryCursorListeners = new Set<() => void>();
   const resolutions: ResolutionInput[] = [];
+  const navigationStates: SourceNavigationStateInput[] = [];
+  const cursorSets: SourcePosition[] = [];
+  const revealedRanges: SourceRange[] = [];
   const errors: unknown[] = [];
   const diagnosticRecords: unknown[][] = [];
   let diagnosticClearCalls = 0;
   let nextDiagnosticClearError: Error | undefined;
   let editor = createEditor(uri, options.activeLanguageId, text);
+  let primaryCursor: SourcePosition = { line: 0, character: 0 };
   const runtime = createPresenterRuntime({
     registry,
     workspace: workspace(),
@@ -343,8 +436,17 @@ function runtimeHarness(options: {
       resolutions.push(resolution);
       if (options.sendError) throw options.sendError;
     },
+    sendSourceNavigationState(state) {
+      navigationStates.push(state);
+      if (options.navigationSendError) throw options.navigationSendError;
+    },
     host: {
       getActiveEditor: () => editor,
+      getPrimaryCursor: () => primaryCursor,
+      setPrimaryCursor(_editor, position) {
+        primaryCursor = position;
+        cursorSets.push(position);
+      },
       onDidChangeActiveEditor(listener) {
         activeEditorListeners.add(listener);
         return disposable(() => {
@@ -357,6 +459,13 @@ function runtimeHarness(options: {
         return disposable(() => {
           documentListeners.delete(listener);
           disposed.push("document-listener");
+        });
+      },
+      onDidChangePrimaryCursor(listener) {
+        primaryCursorListeners.add(listener);
+        return disposable(() => {
+          primaryCursorListeners.delete(listener);
+          disposed.push("primary-cursor-listener");
         });
       },
       createThemeIcon: (id) => ({ id }) as vscode.ThemeIcon,
@@ -373,8 +482,9 @@ function runtimeHarness(options: {
         () => disposed.push("tree-registration"),
       ),
       registerCommand: () => disposable(() => disposed.push("command")),
-      revealRange() {},
-      selectRangeStart() {},
+      revealRange(_editor, range) {
+        revealedRanges.push(range as SourceRange);
+      },
       reportError: (error) => {
         errors.push(error);
         if (options.reporterError) throw options.reporterError;
@@ -390,6 +500,9 @@ function runtimeHarness(options: {
     registeredPluginIds,
     disposed,
     resolutions,
+    navigationStates,
+    cursorSets,
+    revealedRanges,
     errors,
     diagnosticRecords,
     get diagnosticClearCalls() {
@@ -402,6 +515,16 @@ function runtimeHarness(options: {
     changeActiveEditor(nextUri: string, languageId: string) {
       editor = createEditor(nextUri, languageId, ".card {}");
       for (const listener of activeEditorListeners) listener(editor);
+    },
+    changeTextDocument() {
+      for (const listener of documentListeners) listener(editor.document);
+    },
+    movePrimaryCursor(position: SourcePosition) {
+      primaryCursor = position;
+    },
+    changePrimaryCursor(position: SourcePosition) {
+      primaryCursor = position;
+      for (const listener of primaryCursorListeners) listener();
     },
     flush,
   };
@@ -456,8 +579,27 @@ function fixturePlugin(localPath?: string): SourcePlugin {
 
 function createEditor(uri: string, languageId: string, text: string) {
   return {
+    documentUri: uri,
     document: textDocument(uri, languageId, text),
     setDecorations() {},
+  };
+}
+
+function sourceNavigate(
+  direction: SourceNavigateMessage["direction"],
+  overrides: Partial<
+    Pick<SourceNavigateMessage, "inspectMessageId" | "resolutionGeneration">
+  > = {},
+): SourceNavigateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigate",
+    messageId: `navigate-${direction}`,
+    sessionId: "session-1",
+    inspectMessageId: overrides.inspectMessageId ?? "inspect-1",
+    resolutionGeneration: overrides.resolutionGeneration ?? 0,
+    direction,
+    metadata: {},
   };
 }
 

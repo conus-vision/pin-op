@@ -44,6 +44,8 @@ export async function activate(
     diagnostics,
     sendResolution: (resolution) =>
       resolutionClients.sendResolution(resolution),
+    sendSourceNavigationState: (state) =>
+      sourceNavigationClients.sendSourceNavigationState(state),
   });
   presenterRuntime = runtime;
 
@@ -86,11 +88,15 @@ export async function activate(
         output?.appendLine(`inspect ${message.messageId}`);
         runtime.select(message);
       });
+      const unsubscribeSourceNavigate = nextClient.onSourceNavigate((message) =>
+        runtime.navigate(message)
+      );
       resolutionClients.bind(nextClient);
       sourceNavigationClients.bind(nextClient);
       return {
         connect: () => nextClient.connect(),
         dispose() {
+          unsubscribeSourceNavigate();
           resolutionClients.unbind(nextClient);
           sourceNavigationClients.unbind(nextClient);
           runtime.clear();
@@ -193,6 +199,10 @@ function createPresenterHost(): PresenterRuntimeHost {
       vscode.workspace.onDidChangeTextDocument((event) =>
         listener(event.document),
       ),
+    onDidChangePrimaryCursor: (listener) =>
+      vscode.window.onDidChangeTextEditorSelection((event) => {
+        if (event.textEditor === vscode.window.activeTextEditor) listener();
+      }),
     createThemeIcon: (id) => new vscode.ThemeIcon(id),
     createThemeColor: (id) => new vscode.ThemeColor(id),
     overviewRulerLaneRight: vscode.OverviewRulerLane.Right,
@@ -207,15 +217,16 @@ function createPresenterHost(): PresenterRuntimeHost {
       vscode.window.createTextEditorDecorationType(options),
     createRange: (startLine, startColumn, endLine, endColumn) =>
       new vscode.Range(startLine, startColumn, endLine, endColumn),
+    getPrimaryCursor: (editor) => vscodeEditor(editor).selection.active,
+    setPrimaryCursor: (editor, position_) => {
+      const position = new vscode.Position(position_.line, position_.character);
+      vscodeEditor(editor).selection = new vscode.Selection(position, position);
+    },
     revealRange: (editor, range) =>
       vscodeEditor(editor).revealRange(
         range as vscode.Range,
         vscode.TextEditorRevealType.InCenter,
       ),
-    selectRangeStart: (editor, start) => {
-      const position = new vscode.Position(start.line, start.character);
-      vscodeEditor(editor).selection = new vscode.Selection(position, position);
-    },
     reportError: reportPresenterError,
   };
 }
@@ -235,6 +246,7 @@ type VsCodePresenterEditor = PresenterEditorLike & {
 function presenterEditor(editor: vscode.TextEditor): VsCodePresenterEditor {
   return {
     source: editor,
+    documentUri: editor.document.uri.toString(),
     document: editor.document,
     setDecorations(decorationType, ranges) {
       editor.setDecorations(

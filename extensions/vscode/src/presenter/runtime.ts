@@ -6,8 +6,14 @@ import type {
   SourceRange,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import type { InspectMessage } from "@browser2ide/protocol";
-import type { ResolutionInput } from "../bridgeClient.js";
+import type {
+  InspectMessage,
+  SourceNavigateMessage,
+} from "@browser2ide/protocol";
+import type {
+  ResolutionInput,
+  SourceNavigationStateInput,
+} from "../bridgeClient.js";
 import type { DiagnosticsTracker } from "../diagnostics.js";
 import { createBrowser2IDEApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
@@ -37,8 +43,16 @@ import {
   type SourceDecorationHost,
 } from "./decorations.js";
 import { SelectionStore } from "./selectionStore.js";
+import {
+  SourceNavigator,
+  type SourceNavigationEditor,
+  type SourceNavigationHost,
+} from "./sourceNavigator.js";
 
-export type PresenterEditorLike = ActiveEditorLike & SourceDecorationEditorLike;
+export type PresenterEditorLike =
+  & ActiveEditorLike
+  & SourceDecorationEditorLike
+  & SourceNavigationEditor;
 
 export interface PresenterRuntimeHost
   extends CoordinatorHost,
@@ -53,8 +67,13 @@ export interface PresenterRuntimeHost
     command: string,
     callback: (...arguments_: unknown[]) => unknown,
   ): DisposableLike;
+  getPrimaryCursor(editor: PresenterEditorLike): SourcePosition;
+  setPrimaryCursor(
+    editor: PresenterEditorLike,
+    position: SourcePosition,
+  ): void;
+  onDidChangePrimaryCursor(listener: () => void): DisposableLike;
   revealRange(editor: PresenterEditorLike, range: unknown): void;
-  selectRangeStart(editor: PresenterEditorLike, start: SourcePosition): void;
   reportError(error: unknown): void;
 }
 
@@ -67,12 +86,16 @@ export interface PresenterRuntimeOptions {
     "recordResolution" | "clearResolution"
   >;
   readonly sendResolution?: (resolution: ResolutionInput) => void;
+  readonly sendSourceNavigationState?: (
+    state: SourceNavigationStateInput,
+  ) => void;
 }
 
 export interface PresenterRuntime extends DisposableLike {
   readonly api: Browser2IDEApi;
   readonly tree: ApplicableSourcesTreeDataProvider;
   select(message: InspectMessage): void;
+  navigate(message: SourceNavigateMessage): void;
   clear(): void;
 }
 
@@ -92,6 +115,14 @@ export function createPresenterRuntime(
   };
   const tree = new ApplicableSourcesTreeDataProvider(treeOptions);
   const decorations = new SourceDecorationManager(host);
+  const sourceNavigator = new SourceNavigator(
+    createSourceNavigationHost(host),
+    {
+      sendSourceNavigationState(state) {
+        runSink(host, () => options.sendSourceNavigationState?.(state));
+      },
+    },
+  );
   const treeRegistration = host.registerTreeDataProvider(tree);
   const commandRegistration = registerPresenterCommands(
     {
@@ -102,7 +133,7 @@ export function createPresenterRuntime(
       revealRange: (editor, range) =>
         host.revealRange(editor as PresenterEditorLike, range),
       selectRangeStart: (editor, start) =>
-        host.selectRangeStart(editor as PresenterEditorLike, start),
+        host.setPrimaryCursor(editor as PresenterEditorLike, start),
     },
     tree,
     (error) => reportSafely(host, error),
@@ -121,6 +152,7 @@ export function createPresenterRuntime(
     runSink(host, () => tree.clear());
     runSink(host, () => decorations.clear());
     runSink(host, () => options.diagnostics?.clearResolution());
+    runSink(host, () => sourceNavigator.invalidate());
   };
   const coordinator = new ActiveEditorCoordinator({
     host,
@@ -143,6 +175,16 @@ export function createPresenterRuntime(
           ...toProtocolResolution(publication.outcome),
         });
       });
+      runSink(host, () => {
+        sourceNavigator.update({
+          inspectMessageId: publication.inspectMessageId,
+          resolutionGeneration: publication.resolutionGeneration,
+          ...(publication.resolution
+            ? { documentUri: publication.resolution.documentUri }
+            : {}),
+          matches: publication.resolution?.matches ?? [],
+        });
+      });
     },
     clear,
     onError: (error) => reportSafely(host, error),
@@ -153,7 +195,11 @@ export function createPresenterRuntime(
     api,
     tree,
     select(message) {
+      runSink(host, () => sourceNavigator.beginInspect(message.messageId));
       coordinator.select(message);
+    },
+    navigate(message) {
+      runSink(host, () => sourceNavigator.navigate(message));
     },
     clear() {
       coordinator.clearSelection();
@@ -162,6 +208,7 @@ export function createPresenterRuntime(
       if (disposed) return;
       disposed = true;
       coordinator.dispose();
+      sourceNavigator.dispose();
       commandRegistration.dispose();
       treeRegistration.dispose();
       decorations.dispose();
@@ -187,6 +234,27 @@ function reportSafely(host: PresenterRuntimeHost, error: unknown): void {
   } catch {
     // Error reporting must not suppress the independent resolution sinks.
   }
+}
+
+function createSourceNavigationHost(
+  host: PresenterRuntimeHost,
+): SourceNavigationHost {
+  return {
+    getActiveEditor: () => host.getActiveEditor(),
+    getPrimaryCursor: (editor) =>
+      host.getPrimaryCursor(editor as PresenterEditorLike),
+    setPrimaryCursor: (editor, position) =>
+      host.setPrimaryCursor(editor as PresenterEditorLike, position),
+    revealRange: (editor, range) =>
+      host.revealRange(
+        editor as PresenterEditorLike,
+        createHostRange(host, range),
+      ),
+    onDidChangeActiveEditor: (listener) =>
+      host.onDidChangeActiveEditor(() => listener()),
+    onDidChangePrimaryCursor: (listener) =>
+      host.onDidChangePrimaryCursor(listener),
+  };
 }
 
 function createHostRange(
