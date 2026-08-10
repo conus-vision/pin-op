@@ -1,7 +1,6 @@
 import {
   ChevronLeft,
   ChevronRight,
-  createElement as createLucideElement,
   type IconNode,
 } from "lucide";
 import {
@@ -13,10 +12,11 @@ import type {
   SourceNavigationController,
   SourceNavigationViewModel,
 } from "./sourceNavigationController.js";
+import { createLucideElement } from "./lucideElement.js";
 
 export type DomTreeDocument = Pick<
   Document,
-  "activeElement" | "createElement" | "getElementById"
+  "activeElement" | "createElement" | "createElementNS" | "getElementById"
 >;
 
 export interface DomTreeViewOptions {
@@ -70,6 +70,9 @@ export class DomTreeView {
   private readonly onKeyDown = (event: Event): void => {
     const keyboardEvent = event as KeyboardEvent;
     if (!TREE_KEYS.has(keyboardEvent.key as DomTreeKey)) {
+      return;
+    }
+    if (isSourceNavigationTarget(event.target, this.tree)) {
       return;
     }
     event.preventDefault();
@@ -495,13 +498,24 @@ function createDefaultResizeObserver(
   return new ResizeObserver(() => listener());
 }
 
+function isSourceNavigationTarget(
+  target: EventTarget | null,
+  boundary: HTMLElement,
+): boolean {
+  const action = closestDataValue(target, boundary, "action");
+  return (
+    action === "source-previous" ||
+    action === "source-next" ||
+    closestDataValue(target, boundary, "part") ===
+      "source-navigation-controls"
+  );
+}
+
 function createNavigationIcon(
   ownerDocument: DomTreeDocument,
   icon: IconNode,
 ): Element {
-  const element = typeof globalThis.document?.createElementNS === "function"
-    ? createLucideElement(icon)
-    : ownerDocument.createElement("span");
+  const element = createLucideElement(ownerDocument, icon);
   element.setAttribute("aria-hidden", "true");
   return element;
 }

@@ -160,6 +160,16 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         view.renderResolution(model);
       }
     } else if (domEvent) {
+      const treeBeforeEvent = treeController.snapshot();
+      if (
+        domEvent.type === "dom.selectionChanged" &&
+        (treeBeforeEvent.documentEpoch === undefined ||
+          domEvent.documentEpoch >= treeBeforeEvent.documentEpoch) &&
+        (domEvent.documentEpoch !== treeBeforeEvent.documentEpoch ||
+          domEvent.nodeRef !== treeBeforeEvent.selectedRef)
+      ) {
+        sourceNavigationController.invalidate();
+      }
       treeController.handleEvent(domEvent);
       if (domEvent.type === "dom.selectionChanged") {
         const selected = domEvent.ancestorPath.at(-1);

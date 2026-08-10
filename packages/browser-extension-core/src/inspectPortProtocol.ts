@@ -1,4 +1,7 @@
-import { RESOLUTION_LIMITS } from "@browser2ide/protocol";
+import {
+  RESOLUTION_LIMITS,
+  type SourceNavigationStateMessage,
+} from "@browser2ide/protocol";
 import type {
   DomEvent,
   DomRequest,
@@ -60,6 +63,7 @@ export type PanelToBackgroundInspectPortMessage =
 export type BackgroundToPanelInspectPortMessage =
   | InspectPortResult
   | InspectPortInvalidated
+  | SourceNavigationStateMessage
   | DomResponse
   | DomEvent;
 

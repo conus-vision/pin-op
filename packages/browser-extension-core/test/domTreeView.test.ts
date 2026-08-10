@@ -5,7 +5,7 @@ import {
 } from "@browser2ide/protocol";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DomTreeController,
   type DomTreeTransport,
@@ -22,6 +22,10 @@ import type {
 } from "../src/domProtocol.js";
 
 describe("DomTreeView", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("renders an accessible tree with roving focus and safe text labels", () => {
     const harness = createHarness();
     const dangerous = "<img src=x onerror=alert(1)>";
@@ -182,6 +186,66 @@ describe("DomTreeView", () => {
       expect.objectContaining({ type: "dom.select" }),
     );
     expect(harness.controller.focusedRef).toBe("selected");
+  });
+
+  it("leaves source control keyboard activation to the nested buttons", async () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+    const tree = harness.dom.element("dom-tree");
+    const previous = harness.dom.row("selected")
+      .findByData("action", "source-previous");
+    const next = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    const previousIcon = previous?.children[0];
+    if (!previous || !next || !previousIcon) {
+      throw new Error("Missing selected-row source navigation controls");
+    }
+
+    const enter = tree.dispatch("keydown", {
+      key: "Enter",
+      target: previousIcon,
+    });
+    const arrow = tree.dispatch("keydown", {
+      key: "ArrowLeft",
+      target: next,
+    });
+    await flushAsync();
+
+    expect(enter.defaultPrevented).toBe(false);
+    expect(arrow.defaultPrevented).toBe(false);
+    expect(harness.controller.focusedRef).toBe("selected");
+    expect(harness.transport.dispatched).not.toContainEqual(
+      expect.objectContaining({ type: "dom.select" }),
+    );
+    expect(harness.sourceCommands).toEqual([]);
+  });
+
+  it("creates row source icons with the supplied tree document", () => {
+    const globalCreateElementNS = vi.fn(() => {
+      throw new Error("global document must not create row icons");
+    });
+    vi.stubGlobal("document", { createElementNS: globalCreateElementNS });
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+
+    const previous = harness.dom.row("selected")
+      .findByData("action", "source-previous");
+    expect(globalCreateElementNS).not.toHaveBeenCalled();
+    expect(previous?.children[0]?.tagName).toBe("svg");
+    expect(harness.dom.createdNamespacedTags()).toContainEqual({
+      namespace: "http://www.w3.org/2000/svg",
+      tagName: "path",
+    });
   });
 
   it("focuses the disclosed row and keeps one roving tabindex", async () => {
@@ -751,6 +815,10 @@ class FakeDom {
   public readonly document: DomTreeDocument;
   private readonly elements = new Map<string, FakeElement>();
   private readonly tags: string[] = [];
+  private readonly namespacedTags: Array<{
+    readonly namespace: string;
+    readonly tagName: string;
+  }> = [];
   public activeElement: FakeElement | undefined;
 
   public constructor(clientHeight: number) {
@@ -763,6 +831,10 @@ class FakeDom {
       createElement: (tagName) => {
         this.tags.push(tagName.toLowerCase());
         return new FakeElement(this, tagName);
+      },
+      createElementNS: (namespace, tagName) => {
+        this.namespacedTags.push({ namespace, tagName });
+        return new FakeElement(this, tagName, namespace);
       },
       get activeElement() {
         return tree.owner.activeElement;
@@ -788,6 +860,13 @@ class FakeDom {
 
   public createdTags(): readonly string[] {
     return this.tags;
+  }
+
+  public createdNamespacedTags(): readonly {
+    readonly namespace: string;
+    readonly tagName: string;
+  }[] {
+    return this.namespacedTags;
   }
 
   public totalListeners(): number {
@@ -824,6 +903,7 @@ class FakeElement {
   public constructor(
     public readonly owner: FakeDom,
     public readonly tagName: string,
+    public readonly namespaceURI?: string,
   ) {}
 
   public setAttribute(name: string, value: string): void {
@@ -846,6 +926,11 @@ class FakeElement {
       child.parentElement = this;
       this.children.push(child);
     }
+  }
+
+  public appendChild(child: FakeElement): FakeElement {
+    this.append(child);
+    return child;
   }
 
   public replaceChildren(...children: FakeElement[]): void {

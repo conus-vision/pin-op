@@ -1,7 +1,6 @@
 import {
   ChevronLeft,
   ChevronRight,
-  createElement as createLucideElement,
   type IconNode,
 } from "lucide";
 import type {
@@ -14,10 +13,11 @@ import type {
   SourceNavigationController,
   SourceNavigationViewModel,
 } from "./sourceNavigationController.js";
+import { createLucideElement } from "./lucideElement.js";
 
 export interface PanelDocument {
   getElementById(id: string): unknown;
-  createElement(tagName: string): unknown;
+  createElementNS(namespace: string, qualifiedName: string): Element;
 }
 
 export class DomPanelView implements PanelView {
@@ -216,12 +216,7 @@ function createNavigationIcon(
   ownerDocument: PanelDocument,
   icon: IconNode,
 ): unknown {
-  const element = typeof globalThis.document?.createElementNS === "function"
-    ? createLucideElement(icon)
-    : ownerDocument.createElement("span");
-  if (element && typeof element === "object" && "setAttribute" in element) {
-    (element as { setAttribute(name: string, value: string): void })
-      .setAttribute("aria-hidden", "true");
-  }
+  const element = createLucideElement(ownerDocument, icon);
+  element.setAttribute("aria-hidden", "true");
   return element;
 }

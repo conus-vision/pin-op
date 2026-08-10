@@ -4,7 +4,7 @@ import {
   type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";
 import { startPanelRuntime } from "../src/panelRuntime.js";
 
@@ -32,6 +32,10 @@ describe("startPanelRuntime", () => {
     initializeIcons = vi.fn();
     reportedErrors = [];
     diagnostics = new PanelDiagnostics();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("opens one shared port without reading clipboard or enabling inspect", async () => {
@@ -383,6 +387,25 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("creates footer source icons with the supplied panel document", async () => {
+    const globalCreateElementNS = vi.fn(() => {
+      throw new Error("global document must not create panel icons");
+    });
+    vi.stubGlobal("document", { createElementNS: globalCreateElementNS });
+
+    const runtime = createRuntime();
+    await runtime.ready;
+
+    expect(globalCreateElementNS).not.toHaveBeenCalled();
+    expect(dom.element("source-previous").children[0]?.tagName).toBe("svg");
+    expect(dom.element("source-next").children[0]?.tagName).toBe("svg");
+    expect(dom.namespacedTags()).toContainEqual({
+      namespace: "http://www.w3.org/2000/svg",
+      tagName: "path",
+    });
+    runtime.dispose();
+  });
+
   it("keeps selected-row and footer source navigation synchronized", async () => {
     const runtime = createRuntime();
     await runtime.ready;
@@ -582,36 +605,27 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
-  it("keeps current navigation when its DOM selection event arrives last", async () => {
+  it("invalidates old navigation before a new selection inspect starts", async () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
     await flushAsync();
 
-    port.emitMessage(inspectStarted("inspect-late-dom-navigation"));
-    port.emitMessage(resolutionMessage({
-      inspectMessageId: "inspect-late-dom-navigation",
-      resolutionGeneration: 4,
-      selectedMatchCount: 2,
-    }));
-    port.emitMessage(sourceNavigationState({
-      inspectMessageId: "inspect-late-dom-navigation",
-      resolutionGeneration: 4,
-      selectedMatchCount: 2,
-      activeMatchIndex: 1,
-    }));
+    showReadySourceNavigation(port, "selected-a", "inspect-a");
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+
     port.emitMessage({
       type: "dom.selectionChanged",
-      documentEpoch: 7,
-      nodeRef: "selected",
-      ancestorPath: [domNode("selected", "button#late.primary")],
+      documentEpoch: 1,
+      nodeRef: "selected-b",
+      ancestorPath: [domNode("selected-b", "button#new.primary")],
     });
+    dom.element("source-next").dispatch("click");
+    await flushAsync();
 
-    expect(dom.element("source-navigation-footer").hidden).toBe(false);
-    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
-    expect(rowSourceButton(dom, "source-previous").disabled).toBe(false);
-    expect(rowSourceButton(dom, "source-next").disabled).toBe(false);
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
     runtime.dispose();
   });
 
@@ -1076,12 +1090,19 @@ class FakeElement {
   public scrollTop = 0;
   public clientHeight = 120;
   public textContent = "";
+  public readonly tagName: string;
+  public readonly namespaceURI: string | undefined;
   public readonly style: Record<string, string> = {};
   public readonly dataset: Record<string, string> = {};
   public readonly children: FakeElement[] = [];
   public parentElement: FakeElement | undefined;
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
+
+  public constructor(tagName = "div", namespaceURI?: string) {
+    this.tagName = tagName.toLowerCase();
+    this.namespaceURI = namespaceURI;
+  }
 
   public setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
@@ -1100,6 +1121,11 @@ class FakeElement {
       child.parentElement = this;
       this.children.push(child);
     }
+  }
+
+  public appendChild(child: FakeElement): FakeElement {
+    this.append(child);
+    return child;
   }
 
   public replaceChildren(...children: FakeElement[]): void {
@@ -1162,17 +1188,29 @@ class FakeElement {
 interface FakeDom {
   readonly document: { getElementById(id: string): FakeElement | null };
   element(id: string): FakeElement;
+  namespacedTags(): readonly {
+    readonly namespace: string;
+    readonly tagName: string;
+  }[];
   totalListeners(): number;
 }
 
 function createFakeDom(): FakeDom {
+  const namespacedTags: Array<{
+    readonly namespace: string;
+    readonly tagName: string;
+  }> = [];
   const elements = new Map(
     ELEMENT_IDS.map((id) => [id, new FakeElement()] as const),
   );
   return {
     document: {
       getElementById: (id) => elements.get(id as (typeof ELEMENT_IDS)[number]) ?? null,
-      createElement: () => new FakeElement(),
+      createElement: (tagName: string) => new FakeElement(tagName),
+      createElementNS: (namespace: string, tagName: string) => {
+        namespacedTags.push({ namespace, tagName });
+        return new FakeElement(tagName, namespace);
+      },
       activeElement: null,
     },
     element(id) {
@@ -1181,6 +1219,9 @@ function createFakeDom(): FakeDom {
         throw new Error(`Unknown fake element: ${id}`);
       }
       return element;
+    },
+    namespacedTags() {
+      return namespacedTags;
     },
     totalListeners() {
       return [...elements.values()].reduce(
