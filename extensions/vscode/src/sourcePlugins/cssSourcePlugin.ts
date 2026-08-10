@@ -17,6 +17,8 @@ import {
 import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
 import type { StatusAwareSourcePluginResult } from "./types.js";
 
+const MAX_WORKSPACE_LABEL_LENGTH = 128;
+
 export class CssSourcePlugin implements SourcePlugin {
   public readonly id = "browser2ide.css";
   public readonly displayName = "Browser2IDE CSS";
@@ -49,20 +51,23 @@ export class CssSourcePlugin implements SourcePlugin {
     const missingUrls = new Set<string>();
     const ambiguousRules = new Set<string>();
     const failures = new Set<ResolutionStatus>();
-    const strategyDiagnostics = new Map<
-      SourceUriResolution["strategy"],
-      PluginDiagnostic
-    >();
+    const strategyDiagnostics = new Map<string, PluginDiagnostic>();
     for (const entry of targetCssFacts(context.selection)) {
-      if (context.signal.aborted) break;
+      if (context.signal.aborted) return abortedResult();
       const resolution = await context.workspace.resolveSourceUri(
         entry.sourceUrl,
         context.selection.context.url,
       );
-      if (!strategyDiagnostics.has(resolution.strategy)) {
+      if (context.signal.aborted) return abortedResult();
+      const strategyDiagnostic = sourceStrategyDiagnostic(resolution);
+      const strategyDiagnosticKey = JSON.stringify([
+        strategyDiagnostic.code,
+        strategyDiagnostic.message,
+      ]);
+      if (!strategyDiagnostics.has(strategyDiagnosticKey)) {
         strategyDiagnostics.set(
-          resolution.strategy,
-          sourceStrategyDiagnostic(resolution),
+          strategyDiagnosticKey,
+          strategyDiagnostic,
         );
       }
       const sourceKind = classifyActiveDocumentSource(
@@ -203,18 +208,23 @@ function ambiguousRuleDiagnostic(selector: string): PluginDiagnostic {
 function sourceStrategyDiagnostic(
   resolution: SourceUriResolution,
 ): PluginDiagnostic {
-  if (resolution.strategy === "automatic") {
-    return {
-      code: "css.sourceAutomatic",
-      message: "Automatic source matching",
-      severity: "info",
-    };
+  const strategy = resolution.strategy;
+  switch (strategy) {
+    case "automatic":
+      return {
+        code: "css.sourceAutomatic",
+        message: "Automatic source matching",
+        severity: "info",
+      };
+    case "workspace-bound":
+      return {
+        code: "css.sourceWorkspaceBound",
+        message: `Workspace-bound: ${workspaceFolderLabel(resolution)}`,
+        severity: "info",
+      };
+    default:
+      return unsupportedSourceResolutionStrategy(strategy);
   }
-  return {
-    code: "css.sourceWorkspaceBound",
-    message: `Workspace-bound: ${workspaceFolderLabel(resolution)}`,
-    severity: "info",
-  };
 }
 
 function workspaceFolderLabel(resolution: SourceUriResolution): string {
@@ -226,18 +236,32 @@ function workspaceFolderLabel(resolution: SourceUriResolution): string {
     const pathname = new URL(resolution.workspaceFolderUri).pathname
       .replace(/\/+$/, "");
     const segment = pathname.slice(pathname.lastIndexOf("/") + 1);
-    const label = decodeURIComponent(segment);
+    const label = decodeURIComponent(segment)
+      .replace(
+        /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+        "",
+      )
+      .trim();
     if (
-      label.trim().length === 0 ||
+      label.length === 0 ||
       /^[a-z]:$/i.test(label) ||
-      /[/\\\u0000-\u001f\u007f]/.test(label)
+      /[/\\]/.test(label)
     ) {
       return fallback;
     }
-    return label;
+    return [...label]
+      .slice(0, MAX_WORKSPACE_LABEL_LENGTH)
+      .join("")
+      .trim() || fallback;
   } catch {
     return fallback;
   }
+}
+
+function unsupportedSourceResolutionStrategy(strategy: never): never {
+  throw new Error(
+    `Unsupported CSS source resolution strategy: ${String(strategy)}`,
+  );
 }
 
 function addOnce(
@@ -262,6 +286,10 @@ function failureStatus(failures: ReadonlySet<ResolutionStatus>): ResolutionStatu
     if (failures.has(status)) return status;
   }
   return "no-rule-match";
+}
+
+function abortedResult(): StatusAwareSourcePluginResult {
+  return { status: "no-rule-match", matches: [], diagnostics: [] };
 }
 
 function messageOf(error: unknown): string {

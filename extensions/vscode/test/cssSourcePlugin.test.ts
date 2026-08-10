@@ -1408,33 +1408,75 @@ describe("CssSourcePlugin", () => {
     }]);
   });
 
-  it("deduplicates strategy diagnostics across source resolutions", async () => {
+  it("deduplicates strategy diagnostics by code and message", async () => {
     const result = await resolveCss(
       [
         ".card { color: red; }",
         ".layout { color: red; }",
+        ".panel { color: red; }",
       ].join("\n"),
       selection([
         cssTarget("selected", ".card", "/dist/app.css"),
         cssTarget("parent", ".layout", "/dist/layout.css"),
+        cssTarget("parent", ".panel", "/dist/panel.css"),
       ]),
-      {
-        uris: [],
-        status: "ambiguous",
+      async (sourceUrl) => ({
+        uris: ["file:///workspace/dist/app.css"],
+        status: "exact",
         strategy: "workspace-bound",
-      },
+        workspaceFolderUri: sourceUrl === "/dist/layout.css"
+          ? "file:///workspaces/SECOND"
+          : "file:///workspaces/FIRST",
+      }),
     );
 
-    expect(result.status).toBe("source-ambiguous");
-    expect(result.diagnostics?.map((diagnostic) => diagnostic.code)).toEqual([
-      "css.sourceAmbiguous",
-      "css.sourceAmbiguous",
-      "css.sourceWorkspaceBound",
+    expect(result.status).toBe("matched");
+    expect(result.matches).toHaveLength(3);
+    expect(result.diagnostics).toEqual([
+      {
+        code: "css.sourceWorkspaceBound",
+        message: "Workspace-bound: FIRST",
+        severity: "info",
+      },
+      {
+        code: "css.sourceWorkspaceBound",
+        message: "Workspace-bound: SECOND",
+        severity: "info",
+      },
     ]);
-    expect(result.diagnostics?.at(-1)).toEqual({
-      code: "css.sourceWorkspaceBound",
-      message: "Workspace-bound: ambiguous workspace",
-      severity: "info",
+  });
+
+  it("returns an empty aborted result when source resolution is cancelled", async () => {
+    let finishResolution: ((resolution: Resolution) => void) | undefined;
+    let resolutionStarted = false;
+    const deferredResolution = new Promise<Resolution>((resolve) => {
+      finishResolution = resolve;
+    });
+    const controller = new AbortController();
+    const pending = resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      async () => {
+        resolutionStarted = true;
+        return deferredResolution;
+      },
+      new CssSourcePlugin(),
+      1,
+      controller.signal,
+    );
+
+    expect(resolutionStarted).toBe(true);
+    controller.abort();
+    finishResolution?.({
+      uris: ["file:///workspace/dist/app.css"],
+      status: "exact",
+      strategy: "automatic",
+    });
+
+    await expect(pending).resolves.toEqual({
+      status: "no-rule-match",
+      matches: [],
+      diagnostics: [],
     });
   });
 
@@ -1464,6 +1506,88 @@ describe("CssSourcePlugin", () => {
     const serialized = JSON.stringify(result.diagnostics);
     expect(serialized).not.toContain("file:///");
     expect(serialized).not.toContain("C:/Users/alice/private-project");
+  });
+
+  it("removes control and bidi characters from workspace labels", async () => {
+    const controls =
+      "\u0000\u001f\u007f\u0080\u009f\u061c\u200e\u200f" +
+      "\u2028\u2029\u202a\u202e\u2066\u2069";
+    const label = `  Project${controls} Workspace  `;
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      {
+        uris: ["file:///workspace/dist/app.css"],
+        status: "exact",
+        strategy: "workspace-bound",
+        workspaceFolderUri:
+          `file:///workspaces/${encodeURIComponent(label)}`,
+      },
+    );
+
+    expect(result.diagnostics).toEqual([{
+      code: "css.sourceWorkspaceBound",
+      message: "Workspace-bound: Project Workspace",
+      severity: "info",
+    }]);
+  });
+
+  it("uses a fallback when workspace label sanitization leaves no text", async () => {
+    const label = "\u0000\u0080\u2028\u202e\u2066";
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      {
+        uris: [],
+        status: "ambiguous",
+        strategy: "workspace-bound",
+        workspaceFolderUri:
+          `file:///workspaces/${encodeURIComponent(label)}`,
+      },
+    );
+
+    expect(result.diagnostics?.at(-1)).toEqual({
+      code: "css.sourceWorkspaceBound",
+      message: "Workspace-bound: ambiguous workspace",
+      severity: "info",
+    });
+  });
+
+  it("caps displayed workspace labels at 128 Unicode characters", async () => {
+    const displayedLabel = `${"a".repeat(127)}\u{1f600}`;
+    const label = `${displayedLabel}trailing text`;
+    const result = await resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      {
+        uris: ["file:///workspace/dist/app.css"],
+        status: "exact",
+        strategy: "workspace-bound",
+        workspaceFolderUri:
+          `file:///workspaces/${encodeURIComponent(label)}`,
+      },
+    );
+
+    expect(result.diagnostics).toEqual([{
+      code: "css.sourceWorkspaceBound",
+      message: `Workspace-bound: ${displayedLabel}`,
+      severity: "info",
+    }]);
+    expect([...displayedLabel]).toHaveLength(128);
+  });
+
+  it("rejects unsupported source resolution strategies", async () => {
+    await expect(resolveCss(
+      ".card { color: red; }",
+      selection([cssTarget("selected", ".card", "/dist/app.css")]),
+      {
+        uris: [],
+        status: "not-found",
+        strategy: "future-strategy",
+      } as unknown as Resolution,
+    )).rejects.toThrow(
+      "Unsupported CSS source resolution strategy: future-strategy",
+    );
   });
 
   it.each([
@@ -1801,24 +1925,26 @@ describe("CssSourcePlugin", () => {
 });
 
 type Resolution = Awaited<ReturnType<SourceWorkspace["resolveSourceUri"]>>;
+type ResolutionFixture = Resolution | SourceWorkspace["resolveSourceUri"];
 
 async function resolveCss(
   text: string,
   selected: SelectionSnapshot,
-  resolution: Resolution = {
+  resolution: ResolutionFixture = {
     uris: ["file:///workspace/dist/app.css"],
     status: "exact",
     strategy: "automatic",
   },
   plugin = new CssSourcePlugin(),
   version = 1,
+  signal = new AbortController().signal,
 ) {
   const sourceDocument = document(text, version);
   return plugin.resolve({
     selection: selected,
     document: sourceDocument,
     workspace: workspace(resolution),
-    signal: new AbortController().signal,
+    signal,
   });
 }
 
@@ -2018,11 +2144,16 @@ function document(
   };
 }
 
-function workspace(resolution: Resolution): SourceWorkspace {
+function workspace(resolution: ResolutionFixture): SourceWorkspace {
   return {
-    findFiles: async () => resolution.uris,
+    findFiles: async () => typeof resolution === "function"
+      ? []
+      : resolution.uris,
     readText: async () => "",
-    resolveSourceUri: async () => resolution,
+    resolveSourceUri: async (sourceUrl, baseUrl) =>
+      typeof resolution === "function"
+        ? resolution(sourceUrl, baseUrl)
+        : resolution,
     resolveRelativeUri: (base, reference) => new URL(reference, base).toString(),
     isWorkspaceUri: () => true,
   };
