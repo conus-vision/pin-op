@@ -172,8 +172,11 @@ function createPresenterHost(): PresenterRuntimeHost {
       }));
     },
     findFiles: (pattern, exclude) => vscode.workspace.findFiles(pattern, exclude),
+    joinPath: (base, ...pathSegments) =>
+      vscode.Uri.joinPath(base as vscode.Uri, ...pathSegments),
     parseUri: (value) => vscode.Uri.parse(value),
     readFile: (uri) => vscode.workspace.fs.readFile(uri as vscode.Uri),
+    stat: (uri) => vscode.workspace.fs.stat(uri as vscode.Uri),
     getActiveEditor: () => {
       const editor = vscode.window.activeTextEditor;
       return editor ? presenterEditor(editor) : undefined;

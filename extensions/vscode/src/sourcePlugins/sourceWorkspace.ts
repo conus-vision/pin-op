@@ -12,8 +12,10 @@ export interface UriLike {
 export interface WorkspaceHost {
   readonly workspaceFolders: readonly { readonly uri: UriLike }[];
   findFiles(pattern: string, exclude: string): PromiseLike<readonly UriLike[]>;
+  joinPath(base: UriLike, ...pathSegments: string[]): UriLike;
   parseUri(value: string): UriLike;
   readFile(uri: UriLike): PromiseLike<Uint8Array>;
+  stat(uri: UriLike): PromiseLike<unknown>;
 }
 
 interface WorkspaceFolderIdentity {
@@ -165,6 +167,17 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
       return { uris: [], status: "not-found", ...baseResult };
     }
 
+    const boundCandidate = scope.folder
+      ? await this.probeBoundCandidate(relativePath, scope.folder)
+      : undefined;
+    if (boundCandidate) {
+      return {
+        uris: [boundCandidate],
+        status: "exact",
+        ...baseResult,
+      };
+    }
+
     const exact = await this.findCandidates(relativePath, scope.folder);
     if (exact.length === 1) {
       return { uris: exact, status: "exact", ...baseResult };
@@ -203,7 +216,12 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     relativePath: string,
     folder?: WorkspaceFolderIdentity,
   ): Promise<readonly string[]> {
-    const matches = await this.findFiles(`**/${escapeGlob(relativePath)}`);
+    let matches: readonly string[];
+    try {
+      matches = await this.findFiles(`**/${escapeGlob(relativePath)}`);
+    } catch {
+      return [];
+    }
     const seen = new Set<string>();
     const candidates: string[] = [];
     for (const candidate of matches) {
@@ -215,6 +233,23 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
       candidates.push(candidate);
     }
     return candidates;
+  }
+
+  private async probeBoundCandidate(
+    relativePath: string,
+    folder: WorkspaceFolderIdentity,
+  ): Promise<string | undefined> {
+    const root = this.host.parseUri(folder.uri);
+    const candidate = this.host.joinPath(root, ...relativePath.split("/"))
+      .toString();
+    if (!uriWithin(candidate, folder.uri)) return undefined;
+
+    try {
+      await this.host.stat(this.host.parseUri(candidate));
+      return candidate;
+    } catch (error) {
+      return isNotFoundError(error) ? undefined : candidate;
+    }
   }
 
   private workspaceFolders(): readonly WorkspaceFolderIdentity[] {
@@ -431,4 +466,12 @@ function isWindowsFileUri(uri: URL, pathname: string): boolean {
       uri.host !== "" ||
       /^\/[a-z]:\//i.test(pathname)
     );
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  const code = (error as { readonly code?: unknown }).code;
+  return code === "ENOENT" || code === "FileNotFound";
 }

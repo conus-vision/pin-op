@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyActiveDocumentSource } from "../src/sourcePlugins/sourceWorkspace.js";
+import {
+  classifyActiveDocumentSource,
+  VsCodeSourceWorkspace,
+} from "../src/sourcePlugins/sourceWorkspace.js";
 import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
 
 describe("VsCodeSourceWorkspace", () => {
@@ -155,6 +158,47 @@ describe("VsCodeSourceWorkspace", () => {
       strategy: "workspace-bound",
       workspaceFolderUri: "file:///D:/sites/_ORB",
     });
+  });
+
+  it("probes a workspace-bound exact path without a global file search", async () => {
+    const root = "file:///D:/sites/_ORB";
+    const intended = `${root}/wp-content/themes/orbiter/style.css`;
+    let findCalls = 0;
+    let statCalls = 0;
+    const uri = (value: string) => ({ toString: () => value });
+    const workspace = new VsCodeSourceWorkspace({
+      workspaceFolders: [{ uri: uri(root) }],
+      async findFiles() {
+        findCalls += 1;
+        throw Object.assign(new Error("too many open files"), {
+          code: "EMFILE",
+        });
+      },
+      parseUri: uri,
+      async readFile() {
+        return new Uint8Array();
+      },
+      joinPath(base: { toString(): string }, ...segments: string[]) {
+        return uri(`${base.toString()}/${segments.join("/")}`);
+      },
+      async stat(value: { toString(): string }) {
+        statCalls += 1;
+        expect(value.toString()).toBe(intended);
+        return {};
+      },
+    });
+
+    await expect(workspace.resolveSourceUri(
+      "/_ORB/wp-content/themes/orbiter/style.css?v=7",
+      "http://localhost/_ORB/",
+    )).resolves.toEqual({
+      uris: [intended],
+      status: "exact",
+      strategy: "workspace-bound",
+      workspaceFolderUri: root,
+    });
+    expect(statCalls).toBe(1);
+    expect(findCalls).toBe(0);
   });
 
   it("isolates basename fallback to the workspace-bound root", async () => {

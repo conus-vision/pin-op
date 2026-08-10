@@ -24,11 +24,27 @@ export function memorySourceWorkspace(
         }))
         .map(uri);
     },
+    joinPath(base, ...pathSegments) {
+      const root = new URL(base.toString());
+      const pathname = root.pathname.replace(/\/+$/, "");
+      root.pathname = `${pathname}/${pathSegments.map((segment) =>
+        encodeURIComponent(segment)
+      ).join("/")}`;
+      return uri(root.toString());
+    },
     parseUri: uri,
     async readFile(value) {
       const text = files[value.toString()];
       if (text === undefined) throw new Error(`Missing fixture: ${value}`);
       return encoder.encode(text);
+    },
+    async stat(value) {
+      if (files[value.toString()] === undefined) {
+        throw Object.assign(new Error(`Missing fixture: ${value}`), {
+          code: "FileNotFound",
+        });
+      }
+      return {};
     },
   };
   return new VsCodeSourceWorkspace(host);
