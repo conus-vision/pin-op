@@ -203,6 +203,36 @@ variants. Confirm `SCSS source map missing`, `SCSS source map invalid`, or
 `No matching rules in active file`, with no guessed highlight. Restore the
 fixture after the checks.
 
+### Optional `_ORB` Project Regression
+
+Use this check when the real `_ORB` project is available alongside the current
+Development Host workflow:
+
+1. In the current Extension Development Host, choose **File > Add Folder to
+   Workspace** and add the real project root named `_ORB`, or open it in that
+   host as appropriate. Keep the repository fixture available in the host for
+   the automatic-mode check below.
+2. Confirm the project contains
+   `wp-content/themes/orbiter/style.scss`, its generated `style.css`, and a
+   usable inline or external source map from that CSS into the SCSS file. Leave
+   the project's other `style.css` files in place as duplicate basenames.
+3. In the already linked Firefox Browser2IDE panel, load
+   `http://localhost/_ORB/` and inspect `.home_slide_title`. Confirm its CSS
+   comes from `/_ORB/wp-content/themes/orbiter/style.css?v=7`.
+4. Keep the mapped `wp-content/themes/orbiter/style.scss` active in VS Code and
+   confirm complete SCSS blocks, including their closing braces, are
+   highlighted.
+5. Run **Browser2IDE: Open Diagnostics**. Confirm the exact strategy message
+   `Workspace-bound: _ORB` and `resolution status=matched`, not
+   `resolution status=source-ambiguous`.
+6. Separately confirm the Firefox DevTools footer does not show
+   `Ambiguous source path`.
+
+Return to the repository fixture at `http://127.0.0.1:4173/`, activate
+`examples/basic-css/src/layout.scss`, and select `.card.featured`. Run
+**Browser2IDE: Open Diagnostics** and confirm the exact strategy message
+`Automatic source matching`.
+
 ### Window Isolation And Peer State
 
 1. Alternate selections in Windows A and B. Only their explicitly linked IDE

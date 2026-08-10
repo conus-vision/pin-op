@@ -29,9 +29,13 @@ export interface SourceDocument {
   offsetAt(position: SourcePosition): number;
 }
 
+export type SourceResolutionStrategy = "workspace-bound" | "automatic";
+
 export interface SourceUriResolution {
   readonly uris: readonly string[];
   readonly status: "exact" | "unique-basename" | "not-found" | "ambiguous";
+  readonly strategy: SourceResolutionStrategy;
+  readonly workspaceFolderUri?: string;
 }
 
 export interface SourceWorkspace {

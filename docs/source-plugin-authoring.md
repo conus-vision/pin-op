@@ -79,7 +79,13 @@ const twigPlugin: SourcePlugin = {
           context.selection.context.url,
         );
         if (context.signal.aborted) return { matches: [] };
-        if (!resolution.uris.includes(context.document.uri)) continue;
+        if (
+          resolution.status !== "exact" ||
+          resolution.uris.length !== 1 ||
+          resolution.uris[0] !== context.document.uri
+        ) {
+          continue;
+        }
 
         const text = context.document.getText();
         if (
@@ -154,8 +160,22 @@ Follow these rules in every resolver:
 - Use only the provided `SourceDocument` and `SourceWorkspace` host services
   when possible. Host workspace services do not fetch network URLs or execute
   project modules.
+- Treat source identity as authoritative only when `resolution.status` is
+  `exact`, `resolution.uris` contains exactly one URI, and that URI is exactly
+  `context.document.uri`.
 - Return structured diagnostics for recoverable failures. Do not include page
   secrets, pairing codes, or session tokens in a diagnostic or its metadata.
+
+Every source URI resolution includes a required `strategy` field:
+
+- `workspace-bound` means an open workspace-folder identity constrained the
+  lookup.
+- `automatic` means no project identity was available. The risk of a
+  coincidental match is the plugin and user's responsibility.
+
+The separate `unique-basename` resolution status is heuristic. Do not treat it
+as authoritative source identity unless the plugin has independent evidence,
+and clearly diagnose that heuristic when using it.
 
 Core discards out-of-bounds ranges, unknown target roles, cancelled results,
 and results from superseded document or selection generations. One plugin

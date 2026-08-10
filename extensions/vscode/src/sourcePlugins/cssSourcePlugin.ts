@@ -4,6 +4,7 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourcePluginContext,
+  type SourceUriResolution,
 } from "@browser2ide/plugin-api";
 import type { ResolutionStatus } from "@browser2ide/protocol";
 import { targetCssFacts } from "./cssFacts.js";
@@ -15,6 +16,8 @@ import {
 } from "./stylesheetAst.js";
 import { classifyActiveDocumentSource } from "./sourceWorkspace.js";
 import type { StatusAwareSourcePluginResult } from "./types.js";
+
+const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class CssSourcePlugin implements SourcePlugin {
   public readonly id = "browser2ide.css";
@@ -30,6 +33,7 @@ export class CssSourcePlugin implements SourcePlugin {
   public async resolve(
     context: SourcePluginContext,
   ): Promise<StatusAwareSourcePluginResult> {
+    if (context.signal.aborted) return abortedResult();
     let parsed;
     try {
       parsed = this.ast.parseDocument(context.document, "css");
@@ -48,12 +52,25 @@ export class CssSourcePlugin implements SourcePlugin {
     const missingUrls = new Set<string>();
     const ambiguousRules = new Set<string>();
     const failures = new Set<ResolutionStatus>();
+    const strategyDiagnostics = new Map<string, PluginDiagnostic>();
     for (const entry of targetCssFacts(context.selection)) {
-      if (context.signal.aborted) break;
+      if (context.signal.aborted) return abortedResult();
       const resolution = await context.workspace.resolveSourceUri(
         entry.sourceUrl,
         context.selection.context.url,
       );
+      if (context.signal.aborted) return abortedResult();
+      const strategyDiagnostic = sourceStrategyDiagnostic(resolution);
+      const strategyDiagnosticKey = JSON.stringify([
+        strategyDiagnostic.code,
+        strategyDiagnostic.message,
+      ]);
+      if (!strategyDiagnostics.has(strategyDiagnosticKey)) {
+        strategyDiagnostics.set(
+          strategyDiagnosticKey,
+          strategyDiagnostic,
+        );
+      }
       const sourceKind = classifyActiveDocumentSource(
         resolution,
         context.document.uri,
@@ -83,7 +100,8 @@ export class CssSourcePlugin implements SourcePlugin {
         ? findExactCssRules(parsed, entry.fact, context.document)
         : [];
       const canFallback = sourceKind === "not-found"
-        ? canFingerprintFallback(entry.fact)
+        ? resolution.strategy === "automatic" &&
+          canFingerprintFallback(entry.fact)
         : canFingerprintFallback(entry.fact, context.document);
       const rules = exactRules.length > 0
         ? exactRules
@@ -124,7 +142,7 @@ export class CssSourcePlugin implements SourcePlugin {
     return {
       status: matches.length > 0 ? "matched" : failureStatus(failures),
       matches,
-      diagnostics,
+      diagnostics: [...diagnostics, ...strategyDiagnostics.values()],
     };
   }
 }
@@ -188,6 +206,65 @@ function ambiguousRuleDiagnostic(selector: string): PluginDiagnostic {
   };
 }
 
+function sourceStrategyDiagnostic(
+  resolution: SourceUriResolution,
+): PluginDiagnostic {
+  const strategy = resolution.strategy;
+  switch (strategy) {
+    case "automatic":
+      return {
+        code: "css.sourceAutomatic",
+        message: "Automatic source matching",
+        severity: "info",
+      };
+    case "workspace-bound":
+      return {
+        code: "css.sourceWorkspaceBound",
+        message: `Workspace-bound: ${workspaceFolderLabel(resolution)}`,
+        severity: "info",
+      };
+    default:
+      return unsupportedSourceResolutionStrategy(strategy);
+  }
+}
+
+function workspaceFolderLabel(resolution: SourceUriResolution): string {
+  const fallback = resolution.status === "ambiguous"
+    ? "ambiguous workspace"
+    : "workspace";
+  if (resolution.workspaceFolderUri === undefined) return fallback;
+  try {
+    const pathname = new URL(resolution.workspaceFolderUri).pathname
+      .replace(/\/+$/, "");
+    const segment = pathname.slice(pathname.lastIndexOf("/") + 1);
+    const label = decodeURIComponent(segment)
+      .replace(
+        /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+        "",
+      )
+      .trim();
+    if (
+      label.length === 0 ||
+      /^[a-z]:$/i.test(label) ||
+      /[/\\]/.test(label)
+    ) {
+      return fallback;
+    }
+    return [...label]
+      .slice(0, MAX_WORKSPACE_LABEL_LENGTH)
+      .join("")
+      .trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function unsupportedSourceResolutionStrategy(strategy: never): never {
+  throw new Error(
+    `Unsupported CSS source resolution strategy: ${String(strategy)}`,
+  );
+}
+
 function addOnce(
   seen: Set<string>,
   key: string,
@@ -210,6 +287,10 @@ function failureStatus(failures: ReadonlySet<ResolutionStatus>): ResolutionStatu
     if (failures.has(status)) return status;
   }
   return "no-rule-match";
+}
+
+function abortedResult(): StatusAwareSourcePluginResult {
+  return { status: "no-rule-match", matches: [], diagnostics: [] };
 }
 
 function messageOf(error: unknown): string {

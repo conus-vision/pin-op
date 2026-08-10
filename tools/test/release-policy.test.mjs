@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   assertAsciiFilename,
@@ -7,6 +8,14 @@ import {
   normalizeArchivePath,
   rejectSensitivePath,
 } from "../release-policy.mjs";
+
+const generatedReleaseTextPaths = [
+  "extensions/vscode/THIRD_PARTY_NOTICES",
+  "extensions/chrome/LICENSE",
+  "extensions/chrome/THIRD_PARTY_NOTICES",
+  "extensions/firefox/LICENSE",
+  "extensions/firefox/THIRD_PARTY_NOTICES",
+];
 
 test("archive paths reject traversal and absolute forms", () => {
   for (const path of [
@@ -87,4 +96,29 @@ test("checksum artifact names must be printable ASCII", () => {
 test("tracked text comparison ignores checkout line endings", () => {
   assert.doesNotThrow(() => assertTextEqual("MIT\r\nlicense\r\n", "MIT\nlicense\n"));
   assert.throws(() => assertTextEqual("MIT\nlicense\n", "different\n"), /differs/);
+});
+
+test("generated release notice inputs force LF worktree line endings", async () => {
+  const attributes = await readFile(".gitattributes", "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  });
+  const rules = new Map(
+    attributes
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"))
+      .map((line) => {
+        const [path, ...policy] = line.split(/\s+/u);
+        return [path, policy];
+      }),
+  );
+
+  for (const path of generatedReleaseTextPaths) {
+    assert.deepEqual(
+      rules.get(path),
+      ["text", "eol=lf"],
+      `${path} must declare text eol=lf`,
+    );
+  }
 });

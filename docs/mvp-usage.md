@@ -103,13 +103,30 @@ Browser2IDE sends one selected target and, when available, its immediate DOM
 parent. VS Code retains the latest valid selection and resolves it only against
 the active document. It does not open, close, or switch editor tabs.
 
-- CSS first uses exact generated source positions or CSSOM paths. A conservative
-  CSS fingerprint fallback can use normalized selector, media conditions, and
-  declaration evidence only when the result is unique.
-- SCSS resolves the generated CSS in the workspace, finds one generated rule,
-  loads its inline or external source map, and requires the mapped source to be
-  the active SCSS document. SCSS fails closed on a missing, invalid, ambiguous,
-  unmapped, or other-document result.
+Source lookup is workspace-bound when the document or stylesheet URL path
+begins with an open workspace folder name. Browser2IDE strips that leading
+segment once and searches only that folder. For example,
+`http://localhost/_ORB/` with
+`/_ORB/wp-content/themes/orbiter/style.css?v=7` binds to the open `_ORB` folder;
+duplicate basenames elsewhere do not make the source ambiguous.
+
+When neither URL identifies an open folder, source lookup remains automatic
+across all open folders, using exact-path and unique-basename matching. This is
+a convenience trade-off: the user accepts the risk of a coincidental automatic
+mapping. Applicable Sources and **Browser2IDE: Open Diagnostics** report the
+strategy with the exact local text `Workspace-bound: <folder>` (for example,
+`Workspace-bound: _ORB`) or `Automatic source matching`.
+
+- CSS first uses exact generated source positions or CSSOM paths. A
+  workspace-bound source miss never fingerprint-matches an unrelated active CSS
+  file. Automatic mode may retain a conservative CSS fingerprint fallback using
+  normalized selector, media conditions, and declaration evidence only when
+  the result is unique.
+- SCSS requires generated CSS and a usable inline or external source map into
+  the exact active SCSS document. Automatic unique-basename matching may locate
+  and diagnose the generated CSS, but it can never authorize a basename-only
+  original SCSS source. Missing, invalid, ambiguous, unmapped, and
+  other-document outcomes fail closed.
 - Compatible separately installed source plugins can resolve other active
   document types through the versioned source-plugin API.
 

@@ -9,6 +9,7 @@ import type {
 } from "@browser2ide/plugin-api";
 import type { CssRuleFact, InspectTarget } from "@browser2ide/protocol";
 import { ScssSourcePlugin } from "../src/sourcePlugins/scssSourcePlugin.js";
+import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
 
 describe("ScssSourcePlugin", () => {
   it("maps selected and parent rules to complete blocks in layout.scss", async () => {
@@ -44,6 +45,64 @@ describe("ScssSourcePlugin", () => {
       result.matches.every((match) => match.confidence === "sourcemap"),
     ).toBe(true);
     expect(result.status).toBe("matched");
+  });
+
+  it("maps an _ORB stylesheet through the workspace-bound resolver", async () => {
+    const root = "file:///D:/sites/_ORB";
+    const activeUri = `${root}/wp-content/themes/orbiter/style.scss`;
+    const generatedUri = `${root}/wp-content/themes/orbiter/style.css`;
+    const mapUri = `${generatedUri}.map`;
+    const generator = new SourceMapGenerator({ file: "style.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "style.scss",
+    });
+    const original = ".home_slide_title { color: red; }";
+    const generated = `${original}\n/*# sourceMappingURL=style.css.map */`;
+    const workspace = memorySourceWorkspace(
+      {
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: generator.toString(),
+        [`${root}/wp-admin/css/style.css`]: "body {}",
+        [`${root}/wp-includes/css/style.css`]: "body {}",
+      },
+      [root],
+    );
+    const selected = selection([cssTarget(
+      "selected",
+      ".home_slide_title",
+      "/_ORB/wp-content/themes/orbiter/style.css?v=7",
+      { rulePath: "0.0" },
+    )], "http://localhost/_ORB/");
+
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selected,
+      document: document(activeUri, original),
+      workspace,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        targetRole: "selected",
+        confidence: "sourcemap",
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 0, character: original.length },
+        },
+      }),
+    ]);
+    expect(result.diagnostics).toEqual([{
+      code: "scss.sourceWorkspaceBound",
+      message: "Workspace-bound: _ORB",
+      severity: "info",
+    }]);
+    expect(result.diagnostics?.map((entry) => entry.code)).not.toContain(
+      "scss.generatedSourceAmbiguous",
+    );
   });
 
   it("uses the mapped position for repeated and nested SCSS rules", async () => {
@@ -259,15 +318,71 @@ describe("ScssSourcePlugin", () => {
     expect(result.matches).toEqual([]);
   });
 
-  it("does not trust a unique-basename source-map target as active", async () => {
+  it.each(["automatic", "workspace-bound"] as const)(
+    "does not trust a %s unique-basename source-map target as active",
+    async (strategy) => {
+      const activeUri = "file:///workspace/src/card.scss";
+      const generatedUri = "file:///workspace/dist/app.css";
+      const mapUri = `${generatedUri}.map`;
+      const original = ".card { color: red; }";
+      const generated = [
+        ".card { color: red; }",
+        "/*# sourceMappingURL=app.css.map */",
+      ].join("\n");
+      const generator = new SourceMapGenerator({ file: "app.css" });
+      generator.addMapping({
+        generated: { line: 1, column: 0 },
+        original: { line: 1, column: 0 },
+        source: "../src/card.scss",
+      });
+      const files = {
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: generator.toString(),
+      };
+      const baseWorkspace = memoryWorkspace(files);
+      const result = await new ScssSourcePlugin().resolve({
+        selection: selection([cssTarget(
+          "selected",
+          ".card",
+          "/dist/app.css",
+        )]),
+        document: document(activeUri, original),
+        workspace: {
+          ...baseWorkspace,
+          async resolveSourceUri(sourceUrl, baseUrl) {
+            if (sourceUrl.endsWith("card.scss")) {
+              return strategy === "automatic"
+                ? {
+                  uris: [activeUri],
+                  status: "unique-basename",
+                  strategy,
+                }
+                : {
+                  uris: [activeUri],
+                  status: "unique-basename",
+                  strategy,
+                  workspaceFolderUri: "file:///workspace",
+                };
+            }
+            return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
+          },
+        },
+        signal: new AbortController().signal,
+      });
+
+      expect(result.matches).toEqual([]);
+      expect(result.status).toBe("source-not-found");
+      expect(result.diagnostics?.map((entry) => entry.code)).toContain(
+        "scss.originalSourceNotFound",
+      );
+    },
+  );
+
+  it("uses a unique generated basename only in automatic mode", async () => {
     const activeUri = "file:///workspace/src/card.scss";
-    const generatedUri = "file:///workspace/dist/app.css";
+    const generatedUri = "file:///workspace/build/app.css";
     const mapUri = `${generatedUri}.map`;
-    const original = ".card { color: red; }";
-    const generated = [
-      ".card { color: red; }",
-      "/*# sourceMappingURL=app.css.map */",
-    ].join("\n");
     const generator = new SourceMapGenerator({ file: "app.css" });
     generator.addMapping({
       generated: { line: 1, column: 0 },
@@ -275,71 +390,87 @@ describe("ScssSourcePlugin", () => {
       source: "../src/card.scss",
     });
     const files = {
-      [activeUri]: original,
-      [generatedUri]: generated,
+      [activeUri]: ".card { color: red; }",
+      [generatedUri]: [
+        ".card { color: red; }",
+        "/*# sourceMappingURL=app.css.map */",
+      ].join("\n"),
       [mapUri]: generator.toString(),
     };
-    const baseWorkspace = memoryWorkspace(files);
+    const base = memoryWorkspace(files);
     const result = await new ScssSourcePlugin().resolve({
       selection: selection([cssTarget(
         "selected",
         ".card",
-        "/dist/app.css",
+        "/assets/app.css",
       )]),
-      document: document(activeUri, original),
+      document: document(activeUri, files[activeUri]),
       workspace: {
-        ...baseWorkspace,
-        async resolveSourceUri(sourceUrl, baseUrl) {
-          if (sourceUrl.endsWith("card.scss")) {
-            return { uris: [activeUri], status: "unique-basename" };
-          }
-          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
-        },
+        ...base,
+        resolveSourceUri: async (sourceUrl, baseUrl) =>
+          sourceUrl === "/assets/app.css"
+            ? {
+              uris: [generatedUri],
+              status: "unique-basename",
+              strategy: "automatic",
+            }
+            : base.resolveSourceUri(sourceUrl, baseUrl),
       },
       signal: new AbortController().signal,
+    });
+
+    expect(result.status).toBe("matched");
+    expect(result.matches).toEqual([
+      expect.objectContaining({ confidence: "sourcemap" }),
+    ]);
+    expect(result.diagnostics).toEqual([
+      {
+        code: "scss.generatedSourceHeuristic",
+        message:
+          "Generated CSS used automatic basename matching: /assets/app.css",
+        severity: "info",
+      },
+      {
+        code: "scss.sourceAutomatic",
+        message: "Automatic source matching",
+        severity: "info",
+      },
+    ]);
+  });
+
+  it("rejects a workspace-bound unique generated basename", async () => {
+    const result = await resolveWithGeneratedResolution({
+      uris: ["file:///workspace/build/app.css"],
+      status: "unique-basename",
+      strategy: "workspace-bound",
+      workspaceFolderUri: "file:///workspace",
     });
 
     expect(result.matches).toEqual([]);
     expect(result.status).toBe("source-not-found");
-    expect(result.diagnostics?.map((entry) => entry.code)).toContain(
-      "scss.originalSourceNotFound",
-    );
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: "scss.generatedSourceNotFound" }),
+      {
+        code: "scss.sourceWorkspaceBound",
+        message: "Workspace-bound: workspace",
+        severity: "info",
+      },
+    ]);
   });
 
-  it("does not trust a unique-basename generated stylesheet path", async () => {
-    const activeUri = "file:///workspace/src/card.scss";
-    const generatedUri = "file:///workspace/dist/app.css";
-    const files = {
-      [activeUri]: ".card { color: red; }",
-      [generatedUri]: ".card { color: red; }",
-    };
-    const baseWorkspace = memoryWorkspace(files);
-    const reads: string[] = [];
-    const result = await new ScssSourcePlugin().resolve({
-      selection: selection([cssTarget(
-        "selected",
-        ".card",
-        "/dist/app.css",
-      )]),
-      document: document(activeUri, files[activeUri]),
-      workspace: {
-        ...baseWorkspace,
-        async readText(uri) {
-          reads.push(uri);
-          return baseWorkspace.readText(uri);
-        },
-        async resolveSourceUri(sourceUrl, baseUrl) {
-          if (sourceUrl === "/dist/app.css") {
-            return { uris: [generatedUri], status: "unique-basename" };
-          }
-          return baseWorkspace.resolveSourceUri(sourceUrl, baseUrl);
-        },
-      },
-      signal: new AbortController().signal,
+  it("keeps ambiguous generated source resolution ambiguous", async () => {
+    const result = await resolveWithGeneratedResolution({
+      uris: [],
+      status: "ambiguous",
+      strategy: "automatic",
     });
 
     expect(result.matches).toEqual([]);
-    expect(reads).toEqual([]);
+    expect(result.status).toBe("source-ambiguous");
+    expect(result.diagnostics?.map((entry) => entry.code)).toEqual([
+      "scss.generatedSourceAmbiguous",
+      "scss.sourceAutomatic",
+    ]);
   });
 
   it.each([
@@ -359,6 +490,179 @@ describe("ScssSourcePlugin", () => {
       expect(result.diagnostics?.map((entry) => entry.code)).toContain(code);
     },
   );
+
+  it("deduplicates strategy diagnostics by code and message", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const files = { [activeUri]: ".card {}" };
+    const base = memoryWorkspace(files);
+    const result = await new ScssSourcePlugin().resolve({
+      selection: selection([
+        cssTarget("selected", ".card", "/dist/app.css"),
+        cssTarget("parent", ".layout", "/dist/layout.css"),
+        cssTarget("parent", ".panel", "/dist/panel.css"),
+      ]),
+      document: document(activeUri, files[activeUri]),
+      workspace: {
+        ...base,
+        resolveSourceUri: async (sourceUrl) => ({
+          uris: [],
+          status: "not-found",
+          strategy: "workspace-bound",
+          workspaceFolderUri: sourceUrl === "/dist/layout.css"
+            ? "file:///workspaces/SECOND"
+            : "file:///workspaces/FIRST",
+        }),
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result.status).toBe("source-not-found");
+    expect(result.diagnostics?.map((entry) => entry.code)).toEqual([
+      "scss.generatedSourceNotFound",
+      "scss.generatedSourceNotFound",
+      "scss.generatedSourceNotFound",
+      "scss.sourceWorkspaceBound",
+      "scss.sourceWorkspaceBound",
+    ]);
+    expect(result.diagnostics?.slice(-2)).toEqual([
+      {
+        code: "scss.sourceWorkspaceBound",
+        message: "Workspace-bound: FIRST",
+        severity: "info",
+      },
+      {
+        code: "scss.sourceWorkspaceBound",
+        message: "Workspace-bound: SECOND",
+        severity: "info",
+      },
+    ]);
+  });
+
+  it("does not expose the workspace URI in a bound diagnostic", async () => {
+    const result = await resolveWithGeneratedResolution({
+      uris: ["file:///workspace/build/app.css"],
+      status: "unique-basename",
+      strategy: "workspace-bound",
+      workspaceFolderUri:
+        "file:///C:/Users/alice/private-project/_ORB%20Workspace/",
+    });
+
+    expect(result.diagnostics).toContainEqual({
+      code: "scss.sourceWorkspaceBound",
+      message: "Workspace-bound: _ORB Workspace",
+      severity: "info",
+    });
+    const serialized = JSON.stringify(result.diagnostics);
+    expect(serialized).not.toContain("file:///");
+    expect(serialized).not.toContain("C:/Users/alice/private-project");
+  });
+
+  it("removes control and bidi characters from workspace labels", async () => {
+    const controls =
+      "\u0000\u001f\u007f\u0080\u009f\u061c\u200e\u200f" +
+      "\u2028\u2029\u202a\u202e\u2066\u2069";
+    const label = `  Project${controls} Workspace  `;
+    const result = await resolveWithGeneratedResolution({
+      uris: ["file:///workspace/build/app.css"],
+      status: "unique-basename",
+      strategy: "workspace-bound",
+      workspaceFolderUri: `file:///workspaces/${encodeURIComponent(label)}`,
+    });
+
+    expect(result.diagnostics?.at(-1)).toEqual({
+      code: "scss.sourceWorkspaceBound",
+      message: "Workspace-bound: Project Workspace",
+      severity: "info",
+    });
+  });
+
+  it("uses a safe fallback when workspace label sanitization is empty", async () => {
+    const label = "\u0000\u0080\u2028\u202e\u2066";
+    const result = await resolveWithGeneratedResolution({
+      uris: [],
+      status: "ambiguous",
+      strategy: "workspace-bound",
+      workspaceFolderUri: `file:///workspaces/${encodeURIComponent(label)}`,
+    });
+
+    expect(result.diagnostics?.at(-1)).toEqual({
+      code: "scss.sourceWorkspaceBound",
+      message: "Workspace-bound: ambiguous workspace",
+      severity: "info",
+    });
+  });
+
+  it("caps displayed workspace labels at 128 Unicode code points", async () => {
+    const displayedLabel = `${"a".repeat(127)}\u{1f600}`;
+    const result = await resolveWithGeneratedResolution({
+      uris: ["file:///workspace/build/app.css"],
+      status: "unique-basename",
+      strategy: "workspace-bound",
+      workspaceFolderUri:
+        `file:///workspaces/${encodeURIComponent(`${displayedLabel}tail`)}`,
+    });
+
+    expect(result.diagnostics?.at(-1)).toEqual({
+      code: "scss.sourceWorkspaceBound",
+      message: `Workspace-bound: ${displayedLabel}`,
+      severity: "info",
+    });
+    expect([...displayedLabel]).toHaveLength(128);
+  });
+
+  it("rejects unsupported source resolution strategies", async () => {
+    await expect(resolveWithGeneratedResolution({
+      uris: [],
+      status: "not-found",
+      strategy: "future-strategy",
+    } as unknown as Resolution)).rejects.toThrow(
+      "Unsupported SCSS source resolution strategy: future-strategy",
+    );
+  });
+
+  it("returns an empty result when generated source resolution is cancelled", async () => {
+    let finishResolution: ((resolution: Resolution) => void) | undefined;
+    let markResolutionStarted: (() => void) | undefined;
+    const resolutionStarted = new Promise<void>((resolve) => {
+      markResolutionStarted = resolve;
+    });
+    const deferredResolution = new Promise<Resolution>((resolve) => {
+      finishResolution = resolve;
+    });
+    const activeUri = "file:///workspace/src/card.scss";
+    const base = memoryWorkspace({ [activeUri]: ".card {}" });
+    const controller = new AbortController();
+    const pending = new ScssSourcePlugin().resolve({
+      selection: selection([cssTarget(
+        "selected",
+        ".card",
+        "/dist/app.css",
+      )]),
+      document: document(activeUri, ".card {}"),
+      workspace: {
+        ...base,
+        resolveSourceUri: async () => {
+          markResolutionStarted?.();
+          return deferredResolution;
+        },
+      },
+      signal: controller.signal,
+    });
+    await resolutionStarted;
+
+    controller.abort();
+    finishResolution?.({
+      uris: ["file:///workspace/dist/app.css"],
+      status: "exact",
+      strategy: "future-strategy",
+    } as unknown as Resolution);
+
+    await expect(pending).resolves.toEqual({
+      status: "no-rule-match",
+      matches: [],
+      diagnostics: [],
+    });
+  });
 
   it("stops after an aborted generated CSS read", async () => {
     const activeUri = "file:///workspace/src/card.scss";
@@ -487,6 +791,36 @@ async function resolveBrokenMap(
   );
 }
 
+type Resolution = Awaited<ReturnType<SourceWorkspace["resolveSourceUri"]>>;
+
+async function resolveWithGeneratedResolution(
+  resolution: Resolution,
+) {
+  const activeUri = "file:///workspace/src/card.scss";
+  const generatedUri = "file:///workspace/build/app.css";
+  const files = {
+    [activeUri]: ".card { color: red; }",
+    [generatedUri]: ".card { color: red; }",
+  };
+  const base = memoryWorkspace(files);
+  return new ScssSourcePlugin().resolve({
+    selection: selection([cssTarget(
+      "selected",
+      ".card",
+      "/assets/app.css",
+    )]),
+    document: document(activeUri, files[activeUri]),
+    workspace: {
+      ...base,
+      resolveSourceUri: async (sourceUrl, baseUrl) =>
+        sourceUrl === "/assets/app.css"
+          ? resolution
+          : base.resolveSourceUri(sourceUrl, baseUrl),
+    },
+    signal: new AbortController().signal,
+  });
+}
+
 async function resolveScss(
   activeUri: string,
   activeText: string,
@@ -517,24 +851,38 @@ function memoryWorkspace(
         resolved.protocol === "file:" &&
         resolved.toString().startsWith("file:///workspace/")
       ) {
-        return { uris: [resolved.toString()], status: "exact" };
+        return {
+          uris: [resolved.toString()],
+          status: "exact",
+          strategy: "workspace-bound",
+          workspaceFolderUri: "file:///workspace",
+        };
       }
       const pathname = decodeURIComponent(resolved.pathname);
       const exact = Object.keys(files).filter((uri) =>
         decodeURIComponent(new URL(uri).pathname).endsWith(pathname),
       );
-      if (exact.length === 1) return { uris: exact, status: "exact" };
-      if (exact.length > 1) return { uris: [], status: "ambiguous" };
+      if (exact.length === 1) {
+        return { uris: exact, status: "exact", strategy: "automatic" };
+      }
+      if (exact.length > 1) {
+        return { uris: [], status: "ambiguous", strategy: "automatic" };
+      }
       const basename = pathname.slice(pathname.lastIndexOf("/") + 1);
       const fallback = Object.keys(files).filter((uri) =>
         decodeURIComponent(new URL(uri).pathname).endsWith(`/${basename}`),
       );
       if (fallback.length === 1) {
-        return { uris: fallback, status: "unique-basename" };
+        return {
+          uris: fallback,
+          status: "unique-basename",
+          strategy: "automatic",
+        };
       }
       return {
         uris: [],
         status: fallback.length > 1 ? "ambiguous" : "not-found",
+        strategy: "automatic",
       };
     },
     resolveRelativeUri: (base, reference) => new URL(reference, base).toString(),
@@ -542,12 +890,15 @@ function memoryWorkspace(
   };
 }
 
-function selection(targets: readonly InspectTarget[]): SelectionSnapshot {
+function selection(
+  targets: readonly InspectTarget[],
+  url = "http://localhost:4173/page",
+): SelectionSnapshot {
   return {
     sessionId: "session-1",
     messageId: "inspect-1",
     targets,
-    context: { url: "http://localhost:4173/page", metadata: {} },
+    context: { url, metadata: {} },
     metadata: {},
   };
 }
