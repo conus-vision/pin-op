@@ -126,14 +126,104 @@ describe("PanelInspectTransport DOM integration", () => {
   });
 });
 
+describe("PanelInspectTransport source navigation", () => {
+  it("lazily posts canonical previous and next commands on the shared port", () => {
+    const port = new FakePort();
+    let factoryCalls = 0;
+    const transport = new PanelInspectTransport(() => {
+      factoryCalls += 1;
+      return port;
+    });
+    const previous = sourceNavigateCommand("previous");
+
+    transport.dispatchSourceNavigation(previous);
+    transport.dispatchSourceNavigation(sourceNavigateCommand("next"));
+
+    expect(factoryCalls).toBe(1);
+    expect(port.sent).toEqual([
+      sourceNavigateCommand("previous"),
+      sourceNavigateCommand("next"),
+    ]);
+    expect(port.sent[0]).not.toBe(previous);
+  });
+
+  it("rejects malformed or non-local commands without opening or posting", () => {
+    const port = new FakePort();
+    let factoryCalls = 0;
+    const transport = new PanelInspectTransport(() => {
+      factoryCalls += 1;
+      return port;
+    });
+    const valid = sourceNavigateCommand("next");
+    const invalid = [
+      { ...valid, sessionId: "session-a" },
+      { ...valid, messageId: "message-a" },
+      { ...valid, extra: true },
+      { ...valid, direction: "first" },
+      { ...valid, resolutionGeneration: -1 },
+      { type: valid.type, inspectMessageId: valid.inspectMessageId },
+      null,
+    ];
+
+    for (const message of invalid) {
+      expect(() => transport.dispatchSourceNavigation(message)).toThrow(
+        "Invalid source navigation command",
+      );
+    }
+    expect(factoryCalls).toBe(0);
+    expect(port.sent).toEqual([]);
+  });
+
+  it("throws the existing closed error after disposal without opening a port", () => {
+    let factoryCalls = 0;
+    const transport = new PanelInspectTransport(() => {
+      factoryCalls += 1;
+      return new FakePort();
+    });
+    transport.dispose();
+
+    expect(() =>
+      transport.dispatchSourceNavigation(sourceNavigateCommand("next"))
+    ).toThrow("Inspect connection is closed");
+    expect(factoryCalls).toBe(0);
+  });
+
+  it("cleans up a failed post and reopens through unexpected-disconnect semantics", () => {
+    const ports = [new FakePort(), new FakePort()];
+    ports[0]!.throwOnPost = true;
+    let factoryCalls = 0;
+    let unexpectedDisconnects = 0;
+    const transport = new PanelInspectTransport(
+      () => ports[factoryCalls++]!,
+      () => {
+        unexpectedDisconnects += 1;
+      },
+    );
+
+    expect(() =>
+      transport.dispatchSourceNavigation(sourceNavigateCommand("previous"))
+    ).toThrow("Inspect connection is closed");
+    expect(unexpectedDisconnects).toBe(1);
+    expect(ports[0]!.listenerCount()).toBe(0);
+
+    transport.dispatchSourceNavigation(sourceNavigateCommand("next"));
+    expect(factoryCalls).toBe(2);
+    expect(ports[1]!.sent).toEqual([sourceNavigateCommand("next")]);
+  });
+});
+
 class FakePort implements PanelInspectPort {
   public readonly name = "browser2ide.devtools.channel-1";
   public readonly sent: unknown[] = [];
   public readonly onMessage = new FakeEvent<(message: unknown) => void>();
   public readonly onDisconnect = new FakeEvent<() => void>();
   public disconnected = false;
+  public throwOnPost = false;
 
   public postMessage(message: unknown): void {
+    if (this.throwOnPost) {
+      throw new Error("post failed");
+    }
     this.sent.push(message);
   }
 
@@ -144,6 +234,10 @@ class FakePort implements PanelInspectPort {
 
   public emitMessage(message: unknown): void {
     this.onMessage.emit(message);
+  }
+
+  public listenerCount(): number {
+    return this.onMessage.listenerCount() + this.onDisconnect.listenerCount();
   }
 }
 
@@ -163,6 +257,19 @@ class FakeEvent<T extends (...args: never[]) => void> {
       listener(...args);
     }
   }
+
+  public listenerCount(): number {
+    return this.listeners.size;
+  }
+}
+
+function sourceNavigateCommand(direction: "previous" | "next") {
+  return {
+    type: "browser2ide.source.navigate" as const,
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    direction,
+  };
 }
 
 function rootResponse(requestId: string) {

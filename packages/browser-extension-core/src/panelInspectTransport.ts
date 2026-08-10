@@ -14,6 +14,7 @@ import {
   parseInspectControllerCommand,
   parseInspectPortInvalidated,
   parseInspectPortResult,
+  parsePanelSourceNavigateCommand,
   type InspectPortRequest,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
@@ -126,6 +127,27 @@ export class PanelInspectTransport {
     try {
       connection = this.connection ?? this.openConnection();
       connection.port.postMessage(request);
+    } catch {
+      if (connection) {
+        this.closeConnection(connection, true);
+      }
+      throw new Error("Inspect connection is closed");
+    }
+  }
+
+  public dispatchSourceNavigation(message: unknown): void {
+    if (this.disposed) {
+      throw new Error("Inspect connection is closed");
+    }
+    const command = parsePanelSourceNavigateCommand(message);
+    if (!command) {
+      throw new Error("Invalid source navigation command");
+    }
+
+    let connection: PortConnection | undefined;
+    try {
+      connection = this.connection ?? this.openConnection();
+      connection.port.postMessage(command);
     } catch {
       if (connection) {
         this.closeConnection(connection, true);
