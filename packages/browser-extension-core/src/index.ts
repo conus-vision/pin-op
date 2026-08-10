@@ -282,6 +282,11 @@ export type {
   ResolutionViewModel,
   ResolvingPresentation,
 } from "./resolutionPresenter.js";
+export { SourceNavigationController } from "./sourceNavigationController.js";
+export type {
+  SourceNavigationDispatch,
+  SourceNavigationViewModel,
+} from "./sourceNavigationController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { DomPanelView } from "./panelView.js";

@@ -289,10 +289,36 @@ input:disabled {
 }
 
 .dom-tree-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-navigation-controls {
+  display: flex;
+  width: 44px;
+  flex: 0 0 44px;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.source-navigation-button {
+  display: inline-grid;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  flex: 0 0 22px;
+  place-items: center;
+}
+
+.source-navigation-controls .source-navigation-button {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  flex-basis: 20px;
 }
 
 .dom-tree-empty {
@@ -321,6 +347,34 @@ input:disabled {
   min-height: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resolution-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.resolution-status {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.source-navigation-footer {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+
+#source-navigation-counter {
+  min-width: 36px;
+  color: color-mix(in srgb, CanvasText 72%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 

@@ -1,3 +1,8 @@
+import {
+  PROTOCOL_VERSION,
+  type ResolutionMessage,
+  type SourceNavigationStateMessage,
+} from "@browser2ide/protocol";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +14,7 @@ import {
   DomTreeView,
   type DomTreeDocument,
 } from "../src/domTreeView.js";
+import { SourceNavigationController } from "../src/sourceNavigationController.js";
 import type {
   DomNodeView,
   DomRequest,
@@ -89,6 +95,93 @@ describe("DomTreeView", () => {
     harness.dom.element("dom-tree").dispatch("click", { target: disclosure });
     await flushAsync();
     expect(harness.controller.isExpanded("parent")).toBe(false);
+  });
+
+  it("renders controls and resolving space only on the selected DOM row", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+
+    harness.sourceNavigation.beginInspect("inspect-1");
+
+    expect(harness.dom.row("root").findByData(
+      "part",
+      "source-navigation-controls",
+    )).toBeUndefined();
+    const reserved = harness.dom.row("selected").findByData(
+      "part",
+      "source-navigation-controls",
+    );
+    expect(reserved).toBeDefined();
+    expect(reserved?.findByData("action", "source-previous")).toBeUndefined();
+
+    harness.sourceNavigation.acceptResolution(resolution({
+      selectedMatchCount: 2,
+    }));
+
+    const selected = harness.dom.row("selected");
+    const previous = selected.findByData("action", "source-previous");
+    const next = selected.findByData("action", "source-next");
+    expect(previous?.getAttribute("type")).toBe("button");
+    expect(previous?.getAttribute("aria-label")).toBe("Previous source match");
+    expect(previous?.getAttribute("title")).toBe("Previous source match");
+    expect(previous?.disabled).toBe(true);
+    expect(next?.getAttribute("aria-label")).toBe("Next source match");
+    expect(next?.getAttribute("title")).toBe("Next source match");
+    expect(next?.disabled).toBe(true);
+
+    harness.sourceNavigation.acceptResolution(resolution({
+      resolutionGeneration: 4,
+      selectedMatchCount: 0,
+      parentMatchCount: 2,
+    }));
+
+    expect(harness.dom.row("selected").findByData(
+      "part",
+      "source-navigation-controls",
+    )).toBeUndefined();
+  });
+
+  it("contains row navigation clicks before selection and dispatches both actions", async () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution({
+      selectedMatchCount: 2,
+    }));
+    harness.sourceNavigation.acceptState(navigationState({
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    const tree = harness.dom.element("dom-tree");
+    const selected = harness.dom.row("selected");
+    const previous = selected.findByData("action", "source-previous");
+    const next = selected.findByData("action", "source-next");
+    if (!previous || !next) {
+      throw new Error("Missing selected-row source navigation controls");
+    }
+
+    const previousClick = tree.dispatch("click", { target: previous });
+    const nextClick = tree.dispatch("click", { target: next });
+    await flushAsync();
+
+    expect(previousClick.defaultPrevented).toBe(true);
+    expect(previousClick.propagationStopped).toBe(true);
+    expect(nextClick.defaultPrevented).toBe(true);
+    expect(nextClick.propagationStopped).toBe(true);
+    expect(harness.sourceCommands.map((command) => command.direction)).toEqual([
+      "previous",
+      "next",
+    ]);
+    expect(harness.transport.dispatched).not.toContainEqual(
+      expect.objectContaining({ type: "dom.select" }),
+    );
+    expect(harness.controller.focusedRef).toBe("selected");
   });
 
   it("focuses the disclosed row and keeps one roving tabindex", async () => {
@@ -395,16 +488,32 @@ function createHarness(options: {
   const transport = new TestTransport();
   const resize = new FakeResizeObserverAdapter();
   const errors: unknown[] = [];
+  const sourceCommands: Array<{
+    readonly direction: "previous" | "next";
+  }> = [];
+  const sourceNavigation = new SourceNavigationController((command) => {
+    sourceCommands.push(command);
+  });
   const controller = new DomTreeController({ transport });
   const view = new DomTreeView({
     document: dom.document,
     controller,
+    sourceNavigationController: sourceNavigation,
     rowHeight: options.rowHeight ?? 24,
     overscan: options.overscan ?? 2,
     createResizeObserver: (listener) => resize.create(listener),
     onError: (error) => errors.push(error),
   });
-  return { dom, transport, controller, view, resize, errors };
+  return {
+    dom,
+    transport,
+    controller,
+    sourceNavigation,
+    sourceCommands,
+    view,
+    resize,
+    errors,
+  };
 }
 
 function tabbableRows(dom: FakeDom): FakeElement[] {
@@ -440,6 +549,44 @@ function selectionChanged(
     documentEpoch,
     nodeRef: ancestorPath.at(-1)?.nodeRef ?? "missing",
     ancestorPath,
+  };
+}
+
+function resolution(
+  overrides: Partial<ResolutionMessage> = {},
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: "resolution-1",
+    sessionId: "session-1",
+    source: { role: "ide", id: "ide-1" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 3,
+    status: "matched",
+    selectedMatchCount: 2,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
+    metadata: {},
+    ...overrides,
+  };
+}
+
+function navigationState(
+  overrides: Partial<SourceNavigationStateMessage> = {},
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: "state-1",
+    sessionId: "session-1",
+    source: { role: "ide", id: "ide-1" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 3,
+    selectedMatchCount: 2,
+    metadata: {},
+    ...overrides,
   };
 }
 
@@ -662,6 +809,7 @@ class FakeElement {
   public id = "";
   public className = "";
   public hidden = false;
+  public disabled = false;
   public scrollTop = 0;
   public clientHeight = 0;
   public tabIndex = -1;
@@ -772,6 +920,7 @@ class FakeElement {
 
 class FakeEvent {
   public defaultPrevented = false;
+  public propagationStopped = false;
 
   public constructor(
     public readonly type: string,
@@ -781,6 +930,10 @@ class FakeEvent {
 
   public preventDefault(): void {
     this.defaultPrevented = true;
+  }
+
+  public stopPropagation(): void {
+    this.propagationStopped = true;
   }
 }
 

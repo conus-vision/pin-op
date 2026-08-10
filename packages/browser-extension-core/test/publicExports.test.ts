@@ -30,6 +30,7 @@ import {
   PageOverlay,
   PanelController,
   ResolutionPresenter,
+  SourceNavigationController,
   formatResolutionFooter,
   presentResolution,
   PanelInspectTransport,
@@ -83,6 +84,7 @@ describe("browser extension core exports", () => {
     expect(parseDomResponse).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
+    expect(SourceNavigationController).toBeTypeOf("function");
     expect(formatResolutionFooter).toBeTypeOf("function");
     expect(presentResolution).toBeTypeOf("function");
     expect(PanelInspectTransport).toBeTypeOf("function");

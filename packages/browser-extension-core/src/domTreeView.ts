@@ -1,8 +1,18 @@
 import {
+  ChevronLeft,
+  ChevronRight,
+  createElement as createLucideElement,
+  type IconNode,
+} from "lucide";
+import {
   type DomTreeController,
   type DomTreeKey,
   type DomTreeRow,
 } from "./domTreeController.js";
+import type {
+  SourceNavigationController,
+  SourceNavigationViewModel,
+} from "./sourceNavigationController.js";
 
 export type DomTreeDocument = Pick<
   Document,
@@ -12,6 +22,7 @@ export type DomTreeDocument = Pick<
 export interface DomTreeViewOptions {
   readonly document: DomTreeDocument;
   readonly controller: DomTreeController;
+  readonly sourceNavigationController: SourceNavigationController;
   readonly rowHeight?: number;
   readonly overscan?: number;
   readonly createResizeObserver?: DomTreeResizeObserverFactory;
@@ -41,6 +52,7 @@ const TREE_KEYS = new Set<DomTreeKey>([
 export class DomTreeView {
   private readonly document: DomTreeDocument;
   private readonly controller: DomTreeController;
+  private readonly sourceNavigationController: SourceNavigationController;
   private readonly tree: HTMLElement;
   private readonly spacer: HTMLElement;
   private readonly empty: HTMLElement;
@@ -49,6 +61,7 @@ export class DomTreeView {
   private readonly onError: (error: unknown) => void;
   private readonly resizeObserver: DomTreeResizeObserver | undefined;
   private removeControllerListener: (() => void) | undefined;
+  private removeSourceNavigationListener: (() => void) | undefined;
   private seenRevealVersion = 0;
   private seenFocusedRef: string | undefined;
   private disposed = false;
@@ -63,6 +76,15 @@ export class DomTreeView {
     this.run(() => this.controller.handleKey(keyboardEvent.key as DomTreeKey));
   };
   private readonly onClick = (event: Event): void => {
+    const action = closestDataValue(event.target, this.tree, "action");
+    if (action === "source-previous" || action === "source-next") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.run(() => this.sourceNavigationController.navigate(
+        action === "source-previous" ? "previous" : "next",
+      ));
+      return;
+    }
     const row = closestRow(event.target, this.tree);
     if (!row) {
       return;
@@ -71,7 +93,6 @@ export class DomTreeView {
     if (!nodeRef) {
       return;
     }
-    const action = closestDataValue(event.target, this.tree, "action");
     if (action === "toggle") {
       event.preventDefault();
       this.controller.focus(nodeRef);
@@ -113,6 +134,7 @@ export class DomTreeView {
   public constructor(options: DomTreeViewOptions) {
     this.document = options.document;
     this.controller = options.controller;
+    this.sourceNavigationController = options.sourceNavigationController;
     this.tree = requiredElement(options.document, "dom-tree");
     this.spacer = requiredElement(options.document, "dom-tree-spacer");
     this.empty = requiredElement(options.document, "dom-tree-empty");
@@ -140,6 +162,8 @@ export class DomTreeView {
     this.tree.addEventListener("pointerleave", this.onPointerLeave);
     this.resizeObserver?.observe(this.tree);
     this.removeControllerListener = this.controller.subscribe(() => this.render());
+    this.removeSourceNavigationListener =
+      this.sourceNavigationController.subscribe(() => this.render());
     this.render();
   }
 
@@ -148,6 +172,7 @@ export class DomTreeView {
       return;
     }
     const snapshot = this.controller.snapshot();
+    const sourceNavigation = this.sourceNavigationController.snapshot();
     const focusChanged = snapshot.focusedRef !== this.seenFocusedRef;
     if (
       snapshot.revealRef &&
@@ -194,7 +219,7 @@ export class DomTreeView {
     this.tree.setAttribute("aria-busy", snapshot.loadingRoot ? "true" : "false");
     this.empty.hidden = allRows.length > 0 || snapshot.loadingRoot;
     this.spacer.replaceChildren(...rows.map(({ index, value }) => (
-      this.createRow(value, index)
+      this.createRow(value, index, sourceNavigation)
     )));
 
     if (restoreFocus && snapshot.focusedRef) {
@@ -222,6 +247,8 @@ export class DomTreeView {
     this.disposed = true;
     this.removeControllerListener?.();
     this.removeControllerListener = undefined;
+    this.removeSourceNavigationListener?.();
+    this.removeSourceNavigationListener = undefined;
     this.tree.removeEventListener("scroll", this.onScroll);
     this.tree.removeEventListener("keydown", this.onKeyDown);
     this.tree.removeEventListener("click", this.onClick);
@@ -231,7 +258,11 @@ export class DomTreeView {
     this.spacer.replaceChildren();
   }
 
-  private createRow(row: DomTreeRow, index: number): HTMLElement {
+  private createRow(
+    row: DomTreeRow,
+    index: number,
+    sourceNavigation: SourceNavigationViewModel,
+  ): HTMLElement {
     const element = this.document.createElement("div");
     element.className = rowClassName(row);
     element.dataset.nodeRef = row.nodeRef;
@@ -272,7 +303,55 @@ export class DomTreeView {
     label.dataset.part = "label";
     label.textContent = row.label;
     element.append(disclosure, label);
+    if (row.selected && sourceNavigation.reserveRowSpace) {
+      element.append(this.createSourceNavigationControls(sourceNavigation));
+    }
     return element;
+  }
+
+  private createSourceNavigationControls(
+    model: SourceNavigationViewModel,
+  ): HTMLElement {
+    const controls = this.document.createElement("span");
+    controls.className = "source-navigation-controls";
+    controls.dataset.part = "source-navigation-controls";
+    if (!model.visible) {
+      controls.setAttribute("aria-hidden", "true");
+      return controls;
+    }
+
+    controls.append(
+      this.createSourceNavigationButton(
+        "source-previous",
+        "Previous source match",
+        ChevronLeft,
+        model.disabled,
+      ),
+      this.createSourceNavigationButton(
+        "source-next",
+        "Next source match",
+        ChevronRight,
+        model.disabled,
+      ),
+    );
+    return controls;
+  }
+
+  private createSourceNavigationButton(
+    action: "source-previous" | "source-next",
+    label: string,
+    icon: IconNode,
+    disabled: boolean,
+  ): HTMLButtonElement {
+    const button = this.document.createElement("button") as HTMLButtonElement;
+    button.className = "source-navigation-button";
+    button.dataset.action = action;
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    button.disabled = disabled;
+    button.append(createNavigationIcon(this.document, icon));
+    return button;
   }
 
   private ensureVisible(nodeRef: string): void {
@@ -414,4 +493,15 @@ function createDefaultResizeObserver(
     return undefined;
   }
   return new ResizeObserver(() => listener());
+}
+
+function createNavigationIcon(
+  ownerDocument: DomTreeDocument,
+  icon: IconNode,
+): Element {
+  const element = typeof globalThis.document?.createElementNS === "function"
+    ? createLucideElement(icon)
+    : ownerDocument.createElement("span");
+  element.setAttribute("aria-hidden", "true");
+  return element;
 }

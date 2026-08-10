@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
+  type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -382,6 +383,165 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("keeps selected-row and footer source navigation synchronized", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage({
+      type: "dom.selectionChanged",
+      documentEpoch: 7,
+      nodeRef: "selected",
+      ancestorPath: [
+        domNode("root", "html", true),
+        domNode("selected", "button.save"),
+      ],
+    });
+    port.emitMessage(inspectStarted("inspect-navigation"));
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("dom-tree-spacer").findByData(
+      "part",
+      "source-navigation-controls",
+    )).toBeDefined();
+
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-navigation",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+    }));
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+    expect(dom.element("source-navigation-counter").value).toBe("- / 2");
+    expect(dom.element("source-previous").disabled).toBe(true);
+    expect(dom.element("source-next").disabled).toBe(true);
+    expect(rowSourceButton(dom, "source-previous").disabled).toBe(true);
+    expect(rowSourceButton(dom, "source-next").disabled).toBe(true);
+
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-navigation",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+    expect(dom.element("source-previous").disabled).toBe(false);
+    expect(dom.element("source-next").disabled).toBe(false);
+    expect(rowSourceButton(dom, "source-previous").disabled).toBe(false);
+    expect(rowSourceButton(dom, "source-next").disabled).toBe(false);
+
+    dom.element("source-next").dispatch("click");
+    dom.element("dom-tree").dispatch("click", {
+      target: rowSourceButton(dom, "source-previous"),
+    });
+    await flushAsync();
+
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([
+      {
+        type: "browser2ide.source.navigate",
+        inspectMessageId: "inspect-navigation",
+        resolutionGeneration: 5,
+        direction: "next",
+      },
+      {
+        type: "browser2ide.source.navigate",
+        inspectMessageId: "inspect-navigation",
+        resolutionGeneration: 5,
+        direction: "previous",
+      },
+    ]);
+    runtime.dispose();
+  });
+
+  it("accepts equal-generation cursor updates and rejects mismatched state", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage({
+      type: "dom.selectionChanged",
+      documentEpoch: 1,
+      nodeRef: "selected",
+      ancestorPath: [domNode("selected", "main")],
+    });
+    port.emitMessage(inspectStarted());
+    port.emitMessage(resolutionMessage({
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+    }));
+
+    port.emitMessage(sourceNavigationState({
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    port.emitMessage(sourceNavigationState({
+      messageId: "state-2",
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+
+    port.emitMessage(sourceNavigationState({
+      messageId: "state-wrong-count",
+      resolutionGeneration: 3,
+      selectedMatchCount: 3,
+      activeMatchIndex: 0,
+    }));
+    port.emitMessage(sourceNavigationState({
+      messageId: "state-wrong-generation",
+      resolutionGeneration: 4,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+    runtime.dispose();
+  });
+
+  it("invalidates navigation on selection reset, inspect invalidation, and IDE disconnect", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+
+    showReadySourceNavigation(port, "selected-a", "inspect-a");
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+
+    port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-b", "inspect-b");
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+
+    port.emitMessage(inspectStarted("inspect-c"));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-c",
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-c",
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+
+    port.emitMessage(peerState(false, 2));
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    runtime.dispose();
+  });
+
   it("keeps a matched footer when the DOM selection arrives after resolution", async () => {
     const runtime = createRuntime();
     await runtime.ready;
@@ -419,6 +579,39 @@ describe("startPanelRuntime", () => {
       selectedMatchCount: 2,
       parentMatchCount: 1,
     });
+    runtime.dispose();
+  });
+
+  it("keeps current navigation when its DOM selection event arrives last", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+
+    port.emitMessage(inspectStarted("inspect-late-dom-navigation"));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-late-dom-navigation",
+      resolutionGeneration: 4,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-late-dom-navigation",
+      resolutionGeneration: 4,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+    port.emitMessage({
+      type: "dom.selectionChanged",
+      documentEpoch: 7,
+      nodeRef: "selected",
+      ancestorPath: [domNode("selected", "button#late.primary")],
+    });
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+    expect(rowSourceButton(dom, "source-previous").disabled).toBe(false);
+    expect(rowSourceButton(dom, "source-next").disabled).toBe(false);
     runtime.dispose();
   });
 
@@ -808,12 +1001,19 @@ describe("startPanelRuntime", () => {
     );
     expect(html).toContain('id="selected-element-summary"');
     expect(html).toContain('id="resolution-status"');
+    expect(html.replace(/\s+/g, " ")).toContain(
+      '<div class="resolution-row"> <output id="resolution-status" class="resolution-status" role="status">Select an element to inspect</output> <div id="source-navigation-footer" class="source-navigation-footer" hidden> <output id="source-navigation-counter"></output> <button id="source-previous" class="source-navigation-button" type="button" aria-label="Previous source match" title="Previous source match"></button> <button id="source-next" class="source-navigation-button" type="button" aria-label="Next source match" title="Next source match"></button> </div> </div>',
+    );
     expect(html).not.toContain('id="change-button"');
     expect(html).not.toContain('id="unlink-button"');
     expect(html).not.toContain('id="connected-controls"');
     expect(html).not.toContain('id="inspect-mode" type="checkbox"');
     expect(css).toContain("grid-template-rows: auto auto minmax(0, 1fr) auto");
     expect(css).toContain("@media (max-width: 360px)");
+    expect(css).toContain(".source-navigation-controls");
+    expect(css).toContain(".source-navigation-footer");
+    expect(css).toMatch(/\.resolution-status\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 auto;/s);
+    expect(css).toMatch(/\.source-navigation-button\s*\{[^}]*width:\s*22px;[^}]*height:\s*22px;/s);
   });
 
   function createRuntime() {
@@ -857,6 +1057,10 @@ const ELEMENT_IDS = [
   "inspect-mode",
   "selected-element-summary",
   "resolution-status",
+  "source-navigation-footer",
+  "source-navigation-counter",
+  "source-previous",
+  "source-next",
   "panel-error",
   "dom-tree",
   "dom-tree-spacer",
@@ -920,6 +1124,7 @@ class FakeElement {
     const event = {
       target: this,
       preventDefault() {},
+      stopPropagation() {},
       ...init,
     } as unknown as Event;
     for (const listener of [...(this.listeners.get(type) ?? [])]) {
@@ -1060,6 +1265,10 @@ function isRootRequest(value: unknown): boolean {
   return isRecord(value) && value.type === "dom.getRoot";
 }
 
+function isSourceNavigationCommand(value: unknown): boolean {
+  return isRecord(value) && value.type === "browser2ide.source.navigate";
+}
+
 function domNode(nodeRef: string, label: string, expandable = false) {
   return {
     nodeRef,
@@ -1094,6 +1303,57 @@ function resolutionMessage(
     metadata: {},
     ...overrides,
   };
+}
+
+function sourceNavigationState(
+  overrides: Partial<SourceNavigationStateMessage> = {},
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: "state-1",
+    sessionId: "session-1",
+    source: { role: "ide", id: "vscode-1" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 1,
+    selectedMatchCount: 1,
+    metadata: {},
+    ...overrides,
+  };
+}
+
+function rowSourceButton(
+  dom: FakeDom,
+  action: "source-previous" | "source-next",
+): FakeElement {
+  const button = dom.element("dom-tree-spacer").findByData("action", action);
+  if (!button) {
+    throw new Error(`Missing row source button: ${action}`);
+  }
+  return button;
+}
+
+function showReadySourceNavigation(
+  port: TestRuntimePort,
+  nodeRef: string,
+  inspectMessageId: string,
+): void {
+  port.emitMessage({
+    type: "dom.selectionChanged",
+    documentEpoch: 1,
+    nodeRef,
+    ancestorPath: [domNode(nodeRef, "main")],
+  });
+  port.emitMessage(inspectStarted(inspectMessageId));
+  port.emitMessage(resolutionMessage({
+    inspectMessageId,
+    selectedMatchCount: 2,
+  }));
+  port.emitMessage(sourceNavigationState({
+    inspectMessageId,
+    selectedMatchCount: 2,
+    activeMatchIndex: 0,
+  }));
 }
 
 function inspectStarted(inspectMessageId = "inspect-1") {

@@ -1,6 +1,7 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceNavigationStateMessageSchema,
 } from "@browser2ide/protocol";
 import {
   createPanelIcons,
@@ -16,6 +17,7 @@ import { PanelInspectTransport } from "./panelInspectTransport.js";
 import type { PanelInspectStartedState } from "./panelSessionTransport.js";
 import { DomPanelView, type PanelDocument } from "./panelView.js";
 import { ResolutionPresenter } from "./resolutionPresenter.js";
+import { SourceNavigationController } from "./sourceNavigationController.js";
 import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
@@ -79,6 +81,11 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     },
     (message) => routePanelMessage(message),
   );
+  const sourceNavigationController = new SourceNavigationController(
+    (message) => inspectTransport.dispatchSourceNavigation(message),
+  );
+  const removeSourceNavigationBindings =
+    view.bindSourceNavigation(sourceNavigationController);
   treeController = new DomTreeController({
     transport: {
       request: (request) => inspectTransport.requestDom(request),
@@ -90,6 +97,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   const treeView = new DomTreeView({
     document: options.document,
     controller: treeController,
+    sourceNavigationController,
     onError: reportError,
   });
   const inspectController = new PanelInspectController((message) =>
@@ -143,6 +151,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     const inspectStarted = validatedInspectStarted(message);
     const domEvent = validatedDomEvent(message);
     if (inspectStarted) {
+      sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
       const model = resolutionPresenter.beginCorrelatedInspect(
         inspectStarted.inspectMessageId,
       );
@@ -165,11 +174,19 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       const resolution = ResolutionMessageSchema.parse(message);
       const model = resolutionPresenter.acceptResolution(resolution);
       if (model) {
+        sourceNavigationController.acceptResolution(resolution);
         diagnostics.recordResolution(resolution);
         view.renderResolution(model);
       }
+    } else if (validatedSourceNavigationState(message)) {
+      sourceNavigationController.acceptState(
+        SourceNavigationStateMessageSchema.parse(message),
+      );
     } else if (validatedPeerState(message)) {
       const peer = PeerStateMessageSchema.parse(message);
+      if (!peer.connected) {
+        sourceNavigationController.invalidate();
+      }
       const model = peer.connected
         ? resolutionPresenter.restartResolution()
         : resolutionPresenter.ideDisconnected();
@@ -188,6 +205,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         message.inspectMessageId,
       );
       if (model) {
+        sourceNavigationController.invalidate();
         diagnostics.recordIdeDisconnected();
         view.renderResolution(model);
       }
@@ -200,6 +218,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       void treeController.loadRoot();
     } else if (parseInspectPortInvalidated(message)) {
       const shouldRecover = treeSessionActive;
+      sourceNavigationController.invalidate();
       treeController.reset();
       resetResolutionState();
       if (shouldRecover) {
@@ -229,6 +248,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
 
   function deactivateTreeSession(): void {
     treeSessionActive = false;
+    sourceNavigationController.invalidate();
     treeController.reset();
   }
 
@@ -251,6 +271,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     removeUnload = undefined;
     remove?.();
     stateListeners.clear();
+    removeSourceNavigationBindings();
     diagnostics.clearResolution();
     treeView.dispose();
     treeController.dispose();
@@ -314,6 +335,10 @@ function validatedResolution(message: unknown): boolean {
 
 function validatedPeerState(message: unknown): boolean {
   return PeerStateMessageSchema.safeParse(message).success;
+}
+
+function validatedSourceNavigationState(message: unknown): boolean {
+  return SourceNavigationStateMessageSchema.safeParse(message).success;
 }
 
 function isIdeDisconnected(

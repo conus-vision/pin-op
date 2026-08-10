@@ -90,9 +90,14 @@
           class="selected-element-summary"
           hidden
         ></output>
-        <output id="resolution-status" class="resolution-status" role="status">
-          Select an element to inspect
-        </output>
+        <div class="resolution-row">
+          <output id="resolution-status" class="resolution-status" role="status">Select an element to inspect</output>
+          <div id="source-navigation-footer" class="source-navigation-footer" hidden>
+            <output id="source-navigation-counter"></output>
+            <button id="source-previous" class="source-navigation-button" type="button" aria-label="Previous source match" title="Previous source match"></button>
+            <button id="source-next" class="source-navigation-button" type="button" aria-label="Next source match" title="Next source match"></button>
+          </div>
+        </div>
         <output id="panel-error" class="panel-error" role="status" hidden></output>
       </footer>
     </main>
