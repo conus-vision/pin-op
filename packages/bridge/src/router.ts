@@ -93,6 +93,30 @@ export function routeMessage(
       }
 
       if (
+        replyRoutes.peek(message.sessionId, message.inspectMessageId) !==
+        sender.id
+      ) {
+        sendError(
+          sender,
+          "protocol.invalidMessage",
+          "Message does not match protocol",
+        );
+        return;
+      }
+
+      const recipients = registry
+        .findBySessionAndRole(message.sessionId, "ide")
+        .filter((client) => supportsCapability(client, "source-navigation"));
+      if (recipients.length === 0) {
+        sendError(
+          sender,
+          "bridge.noIdeClient",
+          "No IDE client is connected to this session",
+        );
+        return;
+      }
+
+      if (
         replyRoutes.resolve(message.sessionId, message.inspectMessageId) !==
         sender.id
       ) {
@@ -105,13 +129,7 @@ export function routeMessage(
       }
 
       if (
-        sendToCapableRole(
-          registry,
-          message.sessionId,
-          "ide",
-          "source-navigation",
-          message,
-        ) === 0
+        sendToClients(recipients, message) === 0
       ) {
         sendError(
           sender,
@@ -169,10 +187,9 @@ function routeBrowserReply(
   >,
   requiredRecipientCapability?: ProtocolCapability,
 ): void {
-  const connectionId = replyRoutes.resolve(
-    message.sessionId,
-    message.inspectMessageId,
-  );
+  const connectionId = requiredRecipientCapability
+    ? replyRoutes.peek(message.sessionId, message.inspectMessageId)
+    : replyRoutes.resolve(message.sessionId, message.inspectMessageId);
   if (connectionId === undefined) {
     sendError(
       sender,
@@ -200,6 +217,19 @@ function routeBrowserReply(
   if (
     requiredRecipientCapability &&
     !supportsCapability(recipient, requiredRecipientCapability)
+  ) {
+    sendError(
+      sender,
+      "bridge.noBrowserClient",
+      "No browser client is connected to this session",
+    );
+    return;
+  }
+
+  if (
+    requiredRecipientCapability &&
+    replyRoutes.resolve(message.sessionId, message.inspectMessageId) !==
+      connectionId
   ) {
     sendError(
       sender,
@@ -261,16 +291,13 @@ function sendToRoles(
   return sent;
 }
 
-function sendToCapableRole(
-  registry: ClientRegistry,
-  sessionId: string,
-  role: ClientRole,
-  capability: ProtocolCapability,
+function sendToClients(
+  clients: readonly RegisteredClient[],
   message: Browser2IdeMessage,
 ): number {
   let sent = 0;
-  for (const client of registry.findBySessionAndRole(sessionId, role)) {
-    if (supportsCapability(client, capability) && sendMessage(client, message)) {
+  for (const client of clients) {
+    if (sendMessage(client, message)) {
       sent += 1;
     }
   }

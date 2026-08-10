@@ -99,13 +99,17 @@ export class ReplyRouteRegistry {
   }
 
   resolve(sessionId: string, inspectMessageId: string): string | undefined {
-    const route = this.routes.get(sessionId)?.get(inspectMessageId);
-    if (route === undefined) {
+    const connectionId = this.peek(sessionId, inspectMessageId);
+    if (connectionId === undefined) {
       return undefined;
     }
 
-    this.touchClientRoute(route.connectionId, sessionId, inspectMessageId);
-    return route.connectionId;
+    this.touchClientRoute(connectionId, sessionId, inspectMessageId);
+    return connectionId;
+  }
+
+  peek(sessionId: string, inspectMessageId: string): string | undefined {
+    return this.routes.get(sessionId)?.get(inspectMessageId)?.connectionId;
   }
 
   remove(sessionId: string, inspectMessageId: string): boolean {

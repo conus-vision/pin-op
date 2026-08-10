@@ -102,7 +102,7 @@ export class ClientRegistry {
   add(client: ClientRegistration): RegisteredClient {
     const entry: RegisteredClient = {
       ...client,
-      capabilities: Object.freeze([...(client.capabilities ?? [])]),
+      capabilities: Object.freeze([...client.capabilities]),
       id: randomUUID(),
       missedPongs: 0,
     };

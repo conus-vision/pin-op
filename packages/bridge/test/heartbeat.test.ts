@@ -21,6 +21,7 @@ function client() {
     source: { role: "browser" as const, id: "browser-source", metadata: {} },
     sessionId: "session-1",
     authToken: "browser-session-1-token",
+    capabilities: [],
   };
 }
 
@@ -28,13 +29,14 @@ describe("bridge heartbeat", () => {
   it("sends ping every 15 seconds and terminates clients that miss two pongs", () => {
     vi.useFakeTimers();
     const registry = new ClientRegistry();
-    const entry = registry.add(client());
+    const testClient = client();
+    const entry = registry.add(testClient);
 
     const heartbeat = startHeartbeat(registry);
 
     vi.advanceTimersByTime(15_000);
-    expect(entry.connection.sent).toHaveLength(1);
-    expect(entry.connection.sent[0]).toMatchObject({
+    expect(testClient.connection.sent).toHaveLength(1);
+    expect(testClient.connection.sent[0]).toMatchObject({
       protocolVersion: PROTOCOL_VERSION,
       type: "ping",
       metadata: {},
@@ -42,12 +44,12 @@ describe("bridge heartbeat", () => {
     expect(entry.missedPongs).toBe(1);
 
     vi.advanceTimersByTime(15_000);
-    expect(entry.connection.sent).toHaveLength(2);
+    expect(testClient.connection.sent).toHaveLength(2);
     expect(entry.missedPongs).toBe(2);
-    expect(entry.connection.terminated).toBe(false);
+    expect(testClient.connection.terminated).toBe(false);
 
     vi.advanceTimersByTime(15_000);
-    expect(entry.connection.terminated).toBe(true);
+    expect(testClient.connection.terminated).toBe(true);
 
     heartbeat.stop();
     vi.useRealTimers();

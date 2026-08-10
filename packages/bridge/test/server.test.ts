@@ -2575,6 +2575,7 @@ function inMemoryClient(
       source: { role, id: `${role}-${sessionId}`, metadata: {} },
       sessionId,
       authToken: `${role}-${sessionId}-token`,
+      capabilities: [],
     },
   };
 }

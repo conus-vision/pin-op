@@ -62,6 +62,20 @@ describe("reply route registry", () => {
     expect(routes.resolve("session-1", "inspect-other")).toBe("browser-2");
   });
 
+  it("peeks without refreshing the least recently used route", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 2 });
+
+    routes.register("session-1", "inspect-old", "browser-1").commit();
+    routes.register("session-1", "inspect-new", "browser-1").commit();
+
+    expect(routes.peek("session-1", "inspect-old")).toBe("browser-1");
+    routes.register("session-1", "inspect-next", "browser-1").commit();
+
+    expect(routes.resolve("session-1", "inspect-old")).toBeUndefined();
+    expect(routes.resolve("session-1", "inspect-new")).toBe("browser-1");
+    expect(routes.resolve("session-1", "inspect-next")).toBe("browser-1");
+  });
+
   it("keeps the reverse index bound after limit-one cross-session eviction", () => {
     const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
 
