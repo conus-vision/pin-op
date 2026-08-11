@@ -421,9 +421,8 @@ function captureSegment(element: Element, parent: Node, root: Node): DomPathSegm
   const siblingIndex = elementSiblingIndex(parent, element);
   const evidence = readCanonicalEvidence(element, parent, root);
   if (!tagName || siblingIndex === undefined || !evidence) throw invalidLocator();
-  const id = evidence.id !== undefined && hasUniqueId(root, evidence.id)
-    ? evidence.id
-    : undefined;
+  const id = stabilizeSegmentIdentity(element, parent, root, tagName, siblingIndex, evidence);
+  if (id === READ_FAILED) throw invalidLocator();
   return Object.freeze({
     tagName,
     siblingIndex,
@@ -606,9 +605,26 @@ function confirmElementSiblingIndex(
   expectedIndex: number,
 ): number | undefined {
   const verifiedChildren = readChildCollection(parent);
+  if (!verifiedChildren || verifiedChildren.length !== initialChildren.length) return undefined;
+  let elementIndex = 0;
+  let targetCount = 0;
+  for (let physicalIndex = 0; physicalIndex < verifiedChildren.length; physicalIndex += 1) {
+    const child = readCollectionItem(verifiedChildren.collection, physicalIndex);
+    if (!isNode(child)) return undefined;
+    if (readNodeType(child) !== 1) continue;
+    if (child === target) {
+      targetCount += 1;
+      if (elementIndex !== expectedIndex) return undefined;
+    } else if (elementIndex === expectedIndex) {
+      return undefined;
+    }
+    elementIndex += 1;
+  }
+  const finalChildren = readChildCollection(parent);
   if (
-    !verifiedChildren ||
-    verifiedChildren.length !== initialChildren.length ||
+    targetCount !== 1 ||
+    !finalChildren ||
+    finalChildren.length !== verifiedChildren.length ||
     readParentNode(target) !== parent
   ) return undefined;
   return expectedIndex;
@@ -630,33 +646,59 @@ function matchesSegment(
   root: Node,
 ): boolean {
   if (readTagName(element) !== segment.tagName) return false;
+  if (elementSiblingIndex(parent, element) !== segment.siblingIndex) return false;
   const evidence = readCanonicalEvidence(element, parent, root);
-  const id = evidence?.id !== undefined && hasUniqueId(root, evidence.id)
-    ? evidence.id
-    : undefined;
+  if (!evidence) return false;
+  const id = stabilizeSegmentIdentity(
+    element,
+    parent,
+    root,
+    segment.tagName,
+    segment.siblingIndex,
+    evidence,
+  );
   if (
-    !evidence ||
+    id === READ_FAILED ||
     id !== segment.id ||
     !sameStringValues(evidence.classes, segment.classes) ||
     !sameAttributes(evidence.attributes, segment.attributes)
   ) {
     return false;
   }
+  return true;
+}
+
+function stabilizeSegmentIdentity(
+  element: Element,
+  parent: Node,
+  root: Node,
+  tagName: string,
+  siblingIndex: number,
+  evidence: CanonicalEvidence,
+): string | undefined | typeof READ_FAILED {
+  const firstUnique = evidence.id === undefined
+    ? undefined
+    : uniqueIdStatus(root, evidence.id);
+  if (firstUnique === READ_FAILED) return READ_FAILED;
   const verifiedEvidence = readCanonicalEvidence(element, parent, root);
   if (
-    readTagName(element) !== segment.tagName ||
+    readTagName(element) !== tagName ||
+    elementSiblingIndex(parent, element) !== siblingIndex ||
     !verifiedEvidence ||
-    !sameCanonicalEvidence(evidence, verifiedEvidence) ||
-    id !== segment.id ||
-    (id !== undefined && !hasUniqueId(root, id))
-  ) return false;
+    !sameCanonicalEvidence(evidence, verifiedEvidence)
+  ) return READ_FAILED;
+  const secondUnique = evidence.id === undefined
+    ? undefined
+    : uniqueIdStatus(root, evidence.id);
+  if (secondUnique === READ_FAILED) return READ_FAILED;
   const finalEvidence = readCanonicalEvidence(element, parent, root);
-  return (
-    readTagName(element) === segment.tagName &&
-    !!finalEvidence &&
-    sameCanonicalEvidence(evidence, finalEvidence) &&
-    elementSiblingIndex(parent, element) === segment.siblingIndex
-  );
+  if (
+    readTagName(element) !== tagName ||
+    elementSiblingIndex(parent, element) !== siblingIndex ||
+    !finalEvidence ||
+    !sameCanonicalEvidence(evidence, finalEvidence)
+  ) return READ_FAILED;
+  return firstUnique === true && secondUnique === true ? evidence.id : undefined;
 }
 
 function sameCanonicalEvidence(
@@ -670,25 +712,25 @@ function sameCanonicalEvidence(
   );
 }
 
-function hasUniqueId(
+function uniqueIdStatus(
   root: Node,
   id: string,
-): boolean {
+): boolean | typeof READ_FAILED {
   const pending: Array<{ readonly node: Node; readonly children?: { readonly collection: object; readonly length: number }; next?: number }> = [{ node: root }];
   const seen = new Set<Node>();
   let matches = 0;
   while (pending.length > 0) {
     const current = pending[pending.length - 1]!;
     if (!current.children) {
-      if (seen.size >= MAX_ID_SCAN_NODES || seen.has(current.node)) return false;
+      if (seen.size >= MAX_ID_SCAN_NODES || seen.has(current.node)) return READ_FAILED;
       seen.add(current.node);
       if (readNodeType(current.node) === 1) {
         const currentId = readIdStrict(current.node as Element);
-        if (currentId === READ_FAILED) return false;
+        if (currentId === READ_FAILED) return READ_FAILED;
         if (currentId === id && ++matches > 1) return false;
       }
       const children = readChildCollection(current.node);
-      if (!children) return false;
+      if (!children) return READ_FAILED;
       (current as { children: { readonly collection: object; readonly length: number }; next: number }).children = children;
       (current as { next: number }).next = 0;
     }
@@ -697,7 +739,7 @@ function hasUniqueId(
       continue;
     }
     const child = readCollectionItem(current.children!.collection, current.next!++);
-    if (!isNode(child)) return false;
+    if (!isNode(child)) return READ_FAILED;
     pending.push({ node: child });
   }
   return matches === 1;

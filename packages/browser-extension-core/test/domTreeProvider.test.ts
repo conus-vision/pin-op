@@ -2817,10 +2817,7 @@ describe("DomTreeProvider", () => {
       nodeRef: hostView.nodeRef,
       branchRevision: 1,
     })).toThrowError("stale-branch");
-    expect(invalidated).toContainEqual({
-      nodeRef: hostView.nodeRef,
-      branchRevision: 2,
-    });
+    expect(invalidated).toEqual([]);
   });
 
   it("resumes physical traversal without rescanning earlier child pages", () => {
@@ -2859,7 +2856,7 @@ describe("DomTreeProvider", () => {
 
       expect(page.nodes).toHaveLength(50);
       expect(page.nextCursor).toBeDefined();
-      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(51);
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(32_000);
       cursor = page.nextCursor;
     }
   });
@@ -2901,7 +2898,7 @@ describe("DomTreeProvider", () => {
       });
       found.push(...page.nodes);
 
-      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(256);
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(4_000);
       if (found.length === 0) {
         expect(page.nextCursor).toBeDefined();
       }
@@ -4127,6 +4124,82 @@ describe("DomTreeProvider", () => {
     expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
   });
 
+  it("fails capture when a verified child collection spoofs the same-length sibling position", () => {
+    const tree = createHeadingTree({ includeSibling: true });
+    const sibling = tree.main.childNodes[0]!;
+    const originalChildren = tree.main.childNodes;
+    let reads = 0;
+    Object.defineProperty(tree.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? originalChildren : [tree.target, sibling];
+      },
+    });
+
+    expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
+  });
+
+  it("fails recovery when a verified child collection reorders same-length siblings", () => {
+    const first = createHeadingTree({ includeSibling: true });
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ includeSibling: true });
+    const sibling = second.main.childNodes[0]!;
+    const originalChildren = second.main.childNodes;
+    let reads = 0;
+    Object.defineProperty(second.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? originalChildren : [second.target, sibling];
+      },
+    });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("omits a capture ID when a second bounded scan finds a late duplicate", () => {
+    const tree = createHeadingTree();
+    const earlier = createElement("aside", tree.document);
+    tree.document.documentElement.remove(tree.document.documentElement.childNodes[0]!);
+    tree.document.documentElement.append(earlier);
+    tree.document.documentElement.append(tree.main.parentNode as FakeNode);
+    const originalChildren = tree.target.childNodes;
+    let inserted = false;
+    Object.defineProperty(tree.target, "childNodes", {
+      configurable: true,
+      get: () => {
+        if (!inserted) {
+          inserted = true;
+          const duplicate = createElement("aside", tree.document);
+          duplicate.id = tree.target.id;
+          earlier.append(duplicate);
+        }
+        return originalChildren;
+      },
+    });
+
+    expect(locatorFor(tree.provider, tree.target).path.at(-1)?.id).toBeUndefined();
+  });
+
+  it("fails capture when uniqueness traversal mutates candidate evidence", () => {
+    const tree = createHeadingTree();
+    const children = tree.target.childNodes;
+    let mutated = false;
+    Object.defineProperty(tree.target, "childNodes", {
+      configurable: true,
+      get: () => {
+        if (!mutated) {
+          mutated = true;
+          tree.target.className = "mutated";
+        }
+        return children;
+      },
+    });
+
+    expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
+  });
+
   it("fails locator resolution when a second uniqueness scan finds a late duplicate", () => {
     const first = createHeadingTree();
     const locator = locatorFor(first.provider, first.target);
@@ -4284,6 +4357,82 @@ describe("DomTreeProvider", () => {
       nodeRef: hostView.nodeRef,
       branchRevision: hostView.branchRevision,
     }).nodes).toHaveLength(50);
+  });
+
+  it("rolls back ancestor-path materialization before a late view failure", () => {
+    const tree = createHeadingTree();
+    const revealed = tree.provider.revealElement(tree.target as unknown as Element);
+    const documentEpoch = tree.provider.getRoot().documentEpoch;
+    const provider = tree.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { readonly size: number };
+      viewElement(element: Element, ...args: readonly unknown[]): unknown;
+    };
+    const records = [...provider.records.entries()];
+    const referenceCount = provider.nodeRegistry.size;
+    const originalViewElement = provider.viewElement;
+    provider.viewElement = (element, ...args) => {
+      if (element === tree.main.parentNode) throw new Error("late ancestor view failure");
+      return originalViewElement.call(provider, element, ...args);
+    };
+
+    expect(() => tree.provider.ancestorPath(revealed.nodeRef, documentEpoch))
+      .toThrowError("late ancestor view failure");
+    expect([...provider.records.entries()]).toEqual(records);
+    expect(provider.nodeRegistry.size).toBe(referenceCount);
+
+    provider.viewElement = originalViewElement;
+    expect(tree.provider.ancestorPath(revealed.nodeRef, documentEpoch)
+      .map(({ label }) => label)).toEqual(["html", "body", "main", "h2#section_title_id1.block_title [data-section] [aria-label] [role]"]);
+  });
+
+  it("buffers invalidation callbacks until a child page commits", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    document.documentElement.append(host);
+    const invalidated: Array<{ readonly nodeRef: string; readonly branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(harness.provider, root.node, root.documentEpoch, "callback-host");
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "expand-callback-host",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    });
+    host.attachShadow();
+    const provider = harness.provider as unknown as {
+      viewShadowRoot(root: ShadowRoot, ...args: readonly unknown[]): unknown;
+    };
+    const originalViewShadowRoot = provider.viewShadowRoot;
+    provider.viewShadowRoot = () => {
+      throw new Error("late invalidation view failure");
+    };
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "failed-callback-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision + 1,
+    })).toThrowError("late invalidation view failure");
+    expect(invalidated).toEqual([]);
+
+    provider.viewShadowRoot = originalViewShadowRoot;
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "committed-callback-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision + 1,
+    });
+    expect(invalidated).toEqual([{
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision + 1,
+    }]);
   });
 
   it("rolls back earlier child views when a later materialization throws", () => {

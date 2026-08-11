@@ -212,6 +212,7 @@ interface ProviderMaterializationMetadata {
   readonly shadowScanOffset: number;
   readonly pendingMutations: readonly PendingMutationRecord[];
   readonly pendingFrameMutationScans: readonly PendingFrameMutationScan[];
+  readonly pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   readonly mutationTimer: DomTreeTimerHandle | undefined;
   readonly frameMutationScanTimer: DomTreeTimerHandle | undefined;
   readonly shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -228,6 +229,12 @@ interface ProviderAuthorityOperation {
   commit(): boolean;
   rollback(cleanup?: () => void): boolean;
 }
+
+type ProviderOutwardEffect =
+  | { readonly kind: "frame"; readonly event: FrameLifecycleEvent }
+  | { readonly kind: "invalidated"; readonly branch: DomInvalidationBranch }
+  | { readonly kind: "selected-removed"; readonly event: DomTreeSelectedNodeRemoval }
+  | { readonly kind: "mutation-settled" };
 
 type LogicalPathEntry =
   | {
@@ -289,7 +296,7 @@ export class DomTreeProvider {
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
-  private lifecycleEventBuffer: FrameLifecycleEvent[] | undefined;
+  private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
   private mutationTimer: DomTreeTimerHandle | undefined;
   private frameMutationScanTimer: DomTreeTimerHandle | undefined;
   private shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -416,18 +423,33 @@ export class DomTreeProvider {
       throwDomTreeError("stale-document");
     }
     this.flushMutationBarrier();
-    const context = this.frameRegistry.topContext;
-    const element = this.topDocument?.documentElement;
-    if (!context || !element) {
+    const operation = this.beginProviderAuthorityOperation();
+    if (!operation) {
       throwDomTreeError("node-unavailable");
     }
-    const node = this.viewElement(element, context);
-    return Object.freeze({
-      type: "dom.root",
-      requestId: "root",
-      documentEpoch: this.documentEpoch,
-      node,
-    });
+    let committed = false;
+    try {
+      const context = this.frameRegistry.topContext;
+      const element = this.topDocument?.documentElement;
+      if (!context || !element) {
+        throwDomTreeError("node-unavailable");
+      }
+      const response = Object.freeze({
+        type: "dom.root" as const,
+        requestId: "root",
+        documentEpoch: this.documentEpoch,
+        node: this.viewElement(element, context),
+      });
+      if (!operation.commit()) {
+        throwDomTreeError("node-unavailable");
+      }
+      committed = true;
+      return response;
+    } finally {
+      if (!committed && !operation.rollback()) {
+        throwDomTreeError("node-unavailable");
+      }
+    }
   }
 
   public getChildren(request: DomChildrenRequest): DomChildrenResponse {
@@ -603,33 +625,45 @@ export class DomTreeProvider {
       throwDomTreeError("stale-document");
     }
     this.flushMutationBarrier();
-    const reversed: DomNodeView[] = [];
-    const seen = new Set<string>();
-    let currentRef: string | undefined = nodeRef;
-    while (currentRef) {
-      if (
-        seen.has(currentRef) ||
-        reversed.length >= DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH
-      ) {
+    const authorityOperation = this.beginProviderAuthorityOperation();
+    if (!authorityOperation) throwDomTreeError("node-unavailable");
+    let committed = false;
+    try {
+      const reversed: DomNodeView[] = [];
+      const seen = new Set<string>();
+      let currentRef: string | undefined = nodeRef;
+      while (currentRef) {
+        if (
+          seen.has(currentRef) ||
+          reversed.length >= DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH
+        ) {
+          throwDomTreeError("node-unavailable");
+        }
+        seen.add(currentRef);
+        const record = this.records.get(currentRef);
+        if (!record) {
+          throwDomTreeError("unknown-node");
+        }
+        const node = this.resolveNode(currentRef, record.scope);
+        if (!node) {
+          throwDomTreeError("unknown-node");
+        }
+        reversed.push(record.kind === "shadow-root"
+          ? this.viewShadowRoot(node as ShadowRoot, record.scope, record.parentRef)
+          : record.kind === "frame-document"
+            ? this.viewFrameDocument(node as Document, record.scope as FrameContext, record.parentRef)
+            : this.viewElement(node as Element, record.scope, record.parentRef));
+        currentRef = record.parentRef;
+      }
+      const result = Object.freeze(reversed.reverse());
+      committed = authorityOperation.commit();
+      if (!committed) throwDomTreeError("node-unavailable");
+      return result;
+    } finally {
+      if (!committed && !authorityOperation.rollback()) {
         throwDomTreeError("node-unavailable");
       }
-      seen.add(currentRef);
-      const record = this.records.get(currentRef);
-      if (!record) {
-        throwDomTreeError("unknown-node");
-      }
-      const node = this.resolveNode(currentRef, record.scope);
-      if (!node) {
-        throwDomTreeError("unknown-node");
-      }
-      reversed.push(record.kind === "shadow-root"
-        ? this.viewShadowRoot(node as ShadowRoot, record.scope, record.parentRef)
-        : record.kind === "frame-document"
-          ? this.viewFrameDocument(node as Document, record.scope as FrameContext, record.parentRef)
-          : this.viewElement(node as Element, record.scope, record.parentRef));
-      currentRef = record.parentRef;
     }
-    return Object.freeze(reversed.reverse());
   }
 
   public lookupElement(element: Element): DomTreeElementIdentity | undefined {
@@ -740,7 +774,7 @@ export class DomTreeProvider {
   public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
     this.requireActive();
     this.flushMutationBarrier();
-    if (this.lifecycleEventBuffer) return undefined;
+    if (this.outwardEffectBuffer) return undefined;
     const authorityOperation = this.beginProviderAuthorityOperation();
     if (!authorityOperation) return undefined;
     let transaction: ReturnType<DomStableLocatorService["beginResolve"]>;
@@ -1564,14 +1598,10 @@ export class DomTreeProvider {
       }
     }
     for (const { nodeRef, branch } of branches) {
-      try {
-        this.onInvalidated?.(Object.freeze({
-          nodeRef,
-          branchRevision: branch.revision,
-        }));
-      } catch {
-        // Consumer callbacks cannot disrupt DOM ownership bookkeeping.
-      }
+      this.emitInvalidated(Object.freeze({
+        nodeRef,
+        branchRevision: branch.revision,
+      }));
     }
   }
 
@@ -1998,22 +2028,22 @@ export class DomTreeProvider {
   private beginProviderAuthorityOperation(): ProviderAuthorityOperation | undefined {
     const snapshot = this.snapshotProviderAuthority();
     if (!snapshot) return undefined;
-    const parentBuffer = this.lifecycleEventBuffer;
+    const parentBuffer = this.outwardEffectBuffer;
     const buffer = parentBuffer ?? [];
     const ownsBuffer = parentBuffer === undefined;
-    if (ownsBuffer) this.lifecycleEventBuffer = buffer;
+    if (ownsBuffer) this.outwardEffectBuffer = buffer;
     let closed = false;
     return {
       commit: () => {
-        if (closed || (ownsBuffer && this.lifecycleEventBuffer !== buffer)) return false;
+        if (closed || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
         closed = true;
         if (!ownsBuffer) return true;
-        this.lifecycleEventBuffer = undefined;
-        for (const event of buffer) this.handleFrameLifecycle(event);
+        this.outwardEffectBuffer = undefined;
+        for (const effect of buffer) this.emitOutwardEffect(effect);
         return true;
       },
       rollback: (cleanup) => {
-        if (closed || (ownsBuffer && this.lifecycleEventBuffer !== buffer)) return false;
+        if (closed || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
         let restored = true;
         let retainedEvents: readonly FrameLifecycleEvent[] = [];
         try {
@@ -2028,7 +2058,7 @@ export class DomTreeProvider {
           restored = false;
         } finally {
           closed = true;
-          if (ownsBuffer) this.lifecycleEventBuffer = undefined;
+          if (ownsBuffer) this.outwardEffectBuffer = undefined;
         }
         if (ownsBuffer) {
           for (const event of retainedEvents) this.handleFrameLifecycle(event);
@@ -2039,8 +2069,9 @@ export class DomTreeProvider {
   }
 
   private rollbackBufferedFrameRegistrations(
-    events: readonly FrameLifecycleEvent[],
+    effects: readonly ProviderOutwardEffect[],
   ): readonly FrameLifecycleEvent[] {
+    const events = effects.flatMap((effect) => effect.kind === "frame" ? [effect.event] : []);
     const temporaryFrameRefs = new Set(events
       .filter((event) => event.type === "registered")
       .map((event) => event.frameRef)
@@ -2146,6 +2177,7 @@ export class DomTreeProvider {
       pendingFrameMutationScans: snapshotPendingFrameMutationScans(
         this.pendingFrameMutationScans,
       ),
+      pendingSelectedRemoval: this.pendingSelectedRemoval,
       mutationTimer: this.mutationTimer,
       frameMutationScanTimer: this.frameMutationScanTimer,
       shadowScanTimer: this.shadowScanTimer,
@@ -2174,6 +2206,7 @@ export class DomTreeProvider {
       this.pendingFrameMutationScans.length,
       ...snapshotPendingFrameMutationScans(snapshot.pendingFrameMutationScans),
     );
+    this.pendingSelectedRemoval = snapshot.pendingSelectedRemoval;
     this.mutationTimer = snapshot.mutationTimer;
     this.frameMutationScanTimer = snapshot.frameMutationScanTimer;
     this.shadowScanTimer = snapshot.shadowScanTimer;
@@ -2329,6 +2362,38 @@ export class DomTreeProvider {
     if (!event) {
       return;
     }
+    this.emitSelectedNodeRemoved(event);
+  }
+
+  private emitMutationSettled(): void {
+    if (this.outwardEffectBuffer) {
+      this.outwardEffectBuffer.push({ kind: "mutation-settled" });
+      return;
+    }
+    try {
+      this.onMutationSettled?.();
+    } catch {
+      // Consumer reconciliation cannot disrupt DOM ownership bookkeeping.
+    }
+  }
+
+  private emitInvalidated(branch: DomInvalidationBranch): void {
+    if (this.outwardEffectBuffer) {
+      this.outwardEffectBuffer.push({ kind: "invalidated", branch });
+      return;
+    }
+    try {
+      this.onInvalidated?.(branch);
+    } catch {
+      // Consumer callbacks cannot disrupt DOM ownership bookkeeping.
+    }
+  }
+
+  private emitSelectedNodeRemoved(event: DomTreeSelectedNodeRemoval): void {
+    if (this.outwardEffectBuffer) {
+      this.outwardEffectBuffer.push({ kind: "selected-removed", event });
+      return;
+    }
     try {
       this.onSelectedNodeRemoved?.(event);
     } catch {
@@ -2336,11 +2401,15 @@ export class DomTreeProvider {
     }
   }
 
-  private emitMutationSettled(): void {
-    try {
-      this.onMutationSettled?.();
-    } catch {
-      // Consumer reconciliation cannot disrupt DOM ownership bookkeeping.
+  private emitOutwardEffect(effect: ProviderOutwardEffect): void {
+    if (effect.kind === "frame") {
+      this.handleFrameLifecycle(effect.event);
+    } else if (effect.kind === "invalidated") {
+      this.emitInvalidated(effect.branch);
+    } else if (effect.kind === "selected-removed") {
+      this.emitSelectedNodeRemoved(effect.event);
+    } else {
+      this.emitMutationSettled();
     }
   }
 
@@ -2637,8 +2706,8 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): void {
-    if (this.lifecycleEventBuffer) {
-      this.lifecycleEventBuffer.push(event);
+    if (this.outwardEffectBuffer) {
+      this.outwardEffectBuffer.push({ kind: "frame", event });
       return;
     }
     if (this.disposed || event.type === "reset") {
