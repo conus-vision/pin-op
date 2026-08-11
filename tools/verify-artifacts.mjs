@@ -442,7 +442,7 @@ async function verifyBrowser(archive, filename, browser) {
     browser,
   );
   parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
-    expectedProtocolVersion: 4,
+    expectedProtocolVersion: 5,
     label: `${filename} runtime metadata`,
   });
 }
@@ -515,12 +515,22 @@ export function validateVsixArchive(archive, filename) {
   parseRuntimeMetadata(
     archive.files.get("extension/dist/runtime-metadata.json"),
     {
-      expectedProtocolVersion: 4,
+      expectedProtocolVersion: 5,
       label: `${filename} runtime metadata`,
     },
   );
 
   const bundle = archive.files.get("extension/dist/extension.cjs").toString("utf8");
+  if (!bundle.includes("source-navigation")) {
+    throw new Error(
+      `${filename} VSIX bundle is missing current source-navigation capability`,
+    );
+  }
+  for (const type of ["source.navigate", "source.navigationState"]) {
+    if (!bundle.includes(type)) {
+      throw new Error(`${filename} VSIX bundle is missing current ${type} message`);
+    }
+  }
   const runtimeRequires = [
     ...bundle.matchAll(/\brequire\((["'])([^"'.\/][^"']*)\1\)/g),
   ].map((match) => match[2]);

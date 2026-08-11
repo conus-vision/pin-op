@@ -509,12 +509,23 @@ export function describeBrowserAdapterContract(
         "devtools.ts",
         "panel.ts",
       ]) {
+        const source = readFileSync(
+          new URL(`src/${name}`, contract.extensionRoot),
+          "utf8",
+        );
         expect(
-          adapterImportBoundaryViolations(
-            name,
-            readFileSync(new URL(`src/${name}`, contract.extensionRoot), "utf8"),
-          ),
+          adapterImportBoundaryViolations(name, source),
         ).toEqual([]);
+        expect(
+          moduleImportEdges(name, source).some(
+            ({ moduleName }) => moduleName === SHARED_RUNTIME_MODULE,
+          ),
+        ).toBe(true);
+        expect(source).not.toContain("dom.resolveLocator");
+        expect(source).not.toContain("source.navigate");
+        expect(source).not.toContain("source.navigationState");
+        expect(source).not.toContain("DomStableLocator");
+        expect(source).not.toContain("SourceNavigationController");
       }
 
       const decoySource = `
@@ -558,11 +569,11 @@ export function describeBrowserPackageContract(
 
     it("ships the shared inspector panel from the real package", () => {
       const panel = packagedText(packaged, "dist/panel.html");
+      const panelCss = packagedText(packaged, "dist/panel.css");
+      const panelBundle = packagedText(packaged, "dist/panel.js");
 
       expect(panel).toBe(sharedAsset("panel.html"));
-      expect(packagedText(packaged, "dist/panel.css")).toBe(
-        sharedAsset("panel.css"),
-      );
+      expect(panelCss).toBe(sharedAsset("panel.css"));
       expect(packagedBytes(packaged, "dist/browser2ide.svg")).toEqual(
         Buffer.from(sharedAsset("browser2ide.svg")),
       );
@@ -579,6 +590,10 @@ export function describeBrowserPackageContract(
       expect(panel).toMatch(
         /<footer\b[^>]*class="panel-footer"[^>]*>[\s\S]*id="resolution-status"[\s\S]*<\/footer>/,
       );
+      expect(panel).toContain("source-navigation-footer");
+      expect(panelCss).toContain(".source-navigation-controls");
+      expect(panelBundle).toContain("source.navigationState");
+      expect(panelBundle).toContain("dom.resolveLocator");
     });
 
     it("emits exact structured protocol metadata without live marker logic", () => {
@@ -587,7 +602,7 @@ export function describeBrowserPackageContract(
       ) as unknown;
       expect(metadata).toEqual({
         schemaVersion: 1,
-        protocolVersion: 4,
+        protocolVersion: 5,
       });
 
       const adapter = readFileSync(

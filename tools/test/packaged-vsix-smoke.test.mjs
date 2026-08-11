@@ -14,6 +14,13 @@ const installedSmokePath = resolve(
 const installerUrl = new URL("../install-vsix-for-smoke.mjs", import.meta.url);
 const runtimeOptionsUrl = new URL("../vscode-smoke-runtime.mjs", import.meta.url);
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const extensionBundleFixture = [
+  'const vscode = require("vscode");',
+  'const capabilities = ["resolution", "source-navigation"];',
+  'const sourceNavigateType = "source.navigate";',
+  'const sourceNavigationStateType = "source.navigationState";',
+  "",
+].join("\n");
 
 test("installed VSIX smoke never invokes the machine CLI installer", async () => {
   const source = await readFile(installedSmokePath, "utf8");
@@ -30,6 +37,16 @@ test("installed VSIX smoke has no implicit machine runtime fallback", async () =
   assert.match(source, /resolveVSCodeTestRuntimeOptions/);
   assert.match(source, /\.\.\.runtimeOptions/);
   assert.doesNotMatch(source, /LOCALAPPDATA|defaultVSCodeExecutablePath/);
+});
+
+test("installed VSIX smoke pins protocol 5 and current navigation capabilities", async () => {
+  const source = await readFile(installedSmokePath, "utf8");
+
+  assert.match(source, /metadata\.protocolVersion !== 5/);
+  assert.match(source, /protocol 5/);
+  assert.match(source, /"source-navigation"/);
+  assert.match(source, /"source\.navigationState"/);
+  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V5_OK/);
 });
 
 test("VSIX smoke defaults to stable in the repository runtime cache", async () => {
@@ -130,12 +147,30 @@ test("validated VSIX payload installs under its canonical artifact identity", as
     );
     assert.equal(
       await readFile(join(expectedDirectory, "dist/extension.cjs"), "utf8"),
-      'const vscode = require("vscode");\n',
+      extensionBundleFixture,
     );
     await assert.rejects(
       readFile(join(expectedDirectory, "extension.vsixmanifest")),
       { code: "ENOENT" },
     );
+  });
+});
+
+test("VSIX installation rejects a bundle without current navigation capabilities", async () => {
+  const installVerifiedVsix = await loadInstaller();
+  await withTemporaryDirectory("browser2ide-vsix-capabilities-", async (directory) => {
+    const artifactPath = join(directory, "capabilities.vsix");
+    const extensionsDirectory = join(directory, "extensions");
+    await mkdir(extensionsDirectory);
+    writeVsix(artifactPath, {}, {
+      bundle: 'const vscode = require("vscode");\n',
+    });
+
+    await assert.rejects(
+      installVerifiedVsix(artifactPath, extensionsDirectory),
+      /VSIX bundle is missing current source-navigation capability/i,
+    );
+    assert.deepEqual(await readdir(extensionsDirectory), []);
   });
 });
 
@@ -342,24 +377,27 @@ function expectedManifest(overrides = {}) {
   };
 }
 
-function writeVsix(path, manifestOverrides = {}, xmlOverrides = {}) {
+function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
   const zip = new AdmZip();
   for (const [name, content] of [
     [
       "[Content_Types].xml",
-      xmlOverrides.contentTypesXml ?? expectedContentTypesXml(),
+      archiveOverrides.contentTypesXml ?? expectedContentTypesXml(),
     ],
     [
       "extension.vsixmanifest",
-      xmlOverrides.manifestXml ?? expectedVsixManifestXml(),
+      archiveOverrides.manifestXml ?? expectedVsixManifestXml(),
     ],
     ["extension/LICENSE.txt", projectLicense],
     ["extension/THIRD_PARTY_NOTICES", "notices"],
-    ["extension/dist/extension.cjs", 'const vscode = require("vscode");\n'],
+    [
+      "extension/dist/extension.cjs",
+      archiveOverrides.bundle ?? extensionBundleFixture,
+    ],
     ["extension/dist/mappings.wasm", Buffer.from([0x00, 0x61, 0x73, 0x6d])],
     [
       "extension/dist/runtime-metadata.json",
-      '{"schemaVersion":1,"protocolVersion":4}\n',
+      '{"schemaVersion":1,"protocolVersion":5}\n',
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
     ["extension/readme.md", "readme"],

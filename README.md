@@ -79,8 +79,9 @@ commands, or switch the active editor.
 
 Browser-local DOM node references never cross the product WebSocket. Only a
 bounded selection snapshot travels over the authenticated loopback bridge.
-Protocol version `4` adds targeted resolution replies and IDE peer state while
-keeping product semver independent.
+Protocol version `5` adds capability-gated selected-match source navigation
+while retaining targeted resolution replies and IDE peer state. Product semver
+remains independent.
 
 Read the [architecture overview](docs/architecture.md),
 [protocol contract](docs/protocol.md), and

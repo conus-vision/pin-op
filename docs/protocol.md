@@ -1,21 +1,51 @@
 # Browser2IDE Protocol
 
-The Browser2IDE product protocol carries bounded inspection evidence from a
-linked browser window to local VS Code and returns source-resolution outcomes to
-the originating browser connection.
+Browser2IDE carries bounded inspection evidence from one explicitly linked
+browser window to local VS Code and returns source-resolution and navigation
+state only to the originating browser connection.
 
-## Version
+## Version And Capability Negotiation
 
-The current protocol version is `4`. Product messages use
-`protocolVersion: 4`; product release semver (`0.3.0`) is independent. Packaged
-runtime metadata therefore reports protocol version `4`, not the product major
-or minor version.
+The current protocol version is `5`. Every product message uses
+`protocolVersion: 5`; product release semver (`0.3.0`) is independent. Packaged
+runtime metadata reports protocol version `5`.
 
-Version matching is exact. Unsupported versions, unknown fields, and invalid
-message shapes are rejected. There is no protocol v3 compatibility branch and
-no downgrade negotiation.
+The protocol uses exact version matching with no downgrade negotiation.
+Unsupported versions, unknown fields, and invalid message shapes are rejected.
+There is no protocol v4 compatibility branch.
 
-## Transport
+After linking, each client sends a strict `hello` containing its active
+capabilities. Capability negotiation does not alter the protocol version. It
+authorizes only message families implemented by both endpoints and the bridge:
+
+- browser clients advertise `inspect`, `link`, and `source-navigation`;
+- an inspect-only simulator may advertise only `inspect`, while a simulator
+  that sends navigation intents must also advertise `source-navigation`;
+- IDE clients advertise `resolution` and `source-navigation`.
+
+The bridge stores the authenticated capability list and checks it again when
+routing optional messages. Advertising an unknown capability is invalid, and a
+client without `source-navigation` cannot send or receive that message family.
+
+```json
+{
+  "protocolVersion": 5,
+  "type": "hello",
+  "messageId": "hello-2",
+  "sessionId": "default",
+  "authToken": "<browser-role-token>",
+  "bridgeInstanceId": "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
+  "source": {
+    "role": "browser",
+    "id": "firefox-window-7",
+    "metadata": {}
+  },
+  "capabilities": ["inspect", "link", "source-navigation"],
+  "metadata": {}
+}
+```
+
+## Transport, Link, And Authentication
 
 Product traffic uses WebSocket only:
 
@@ -25,90 +55,59 @@ browser extension -> ws://127.0.0.1:<managed-port> -> VS Code extension
 
 The VS Code bridge binds only to `127.0.0.1` and chooses the first available
 port from `48735` through `48834`. Browser2IDE exposes no product HTTP API and
-does not scan this range from the browser.
+the browser does not scan the port range.
 
-Ordinary protocol messages are strict objects with a non-empty `messageId`,
-message-specific `type`, JSON-only `metadata`, and protocol version `4`.
-Handshake and routed messages add role, session, and identity fields as needed.
-
-## Link Code
+Ordinary protocol messages are strict objects with a non-empty `messageId`, a
+message-specific `type`, JSON-only `metadata`, and protocol version `5`.
+Handshake and routed messages add the exact identity and correlation fields
+their schemas require. WebSocket frames larger than 1 MiB are rejected.
 
 Every bridge start creates a fresh UUID `bridgeInstanceId`, random two-digit
-PIN, role-bound tokens, and managed port. The seven-digit UI code is only an
-encoding of the exact endpoint and PIN:
+PIN, role-bound tokens, and managed port. The seven-digit UI code encodes only
+the exact endpoint and PIN:
 
 ```text
 48735 07 -> port 48735 + PIN 07 -> clipboard value 4873507
 ```
 
-The browser parses the first five digits as the port, connects to that one
-loopback endpoint, and sends the last two digits in a `linkRequest`. The PIN is
-accidental-cross-link protection, not strong authentication.
+The browser connects to that one loopback endpoint and sends the final two
+digits in a `linkRequest`. The PIN prevents accidental local cross-linking; it
+is not strong authentication. A successful `linkAccepted` returns the
+`sessionId`, `bridgeInstanceId`, browser-role token, and expiry used by `hello`.
+The IDE receives its role-bound credentials inside the same VS Code extension
+runtime and does not send `linkRequest`.
 
-## Link And Authentication
+The bridge validates role, session, token, expiry, bridge instance, source, and
+message order before returning `authenticated`. An unauthenticated socket has
+ten seconds and one link attempt. Five failed PIN attempts in the rolling
+window trigger a bridge-wide 60-second cooldown without revealing PIN detail.
 
-A browser or simulator sends one link request on a new socket:
+Authenticated browser credentials and the display code live in
+`browser.storage.session` for that browser window. **Disconnect** sends
+`unlink`, revokes that window's token, closes its socket, and removes only that
+window's session record. Stopping VS Code revokes every token for that bridge
+instance.
 
-```json
-{
-  "protocolVersion": 4,
-  "type": "linkRequest",
-  "messageId": "link-1",
-  "pin": "07",
-  "source": {
-    "role": "browser",
-    "id": "firefox-devtools",
-    "metadata": {}
-  },
-  "metadata": {}
-}
-```
+## Inspect Messages And Targeted Resolution Replies
 
-On success the bridge returns `linkAccepted` with `sessionId`,
-`bridgeInstanceId`, a browser-role token, and expiry. The client then sends
-`hello` with those values and its capabilities. The bridge validates role,
-session, token, expiry, bridge instance, and source before returning
-`authenticated`.
-
-The IDE does not send `linkRequest`. Its role-bound credentials are created
-inside the same VS Code extension runtime and it performs the `hello` exchange
-directly.
-
-Unauthenticated sockets have ten seconds to finish the handshake. A socket gets
-one link attempt. Invalid order, malformed input, or failed authentication
-closes it. Five failed PIN attempts in the rolling window trigger a bridge-wide
-60-second cooldown; responses do not reveal whether a guessed PIN was close.
-
-After authentication, the browser stores the endpoint, session ID, bridge
-instance ID, browser token, and formatted display code in
-`browser.storage.session` for that browser window. Display-code storage is
-session-only. It exists so another panel in the same window can show the same
-code without preserving the original input field.
-
-The DevTools **Disconnect** action sends the protocol `unlink` request, revokes
-that browser token, closes its socket, and removes only that window's session
-record. Stopping VS Code revokes all tokens for that bridge instance.
-
-## Inspect Messages
-
-An `inspect` message contains one required selected target and one optional
+An `inspect` message contains one required selected target and at most one
 immediate-parent target:
 
 - selected has `role: "selected"` and `depth: 0`;
 - parent has `role: "parent"` and `depth: 1`;
 - duplicate roles, other depths, a missing selected target, or more than two
   targets are invalid;
-- each target owns its subject, runtime facts, and metadata.
+- each target owns its strict subject, bounded facts, and metadata.
 
 ```json
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "type": "inspect",
   "messageId": "inspect-42",
   "sessionId": "default",
   "source": {
     "role": "browser",
-    "id": "firefox-devtools:tab-7",
+    "id": "firefox-window-7:tab-3",
     "metadata": {}
   },
   "targets": [
@@ -119,18 +118,7 @@ immediate-parent target:
         "selector": ".card.featured",
         "metadata": {}
       },
-      "facts": [
-        {
-          "type": "css-rule",
-          "selector": ".card",
-          "property": "display",
-          "value": "grid",
-          "metadata": {
-            "sourceUrl": "http://127.0.0.1:4173/dist/app.css",
-            "rulePath": [2, 0]
-          }
-        }
-      ],
+      "facts": [],
       "metadata": {}
     }
   ],
@@ -142,34 +130,22 @@ immediate-parent target:
 }
 ```
 
-Known runtime facts have strict schemas. `css-rule` facts can include selector,
-declaration, source position, source URL, media conditions, and CSSOM rule path.
-`dom-attribute` facts carry bounded names and values. Namespaced plugin facts use
-a lowercase dotted type and JSON-only payload.
-
-Wire source locations are one-based. The source-plugin API converts them to
-zero-based, end-exclusive editor ranges.
-
-## Targeted Resolution Replies
-
-When the bridge accepts an inspect message, it registers a route keyed by
-`sessionId` and the inspect `messageId`, pointing to the exact browser connection
-that sent it. The inspect message is then delivered to the IDE role.
-
-The IDE returns a `resolution` message whose `inspectMessageId` is that original
-ID. The bridge resolves the stored route and sends the reply only to the
-originating browser or simulator connection. It does not broadcast resolution
-replies to every browser in a session.
+When the bridge accepts an inspect message, it registers a reply route keyed by
+`sessionId` and the inspect `messageId`. The route points to the exact browser
+or simulator connection that sent it. The IDE's `resolution.inspectMessageId`
+must reference that route, and the bridge sends each targeted resolution reply
+only to the originating connection, never to every browser in the session.
 
 Routes are bounded to 256 recent inspect IDs per browser connection. Reusing an
-ID on the same connection refreshes its route; the same session/ID from another
-connection is a collision and fails closed. Client disconnect removes its
-routes. `resolutionGeneration` is monotonic for one inspect ID so the panel can
-discard stale replies while accepting later active-editor reruns.
+ID on the same connection refreshes its route; the same session and ID from a
+different connection is a collision and fails closed. Disconnect removes the
+connection's routes. `resolutionGeneration` increases when VS Code resolves the
+same inspect selection again, allowing clients to reject older resolution
+results.
 
 ```json
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "type": "resolution",
   "messageId": "resolution-18",
   "sessionId": "default",
@@ -192,34 +168,97 @@ discard stale replies while accepting later active-editor reruns.
 }
 ```
 
-Resolution status is one of:
+Only `matched` can report nonzero Selected or Parent counts. Other strict
+statuses cover no active editor, unsupported documents, missing or ambiguous
+sources, source-map failures, no or ambiguous rule matches, and bounded plugin
+or internal errors. Wire source locations are one-based; the local source
+plugin API converts them to zero-based, end-exclusive editor ranges.
 
-- `matched`;
-- `no-active-editor`;
-- `unsupported-document`;
-- `no-facts`;
-- `source-not-found`;
-- `source-not-active-document`;
-- `source-ambiguous`;
-- `source-map-missing`;
-- `source-map-invalid`;
-- `no-rule-match`;
-- `rule-match-ambiguous`;
-- `error`.
+## Source Navigation
 
-Only `matched` can have nonzero Selected or Parent counts. Diagnostic codes are
-bounded, unique, and drawn from the closed resolver vocabulary.
-
-## Peer State
-
-Protocol version `4` adds `peerState` so a browser can distinguish an
-authenticated socket from IDE availability. The bridge tracks whether at least
-one IDE role is connected in the session and publishes transitions plus an
-increasing `peerGeneration`:
+Protocol 5 adds the `source-navigation` capability and two strict messages.
+After a resolution with selected matches, a capable browser or simulator sends
+an intent with no source ranges or file identity:
 
 ```json
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
+  "type": "source.navigate",
+  "messageId": "navigate-19",
+  "sessionId": "default",
+  "inspectMessageId": "inspect-42",
+  "resolutionGeneration": 3,
+  "direction": "next",
+  "metadata": {}
+}
+```
+
+The IDE answers with current cursor state:
+
+```json
+{
+  "protocolVersion": 5,
+  "type": "source.navigationState",
+  "messageId": "navigation-state-20",
+  "sessionId": "default",
+  "inspectMessageId": "inspect-42",
+  "source": {
+    "role": "ide",
+    "id": "vscode-window-1"
+  },
+  "resolutionGeneration": 3,
+  "selectedMatchCount": 2,
+  "activeMatchIndex": 0,
+  "metadata": {}
+}
+```
+
+`source.navigate` uses the same inspect reply route as `resolution`. The bridge
+accepts it only from an authenticated browser or simulator that advertises
+`source-navigation`, is in the same session, and owns the route for that
+`inspectMessageId`. It routes the intent only to capable IDE clients in that
+session. A second browser cannot reuse the correlation, even with the same
+session and inspect ID.
+
+The intent and every corresponding state update stay on the same inspect reply
+route and the same browser connection.
+
+`source.navigationState` is accepted only from an authenticated capable IDE.
+Its `source.id` must equal the authenticated source ID, its session must match
+that connection, and its `inspectMessageId` must still resolve to the exact
+originating browser connection, which must also be capable. Browser and IDE
+code additionally correlate the session, role, source ID, `inspectMessageId`,
+and `resolutionGeneration`; stale or mismatched messages are ignored or fail
+closed.
+
+The route remains live, so repeated `source.navigationState` updates in the
+same resolution generation are valid. This is how manual cursor movement can
+update the footer without a new inspect or resolution. Every update has a new
+`messageId` but retains the current inspect ID and generation.
+
+Navigation is selected-only. `selectedMatchCount` counts unique selected
+ranges in the active resolved document. Parent ranges remain distinct editor
+decorations and never enter the navigation count or navigation order. Selecting
+a DOM element does not move the VS Code cursor. Previous/Next moves only the
+primary cursor after a button intent and reveals the chosen selected range.
+
+`activeMatchIndex` is zero-based and is present only when the primary cursor is
+inside one of those selected ranges. In the normal state before navigation,
+the unchanged cursor is outside the matches and `activeMatchIndex` is omitted;
+it is also omitted whenever the cursor moves outside all matches. If the cursor
+already lies inside a selected range, that index can be reported before the
+first navigation click. An index greater than or equal to
+`selectedMatchCount` is invalid.
+
+## Peer State
+
+`peerState` lets a browser distinguish an authenticated socket from IDE
+availability. The bridge publishes whether an IDE role is connected in the
+session and includes an increasing `peerGeneration`:
+
+```json
+{
+  "protocolVersion": 5,
   "type": "peerState",
   "messageId": "peer-9",
   "sessionId": "default",
@@ -230,62 +269,95 @@ increasing `peerGeneration`:
 }
 ```
 
-The current state is sent to a newly authenticated client. A transition is sent
-when IDE availability changes. Older generations cannot overwrite newer panel
+The current state is sent after authentication and transitions are sent when
+IDE availability changes. Older generations cannot overwrite newer panel
 state.
 
-## Browser-Local DOM Protocol
+## Browser-Local DOM Protocol And Recovery
 
 The Inspector DOM tree is deliberately outside the product WebSocket protocol.
-Browser-local node refs and tree messages move only between the panel,
-background, and inspected content runtime.
+Browser-local node refs, stable locators, tree pages, geometry, and recovery
+messages move only among the panel, background, and inspected content runtime.
+Locators never cross the WebSocket.
 
 Each DevTools panel has a validated opaque channel bound by the background to
-one inspected tab. A channel can issue:
+one inspected tab. Browser-local requests include `dom.getRoot`,
+`dom.getChildren`, `dom.resolveLocator`, `dom.select`, `dom.hover`, and
+`dom.clearHover`. Every request/reply is correlated by `requestId`; tree pages
+also prove the channel, document epoch, node ref, branch revision, and cursor as
+applicable. A response from another request, channel, document epoch, or branch
+revision is discarded.
 
-- `dom.getRoot`;
-- `dom.getChildren` with document epoch, node ref, branch revision, and optional
-  cursor;
-- `dom.select`;
-- `dom.hover`;
-- `dom.clearHover`.
+Each rendered node carries a version-1 stable locator used only for bounded
+recovery after a document or branch invalidation. `dom.resolveLocator` asks the
+current content runtime to prove that locator again. Success returns a fresh
+`dom.locator` response with the current document epoch, fresh node view, and
+fresh ancestor path. Failure returns a closed `dom.error` outcome or no match;
+it never selects a nearby node by guess.
 
-The content runtime replies with `dom.root`, `dom.children`, or a closed
-`dom.error` code and emits selection, hover, and branch-invalidation events.
-Every request/reply is correlated by `requestId`. Responses from another type,
-request, channel, document epoch, or branch revision are discarded.
+Stable locator bounds are:
 
-Browser-local bounds include:
+- a total depth cap of 64 across path segments and open-shadow or same-origin
+  frame boundary hops, with no more than 16 boundary records;
+- at most 8 classes and 8 approved attributes per segment;
+- at most 128 characters per tag, ID, class, attribute name, or value token;
+- at most 64 remembered expanded locators during recovery;
+- bounded scans of 4,096 nodes for unique IDs, 256 physical entries for child
+  or evidence reads, and 65,536 total visited nodes.
 
-- 64 KiB serialized tree messages;
-- 100 nodes per child page;
-- 64 nodes in a revealed ancestor path;
-- 128 invalidated branches per event;
-- 64 concurrent panel channels by default;
-- bounded node labels, IDs, provider records, cursor records, scan slices, and
-  virtualized rendered rows.
+A segment fingerprint combines the canonical lowercase tag, exact element
+sibling index, a unique ID only when repeated scans prove it stable and unique,
+and canonical sorted class and approved-attribute subsets capped at 8 each.
+Approved attributes are `role`, `aria-*`, and `data-*`. Resolution re-proves
+every path and boundary, current frame identity and authorization, structural
+index, fingerprint, and target kind. Mutation during reads, changed evidence,
+duplicate or ambiguous identity, stale frame ownership, inaccessible
+boundaries, thrown page accessors, or any exceeded cap fails closed.
 
 Open shadow roots and same-origin frame documents receive explicit tree nodes.
-Cross-origin frame nodes are marked inaccessible and locked. Closed shadow roots
-are not exposed. Node refs do not reveal DOM objects and are invalid after their
-document/frame authority becomes stale.
+Cross-origin frames are locked leaves and closed shadow roots are not exposed.
+Recovery replaces refs only after the complete proof commits. A superseding
+manual selection or newer invalidation wins over older recovery work.
+
+Browser-local resource bounds also include 64 KiB serialized messages, 100
+nodes per child page, 64 nodes in a revealed ancestor path, 128 invalidated
+branches per event, and 64 concurrent panel channels by default.
 
 ## Resource And Routing Bounds
 
-The bridge rejects WebSocket frames larger than 1 MiB. An inspect envelope is at
-most 768 KiB, with at most two targets and 256 facts per target. A resolution
-envelope is at most 16 KiB. URL, route, selector, attribute, value, metadata,
-source, count, generation, and identifier fields all have schema limits.
+An inspect envelope is at most 768 KiB with at most two targets and 256 facts
+per target. Resolution and source-navigation envelopes are at most 16 KiB.
+URLs, routes, selectors, attributes, values, metadata, sources, counts,
+generations, and identifiers all have schema limits.
 
-The router enforces direction:
+The router enforces direction and authority:
 
-- browser/simulator inspect messages go to the IDE role;
-- IDE resolution messages use the targeted reply route;
-- peer state is generated by the bridge;
-- heartbeat ping/pong maintains liveness;
-- invalid roles, sessions, sources, routes, schemas, and stale identities fail
-  with a bounded error or closed connection.
+- browser or simulator inspect messages go to IDE clients in the same session;
+- IDE resolution and navigation-state messages use targeted reply routes;
+- source-navigation messages require the negotiated capability at both ends;
+- peer state is bridge-generated and heartbeat ping/pong maintains liveness;
+- invalid roles, sessions, source IDs, correlations, routes, schemas, and stale
+  identities fail with a bounded error or closed connection.
 
-The `0.3.0` product does not expose source writes, DOM writes, shell execution,
-workspace command execution, or reverse synchronization through protocol
-version `4`.
+## Read-Only Security Model
+
+Browser2IDE is read-only. The browser extension can execute only its packaged
+extension runtime and permitted browser APIs. It can read bounded accessible
+DOM structure, approved attributes, CSSOM evidence, and box geometry, and it can
+draw its own pointer-inert overlay. It cannot write or modify the page DOM or
+CSS, fill or submit forms, invoke page handlers as a product action, or execute
+arbitrary page scripts received from VS Code or the WebSocket.
+
+The IDE extension can read the active workspace document and relevant local
+source maps through its source plugins. It can add editor decorations and, only
+after an explicit Previous/Next intent, move the primary cursor and reveal a
+matched range. It cannot edit or write source files, run a shell, execute an
+arbitrary workspace command, or send a command to change the inspected page.
+The browser cannot ask the IDE to execute commands or edit files, and the IDE
+cannot execute page scripts or modify the DOM.
+
+Only bounded inspect facts and protocol state cross the loopback WebSocket.
+Browser-local locators and node refs never cross it. Source contents, source
+ranges, local file paths, and source-map contents never cross the WebSocket in
+the reverse direction. Protocol 5 exposes no DOM writes, source writes, shell
+execution, workspace command execution, or reverse synchronization.

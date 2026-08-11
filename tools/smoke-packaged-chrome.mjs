@@ -29,6 +29,7 @@ const PANEL_HTML_MARKERS = Object.freeze([
   ["picker asset", 'aria-label="Select an element"'],
   ["resolution footer", 'class="panel-footer"'],
   ["resolution footer", 'id="resolution-status"'],
+  ["source navigation footer", "source-navigation-footer"],
 ]);
 const PANEL_CSS_MARKERS = Object.freeze([
   ["DOM tree style", ".dom-tree-row"],
@@ -39,6 +40,11 @@ const PANEL_CSS_MARKERS = Object.freeze([
   ["resolution footer style", '.resolution-status[data-tone="success"]'],
   ["resolution footer style", '.resolution-status[data-tone="warning"]'],
   ["resolution footer style", '.resolution-status[data-tone="error"]'],
+  ["source navigation controls", ".source-navigation-controls"],
+]);
+const PANEL_BUNDLE_MARKERS = Object.freeze([
+  ["source navigation state", "source.navigationState"],
+  ["locator recovery", "dom.resolveLocator"],
 ]);
 const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   if (document.readyState !== "complete") {
@@ -171,8 +177,9 @@ export function validatePackagedChromeArchive(archive) {
 function assertPackagedInspectorRuntime(archive) {
   assertTextMarkers(archive, "dist/panel.html", PANEL_HTML_MARKERS);
   assertTextMarkers(archive, "dist/panel.css", PANEL_CSS_MARKERS);
+  assertTextMarkers(archive, "dist/panel.js", PANEL_BUNDLE_MARKERS);
   parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
-    expectedProtocolVersion: 4,
+    expectedProtocolVersion: 5,
     label: "Packaged Chrome runtime metadata",
   });
 }

@@ -2,7 +2,7 @@
 
 Browser2IDE is a local, read-only bridge from browser DevTools inspection to
 source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
-protocol version is `4`.
+protocol version is `5`.
 
 ## Components
 
@@ -14,7 +14,8 @@ browser core. The panel owns:
 - explicit browser-window link controls and the displayed port-plus-PIN code;
 - a visual page picker;
 - a virtualized, lazy DOM tree;
-- the selected-element summary and exact IDE resolution footer.
+- the selected-element summary, exact IDE resolution footer, and selected-match
+  source navigation controls.
 
 Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
@@ -53,9 +54,9 @@ durable storage.
 
 ### Protocol And Bridge
 
-Protocol version `4` defines strict handshake, inspection, targeted resolution
-reply, peer state, error, and heartbeat messages. Every product message is
-validated before routing.
+Protocol version `5` defines strict handshake, inspection, targeted resolution,
+capability-gated source navigation, peer state, error, and heartbeat messages.
+Every product message is validated before routing.
 
 The bridge binds one managed port on `127.0.0.1`. A link request to that exact
 port exchanges the two-digit PIN for a role-bound browser token. The bridge does
@@ -65,7 +66,8 @@ For each accepted inspect message, the bridge records a bounded reply route from
 `sessionId` plus `inspectMessageId` to the originating browser connection. IDE
 resolution messages return only through that route, so another linked browser
 connection cannot receive the reply. The bridge also publishes monotonically
-generated IDE peer state when IDE availability changes.
+generated IDE peer state when IDE availability changes. Navigation intents and
+repeated cursor-state updates reuse the same exact inspect reply route.
 
 ### VS Code Presenter
 
@@ -75,7 +77,7 @@ the managed port and two-digit PIN and copies the ungrouped code on click.
 The presenter retains the latest valid selection and resolves it against only
 the active text document. It never switches editors. It owns Selected and Parent
 decorations, validates and deduplicates plugin ranges, updates Applicable
-Sources, and sends a bounded protocol-v4 resolution outcome back to the
+Sources, and sends a bounded protocol-v5 resolution outcome back to the
 originating panel.
 
 ### Source Plugins
@@ -133,7 +135,7 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
 4. Picker click or tree selection resolves a live element through the same
    authority and updates the tree ancestor path.
 5. Only then does the browser collect and publish bounded selected/immediate-
-   parent facts as a protocol-v4 inspect message.
+   parent facts as a protocol-v5 inspect message.
 
 ### Resolve And Present
 

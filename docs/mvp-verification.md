@@ -1,11 +1,116 @@
-# Browser2IDE Development Host Verification
+# Browser2IDE MVP Verification
 
-For terminal-free acceptance of packaged `0.3.0` candidates, use the
-[installed artifact verification guide](installed-verification.md). This
-runbook uses development hosts and unpacked extensions to verify a source
-checkout.
+This runbook separates installed-product acceptance from optional source-checkout
+development. The manual sections describe expected acceptance steps. They have
+not been performed in this task, and this document does not claim that any
+manual, installed-product, signed-package, screenshot, or release check passed.
 
-HTTP in this runbook serves only the fixture and stylesheet/frame resources.
+## Installed Product Verification
+
+Installed Browser2IDE needs no source checkout or terminal. There is no
+separate bridge process: the installed VS Code extension starts automatically
+when a local project opens and exposes its start/stop and link-code control in
+the VS Code status bar.
+
+### Candidate Packages
+
+Use candidates from one trusted build or draft release and compare each file to
+that draft's `SHA256SUMS` before installing:
+
+- `artifacts/browser2ide-vscode-0.3.0.vsix`;
+- `artifacts/browser2ide-chrome-0.3.0.zip`;
+- `artifacts/browser2ide-firefox-0.3.0.zip` for a Firefox Temporary Add-on;
+- a Mozilla-signed `browser2ide-firefox-0.3.0.xpi`, when available, for a
+  persistent Firefox Stable installation.
+
+Install the VSIX with **Extensions > Install from VSIX...**. Open a local
+project and confirm Browser2IDE starts automatically. Its status bar control
+must show a five-digit port and two-digit PIN, such as `48735 07`; clicking it
+copies the seven digits without the space.
+
+For Chrome/Chromium 116 or newer, extract
+`artifacts/browser2ide-chrome-0.3.0.zip`, open `chrome://extensions`, enable
+Developer mode, choose **Load unpacked**, and select the extracted directory
+containing `manifest.json`. Confirm version `0.3.0`, no extension-card errors,
+the Browser2IDE DevTools panel, and persistence after a complete browser
+restart.
+
+Firefox Stable supports the unsigned
+`artifacts/browser2ide-firefox-0.3.0.zip` only as a temporary check. Extract it,
+open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**,
+and select its `manifest.json`. Confirm the Browser2IDE panel and version
+`0.3.0`; expect the Temporary Add-on to disappear after Firefox exits. For a
+persistent check, use **Install Add-on From File...** with the exact
+Mozilla-signed `.xpi`, then restart every Firefox process and confirm it remains
+enabled. Do not treat the unsigned ZIP as signed-XPI evidence.
+
+### Associate Browser And VS Code Windows
+
+Association is explicit and window-scoped:
+
+Each browser window is associated with one VS Code window by that VS Code
+window's five-digit port and two-digit PIN code.
+
+1. Open the project in VS Code Window A and click its Browser2IDE status bar
+   control to copy the current port/code.
+2. In Browser Window A, open DevTools and the **Browser2IDE** panel. Confirm
+   `Not linked`, paste or type Window A's code, and select **Link**.
+3. Confirm `Connected` and the same grouped port/code in Browser Window A and
+   VS Code Window A. That exact code associates this browser window with this
+   VS Code window; it is not a machine-wide pairing.
+4. Repeat with Browser Window B and VS Code Window B using B's different code.
+   Alternate selections and confirm neither browser window updates the other
+   VS Code window.
+
+No source terminal is required for this installed flow. A second tab in the
+same browser window reuses that window's association; a new browser window
+starts `Not linked`.
+
+### Expected Source Navigation And Recovery Scenario
+
+These are expected manual acceptance steps only. They have not been performed
+here. This document does not claim these checks were performed or passed.
+
+1. Connect an installed browser panel to the intended VS Code window. Expand a
+   branch in the lazy DOM tree and select an element with at least two Selected
+   matches in the active CSS or SCSS document.
+2. Confirm the selected tree row and footer expose navigation controls, and the
+   row and footer counts stay in sync and show the same selected-only total.
+3. Confirm selection itself does not move the VS Code cursor. Parent ranges
+   remain distinct and excluded from navigation even though their decorations
+   remain visible.
+4. Click **Previous** or **Next** once. The first Previous/Next click moves the
+   primary VS Code cursor to a Selected match and centers that range. Continue
+   in both directions and confirm deterministic wraparound.
+5. Manually move the primary cursor outside every Selected match. Confirm both
+   browser controls update to `- / N` without another inspect selection.
+6. Reload the page while the selected element's identity is unchanged. Confirm
+   the expanded branch and selection restore without a root-only flash, and
+   source navigation resumes against the new browser-local refs.
+7. Change or remove the selected node so its stable identity is changed or
+   ambiguous, then reload or invalidate its branch. Confirm Browser2IDE safely
+   resets instead of selecting a nearby element.
+8. During recovery, trigger a second invalidation and then make a manual
+   selection. Confirm the second invalidation supersedes older recovery work
+   and the manual selection wins.
+9. Select **Disconnect**. Confirm navigation controls are disabled or hidden,
+   no stale route can update them, no old Previous/Next intent moves VS Code,
+   and another linked browser window remains connected.
+
+Repeat the scenario with the supported installed Firefox path and with the
+installed Chrome package. Also verify picker/DOM-tree parity, open shadow roots,
+same-origin frames, locked cross-origin frames, CSS fingerprint fallback,
+source-mapped SCSS, exact footer outcomes, browser-window isolation, and
+session-only reconnect/cleanup as described in the
+[installed artifact verification guide](installed-verification.md).
+
+## Development And Source Workflow
+
+This optional workflow is for contributors testing a source checkout. It is
+separate from installed-product use and may use development hosts, package
+scripts, and local fixture servers.
+
+HTTP in this workflow serves only fixture and stylesheet/frame resources.
 Browser2IDE product traffic remains a loopback WebSocket.
 
 ## Prerequisites
@@ -63,7 +168,7 @@ Build once:
 corepack pnpm build
 ```
 
-Start the fixture in terminal 1:
+Start the fixture in a dedicated source-workflow shell:
 
 ```powershell
 node examples/basic-css/server.mjs
@@ -82,7 +187,7 @@ Keep `http://127.0.0.1:4173/` running. The fixture contains:
 
 ## Start Two VS Code Development Windows
 
-In terminals 2 and 3:
+From two additional source-workflow shells:
 
 ```powershell
 code --new-window --extensionDevelopmentPath="$PWD/extensions/vscode" "$PWD"
@@ -100,7 +205,7 @@ Do not run a separate bridge process.
 
 ## Load Firefox For Development
 
-In terminal 4, create one disposable profile and preserve it for restarts in
+From another source-workflow shell, create one disposable profile and preserve it for restarts in
 this verification run:
 
 ```powershell

@@ -48,11 +48,19 @@ if (manifest.main !== "./dist/extension.cjs") {
   throw new Error(`VSIX manifest has unexpected main: ${manifest.main}`);
 }
 parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
-  expectedProtocolVersion: 4,
+  expectedProtocolVersion: 5,
   label: "VSIX runtime metadata",
 });
 
 const bundle = entries.get("extension/dist/extension.cjs").toString("utf8");
+if (!bundle.includes("source-navigation")) {
+  throw new Error("VSIX bundle is missing current source-navigation capability");
+}
+for (const type of ["source.navigate", "source.navigationState"]) {
+  if (!bundle.includes(type)) {
+    throw new Error(`VSIX bundle is missing current ${type} message`);
+  }
+}
 const runtimeRequires = [
   ...bundle.matchAll(/\brequire\((["'])([^"'./][^"']*)\1\)/g),
 ].map((match) => match[2]);

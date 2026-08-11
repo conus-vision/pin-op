@@ -31,6 +31,9 @@ const panelHtmlFixture = [
   "</div>",
   '<footer class="panel-footer">',
   '<output id="resolution-status" role="status"></output>',
+  '<div id="source-navigation-footer">',
+  '<output id="source-navigation-counter"></output>',
+  "</div>",
   "</footer>",
 ].join("\n");
 
@@ -40,9 +43,15 @@ const panelCssFixture = [
   ".dom-tree-row.is-frame-document {}",
   ".dom-tree-row.is-inaccessible {}",
   ".panel-footer {}",
+  ".source-navigation-controls {}",
   '.resolution-status[data-tone="success"] {}',
   '.resolution-status[data-tone="warning"] {}',
   '.resolution-status[data-tone="error"] {}',
+].join("\n");
+
+const panelBundleFixture = [
+  'const navigationStateType = "source.navigationState";',
+  'const resolveLocatorType = "dom.resolveLocator";',
 ].join("\n");
 
 function createArchive(paths = CHROME_ARCHIVE_FILES) {
@@ -60,13 +69,13 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   );
   files.set("dist/panel.html", Buffer.from(panelHtmlFixture));
   files.set("dist/panel.css", Buffer.from(panelCssFixture));
-  files.set("dist/panel.js", Buffer.from("packaged panel runtime"));
+  files.set("dist/panel.js", Buffer.from(panelBundleFixture));
   files.set("dist/background.js", Buffer.from("packaged background runtime"));
   files.set("dist/contentScript.js", Buffer.from("packaged content runtime"));
   files.set("dist/devtools.js", Buffer.from("packaged DevTools runtime"));
   files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":4}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
   );
   return { files, paths: [...paths] };
 }
@@ -85,16 +94,16 @@ test("accepts only the exact validated Chrome runtime archive", () => {
   );
 });
 
-test("rejects a packaged runtime downgraded to protocol version 3", () => {
+test("rejects a packaged runtime downgraded to protocol version 4", () => {
   const archive = createArchive();
   archive.files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":3}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":4}\n'),
   );
 
   assert.throws(
     () => validatePackagedChromeArchive(archive),
-    /runtime metadata protocolVersion expected 4 but found 3/i,
+    /runtime metadata protocolVersion expected 5 but found 4/i,
   );
 });
 
@@ -102,7 +111,7 @@ test("rejects malformed or extended packaged runtime metadata", () => {
   for (const [metadata, expectedError] of [
     ["not-json", /runtime metadata is not valid JSON/i],
     [
-      '{"schemaVersion":1,"protocolVersion":4,"marker":"test"}',
+      '{"schemaVersion":1,"protocolVersion":5,"marker":"test"}',
       /runtime metadata has unexpected keys: marker/i,
     ],
   ]) {
@@ -119,7 +128,27 @@ test("requires packaged inspector assets and semantic static markers", () => {
     ["dist/panel.html", 'id="linked-code"', /linked code/i],
     ["dist/panel.html", 'id="inspect-mode"', /picker/i],
     ["dist/panel.html", 'class="panel-footer"', /resolution footer/i],
+    [
+      "dist/panel.html",
+      "source-navigation-footer",
+      /source navigation footer/i,
+    ],
     ["dist/panel.css", ".dom-tree-row", /DOM tree style.*dom-tree-row/i],
+    [
+      "dist/panel.css",
+      ".source-navigation-controls",
+      /source navigation controls/i,
+    ],
+    [
+      "dist/panel.js",
+      "source.navigationState",
+      /source navigation state/i,
+    ],
+    [
+      "dist/panel.js",
+      "dom.resolveLocator",
+      /locator recovery/i,
+    ],
   ];
 
   for (const [path, marker, expectedError] of cases) {

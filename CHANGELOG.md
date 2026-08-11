@@ -21,13 +21,18 @@ All notable changes to Browser2IDE will be documented in this file.
   outcomes.
 - A versioned public source-plugin API for separately installed VS Code source
   resolvers.
+- Selected-match Previous/Next controls shared by the DOM-tree row and footer,
+  with centered VS Code cursor navigation and live cursor-state counts.
+- Browser-local stable-locator recovery for expanded branches and selections
+  across safe reloads and invalidations.
 
 ### Changed
 
-- Advanced the product release to `0.3.0` while keeping the wire protocol at
-  version `4`.
-- Added targeted resolution replies and IDE peer-state updates to protocol
-  version `4`; there is no protocol-v3 compatibility branch.
+- Advanced the product release to `0.3.0` and the exact wire protocol to
+  version `5`.
+- Added capability-gated navigation intents and repeated navigation-state
+  updates to protocol version `5`; there is no protocol-v4 compatibility
+  branch.
 - Replaced the old linked-panel actions with one **Disconnect** action that
   unlinks only the current browser window.
 - Kept Firefox Stable and current Chrome/Chromium on the shared Inspector

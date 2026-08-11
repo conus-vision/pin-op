@@ -75,10 +75,15 @@ discarded.
 
 ## Targeted Replies And Peer State
 
-Protocol version `4` binds each accepted inspect ID to the exact browser
+Protocol version `5` binds each accepted inspect ID to the exact browser
 connection that sent it. IDE resolution replies are routed only to that
 connection. Cross-connection inspect-ID collisions, stale routes, wrong roles,
 and wrong sessions fail closed. Routes are bounded and removed with the client.
+
+Source-navigation intents and cursor-state updates require the negotiated
+`source-navigation` capability and reuse that exact route. They carry only
+direction, correlation, generation, and selected-match counts; browser-local
+locators and IDE source ranges do not cross the WebSocket.
 
 Bridge-generated peer state reports IDE availability with an increasing
 generation. A stale peer update or source-resolution generation cannot replace
@@ -159,10 +164,11 @@ does not upload source or maps to a remote service.
 
 ## Resource Bounds
 
-The bridge rejects WebSocket messages over 1 MiB. Protocol version `4` limits an
+The bridge rejects WebSocket messages over 1 MiB. Protocol version `5` limits an
 inspect envelope to 768 KiB, two targets, 256 facts per target, and bounded
 strings, arrays, metadata, selectors, declarations, URLs, and routes. Resolution
-replies are limited to 16 KiB and closed status/diagnostic vocabularies.
+replies and source-navigation messages are limited to 16 KiB and closed
+status/diagnostic vocabularies.
 
 Browser collection has byte, stylesheet, rule, nesting, declaration, class,
 attribute, and inaccessible-stylesheet budgets. The browser-local tree limits

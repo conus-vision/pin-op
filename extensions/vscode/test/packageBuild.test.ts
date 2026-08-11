@@ -64,7 +64,7 @@ describe("VS Code package build", () => {
 
     expect(JSON.parse(readFileSync(runtimeMetadataUrl, "utf8"))).toEqual({
       schemaVersion: 1,
-      protocolVersion: 4,
+      protocolVersion: 5,
     });
     const buildScript = readFileSync(buildScriptUrl, "utf8");
     expect(buildScript).toContain("PROTOCOL_VERSION");
@@ -73,10 +73,23 @@ describe("VS Code package build", () => {
     );
   });
 
-  it("uses structured metadata in the installed smoke without bundle probes", () => {
+  it("packages the current source-navigation capability and messages", () => {
+    const bundle = readFileSync(bundleUrl, "utf8");
+
+    expect(bundle).toContain(
+      'capabilities: ["resolution", "source-navigation"]',
+    );
+    expect(bundle).toContain("source.navigate");
+    expect(bundle).toContain("source.navigationState");
+  });
+
+  it("pins protocol 5 and current capabilities in the installed smoke", () => {
     const smoke = readFileSync(installedSmokeUrl, "utf8");
 
     expect(smoke).toContain('"runtime-metadata.json"');
+    expect(smoke).toContain("metadata.protocolVersion !== 5");
+    expect(smoke).toContain('"source-navigation"');
+    expect(smoke).toContain('"source.navigationState"');
     expect(smoke).not.toContain("requiredRuntimeMarkers");
     expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
   });

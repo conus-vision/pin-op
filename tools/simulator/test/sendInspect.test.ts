@@ -218,6 +218,7 @@ describe("sendInspect", () => {
         sessionId: SESSION_ID,
         bridgeInstanceId: INSTANCE_ID,
         authToken: AUTH_TOKEN,
+        capabilities: ["inspect"],
       });
       await delay(15);
       expect(bridge.pendingMessages()).toEqual([]);
@@ -257,6 +258,7 @@ describe("sendInspect", () => {
         sessionId: SESSION_ID,
         bridgeInstanceId: INSTANCE_ID,
         authToken: AUTH_TOKEN,
+        capabilities: ["inspect"],
       });
       await delay(15);
       expect(bridge.pendingMessages()).toEqual([]);
