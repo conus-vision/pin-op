@@ -112,6 +112,20 @@ interface FrameDocumentAccess {
   readonly contentWindow: Window;
 }
 
+interface ContextChainEntry {
+  readonly context: FrameContext;
+  readonly record?: FrameRecord;
+  readonly ownership?: FrameRecordOwnership;
+  readonly parent?: FrameContext;
+  readonly contentWindow?: Window;
+}
+
+interface ContextChainSnapshot {
+  readonly state: "active" | "mutating";
+  readonly structuralRevision: number;
+  readonly entries: readonly ContextChainEntry[];
+}
+
 export class FrameRegistry {
   private readonly maxFrames: number;
   private readonly maxFrameEpoch: number;
@@ -288,10 +302,12 @@ export class FrameRegistry {
         registryRef.deref()?.handleLoadByRef(frameRef);
       };
       const registrationRevision = this.structuralRevision;
+      const parentSnapshot = this.captureContextChain(parent, "mutating");
+      if (!parentSnapshot) return undefined;
       const isRegistrationCurrent = (): boolean => (
         this.state === "mutating" &&
         this.structuralRevision === registrationRevision &&
-        this.isLiveContextChain(parent, "mutating")
+        this.validateLiveContextChain(parentSnapshot)
       );
       const inspected = this.inspectDocument(access, isRegistrationCurrent);
       try {
@@ -582,6 +598,8 @@ export class FrameRegistry {
         const loadEpoch = record.frameEpoch;
         const parent = this.contexts.get(record.parentFrameRef);
         if (!parent) return;
+        const parentSnapshot = this.captureContextChain(parent, "mutating");
+        if (!parentSnapshot) return;
         const isLoadCurrent = (): boolean => (
           this.state === "mutating" &&
           this.structuralRevision === loadRevision &&
@@ -589,7 +607,7 @@ export class FrameRegistry {
           record.ownership === ownership &&
           record.frameEpoch === loadEpoch &&
           !record.active &&
-          this.isLiveContextChain(parent, "mutating")
+          this.validateLiveContextChain(parentSnapshot)
         );
         if (
           !isLoadCurrent() ||
@@ -697,143 +715,145 @@ export class FrameRegistry {
     expectedParent?: FrameContext,
     requiredState: "active" | "mutating" = "active",
   ): FrameContext | undefined {
-    if (!context.parentFrameRef) {
-      return this.state === requiredState &&
-        this.top === context &&
-        this.contexts.get(context.frameRef) === context
-        ? context
-        : undefined;
-    }
-    const record = this.records.get(context.frameRef);
-    const ownership = record?.ownership;
-    const parent = expectedParent ?? (() => {
-      const parentContext = this.contexts.get(context.parentFrameRef!);
-      return parentContext
-        ? this.revalidateContext(parentContext, undefined, requiredState)
-        : undefined;
-    })();
-    if (
-      !record ||
-      !record.active ||
-      !ownership ||
-      !parent ||
-      record.parentFrameRef !== parent.frameRef ||
-      !sameFrameIdentity(record, context) ||
-      record.document !== context.document ||
-      !record.contentWindow ||
-      this.contexts.get(context.frameRef) !== context
-    ) return undefined;
+    const snapshot = this.captureContextChain(context, requiredState, expectedParent);
+    return snapshot && this.validateLiveContextChain(snapshot) ? context : undefined;
+  }
+
+  private captureContextChain(
+    context: FrameContext,
+    state: "active" | "mutating",
+    expectedParent?: FrameContext,
+  ): ContextChainSnapshot | undefined {
+    if (this.state !== state) return undefined;
     const structuralRevision = this.structuralRevision;
-    const contentWindow = record.contentWindow;
-    const isAuthoritative = (): boolean => (
-      this.state === requiredState &&
-      this.structuralRevision === structuralRevision &&
-      this.records.get(context.frameRef) === record &&
-      record.active &&
-      record.ownership === ownership &&
-      record.parentFrameRef === parent.frameRef &&
-      sameFrameIdentity(record, context) &&
-      record.document === context.document &&
-      record.contentWindow === contentWindow &&
-      this.contexts.get(context.frameRef) === context &&
-      this.documentRefs.get(context.document) === context.frameRef &&
-      this.isLiveContextChain(parent, requiredState)
-    );
-    if (!isAuthoritative()) return undefined;
-    const ownerDocument = readOwnerDocument(ownership.frameElement);
-    if (!isAuthoritative() || ownerDocument !== parent.document) return undefined;
-    const current = this.inspectDocument(ownership.access, isAuthoritative);
-    return isAuthoritative() &&
-      current?.document === context.document && current.contentWindow === contentWindow
-      ? context
+    const entries: ContextChainEntry[] = [];
+    const seen = new Set<string>();
+    let current: FrameContext | undefined = context;
+    while (current) {
+      if (entries.length >= MAX_CONTEXT_ANCESTORS || seen.has(current.frameRef)) {
+        return undefined;
+      }
+      if (
+        this.contexts.get(current.frameRef) !== current ||
+        this.documentRefs.get(current.document) !== current.frameRef
+      ) {
+        return undefined;
+      }
+      seen.add(current.frameRef);
+      if (!current.parentFrameRef) {
+        if (this.top !== current) return undefined;
+        entries.push(Object.freeze({ context: current }));
+        break;
+      }
+      const record = this.records.get(current.frameRef);
+      const ownership = record?.ownership;
+      const parent = this.contexts.get(current.parentFrameRef);
+      if (
+        !record ||
+        !record.active ||
+        !ownership ||
+        !parent ||
+        record.parentFrameRef !== parent.frameRef ||
+        !sameFrameIdentity(record, current) ||
+        record.document !== current.document ||
+        !record.contentWindow
+      ) {
+        return undefined;
+      }
+      if (entries.length === 0 && expectedParent && parent !== expectedParent) {
+        return undefined;
+      }
+      entries.push(Object.freeze({
+        context: current,
+        record,
+        ownership,
+        parent,
+        contentWindow: record.contentWindow,
+      }));
+      current = parent;
+    }
+    return this.state === state && this.structuralRevision === structuralRevision
+      ? Object.freeze({ state, structuralRevision, entries: Object.freeze(entries) })
       : undefined;
   }
 
-  private isStoredContextCurrent(
-    context: FrameContext,
-    state: "active" | "mutating",
-    seen = new Set<string>(),
-  ): boolean {
-    if (
-      this.state !== state ||
-      seen.has(context.frameRef) ||
-      this.contexts.get(context.frameRef) !== context ||
-      this.documentRefs.get(context.document) !== context.frameRef
-    ) {
-      return false;
-    }
-    if (!context.parentFrameRef) return this.top === context;
-    const record = this.records.get(context.frameRef);
-    if (
-      !record ||
-      !record.active ||
-      !record.ownership ||
-      record.parentFrameRef !== context.parentFrameRef ||
-      !sameFrameIdentity(record, context) ||
-      record.document !== context.document
-    ) {
-      return false;
-    }
-    seen.add(context.frameRef);
-    const parent = this.contexts.get(context.parentFrameRef);
-    return parent ? this.isStoredContextCurrent(parent, state, seen) : false;
+  private validateLiveContextChain(snapshot: ContextChainSnapshot): boolean {
+    return this.isContextChainSnapshotCurrent(snapshot) &&
+      this.validateLiveContextChainPass(snapshot) &&
+      this.validateLiveContextChainPass(snapshot);
   }
 
-  private isLiveContextChain(
-    context: FrameContext,
-    state: "active" | "mutating",
-    seen = new Set<string>(),
-  ): boolean {
-    if (seen.size >= MAX_CONTEXT_ANCESTORS || seen.has(context.frameRef)) {
-      return false;
+  private validateLiveContextChainPass(snapshot: ContextChainSnapshot): boolean {
+    for (let index = snapshot.entries.length - 2; index >= 0; index -= 1) {
+      const entry = snapshot.entries[index]!;
+      const parent = snapshot.entries[index + 1]!.context;
+      const record = entry.record;
+      const ownership = entry.ownership;
+      const contentWindow = entry.contentWindow;
+      if (!record || !ownership || !contentWindow || !this.isContextChainSnapshotCurrent(snapshot)) {
+        return false;
+      }
+      const ownerDocument = readOwnerDocument(ownership.frameElement);
+      if (!this.isContextChainSnapshotCurrent(snapshot) || ownerDocument !== parent.document) {
+        return false;
+      }
+      try {
+        const document = ownership.access.getContentDocument();
+        if (!this.isContextChainSnapshotCurrent(snapshot) || document !== entry.context.document) {
+          return false;
+        }
+        const window = ownership.access.getContentWindow();
+        if (!this.isContextChainSnapshotCurrent(snapshot) || window !== contentWindow) {
+          return false;
+        }
+        const windowDocument = window.document;
+        if (!this.isContextChainSnapshotCurrent(snapshot) || windowDocument !== document) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
     }
+    return this.isContextChainSnapshotCurrent(snapshot);
+  }
+
+  private isContextChainSnapshotCurrent(snapshot: ContextChainSnapshot): boolean {
     if (
-      this.state !== state ||
-      this.contexts.get(context.frameRef) !== context ||
-      this.documentRefs.get(context.document) !== context.frameRef
+      this.state !== snapshot.state ||
+      this.structuralRevision !== snapshot.structuralRevision
     ) {
       return false;
     }
-    if (!context.parentFrameRef) return this.top === context;
-    const record = this.records.get(context.frameRef);
-    const ownership = record?.ownership;
-    const parent = this.contexts.get(context.parentFrameRef);
-    if (
-      !record ||
-      !record.active ||
-      !ownership ||
-      !parent ||
-      record.parentFrameRef !== parent.frameRef ||
-      !sameFrameIdentity(record, context) ||
-      record.document !== context.document
-    ) {
-      return false;
+    for (let index = 0; index < snapshot.entries.length; index += 1) {
+      const entry = snapshot.entries[index]!;
+      if (
+        this.contexts.get(entry.context.frameRef) !== entry.context ||
+        this.documentRefs.get(entry.context.document) !== entry.context.frameRef
+      ) {
+        return false;
+      }
+      if (!entry.record) {
+        if (this.top !== entry.context || index !== snapshot.entries.length - 1) {
+          return false;
+        }
+        continue;
+      }
+      const parent = snapshot.entries[index + 1]?.context;
+      if (
+        !parent ||
+        this.records.get(entry.context.frameRef) !== entry.record ||
+        !entry.record.active ||
+        entry.record.ownership !== entry.ownership ||
+        entry.record.parentFrameRef !== parent.frameRef ||
+        !sameFrameIdentity(entry.record, entry.context) ||
+        entry.record.document !== entry.context.document ||
+        entry.record.contentWindow !== entry.contentWindow ||
+        entry.parent !== parent
+      ) {
+        return false;
+      }
     }
-    const ancestorSeen = new Set(seen);
-    ancestorSeen.add(context.frameRef);
-    if (!this.isLiveContextChain(parent, state, ancestorSeen)) return false;
-    const structuralRevision = this.structuralRevision;
-    const contentWindow = record.contentWindow;
-    const isCurrent = (): boolean => (
-      this.state === state &&
-      this.structuralRevision === structuralRevision &&
-      this.records.get(context.frameRef) === record &&
-      record.active &&
-      record.ownership === ownership &&
-      record.parentFrameRef === parent.frameRef &&
-      sameFrameIdentity(record, context) &&
-      record.document === context.document &&
-      record.contentWindow === contentWindow &&
-      this.contexts.get(context.frameRef) === context &&
-      this.documentRefs.get(context.document) === context.frameRef &&
-      this.isLiveContextChain(parent, state, new Set(seen))
-    );
-    if (!isCurrent()) return false;
-    const ownerDocument = readOwnerDocument(ownership.frameElement);
-    if (!isCurrent() || ownerDocument !== parent.document) return false;
-    const current = this.inspectDocument(ownership.access, isCurrent);
-    return isCurrent() &&
-      current?.document === context.document && current.contentWindow === contentWindow;
+    return true;
   }
 
   private inspectDocument(

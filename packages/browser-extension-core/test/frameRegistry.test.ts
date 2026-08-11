@@ -753,8 +753,8 @@ describe("FrameRegistry", () => {
     expect(Object.isFrozen(accessible)).toBe(true);
     expect(registry.describeFrame(accessibleFrame)).toMatchObject({ frameRef: accessible.frameRef });
     expect(accessibleFrame.loadListenerCount).toBe(1);
-    expect(accessibleFrame.contentDocumentReads).toBe(3);
-    expect(accessibleFrame.contentWindowReads).toBe(3);
+    expect(accessibleFrame.contentDocumentReads).toBe(4);
+    expect(accessibleFrame.contentWindowReads).toBe(4);
 
     const lockedFrame = createFrame({ document: null });
     const locked = registry.describeFrame(lockedFrame);
@@ -876,6 +876,32 @@ describe("FrameRegistry", () => {
     childFrame.dispatchLoad();
 
     expect(registry.getContext(child.frameRef)).toBeUndefined();
+  });
+
+  it.each([8, 16, 32])("bounds live authority reads at depth %i", (depth) => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: depth + 2 });
+    let parentFrameRef = registry.topContext!.frameRef;
+    let leafFrameRef = parentFrameRef;
+    let documentReads = 0;
+    for (let index = 0; index < depth; index += 1) {
+      const frame = createFrame({ document: createDocument() });
+      const document = frame.contentDocument!;
+      Object.defineProperty(frame, "contentDocument", {
+        configurable: true,
+        get: () => {
+          documentReads += 1;
+          if (documentReads > 20_000) throw new Error("recursive authority reads");
+          return document;
+        },
+      });
+      const description = registry.describeFrame(frame, parentFrameRef);
+      if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+      parentFrameRef = description.frameRef;
+      leafFrameRef = description.frameRef;
+    }
+
+    expect(registry.getContext(leafFrameRef)).toMatchObject({ frameRef: leafFrameRef });
+    expect(documentReads).toBeLessThanOrEqual(depth * depth * 16);
   });
 
   it("invalidates only a loaded frame subtree and retains an unaffected sibling", () => {
@@ -1511,7 +1537,7 @@ describe("FrameRegistry", () => {
 
     expect(events).toHaveLength(eventCount);
     expect(registry.getContext(replacement.frameRef)).toMatchObject({ frameEpoch: 1 });
-    expect(replacementFrame.contentDocumentReads).toBe(replacementReads + 1);
+    expect(replacementFrame.contentDocumentReads).toBe(replacementReads + 2);
   });
 
   it("uses a weak registry keyed load callback that stays inert when hostile removal leaks it", () => {
@@ -1655,8 +1681,8 @@ describe("FrameRegistry", () => {
       frameRef: first.frameRef,
       document: replacementDocument,
     });
-    expect(frame.contentDocumentReads).toBe(5);
-    expect(frame.contentWindowReads).toBe(4);
+    expect(frame.contentDocumentReads).toBe(6);
+    expect(frame.contentWindowReads).toBe(5);
     expect(events).toEqual(["registered:true", "navigated:false", "navigated:true"]);
   });
 
