@@ -898,6 +898,7 @@ export class DomTreeProvider {
     scope: NodeScope,
     parentRef?: string,
   ): DomNodeView {
+    const locator = this.captureLocator(element, "element");
     const nodeRef = this.referenceNode(element, scope);
     const existing = this.records.get(nodeRef);
     const frameElement = isFrameElement(element);
@@ -927,7 +928,7 @@ export class DomTreeProvider {
       expandable,
       ...(frameElement && frame?.kind !== "accessible" ? { inaccessible: true } : {}),
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: this.captureLocator(element, "element"),
+      locator,
     });
   }
 
@@ -936,6 +937,7 @@ export class DomTreeProvider {
     scope: NodeScope,
     parentRef?: string,
   ): DomNodeView {
+    const locator = this.captureLocator(shadowRoot, "shadow-root");
     const nodeRef = this.referenceNode(shadowRoot, scope);
     const existing = this.records.get(nodeRef);
     this.storeReferencedRecord(nodeRef, {
@@ -951,7 +953,7 @@ export class DomTreeProvider {
       label: "#shadow-root (open)",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: this.captureLocator(shadowRoot, "shadow-root"),
+      locator,
     });
   }
 
@@ -960,6 +962,7 @@ export class DomTreeProvider {
     scope: FrameContext,
     parentRef?: string,
   ): DomNodeView {
+    const locator = this.captureLocator(document, "frame-document");
     const nodeRef = this.referenceNode(document, scope);
     this.frameDocumentsByRef.set(scope.frameRef, document);
     this.observeRoot(document);
@@ -977,7 +980,7 @@ export class DomTreeProvider {
       label: "#document",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: this.captureLocator(document, "frame-document"),
+      locator,
     });
   }
 

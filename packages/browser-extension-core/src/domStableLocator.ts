@@ -8,6 +8,8 @@ export const DOM_TREE_RECOVERY_MAX_EXPANDED = 64;
 
 const MAX_ID_SCAN_NODES = 4_096;
 const MAX_EVIDENCE_PHYSICAL_SCAN = 256;
+const MAX_CHILD_PHYSICAL_SCAN = 65_536;
+const READ_FAILED = Symbol("dom-stable-locator-read-failed");
 
 export interface DomStableLocator {
   readonly version: 1;
@@ -60,6 +62,7 @@ export interface DomStableLocatorServiceOptions {
       readonly document?: Document;
       readonly frameRef: string;
     } | undefined;
+    unregisterFrame(frameElement: HTMLIFrameElement): readonly unknown[];
   };
   readonly isExcludedNode: (node: Node) => boolean;
 }
@@ -105,56 +108,84 @@ export class DomStableLocatorService {
     let context = this.frameRegistry.getContextForDocument(this.topDocument);
     if (!context || this.isExcluded(root)) return undefined;
     const seen = new Set<Node>([root]);
+    const authorizedFrames: HTMLIFrameElement[] = [];
     let traversed = 0;
-
-    for (const boundary of parsed.boundaries) {
-      const host = this.resolvePath(root, boundary.hostPath, seen, traversed);
-      traversed += boundary.hostPath.length;
-      if (!host || traversed > DOM_STABLE_LOCATOR_MAX_DEPTH) return undefined;
-      if (boundary.kind === "shadow-root") {
-        const shadowRoot = readOpenShadowRoot(host);
-        if (!shadowRoot || this.isExcluded(shadowRoot) || seen.has(shadowRoot)) {
+    let resolved: StableLocatorResolution | undefined;
+    try {
+      for (const boundary of parsed.boundaries) {
+        if (root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
           return undefined;
         }
-        seen.add(shadowRoot);
-        root = shadowRoot;
-        continue;
+        const host = this.resolvePath(root, boundary.hostPath, seen, traversed);
+        traversed += boundary.hostPath.length;
+        if (
+          !host ||
+          traversed > DOM_STABLE_LOCATOR_MAX_DEPTH ||
+          root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
+        ) return undefined;
+        if (boundary.kind === "shadow-root") {
+          const shadowRoot = readOpenShadowRoot(host);
+          if (!shadowRoot || this.isExcluded(shadowRoot) || seen.has(shadowRoot)) {
+            return undefined;
+          }
+          seen.add(shadowRoot);
+          root = shadowRoot;
+          continue;
+        }
+        if (!isFrameElement(host)) return undefined;
+        const frame = this.resolveExactFrame(host, context.frameRef);
+        if (frame?.created) authorizedFrames.push(host);
+        const description = frame?.description;
+        if (
+          !description ||
+          description.kind !== "accessible" ||
+          !description.document ||
+          this.isExcluded(description.document) ||
+          seen.has(description.document)
+        ) return undefined;
+        const childContext = this.frameRegistry.getContext(description.frameRef);
+        if (!childContext || childContext.document !== description.document) return undefined;
+        seen.add(description.document);
+        root = description.document;
+        context = childContext;
       }
-      if (!isFrameElement(host)) return undefined;
-      const description = this.resolveExactFrame(host, context.frameRef);
-      if (
-        !description ||
-        description.kind !== "accessible" ||
-        !description.document ||
-        this.isExcluded(description.document) ||
-        seen.has(description.document)
-      ) {
+
+      if (root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
         return undefined;
       }
-      const childContext = this.frameRegistry.getContext(description.frameRef);
-      if (!childContext || childContext.document !== description.document) return undefined;
-      seen.add(description.document);
-      root = description.document;
-      context = childContext;
+      const target = this.resolvePath(root, parsed.path, seen, traversed);
+      if (
+        !target ||
+        root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
+      ) return undefined;
+      if (parsed.targetKind === "element") {
+        resolved = Object.freeze({ kind: parsed.targetKind, node: target });
+      } else if (parsed.targetKind === "shadow-root") {
+        const shadowRoot = readOpenShadowRoot(target);
+        resolved = shadowRoot && !this.isExcluded(shadowRoot)
+          ? Object.freeze({ kind: parsed.targetKind, node: shadowRoot })
+          : undefined;
+      } else if (isFrameElement(target)) {
+        const frame = this.resolveExactFrame(target, context.frameRef);
+        if (frame?.created) authorizedFrames.push(target);
+        const description = frame?.description;
+        resolved = description?.kind === "accessible" && description.document &&
+            !this.isExcluded(description.document)
+          ? Object.freeze({ kind: parsed.targetKind, node: description.document })
+          : undefined;
+      }
+      return resolved;
+    } finally {
+      if (!resolved) {
+        for (let index = authorizedFrames.length - 1; index >= 0; index -= 1) {
+          try {
+            this.frameRegistry.unregisterFrame(authorizedFrames[index]!);
+          } catch {
+            // The registry owns cleanup; a failed cleanup cannot make resolution succeed.
+          }
+        }
+      }
     }
-
-    const target = this.resolvePath(root, parsed.path, seen, traversed);
-    if (!target) return undefined;
-    if (parsed.targetKind === "element") {
-      return Object.freeze({ kind: parsed.targetKind, node: target });
-    }
-    if (parsed.targetKind === "shadow-root") {
-      const shadowRoot = readOpenShadowRoot(target);
-      return shadowRoot && !this.isExcluded(shadowRoot)
-        ? Object.freeze({ kind: parsed.targetKind, node: shadowRoot })
-        : undefined;
-    }
-    if (!isFrameElement(target)) return undefined;
-    const description = this.resolveExactFrame(target, context.frameRef);
-    return description?.kind === "accessible" && description.document &&
-        !this.isExcluded(description.document)
-      ? Object.freeze({ kind: parsed.targetKind, node: description.document })
-      : undefined;
   }
 
   private captureElement(
@@ -214,11 +245,12 @@ export class DomStableLocatorService {
         !candidate ||
         seen.has(candidate) ||
         this.isExcluded(candidate) ||
-        !matchesSegment(candidate, segment)
+        readParentNode(candidate) !== parent ||
+        !matchesSegment(candidate, segment, parent, root)
       ) {
         return undefined;
       }
-      if (segment.id !== undefined && !hasUniqueId(root, segment.id, this.isExcludedNode)) {
+      if (segment.id !== undefined && !hasUniqueId(root, segment.id)) {
         return undefined;
       }
       seen.add(candidate);
@@ -230,22 +262,31 @@ export class DomStableLocatorService {
   private resolveExactFrame(
     frameElement: HTMLIFrameElement,
     parentFrameRef: string,
-  ): { readonly kind: "accessible" | "inaccessible"; readonly document?: Document; readonly frameRef: string } | undefined {
+  ): {
+    readonly description: { readonly kind: "accessible" | "inaccessible"; readonly document?: Document; readonly frameRef: string };
+    readonly created: boolean;
+  } | undefined {
     const known = this.frameRegistry.getContextForFrameElement(
       frameElement,
       parentFrameRef,
     );
     if (known) {
       return Object.freeze({
-        kind: "accessible" as const,
-        document: known.document,
-        frameRef: known.frameRef,
+        description: Object.freeze({
+          kind: "accessible" as const,
+          document: known.document,
+          frameRef: known.frameRef,
+        }),
+        created: false,
       });
     }
-    return this.frameRegistry.authorizeExactFrameElement(
+    const description = this.frameRegistry.authorizeExactFrameElement(
       frameElement,
       parentFrameRef,
     );
+    return description
+      ? Object.freeze({ description, created: true })
+      : undefined;
   }
 
   private isExcluded(node: Node): boolean {
@@ -295,37 +336,67 @@ function capturePath(
     if (isExcludedNode(current)) throw invalidLocator();
     const parent = readParentNode(current);
     if (!parent || parent === current || isExcludedNode(parent)) throw invalidLocator();
-    reversed.push(captureSegment(current as Element, parent));
+    reversed.push(captureSegment(current as Element, parent, root));
     current = parent;
   }
   if (reversed.length === 0 || isExcludedNode(root)) throw invalidLocator();
   return Object.freeze(reversed.reverse());
 }
 
-function captureSegment(element: Element, parent: Node): DomPathSegment {
+function captureSegment(element: Element, parent: Node, root: Node): DomPathSegment {
   const tagName = readTagName(element);
   const siblingIndex = elementSiblingIndex(parent, element);
-  if (!tagName || siblingIndex === undefined) throw invalidLocator();
-  const id = boundedNonEmpty(readCaptureId(element));
-  const classes = captureClasses(element);
-  const attributes = captureAttributes(element);
+  const evidence = readCanonicalEvidence(element, parent, root);
+  if (!tagName || siblingIndex === undefined || !evidence) throw invalidLocator();
   return Object.freeze({
     tagName,
     siblingIndex,
-    ...(id === undefined ? {} : { id }),
-    ...(classes.length === 0 ? {} : { classes }),
-    ...(attributes.length === 0 ? {} : { attributes }),
+    ...(evidence.id === undefined ? {} : { id: evidence.id }),
+    ...(evidence.classes.length === 0 ? {} : { classes: evidence.classes }),
+    ...(evidence.attributes.length === 0 ? {} : { attributes: evidence.attributes }),
   });
 }
 
-function captureClasses(element: Element): readonly string[] {
+interface CanonicalEvidence {
+  readonly id?: string;
+  readonly classes: readonly string[];
+  readonly attributes: readonly DomLocatorAttribute[];
+}
+
+function readCanonicalEvidence(
+  element: Element,
+  expectedParent: Node,
+  expectedRoot: Node,
+): CanonicalEvidence | undefined {
+  if (
+    readParentNode(element) !== expectedParent ||
+    !hasExpectedRoot(element, expectedRoot)
+  ) return undefined;
+  const rawId = readIdStrict(element);
+  if (rawId === READ_FAILED) return undefined;
+  const classes = readCanonicalClasses(element);
+  const attributes = readCanonicalAttributes(element);
+  if (
+    !classes ||
+    !attributes ||
+    readParentNode(element) !== expectedParent ||
+    !hasExpectedRoot(element, expectedRoot)
+  ) return undefined;
+  return Object.freeze({
+    ...(boundedNonEmpty(rawId) === undefined ? {} : { id: boundedNonEmpty(rawId) }),
+    classes,
+    attributes,
+  });
+}
+
+function readCanonicalClasses(element: Element): readonly string[] | undefined {
   try {
     const classList = element.classList;
-    const length = readBoundedCollectionLength(classList);
+    const length = readBoundedCollectionLength(classList, MAX_EVIDENCE_PHYSICAL_SCAN);
     const selected: string[] = [];
     for (let index = 0; index < length; index += 1) {
       const value = readCollectionItem(classList, index);
-      if (typeof value !== "string") throw invalidLocator();
+      if (value === READ_FAILED || typeof value !== "string") return undefined;
       if (boundedNonEmpty(value) !== undefined && !hasWhitespace(value)) {
         insertBoundedCanonical(
           selected,
@@ -337,20 +408,21 @@ function captureClasses(element: Element): readonly string[] {
     }
     return Object.freeze(selected);
   } catch {
-    throw invalidLocator();
+    return undefined;
   }
 }
 
-function captureAttributes(element: Element): readonly DomLocatorAttribute[] {
+function readCanonicalAttributes(element: Element): readonly DomLocatorAttribute[] | undefined {
   try {
     const attributes = element.attributes;
-    const length = readBoundedCollectionLength(attributes);
+    const length = readBoundedCollectionLength(attributes, MAX_EVIDENCE_PHYSICAL_SCAN);
     const selected: DomLocatorAttribute[] = [];
     for (let index = 0; index < length; index += 1) {
       const attribute = readCollectionItem(attributes, index);
-      if (!attribute || typeof attribute !== "object") throw invalidLocator();
-      const name = String((attribute as { readonly name?: unknown }).name).toLowerCase();
-      const value = String((attribute as { readonly value?: unknown }).value);
+      if (!attribute || attribute === READ_FAILED || typeof attribute !== "object") return undefined;
+      const name = readAttributeName(attribute);
+      const value = readAttributeValue(attribute);
+      if (name === READ_FAILED || value === READ_FAILED) return undefined;
       if (isApprovedAttributeName(name) && boundedText(value) !== undefined) {
         insertBoundedCanonical(
           selected,
@@ -362,26 +434,34 @@ function captureAttributes(element: Element): readonly DomLocatorAttribute[] {
     }
     return Object.freeze(selected);
   } catch {
+    return undefined;
+  }
+}
+
+function readBoundedCollectionLength(collection: unknown, maximum: number): number {
+  try {
+    if (!collection || typeof collection !== "object") throw invalidLocator();
+    const length = (collection as { readonly length?: unknown }).length;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > maximum
+    ) {
+      throw invalidLocator();
+    }
+    return length;
+  } catch {
     throw invalidLocator();
   }
 }
 
-function readBoundedCollectionLength(collection: { readonly length: number }): number {
-  const length = collection.length;
-  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_EVIDENCE_PHYSICAL_SCAN) {
-    throw invalidLocator();
+function readCollectionItem(collection: object, index: number): unknown | typeof READ_FAILED {
+  try {
+    return (collection as { readonly [index: number]: unknown })[index];
+  } catch {
+    return READ_FAILED;
   }
-  return length;
-}
-
-function readCollectionItem(collection: object, index: number): unknown {
-  const candidate = collection as {
-    readonly item?: (index: number) => unknown;
-    readonly [index: number]: unknown;
-  };
-  return typeof candidate.item === "function"
-    ? candidate.item(index)
-    : candidate[index];
 }
 
 function insertBoundedCanonical<T>(
@@ -406,9 +486,13 @@ function compareCodeUnits(left: string, right: string): number {
 
 function elementChildAt(parent: Node, siblingIndex: number): Element | undefined {
   if (!Number.isSafeInteger(siblingIndex) || siblingIndex < 0) return undefined;
+  const children = readChildCollection(parent);
+  if (!children) return undefined;
   let index = 0;
-  for (const child of readChildNodes(parent)) {
-    if (child.nodeType !== 1) continue;
+  for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
+    const child = readCollectionItem(children.collection, physicalIndex);
+    if (!isNode(child)) return undefined;
+    if (readNodeType(child) !== 1) continue;
     if (index === siblingIndex) return child as Element;
     index += 1;
   }
@@ -422,7 +506,7 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
     let current: Element | null = target;
     const seen = new Set<Element>();
     while (current) {
-      if (seen.has(current)) {
+      if (seen.size >= MAX_CHILD_PHYSICAL_SCAN || seen.has(current)) {
         return undefined;
       }
       seen.add(current);
@@ -431,9 +515,13 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
     }
     return index;
   }
+  const children = readChildCollection(parent);
+  if (!children) return undefined;
   let index = 0;
-  for (const child of readChildNodes(parent)) {
-    if (child.nodeType !== 1) continue;
+  for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
+    const child = readCollectionItem(children.collection, physicalIndex);
+    if (!isNode(child)) return undefined;
+    if (readNodeType(child) !== 1) continue;
     if (child === target) return index;
     index += 1;
   }
@@ -442,46 +530,56 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
 
 function readPreviousElementSibling(element: Element): Element | null | undefined {
   try {
-    return "previousElementSibling" in element
-      ? element.previousElementSibling
-      : undefined;
+    const previous = element.previousElementSibling;
+    return previous === null || previous?.nodeType === 1 ? previous : undefined;
   } catch {
     return undefined;
   }
 }
 
-function matchesSegment(element: Element, segment: DomPathSegment): boolean {
+function matchesSegment(
+  element: Element,
+  segment: DomPathSegment,
+  parent: Node,
+  root: Node,
+): boolean {
   if (readTagName(element) !== segment.tagName) return false;
-  if (segment.id !== undefined && readId(element) !== segment.id) return false;
-  const classValues = readClasses(element);
-  if (!classValues) return false;
-  const classes = new Set(classValues);
-  if (segment.classes?.some((value) => !classes.has(value))) return false;
-  const attributeValues = readAttributes(element);
-  if (!attributeValues) return false;
-  const attributes = new Map(attributeValues.map(({ name, value }) => [name, value]));
-  return !segment.attributes?.some(({ name, value }) => attributes.get(name) !== value);
+  const evidence = readCanonicalEvidence(element, parent, root);
+  return !!evidence &&
+    evidence.id === segment.id &&
+    sameStringValues(evidence.classes, segment.classes) &&
+    sameAttributes(evidence.attributes, segment.attributes);
 }
 
 function hasUniqueId(
   root: Node,
   id: string,
-  isExcludedNode: (node: Node) => boolean,
 ): boolean {
-  const pending = [root];
+  const pending: Array<{ readonly node: Node; readonly children?: { readonly collection: object; readonly length: number }; next?: number }> = [{ node: root }];
   const seen = new Set<Node>();
   let matches = 0;
   while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || seen.has(current) || isExcludedNode(current)) continue;
-    if (seen.size >= MAX_ID_SCAN_NODES) return false;
-    seen.add(current);
-    if (current.nodeType === 1 && readId(current as Element) === id) {
-      matches += 1;
-      if (matches > 1) return false;
+    const current = pending[pending.length - 1]!;
+    if (!current.children) {
+      if (seen.size >= MAX_ID_SCAN_NODES || seen.has(current.node)) return false;
+      seen.add(current.node);
+      if (readNodeType(current.node) === 1) {
+        const currentId = readIdStrict(current.node as Element);
+        if (currentId === READ_FAILED) return false;
+        if (currentId === id && ++matches > 1) return false;
+      }
+      const children = readChildCollection(current.node);
+      if (!children) return false;
+      (current as { children: { readonly collection: object; readonly length: number }; next: number }).children = children;
+      (current as { next: number }).next = 0;
     }
-    const children = readChildNodes(current);
-    for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index]!);
+    if (current.next! >= current.children!.length) {
+      pending.pop();
+      continue;
+    }
+    const child = readCollectionItem(current.children!.collection, current.next!++);
+    if (!isNode(child)) return false;
+    pending.push({ node: child });
   }
   return matches === 1;
 }
@@ -498,51 +596,76 @@ function readTagName(element: Element): string | undefined {
 }
 
 function readId(element: Element): string | undefined {
+  const id = readIdStrict(element);
+  return id === READ_FAILED ? undefined : id;
+}
+
+function readIdStrict(element: Element): string | typeof READ_FAILED {
   try {
-    return typeof element.id === "string" ? element.id : undefined;
+    return typeof element.id === "string" ? element.id : READ_FAILED;
+  } catch {
+    return READ_FAILED;
+  }
+}
+
+function readAttributeName(attribute: object): string | typeof READ_FAILED {
+  try {
+    const name = (attribute as { readonly name?: unknown }).name;
+    return typeof name === "string" ? name.toLowerCase() : READ_FAILED;
+  } catch {
+    return READ_FAILED;
+  }
+}
+
+function readAttributeValue(attribute: object): string | typeof READ_FAILED {
+  try {
+    const value = (attribute as { readonly value?: unknown }).value;
+    return typeof value === "string" ? value : READ_FAILED;
+  } catch {
+    return READ_FAILED;
+  }
+}
+
+function readChildCollection(
+  node: Node,
+): { readonly collection: object; readonly length: number } | undefined {
+  try {
+    const collection = node.childNodes;
+    const length = readBoundedCollectionLength(collection, MAX_CHILD_PHYSICAL_SCAN);
+    return Object.freeze({ collection, length });
   } catch {
     return undefined;
   }
 }
 
-function readCaptureId(element: Element): string | undefined {
+function readNodeType(node: Node): number | undefined {
   try {
-    const id = element.id;
-    if (typeof id !== "string") throw invalidLocator();
-    return id;
-  } catch {
-    throw invalidLocator();
-  }
-}
-
-function readClasses(element: Element): readonly string[] | undefined {
-  try {
-    return Array.from(element.classList, (value) => String(value));
+    return typeof node.nodeType === "number" ? node.nodeType : undefined;
   } catch {
     return undefined;
   }
 }
 
-function readAttributes(element: Element): readonly DomLocatorAttribute[] | undefined {
-  try {
-    const values: DomLocatorAttribute[] = [];
-    for (const attribute of Array.from(element.attributes)) {
-      const name = String(attribute.name).toLowerCase();
-      const value = String(attribute.value);
-      values.push(Object.freeze({ name, value }));
-    }
-    return Object.freeze(values);
-  } catch {
-    return undefined;
-  }
+function isNode(value: unknown): value is Node {
+  return !!value && typeof value === "object" && readNodeType(value as Node) !== undefined;
 }
 
-function readChildNodes(node: Node): readonly Node[] {
-  try {
-    return Array.from(node.childNodes);
-  } catch {
-    return Object.freeze([]);
-  }
+function sameStringValues(
+  actual: readonly string[],
+  expected: readonly string[] | undefined,
+): boolean {
+  const values = expected ?? [];
+  return actual.length === values.length && actual.every((value, index) => value === values[index]);
+}
+
+function sameAttributes(
+  actual: readonly DomLocatorAttribute[],
+  expected: readonly DomLocatorAttribute[] | undefined,
+): boolean {
+  const values = expected ?? [];
+  return actual.length === values.length && actual.every(({ name, value }, index) => (
+    name === values[index]?.name && value === values[index]?.value
+  ));
 }
 
 function readParentNode(node: Node): Node | undefined {
@@ -551,6 +674,17 @@ function readParentNode(node: Node): Node | undefined {
   } catch {
     return undefined;
   }
+}
+
+function hasExpectedRoot(node: Node, expectedRoot: Node): boolean {
+  const seen = new Set<Node>();
+  let current: Node | undefined = node;
+  while (current && current !== expectedRoot) {
+    if (seen.size >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(current)) return false;
+    seen.add(current);
+    current = readParentNode(current);
+  }
+  return current === expectedRoot;
 }
 
 function readOpenShadowRoot(element: Element): ShadowRoot | undefined {

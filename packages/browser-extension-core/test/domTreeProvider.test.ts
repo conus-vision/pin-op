@@ -3878,6 +3878,117 @@ describe("DomTreeProvider", () => {
       "node-unavailable",
     );
   });
+
+  it("fails closed during resolution for hostile evidence and child collections", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+
+    const classes = createHeadingTree();
+    Object.defineProperty(classes.target, "classList", {
+      configurable: true,
+      get: () => ({ length: 257 }),
+    });
+    expect(resolveLocator(classes.provider, locator)).toBeUndefined();
+
+    const attributes = createHeadingTree();
+    Object.defineProperty(attributes.target, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile resolution attributes");
+      },
+    });
+    expect(resolveLocator(attributes.provider, locator)).toBeUndefined();
+
+    const children = createHeadingTree();
+    Object.defineProperty(children.main, "childNodes", {
+      configurable: true,
+      get: () => ({ length: 65_537 }),
+    });
+    expect(resolveLocator(children.provider, locator)).toBeUndefined();
+  });
+
+  it("compares canonical top-eight evidence exactly while ignoring noncanonical additions", () => {
+    const first = createHeadingTree({ includeAttributes: false });
+    first.target.className = Array.from({ length: 10 }, (_, index) => `class-${index}`)
+      .join(" ");
+    const locator = locatorFor(first.provider, first.target);
+    expect(locator.path.at(-1)?.classes).toEqual([
+      "class-0", "class-1", "class-2", "class-3",
+      "class-4", "class-5", "class-6", "class-7",
+    ]);
+
+    const equivalent = createHeadingTree({ includeAttributes: false });
+    equivalent.target.className = `${first.target.className} zzz`;
+    expect(resolveLocator(equivalent.provider, locator)?.node.kind).toBe("element");
+
+    const changed = createHeadingTree({ includeAttributes: false });
+    changed.target.className = `aaa ${first.target.className}`;
+    expect(resolveLocator(changed.provider, locator)).toBeUndefined();
+  });
+
+  it("counts excluded duplicate IDs and fails closed on unreadable uniqueness descendants", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+
+    const duplicate = createHeadingTree();
+    const hiddenDuplicate = createElement("aside", duplicate.document);
+    hiddenDuplicate.id = duplicate.target.id;
+    duplicate.main.append(hiddenDuplicate);
+    const excluded = createProviderHarness(duplicate.document, {
+      isExcludedNode: (node) => node === hiddenDuplicate,
+    }).provider;
+    expect(resolveLocator(excluded, locator)).toBeUndefined();
+
+    const unreadable = createHeadingTree();
+    Object.defineProperty(unreadable.document.documentElement, "childNodes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile uniqueness descendants");
+      },
+    });
+    expect(resolveLocator(unreadable.provider, locator)).toBeUndefined();
+  });
+
+  it("rolls back exact frame authorization when later locator proof fails", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree({ materialize: false });
+    second.target.tagName = "P";
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+    expect(second.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(second.frame.loadListenerCount).toBe(0);
+  });
+
+  it("does not materialize references, observers, or frame ownership before capture succeeds", () => {
+    const document = createDocument();
+    const frame = createFrameElement(document, createDocument());
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const originalAttributes = frame.attributes;
+    Object.defineProperty(frame, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile frame identity");
+      },
+    });
+
+    expect(() => onlyChild(harness.provider, root.node, root.documentEpoch, "hostile-frame"))
+      .toThrowError("node-unavailable");
+    expect((harness.provider as unknown as { records: Map<string, unknown> }).records.size)
+      .toBe(1);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(frame.loadListenerCount).toBe(0);
+
+    Object.defineProperty(frame, "attributes", {
+      configurable: true,
+      value: originalAttributes,
+    });
+    expect(onlyChild(harness.provider, root.node, root.documentEpoch, "recovered-frame").kind)
+      .toBe("element");
+    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(2);
+  });
 });
 
 function onlyChild(
@@ -3985,7 +4096,7 @@ function createFramedButtonTree(options: {
       onlyChild(provider, frameView, root.documentEpoch, "frame-document");
     }
   }
-  return { document, provider, target, unrelatedDocument };
+  return { document, provider, target, frame, unrelatedDocument };
 }
 
 interface ProviderHarnessOptions {

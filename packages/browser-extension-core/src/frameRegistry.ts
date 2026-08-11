@@ -165,6 +165,10 @@ export class FrameRegistry {
     ) {
       return undefined;
     }
+    const parent = this.contexts.get(parentFrameRef);
+    if (!parent || readOwnerDocument(frameElement) !== parent.document) {
+      return undefined;
+    }
     const record = this.recordByElement.get(frameElement);
     return record?.parentFrameRef === parentFrameRef
       ? this.contexts.get(record.frameRef)
@@ -176,6 +180,22 @@ export class FrameRegistry {
     frameElement: HTMLIFrameElement,
     parentFrameRef: string,
   ): FrameDescription | undefined {
+    if (
+      this.state !== "active" ||
+      !isObject(frameElement) ||
+      !parentFrameRef ||
+      !isFrameRef(parentFrameRef)
+    ) {
+      return undefined;
+    }
+    const parent = this.contexts.get(parentFrameRef);
+    if (!parent || readOwnerDocument(frameElement) !== parent.document) {
+      return undefined;
+    }
+    const existing = this.recordByElement.get(frameElement);
+    if (existing && existing.parentFrameRef !== parentFrameRef) {
+      return undefined;
+    }
     return this.describeFrame(frameElement, parentFrameRef);
   }
 
@@ -1127,6 +1147,15 @@ function isFrameRef(value: unknown): value is string {
 
 function isObject(value: unknown): value is object {
   return typeof value === "object" && value !== null;
+}
+
+function readOwnerDocument(frameElement: HTMLIFrameElement): Document | undefined {
+  try {
+    const ownerDocument = frameElement.ownerDocument;
+    return isObject(ownerDocument) ? ownerDocument as Document : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function requirePositiveSafeInteger(value: unknown, name: string): number {

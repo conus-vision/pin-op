@@ -1885,6 +1885,25 @@ describe("FrameRegistry", () => {
     expect(() => registry.resetTopDocument(createDocument(), 5)).toThrow(RangeError);
     expect(registry.topContext).toBe(currentTop);
   });
+
+  it("authorizes exact frame hosts only from their owning registered parent context", () => {
+    const topDocument = createDocument();
+    const registry = new FrameRegistry(topDocument, { maxFrames: 4 });
+    const parentDocument = createDocument();
+    const parent = createFrame({ document: parentDocument, ownerDocument: topDocument });
+    const parentDescription = registry.describeFrame(parent);
+    if (parentDescription?.kind !== "accessible") throw new Error("expected parent");
+    const child = createFrame({ document: createDocument(), ownerDocument: parentDocument });
+
+    expect(registry.authorizeExactFrameElement(child, parentDescription.frameRef))
+      .toMatchObject({ kind: "accessible", parentFrameRef: parentDescription.frameRef });
+    expect(registry.authorizeExactFrameElement(child, registry.topContext!.frameRef))
+      .toBeUndefined();
+
+    const moved = createFrame({ document: createDocument(), ownerDocument: topDocument });
+    expect(registry.authorizeExactFrameElement(moved, parentDescription.frameRef))
+      .toBeUndefined();
+  });
 });
 
 function createDocument(): Document {
