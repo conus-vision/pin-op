@@ -2175,14 +2175,30 @@ export class DomTreeProvider {
         try {
           if (!this.isProviderAuthorityCurrent(snapshot)) {
             restored = false;
-          } else if (ownsBuffer && !published) {
-            if (!operationEffects || !this.rollbackBufferedFrameRegistrations(operationEffects, snapshot)) {
+          } else if (!operationEffects) {
+            restored = false;
+          } else {
+            const retainedEvents = this.rollbackBufferedFrameRegistrations(
+              operationEffects,
+              snapshot,
+            );
+            if (!retainedEvents) {
               restored = false;
             } else {
-              restored = this.restoreProviderAuthority(snapshot) && restored;
+              restored = this.restoreProviderAuthority(snapshot, retainedEvents) && restored;
+              // These registry events outlive the failed operation. Reapply
+              // their provider bookkeeping while the operation journal is hidden.
+              for (const event of retainedEvents) {
+                if (!restored || !this.isProviderAuthorityCurrent(snapshot)) {
+                  restored = false;
+                  break;
+                }
+                if (!this.handleFrameLifecycle(event)) {
+                  restored = false;
+                  break;
+                }
+              }
             }
-          } else {
-            restored = this.restoreProviderAuthority(snapshot) && restored;
           }
         } catch {
           restored = false;
@@ -2237,7 +2253,10 @@ export class DomTreeProvider {
     }));
   }
 
-  private restoreProviderAuthority(snapshot: ProviderAuthoritySnapshot): boolean {
+  private restoreProviderAuthority(
+    snapshot: ProviderAuthoritySnapshot,
+    retainedEvents: readonly FrameLifecycleEvent[] = [],
+  ): boolean {
     try {
       if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       const retainedFrames = new Set(
@@ -2261,6 +2280,10 @@ export class DomTreeProvider {
       }
 
       const expectedObservers = new Map(snapshot.rootObservers);
+      const retainedFrameRefs = new Set(retainedEvents.map(({ frameRef }) => frameRef));
+      const retainedSnapshotDocuments = new Set(snapshot.metadata.frameDocumentsByRef
+        .filter(([frameRef]) => retainedFrameRefs.has(frameRef))
+        .map(([, document]) => document));
       for (const root of [...this.rootObservers.keys()]) {
         if (expectedObservers.has(root)) continue;
         if (!this.isProviderAuthorityCurrent(snapshot)) return false;
@@ -2273,7 +2296,10 @@ export class DomTreeProvider {
         }
       }
       for (const [root, observer] of expectedObservers) {
-        if (this.rootObservers.get(root) !== observer) return false;
+        if (
+          this.rootObservers.get(root) !== observer &&
+          !retainedSnapshotDocuments.has(root as Document)
+        ) return false;
       }
       if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       if (!this.restoreSnapshotTimers(snapshot)) return false;

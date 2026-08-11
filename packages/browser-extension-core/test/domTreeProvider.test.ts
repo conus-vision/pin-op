@@ -4788,6 +4788,123 @@ describe("DomTreeProvider", () => {
     expect(observed).toEqual([]);
   });
 
+  it("reconciles retained frame navigation authority without publishing a failed owner journal", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    document.documentElement.append(frame);
+    const events: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => events.push(event.type),
+    });
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "retained-frame");
+    harness.flushEffects();
+    events.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly frameDocumentsByRef: ReadonlyMap<string, Document>;
+      readonly frameDescriptions: ReadonlyMap<string, { readonly document?: Document }>;
+    };
+    const context = harness.provider.frameAuthority.accessibleContexts()
+      .find((candidate) => candidate.frameElement === frame)!;
+    const replacement = createDocument();
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.setFrameDocument(replacement);
+    frame.dispatchLoad();
+    expect(owner.rollback()).toBe(true);
+
+    expect(state.frameDocumentsByRef.get(context.frameRef)).toBe(replacement as unknown as Document);
+    expect(state.frameDescriptions.get(frameView.nodeRef)?.document)
+      .toBe(replacement as unknown as Document);
+    expect(events).toEqual([]);
+    harness.flushEffects();
+    expect(events).toEqual([]);
+  });
+
+  it("reconciles retained frame events in order while suppressing secondary callbacks", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const secondDocument = createDocument();
+    const selected = createElement("button", firstDocument);
+    firstDocument.documentElement.append(selected);
+    const firstFrame = createFrameElement(document, firstDocument);
+    const secondFrame = createFrameElement(document, secondDocument);
+    document.documentElement.append(firstFrame);
+    document.documentElement.append(secondFrame);
+    let selectedRef: string | undefined;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: () => callbacks.push("invalidated"),
+      onSelectedNodeRemoved: () => callbacks.push("selected-removed"),
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    const root = harness.provider.getRoot();
+    const frameViews = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "retained-frame-views",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    expect(frameViews).toHaveLength(2);
+    const firstFrameView = frameViews[0]!;
+    const secondFrameView = frameViews[1]!;
+    const firstFrameDocument = onlyChild(
+      harness.provider,
+      firstFrameView,
+      root.documentEpoch,
+      "retained-first-document",
+    );
+    const firstRoot = onlyChild(
+      harness.provider,
+      firstFrameDocument,
+      root.documentEpoch,
+      "retained-first-root",
+    );
+    selectedRef = onlyChild(
+      harness.provider,
+      firstRoot,
+      root.documentEpoch,
+      "retained-selected",
+    ).nodeRef;
+    harness.flushEffects();
+    callbacks.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly frameDocumentsByRef: ReadonlyMap<string, Document>;
+      handleFrameLifecycle(event: FrameLifecycleEvent): boolean;
+    };
+    const contexts = harness.provider.frameAuthority.accessibleContexts();
+    const firstContext = contexts.find((candidate) => candidate.frameElement === firstFrame)!;
+    const secondContext = contexts.find((candidate) => candidate.frameElement === secondFrame)!;
+    const firstReplacement = createDocument();
+    const secondReplacement = createDocument();
+    const owner = state.beginProviderAuthorityOperation()!;
+    const reconciledFrames: string[] = [];
+    const handleFrameLifecycle = state.handleFrameLifecycle;
+    let reconciling = false;
+    state.handleFrameLifecycle = (event) => {
+      if (reconciling) reconciledFrames.push(event.frameRef);
+      return handleFrameLifecycle.call(state, event);
+    };
+
+    firstFrame.setFrameDocument(firstReplacement);
+    firstFrame.dispatchLoad();
+    secondFrame.setFrameDocument(secondReplacement);
+    secondFrame.dispatchLoad();
+    reconciling = true;
+    expect(owner.rollback()).toBe(true);
+
+    expect(state.frameDocumentsByRef.get(firstContext.frameRef)).toBe(firstReplacement as unknown as Document);
+    expect(state.frameDocumentsByRef.get(secondContext.frameRef)).toBe(secondReplacement as unknown as Document);
+    expect(reconciledFrames).toEqual([firstContext.frameRef, secondContext.frameRef]);
+    expect(secondFrameView.label).toBe("iframe");
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
+  });
+
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
     const document = createDocument();
     const childDocument = createDocument();
