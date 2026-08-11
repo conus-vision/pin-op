@@ -7,6 +7,7 @@ import {
   type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import {
+  isDomResponseForRequest,
   isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
@@ -104,7 +105,7 @@ export class PanelSessionTransport {
     }
     try {
       const response = parseDomResponse(raw);
-      return isExpectedResponse(parsed, response)
+      return isDomResponseForRequest(parsed, response)
         ? response
         : domError("internal-error", requestIdOf(parsed));
     } catch {
@@ -286,29 +287,6 @@ function domError(
 
 function requestIdOf(request: DomRequest): string | undefined {
   return "requestId" in request ? request.requestId : undefined;
-}
-
-function isExpectedResponse(
-  request: DomRequest,
-  response: DomResponse,
-): boolean {
-  const requestId = requestIdOf(request);
-  if (!requestId || response.requestId !== requestId) {
-    return false;
-  }
-  if (response.type === "dom.error") {
-    return true;
-  }
-  if (request.type === "dom.getRoot") {
-    return response.type === "dom.root";
-  }
-  if (request.type === "dom.getChildren") {
-    return response.type === "dom.children";
-  }
-  if (request.type === "dom.resolveLocator") {
-    return response.type === "dom.locator";
-  }
-  return false;
 }
 
 function readRequestId(value: unknown): string | undefined {

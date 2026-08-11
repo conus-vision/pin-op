@@ -444,6 +444,35 @@ export function isSelectionRevision(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+export function isDomResponseForRequest(
+  request: DomRequest,
+  response: DomResponse,
+): boolean {
+  if (!("requestId" in request) || response.requestId !== request.requestId) {
+    return false;
+  }
+  if (response.type === "dom.error") {
+    return !("documentEpoch" in request) ||
+      response.documentEpoch === undefined ||
+      response.documentEpoch === request.documentEpoch;
+  }
+  switch (request.type) {
+    case "dom.getRoot":
+      return response.type === "dom.root" &&
+        (request.documentEpoch === undefined ||
+          response.documentEpoch === request.documentEpoch);
+    case "dom.getChildren":
+      return response.type === "dom.children" &&
+        response.documentEpoch === request.documentEpoch &&
+        response.nodeRef === request.nodeRef &&
+        response.branchRevision === request.branchRevision;
+    case "dom.resolveLocator":
+      return response.type === "dom.locator";
+    default:
+      return false;
+  }
+}
+
 function parseNodeView(value: unknown): DomNodeView {
   const record = snapshotRecord(value, DOM_NODE_VIEW_KEYS);
   assertKeys(record, [

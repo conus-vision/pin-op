@@ -128,6 +128,36 @@ describe("PanelSessionTransport", () => {
       locatorRequest("locator-a"),
       rootResponse("locator-a"),
     ],
+    [
+      "wrong root document epoch",
+      { ...rootRequest("root-epoch"), documentEpoch: 2 },
+      rootResponse("root-epoch"),
+    ],
+    [
+      "wrong children document epoch",
+      childrenRequest("children-epoch"),
+      { ...childrenResponse("children-epoch"), documentEpoch: 2 },
+    ],
+    [
+      "wrong children node reference",
+      childrenRequest("children-node"),
+      { ...childrenResponse("children-node"), nodeRef: "node-forged" },
+    ],
+    [
+      "wrong children branch revision",
+      childrenRequest("children-branch"),
+      { ...childrenResponse("children-branch"), branchRevision: 1 },
+    ],
+    [
+      "contradictory error document epoch",
+      childrenRequest("children-error"),
+      {
+        type: "dom.error" as const,
+        requestId: "children-error",
+        documentEpoch: 2,
+        code: "stale-branch" as const,
+      },
+    ],
   ])("returns a correlated internal error for a %s", async (
     _case,
     request,
@@ -144,6 +174,24 @@ describe("PanelSessionTransport", () => {
       requestId: request.requestId,
       code: "internal-error",
     });
+  });
+
+  it("accepts a correlated bounded error that omits documentEpoch", async () => {
+    const response = {
+      type: "dom.error" as const,
+      requestId: "children-bounded-error",
+      code: "stale-branch" as const,
+    };
+    const transport = new PanelSessionTransport({
+      sendTabMessage: async () => response,
+      postPanelMessage: vi.fn(),
+    });
+    transport.bind("panel-a", 7);
+
+    await expect(transport.request(
+      "panel-a",
+      childrenRequest("children-bounded-error"),
+    )).resolves.toEqual(response);
   });
 
   it("coalesces concurrent selection republish for one channel binding", async () => {

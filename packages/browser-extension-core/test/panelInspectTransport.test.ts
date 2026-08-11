@@ -66,6 +66,87 @@ describe("PanelInspectTransport DOM integration", () => {
     await expect(pending).resolves.toEqual(rootResponse("root-family"));
   });
 
+  it("keeps an epoch-bound root query pending after a stale response", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-epoch",
+      documentEpoch: 4,
+    });
+
+    port.emitMessage({
+      ...rootResponse("root-epoch"),
+      documentEpoch: 3,
+    });
+    const state = viState(pending);
+    await Promise.resolve();
+    expect(state.settled).toBe(false);
+
+    const response = {
+      ...rootResponse("root-epoch"),
+      documentEpoch: 4,
+    };
+    port.emitMessage(response);
+    await expect(pending).resolves.toEqual(response);
+  });
+
+  it("keeps a children query pending until every identity field matches", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const request = childrenRequest("children-identity");
+    const response = childrenResponse("children-identity");
+    const pending = transport.requestDom(request);
+    const state = viState(pending);
+
+    port.emitMessage({ ...response, documentEpoch: 8 });
+    port.emitMessage({ ...response, nodeRef: "node-forged" });
+    port.emitMessage({ ...response, branchRevision: 6 });
+    await Promise.resolve();
+    expect(state.settled).toBe(false);
+
+    port.emitMessage(response);
+    await expect(pending).resolves.toEqual(response);
+  });
+
+  it("rejects contradictory error correlation but accepts an omitted epoch", async () => {
+    const port = new FakePort();
+    const unhandled: unknown[] = [];
+    const transport = new PanelInspectTransport(
+      () => port,
+      () => undefined,
+      (message) => unhandled.push(message),
+    );
+    const request = childrenRequest("children-error");
+    const pending = transport.requestDom(request);
+    const state = viState(pending);
+    const wrongId = {
+      type: "dom.error" as const,
+      requestId: "children-other",
+      code: "stale-branch" as const,
+    };
+    const wrongEpoch = {
+      type: "dom.error" as const,
+      requestId: request.requestId,
+      documentEpoch: 8,
+      code: "stale-branch" as const,
+    };
+
+    port.emitMessage(wrongId);
+    port.emitMessage(wrongEpoch);
+    await Promise.resolve();
+    expect(state.settled).toBe(false);
+    expect(unhandled).toEqual([wrongId, wrongEpoch]);
+
+    const boundedError = {
+      type: "dom.error" as const,
+      requestId: request.requestId,
+      code: "stale-branch" as const,
+    };
+    port.emitMessage(boundedError);
+    await expect(pending).resolves.toEqual(boundedError);
+  });
+
   it("dispatches validated DOM commands and rejects pending queries on close", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
@@ -93,25 +174,99 @@ describe("PanelInspectTransport DOM integration", () => {
     await expect(pending).rejects.toThrow("Inspect connection is closed");
   });
 
-  it("cancels pending DOM queries without closing the shared panel port", async () => {
+  it("retires a canceled locator ID and ignores its delayed response", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
-    const pending = transport.requestDom({
-      type: "dom.getRoot",
-      requestId: "root-old-session",
-    });
+    const request = locatorRequest("locator-old-session");
+    const pending = transport.requestDom(request);
 
     transport.cancelDomRequests("DOM session changed");
 
     await expect(pending).rejects.toThrow("DOM session changed");
     expect(port.disconnected).toBe(false);
-    const next = transport.requestDom({
-      type: "dom.getRoot",
-      requestId: "root-new-session",
+    const reused = promiseState(transport.requestDom(request));
+    const next = transport.requestDom(locatorRequest("locator-new-session"));
+    const nextState = viState(next);
+
+    port.emitMessage(locatorResponse("locator-old-session"));
+    await Promise.resolve();
+    expect(reused).toMatchObject({
+      status: "rejected",
+      reason: "Duplicate DOM request",
     });
-    port.emitMessage(rootResponse("root-old-session"));
-    port.emitMessage(rootResponse("root-new-session"));
-    await expect(next).resolves.toEqual(rootResponse("root-new-session"));
+    expect(nextState.settled).toBe(false);
+
+    port.emitMessage(locatorResponse("locator-new-session"));
+    await expect(next).resolves.toEqual(locatorResponse("locator-new-session"));
+  });
+
+  it("retires a completed locator ID for the live port", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const request = locatorRequest("locator-complete");
+    const pending = transport.requestDom(request);
+    port.emitMessage(locatorResponse(request.requestId));
+    await expect(pending).resolves.toEqual(locatorResponse(request.requestId));
+
+    const reused = promiseState(transport.requestDom(request));
+    await Promise.resolve();
+
+    expect(reused).toMatchObject({
+      status: "rejected",
+      reason: "Duplicate DOM request",
+    });
+    expect(port.sent).toEqual([request]);
+  });
+
+  it("allows an ID again only after the old port disconnects", async () => {
+    const ports = [new FakePort(), new FakePort()];
+    let portIndex = 0;
+    const transport = new PanelInspectTransport(() => ports[portIndex++]!);
+    const request = locatorRequest("locator-reconnected");
+    const first = transport.requestDom(request);
+    ports[0]!.emitMessage(locatorResponse(request.requestId));
+    await first;
+
+    ports[0]!.disconnect();
+    const second = transport.requestDom(request);
+    const secondState = viState(second);
+    ports[0]!.emitMessage(locatorResponse(request.requestId));
+    await Promise.resolve();
+    expect(secondState.settled).toBe(false);
+
+    ports[1]!.emitMessage(locatorResponse(request.requestId));
+    await expect(second).resolves.toEqual(locatorResponse(request.requestId));
+    expect(portIndex).toBe(2);
+  });
+
+  it("bounds retired DOM query IDs for one live port", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    for (let index = 0; index < 4_096; index += 1) {
+      const requestId = `bounded-${index}`;
+      const pending = transport.requestDom({
+        type: "dom.getRoot",
+        requestId,
+      });
+      port.emitMessage({
+        type: "dom.error",
+        requestId,
+        code: "node-unavailable",
+      });
+      await pending;
+    }
+
+    const overflow = promiseState(transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "bounded-overflow",
+    }));
+    await Promise.resolve();
+
+    expect(overflow).toMatchObject({
+      status: "rejected",
+      reason: "DOM request ID limit reached",
+    });
+    expect(port.sent).toHaveLength(4_096);
   });
 
   it("forwards only validated DOM, protocol, and browser-local push messages", () => {
@@ -330,6 +485,27 @@ function rootResponse(requestId: string) {
   };
 }
 
+function childrenRequest(requestId: string) {
+  return {
+    type: "dom.getChildren" as const,
+    requestId,
+    documentEpoch: 7,
+    nodeRef: "node-root",
+    branchRevision: 5,
+  };
+}
+
+function childrenResponse(requestId: string) {
+  return {
+    type: "dom.children" as const,
+    requestId,
+    documentEpoch: 7,
+    nodeRef: "node-root",
+    branchRevision: 5,
+    nodes: [],
+  };
+}
+
 function locatorRequest(requestId: string) {
   return {
     type: "dom.resolveLocator" as const,
@@ -418,6 +594,26 @@ function viState(promise: Promise<unknown>): { settled: boolean } {
   void promise.finally(() => {
     state.settled = true;
   });
+  return state;
+}
+
+function promiseState(promise: Promise<unknown>): {
+  status: "pending" | "fulfilled" | "rejected";
+  reason?: string;
+} {
+  const state: {
+    status: "pending" | "fulfilled" | "rejected";
+    reason?: string;
+  } = { status: "pending" };
+  void promise.then(
+    () => {
+      state.status = "fulfilled";
+    },
+    (error: unknown) => {
+      state.status = "rejected";
+      state.reason = error instanceof Error ? error.message : String(error);
+    },
+  );
   return state;
 }
 

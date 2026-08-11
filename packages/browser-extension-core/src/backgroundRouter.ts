@@ -20,6 +20,7 @@ import {
   type InspectSessionInvalidationReason,
 } from "./backgroundInspectSession.js";
 import {
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
@@ -1129,6 +1130,10 @@ export class BackgroundRouter {
       try {
         domRequest = parseDomRequest(message);
       } catch {
+        const requestId = readDomQueryRequestId(message);
+        if (requestId) {
+          this.postDomQueryError(record, requestId, "invalid-request");
+        }
         return;
       }
       this.queueDomRequest(record, activationToken, domRequest);
@@ -2222,9 +2227,50 @@ function maintainsInspectionSession(
 }
 
 function domQueryRequestId(request: DomRequest): string | undefined {
-  return request.type === "dom.getRoot" || request.type === "dom.getChildren"
+  return request.type === "dom.getRoot" ||
+    request.type === "dom.getChildren" ||
+    request.type === "dom.resolveLocator"
     ? request.requestId
     : undefined;
+}
+
+function readDomQueryRequestId(value: unknown): string | undefined {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const typeDescriptor = Reflect.getOwnPropertyDescriptor(
+      descriptors,
+      "type",
+    )?.value as PropertyDescriptor | undefined;
+    const requestIdDescriptor = Reflect.getOwnPropertyDescriptor(
+      descriptors,
+      "requestId",
+    )?.value as PropertyDescriptor | undefined;
+    if (
+      !typeDescriptor ||
+      !requestIdDescriptor ||
+      !Object.hasOwn(typeDescriptor, "value") ||
+      !Object.hasOwn(requestIdDescriptor, "value")
+    ) {
+      return undefined;
+    }
+    const type = typeDescriptor.value;
+    const requestId = requestIdDescriptor.value;
+    return (
+      type === "dom.getRoot" ||
+      type === "dom.getChildren" ||
+      type === "dom.resolveLocator"
+    ) &&
+        typeof requestId === "string" &&
+        requestId.length > 0 &&
+        requestId.length <= DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH
+      ? requestId
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function windowIsAvailable(

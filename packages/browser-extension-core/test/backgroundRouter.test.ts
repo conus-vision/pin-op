@@ -1427,6 +1427,95 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "dom.root")).toEqual([domRoot("root-1")]);
   });
 
+  it("routes locator resolution errors from the current content session", async () => {
+    const request = domResolveLocator("locator-1");
+    const response = {
+      type: "dom.error" as const,
+      requestId: request.requestId,
+      documentEpoch: 3,
+      code: "node-unavailable" as const,
+    };
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.resolveLocator"
+          ? response
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    panel.emitMessage(request);
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(harness.inspectCalls).toContainEqual(["tab", 17, request]);
+    expect(messagesOfType(panel, "dom.error")).toEqual([response]);
+  });
+
+  it("settles an invalid locator query without dispatching it", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const request = domResolveLocator("locator-invalid");
+    const invalidRequest = {
+      ...request,
+      locator: { ...request.locator, extra: true },
+    };
+
+    panel.emitMessage(invalidRequest);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toEqual([{
+      type: "dom.error",
+      requestId: request.requestId,
+      code: "invalid-request",
+    }]);
+    expect(harness.inspectCalls).not.toContainEqual([
+      "tab",
+      17,
+      invalidRequest,
+    ]);
+  });
+
+  it("settles a mismatched locator response with the panel request ID", async () => {
+    const request = domResolveLocator("locator-current");
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.resolveLocator"
+          ? {
+              type: "dom.error",
+              requestId: "locator-stale",
+              code: "node-unavailable",
+            }
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    panel.emitMessage(request);
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toEqual([{
+      type: "dom.error",
+      requestId: request.requestId,
+      code: "internal-error",
+    }]);
+  });
+
   it.each([
     {
       type: "dom.getRoot" as const,
@@ -1439,6 +1528,7 @@ describe("BackgroundRouter", () => {
       nodeRef: "node-root",
       branchRevision: 0,
     },
+    domResolveLocator("locator-after-unlink"),
   ])("settles queued $type after unlink before dispatch", async (request) => {
     const enable = deferred<void>();
     const harness = createHarness({
@@ -3798,6 +3888,19 @@ function domRoot(requestId: string) {
         boundaries: [],
         path: [{ tagName: "html", siblingIndex: 0 }],
       },
+    },
+  };
+}
+
+function domResolveLocator(requestId: string) {
+  return {
+    type: "dom.resolveLocator" as const,
+    requestId,
+    locator: {
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: [],
+      path: [{ tagName: "button", siblingIndex: 0, id: "save" }],
     },
   };
 }

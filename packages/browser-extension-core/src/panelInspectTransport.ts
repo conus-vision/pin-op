@@ -4,6 +4,7 @@ import {
   SourceNavigationStateMessageSchema,
 } from "@browser2ide/protocol";
 import {
+  isDomResponseForRequest,
   isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
@@ -20,6 +21,8 @@ import {
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
 import { parseLinkCode } from "./linkCode.js";
+
+const MAX_DOM_REQUEST_IDS_PER_CONNECTION = 4_096;
 
 export class PanelInspectTransport {
   private readonly pendingInspect = new Map<
@@ -95,16 +98,24 @@ export class PanelInspectTransport {
     if (!request || !isDomQuery(request)) {
       return Promise.reject(new Error("Invalid DOM request"));
     }
-    if (this.pendingDom.has(request.requestId)) {
-      return Promise.reject(new Error("Duplicate DOM request"));
-    }
-
     let connection: PortConnection;
     try {
       connection = this.connection ?? this.openConnection();
     } catch {
       return Promise.reject(new Error("Inspect connection is closed"));
     }
+    if (
+      this.pendingDom.has(request.requestId) ||
+      connection.domRequestIds.has(request.requestId)
+    ) {
+      return Promise.reject(new Error("Duplicate DOM request"));
+    }
+    if (
+      connection.domRequestIds.size >= MAX_DOM_REQUEST_IDS_PER_CONNECTION
+    ) {
+      return Promise.reject(new Error("DOM request ID limit reached"));
+    }
+    connection.domRequestIds.add(request.requestId);
 
     return new Promise((resolve, reject) => {
       this.pendingDom.set(request.requestId, { request, resolve, reject });
@@ -188,6 +199,7 @@ export class PanelInspectTransport {
     const port = this.createPort();
     const connection: PortConnection = {
       port,
+      domRequestIds: new Set(),
       onMessage: (message) => this.handleMessage(connection, message),
       onDisconnect: () => this.handleDisconnect(connection),
     };
@@ -228,7 +240,7 @@ export class PanelInspectTransport {
       if (
         pending &&
         requestId &&
-        isExpectedDomResponse(pending.request, domResponse)
+        isDomResponseForRequest(pending.request, domResponse)
       ) {
         this.pendingDom.delete(requestId);
         pending.resolve(domResponse);
@@ -283,6 +295,7 @@ export class PanelInspectTransport {
 
 interface PortConnection {
   readonly port: PanelInspectPort;
+  readonly domRequestIds: Set<string>;
   readonly onMessage: (message: unknown) => void;
   readonly onDisconnect: () => void;
 }
@@ -312,26 +325,6 @@ function isDomQuery(
 }
 
 type DomQuery = Extract<DomRequest, { readonly requestId: string }>;
-
-function isExpectedDomResponse(
-  request: DomQuery,
-  response: DomResponse,
-): boolean {
-  if (response.requestId !== request.requestId) {
-    return false;
-  }
-  if (response.type === "dom.error") {
-    return true;
-  }
-  switch (request.type) {
-    case "dom.getRoot":
-      return response.type === "dom.root";
-    case "dom.getChildren":
-      return response.type === "dom.children";
-    case "dom.resolveLocator":
-      return response.type === "dom.locator";
-  }
-}
 
 function validatedPushMessage(message: unknown): unknown | undefined {
   try {
