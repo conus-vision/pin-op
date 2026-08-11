@@ -4478,6 +4478,217 @@ describe("DomTreeProvider", () => {
     expect(resolveLocator(harness.provider, locator)).toBeUndefined();
   });
 
+  it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const target = createElement("button", childDocument);
+    childDocument.documentElement.append(target);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let selectedRef: string | undefined;
+    let provider: DomTreeProvider | undefined;
+    let armed = false;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: () => {
+        callbacks.push("invalidated");
+        if (callbacks.length === 1) {
+          provider?.resetDocument(createDocument() as unknown as Document, 4);
+        }
+      },
+      onSelectedNodeRemoved: () => callbacks.push("selected-removed"),
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "fanout-frame");
+    const frameDocument = onlyChild(harness.provider, frameView, root.documentEpoch, "fanout-document");
+    const childRoot = onlyChild(harness.provider, frameDocument, root.documentEpoch, "fanout-html");
+    const targetView = onlyChild(harness.provider, childRoot, root.documentEpoch, "fanout-target");
+    selectedRef = targetView.nodeRef;
+    const state = harness.provider as unknown as {
+      beginProviderAuthorityOperation(): { publish(validate?: () => boolean): boolean } | undefined;
+    };
+    const originalBeginOperation = state.beginProviderAuthorityOperation;
+    state.beginProviderAuthorityOperation = () => {
+      const operation = originalBeginOperation.call(state);
+      if (!operation) return undefined;
+      return Object.freeze({
+        ...operation,
+        publish: (validate?: () => boolean) => {
+          if (armed) {
+            armed = false;
+            frame.setFrameDocument(createDocument());
+            frame.dispatchLoad();
+          }
+          return operation.publish(validate);
+        },
+      });
+    };
+    callbacks.length = 0;
+    armed = true;
+
+    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+    expect(callbacks).toEqual(["invalidated"]);
+  });
+
+  it("replays frame callback fan-out once in deterministic order for read-only callbacks", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const target = createElement("button", childDocument);
+    childDocument.documentElement.append(target);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let selectedRef: string | undefined;
+    let armed = false;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: () => callbacks.push("invalidated"),
+      onSelectedNodeRemoved: () => callbacks.push("selected-removed"),
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "fanout-read-frame");
+    const frameDocument = onlyChild(harness.provider, frameView, root.documentEpoch, "fanout-read-document");
+    const childRoot = onlyChild(harness.provider, frameDocument, root.documentEpoch, "fanout-read-html");
+    const targetView = onlyChild(harness.provider, childRoot, root.documentEpoch, "fanout-read-target");
+    selectedRef = targetView.nodeRef;
+    const state = harness.provider as unknown as {
+      beginProviderAuthorityOperation(): { publish(validate?: () => boolean): boolean } | undefined;
+    };
+    const originalBeginOperation = state.beginProviderAuthorityOperation;
+    state.beginProviderAuthorityOperation = () => {
+      const operation = originalBeginOperation.call(state);
+      if (!operation) return undefined;
+      return Object.freeze({
+        ...operation,
+        publish: (validate?: () => boolean) => {
+          if (armed) {
+            armed = false;
+            frame.setFrameDocument(createDocument());
+            frame.dispatchLoad();
+          }
+          return operation.publish(validate);
+        },
+      });
+    };
+    callbacks.length = 0;
+    armed = true;
+
+    expect(harness.provider.getRoot().node.label).toBe("html");
+    expect(callbacks).toEqual([
+      "invalidated",
+      "invalidated",
+      "selected-removed",
+      "frame",
+    ]);
+  });
+
+  it.each([
+    ["detached", (document: FakeDocument, parent: FakeElement) => {
+      (parent.parentNode as FakeElement).remove(parent);
+    }],
+    ["moved", (document: FakeDocument, parent: FakeElement) => {
+      const body = parent.parentNode as FakeElement;
+      body.remove(parent);
+      document.documentElement.append(parent);
+    }],
+    ["replaced", (document: FakeDocument, parent: FakeElement) => {
+      const body = parent.parentNode as FakeElement;
+      body.remove(parent);
+      body.append(createElement("main", document));
+    }],
+    ["given a child", (_document: FakeDocument, parent: FakeElement) => {
+      parent.append(createElement("button", parent.ownerDocument));
+    }],
+  ] as const)("does not return an empty page when its parent is %s by a callback", (_name, mutate) => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const parent = createElement("main", document);
+    body.append(parent);
+    document.documentElement.append(body);
+    let callbackCount = 0;
+    const harness = createProviderHarness(document, {
+      onInvalidated: () => {
+        callbackCount += 1;
+        mutate(document, parent);
+      },
+    });
+    const root = harness.provider.getRoot();
+    const bodyView = onlyChild(harness.provider, root.node, root.documentEpoch, "empty-page-body");
+    const parentView = onlyChild(harness.provider, bodyView, root.documentEpoch, "empty-page-parent");
+    const state = harness.provider as unknown as {
+      logicalChildPage(node: Node, ...args: readonly unknown[]): unknown;
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+    };
+    const originalLogicalChildPage = state.logicalChildPage;
+    let injected = false;
+    state.logicalChildPage = (node, ...args) => {
+      const page = originalLogicalChildPage.call(state, node, ...args);
+      if (!injected && node === parent) {
+        injected = true;
+        state.emitInvalidated({
+          nodeRef: parentView.nodeRef,
+          branchRevision: parentView.branchRevision,
+        });
+      }
+      return page;
+    };
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "empty-page-live-parent",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(callbackCount).toBe(1);
+  });
+
+  it("returns an empty page after a read-only callback", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const parent = createElement("main", document);
+    body.append(parent);
+    document.documentElement.append(body);
+    let callbackCount = 0;
+    const harness = createProviderHarness(document, {
+      onInvalidated: () => { callbackCount += 1; },
+    });
+    const root = harness.provider.getRoot();
+    const bodyView = onlyChild(harness.provider, root.node, root.documentEpoch, "empty-read-body");
+    const parentView = onlyChild(harness.provider, bodyView, root.documentEpoch, "empty-read-parent");
+    const state = harness.provider as unknown as {
+      logicalChildPage(node: Node, ...args: readonly unknown[]): unknown;
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+    };
+    const originalLogicalChildPage = state.logicalChildPage;
+    let injected = false;
+    state.logicalChildPage = (node, ...args) => {
+      const page = originalLogicalChildPage.call(state, node, ...args);
+      if (!injected && node === parent) {
+        injected = true;
+        state.emitInvalidated({
+          nodeRef: parentView.nodeRef,
+          branchRevision: parentView.branchRevision,
+        });
+      }
+      return page;
+    };
+
+    const response = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "empty-page-read-only",
+      documentEpoch: root.documentEpoch,
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision,
+    });
+    expect(response.nodes).toEqual([]);
+    expect(callbackCount).toBe(1);
+  });
+
   it("fails capture when a registered frame host is moved or has the wrong parent owner", () => {
     const framed = createFramedButtonTree();
     const service = (framed.provider as unknown as {

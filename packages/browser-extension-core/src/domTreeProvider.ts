@@ -312,6 +312,7 @@ export class DomTreeProvider {
   private replayingFrameEffect: FrameLifecycleEvent | undefined;
   private nextPublicationToken = 1;
   private activePublicationToken: number | undefined;
+  private activePublicationGuard: (() => boolean) | undefined;
   private nextCursor = 1;
   private frameTracking = false;
   private disposed = false;
@@ -625,6 +626,9 @@ export class DomTreeProvider {
       response.nodes,
       response.documentEpoch,
       response.branchRevision,
+      request.cursor,
+      requestedCursor,
+      nextCursor,
     );
     authorityCommitted = authorityOperation.publish(validate) &&
       authorityOperation.finalize(validate);
@@ -1596,7 +1600,7 @@ export class DomTreeProvider {
     this.invalidateBranches([nodeRef]);
   }
 
-  private invalidateBranches(nodeRefs: Iterable<string>): void {
+  private invalidateBranches(nodeRefs: Iterable<string>): boolean {
     const branches: Array<{
       readonly nodeRef: string;
       readonly branch: ExpandedBranch;
@@ -1635,11 +1639,14 @@ export class DomTreeProvider {
       }
     }
     for (const { nodeRef, branch } of branches) {
-      this.emitInvalidated(Object.freeze({
+      if (!this.emitInvalidated(Object.freeze({
         nodeRef,
         branchRevision: branch.revision,
-      }));
+      }))) {
+        return false;
+      }
     }
+    return true;
   }
 
   private trackExpandedShadowHost(
@@ -2094,13 +2101,23 @@ export class DomTreeProvider {
         }
         this.outwardEffectBuffer = undefined;
         const previousPublicationToken = this.activePublicationToken;
+        const previousPublicationGuard = this.activePublicationGuard;
         this.activePublicationToken = publicationToken;
+        this.activePublicationGuard = () => (
+          this.activePublicationToken === publicationToken &&
+          this.isProviderAuthorityCurrent(snapshot) &&
+          validate()
+        );
         try {
           for (let index = 0; index < buffer.length; index += 1) {
             const effect = buffer[index]!;
             if (effect.kind === "frame") this.replayingFrameEffect = effect.event;
             try {
-              this.emitOutwardEffect(effect);
+              if (!this.emitOutwardEffect(effect)) {
+                publicationFailed = true;
+                buffer.length = 0;
+                return false;
+              }
             } finally {
               this.replayingFrameEffect = undefined;
             }
@@ -2120,6 +2137,7 @@ export class DomTreeProvider {
           return false;
         } finally {
           this.activePublicationToken = previousPublicationToken;
+          this.activePublicationGuard = previousPublicationGuard;
         }
         return true;
       },
@@ -2501,14 +2519,42 @@ export class DomTreeProvider {
     views: readonly DomNodeView[],
     documentEpoch: number,
     branchRevision: number,
+    cursor: string | undefined,
+    expectedCursor: CursorRecord | undefined,
+    nextCursor: string | undefined,
   ): boolean {
     try {
+      const parentRecord = this.records.get(parentRef);
+      const resolvedParent = parentRecord
+        ? this.nodeRegistry.resolve(parentRef, parentRecord.scope)
+        : undefined;
       if (
         !this.validateLiveViews(views, documentEpoch) ||
-        !this.records.get(parentRef) ||
-        !sameNodeScope(this.records.get(parentRef)!.scope, scope) ||
-        this.expandedBranches.get(parentRef)?.revision !== branchRevision
+        !parentRecord ||
+        resolvedParent !== parent ||
+        !sameNodeScope(parentRecord.scope, scope) ||
+        parentRecord.scope.documentEpoch !== documentEpoch ||
+        this.expandedBranches.get(parentRef)?.revision !== branchRevision ||
+        (cursor !== undefined && (
+          !expectedCursor ||
+          this.cursors.get(cursor) !== expectedCursor ||
+          !expectedCursor.active ||
+          expectedCursor.nodeRef !== parentRef ||
+          expectedCursor.documentEpoch !== documentEpoch ||
+          expectedCursor.branchRevision !== branchRevision ||
+          expectedCursor.physicalOffset !== physicalOffset
+        )) ||
+        (nextCursor !== undefined && (
+          this.cursors.get(nextCursor)?.nodeRef !== parentRef ||
+          this.cursors.get(nextCursor)?.documentEpoch !== documentEpoch ||
+          this.cursors.get(nextCursor)?.branchRevision !== branchRevision ||
+          !this.cursors.get(nextCursor)?.active
+        ))
       ) {
+        return false;
+      }
+      const liveParentPath = this.logicalPathForResolvedLocator(parentRecord.kind, parent);
+      if (!liveParentPath || !this.validateMaterializedPath(liveParentPath, parentRef)) {
         return false;
       }
       const current = this.logicalChildPage(parent, parentRef, scope, physicalOffset);
@@ -2647,60 +2693,63 @@ export class DomTreeProvider {
     }
   }
 
-  private emitPendingSelectedRemoval(): void {
+  private emitPendingSelectedRemoval(): boolean {
     const event = this.pendingSelectedRemoval;
     this.pendingSelectedRemoval = undefined;
     if (!event) {
-      return;
+      return true;
     }
-    this.emitSelectedNodeRemoved(event);
+    return this.emitSelectedNodeRemoved(event);
   }
 
-  private emitMutationSettled(): void {
+  private emitMutationSettled(): boolean {
     if (this.outwardEffectBuffer) {
       this.outwardEffectBuffer.push({ kind: "mutation-settled" });
-      return;
+      return true;
     }
-    try {
-      this.onMutationSettled?.();
-    } catch {
-      // Consumer reconciliation cannot disrupt DOM ownership bookkeeping.
-    }
+    return this.onMutationSettled
+      ? this.invokeOutwardCallback(this.onMutationSettled)
+      : true;
   }
 
-  private emitInvalidated(branch: DomInvalidationBranch): void {
+  private emitInvalidated(branch: DomInvalidationBranch): boolean {
     if (this.outwardEffectBuffer) {
       this.outwardEffectBuffer.push({ kind: "invalidated", branch });
-      return;
+      return true;
     }
-    try {
-      this.onInvalidated?.(branch);
-    } catch {
-      // Consumer callbacks cannot disrupt DOM ownership bookkeeping.
-    }
+    return this.onInvalidated
+      ? this.invokeOutwardCallback(() => this.onInvalidated?.(branch))
+      : true;
   }
 
-  private emitSelectedNodeRemoved(event: DomTreeSelectedNodeRemoval): void {
+  private emitSelectedNodeRemoved(event: DomTreeSelectedNodeRemoval): boolean {
     if (this.outwardEffectBuffer) {
       this.outwardEffectBuffer.push({ kind: "selected-removed", event });
-      return;
+      return true;
     }
+    return this.onSelectedNodeRemoved
+      ? this.invokeOutwardCallback(() => this.onSelectedNodeRemoved?.(event))
+      : true;
+  }
+
+  private invokeOutwardCallback(callback: (() => void) | undefined): boolean {
     try {
-      this.onSelectedNodeRemoved?.(event);
+      callback?.();
     } catch {
       // Consumer callbacks cannot disrupt DOM ownership bookkeeping.
     }
+    return this.activePublicationGuard?.() ?? true;
   }
 
-  private emitOutwardEffect(effect: ProviderOutwardEffect): void {
+  private emitOutwardEffect(effect: ProviderOutwardEffect): boolean {
     if (effect.kind === "frame") {
-      this.handleFrameLifecycle(effect.event);
+      return this.handleFrameLifecycle(effect.event);
     } else if (effect.kind === "invalidated") {
-      this.emitInvalidated(effect.branch);
+      return this.emitInvalidated(effect.branch);
     } else if (effect.kind === "selected-removed") {
-      this.emitSelectedNodeRemoved(effect.event);
+      return this.emitSelectedNodeRemoved(effect.event);
     } else {
-      this.emitMutationSettled();
+      return this.emitMutationSettled();
     }
   }
 
@@ -2996,16 +3045,16 @@ export class DomTreeProvider {
     }
   }
 
-  private handleFrameLifecycle(event: FrameLifecycleEvent): void {
+  private handleFrameLifecycle(event: FrameLifecycleEvent): boolean {
     if (this.outwardEffectBuffer) {
       this.outwardEffectBuffer.push({ kind: "frame", event });
-      return;
+      return true;
     }
     if (this.replayingFrameEffect !== event) {
       this.authorityGeneration += 1;
     }
     if (this.disposed || event.type === "reset") {
-      return;
+      return true;
     }
     const frameNodeRefs = [...this.frameDescriptions.entries()]
       .filter(([, description]) => description.frameRef === event.frameRef)
@@ -3065,10 +3114,10 @@ export class DomTreeProvider {
           affected.add(parentRef);
         }
       }
-      this.invalidateBranches(affected);
+      if (!this.invalidateBranches(affected)) return false;
     }
     if (this.mutationProcessingDepth === 0) {
-      this.emitPendingSelectedRemoval();
+      if (!this.emitPendingSelectedRemoval()) return false;
     }
     if (
       this.frameTracking &&
@@ -3079,11 +3128,9 @@ export class DomTreeProvider {
         this.queueFrameDiscovery(context.document);
       }
     }
-    try {
-      this.onFrameLifecycle?.(event);
-    } catch {
-      // Consumer callbacks cannot disrupt frame authority bookkeeping.
-    }
+    return this.onFrameLifecycle
+      ? this.invokeOutwardCallback(() => this.onFrameLifecycle?.(event))
+      : true;
   }
 
   private cancelScheduledWork(): void {
