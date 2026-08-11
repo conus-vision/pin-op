@@ -3789,8 +3789,8 @@ describe("DomTreeProvider", () => {
     let parent = document.documentElement;
     let target!: FakeElement;
     const collections: Array<{ readonly parent: FakeElement; readonly children: FakeNode[] }> = [];
-    for (let depth = 0; depth < 63; depth += 1) {
-      const next = createElement(depth === 62 ? "h2" : "section", document);
+    for (let depth = 0; depth < 53; depth += 1) {
+      const next = createElement(depth === 52 ? "h2" : "section", document);
       const children: FakeNode[] = [];
       for (let index = 0; index < 255; index += 1) {
         const sibling = createElement("span", document);
@@ -3826,6 +3826,44 @@ describe("DomTreeProvider", () => {
 
     expect(service.resolve(locator)).toBeUndefined();
     expect(indexedReads).toBeLessThanOrEqual(65_536);
+  });
+
+  it("charges previous-sibling walks to the shared locator visit budget", () => {
+    const document = createDocument();
+    let parent = document.documentElement;
+    let target!: FakeElement;
+    let siblingReads = 0;
+    for (let depth = 0; depth < 63; depth += 1) {
+      const next = createElement(depth === 62 ? "h2" : "section", document);
+      const children: FakeElement[] = [];
+      for (let index = 0; index < 255; index += 1) {
+        const sibling = createElement("span", document);
+        parent.append(sibling);
+        children.push(sibling);
+      }
+      parent.append(next);
+      children.push(next);
+      for (const child of children) {
+        const previous = child.previousElementSibling;
+        Object.defineProperty(child, "previousElementSibling", {
+          configurable: true,
+          get: () => {
+            siblingReads += 1;
+            return previous;
+          },
+        });
+      }
+      parent = next;
+      target = next;
+    }
+    const provider = createProvider(document);
+    const service = (provider as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+
+    expect(() => service.capture(target as unknown as Node, "element"))
+      .toThrow("Invalid stable DOM locator");
+    expect(siblingReads).toBeLessThanOrEqual(65_536);
   });
 
   it("resolves a captured shadow-root target with a fresh full materialized path", () => {
@@ -4526,6 +4564,46 @@ describe("DomTreeProvider", () => {
     });
 
     expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+  });
+
+  it("rolls back published locator authority without reusing tentative frame identity", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    const observedFrameRefs: string[] = [];
+    let invalidate = true;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "registered") return;
+        observedFrameRefs.push(event.frameRef);
+        if (invalidate) target.className = "changed";
+      },
+    });
+    const state = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly frameAuthority: { accessibleContexts(): readonly unknown[] };
+    };
+    const recordsBefore = state.records.size;
+    const contextsBefore = state.frameAuthority.accessibleContexts().length;
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(state.records.size).toBe(recordsBefore);
+    expect(state.frameAuthority.accessibleContexts()).toHaveLength(contextsBefore);
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+
+    invalidate = false;
+    target.className = "action";
+    expect(resolveLocator(harness.provider, locator)?.node.label).toContain("button#frame_target.action");
+    expect(observedFrameRefs).toHaveLength(2);
+    expect(observedFrameRefs[1]).not.toBe(observedFrameRefs[0]);
   });
 
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
@@ -5919,6 +5997,52 @@ describe("DomTreeProvider", () => {
 
     expect(state.invokeOutwardCallback(() => { callbacks += 1; })).toBe(false);
     expect(callbacks).toBe(0);
+  });
+
+  it("does not read selected state after publication authority is already stale", () => {
+    let reads = 0;
+    const harness = createProviderHarness(createDocument(), {
+      getSelectedNodeRef: () => {
+        reads += 1;
+        return "selected-ref";
+      },
+    });
+    const state = harness.provider as unknown as {
+      activePublicationGuard: (() => boolean) | undefined;
+      readSelectedNodeRef(): { readonly valid: boolean; readonly nodeRef?: string };
+    };
+    state.activePublicationGuard = () => false;
+
+    expect(state.readSelectedNodeRef()).toEqual({ valid: false });
+    expect(reads).toBe(0);
+  });
+
+  it("never reuses a tentative cursor after provider authority restoration", () => {
+    const harness = createProviderHarness(createDocument());
+    const root = harness.provider.getRoot();
+    const state = harness.provider as unknown as {
+      snapshotProviderAuthority(): unknown;
+      restoreProviderAuthority(snapshot: unknown): boolean;
+      createCursor(record: {
+        readonly nodeRef: string;
+        readonly documentEpoch: number;
+        readonly branchRevision: number;
+        readonly offset: number;
+        readonly physicalOffset: number;
+      }): string;
+    };
+    const snapshot = state.snapshotProviderAuthority();
+    const cursorRecord = {
+      nodeRef: root.node.nodeRef,
+      documentEpoch: root.documentEpoch,
+      branchRevision: root.node.branchRevision,
+      offset: 1,
+      physicalOffset: 1,
+    };
+    const tentative = state.createCursor(cursorRecord);
+
+    expect(state.restoreProviderAuthority(snapshot)).toBe(true);
+    expect(state.createCursor(cursorRecord)).not.toBe(tentative);
   });
 });
 

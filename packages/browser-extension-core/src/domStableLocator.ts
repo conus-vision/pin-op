@@ -690,23 +690,22 @@ function elementSiblingIndex(
 ): number | undefined {
   const children = snapshotChildNodes(parent, budget);
   if (!children || readParentNode(target) !== parent) return undefined;
-  const previous = readPreviousElementSibling(target);
+  if (!budget.visit()) return undefined;
+  let previous = readPreviousElementSibling(target);
   if (previous === undefined) return undefined;
   let siblingIndex = 0;
-  if (previous !== null) {
-    let current: Element | null = target;
-    const seen = new Set<Element>();
-    while (current) {
-      if (seen.size >= MAX_CHILD_PHYSICAL_SCAN || seen.has(current)) {
-        return undefined;
-      }
-      seen.add(current);
-      const next = readPreviousElementSibling(current);
-      if (next === undefined) return undefined;
-      if (next !== null && readParentNode(next) !== parent) return undefined;
-      current = next;
-      if (next !== null) siblingIndex += 1;
-    }
+  const seen = new Set<Element>([target]);
+  while (previous !== null) {
+    if (
+      !budget.visit() ||
+      seen.size >= MAX_CHILD_PHYSICAL_SCAN ||
+      seen.has(previous)
+    ) return undefined;
+    seen.add(previous);
+    if (readParentNode(previous) !== parent) return undefined;
+    siblingIndex += 1;
+    previous = readPreviousElementSibling(previous);
+    if (previous === undefined) return undefined;
   }
   return confirmElementSiblingIndex(parent, target, children, siblingIndex, budget);
 }

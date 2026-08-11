@@ -2170,19 +2170,23 @@ export class DomTreeProvider {
         if (closed || (ownsBuffer && !published && this.outwardEffectBuffer !== buffer)) return false;
         let restored = true;
         let retainedEvents: readonly FrameLifecycleEvent[] = [];
+        const suppressPublishedCleanupEffects = ownsBuffer && published;
+        const previousBuffer = this.outwardEffectBuffer;
+        if (suppressPublishedCleanupEffects) this.outwardEffectBuffer = buffer;
         try {
           cleanup?.();
         } catch {
           restored = false;
-        }
-        if (ownsBuffer && published) {
-          closed = true;
-          return restored;
+        } finally {
+          if (suppressPublishedCleanupEffects) {
+            if (this.outwardEffectBuffer === buffer) this.outwardEffectBuffer = previousBuffer;
+            buffer.length = 0;
+          }
         }
         try {
           if (!this.isProviderAuthorityCurrent(snapshot)) {
             restored = false;
-          } else if (ownsBuffer) {
+          } else if (ownsBuffer && !published) {
             const rolledBackEvents = this.rollbackBufferedFrameRegistrations(buffer, snapshot);
             if (!rolledBackEvents) {
               restored = false;
@@ -2199,7 +2203,7 @@ export class DomTreeProvider {
           closed = true;
           if (ownsBuffer) this.outwardEffectBuffer = undefined;
         }
-        if (ownsBuffer && restored && this.isProviderAuthorityCurrent(snapshot)) {
+        if (ownsBuffer && !published && restored && this.isProviderAuthorityCurrent(snapshot)) {
           for (const event of retainedEvents) this.handleFrameLifecycle(event);
         }
         return restored;
@@ -2401,7 +2405,9 @@ export class DomTreeProvider {
     restoreMap(this.ownedFramesByRef, snapshot.ownedFramesByRef);
     restoreSet(this.inactiveFrameRefs, snapshot.inactiveFrameRefs);
     restoreMap(this.cursors, snapshot.cursors);
-    this.nextCursor = snapshot.nextCursor;
+    // Cursors are opaque capabilities: rollback may remove their records, but
+    // must never make a previously issued token available again.
+    this.nextCursor = Math.max(this.nextCursor, snapshot.nextCursor);
     this.frameTracking = snapshot.frameTracking;
     this.shadowScanOffset = snapshot.shadowScanOffset;
     this.pendingMutations.splice(0, this.pendingMutations.length, ...snapshot.pendingMutations);
@@ -2738,6 +2744,9 @@ export class DomTreeProvider {
     if (!this.getSelectedNodeRef) {
       return Object.freeze({ valid: true, nodeRef: undefined });
     }
+    if (!this.publicationCanContinue()) {
+      return Object.freeze({ valid: false, nodeRef: undefined });
+    }
     let nodeRef: string | undefined;
     this.externalValueReadDepth += 1;
     try {
@@ -2748,10 +2757,10 @@ export class DomTreeProvider {
     } finally {
       this.externalValueReadDepth -= 1;
     }
-    return Object.freeze({
-      valid: this.publicationCanContinue(),
-      nodeRef,
-    });
+    if (!this.publicationCanContinue()) {
+      return Object.freeze({ valid: false, nodeRef: undefined });
+    }
+    return Object.freeze({ valid: true, nodeRef });
   }
 
   private releaseInvalidatedRefs(
