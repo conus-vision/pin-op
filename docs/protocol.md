@@ -353,12 +353,20 @@ The router enforces direction and authority:
 
 ## Read-Only Security Model
 
-Browser2IDE is read-only. The browser extension can execute only its packaged
-extension runtime and permitted browser APIs. It can read bounded accessible
-DOM structure, approved attributes, CSSOM evidence, and box geometry, and it can
-draw its own pointer-inert overlay. It cannot write or modify the page DOM or
-CSS, fill or submit forms, invoke page handlers as a product action, or execute
-arbitrary page scripts received from VS Code or the WebSocket.
+Browser2IDE is read-only with respect to page-owned content, application state,
+and source code. The browser extension can execute only its packaged extension
+runtime and permitted browser APIs. It can read bounded accessible DOM
+structure, approved attributes, CSSOM evidence, and box geometry. It does not
+modify page-owned content or application state. It cannot fill or submit forms
+or invoke page handlers, and it does not execute page commands or arbitrary
+page scripts received from VS Code or the WebSocket.
+
+For visual highlighting, the extension temporarily inserts an isolated
+Browser2IDE inspection overlay DOM under a dedicated pointer-inert host with a
+closed shadow root. The overlay and every node it owns are excluded from picker
+targeting, DOM tree inspection, and stable locator capture. The rendered overlay
+is removed when highlighting is disabled or cleared. Its host and any remaining
+overlay DOM are removed when the inspection session is disposed.
 
 The IDE extension can read the active workspace document and relevant local
 source maps through its source plugins. It can add editor decorations and, only
@@ -366,10 +374,12 @@ after an explicit Previous/Next intent, move the primary cursor and reveal a
 matched range. It cannot edit or write source files, run a shell, execute an
 arbitrary workspace command, or send a command to change the inspected page.
 The browser cannot ask the IDE to execute commands or edit files, and the IDE
-cannot execute page scripts or modify the DOM.
+cannot execute page scripts or request changes to page-owned content or
+application state.
 
 Only bounded inspect facts and protocol state cross the loopback WebSocket.
 Browser-local locators and node refs never cross it. Source contents, source
 ranges, local file paths, and source-map contents never cross the WebSocket in
-the reverse direction. Protocol 5 exposes no DOM writes, source writes, shell
-execution, workspace command execution, or reverse synchronization.
+the reverse direction. Protocol 5 exposes no page-owned DOM writes, source
+writes, shell execution, workspace command execution, or reverse
+synchronization.

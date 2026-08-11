@@ -17,9 +17,9 @@ the VS Code status bar.
 Use candidates from one trusted build or draft release and compare each file to
 that draft's `SHA256SUMS` before installing:
 
-- `artifacts/browser2ide-vscode-0.3.0.vsix`;
-- `artifacts/browser2ide-chrome-0.3.0.zip`;
-- `artifacts/browser2ide-firefox-0.3.0.zip` for a Firefox Temporary Add-on;
+- `browser2ide-vscode-0.3.0.vsix`;
+- `browser2ide-chrome-0.3.0.zip`;
+- `browser2ide-firefox-0.3.0.zip` for a Firefox Temporary Add-on;
 - a Mozilla-signed `browser2ide-firefox-0.3.0.xpi`, when available, for a
   persistent Firefox Stable installation.
 
@@ -29,20 +29,21 @@ must show a five-digit port and two-digit PIN, such as `48735 07`; clicking it
 copies the seven digits without the space.
 
 For Chrome/Chromium 116 or newer, extract
-`artifacts/browser2ide-chrome-0.3.0.zip`, open `chrome://extensions`, enable
+`browser2ide-chrome-0.3.0.zip`, open `chrome://extensions`, enable
 Developer mode, choose **Load unpacked**, and select the extracted directory
 containing `manifest.json`. Confirm version `0.3.0`, no extension-card errors,
 the Browser2IDE DevTools panel, and persistence after a complete browser
 restart.
 
 Firefox Stable supports the unsigned
-`artifacts/browser2ide-firefox-0.3.0.zip` only as a temporary check. Extract it,
+`browser2ide-firefox-0.3.0.zip` only as a temporary check. Extract it,
 open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**,
 and select its `manifest.json`. Confirm the Browser2IDE panel and version
 `0.3.0`; expect the Temporary Add-on to disappear after Firefox exits. For a
 persistent check, use **Install Add-on From File...** with the exact
-Mozilla-signed `.xpi`, then restart every Firefox process and confirm it remains
-enabled. Do not treat the unsigned ZIP as signed-XPI evidence.
+Mozilla-signed `browser2ide-firefox-0.3.0.xpi`, then restart every Firefox
+process and confirm it remains enabled. Do not treat the unsigned ZIP as
+signed-XPI evidence.
 
 ### Associate Browser And VS Code Windows
 

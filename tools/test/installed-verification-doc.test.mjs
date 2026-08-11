@@ -27,6 +27,9 @@ const [, sourceNavigationAndLater] = protocolGuide.split("## Source Navigation")
 const [sourceNavigationSection] = (sourceNavigationAndLater ?? "").split(
   "## Peer State",
 );
+const [, readOnlySecuritySection] = protocolGuide.split(
+  "## Read-Only Security Model",
+);
 
 test("installed primary path is terminal-free and starts automatically", () => {
   assert.ok(verificationRecord, "0.3.0 candidate verification record is required");
@@ -70,22 +73,26 @@ test("MVP runbook leads with installed-product UX and explicit window associatio
   );
 });
 
-test("MVP runbook names supported installed Firefox and Chrome package paths", () => {
+test("MVP runbook uses flat downloaded filenames for installed packages", () => {
+  assert.doesNotMatch(installedProductRunbook, /artifacts[\\/]/i);
   assert.match(
     installedProductRunbook,
-    /artifacts\/browser2ide-vscode-0\.3\.0\.vsix/,
+    /`browser2ide-vscode-0\.3\.0\.vsix`/,
   );
   assert.match(
     installedProductRunbook,
-    /artifacts\/browser2ide-chrome-0\.3\.0\.zip/,
+    /`browser2ide-chrome-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Load unpacked/);
   assert.match(
     installedProductRunbook,
-    /artifacts\/browser2ide-firefox-0\.3\.0\.zip/,
+    /`browser2ide-firefox-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Temporary Add-on|about:debugging/i);
-  assert.match(installedProductRunbook, /signed[\s\S]*\.xpi/i);
+  assert.match(
+    installedProductRunbook,
+    /signed[\s\S]*`browser2ide-firefox-0\.3\.0\.xpi`/i,
+  );
 });
 
 test("normal Inspector workflow is explicit and scoped to one browser window", () => {
@@ -255,14 +262,38 @@ test("protocol guide bounds browser-local locator recovery and keeps it off WebS
 });
 
 test("protocol guide states the read-only browser and IDE execution boundary", () => {
-  assert.match(protocolGuide, /read-only security model/i);
-  assert.match(protocolGuide, /browser[\s\S]*read[\s\S]*(?:DOM|CSS)/i);
-  assert.match(protocolGuide, /browser[\s\S]*cannot[\s\S]*(?:write|modify)[\s\S]*DOM/i);
-  assert.match(protocolGuide, /IDE[\s\S]*read[\s\S]*workspace/i);
-  assert.match(protocolGuide, /IDE[\s\S]*move[\s\S]*cursor[\s\S]*reveal/i);
-  assert.match(protocolGuide, /cannot[\s\S]*shell[\s\S]*workspace command/i);
-  assert.match(protocolGuide, /cannot[\s\S]*execute page scripts/i);
-  assert.match(protocolGuide, /source (?:contents|ranges)[\s\S]*never cross[\s\S]*WebSocket/i);
+  assert.ok(readOnlySecuritySection, "Read-Only Security Model section is required");
+  assert.match(readOnlySecuritySection, /browser[\s\S]*read[\s\S]*(?:DOM|CSS)/i);
+  assert.match(
+    readOnlySecuritySection,
+    /does\s+not\s+modify[\s\S]*page-owned content[\s\S]*application state/i,
+  );
+  assert.match(readOnlySecuritySection, /does\s+not\s+execute page commands/i);
+  assert.match(
+    readOnlySecuritySection,
+    /temporarily inserts[\s\S]*isolated\s+Browser2IDE inspection overlay DOM/i,
+  );
+  assert.match(
+    readOnlySecuritySection,
+    /overlay[\s\S]*excluded[\s\S]*inspection[\s\S]*locator capture/i,
+  );
+  assert.match(
+    readOnlySecuritySection,
+    /overlay[\s\S]*removed[\s\S]*disabled[\s\S]*removed[\s\S]*disposed/i,
+  );
+  assert.match(readOnlySecuritySection, /IDE[\s\S]*read[\s\S]*workspace/i);
+  assert.match(readOnlySecuritySection, /IDE[\s\S]*move[\s\S]*cursor[\s\S]*reveal/i);
+  assert.match(readOnlySecuritySection, /cannot[\s\S]*edit or write source files/i);
+  assert.match(readOnlySecuritySection, /cannot[\s\S]*shell[\s\S]*workspace command/i);
+  assert.match(readOnlySecuritySection, /cannot[\s\S]*execute page scripts/i);
+  assert.match(
+    readOnlySecuritySection,
+    /source (?:contents|ranges)[\s\S]*never cross[\s\S]*WebSocket/i,
+  );
+  assert.doesNotMatch(
+    readOnlySecuritySection,
+    /cannot (?:write or modify|modify) the page DOM/i,
+  );
 });
 
 test("privacy and security materials describe the release trust boundaries", () => {
