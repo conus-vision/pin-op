@@ -4,6 +4,7 @@ import {
   SourceNavigationStateMessageSchema,
 } from "@browser2ide/protocol";
 import {
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isDomResponseForRequest,
   isSelectionRevision,
   parseDomEvent,
@@ -22,7 +23,7 @@ import {
 } from "./inspectPortProtocol.js";
 import { parseLinkCode } from "./linkCode.js";
 
-const MAX_DOM_REQUEST_IDS_PER_CONNECTION = 4_096;
+const DOM_WIRE_REQUEST_ID_PREFIX = "domq-";
 
 export class PanelInspectTransport {
   private readonly pendingInspect = new Map<
@@ -35,11 +36,13 @@ export class PanelInspectTransport {
   private readonly pendingDom = new Map<
     string,
     {
-      readonly request: DomQuery;
+      readonly callerRequest: DomQuery;
+      readonly wireRequest: DomQuery;
       resolve(value: DomResponse): void;
       reject(reason: unknown): void;
     }
   >();
+  private readonly pendingDomCallerIds = new Set<string>();
   private nextRequestId = 1;
   private connection: PortConnection | undefined;
   private disposed = false;
@@ -98,29 +101,31 @@ export class PanelInspectTransport {
     if (!request || !isDomQuery(request)) {
       return Promise.reject(new Error("Invalid DOM request"));
     }
+    if (this.pendingDomCallerIds.has(request.requestId)) {
+      return Promise.reject(new Error("Duplicate DOM request"));
+    }
     let connection: PortConnection;
     try {
       connection = this.connection ?? this.openConnection();
     } catch {
       return Promise.reject(new Error("Inspect connection is closed"));
     }
-    if (
-      this.pendingDom.has(request.requestId) ||
-      connection.domRequestIds.has(request.requestId)
-    ) {
-      return Promise.reject(new Error("Duplicate DOM request"));
+    const wireRequestId = nextDomWireRequestId(connection);
+    if (!wireRequestId) {
+      return Promise.reject(new Error("DOM request ID space exhausted"));
     }
-    if (
-      connection.domRequestIds.size >= MAX_DOM_REQUEST_IDS_PER_CONNECTION
-    ) {
-      return Promise.reject(new Error("DOM request ID limit reached"));
-    }
-    connection.domRequestIds.add(request.requestId);
+    const wireRequest = cloneDomQueryWithRequestId(request, wireRequestId);
 
     return new Promise((resolve, reject) => {
-      this.pendingDom.set(request.requestId, { request, resolve, reject });
+      this.pendingDomCallerIds.add(request.requestId);
+      this.pendingDom.set(wireRequestId, {
+        callerRequest: request,
+        wireRequest,
+        resolve,
+        reject,
+      });
       try {
-        connection.port.postMessage(request);
+        connection.port.postMessage(wireRequest);
       } catch {
         this.closeConnection(connection, true);
       }
@@ -175,6 +180,7 @@ export class PanelInspectTransport {
       pending.reject(error);
     }
     this.pendingDom.clear();
+    this.pendingDomCallerIds.clear();
   }
 
   public dispose(): void {
@@ -199,7 +205,7 @@ export class PanelInspectTransport {
     const port = this.createPort();
     const connection: PortConnection = {
       port,
-      domRequestIds: new Set(),
+      nextDomRequestSequence: 1,
       onMessage: (message) => this.handleMessage(connection, message),
       onDisconnect: () => this.handleDisconnect(connection),
     };
@@ -240,11 +246,20 @@ export class PanelInspectTransport {
       if (
         pending &&
         requestId &&
-        isDomResponseForRequest(pending.request, domResponse)
+        isDomResponseForRequest(pending.wireRequest, domResponse)
       ) {
         this.pendingDom.delete(requestId);
-        pending.resolve(domResponse);
-      } else if (domResponse.type === "dom.error") {
+        this.pendingDomCallerIds.delete(pending.callerRequest.requestId);
+        pending.resolve(normalizeDomResponseRequestId(
+          domResponse,
+          pending.callerRequest.requestId,
+        ));
+      } else if (
+        domResponse.type === "dom.error" &&
+        (pending ||
+          !requestId ||
+          !requestId.startsWith(DOM_WIRE_REQUEST_ID_PREFIX))
+      ) {
         this.forwardUnhandled(domResponse);
       }
       return;
@@ -295,7 +310,7 @@ export class PanelInspectTransport {
 
 interface PortConnection {
   readonly port: PanelInspectPort;
-  readonly domRequestIds: Set<string>;
+  nextDomRequestSequence: number | undefined;
   readonly onMessage: (message: unknown) => void;
   readonly onDisconnect: () => void;
 }
@@ -325,6 +340,46 @@ function isDomQuery(
 }
 
 type DomQuery = Extract<DomRequest, { readonly requestId: string }>;
+
+function nextDomWireRequestId(
+  connection: PortConnection,
+): string | undefined {
+  const sequence = connection.nextDomRequestSequence;
+  if (
+    sequence === undefined ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 1
+  ) {
+    return undefined;
+  }
+  const requestId = `${DOM_WIRE_REQUEST_ID_PREFIX}${sequence}`;
+  if (requestId.length > DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH) {
+    connection.nextDomRequestSequence = undefined;
+    return undefined;
+  }
+  connection.nextDomRequestSequence = sequence === Number.MAX_SAFE_INTEGER
+    ? undefined
+    : sequence + 1;
+  return requestId;
+}
+
+function cloneDomQueryWithRequestId(
+  request: DomQuery,
+  requestId: string,
+): DomQuery {
+  const cloned = parseDomRequest({ ...request, requestId });
+  if (!isDomQuery(cloned)) {
+    throw new Error("Invalid DOM request");
+  }
+  return cloned;
+}
+
+function normalizeDomResponseRequestId(
+  response: DomResponse,
+  requestId: string,
+): DomResponse {
+  return Object.freeze({ ...response, requestId });
+}
 
 function validatedPushMessage(message: unknown): unknown | undefined {
   try {

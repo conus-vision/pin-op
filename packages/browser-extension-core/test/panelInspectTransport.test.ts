@@ -5,6 +5,11 @@ import {
   type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
+import {
+  DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  parseDomRequest,
+  type DomRequest,
+} from "../src/domProtocol.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
@@ -17,11 +22,11 @@ describe("PanelInspectTransport DOM integration", () => {
       type: "dom.getRoot",
       requestId: "root-1",
     });
+    const wireRequest = sentDomQuery(port);
 
-    expect(port.sent).toEqual([
-      { type: "dom.getRoot", requestId: "root-1" },
-    ]);
-    port.emitMessage(rootResponse("root-1"));
+    expect(wireRequest).toMatchObject({ type: "dom.getRoot" });
+    expect(wireRequest.requestId).not.toBe("root-1");
+    port.emitMessage(rootResponse(wireRequest.requestId));
     await expect(pending).resolves.toEqual(rootResponse("root-1"));
 
     await expect(transport.requestDom({
@@ -38,14 +43,19 @@ describe("PanelInspectTransport DOM integration", () => {
     const request = locatorRequest("locator-1");
 
     const pending = transport.requestDom(request);
+    const wireRequest = sentDomQuery(port);
 
-    expect(port.sent).toEqual([request]);
-    port.emitMessage(rootResponse("locator-1"));
+    expect(wireRequest).toEqual({
+      ...request,
+      requestId: wireRequest.requestId,
+    });
+    expect(wireRequest.requestId).not.toBe(request.requestId);
+    port.emitMessage(rootResponse(wireRequest.requestId));
     const state = viState(pending);
     await Promise.resolve();
     expect(state.settled).toBe(false);
 
-    port.emitMessage(locatorResponse("locator-1"));
+    port.emitMessage(locatorResponse(wireRequest.requestId));
     await expect(pending).resolves.toEqual(locatorResponse("locator-1"));
   });
 
@@ -56,13 +66,14 @@ describe("PanelInspectTransport DOM integration", () => {
       type: "dom.getRoot",
       requestId: "root-family",
     });
+    const wireRequest = sentDomQuery(port);
 
-    port.emitMessage(locatorResponse("root-family"));
+    port.emitMessage(locatorResponse(wireRequest.requestId));
     const state = viState(pending);
     await Promise.resolve();
     expect(state.settled).toBe(false);
 
-    port.emitMessage(rootResponse("root-family"));
+    port.emitMessage(rootResponse(wireRequest.requestId));
     await expect(pending).resolves.toEqual(rootResponse("root-family"));
   });
 
@@ -74,9 +85,10 @@ describe("PanelInspectTransport DOM integration", () => {
       requestId: "root-epoch",
       documentEpoch: 4,
     });
+    const wireRequest = sentDomQuery(port);
 
     port.emitMessage({
-      ...rootResponse("root-epoch"),
+      ...rootResponse(wireRequest.requestId),
       documentEpoch: 3,
     });
     const state = viState(pending);
@@ -84,19 +96,23 @@ describe("PanelInspectTransport DOM integration", () => {
     expect(state.settled).toBe(false);
 
     const response = {
-      ...rootResponse("root-epoch"),
+      ...rootResponse(wireRequest.requestId),
       documentEpoch: 4,
     };
     port.emitMessage(response);
-    await expect(pending).resolves.toEqual(response);
+    await expect(pending).resolves.toEqual({
+      ...response,
+      requestId: "root-epoch",
+    });
   });
 
   it("keeps a children query pending until every identity field matches", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
     const request = childrenRequest("children-identity");
-    const response = childrenResponse("children-identity");
     const pending = transport.requestDom(request);
+    const wireRequest = sentDomQuery(port);
+    const response = childrenResponse(wireRequest.requestId);
     const state = viState(pending);
 
     port.emitMessage({ ...response, documentEpoch: 8 });
@@ -106,7 +122,7 @@ describe("PanelInspectTransport DOM integration", () => {
     expect(state.settled).toBe(false);
 
     port.emitMessage(response);
-    await expect(pending).resolves.toEqual(response);
+    await expect(pending).resolves.toEqual(childrenResponse(request.requestId));
   });
 
   it("rejects contradictory error correlation but accepts an omitted epoch", async () => {
@@ -119,6 +135,7 @@ describe("PanelInspectTransport DOM integration", () => {
     );
     const request = childrenRequest("children-error");
     const pending = transport.requestDom(request);
+    const wireRequest = sentDomQuery(port);
     const state = viState(pending);
     const wrongId = {
       type: "dom.error" as const,
@@ -127,7 +144,7 @@ describe("PanelInspectTransport DOM integration", () => {
     };
     const wrongEpoch = {
       type: "dom.error" as const,
-      requestId: request.requestId,
+      requestId: wireRequest.requestId,
       documentEpoch: 8,
       code: "stale-branch" as const,
     };
@@ -140,11 +157,14 @@ describe("PanelInspectTransport DOM integration", () => {
 
     const boundedError = {
       type: "dom.error" as const,
-      requestId: request.requestId,
+      requestId: wireRequest.requestId,
       code: "stale-branch" as const,
     };
     port.emitMessage(boundedError);
-    await expect(pending).resolves.toEqual(boundedError);
+    await expect(pending).resolves.toEqual({
+      ...boundedError,
+      requestId: request.requestId,
+    });
   });
 
   it("dispatches validated DOM commands and rejects pending queries on close", async () => {
@@ -160,113 +180,186 @@ describe("PanelInspectTransport DOM integration", () => {
       type: "dom.getRoot",
       requestId: "root-pending",
     });
+    const wireRequest = sentDomQuery(port, 1);
 
-    expect(port.sent).toEqual([
-      {
-        type: "dom.select",
-        documentEpoch: 1,
-        nodeRef: "node-1",
-      },
-      { type: "dom.getRoot", requestId: "root-pending" },
-    ]);
+    expect(port.sent[0]).toEqual({
+      type: "dom.select",
+      documentEpoch: 1,
+      nodeRef: "node-1",
+    });
+    expect(wireRequest).toMatchObject({ type: "dom.getRoot" });
+    expect(wireRequest.requestId).not.toBe("root-pending");
 
     transport.dispose();
     await expect(pending).rejects.toThrow("Inspect connection is closed");
   });
 
-  it("retires a canceled locator ID and ignores its delayed response", async () => {
+  it("reuses a canceled caller ID with a new wire ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
-    const request = locatorRequest("locator-old-session");
+    const request = locatorRequest("locator-reused");
     const pending = transport.requestDom(request);
+    const oldWireRequest = sentDomQuery(port);
 
     transport.cancelDomRequests("DOM session changed");
 
     await expect(pending).rejects.toThrow("DOM session changed");
     expect(port.disconnected).toBe(false);
-    const reused = promiseState(transport.requestDom(request));
-    const next = transport.requestDom(locatorRequest("locator-new-session"));
-    const nextState = viState(next);
+    const reissued = transport.requestDom(request);
+    const reissuedState = promiseState(reissued);
+    expect(port.sent).toHaveLength(2);
+    const newWireRequest = sentDomQuery(port, 1);
+    expect(newWireRequest.requestId).not.toBe(oldWireRequest.requestId);
 
-    port.emitMessage(locatorResponse("locator-old-session"));
+    port.emitMessage(locatorResponse(oldWireRequest.requestId));
     await Promise.resolve();
-    expect(reused).toMatchObject({
-      status: "rejected",
-      reason: "Duplicate DOM request",
-    });
-    expect(nextState.settled).toBe(false);
+    expect(reissuedState.status).toBe("pending");
 
-    port.emitMessage(locatorResponse("locator-new-session"));
-    await expect(next).resolves.toEqual(locatorResponse("locator-new-session"));
+    port.emitMessage(locatorResponse(newWireRequest.requestId));
+    await expect(reissued).resolves.toEqual(locatorResponse(request.requestId));
   });
 
-  it("retires a completed locator ID for the live port", async () => {
+  it("reuses a completed caller ID with a new wire ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
     const request = locatorRequest("locator-complete");
-    const pending = transport.requestDom(request);
-    port.emitMessage(locatorResponse(request.requestId));
-    await expect(pending).resolves.toEqual(locatorResponse(request.requestId));
+    const first = transport.requestDom(request);
+    const firstWireRequest = sentDomQuery(port);
+    port.emitMessage(locatorResponse(firstWireRequest.requestId));
+    await expect(first).resolves.toEqual(locatorResponse(request.requestId));
 
-    const reused = promiseState(transport.requestDom(request));
-    await Promise.resolve();
+    const second = transport.requestDom(request);
+    const secondState = promiseState(second);
+    expect(port.sent).toHaveLength(2);
+    const secondWireRequest = sentDomQuery(port, 1);
+    expect(secondWireRequest.requestId).not.toBe(firstWireRequest.requestId);
+    port.emitMessage(locatorResponse(secondWireRequest.requestId));
 
-    expect(reused).toMatchObject({
-      status: "rejected",
-      reason: "Duplicate DOM request",
-    });
-    expect(port.sent).toEqual([request]);
+    await expect(second).resolves.toEqual(locatorResponse(request.requestId));
+    expect(secondState.status).toBe("fulfilled");
   });
 
-  it("allows an ID again only after the old port disconnects", async () => {
+  it("rejects only a simultaneous duplicate caller ID", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const request = locatorRequest("locator-concurrent");
+    const pending = transport.requestDom(request);
+    const wireRequest = sentDomQuery(port);
+
+    await expect(transport.requestDom(request)).rejects.toThrow(
+      "Duplicate DOM request",
+    );
+    expect(port.sent).toHaveLength(1);
+
+    port.emitMessage(locatorResponse(wireRequest.requestId));
+    await expect(pending).resolves.toEqual(locatorResponse(request.requestId));
+  });
+
+  it("isolates a reused caller ID from messages on a disconnected port", async () => {
     const ports = [new FakePort(), new FakePort()];
     let portIndex = 0;
     const transport = new PanelInspectTransport(() => ports[portIndex++]!);
     const request = locatorRequest("locator-reconnected");
     const first = transport.requestDom(request);
-    ports[0]!.emitMessage(locatorResponse(request.requestId));
-    await first;
+    const firstWireRequest = sentDomQuery(ports[0]!);
+    ports[0]!.emitMessage(locatorResponse(firstWireRequest.requestId));
+    await expect(first).resolves.toEqual(locatorResponse(request.requestId));
 
     ports[0]!.disconnect();
     const second = transport.requestDom(request);
+    const secondWireRequest = sentDomQuery(ports[1]!);
     const secondState = viState(second);
-    ports[0]!.emitMessage(locatorResponse(request.requestId));
+    expect(secondWireRequest.requestId).toBe(firstWireRequest.requestId);
+
+    ports[0]!.emitMessage(locatorResponse(firstWireRequest.requestId));
     await Promise.resolve();
     expect(secondState.settled).toBe(false);
 
-    ports[1]!.emitMessage(locatorResponse(request.requestId));
+    ports[1]!.emitMessage(locatorResponse(secondWireRequest.requestId));
     await expect(second).resolves.toEqual(locatorResponse(request.requestId));
     expect(portIndex).toBe(2);
   });
 
-  it("bounds retired DOM query IDs for one live port", async () => {
+  it("continues beyond 4096 sequential queries without retaining IDs", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
-    for (let index = 0; index < 4_096; index += 1) {
+    for (let index = 0; index < 4_100; index += 1) {
       const requestId = `bounded-${index}`;
       const pending = transport.requestDom({
         type: "dom.getRoot",
         requestId,
       });
+      const state = promiseState(pending);
+      expect(port.sent).toHaveLength(index + 1);
+      const wireRequest = sentDomQuery(port, index);
       port.emitMessage({
+        type: "dom.error",
+        requestId: wireRequest.requestId,
+        code: "node-unavailable",
+      });
+      await expect(pending).resolves.toEqual({
         type: "dom.error",
         requestId,
         code: "node-unavailable",
       });
-      await pending;
+      expect(state.status).toBe("fulfilled");
     }
 
-    const overflow = promiseState(transport.requestDom({
-      type: "dom.getRoot",
-      requestId: "bounded-overflow",
-    }));
-    await Promise.resolve();
-
-    expect(overflow).toMatchObject({
-      status: "rejected",
-      reason: "DOM request ID limit reached",
+    expect(pendingDomCounts(transport)).toEqual({
+      callerIds: 0,
+      wireRequests: 0,
     });
-    expect(port.sent).toHaveLength(4_096);
+  });
+
+  it("keeps wire IDs bounded and normalizes frozen responses to the caller ID", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const callerRequestId = "x".repeat(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH);
+    const pending = transport.requestDom(locatorRequest(callerRequestId));
+    const wireRequest = sentDomQuery(port);
+
+    expect(wireRequest.requestId).toMatch(/^domq-[1-9]\d*$/);
+    expect(wireRequest.requestId.length).toBeLessThanOrEqual(
+      DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+    );
+    expect(wireRequest.requestId).not.toBe(callerRequestId);
+
+    port.emitMessage(locatorResponse(wireRequest.requestId));
+    const response = await pending;
+
+    expect(response.requestId).toBe(callerRequestId);
+    expect(Object.isFrozen(response)).toBe(true);
+    if (response.type !== "dom.locator") {
+      throw new Error("Expected a locator response");
+    }
+    expect(Object.isFrozen(response.node)).toBe(true);
+    expect(Object.isFrozen(response.ancestorPath)).toBe(true);
+    expect(Object.isFrozen(response.node.locator)).toBe(true);
+  });
+
+  it("fails closed only after exhausting the safe-integer wire sequence", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    transport.connect();
+    setNextDomWireSequence(transport, Number.MAX_SAFE_INTEGER);
+
+    const last = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "last-safe-wire",
+    });
+    const lastWireRequest = sentDomQuery(port);
+    expect(lastWireRequest.requestId).toBe(
+      `domq-${Number.MAX_SAFE_INTEGER}`,
+    );
+    port.emitMessage(rootResponse(lastWireRequest.requestId));
+    await expect(last).resolves.toEqual(rootResponse("last-safe-wire"));
+
+    await expect(transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "exhausted-wire",
+    })).rejects.toThrow("DOM request ID space exhausted");
+    expect(port.sent).toHaveLength(1);
+    expect(port.disconnected).toBe(false);
   });
 
   it("forwards only validated DOM, protocol, and browser-local push messages", () => {
@@ -587,6 +680,46 @@ function pathSegment(overrides: Partial<{
     siblingIndex: 0,
     ...overrides,
   };
+}
+
+type TestDomQuery = Extract<DomRequest, { readonly requestId: string }>;
+
+function sentDomQuery(
+  port: FakePort,
+  index = port.sent.length - 1,
+): TestDomQuery {
+  const request = parseDomRequest(port.sent[index]);
+  if (!("requestId" in request)) {
+    throw new Error("Expected a DOM query");
+  }
+  return request;
+}
+
+function pendingDomCounts(transport: PanelInspectTransport): {
+  readonly callerIds: number;
+  readonly wireRequests: number;
+} {
+  const state = transport as unknown as {
+    readonly pendingDom: ReadonlyMap<string, unknown>;
+    readonly pendingDomCallerIds: ReadonlySet<string>;
+  };
+  return {
+    callerIds: state.pendingDomCallerIds.size,
+    wireRequests: state.pendingDom.size,
+  };
+}
+
+function setNextDomWireSequence(
+  transport: PanelInspectTransport,
+  sequence: number,
+): void {
+  const state = transport as unknown as {
+    readonly connection?: { nextDomRequestSequence: number | undefined };
+  };
+  if (!state.connection) {
+    throw new Error("Expected an inspect connection");
+  }
+  state.connection.nextDomRequestSequence = sequence;
 }
 
 function viState(promise: Promise<unknown>): { settled: boolean } {
