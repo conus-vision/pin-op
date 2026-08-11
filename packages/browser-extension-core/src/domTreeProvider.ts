@@ -43,6 +43,8 @@ const ELEMENT_LABEL_MAX_TOKEN_LENGTH = 64;
 const FRAME_MUTATION_SCAN_LIMIT = 1_024;
 const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
 const MAX_SHADOW_CONTAINMENT_DEPTH = 512;
+const ROLLBACK_FRAME_RECONCILIATION_MAX_ATTEMPTS = 16;
+const ROLLBACK_FRAME_RECONCILIATION_MAX_EFFECTS = 256;
 const SHADOW_SCAN_BATCH_SIZE = 8;
 const SHADOW_SCAN_INTERVAL_MS = 1_000;
 
@@ -318,6 +320,7 @@ export class DomTreeProvider {
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
+  private rollbackEffectSuppressionDepth = 0;
   private readonly postCommitEffectBatches: PostCommitEffectBatch[] = [];
   private postCommitDeliveryScheduled = false;
   private mutationTimer: DomTreeTimerHandle | undefined;
@@ -2168,37 +2171,15 @@ export class DomTreeProvider {
         } catch {
           restored = false;
         }
-        const operationEffects = this.outwardEffectBuffer === buffer
-          ? Object.freeze(buffer.slice(effectSavepoint))
-          : undefined;
-        if (!operationEffects || !discardEffectsSinceSavepoint()) restored = false;
         try {
           if (!this.isProviderAuthorityCurrent(snapshot)) {
             restored = false;
-          } else if (!operationEffects) {
-            restored = false;
           } else {
-            const retainedEvents = this.rollbackBufferedFrameRegistrations(
-              operationEffects,
+            restored = this.reconcileRollbackFrameAuthority(
               snapshot,
-            );
-            if (!retainedEvents) {
-              restored = false;
-            } else {
-              restored = this.restoreProviderAuthority(snapshot, retainedEvents) && restored;
-              // These registry events outlive the failed operation. Reapply
-              // their provider bookkeeping while the operation journal is hidden.
-              for (const event of retainedEvents) {
-                if (!restored || !this.isProviderAuthorityCurrent(snapshot)) {
-                  restored = false;
-                  break;
-                }
-                if (!this.handleFrameLifecycle(event)) {
-                  restored = false;
-                  break;
-                }
-              }
-            }
+              buffer,
+              effectSavepoint,
+            ) && restored;
           }
         } catch {
           restored = false;
@@ -2224,17 +2205,127 @@ export class DomTreeProvider {
       this.authorityGeneration === snapshot.authorityGeneration;
   }
 
+  private reconcileRollbackFrameAuthority(
+    snapshot: ProviderAuthoritySnapshot,
+    buffer: ProviderOutwardEffect[],
+    effectSavepoint: number,
+  ): boolean {
+    if (this.outwardEffectBuffer !== buffer) return false;
+    const temporaryFrameRefs = new Set<string>();
+    const retainedEvents: FrameLifecycleEvent[] = [];
+    let effectCursor = effectSavepoint;
+    let processedEffects = 0;
+
+    for (
+      let attempt = 0;
+      attempt < ROLLBACK_FRAME_RECONCILIATION_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      if (
+        !this.isProviderAuthorityCurrent(snapshot) ||
+        this.outwardEffectBuffer !== buffer
+      ) return false;
+      const end = buffer.length;
+      const effects = Object.freeze(buffer.slice(effectCursor, end));
+      effectCursor = end;
+      processedEffects += effects.length;
+      if (processedEffects > ROLLBACK_FRAME_RECONCILIATION_MAX_EFFECTS) return false;
+      const retained = this.rollbackBufferedFrameRegistrations(
+        effects,
+        snapshot,
+        temporaryFrameRefs,
+      );
+      if (!retained) return false;
+      retainedEvents.push(...retained);
+
+      if (!this.restoreProviderAuthority(snapshot, retainedEvents)) {
+        if (
+          this.isProviderAuthorityCurrent(snapshot) &&
+          this.outwardEffectBuffer === buffer &&
+          buffer.length > effectCursor
+        ) continue;
+        return false;
+      }
+      if (buffer.length > effectCursor) continue;
+
+      if (!this.replayRetainedFrameEvents(snapshot, retainedEvents)) return false;
+      if (buffer.length > effectCursor) continue;
+      const converged = this.hasConvergedFrameAuthority();
+      if (buffer.length > effectCursor) continue;
+      if (!converged) return false;
+      return true;
+    }
+    return false;
+  }
+
+  private replayRetainedFrameEvents(
+    snapshot: ProviderAuthoritySnapshot,
+    events: readonly FrameLifecycleEvent[],
+  ): boolean {
+    this.rollbackEffectSuppressionDepth += 1;
+    try {
+      for (const event of events) {
+        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+        if (!this.handleFrameLifecycle(event)) return false;
+      }
+      return this.isProviderAuthorityCurrent(snapshot);
+    } finally {
+      this.rollbackEffectSuppressionDepth -= 1;
+    }
+  }
+
+  private hasConvergedFrameAuthority(): boolean {
+    try {
+      for (const [frameRef, document] of this.frameDocumentsByRef) {
+        const context = this.frameRegistry.getContext(frameRef);
+        if (!context || context.document !== document || !this.rootObservers.has(document)) {
+          return false;
+        }
+      }
+      for (const description of this.frameDescriptions.values()) {
+        const context = this.frameRegistry.getContext(description.frameRef);
+        if (description.kind === "accessible") {
+          if (
+            !context ||
+            context.document !== description.document ||
+            context.frameEpoch !== description.frameEpoch ||
+            context.documentEpoch !== description.documentEpoch ||
+            context.parentFrameRef !== description.parentFrameRef
+          ) return false;
+        } else if (context) {
+          return false;
+        }
+      }
+      for (const [frameRef, owned] of this.ownedFramesByRef) {
+        const context = this.frameRegistry.getContext(frameRef);
+        if (
+          !context ||
+          context.frameElement !== owned.frameElement ||
+          context.parentFrameRef !== owned.parentFrameRef
+        ) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private rollbackBufferedFrameRegistrations(
     effects: readonly ProviderOutwardEffect[],
     snapshot: ProviderAuthoritySnapshot,
+    temporaryFrameRefs: Set<string> = new Set<string>(),
   ): readonly FrameLifecycleEvent[] | undefined {
     if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
     const events = effects.flatMap((effect) => effect.kind === "frame" ? [effect.event] : []);
-    const temporaryFrameRefs = new Set(events
+    const registeredFrameRefs = events
       .filter((event) => event.type === "registered")
       .map((event) => event.frameRef)
-    );
-    const registeredFrameRefs = [...temporaryFrameRefs].reverse();
+      .filter((frameRef) => {
+        if (temporaryFrameRefs.has(frameRef)) return false;
+        temporaryFrameRefs.add(frameRef);
+        return true;
+      })
+      .reverse();
     for (const frameRef of registeredFrameRefs) {
       this.frameRegistry.unregisterFrame(frameRef);
       if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
@@ -2828,7 +2919,9 @@ export class DomTreeProvider {
 
   private emitMutationSettled(): boolean {
     if (this.outwardEffectBuffer) {
-      this.outwardEffectBuffer.push({ kind: "mutation-settled" });
+      if (this.rollbackEffectSuppressionDepth === 0) {
+        this.outwardEffectBuffer.push({ kind: "mutation-settled" });
+      }
       return true;
     }
     return this.onMutationSettled
@@ -2838,7 +2931,9 @@ export class DomTreeProvider {
 
   private emitInvalidated(branch: DomInvalidationBranch): boolean {
     if (this.outwardEffectBuffer) {
-      this.outwardEffectBuffer.push({ kind: "invalidated", branch });
+      if (this.rollbackEffectSuppressionDepth === 0) {
+        this.outwardEffectBuffer.push({ kind: "invalidated", branch });
+      }
       return true;
     }
     return this.onInvalidated
@@ -2848,7 +2943,9 @@ export class DomTreeProvider {
 
   private emitSelectedNodeRemoved(event: DomTreeSelectedNodeRemoval): boolean {
     if (this.outwardEffectBuffer) {
-      this.outwardEffectBuffer.push({ kind: "selected-removed", event });
+      if (this.rollbackEffectSuppressionDepth === 0) {
+        this.outwardEffectBuffer.push({ kind: "selected-removed", event });
+      }
       return true;
     }
     return this.onSelectedNodeRemoved
@@ -2914,7 +3011,9 @@ export class DomTreeProvider {
 
   private emitFrameLifecycle(event: FrameLifecycleEvent): boolean {
     if (this.outwardEffectBuffer) {
-      this.outwardEffectBuffer.push({ kind: "frame", event });
+      if (this.rollbackEffectSuppressionDepth === 0) {
+        this.outwardEffectBuffer.push({ kind: "frame", event });
+      }
       return true;
     }
     return this.onFrameLifecycle
