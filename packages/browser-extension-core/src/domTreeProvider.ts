@@ -2174,15 +2174,26 @@ export class DomTreeProvider {
           return restored;
         }
         try {
-          if (ownsBuffer) retainedEvents = this.rollbackBufferedFrameRegistrations(buffer);
-          restored = this.restoreProviderAuthority(snapshot) && restored;
+          if (!this.isProviderAuthorityCurrent(snapshot)) {
+            restored = false;
+          } else if (ownsBuffer) {
+            const rolledBackEvents = this.rollbackBufferedFrameRegistrations(buffer, snapshot);
+            if (!rolledBackEvents) {
+              restored = false;
+            } else {
+              retainedEvents = rolledBackEvents;
+              restored = this.restoreProviderAuthority(snapshot) && restored;
+            }
+          } else {
+            restored = this.restoreProviderAuthority(snapshot) && restored;
+          }
         } catch {
           restored = false;
         } finally {
           closed = true;
           if (ownsBuffer) this.outwardEffectBuffer = undefined;
         }
-        if (ownsBuffer) {
+        if (ownsBuffer && restored && this.isProviderAuthorityCurrent(snapshot)) {
           for (const event of retainedEvents) this.handleFrameLifecycle(event);
         }
         return restored;
@@ -2199,7 +2210,9 @@ export class DomTreeProvider {
 
   private rollbackBufferedFrameRegistrations(
     effects: readonly ProviderOutwardEffect[],
-  ): readonly FrameLifecycleEvent[] {
+    snapshot: ProviderAuthoritySnapshot,
+  ): readonly FrameLifecycleEvent[] | undefined {
+    if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
     const events = effects.flatMap((effect) => effect.kind === "frame" ? [effect.event] : []);
     const temporaryFrameRefs = new Set(events
       .filter((event) => event.type === "registered")
@@ -2208,6 +2221,7 @@ export class DomTreeProvider {
     const registeredFrameRefs = [...temporaryFrameRefs].reverse();
     for (const frameRef of registeredFrameRefs) {
       this.frameRegistry.unregisterFrame(frameRef);
+      if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
     }
     return Object.freeze(events.flatMap((event) => {
       if (temporaryFrameRefs.has(event.frameRef)) return [];
@@ -2225,6 +2239,7 @@ export class DomTreeProvider {
 
   private restoreProviderAuthority(snapshot: ProviderAuthoritySnapshot): boolean {
     try {
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       const retainedFrames = new Set(
         snapshot.metadata.ownedFramesByRef.map(([, owned]) => owned.frameElement),
       );
@@ -2232,17 +2247,39 @@ export class DomTreeProvider {
         .filter(({ frameElement }) => !retainedFrames.has(frameElement))
         .map(({ frameElement }) => frameElement)
         .reverse();
-      for (const frameElement of newFrames) this.unregisterDiscoveredFrame(frameElement);
+      for (const frameElement of newFrames) {
+        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+        const frameRef = this.frameRefsByElement.get(frameElement);
+        this.unregisterDiscoveredFrame(frameElement);
+        if (
+          !this.isProviderAuthorityCurrent(snapshot) ||
+          this.frameRefsByElement.get(frameElement) !== undefined ||
+          (frameRef !== undefined && this.ownedFramesByRef.has(frameRef))
+        ) {
+          return false;
+        }
+      }
 
       const expectedObservers = new Map(snapshot.rootObservers);
       for (const root of [...this.rootObservers.keys()]) {
-        if (!expectedObservers.has(root)) this.disconnectObserver(root);
+        if (expectedObservers.has(root)) continue;
+        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+        this.disconnectObserver(root);
+        if (
+          !this.isProviderAuthorityCurrent(snapshot) ||
+          this.rootObservers.get(root) !== undefined
+        ) {
+          return false;
+        }
       }
       for (const [root, observer] of expectedObservers) {
         if (this.rootObservers.get(root) !== observer) return false;
       }
-      if (!this.restoreSnapshotTimers(snapshot.metadata)) return false;
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+      if (!this.restoreSnapshotTimers(snapshot)) return false;
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       if (!this.nodeRegistry.restore(snapshot.nodeRegistry)) return false;
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
 
       this.refsByNode = new WeakMap<Node, string>();
       for (const [node, ref] of snapshot.refsByNode) this.refsByNode.set(node, ref);
@@ -2258,31 +2295,40 @@ export class DomTreeProvider {
     }
   }
 
-  private restoreSnapshotTimers(snapshot: ProviderMaterializationMetadata): boolean {
+  private restoreSnapshotTimers(snapshot: ProviderAuthoritySnapshot): boolean {
+    if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+    const metadata = snapshot.metadata;
     if (
-      (snapshot.mutationTimer !== undefined && this.mutationTimer !== snapshot.mutationTimer) ||
-      (snapshot.frameMutationScanTimer !== undefined &&
-        this.frameMutationScanTimer !== snapshot.frameMutationScanTimer) ||
-      (snapshot.shadowScanTimer !== undefined && this.shadowScanTimer !== snapshot.shadowScanTimer)
+      (metadata.mutationTimer !== undefined && this.mutationTimer !== metadata.mutationTimer) ||
+      (metadata.frameMutationScanTimer !== undefined &&
+        this.frameMutationScanTimer !== metadata.frameMutationScanTimer) ||
+      (metadata.shadowScanTimer !== undefined && this.shadowScanTimer !== metadata.shadowScanTimer)
     ) {
       return false;
     }
-    if (snapshot.mutationTimer === undefined && this.mutationTimer !== undefined) {
-      this.cancelTimeout(this.mutationTimer);
-      this.mutationTimer = undefined;
+    return this.cancelRollbackTimer(snapshot, "mutationTimer") &&
+      this.cancelRollbackTimer(snapshot, "frameMutationScanTimer") &&
+      this.cancelRollbackTimer(snapshot, "shadowScanTimer");
+  }
+
+  private cancelRollbackTimer(
+    snapshot: ProviderAuthoritySnapshot,
+    timer: "mutationTimer" | "frameMutationScanTimer" | "shadowScanTimer",
+  ): boolean {
+    if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+    if (snapshot.metadata[timer] !== undefined) return this[timer] === snapshot.metadata[timer];
+    const handle = this[timer];
+    if (handle === undefined) return true;
+    let cancelled = true;
+    try {
+      this.cancelTimeout(handle);
+    } catch {
+      cancelled = false;
     }
-    if (
-      snapshot.frameMutationScanTimer === undefined &&
-      this.frameMutationScanTimer !== undefined
-    ) {
-      this.cancelTimeout(this.frameMutationScanTimer);
-      this.frameMutationScanTimer = undefined;
-    }
-    if (snapshot.shadowScanTimer === undefined && this.shadowScanTimer !== undefined) {
-      this.cancelTimeout(this.shadowScanTimer);
-      this.shadowScanTimer = undefined;
-    }
-    return true;
+    if (!this.isProviderAuthorityCurrent(snapshot) || this[timer] !== handle) return false;
+    if (!cancelled) return false;
+    this[timer] = undefined;
+    return this.isProviderAuthorityCurrent(snapshot);
   }
 
   private snapshotMaterializationMetadata(): ProviderMaterializationMetadata {

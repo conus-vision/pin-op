@@ -5625,7 +5625,145 @@ describe("DomTreeProvider", () => {
       .toBe("element");
     expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(2);
   });
+
+  it.each([
+    ["mutationTimer", "reset"],
+    ["frameMutationScanTimer", "dispose"],
+    ["shadowScanTimer", "reset"],
+  ] as const)("abandons rollback when canceling %s reenters through %s", (timerField, action) => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+    const internals = provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+    const currentHandle = 101;
+    const replacementHandle = 202;
+    let reentered = false;
+    internals[timerField] = currentHandle;
+    internals.cancelTimeout = () => {
+      if (reentered) return;
+      reentered = true;
+      if (action === "reset") {
+        provider.resetDocument(replacement as unknown as Document, 4);
+      } else {
+        provider.dispose();
+      }
+      internals[timerField] = replacementHandle;
+    };
+
+    expect(internals.restoreSnapshotTimers(snapshot)).toBe(false);
+    expect(internals[timerField]).toBe(replacementHandle);
+    expect(reentered).toBe(true);
+  });
+
+  it("abandons timer rollback when cancellation throws after replacing state", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const internals = harness.provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+    internals.mutationTimer = 101;
+    internals.cancelTimeout = () => {
+      internals.mutationTimer = 202;
+      throw new Error("hostile timer cancellation");
+    };
+
+    expect(internals.restoreSnapshotTimers(snapshot)).toBe(false);
+    expect(internals.mutationTimer).toBe(202);
+  });
+
+  it("abandons provider rollback after an observer disconnect resets authority", () => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+    const internals = provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+    const extraRoot = createElement("aside", document);
+    internals.rootObservers.set(extraRoot as unknown as Node, {
+      disconnect: () => provider.resetDocument(replacement as unknown as Document, 4),
+    });
+
+    expect(internals.restoreProviderAuthority(snapshot)).toBe(false);
+    expect(internals.topDocument).toBe(replacement as unknown as Document);
+    expect(internals.rootObservers.has(document as unknown as Node)).toBe(false);
+    expect(internals.rootObservers.has(replacement as unknown as Node)).toBe(true);
+  });
+
+  it("abandons provider rollback after frame unregistration resets authority", () => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let provider: DomTreeProvider | undefined;
+    let reentered = false;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "removed" || reentered || !provider) return;
+        reentered = true;
+        provider.resetDocument(replacement as unknown as Document, 4);
+      },
+    });
+    provider = harness.provider;
+    const root = provider.getRoot();
+    const internals = provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+
+    onlyChild(provider, root.node, root.documentEpoch, "operation-frame");
+
+    expect(internals.restoreProviderAuthority(snapshot)).toBe(false);
+    expect(internals.topDocument).toBe(replacement as unknown as Document);
+    expect(reentered).toBe(true);
+  });
+
+  it("abandons provider rollback after registry restoration resets authority", () => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+    const internals = provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+    internals.nodeRegistry.restore = () => {
+      provider.resetDocument(replacement as unknown as Document, 4);
+      return true;
+    };
+
+    expect(internals.restoreProviderAuthority(snapshot)).toBe(false);
+    expect(internals.topDocument).toBe(replacement as unknown as Document);
+  });
+
+  it("restores only timers created by a failed operation", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const internals = harness.provider as unknown as ProviderRollbackInternals;
+    const snapshot = internals.snapshotProviderAuthority();
+    const cancelled: unknown[] = [];
+    internals.mutationTimer = 101;
+    internals.frameMutationScanTimer = 102;
+    internals.shadowScanTimer = 103;
+    internals.cancelTimeout = (handle) => cancelled.push(handle);
+
+    expect(internals.restoreSnapshotTimers(snapshot)).toBe(true);
+    expect(cancelled).toEqual([101, 102, 103]);
+    expect(internals.mutationTimer).toBeUndefined();
+    expect(internals.frameMutationScanTimer).toBeUndefined();
+    expect(internals.shadowScanTimer).toBeUndefined();
+  });
 });
+
+interface ProviderRollbackInternals {
+  topDocument: Document | undefined;
+  mutationTimer: unknown;
+  frameMutationScanTimer: unknown;
+  shadowScanTimer: unknown;
+  cancelTimeout: (handle: unknown) => void;
+  rootObservers: Map<Node, { disconnect(): void }>;
+  nodeRegistry: { restore(snapshot: unknown): boolean };
+  snapshotProviderAuthority(): unknown;
+  restoreSnapshotTimers(snapshot: unknown): boolean;
+  restoreProviderAuthority(snapshot: unknown): boolean;
+}
 
 function onlyChild(
   provider: DomTreeProvider,
