@@ -158,6 +158,7 @@ export {
   DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH,
   DOM_STABLE_LOCATOR_VERSION,
   DOM_TREE_RECOVERY_MAX_EXPANDED,
+  locatorDepth,
 } from "./domStableLocator.js";
 export type {
   DomBoundaryLocator,
@@ -169,6 +170,8 @@ export { DomTreeController } from "./domTreeController.js";
 export type {
   DomTreeControllerOptions,
   DomTreeKey,
+  DomTreeRecoveryFocusAnchor,
+  DomTreeRecoveryFocusRowType,
   DomTreeRecoverySnapshot,
   DomTreeRow,
   DomTreeSnapshot,

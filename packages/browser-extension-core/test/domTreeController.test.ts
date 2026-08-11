@@ -438,6 +438,10 @@ describe("DomTreeController", () => {
     expect(snapshot).toEqual({
       selectedLocator,
       selectedWasExpanded: false,
+      focusAnchor: {
+        locator: selectedLocator,
+        rowType: "node",
+      },
       expandedLocators: [locator(1), duplicateLocator],
     });
     expect(controller.snapshot().recovering).toBe(true);
@@ -447,8 +451,17 @@ describe("DomTreeController", () => {
 
   it("caps expanded recovery locators at 64 while retaining the selection", async () => {
     const transport = new TestTransport();
+    const selectedLocator = locatorWithBoundaries(
+      [{ kind: "frame-document", hostDepth: 1 }],
+      1,
+      63,
+    );
     const children = Array.from({ length: 64 }, (_, index) => (
-      locatedNode(`child-${index}`, locator(2, index), true)
+      locatedNode(
+        `child-${index}`,
+        index === 63 ? selectedLocator : locator(2, index),
+        true,
+      )
     ));
     transport.enqueue(rootResponse(locatedNode("root", locator(1), true)));
     transport.enqueue(childrenResponse("root", 0, children));
@@ -468,13 +481,69 @@ describe("DomTreeController", () => {
 
     const snapshot = controller.beginRecovery();
 
-    expect(snapshot.selectedLocator).toEqual(locator(2, 63));
+    expect(snapshot.selectedLocator).toEqual(selectedLocator);
     expect(snapshot.selectedWasExpanded).toBe(true);
+    expect(snapshot.focusAnchor).toEqual({
+      locator: selectedLocator,
+      rowType: "node",
+    });
     expect(snapshot.expandedLocators).toHaveLength(64);
     expect(snapshot.expandedLocators[0]).toEqual(locator(1));
     expect(snapshot.expandedLocators.slice(1)).toEqual(
       Array.from({ length: 63 }, (_, index) => locator(2, index)),
     );
+  });
+
+  it("orders normal, shadow, and frame locators by boundary-aware depth", () => {
+    const transport = new TestTransport();
+    const normalLocator = locator(3, 1);
+    const shadowLocator = locatorWithBoundaries(
+      [{ kind: "shadow-root", hostDepth: 1 }],
+      2,
+      2,
+    );
+    const frameLocator = locatorWithBoundaries([
+      { kind: "frame-document", hostDepth: 1 },
+      { kind: "shadow-root", hostDepth: 1 },
+    ], 1, 3);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("frame", frameLocator, true),
+      locatedNode("shadow", shadowLocator, true),
+      locatedNode("normal", normalLocator, true),
+      locatedNode("selected", locator(6, 4)),
+    ]));
+
+    const snapshot = controller.beginRecovery();
+
+    expect(snapshot.expandedLocators).toEqual([
+      normalLocator,
+      shadowLocator,
+      frameLocator,
+    ]);
+  });
+
+  it("captures a load-more recovery focus anchor by parent locator", async () => {
+    const transport = new TestTransport();
+    const rootLocator = locator(1, 4);
+    const root = locatedNode("root", rootLocator, true);
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse("root", 0, [node("child")], "next"));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    const loadMore = controller.rows().find((row) => row.type === "load-more");
+    if (!loadMore) {
+      throw new Error("Missing load-more row");
+    }
+    controller.focus(loadMore.nodeRef);
+
+    const snapshot = controller.beginRecovery();
+
+    expect(snapshot.focusAnchor).toEqual({
+      locator: rootLocator,
+      rowType: "load-more",
+    });
   });
 
   it("keeps frozen rows read-only throughout recovery", async () => {
@@ -695,6 +764,25 @@ function locator(depth: number, siblingIndex = 0): DomStableLocator {
       tagName: index === depth - 1 ? "div" : "section",
       siblingIndex: index === depth - 1 ? siblingIndex : 0,
     })),
+  };
+}
+
+function locatorWithBoundaries(
+  boundaries: readonly {
+    readonly kind: "shadow-root" | "frame-document";
+    readonly hostDepth: number;
+  }[],
+  pathDepth: number,
+  siblingIndex: number,
+): DomStableLocator {
+  return {
+    version: 1,
+    targetKind: "element",
+    boundaries: boundaries.map(({ kind, hostDepth }) => ({
+      kind,
+      hostPath: locator(hostDepth).path,
+    })),
+    path: locator(pathDepth, siblingIndex).path,
   };
 }
 

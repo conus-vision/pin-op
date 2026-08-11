@@ -6,6 +6,7 @@ import {
 import { DomTreeRecoveryCoordinator } from "../src/domTreeRecoveryCoordinator.js";
 import type {
   DomChildrenResponse,
+  DomErrorCode,
   DomLocatorResponse,
   DomNodeView,
   DomRequest,
@@ -46,6 +47,65 @@ describe("DomTreeRecoveryCoordinator", () => {
       documentEpoch: 2,
       nodeRef: "new-selected",
     }]);
+  });
+
+  it("restores separate row focus without another locator resolution", async () => {
+    const transport = new TestTransport();
+    const rootLocator = locator(1, 0);
+    const selectedLocator = locator(2, 1);
+    const oldRoot = node("old-root", rootLocator, true);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      oldRoot,
+      node("old-selected", selectedLocator),
+    ]));
+    controller.focus(oldRoot.nodeRef);
+    const coordinator = createCoordinator(controller, transport);
+    const newRoot = node("new-root", rootLocator, true);
+    const newSelected = node("new-selected", selectedLocator);
+    transport.enqueue(rootResponse(newRoot, 2));
+    transport.enqueue(locatorResponse(newSelected, [newRoot, newSelected], 2));
+    transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
+    transport.enqueue(childrenResponse(newRoot, [newSelected], 2));
+
+    await coordinator.begin();
+
+    expect(controller.focusedRef).toBe("new-root");
+    expect(transport.requests.filter(isResolveRequest)).toHaveLength(2);
+    expect(transport.dispatched).toEqual([{
+      type: "dom.select",
+      documentEpoch: 2,
+      nodeRef: "new-selected",
+    }]);
+  });
+
+  it("restores a focused load-more row after hydrating its recovered branch", async () => {
+    const transport = new TestTransport();
+    const rootLocator = locator(1, 0);
+    const oldRoot = node("old-root", rootLocator, true);
+    transport.enqueue(rootResponse(oldRoot, 1));
+    transport.enqueue(childrenResponse(oldRoot, [], 1, "old-next"));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(oldRoot.nodeRef);
+    const oldLoadMore = controller.rows().find((row) => row.type === "load-more");
+    if (!oldLoadMore) {
+      throw new Error("Missing old load-more row");
+    }
+    controller.focus(oldLoadMore.nodeRef);
+    const coordinator = createCoordinator(controller, transport);
+    const newRoot = node("new-root", rootLocator, true);
+    transport.enqueue(rootResponse(newRoot, 2));
+    transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
+    transport.enqueue(childrenResponse(newRoot, [], 2, "new-next"));
+
+    await coordinator.begin();
+
+    const newLoadMore = controller.rows().find((row) => row.type === "load-more");
+    expect(newLoadMore).toMatchObject({ parentRef: "new-root", focused: true });
+    expect(controller.focusedRef).toBe(newLoadMore?.nodeRef);
+    expect(transport.requests.filter(isResolveRequest)).toHaveLength(1);
+    expect(transport.dispatched).toEqual([]);
   });
 
   it("resolves selection first, tolerates an expanded failure, and swaps once", async () => {
@@ -108,6 +168,44 @@ describe("DomTreeRecoveryCoordinator", () => {
     }]);
   });
 
+  it("orders mixed expanded locators by boundary-aware depth", async () => {
+    const transport = new TestTransport();
+    const normalLocator = locator(3, 1);
+    const shadowLocator = locatorWithBoundaries(
+      [{ kind: "shadow-root", hostDepth: 1 }],
+      2,
+      2,
+    );
+    const frameLocator = locatorWithBoundaries([
+      { kind: "frame-document", hostDepth: 1 },
+      { kind: "shadow-root", hostDepth: 1 },
+    ], 1, 3);
+    const selectedLocator = locator(6, 4);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-frame", frameLocator, true),
+      node("old-shadow", shadowLocator, true),
+      node("old-normal", normalLocator, true),
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+    for (let index = 0; index < 4; index += 1) {
+      transport.enqueue(errorResponse("node-unavailable"));
+    }
+
+    await coordinator.begin();
+
+    expect(transport.requests.filter(isResolveRequest).map((request) => (
+      request.locator
+    ))).toEqual([
+      selectedLocator,
+      normalLocator,
+      shadowLocator,
+      frameLocator,
+    ]);
+  });
+
   it("finishes with a live root and no selection when selected recovery fails", async () => {
     const transport = new TestTransport();
     const controller = createController(transport);
@@ -125,6 +223,232 @@ describe("DomTreeRecoveryCoordinator", () => {
     expect(controller.snapshot().selectedRef).toBeUndefined();
     expect(controller.snapshot().recovering).toBe(false);
     expect(transport.dispatched).toEqual([]);
+  });
+
+  it.each(["stale-document", "session-disposed"] as const)(
+    "aborts when selected locator recovery returns %s",
+    async (code) => {
+      const transport = new TestTransport();
+      const selectedLocator = locator(1, 4);
+      const controller = createController(transport);
+      controller.handleEvent(selectionEvent(1, [
+        node("old-selected", selectedLocator),
+      ]));
+      const coordinator = createCoordinator(controller, transport);
+      transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+      transport.enqueue(errorResponse(code));
+
+      await coordinator.begin();
+
+      expectSafeRecoveryReset(controller, transport);
+    },
+  );
+
+  it.each(["stale-document", "session-disposed"] as const)(
+    "aborts when expanded locator recovery returns %s",
+    async (code) => {
+      const transport = new TestTransport();
+      const rootLocator = locator(1, 0);
+      const oldRoot = node("old-root", rootLocator, true);
+      transport.enqueue(rootResponse(oldRoot, 1));
+      transport.enqueue(childrenResponse(oldRoot, [], 1));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(oldRoot.nodeRef);
+      const coordinator = createCoordinator(controller, transport);
+      transport.enqueue(rootResponse(node("new-root", rootLocator, true), 2));
+      transport.enqueue(errorResponse(code));
+
+      await coordinator.begin();
+
+      expectSafeRecoveryReset(controller, transport);
+    },
+  );
+
+  it.each(["stale-document", "session-disposed"] as const)(
+    "aborts when selected branch hydration returns %s",
+    async (code) => {
+      const transport = new TestTransport();
+      const selectedLocator = locator(1, 3);
+      const oldSelected = node("old-selected", selectedLocator, true);
+      const controller = createController(transport);
+      controller.handleEvent(selectionEvent(1, [oldSelected]));
+      transport.enqueue(childrenResponse(oldSelected, [], 1));
+      await controller.expand(oldSelected.nodeRef);
+      const coordinator = createCoordinator(controller, transport);
+      const newSelected = node("new-selected", selectedLocator, true);
+      transport.enqueue(rootResponse(newSelected, 2));
+      transport.enqueue(locatorResponse(newSelected, [newSelected], 2));
+      transport.enqueue(errorResponse(code));
+
+      await coordinator.begin();
+
+      expectSafeRecoveryReset(controller, transport);
+    },
+  );
+
+  it.each(["stale-document", "session-disposed"] as const)(
+    "aborts when expanded branch hydration returns %s",
+    async (code) => {
+      const transport = new TestTransport();
+      const rootLocator = locator(1, 0);
+      const oldRoot = node("old-root", rootLocator, true);
+      transport.enqueue(rootResponse(oldRoot, 1));
+      transport.enqueue(childrenResponse(oldRoot, [], 1));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(oldRoot.nodeRef);
+      const coordinator = createCoordinator(controller, transport);
+      const newRoot = node("new-root", rootLocator, true);
+      transport.enqueue(rootResponse(newRoot, 2));
+      transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
+      transport.enqueue(errorResponse(code));
+
+      await coordinator.begin();
+
+      expectSafeRecoveryReset(controller, transport);
+    },
+  );
+
+  it("aborts and reports a locator transport ownership failure", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 4);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    const failedLocator = deferred<DomResponse>();
+    transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+    transport.enqueue(failedLocator.promise);
+    const recovery = coordinator.begin();
+    await waitForRequests(transport, 2);
+    failedLocator.reject(new Error("locator session closed"));
+
+    await expect(recovery).rejects.toThrow("locator session closed");
+    expectSafeRecoveryReset(controller, transport);
+  });
+
+  it("aborts a partial locator code from a mismatched document", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 4);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+    transport.enqueue(errorResponse("node-unavailable", 99));
+
+    await coordinator.begin();
+
+    expectSafeRecoveryReset(controller, transport);
+  });
+
+  it("aborts a locator path owned by another replacement root", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(2, 4);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    const newRoot = node("new-root", locator(1, 0));
+    const foreignRoot = node("foreign-root", locator(1, 8), true);
+    const foreignSelected = node("foreign-selected", selectedLocator);
+    transport.enqueue(rootResponse(newRoot, 2));
+    transport.enqueue(locatorResponse(foreignSelected, [
+      foreignRoot,
+      foreignSelected,
+    ], 2));
+
+    await coordinator.begin();
+
+    expectSafeRecoveryReset(controller, transport);
+  });
+
+  it("aborts and reports a hydration transport ownership failure", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 3);
+    const oldSelected = node("old-selected", selectedLocator, true);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [oldSelected]));
+    transport.enqueue(childrenResponse(oldSelected, [], 1));
+    await controller.expand(oldSelected.nodeRef);
+    const coordinator = createCoordinator(controller, transport);
+    const failedChildren = deferred<DomResponse>();
+    const newSelected = node("new-selected", selectedLocator, true);
+    transport.enqueue(rootResponse(newSelected, 2));
+    transport.enqueue(locatorResponse(newSelected, [newSelected], 2));
+    transport.enqueue(failedChildren.promise);
+    const recovery = coordinator.begin();
+    await waitForRequests(transport, 3);
+    failedChildren.reject(new Error("children session closed"));
+
+    await expect(recovery).rejects.toThrow("children session closed");
+    expectSafeRecoveryReset(controller, transport);
+  });
+
+  it("aborts a partial branch code from a mismatched document", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 3);
+    const oldSelected = node("old-selected", selectedLocator, true);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [oldSelected]));
+    transport.enqueue(childrenResponse(oldSelected, [], 1));
+    await controller.expand(oldSelected.nodeRef);
+    const coordinator = createCoordinator(controller, transport);
+    const newSelected = node("new-selected", selectedLocator, true);
+    transport.enqueue(rootResponse(newSelected, 2));
+    transport.enqueue(locatorResponse(newSelected, [newSelected], 2));
+    transport.enqueue(errorResponse("stale-branch", 99));
+
+    await coordinator.begin();
+
+    expectSafeRecoveryReset(controller, transport);
+  });
+
+  it("continues hydration after an individual stale branch miss", async () => {
+    const transport = new TestTransport();
+    const rootLocator = locator(1, 0);
+    const parentLocator = locator(2, 1);
+    const selectedLocator = locator(3, 2);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-root", rootLocator, true),
+      node("old-parent", parentLocator, true),
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    const newRoot = node("new-root", rootLocator, true);
+    const newParent = node("new-parent", parentLocator, true);
+    const newSelected = node("new-selected", selectedLocator);
+    transport.enqueue(rootResponse(newRoot, 2));
+    transport.enqueue(locatorResponse(newSelected, [
+      newRoot,
+      newParent,
+      newSelected,
+    ], 2));
+    transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
+    transport.enqueue(locatorResponse(newParent, [newRoot, newParent], 2));
+    transport.enqueue(errorResponse("stale-branch"));
+    transport.enqueue(childrenResponse(newParent, [newSelected], 2));
+
+    await coordinator.begin();
+
+    expect(transport.requests.filter(isChildrenRequest).map((request) => (
+      request.nodeRef
+    ))).toEqual(["new-root", "new-parent"]);
+    expect(nodeRefs(controller)).toEqual([
+      "new-root",
+      "new-parent",
+      "new-selected",
+    ]);
+    expect(transport.dispatched).toEqual([{
+      type: "dom.select",
+      documentEpoch: 2,
+      nodeRef: "new-selected",
+    }]);
   });
 
   it("lets a manual same-epoch selection clear frozen refs and win the race", async () => {
@@ -160,6 +484,51 @@ describe("DomTreeRecoveryCoordinator", () => {
     expect(transport.dispatched).toEqual([]);
   });
 
+  it("does not dispatch the recovered selection after a reentrant manual finish", async () => {
+    const transport = new TestTransport();
+    const rootLocator = locator(1, 0);
+    const selectedLocator = locator(2, 1);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-root", rootLocator, true),
+      node("old-selected", selectedLocator),
+    ]));
+    const coordinator = createCoordinator(controller, transport);
+    const newRoot = node("new-root", rootLocator, true);
+    const newSelected = node("new-selected", selectedLocator);
+    const manualSelected = node("manual-selected", locator(2, 2));
+    let manualWon = false;
+    controller.subscribe(() => {
+      const snapshot = controller.snapshot();
+      if (
+        manualWon ||
+        snapshot.recovering ||
+        snapshot.selectedRef !== newSelected.nodeRef
+      ) {
+        return;
+      }
+      manualWon = true;
+      const manual = selectionEvent(2, [newRoot, manualSelected], 2);
+      coordinator.handleManualSelection(manual);
+      controller.handleEvent(manual);
+    });
+    transport.enqueue(rootResponse(newRoot, 2));
+    transport.enqueue(locatorResponse(newSelected, [newRoot, newSelected], 2));
+    transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
+    transport.enqueue(childrenResponse(newRoot, [newSelected], 2));
+
+    await coordinator.begin();
+
+    expect(manualWon).toBe(true);
+    expect(controller.snapshot().selectedRef).toBe("manual-selected");
+    expect(nodeRefs(controller)).toEqual([
+      "new-root",
+      "new-selected",
+      "manual-selected",
+    ]);
+    expect(transport.dispatched).toEqual([]);
+  });
+
   it("lets a second invalidation supersede a pending root response", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
@@ -169,6 +538,7 @@ describe("DomTreeRecoveryCoordinator", () => {
     const firstRoot = deferred<DomResponse>();
     transport.enqueue(firstRoot.promise);
     transport.enqueue(rootResponse(node("second-root", locator(1, 2)), 2));
+    transport.enqueue(errorResponse("node-unavailable"));
 
     const first = coordinator.begin();
     await waitForRequests(transport, 2);
@@ -352,6 +722,25 @@ function locator(depth: number, siblingIndex: number): DomStableLocator {
   };
 }
 
+function locatorWithBoundaries(
+  boundaries: readonly {
+    readonly kind: "shadow-root" | "frame-document";
+    readonly hostDepth: number;
+  }[],
+  pathDepth: number,
+  siblingIndex: number,
+): DomStableLocator {
+  return {
+    version: 1,
+    targetKind: "element",
+    boundaries: boundaries.map(({ kind, hostDepth }) => ({
+      kind,
+      hostPath: locator(hostDepth, 0).path,
+    })),
+    path: locator(pathDepth, siblingIndex).path,
+  };
+}
+
 function selectionEvent(
   documentEpoch: number,
   ancestorPath: readonly DomNodeView[],
@@ -396,6 +785,7 @@ function childrenResponse(
   parent: DomNodeView,
   nodes: readonly DomNodeView[],
   documentEpoch: number,
+  nextCursor?: string,
 ): DomChildrenResponse {
   return {
     type: "dom.children",
@@ -404,15 +794,30 @@ function childrenResponse(
     nodeRef: parent.nodeRef,
     branchRevision: parent.branchRevision,
     nodes,
+    ...(nextCursor ? { nextCursor } : {}),
   };
 }
 
-function errorResponse(code: "node-unavailable"): DomResponse {
+function errorResponse(
+  code: DomErrorCode,
+  documentEpoch?: number,
+): DomResponse {
   return {
     type: "dom.error",
     requestId: "test-response",
+    ...(documentEpoch !== undefined ? { documentEpoch } : {}),
     code,
   };
+}
+
+function expectSafeRecoveryReset(
+  controller: DomTreeController,
+  transport: TestTransport,
+): void {
+  expect(controller.rows()).toEqual([]);
+  expect(controller.snapshot().recovering).toBe(false);
+  expect(controller.snapshot().selectedRef).toBeUndefined();
+  expect(transport.dispatched).toEqual([]);
 }
 
 function nodeRefs(controller: DomTreeController): string[] {

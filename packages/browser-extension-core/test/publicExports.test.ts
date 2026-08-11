@@ -78,6 +78,7 @@ describe("browser extension core exports", () => {
     expect(publicExports.DOM_STABLE_LOCATOR_MAX_ATTRIBUTES).toBe(8);
     expect(publicExports.DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH).toBe(128);
     expect(publicExports.DOM_TREE_RECOVERY_MAX_EXPANDED).toBe(64);
+    expect(publicExports.locatorDepth).toBeTypeOf("function");
     expect(DomNodeRegistry).toBeTypeOf("function");
     expect(DomPanelView).toBeTypeOf("function");
     expect(DomTreeController).toBeTypeOf("function");

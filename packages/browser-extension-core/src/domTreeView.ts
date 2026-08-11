@@ -64,6 +64,7 @@ export class DomTreeView {
   private removeSourceNavigationListener: (() => void) | undefined;
   private seenRevealVersion = 0;
   private seenFocusedRef: string | undefined;
+  private seenRecovering = false;
   private disposed = false;
 
   private readonly onScroll = (): void => this.render();
@@ -192,14 +193,20 @@ export class DomTreeView {
     }
     const snapshot = this.controller.snapshot();
     const sourceNavigation = this.sourceNavigationController.snapshot();
+    const restoreFocus = this.tree.contains(this.document.activeElement);
     const focusChanged = snapshot.focusedRef !== this.seenFocusedRef;
+    const recoveryFinished = this.seenRecovering && !snapshot.recovering;
+    this.seenRecovering = snapshot.recovering;
     if (
       snapshot.revealRef &&
       snapshot.revealVersion > this.seenRevealVersion
     ) {
       this.seenRevealVersion = snapshot.revealVersion;
       this.ensureVisible(snapshot.revealRef);
-    } else if (focusChanged && snapshot.focusedRef) {
+    } else if (
+      snapshot.focusedRef &&
+      (focusChanged || (recoveryFinished && restoreFocus))
+    ) {
       this.ensureVisible(snapshot.focusedRef);
     }
     this.seenFocusedRef = snapshot.focusedRef;
@@ -233,10 +240,8 @@ export class DomTreeView {
         return;
       }
     }
-    const restoreFocus = !snapshot.recovering &&
-      this.tree.contains(this.document.activeElement);
-
     this.spacer.style.height = `${allRows.length * this.rowHeight}px`;
+    this.tree.setAttribute("tabindex", allRows.length === 0 ? "0" : "-1");
     this.tree.setAttribute(
       "aria-busy",
       snapshot.loadingRoot || snapshot.recovering ? "true" : "false",
@@ -249,8 +254,10 @@ export class DomTreeView {
       this.createRow(value, index, sourceNavigation, snapshot.recovering)
     )));
 
-    if (restoreFocus && snapshot.focusedRef) {
-      this.focusRenderedRow(snapshot.focusedRef);
+    if (restoreFocus) {
+      if (!snapshot.focusedRef || !this.focusRenderedRow(snapshot.focusedRef)) {
+        this.focusTree();
+      }
     }
   }
 
@@ -271,6 +278,7 @@ export class DomTreeView {
     if (this.disposed) {
       return;
     }
+    const releaseFocus = this.tree.contains(this.document.activeElement);
     this.disposed = true;
     this.removeControllerListener?.();
     this.removeControllerListener = undefined;
@@ -283,6 +291,10 @@ export class DomTreeView {
     this.tree.removeEventListener("pointerleave", this.onPointerLeave);
     this.resizeObserver?.disconnect();
     this.spacer.replaceChildren();
+    if (releaseFocus) {
+      this.tree.setAttribute("tabindex", "0");
+      this.focusTree();
+    }
   }
 
   private createRow(
@@ -306,7 +318,7 @@ export class DomTreeView {
     element.setAttribute("aria-selected", String(row.selected));
     element.setAttribute(
       "tabindex",
-      !recovering && row.focused && isFocusableRow(row) ? "0" : "-1",
+      row.focused && isFocusableRow(row) ? "0" : "-1",
     );
     if (row.inaccessible || recovering) {
       element.setAttribute("aria-disabled", "true");
@@ -406,15 +418,24 @@ export class DomTreeView {
     }
   }
 
-  private focusRenderedRow(nodeRef: string): void {
+  private focusRenderedRow(nodeRef: string): boolean {
     const row = findRenderedRow(this.spacer, nodeRef);
     if (!row) {
-      return;
+      return false;
     }
     try {
       row.focus({ preventScroll: true });
     } catch {
       row.focus();
+    }
+    return true;
+  }
+
+  private focusTree(): void {
+    try {
+      this.tree.focus({ preventScroll: true });
+    } catch {
+      this.tree.focus();
     }
   }
 

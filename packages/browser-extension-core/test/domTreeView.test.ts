@@ -492,6 +492,7 @@ describe("DomTreeView", () => {
     harness.sourceNavigation.beginInspect("inspect-1");
     harness.sourceNavigation.acceptResolution(resolution());
     harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+    harness.view.focus("selected");
 
     harness.controller.beginRecovery();
 
@@ -506,7 +507,8 @@ describe("DomTreeView", () => {
     expect(root.getAttribute("aria-disabled")).toBe("true");
     expect(root.findByData("part", "disclosure")?.dataset.action)
       .toBeUndefined();
-    expect(selected.getAttribute("tabindex")).toBe("-1");
+    expect(selected.getAttribute("tabindex")).toBe("0");
+    expect(harness.dom.activeElement).toBe(selected);
     expect(previous).toBeDefined();
     expect(previous?.disabled).toBe(true);
     expect(loadMore?.getAttribute("aria-disabled")).toBe("true");
@@ -524,6 +526,124 @@ describe("DomTreeView", () => {
     expect(harness.sourceCommands).toEqual([]);
     expect(harness.transport.dispatched).toEqual([]);
     expect(harness.transport.requests).toEqual([]);
+  });
+
+  it("restores browser focus to the recovered selected row", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      node("old-selected", "button.save"),
+    ]));
+    harness.view.focus("old-selected");
+    const newRoot = node("new-root", "html", true);
+    const newSelected = node("new-selected", "button.save");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newSelected, [newRoot, newSelected], 2),
+      { selected: true, expanded: false, focusIntent: "node" },
+    );
+    harness.controller.finishRecovery();
+
+    expect(harness.controller.focusedRef).toBe("new-selected");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("new-selected"));
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
+  it("reveals a recovered focus anchor when the new session reuses its ref", () => {
+    const harness = createHarness({ clientHeight: 48, overscan: 0 });
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      node("reused-focused", "button.save"),
+    ]));
+    harness.view.focus("reused-focused");
+    const newRoot = node("new-root", "html", true);
+    const ancestors = Array.from({ length: 6 }, (_, index) => (
+      node(`new-ancestor-${index}`, `section.${index}`, true)
+    ));
+    const recoveredFocus = node("reused-focused", "button.save");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        recoveredFocus,
+        [newRoot, ...ancestors, recoveredFocus],
+        2,
+      ),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    harness.controller.finishRecovery();
+
+    expect(harness.dom.element("dom-tree").scrollTop).toBeGreaterThan(0);
+    expect(harness.dom.activeElement).toBe(harness.dom.row("reused-focused"));
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
+  it("falls back to the recovered root when the focus anchor is missing", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      node("old-focused", "button.missing"),
+    ]));
+    harness.view.focus("old-focused");
+    const newRoot = node("new-root", "html");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.finishRecovery();
+
+    expect(harness.controller.focusedRef).toBe("new-root");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("new-root"));
+  });
+
+  it("does not steal manually moved browser focus after recovery", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-selected", "button.save"),
+    ]));
+    harness.view.focus("old-selected");
+    harness.controller.beginRecovery();
+    const outside = harness.dom.document.createElement("button") as unknown as FakeElement;
+    outside.focus();
+    const newSelected = node("new-selected", "button.save");
+    harness.controller.installRecoveryRoot(recoveryRoot(newSelected, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newSelected, [newSelected], 2),
+      { selected: true, expanded: false, focusIntent: "node" },
+    );
+
+    harness.controller.finishRecovery();
+
+    expect(harness.dom.activeElement).toBe(outside);
+  });
+
+  it("moves focused recovery rows to the tree on cancel and dispose", () => {
+    const canceled = createHarness();
+    canceled.controller.handleEvent(selectionChanged(1, [
+      node("selected", "button.save"),
+    ]));
+    canceled.view.focus("selected");
+    canceled.controller.beginRecovery();
+
+    canceled.controller.cancelRecovery("test cancel");
+
+    expect(canceled.dom.activeElement).toBe(canceled.dom.element("dom-tree"));
+    expect(canceled.dom.element("dom-tree").getAttribute("tabindex")).toBe("0");
+
+    const disposed = createHarness();
+    disposed.controller.handleEvent(selectionChanged(1, [
+      node("selected", "button.save"),
+    ]));
+    disposed.view.focus("selected");
+    disposed.controller.beginRecovery();
+
+    disposed.view.dispose();
+
+    expect(disposed.dom.activeElement).toBe(disposed.dom.element("dom-tree"));
   });
 
   it("removes listeners and rendered rows on disposal", () => {
@@ -874,7 +994,7 @@ class FakeDom {
   public constructor(clientHeight: number) {
     const tree = this.register("dom-tree");
     tree.clientHeight = clientHeight;
-    this.register("dom-tree-spacer");
+    tree.append(this.register("dom-tree-spacer"));
     this.register("dom-tree-empty");
     this.document = {
       getElementById: (id) => this.elements.get(id),
@@ -1070,6 +1190,32 @@ class FakeEvent {
   public stopPropagation(): void {
     this.propagationStopped = true;
   }
+}
+
+function recoveryRoot(
+  root: DomNodeView,
+  documentEpoch: number,
+) {
+  return {
+    type: "dom.root" as const,
+    requestId: "recovery-root",
+    documentEpoch,
+    node: root,
+  };
+}
+
+function recoveryLocator(
+  target: DomNodeView,
+  ancestorPath: readonly DomNodeView[],
+  documentEpoch: number,
+) {
+  return {
+    type: "dom.locator" as const,
+    requestId: "recovery-locator",
+    documentEpoch,
+    node: target,
+    ancestorPath,
+  };
 }
 
 async function flushAsync(): Promise<void> {

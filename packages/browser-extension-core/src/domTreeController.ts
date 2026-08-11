@@ -11,8 +11,13 @@ import {
 } from "./domProtocol.js";
 import {
   DOM_TREE_RECOVERY_MAX_EXPANDED,
+  locatorDepth,
   type DomStableLocator,
 } from "./domStableLocator.js";
+import {
+  classifyDomTreeRecoveryError,
+  DomTreeRecoveryFatalError,
+} from "./domTreeRecoveryError.js";
 import {
   virtualTreeRows,
   type VirtualTreeRow,
@@ -42,7 +47,15 @@ export interface DomTreeControllerOptions {
 export interface DomTreeRecoverySnapshot {
   readonly selectedLocator?: DomStableLocator;
   readonly selectedWasExpanded: boolean;
+  readonly focusAnchor?: DomTreeRecoveryFocusAnchor;
   readonly expandedLocators: readonly DomStableLocator[];
+}
+
+export type DomTreeRecoveryFocusRowType = "node" | "load-more";
+
+export interface DomTreeRecoveryFocusAnchor {
+  readonly locator: DomStableLocator;
+  readonly rowType: DomTreeRecoveryFocusRowType;
 }
 
 interface DomTreeNodeRow {
@@ -146,6 +159,8 @@ export class DomTreeController {
   private rootRequest: { readonly token: object; readonly promise: Promise<void> } | undefined;
   private frozenRows: readonly DomTreeRow[] | undefined;
   private recoverySnapshot: DomTreeRecoverySnapshot | undefined;
+  private recoveryFocusRef: string | undefined;
+  private recoveryFocusRowType: DomTreeRecoveryFocusRowType | undefined;
   private recovering = false;
   private generation = 0;
   private requestSequence = 0;
@@ -280,12 +295,24 @@ export class DomTreeController {
     this.rootRef = response.node.nodeRef;
     this.upsertNode(response.node, undefined);
     this.focusedNodeRef = response.node.nodeRef;
+    const focusAnchor = this.recoverySnapshot?.focusAnchor;
+    if (
+      focusAnchor &&
+      locatorKey(focusAnchor.locator) === locatorKey(response.node.locator)
+    ) {
+      this.recoveryFocusRef = response.node.nodeRef;
+      this.recoveryFocusRowType = focusAnchor.rowType;
+    }
     this.invalidateRows();
   }
 
   public installRecoveredPath(
     response: DomLocatorResponse,
-    options: { readonly selected: boolean; readonly expanded: boolean },
+    options: {
+      readonly selected: boolean;
+      readonly expanded: boolean;
+      readonly focusIntent?: DomTreeRecoveryFocusRowType;
+    },
   ): void {
     if (
       this.disposed ||
@@ -313,7 +340,10 @@ export class DomTreeController {
           }
         }
       }
-      if (options.selected && index < response.ancestorPath.length - 1) {
+      if (
+        (options.selected || options.focusIntent) &&
+        index < response.ancestorPath.length - 1
+      ) {
         this.expanded.add(view.nodeRef);
       }
       parentRef = view.nodeRef;
@@ -327,9 +357,12 @@ export class DomTreeController {
         response.ancestorPath.map((view) => view.nodeRef),
       );
       this.selectedNodeRef = response.node.nodeRef;
-      this.focusedNodeRef = response.node.nodeRef;
       this.currentRevealRef = response.node.nodeRef;
       this.currentRevealVersion += 1;
+    }
+    if (options.focusIntent) {
+      this.recoveryFocusRef = response.node.nodeRef;
+      this.recoveryFocusRowType = options.focusIntent;
     }
     this.currentError = undefined;
     this.invalidateRows();
@@ -356,9 +389,12 @@ export class DomTreeController {
       return;
     }
     this.commitRecoveredChildren();
+    this.restoreRecoveryFocus();
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
+    this.recoveryFocusRef = undefined;
+    this.recoveryFocusRowType = undefined;
     this.invalidateRows();
     this.notify();
   }
@@ -722,6 +758,7 @@ export class DomTreeController {
     const selectedLocator = selectedRef
       ? this.nodes.get(selectedRef)?.view.locator
       : undefined;
+    const focusAnchor = this.captureRecoveryFocusAnchor();
     const ordered = [...this.expanded]
       .map((nodeRef, index) => {
         const stableLocator = this.nodes.get(nodeRef)?.view.locator;
@@ -750,8 +787,28 @@ export class DomTreeController {
       ...(selectedLocator ? { selectedLocator } : {}),
       selectedWasExpanded: selectedRef !== undefined &&
         this.expanded.has(selectedRef),
+      ...(focusAnchor ? { focusAnchor } : {}),
       expandedLocators: Object.freeze(expandedLocators),
     });
+  }
+
+  private captureRecoveryFocusAnchor(): DomTreeRecoveryFocusAnchor | undefined {
+    const focusedRow = this.rows().find((row) => (
+      row.nodeRef === this.focusedNodeRef
+    ));
+    if (!focusedRow) {
+      return undefined;
+    }
+    const nodeRef = focusedRow.type === "load-more"
+      ? focusedRow.parentRef
+      : focusedRow.nodeRef;
+    const stableLocator = this.nodes.get(nodeRef)?.view.locator;
+    return stableLocator
+      ? Object.freeze({
+        locator: stableLocator,
+        rowType: focusedRow.type,
+      })
+      : undefined;
   }
 
   private async fetchRecoveryChildren(
@@ -800,7 +857,25 @@ export class DomTreeController {
           return;
         }
         if (response.type === "dom.error") {
-          return;
+          if (
+            response.requestId !== request.requestId ||
+            (response.documentEpoch !== undefined &&
+              response.documentEpoch !== epoch)
+          ) {
+            throw new DomTreeRecoveryFatalError(
+              "branch",
+              "DOM recovery branch response lost session ownership",
+              response.code,
+            );
+          }
+          if (classifyDomTreeRecoveryError("branch", response.code) === "partial") {
+            return;
+          }
+          throw new DomTreeRecoveryFatalError(
+            "branch",
+            `DOM recovery branch failed: ${response.code}`,
+            response.code,
+          );
         }
         if (
           response.type !== "dom.children" ||
@@ -809,7 +884,10 @@ export class DomTreeController {
           response.nodeRef !== nodeRef ||
           response.branchRevision !== revision
         ) {
-          return;
+          throw new DomTreeRecoveryFatalError(
+            "branch",
+            "DOM recovery branch response lost session ownership",
+          );
         }
         this.clearPageChildren(currentBranch);
         for (const child of response.nodes) {
@@ -824,7 +902,7 @@ export class DomTreeController {
         this.invalidateRows();
       } catch (error) {
         if (this.isCurrentRecovery(recoveryGeneration)) {
-          this.reportError(error);
+          throw error;
         }
       } finally {
         const currentBranch = this.branches.get(nodeRef);
@@ -1251,6 +1329,29 @@ export class DomTreeController {
     }
   }
 
+  private restoreRecoveryFocus(): void {
+    const nodeRef = this.recoveryFocusRef;
+    if (!nodeRef || !this.nodes.has(nodeRef)) {
+      this.focusedNodeRef = this.rootRef;
+      return;
+    }
+    if (this.recoveryFocusRowType === "load-more") {
+      const branch = this.branches.get(nodeRef);
+      const hasLoadMoreRow = this.expanded.has(nodeRef) && Boolean(
+        branch && (
+          branch.nextCursor ||
+          branch.pending ||
+          (!branch.loaded && branch.children.length === 0)
+        )
+      );
+      this.focusedNodeRef = hasLoadMoreRow
+        ? `${LOAD_MORE_PREFIX}${nodeRef}`
+        : this.rootRef;
+      return;
+    }
+    this.focusedNodeRef = nodeRef;
+  }
+
   private isPageChild(nodeRef: string): boolean {
     for (const branch of this.branches.values()) {
       if (
@@ -1354,6 +1455,8 @@ export class DomTreeController {
 
   private clearLiveState(documentEpoch: number | undefined): void {
     this.rootRequest = undefined;
+    this.recoveryFocusRef = undefined;
+    this.recoveryFocusRowType = undefined;
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
@@ -1432,13 +1535,6 @@ function emptyRecoverySnapshot(): DomTreeRecoverySnapshot {
     selectedWasExpanded: false,
     expandedLocators: Object.freeze([]),
   });
-}
-
-function locatorDepth(locator: DomStableLocator): number {
-  return locator.path.length + locator.boundaries.reduce(
-    (total, boundary) => total + boundary.hostPath.length,
-    0,
-  );
 }
 
 function locatorKey(locator: DomStableLocator): string {

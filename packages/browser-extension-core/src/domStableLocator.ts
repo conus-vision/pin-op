@@ -47,6 +47,13 @@ export interface DomLocatorAttribute {
   readonly value: string;
 }
 
+export function locatorDepth(locator: DomStableLocator): number {
+  return locator.path.length + locator.boundaries.reduce(
+    (total, boundary) => total + boundary.hostPath.length + 1,
+    0,
+  );
+}
+
 export interface StableLocatorResolution {
   readonly kind: DomStableLocator["targetKind"];
   readonly node: Node;
