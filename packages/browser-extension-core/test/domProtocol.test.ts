@@ -292,7 +292,7 @@ describe("DOM protocol", () => {
     }
   });
 
-  it("rejects unknown stable locator keys at every level", () => {
+  it("ignores unknown stable locator keys at every level without enumerating them", () => {
     const inputs = [
       { ...stableLocator(), extra: true },
       stableLocator({
@@ -311,11 +311,11 @@ describe("DOM protocol", () => {
     ];
 
     for (const locator of inputs) {
-      expect(() => parseDomRequest({
+      expect(parseDomRequest({
         type: "dom.resolveLocator",
         requestId: "locator-unknown-key",
         locator,
-      })).toThrow(DomProtocolError);
+      })).toMatchObject({ type: "dom.resolveLocator" });
     }
   });
 
@@ -681,18 +681,49 @@ describe("DOM protocol", () => {
     expect(getCalls).toBe(0);
   });
 
-  it("normalizes throwing locator proxy reflection", () => {
+  it("parses locator proxies without enumerating untrusted keys", () => {
+    let ownKeysCalls = 0;
     const locator = new Proxy(stableLocator(), {
       ownKeys() {
-        throw new Error("locator ownKeys failed");
+        ownKeysCalls += 1;
+        throw new Error("locator ownKeys must not run");
       },
     });
 
-    expect(() => parseDomRequest({
+    expect(parseDomRequest({
       type: "dom.resolveLocator",
       requestId: "locator-reflection",
       locator,
-    })).toThrow(DomProtocolError);
+    })).toMatchObject({ type: "dom.resolveLocator" });
+    expect(ownKeysCalls).toBe(0);
+  });
+
+  it("reads only whitelisted locator properties from oversized records", () => {
+    const extras = Object.fromEntries(
+      Array.from({ length: 2_000 }, (_, index) => [`extra-${index}`, index]),
+    );
+    const descriptorReads: PropertyKey[] = [];
+    const locator = new Proxy({ ...stableLocator(), ...extras }, {
+      getOwnPropertyDescriptor(target, key) {
+        descriptorReads.push(key);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+      ownKeys() {
+        throw new Error("oversized locator keys must not be enumerated");
+      },
+    });
+
+    expect(parseDomRequest({
+      type: "dom.resolveLocator",
+      requestId: "locator-oversized",
+      locator,
+    })).toMatchObject({ type: "dom.resolveLocator" });
+    expect(descriptorReads).toEqual([
+      "version",
+      "targetKind",
+      "boundaries",
+      "path",
+    ]);
   });
 
   it("rejects nested node accessors without executing them", () => {

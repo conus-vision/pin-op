@@ -1310,116 +1310,89 @@ function parseBoundedArray<T>(
   maximumLength: number,
   parseItem: (item: unknown) => T,
 ): readonly T[] {
-  const properties = snapshotOwnDataProperties(value, "array");
-  const lengthProperty = properties.find(({ key }) => key === "length");
-  const length = lengthProperty?.value;
+  const length = readArrayLength(value);
   if (
     typeof length !== "number" ||
     !Number.isSafeInteger(length) ||
     length < 0 ||
-    length > maximumLength ||
-    properties.length !== length + 1
+    length > maximumLength
   ) {
     throw invalidLocator();
   }
 
-  const values: unknown[] = new Array(length);
-  for (const { key, value: item } of properties) {
-    if (key === "length") {
-      continue;
-    }
-    if (typeof key !== "string" || !isCanonicalArrayIndex(key, length)) {
-      throw invalidLocator();
-    }
-    values[Number(key)] = item;
-  }
-  const snapshot = Object.freeze(values);
+  const array = value as object;
   const parsed: T[] = [];
   for (let index = 0; index < length; index += 1) {
-    if (!hasOwn(snapshot, String(index))) {
-      throw invalidLocator();
-    }
-    parsed.push(parseItem(snapshot[index]));
+    const item = readOwnDataProperty(array, String(index));
+    if (!item.present) throw invalidLocator();
+    parsed.push(parseItem(item.value));
   }
   return Object.freeze(parsed);
-}
-
-function isCanonicalArrayIndex(key: string, length: number): boolean {
-  const index = Number(key);
-  return (
-    Number.isSafeInteger(index) &&
-    index >= 0 &&
-    index < length &&
-    String(index) === key
-  );
-}
-
-interface OwnDataProperty {
-  readonly key: PropertyKey;
-  readonly value: unknown;
-}
-
-function snapshotOwnDataProperties(
-  value: unknown,
-  expectedKind: "record" | "array",
-): readonly OwnDataProperty[] {
-  try {
-    if (value === null || typeof value !== "object") {
-      throw invalidLocator();
-    }
-    const isArray = Array.isArray(value);
-    if ((expectedKind === "array") !== isArray) {
-      throw invalidLocator();
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const properties: OwnDataProperty[] = [];
-    for (const key of Reflect.ownKeys(descriptors)) {
-      const descriptorHolder = Reflect.getOwnPropertyDescriptor(
-        descriptors,
-        key,
-      );
-      const descriptor = descriptorHolder?.value as
-        | PropertyDescriptor
-        | undefined;
-      if (!descriptor || !hasOwn(descriptor, "value")) {
-        throw invalidLocator();
-      }
-      properties.push(Object.freeze({ key, value: descriptor.value }));
-    }
-    return Object.freeze(properties);
-  } catch {
-    throw invalidLocator();
-  }
 }
 
 function snapshotRecord(
   value: unknown,
   allowedKeys: readonly string[],
 ): Readonly<Record<string, unknown>> {
-  const properties = snapshotOwnDataProperties(value, "record");
+  if (!isPlainRecord(value)) throw invalidLocator();
   const snapshot: Record<string, unknown> = Object.create(null) as Record<
     string,
     unknown
   >;
-  for (const { key, value: propertyValue } of properties) {
-    if (typeof key !== "string" || !allowedKeys.includes(key)) {
-      throw invalidLocator();
+  for (const key of allowedKeys) {
+    const property = readOwnDataProperty(value, key);
+    if (property.present) {
+      snapshot[key] = property.value;
     }
-    snapshot[key] = propertyValue;
   }
   return Object.freeze(snapshot);
 }
 
 function assertKeys(
   value: Record<string, unknown>,
-  allowedKeys: readonly string[],
+  _allowedKeys: readonly string[],
   requiredKeys: readonly string[],
 ): void {
-  const keys = Reflect.ownKeys(value);
-  if (
-    keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key)) ||
-    requiredKeys.some((key) => !hasOwn(value, key))
-  ) {
+  if (requiredKeys.some((key) => !hasOwn(value, key))) {
+    throw invalidLocator();
+  }
+}
+
+interface OwnDataPropertyRead {
+  readonly present: boolean;
+  readonly value: unknown;
+}
+
+function readArrayLength(value: unknown): unknown {
+  if (!Array.isArray(value) || !hasExpectedPrototype(value, Array.prototype)) {
+    throw invalidLocator();
+  }
+  const property = readOwnDataProperty(value, "length");
+  return property.present ? property.value : undefined;
+}
+
+function isPlainRecord(value: unknown): value is object {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    hasExpectedPrototype(value, Object.prototype);
+}
+
+function hasExpectedPrototype(value: object, prototype: object): boolean {
+  try {
+    return Object.getPrototypeOf(value) === prototype;
+  } catch {
+    throw invalidLocator();
+  }
+}
+
+function readOwnDataProperty(value: object, key: string): OwnDataPropertyRead {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) return Object.freeze({ present: false, value: undefined });
+    if (!hasOwn(descriptor, "value")) throw invalidLocator();
+    return Object.freeze({ present: true, value: descriptor.value });
+  } catch {
     throw invalidLocator();
   }
 }

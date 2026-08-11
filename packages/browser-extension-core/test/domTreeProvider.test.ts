@@ -6782,7 +6782,7 @@ describe("DomTreeProvider", () => {
 
     expect(internals.restoreSnapshotTimers(snapshot)).toBe(false);
     expect(cancelled).toEqual([101]);
-    expect(internals.mutationTimer).toBe(101);
+    expect(internals.mutationTimer).toBeUndefined();
     expect(internals.frameMutationScanTimer).toBe(replacementFrameTimer);
     expect(internals.shadowScanTimer).toBe(replacementShadowTimer);
   });
@@ -6803,7 +6803,7 @@ describe("DomTreeProvider", () => {
 
     expect(internals.restoreSnapshotTimers(snapshot)).toBe(false);
     expect(cancelled).toEqual([101]);
-    expect(internals.mutationTimer).toBe(101);
+    expect(internals.mutationTimer).toBeUndefined();
     expect(internals.frameMutationScanTimer).toBeUndefined();
     expect(internals.shadowScanTimer).toBe(103);
   });
@@ -6935,6 +6935,81 @@ describe("DomTreeProvider", () => {
     expect(state.shadowScanTimer).toBeUndefined();
   });
 
+  it("continues rollback timer cancellation after a hostile timer throws", () => {
+    const harness = createProviderHarness(createDocument());
+    const state = harness.provider as unknown as ProviderRollbackInternals;
+    const snapshot = state.snapshotProviderAuthority();
+    const cancelled: unknown[] = [];
+    state.mutationTimer = 101;
+    state.frameMutationScanTimer = 102;
+    state.shadowScanTimer = 103;
+    state.cancelTimeout = (handle) => {
+      cancelled.push(handle);
+      if (handle === 101) throw new Error("hostile rollback cancellation");
+    };
+
+    expect(state.restoreSnapshotTimers(snapshot)).toBe(false);
+    expect(cancelled).toEqual([101, 102, 103]);
+    expect(state.mutationTimer).toBeUndefined();
+    expect(state.frameMutationScanTimer).toBeUndefined();
+    expect(state.shadowScanTimer).toBeUndefined();
+  });
+
+  it.each([
+    ["mutation barrier", "mutationTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.flushMutationBarrier()],
+    ["collapsed frame scan", "frameMutationScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.pruneCollapsedFrameMutationScans(undefined)],
+    ["idle shadow scan", "shadowScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.stopShadowScanIfIdle()],
+  ] as const)("clears the %s timer before hostile cancellation", (_path, timer, cancel) => {
+    const harness = createProviderHarness(createDocument());
+    const state = harness.provider as unknown as ProviderRollbackInternals & ProviderTimerCancellationInternals;
+    state[timer] = 101;
+    let observed: unknown;
+    state.cancelTimeout = () => {
+      observed = state[timer];
+      throw new Error("hostile cancellation");
+    };
+
+    expect(() => cancel(state)).not.toThrow();
+    expect(observed).toBeUndefined();
+    expect(state[timer]).toBeUndefined();
+  });
+
+  it.each([
+    ["mutation barrier", "mutationTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.flushMutationBarrier()],
+    ["collapsed frame scan", "frameMutationScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.pruneCollapsedFrameMutationScans(undefined)],
+    ["idle shadow scan", "shadowScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.stopShadowScanIfIdle()],
+  ] as const)("preserves a reentrant %s timer replacement", (_path, timer, cancel) => {
+    const harness = createProviderHarness(createDocument());
+    const state = harness.provider as unknown as ProviderRollbackInternals & ProviderTimerCancellationInternals;
+    state[timer] = 101;
+    state.cancelTimeout = () => {
+      state[timer] = 202;
+    };
+
+    cancel(state);
+    expect(state[timer]).toBe(202);
+  });
+
+  it.each([
+    ["mutation barrier", "mutationTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.flushMutationBarrier()],
+    ["collapsed frame scan", "frameMutationScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.pruneCollapsedFrameMutationScans(undefined)],
+    ["idle shadow scan", "shadowScanTimer", (state: ProviderRollbackInternals & ProviderTimerCancellationInternals) => state.stopShadowScanIfIdle()],
+  ] as const)("preserves a reentrant reset replacement from the %s timer", (_path, timer, cancel) => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const harness = createProviderHarness(document);
+    const state = harness.provider as unknown as ProviderRollbackInternals & ProviderTimerCancellationInternals;
+    state[timer] = 101;
+    state.cancelTimeout = () => {
+      harness.provider.resetDocument(replacement as unknown as Document, 4);
+      state[timer] = 202;
+    };
+
+    cancel(state);
+    expect(state.topDocument).toBe(replacement as unknown as Document);
+    expect(state[timer]).toBe(202);
+  });
+
   it("does not invoke an outward callback after publication authority is already stale", () => {
     const provider = createProvider(createDocument());
     const state = provider as unknown as {
@@ -7006,6 +7081,12 @@ interface ProviderRollbackInternals {
   snapshotProviderAuthority(): unknown;
   restoreSnapshotTimers(snapshot: unknown): boolean;
   restoreProviderAuthority(snapshot: unknown): boolean;
+}
+
+interface ProviderTimerCancellationInternals {
+  flushMutationBarrier(): void;
+  pruneCollapsedFrameMutationScans(collapsedNode: Node | undefined): void;
+  stopShadowScanIfIdle(): void;
 }
 
 interface AuthorityOperationInternals {

@@ -56,7 +56,7 @@ describe("PanelSessionTransport", () => {
 
     await expect(transport.request("panel-a", {
       ...locatorRequest("locator-invalid"),
-      locator: { ...stableLocator(), extra: true },
+      locator: { ...stableLocator(), version: 2 },
     } as unknown as DomRequest)).resolves.toEqual({
       type: "dom.error",
       requestId: "locator-invalid",

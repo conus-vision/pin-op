@@ -1467,7 +1467,7 @@ describe("BackgroundRouter", () => {
     const request = domResolveLocator("locator-invalid");
     const invalidRequest = {
       ...request,
-      locator: { ...request.locator, extra: true },
+      locator: { ...request.locator, version: 2 },
     };
 
     panel.emitMessage(invalidRequest);

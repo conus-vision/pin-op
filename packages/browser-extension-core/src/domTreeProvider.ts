@@ -242,6 +242,11 @@ interface RollbackTimerState {
   shadowScanTimer: DomTreeTimerHandle | undefined;
 }
 
+interface TimerCancellationResult {
+  readonly current: boolean;
+  readonly cancelled: boolean;
+}
+
 interface ProviderAuthorityOperation {
   publish(validate?: () => boolean): boolean;
   finalize(validate?: () => boolean, beforeEnqueue?: () => boolean): boolean;
@@ -1621,8 +1626,8 @@ export class DomTreeProvider {
       }
     }
     if (this.mutationTimer !== undefined) {
-      this.cancelTimeout(this.mutationTimer);
-      this.mutationTimer = undefined;
+      const cancellation = this.cancelTimerSlot("mutationTimer");
+      if (!cancellation.current) return;
     }
     if (this.pendingMutations.length > 0) {
       this.processMutations();
@@ -2532,6 +2537,7 @@ export class DomTreeProvider {
     snapshot: ProviderAuthoritySnapshot,
     timers: RollbackTimerState,
   ): boolean {
+    let cancelled = true;
     const timerNames: readonly (keyof RollbackTimerState)[] = [
       "mutationTimer",
       "frameMutationScanTimer",
@@ -2545,17 +2551,16 @@ export class DomTreeProvider {
         continue;
       }
       if (handle === undefined) continue;
-      let cancelled = true;
-      try {
-        this.cancelTimeout(handle);
-      } catch {
+      const cancellation = this.cancelTimerSlot(timer, handle);
+      timers[timer] = this[timer];
+      if (!cancellation.current || !this.areRollbackTimersCurrent(snapshot, timers)) {
+        return false;
+      }
+      if (!cancellation.cancelled) {
         cancelled = false;
       }
-      if (!this.areRollbackTimersCurrent(snapshot, timers) || !cancelled) return false;
-      this[timer] = undefined;
-      timers[timer] = undefined;
     }
-    return this.areRollbackTimersCurrent(snapshot, timers);
+    return cancelled && this.areRollbackTimersCurrent(snapshot, timers);
   }
 
   private snapshotMaterializationMetadata(): ProviderMaterializationMetadata {
@@ -3290,8 +3295,7 @@ export class DomTreeProvider {
       this.pendingFrameMutationScans.length === 0 &&
       this.frameMutationScanTimer !== undefined
     ) {
-      this.cancelTimeout(this.frameMutationScanTimer);
-      this.frameMutationScanTimer = undefined;
+      this.cancelTimerSlot("frameMutationScanTimer");
     }
   }
 
@@ -3551,35 +3555,51 @@ export class DomTreeProvider {
   }
 
   private cancelScheduledWork(): void {
-    const authority = {
-      topDocument: this.topDocument,
-      documentEpoch: this.documentEpoch,
-      authorityGeneration: this.authorityGeneration,
-      disposed: this.disposed,
-    };
     const timers: readonly (readonly [keyof RollbackTimerState, DomTreeTimerHandle | undefined])[] = [
       ["mutationTimer", this.mutationTimer],
       ["shadowScanTimer", this.shadowScanTimer],
       ["frameMutationScanTimer", this.frameMutationScanTimer],
     ];
     for (const [timer, handle] of timers) {
-      if (handle === undefined || this[timer] !== handle) continue;
-      this[timer] = undefined;
-      try {
-        this.cancelTimeout(handle);
-      } catch {
-        // Continue with the remaining entry handles.
-      }
-      if (
-        this.topDocument !== authority.topDocument ||
-        this.documentEpoch !== authority.documentEpoch ||
-        this.authorityGeneration !== authority.authorityGeneration ||
-        this.disposed !== authority.disposed ||
-        this[timer] !== undefined
-      ) {
-        return;
-      }
+      const cancellation = this.cancelTimerSlot(timer, handle);
+      if (!cancellation.current) return;
     }
+  }
+
+  private cancelTimerSlot(
+    timer: keyof RollbackTimerState,
+    expectedHandle = this[timer],
+  ): TimerCancellationResult {
+    const authority = {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+      disposed: this.disposed,
+    };
+    const isCurrent = (): boolean => (
+      this.topDocument === authority.topDocument &&
+      this.documentEpoch === authority.documentEpoch &&
+      this.authorityGeneration === authority.authorityGeneration &&
+      this.disposed === authority.disposed &&
+      this[timer] === undefined
+    );
+    if (expectedHandle === undefined) {
+      return Object.freeze({
+        current: this[timer] === undefined,
+        cancelled: true,
+      });
+    }
+    if (this[timer] !== expectedHandle) {
+      return Object.freeze({ current: false, cancelled: false });
+    }
+    this[timer] = undefined;
+    let cancelled = true;
+    try {
+      this.cancelTimeout(expectedHandle);
+    } catch {
+      cancelled = false;
+    }
+    return Object.freeze({ current: isCurrent(), cancelled });
   }
 
   private stopShadowScanIfIdle(): void {
@@ -3587,8 +3607,8 @@ export class DomTreeProvider {
       this.expandedShadowHosts.size === 0 &&
       this.shadowScanTimer !== undefined
     ) {
-      this.cancelTimeout(this.shadowScanTimer);
-      this.shadowScanTimer = undefined;
+      const cancellation = this.cancelTimerSlot("shadowScanTimer");
+      if (!cancellation.current) return;
       this.shadowScanOffset = 0;
     }
   }
