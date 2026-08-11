@@ -64,12 +64,14 @@ export class DomNodeRegistry {
   private readonly maxReverseEntries: number;
   private readonly createWeakRef: (node: Node) => NodeWeakReference;
   private forward = new WeakMap<Node, Map<string, string>>();
-  private readonly reverse = new Map<string, NodeEntry>();
-  private readonly retained = new Map<string, Node>();
+  private reverse = new Map<string, NodeEntry>();
+  private retained = new Map<string, Node>();
   private documentEpoch: number;
   private nextRef = 1;
   private nextSequence = 1;
   private structuralRevision = 0;
+  private authorityRevision = 0;
+  private activeRestoreToken: symbol | undefined;
   private readonly dereferencing = new Set<NodeEntry>();
 
   public constructor(options: DomNodeRegistryOptions) {
@@ -95,10 +97,17 @@ export class DomNodeRegistry {
   /** Captures the live authority needed to undo a bounded provider operation. */
   public snapshot(): DomNodeRegistrySnapshot | undefined {
     const revision = this.structuralRevision;
+    const authorityRevision = this.authorityRevision;
+    const documentEpoch = this.documentEpoch;
     const entries: DomNodeRegistrySnapshotEntry[] = [];
     for (const [ref, entry] of this.reverse) {
       const result = this.dereferenceEntry(ref, entry, entry.scope);
-      if (result.kind !== "live" || this.structuralRevision !== revision) {
+      if (
+        result.kind !== "live" ||
+        this.structuralRevision !== revision ||
+        this.authorityRevision !== authorityRevision ||
+        this.documentEpoch !== documentEpoch
+      ) {
         return undefined;
       }
       entries.push(Object.freeze({
@@ -110,7 +119,11 @@ export class DomNodeRegistry {
         reasons: Object.freeze([...entry.reasons]),
       }));
     }
-    if (this.structuralRevision !== revision) return undefined;
+    if (
+      this.structuralRevision !== revision ||
+      this.authorityRevision !== authorityRevision ||
+      this.documentEpoch !== documentEpoch
+    ) return undefined;
     return Object.freeze({
       registry: this,
       documentEpoch: this.documentEpoch,
@@ -123,6 +136,10 @@ export class DomNodeRegistry {
 
   /** Restores a snapshot by rebuilding weak indexes from its live entries. */
   public restore(snapshot: DomNodeRegistrySnapshot): boolean {
+    if (this.activeRestoreToken) {
+      this.bumpAuthorityRevision();
+      return false;
+    }
     if (
       snapshot.registry !== this ||
       snapshot.documentEpoch !== this.documentEpoch ||
@@ -133,16 +150,35 @@ export class DomNodeRegistry {
     ) {
       return false;
     }
-    const nextForward = new WeakMap<Node, Map<string, string>>();
-    const nextReverse = new Map<string, NodeEntry>();
-    const nextRetained = new Map<string, Node>();
+    const documentEpoch = this.documentEpoch;
+    this.bumpAuthorityRevision();
+    const authorityRevision = this.authorityRevision;
+    const restoreToken = Symbol("restore");
+    this.activeRestoreToken = restoreToken;
+    const isRestoreCurrent = (): boolean => (
+      this.activeRestoreToken === restoreToken &&
+      this.documentEpoch === documentEpoch &&
+      this.authorityRevision === authorityRevision
+    );
     try {
+      const nextForward = new WeakMap<Node, Map<string, string>>();
+      const nextReverse = new Map<string, NodeEntry>();
+      const nextRetained = new Map<string, Node>();
       for (const snapshotEntry of snapshot.entries) {
+        let node: Node | undefined;
+        let derefFailed = false;
+        try {
+          node = deref(snapshotEntry.weakNode);
+        } catch {
+          derefFailed = true;
+        }
         if (
+          !isRestoreCurrent() ||
+          derefFailed ||
           !isNodeLike(snapshotEntry.node) ||
           !isNodeRef(snapshotEntry.ref) ||
           !this.isCurrentScope(snapshotEntry.scope) ||
-          deref(snapshotEntry.weakNode) !== snapshotEntry.node ||
+          node !== snapshotEntry.node ||
           !Number.isSafeInteger(snapshotEntry.sequence) || snapshotEntry.sequence < 1 ||
           nextReverse.has(snapshotEntry.ref)
         ) {
@@ -169,18 +205,20 @@ export class DomNodeRegistry {
         });
         if (reasons.size > 0) nextRetained.set(snapshotEntry.ref, snapshotEntry.node);
       }
+      if (!isRestoreCurrent()) return false;
+      this.forward = nextForward;
+      this.reverse = nextReverse;
+      this.retained = nextRetained;
+      this.nextRef = snapshot.nextRef;
+      this.nextSequence = snapshot.nextSequence;
+      this.structuralRevision = snapshot.structuralRevision;
+      this.bumpAuthorityRevision();
+      return true;
     } catch {
       return false;
+    } finally {
+      if (this.activeRestoreToken === restoreToken) this.activeRestoreToken = undefined;
     }
-    this.forward = nextForward;
-    this.reverse.clear();
-    for (const [ref, entry] of nextReverse) this.reverse.set(ref, entry);
-    this.retained.clear();
-    for (const [ref, node] of nextRetained) this.retained.set(ref, node);
-    this.nextRef = snapshot.nextRef;
-    this.nextSequence = snapshot.nextSequence;
-    this.structuralRevision = snapshot.structuralRevision;
-    return true;
   }
 
   public reference(node: Node, scope: NodeScope): string {
@@ -531,6 +569,14 @@ export class DomNodeRegistry {
 
   private bumpStructuralRevision(): void {
     this.structuralRevision += 1;
+    this.bumpAuthorityRevision();
+  }
+
+  private bumpAuthorityRevision(): void {
+    if (!Number.isSafeInteger(this.authorityRevision)) {
+      throw new Error("DomNodeRegistry authority revision exhausted");
+    }
+    this.authorityRevision += 1;
   }
 
   private requireCurrentScope(scope: NodeScope): NodeScope {

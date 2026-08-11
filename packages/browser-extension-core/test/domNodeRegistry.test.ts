@@ -49,6 +49,90 @@ describe("DomNodeRegistry", () => {
     expect(registry.restore(snapshot)).toBe(true);
     expect(factoryCalls).toBe(2);
   });
+
+  it("does not restore stale entries when snapshot deref resets the document", () => {
+    const controller = createReentrantWeakReferenceController();
+    const registry = new DomNodeRegistry({
+      maxReverseEntries: 3,
+      documentEpoch: 7,
+      createWeakRef: controller.create,
+    });
+    const oldNode = createNode();
+    registry.reference(oldNode, scope);
+    const snapshot = registry.snapshot();
+    if (!snapshot) throw new Error("expected registry snapshot");
+    controller.onNextDeref(() => registry.resetDocument(8));
+
+    expect(registry.restore(snapshot)).toBe(false);
+    const nextScope = { ...scope, documentEpoch: 8 };
+    const nextNode = createNode();
+    const nextRef = registry.reference(nextNode, nextScope);
+    expect(registry.resolve(nextRef, nextScope)).toBe(nextNode);
+    expect(registry.size).toBe(1);
+  });
+
+  it("preserves a reentrant reference instead of partially restoring a snapshot", () => {
+    const controller = createReentrantWeakReferenceController();
+    const registry = new DomNodeRegistry({
+      maxReverseEntries: 3,
+      documentEpoch: 7,
+      createWeakRef: controller.create,
+    });
+    const oldNode = createNode();
+    const oldRef = registry.reference(oldNode, scope);
+    const snapshot = registry.snapshot();
+    if (!snapshot) throw new Error("expected registry snapshot");
+    const newerNode = createNode();
+    let newerRef = "";
+    controller.onNextDeref(() => {
+      newerRef = registry.reference(newerNode, scope);
+    });
+
+    expect(registry.restore(snapshot)).toBe(false);
+    expect(registry.resolve(oldRef, scope)).toBe(oldNode);
+    expect(registry.resolve(newerRef, scope)).toBe(newerNode);
+    expect(registry.size).toBe(2);
+  });
+
+  it("fails an outer restore when weak deref attempts a nested restore", () => {
+    const controller = createReentrantWeakReferenceController();
+    const registry = new DomNodeRegistry({
+      maxReverseEntries: 2,
+      documentEpoch: 7,
+      createWeakRef: controller.create,
+    });
+    const node = createNode();
+    const ref = registry.reference(node, scope);
+    const snapshot = registry.snapshot();
+    if (!snapshot) throw new Error("expected registry snapshot");
+    let nestedResult: boolean | undefined;
+    controller.onNextDeref(() => {
+      nestedResult = registry.restore(snapshot);
+    });
+
+    expect(registry.restore(snapshot)).toBe(false);
+    expect(nestedResult).toBe(false);
+    expect(registry.resolve(ref, scope)).toBe(node);
+  });
+
+  it("restores exact snapshot authority after staging every weak entry", () => {
+    const registry = new DomNodeRegistry({ maxReverseEntries: 3, documentEpoch: 7 });
+    const first = createNode();
+    const second = createNode();
+    const firstRef = registry.reference(first, scope);
+    const secondRef = registry.reference(second, scope);
+    registry.retain(firstRef, "selected");
+    const snapshot = registry.snapshot();
+    if (!snapshot) throw new Error("expected registry snapshot");
+    registry.release(firstRef, "selected");
+    registry.reference(createNode(), scope);
+
+    expect(registry.restore(snapshot)).toBe(true);
+    expect(registry.resolve(firstRef, scope)).toBe(first);
+    expect(registry.resolve(secondRef, scope)).toBe(second);
+    expect(registry.retentionReasons(firstRef)).toEqual(["selected"]);
+    expect(registry.reference(createNode(), scope)).toBe("node-3");
+  });
   it("creates opaque refs scoped to one document and frame epoch", () => {
     const registry = new DomNodeRegistry({ maxReverseEntries: 4, documentEpoch: 7 });
     const node = Object.assign(createNode(), {
