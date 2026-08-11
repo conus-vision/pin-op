@@ -234,6 +234,12 @@ interface ProviderAuthoritySnapshot {
   readonly metadata: ProviderMaterializationMetadata;
 }
 
+interface RollbackTimerState {
+  mutationTimer: DomTreeTimerHandle | undefined;
+  frameMutationScanTimer: DomTreeTimerHandle | undefined;
+  shadowScanTimer: DomTreeTimerHandle | undefined;
+}
+
 interface ProviderAuthorityOperation {
   publish(validate?: () => boolean): boolean;
   finalize(validate?: () => boolean): boolean;
@@ -2296,39 +2302,62 @@ export class DomTreeProvider {
   }
 
   private restoreSnapshotTimers(snapshot: ProviderAuthoritySnapshot): boolean {
-    if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+    const timers: RollbackTimerState = {
+      mutationTimer: this.mutationTimer,
+      frameMutationScanTimer: this.frameMutationScanTimer,
+      shadowScanTimer: this.shadowScanTimer,
+    };
+    if (!this.areRollbackTimersCurrent(snapshot, timers)) return false;
     const metadata = snapshot.metadata;
     if (
-      (metadata.mutationTimer !== undefined && this.mutationTimer !== metadata.mutationTimer) ||
+      (metadata.mutationTimer !== undefined && timers.mutationTimer !== metadata.mutationTimer) ||
       (metadata.frameMutationScanTimer !== undefined &&
-        this.frameMutationScanTimer !== metadata.frameMutationScanTimer) ||
-      (metadata.shadowScanTimer !== undefined && this.shadowScanTimer !== metadata.shadowScanTimer)
+        timers.frameMutationScanTimer !== metadata.frameMutationScanTimer) ||
+      (metadata.shadowScanTimer !== undefined && timers.shadowScanTimer !== metadata.shadowScanTimer)
     ) {
       return false;
     }
-    return this.cancelRollbackTimer(snapshot, "mutationTimer") &&
-      this.cancelRollbackTimer(snapshot, "frameMutationScanTimer") &&
-      this.cancelRollbackTimer(snapshot, "shadowScanTimer");
+    return this.cancelRollbackTimers(snapshot, timers);
   }
 
-  private cancelRollbackTimer(
+  private areRollbackTimersCurrent(
     snapshot: ProviderAuthoritySnapshot,
-    timer: "mutationTimer" | "frameMutationScanTimer" | "shadowScanTimer",
+    timers: RollbackTimerState,
   ): boolean {
-    if (!this.isProviderAuthorityCurrent(snapshot)) return false;
-    if (snapshot.metadata[timer] !== undefined) return this[timer] === snapshot.metadata[timer];
-    const handle = this[timer];
-    if (handle === undefined) return true;
-    let cancelled = true;
-    try {
-      this.cancelTimeout(handle);
-    } catch {
-      cancelled = false;
+    return this.isProviderAuthorityCurrent(snapshot) &&
+      this.mutationTimer === timers.mutationTimer &&
+      this.frameMutationScanTimer === timers.frameMutationScanTimer &&
+      this.shadowScanTimer === timers.shadowScanTimer;
+  }
+
+  private cancelRollbackTimers(
+    snapshot: ProviderAuthoritySnapshot,
+    timers: RollbackTimerState,
+  ): boolean {
+    const timerNames: readonly (keyof RollbackTimerState)[] = [
+      "mutationTimer",
+      "frameMutationScanTimer",
+      "shadowScanTimer",
+    ];
+    for (const timer of timerNames) {
+      if (!this.areRollbackTimersCurrent(snapshot, timers)) return false;
+      const handle = timers[timer];
+      if (snapshot.metadata[timer] !== undefined) {
+        if (handle !== snapshot.metadata[timer]) return false;
+        continue;
+      }
+      if (handle === undefined) continue;
+      let cancelled = true;
+      try {
+        this.cancelTimeout(handle);
+      } catch {
+        cancelled = false;
+      }
+      if (!this.areRollbackTimersCurrent(snapshot, timers) || !cancelled) return false;
+      this[timer] = undefined;
+      timers[timer] = undefined;
     }
-    if (!this.isProviderAuthorityCurrent(snapshot) || this[timer] !== handle) return false;
-    if (!cancelled) return false;
-    this[timer] = undefined;
-    return this.isProviderAuthorityCurrent(snapshot);
+    return this.areRollbackTimersCurrent(snapshot, timers);
   }
 
   private snapshotMaterializationMetadata(): ProviderMaterializationMetadata {
