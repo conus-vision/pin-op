@@ -244,10 +244,214 @@ describe("startPanelRuntime", () => {
       type: "browser2ide.inspect.invalidated",
       reason: "documentDisconnected",
     });
+    const requestsBeforeUnlink = port.sent.filter(isRootRequest).length;
     port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
     await flushAsync();
 
-    expect(port.sent.filter(isRootRequest)).toHaveLength(1);
+    expect(requestsBeforeUnlink).toBe(2);
+    expect(port.sent.filter(isRootRequest)).toHaveLength(requestsBeforeUnlink);
+    runtime.dispose();
+  });
+
+  it("freezes the old tree and shows Restoring DOM until one recovered swap", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage(selectionChangedWithRevision(
+      "old-selected",
+      "button#old",
+      1,
+    ));
+
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "old-selected",
+    )).toBeDefined();
+    expect(dom.element("dom-tree").getAttribute("aria-busy")).toBe("true");
+    expect(dom.element("dom-tree").className.split(" "))
+      .toContain("is-recovering");
+    expect(dom.element("resolution-status").value).toBe("Restoring DOM");
+    const recoveryRoot = lastRequest(port, "dom.getRoot");
+    const replacement = domNode("new-selected", "button#new");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: recoveryRoot.requestId,
+      documentEpoch: 1,
+      node: replacement,
+    });
+    await flushAsync();
+    const selectedResolution = lastRequest(port, "dom.resolveLocator");
+    port.emitMessage({
+      type: "dom.locator",
+      requestId: selectedResolution.requestId,
+      documentEpoch: 1,
+      node: replacement,
+      ancestorPath: [replacement],
+    });
+    await flushAsync();
+
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "old-selected",
+    )).toBeUndefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "new-selected",
+    )).toBeDefined();
+    expect(dom.element("dom-tree").getAttribute("aria-busy")).toBe("false");
+    expect(dom.element("dom-tree").className.split(" "))
+      .not.toContain("is-recovering");
+    expect(dom.element("resolution-status").value)
+      .toBe("Select an element to inspect");
+    expect(port.sent.filter((message) => (
+      isRecord(message) && message.type === "dom.select"
+    ))).toEqual([{
+      type: "dom.select",
+      documentEpoch: 1,
+      nodeRef: "new-selected",
+    }]);
+    runtime.dispose();
+  });
+
+  it("lets a manual same-epoch selection replace frozen refs during recovery", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage(selectionChangedWithRevision(
+      "old-selected",
+      "button#old",
+      1,
+      6,
+    ));
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const staleRoot = lastRequest(port, "dom.getRoot");
+
+    port.emitMessage(selectionChangedWithRevision(
+      "manual-selected",
+      "button#manual",
+      1,
+      6,
+    ));
+    port.emitMessage({
+      type: "dom.root",
+      requestId: staleRoot.requestId,
+      documentEpoch: 6,
+      node: domNode("late-root", "html"),
+    });
+    await flushAsync();
+
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "manual-selected",
+    )).toBeDefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "old-selected",
+    )).toBeUndefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "late-root",
+    )).toBeUndefined();
+    expect(dom.element("dom-tree").getAttribute("aria-busy")).toBe("false");
+    expect(dom.element("selected-element-summary").value)
+      .toBe("Selected: button#manual");
+    expect(reportedErrors).toEqual([]);
+    runtime.dispose();
+  });
+
+  it("lets a second invalidation supersede the first recovery root", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    const initialRoot = lastRequest(port, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: initialRoot.requestId,
+      documentEpoch: 1,
+      node: domNode("old-root", "html"),
+    });
+    await flushAsync();
+
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const firstRoot = lastRequest(port, "dom.getRoot");
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const secondRoot = lastRequest(port, "dom.getRoot");
+    expect(secondRoot.requestId).not.toBe(firstRoot.requestId);
+    port.emitMessage({
+      type: "dom.root",
+      requestId: firstRoot.requestId,
+      documentEpoch: 2,
+      node: domNode("stale-root", "html"),
+    });
+    port.emitMessage({
+      type: "dom.root",
+      requestId: secondRoot.requestId,
+      documentEpoch: 2,
+      node: domNode("second-root", "html"),
+    });
+    await flushAsync();
+
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "second-root",
+    )).toBeDefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "stale-root",
+    )).toBeUndefined();
+    expect(dom.element("resolution-status").value)
+      .toBe("Select an element to inspect");
+    runtime.dispose();
+  });
+
+  it("clears frozen controls and restoring status after a fatal root error", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage(selectionChangedWithRevision(
+      "old-selected",
+      "button#old",
+      1,
+    ));
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const recoveryRoot = lastRequest(port, "dom.getRoot");
+
+    port.emitMessage({
+      type: "dom.error",
+      requestId: recoveryRoot.requestId,
+      code: "session-disposed",
+    });
+    await flushAsync();
+
+    expect(dom.element("dom-tree-spacer").children).toEqual([]);
+    expect(dom.element("dom-tree").getAttribute("aria-busy")).toBe("false");
+    expect(dom.element("resolution-status").value)
+      .toBe("Select an element to inspect");
     runtime.dispose();
   });
 
@@ -1500,6 +1704,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRootRequest(value: unknown): boolean {
   return isRecord(value) && value.type === "dom.getRoot";
+}
+
+function lastRequest(
+  port: TestRuntimePort,
+  type: "dom.getRoot" | "dom.resolveLocator",
+): { readonly requestId: string } {
+  const request = [...port.sent].reverse().find((message) => (
+    isRecord(message) && message.type === type
+  ));
+  if (!isRecord(request) || typeof request.requestId !== "string") {
+    throw new Error(`Missing ${type} request`);
+  }
+  return { requestId: request.requestId };
 }
 
 function isSourceNavigationCommand(value: unknown): boolean {

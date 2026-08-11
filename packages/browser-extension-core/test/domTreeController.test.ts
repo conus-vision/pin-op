@@ -4,11 +4,14 @@ import {
   type DomTreeTransport,
 } from "../src/domTreeController.js";
 import type {
+  DomChildrenResponse,
   DomEvent,
   DomNodeView,
   DomRequest,
   DomResponse,
+  DomRootResponse,
 } from "../src/domProtocol.js";
+import type { DomStableLocator } from "../src/domStableLocator.js";
 
 describe("DomTreeController", () => {
   it("loads children lazily and paginates only on demand", async () => {
@@ -415,6 +418,119 @@ describe("DomTreeController", () => {
       .toMatchObject({ kind: "element", inaccessible: true });
   });
 
+  it("captures selected and deduplicated expanded locators shallow-to-deep", () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    const duplicateLocator = locator(2, 7);
+    const selectedLocator = locator(4, 9);
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("root", locator(1), true),
+      locatedNode("parent-a", duplicateLocator, true),
+      locatedNode("parent-b", duplicateLocator, true),
+      locatedNode("selected", selectedLocator),
+    ]));
+    const rowsBeforeRecovery = controller.rows();
+    transport.cancellations.length = 0;
+
+    const snapshot = controller.beginRecovery();
+
+    expect(snapshot).toEqual({
+      selectedLocator,
+      expandedLocators: [locator(1), duplicateLocator],
+    });
+    expect(controller.snapshot().recovering).toBe(true);
+    expect(controller.rows()).toBe(rowsBeforeRecovery);
+    expect(transport.cancellations).toEqual(["DOM tree recovery started"]);
+  });
+
+  it("caps expanded recovery locators at 64 while retaining the selection", async () => {
+    const transport = new TestTransport();
+    const children = Array.from({ length: 64 }, (_, index) => (
+      locatedNode(`child-${index}`, locator(2, index), true)
+    ));
+    transport.enqueue(rootResponse(locatedNode("root", locator(1), true)));
+    transport.enqueue(childrenResponse("root", 0, children));
+    for (let index = 0; index < children.length; index += 1) {
+      transport.enqueue(childrenResponse(`child-${index}`, 0, []));
+    }
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand("root");
+    for (const child of children) {
+      await controller.expand(child.nodeRef);
+    }
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("root", locator(1), true),
+      children.at(-1)!,
+    ]));
+
+    const snapshot = controller.beginRecovery();
+
+    expect(snapshot.selectedLocator).toEqual(locator(2, 63));
+    expect(snapshot.expandedLocators).toHaveLength(64);
+    expect(snapshot.expandedLocators[0]).toEqual(locator(1));
+    expect(snapshot.expandedLocators.slice(1)).toEqual(
+      Array.from({ length: 63 }, (_, index) => locator(2, index)),
+    );
+  });
+
+  it("keeps frozen rows read-only throughout recovery", async () => {
+    const transport = new TestTransport();
+    transport.enqueue(rootResponse(node("root", true)));
+    transport.enqueue(childrenResponse("root", 0, [node("child")], "page-2"));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand("root");
+    controller.focus("child");
+    controller.hover("child");
+    const frozenRows = controller.rows();
+    const requestCount = transport.requests.length;
+    const dispatchCount = transport.dispatched.length;
+
+    controller.beginRecovery();
+    await controller.select("child");
+    controller.hover("child");
+    controller.clearHover();
+    controller.focus("root");
+    controller.collapse("root");
+    await controller.expand("root");
+    await controller.toggle("root");
+    await controller.loadMore("root");
+    await controller.handleKey("Enter");
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: "root", branchRevision: 2 }],
+    });
+
+    expect(controller.rows()).toBe(frozenRows);
+    expect(controller.focusedRef).toBe("child");
+    expect(transport.requests).toHaveLength(requestCount);
+    expect(transport.dispatched).toHaveLength(dispatchCount);
+  });
+
+  it("stages a replacement root without publishing until one atomic finish", () => {
+    const transport = new TestTransport();
+    const changed = vi.fn();
+    const controller = createController(transport, changed);
+    controller.handleEvent(selectionEvent(1, [node("old-root")]));
+    const frozenRows = controller.rows();
+    changed.mockClear();
+
+    controller.beginRecovery();
+    expect(changed).toHaveBeenCalledTimes(1);
+    controller.installRecoveryRoot(rootResponse(node("new-root"), 2));
+
+    expect(controller.rows()).toBe(frozenRows);
+    expect(changed).toHaveBeenCalledTimes(1);
+
+    controller.finishRecovery();
+
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
+    expect(controller.snapshot().recovering).toBe(false);
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
   it("ignores pending responses and further actions after disposal", async () => {
     const transport = new TestTransport();
     const root = deferred<DomResponse>();
@@ -467,10 +583,34 @@ function node(
   };
 }
 
+function locatedNode(
+  nodeRef: string,
+  stableLocator: DomStableLocator,
+  expandable = false,
+  branchRevision = 0,
+): DomNodeView {
+  return {
+    ...node(nodeRef, expandable, branchRevision),
+    locator: stableLocator,
+  };
+}
+
+function locator(depth: number, siblingIndex = 0): DomStableLocator {
+  return {
+    version: 1,
+    targetKind: "element",
+    boundaries: [],
+    path: Array.from({ length: depth }, (_, index) => ({
+      tagName: index === depth - 1 ? "div" : "section",
+      siblingIndex: index === depth - 1 ? siblingIndex : 0,
+    })),
+  };
+}
+
 function rootResponse(
   root: DomNodeView,
   documentEpoch = 1,
-): DomResponse {
+): DomRootResponse {
   return {
     type: "dom.root",
     requestId: "ignored-by-test-transport",
@@ -484,7 +624,7 @@ function childrenResponse(
   branchRevision: number,
   nodes: readonly DomNodeView[],
   nextCursor?: string,
-): DomResponse {
+): DomChildrenResponse {
   return {
     type: "dom.children",
     requestId: "ignored-by-test-transport",

@@ -483,6 +483,49 @@ describe("DomTreeView", () => {
     ]);
   });
 
+  it("keeps frozen rows visible and disables every tree control while recovering", async () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+
+    harness.controller.beginRecovery();
+
+    const tree = harness.dom.element("dom-tree");
+    const root = harness.dom.row("root");
+    const selected = harness.dom.row("selected");
+    const previous = selected.findByData("action", "source-previous");
+    const loadMore = harness.dom.element("dom-tree-spacer")
+      .findByData("rowType", "load-more");
+    expect(tree.getAttribute("aria-busy")).toBe("true");
+    expect(tree.className.split(" ")).toContain("is-recovering");
+    expect(root.getAttribute("aria-disabled")).toBe("true");
+    expect(root.findByData("part", "disclosure")?.dataset.action)
+      .toBeUndefined();
+    expect(selected.getAttribute("tabindex")).toBe("-1");
+    expect(previous).toBeDefined();
+    expect(previous?.disabled).toBe(true);
+    expect(loadMore?.getAttribute("aria-disabled")).toBe("true");
+    if (!previous || !loadMore) {
+      throw new Error("Missing frozen recovery controls");
+    }
+
+    tree.dispatch("click", { target: previous });
+    tree.dispatch("click", { target: selected });
+    tree.dispatch("click", { target: loadMore });
+    tree.dispatch("keydown", { key: "Enter" });
+    tree.dispatch("pointerover", { target: selected });
+    await flushAsync();
+
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+    expect(harness.transport.requests).toEqual([]);
+  });
+
   it("removes listeners and rendered rows on disposal", () => {
     const harness = createHarness();
     harness.controller.handleEvent(selectionChanged(1, [node("root", "html")]));

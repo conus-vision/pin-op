@@ -9,6 +9,7 @@ import {
   type PanelCommand,
 } from "./panelController.js";
 import { DomTreeController } from "./domTreeController.js";
+import { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
 import {
   isSelectionRevision,
   parseDomEvent,
@@ -74,6 +75,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   let controller: PanelController;
   let treeController: DomTreeController;
   let treeSessionActive = false;
+  let domRecoveryStatusGeneration = 0;
   let acceptedSelectionRevision: number | undefined;
   let activeInspectSelectionRevision: number | undefined;
 
@@ -98,6 +100,12 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       cancelPending: (reason) => inspectTransport.cancelDomRequests(reason),
     },
     onError: reportError,
+  });
+  const recoveryCoordinator = new DomTreeRecoveryCoordinator({
+    controller: treeController,
+    transport: {
+      request: (request) => inspectTransport.requestDom(request),
+    },
   });
   const treeView = new DomTreeView({
     document: options.document,
@@ -180,6 +188,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         ) {
           return;
         }
+        domRecoveryStatusGeneration += 1;
+        recoveryCoordinator.handleManualSelection(domEvent);
         if (
           acceptedSelectionRevision === undefined ||
           domEvent.selectionRevision > acceptedSelectionRevision
@@ -253,14 +263,19 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       const shouldRecover = treeSessionActive;
       resetSelectionOwnership();
       sourceNavigationController.invalidate();
-      treeController.reset();
-      resetResolutionState();
       if (shouldRecover) {
-        queueMicrotask(() => {
-          if (!disposed && treeSessionActive) {
-            void treeController.loadRoot();
-          }
-        });
+        const statusGeneration = ++domRecoveryStatusGeneration;
+        resetResolutionState("restoring");
+        void recoveryCoordinator.begin()
+          .then(() => finishRecoveryStatus(statusGeneration))
+          .catch((error) => {
+            reportError(error);
+            finishRecoveryStatus(statusGeneration);
+          });
+      } else {
+        recoveryCoordinator.cancel("Inactive DOM session invalidated");
+        treeController.reset();
+        resetResolutionState();
       }
     } else if (
       isWindowState(message, "notLinked") ||
@@ -282,8 +297,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
 
   function deactivateTreeSession(): void {
     treeSessionActive = false;
+    domRecoveryStatusGeneration += 1;
     resetSelectionOwnership();
     sourceNavigationController.invalidate();
+    recoveryCoordinator.cancel("DOM tree session deactivated");
     treeController.reset();
   }
 
@@ -292,9 +309,23 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     resetResolutionState();
   }
 
-  function resetResolutionState(): void {
+  function resetResolutionState(status?: "restoring"): void {
     diagnostics.clearResolution();
-    view.renderResolution(resolutionPresenter.reset());
+    const model = resolutionPresenter.reset();
+    view.renderResolution(status === "restoring"
+      ? { ...model, statusText: "Restoring DOM" }
+      : model);
+  }
+
+  function finishRecoveryStatus(statusGeneration: number): void {
+    if (
+      disposed ||
+      statusGeneration !== domRecoveryStatusGeneration ||
+      treeController.snapshot().recovering
+    ) {
+      return;
+    }
+    resetResolutionState();
   }
 
   function resetSelectionOwnership(): void {
@@ -313,6 +344,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     stateListeners.clear();
     removeSourceNavigationBindings();
     diagnostics.clearResolution();
+    recoveryCoordinator.dispose();
     treeView.dispose();
     treeController.dispose();
     closePromise = controller

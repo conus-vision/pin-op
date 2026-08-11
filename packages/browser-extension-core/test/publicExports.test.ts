@@ -20,6 +20,7 @@ import {
   DomNodeRegistry,
   DomPanelView,
   DomTreeController,
+  DomTreeRecoveryCoordinator,
   DomTreeProvider,
   DomTreeProviderError,
   DomTreeView,
@@ -80,6 +81,7 @@ describe("browser extension core exports", () => {
     expect(DomNodeRegistry).toBeTypeOf("function");
     expect(DomPanelView).toBeTypeOf("function");
     expect(DomTreeController).toBeTypeOf("function");
+    expect(DomTreeRecoveryCoordinator).toBeTypeOf("function");
     expect(DomTreeProvider).toBeTypeOf("function");
     expect(DomTreeProviderError).toBeTypeOf("function");
     expect(DomTreeView).toBeTypeOf("function");

@@ -3,10 +3,16 @@ import {
   type DomEvent,
   type DomGetChildrenRequest,
   type DomGetRootRequest,
+  type DomLocatorResponse,
   type DomNodeView,
   type DomRequest,
   type DomResponse,
+  type DomRootResponse,
 } from "./domProtocol.js";
+import {
+  DOM_TREE_RECOVERY_MAX_EXPANDED,
+  type DomStableLocator,
+} from "./domStableLocator.js";
 import {
   virtualTreeRows,
   type VirtualTreeRow,
@@ -31,6 +37,11 @@ export interface DomTreeControllerOptions {
   readonly onChange?: () => void;
   readonly onError?: (error: unknown) => void;
   readonly createRequestId?: () => string;
+}
+
+export interface DomTreeRecoverySnapshot {
+  readonly selectedLocator?: DomStableLocator;
+  readonly expandedLocators: readonly DomStableLocator[];
 }
 
 interface DomTreeNodeRow {
@@ -78,6 +89,7 @@ export interface DomTreeSnapshot {
   readonly revealRef?: string;
   readonly revealVersion: number;
   readonly loadingRoot: boolean;
+  readonly recovering: boolean;
   readonly errorCode?: DomErrorCode;
   readonly totalRows: number;
 }
@@ -89,6 +101,7 @@ interface NodeState {
 
 interface BranchState {
   readonly children: string[];
+  readonly recoveredChildren: string[];
   revealChild?: string;
   revision: number;
   loaded: boolean;
@@ -130,6 +143,9 @@ export class DomTreeController {
   private currentError: DomErrorCode | undefined;
   private currentDocumentEpoch: number | undefined;
   private rootRequest: { readonly token: object; readonly promise: Promise<void> } | undefined;
+  private frozenRows: readonly DomTreeRow[] | undefined;
+  private recoverySnapshot: DomTreeRecoverySnapshot | undefined;
+  private recovering = false;
   private generation = 0;
   private requestSequence = 0;
   private disposed = false;
@@ -150,24 +166,35 @@ export class DomTreeController {
   }
 
   public get focusedRef(): string | undefined {
-    return this.focusedNodeRef;
+    return this.recovering
+      ? this.frozenRows?.find((row) => row.focused)?.nodeRef
+      : this.focusedNodeRef;
   }
 
   public snapshot(): DomTreeSnapshot {
     const rows = this.rows();
+    const visibleSelectedRef = this.recovering
+      ? rows.find((row) => row.selected)?.nodeRef
+      : this.selectedNodeRef;
+    const visibleFocusedRef = this.recovering
+      ? rows.find((row) => row.focused)?.nodeRef
+      : this.focusedNodeRef;
+    const visibleHoveredRef = this.recovering
+      ? rows.find((row) => row.hovered)?.nodeRef
+      : this.hoveredNodeRef;
     return Object.freeze({
       ...(this.currentDocumentEpoch === undefined
         ? {}
         : { documentEpoch: this.currentDocumentEpoch }),
-      ...(this.selectedNodeRef === undefined
+      ...(visibleSelectedRef === undefined
         ? {}
-        : { selectedRef: this.selectedNodeRef }),
-      ...(this.focusedNodeRef === undefined
+        : { selectedRef: visibleSelectedRef }),
+      ...(visibleFocusedRef === undefined
         ? {}
-        : { focusedRef: this.focusedNodeRef }),
-      ...(this.hoveredNodeRef === undefined
+        : { focusedRef: visibleFocusedRef }),
+      ...(visibleHoveredRef === undefined
         ? {}
-        : { hoveredRef: this.hoveredNodeRef }),
+        : { hoveredRef: visibleHoveredRef }),
       ...(this.currentHoverSummary === undefined
         ? {}
         : { hoverSummary: this.currentHoverSummary }),
@@ -176,6 +203,7 @@ export class DomTreeController {
         : { revealRef: this.currentRevealRef }),
       revealVersion: this.currentRevealVersion,
       loadingRoot: Boolean(this.rootRequest),
+      recovering: this.recovering,
       ...(this.currentError === undefined
         ? {}
         : { errorCode: this.currentError }),
@@ -184,6 +212,9 @@ export class DomTreeController {
   }
 
   public rows(): readonly DomTreeRow[] {
+    if (this.frozenRows) {
+      return this.frozenRows;
+    }
     if (this.rowsCache) {
       return this.rowsCache;
     }
@@ -219,8 +250,132 @@ export class DomTreeController {
     return this.expanded.has(nodeRef);
   }
 
-  public async loadRoot(): Promise<void> {
+  public beginRecovery(): DomTreeRecoverySnapshot {
     if (this.disposed) {
+      return emptyRecoverySnapshot();
+    }
+    const alreadyRecovering = this.recovering;
+    if (!alreadyRecovering) {
+      this.frozenRows = this.rows();
+      this.recoverySnapshot = this.captureRecoverySnapshot();
+    }
+    const snapshot = this.recoverySnapshot ?? emptyRecoverySnapshot();
+    this.cancelPending("DOM tree recovery started");
+    this.generation += 1;
+    this.clearLiveState(undefined);
+    this.recovering = true;
+    if (!alreadyRecovering) {
+      this.notify();
+    }
+    return snapshot;
+  }
+
+  public installRecoveryRoot(response: DomRootResponse): void {
+    if (this.disposed || !this.recovering) {
+      return;
+    }
+    this.currentDocumentEpoch = response.documentEpoch;
+    this.currentError = undefined;
+    this.rootRef = response.node.nodeRef;
+    this.upsertNode(response.node, undefined);
+    this.focusedNodeRef = response.node.nodeRef;
+    this.invalidateRows();
+  }
+
+  public installRecoveredPath(
+    response: DomLocatorResponse,
+    options: { readonly selected: boolean; readonly expanded: boolean },
+  ): void {
+    if (
+      this.disposed ||
+      !this.recovering ||
+      response.documentEpoch !== this.currentDocumentEpoch ||
+      response.ancestorPath.length === 0 ||
+      response.ancestorPath[0]?.nodeRef !== this.rootRef ||
+      response.ancestorPath.at(-1)?.nodeRef !== response.node.nodeRef
+    ) {
+      return;
+    }
+
+    let parentRef: string | undefined;
+    for (const [index, view] of response.ancestorPath.entries()) {
+      this.upsertNode(view, parentRef);
+      if (parentRef) {
+        const parent = this.nodes.get(parentRef);
+        if (parent) {
+          const branch = this.branchFor(parent.view);
+          if (!branch.recoveredChildren.includes(view.nodeRef)) {
+            branch.recoveredChildren.push(view.nodeRef);
+          }
+          if (options.selected) {
+            branch.revealChild = view.nodeRef;
+          }
+        }
+      }
+      if (options.selected && index < response.ancestorPath.length - 1) {
+        this.expanded.add(view.nodeRef);
+      }
+      parentRef = view.nodeRef;
+    }
+
+    if (options.expanded && response.node.expandable && !response.node.inaccessible) {
+      this.expanded.add(response.node.nodeRef);
+    }
+    if (options.selected) {
+      this.revealPathRefs = Object.freeze(
+        response.ancestorPath.map((view) => view.nodeRef),
+      );
+      this.selectedNodeRef = response.node.nodeRef;
+      this.focusedNodeRef = response.node.nodeRef;
+      this.currentRevealRef = response.node.nodeRef;
+      this.currentRevealVersion += 1;
+    }
+    this.currentError = undefined;
+    this.invalidateRows();
+  }
+
+  public async hydrateRecoveredBranches(): Promise<void> {
+    if (this.disposed || !this.recovering) {
+      return;
+    }
+    const generation = this.generation;
+    const expandedRefs = [...this.expanded].sort((left, right) => (
+      this.nodeDepth(left) - this.nodeDepth(right)
+    ));
+    for (const nodeRef of expandedRefs) {
+      if (!this.isCurrentRecovery(generation)) {
+        return;
+      }
+      await this.fetchRecoveryChildren(nodeRef, generation);
+    }
+  }
+
+  public finishRecovery(): void {
+    if (this.disposed || !this.recovering) {
+      return;
+    }
+    this.recovering = false;
+    this.frozenRows = undefined;
+    this.recoverySnapshot = undefined;
+    this.invalidateRows();
+    this.notify();
+  }
+
+  public cancelRecovery(reason: string): void {
+    if (this.disposed || !this.recovering) {
+      return;
+    }
+    this.cancelPending(reason);
+    this.generation += 1;
+    this.recovering = false;
+    this.frozenRows = undefined;
+    this.recoverySnapshot = undefined;
+    this.clearLiveState(undefined);
+    this.notify();
+  }
+
+  public async loadRoot(): Promise<void> {
+    if (this.disposed || this.recovering) {
       return;
     }
     if (this.rootRef && this.currentDocumentEpoch !== undefined) {
@@ -280,7 +435,7 @@ export class DomTreeController {
   }
 
   public async expand(nodeRef: string): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || this.recovering) {
       return;
     }
     const state = this.nodes.get(nodeRef);
@@ -298,7 +453,7 @@ export class DomTreeController {
   }
 
   public collapse(nodeRef: string): void {
-    if (this.disposed || !this.expanded.has(nodeRef)) {
+    if (this.disposed || this.recovering || !this.expanded.has(nodeRef)) {
       return;
     }
     const previousRows = this.rows();
@@ -319,6 +474,9 @@ export class DomTreeController {
   }
 
   public async toggle(nodeRef: string): Promise<void> {
+    if (this.disposed || this.recovering) {
+      return;
+    }
     if (this.expanded.has(nodeRef)) {
       this.collapse(nodeRef);
       return;
@@ -327,7 +485,7 @@ export class DomTreeController {
   }
 
   public async loadMore(parentRef: string): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || this.recovering) {
       return;
     }
     const node = this.nodes.get(parentRef);
@@ -345,7 +503,7 @@ export class DomTreeController {
   }
 
   public focus(nodeRef: string): void {
-    if (this.disposed || !this.isVisibleRef(nodeRef)) {
+    if (this.disposed || this.recovering || !this.isVisibleRef(nodeRef)) {
       return;
     }
     this.focusedNodeRef = nodeRef;
@@ -353,7 +511,11 @@ export class DomTreeController {
   }
 
   public async select(nodeRef: string): Promise<void> {
-    if (this.disposed || this.currentDocumentEpoch === undefined) {
+    if (
+      this.disposed ||
+      this.recovering ||
+      this.currentDocumentEpoch === undefined
+    ) {
       return;
     }
     const state = this.nodes.get(nodeRef);
@@ -372,7 +534,11 @@ export class DomTreeController {
   }
 
   public hover(nodeRef?: string): void {
-    if (this.disposed || this.currentDocumentEpoch === undefined) {
+    if (
+      this.disposed ||
+      this.recovering ||
+      this.currentDocumentEpoch === undefined
+    ) {
       return;
     }
     if (nodeRef === undefined) {
@@ -399,7 +565,11 @@ export class DomTreeController {
   }
 
   public clearHover(): void {
-    if (this.disposed || this.currentDocumentEpoch === undefined) {
+    if (
+      this.disposed ||
+      this.recovering ||
+      this.currentDocumentEpoch === undefined
+    ) {
       return;
     }
     if (this.lastHoverRequest === null) {
@@ -417,7 +587,7 @@ export class DomTreeController {
   }
 
   public async handleKey(key: DomTreeKey): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || this.recovering) {
       return;
     }
     const rows = this.rows();
@@ -471,7 +641,7 @@ export class DomTreeController {
   }
 
   public handleEvent(event: DomEvent): void {
-    if (this.disposed) {
+    if (this.disposed || this.recovering) {
       return;
     }
     if (
@@ -529,6 +699,9 @@ export class DomTreeController {
     this.disposed = true;
     this.generation += 1;
     this.rootRequest = undefined;
+    this.frozenRows = undefined;
+    this.recoverySnapshot = undefined;
+    this.recovering = false;
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
@@ -542,6 +715,135 @@ export class DomTreeController {
     this.listeners.clear();
   }
 
+  private captureRecoverySnapshot(): DomTreeRecoverySnapshot {
+    const selectedLocator = this.selectedNodeRef
+      ? this.nodes.get(this.selectedNodeRef)?.view.locator
+      : undefined;
+    const ordered = [...this.expanded]
+      .map((nodeRef, index) => {
+        const stableLocator = this.nodes.get(nodeRef)?.view.locator;
+        return stableLocator
+          ? { stableLocator, depth: locatorDepth(stableLocator), index }
+          : undefined;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      .sort((left, right) => (
+        left.depth - right.depth || left.index - right.index
+      ));
+    const seen = new Set<string>();
+    const expandedLocators: DomStableLocator[] = [];
+    for (const { stableLocator } of ordered) {
+      const key = locatorKey(stableLocator);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      expandedLocators.push(stableLocator);
+      if (expandedLocators.length === DOM_TREE_RECOVERY_MAX_EXPANDED) {
+        break;
+      }
+    }
+    return Object.freeze({
+      ...(selectedLocator ? { selectedLocator } : {}),
+      expandedLocators: Object.freeze(expandedLocators),
+    });
+  }
+
+  private async fetchRecoveryChildren(
+    nodeRef: string,
+    recoveryGeneration: number,
+  ): Promise<void> {
+    const state = this.nodes.get(nodeRef);
+    if (
+      !state ||
+      !state.view.expandable ||
+      state.view.inaccessible ||
+      this.currentDocumentEpoch === undefined ||
+      !this.isCurrentRecovery(recoveryGeneration)
+    ) {
+      return;
+    }
+    const branch = this.branchFor(state.view);
+    if (branch.loaded) {
+      return;
+    }
+    if (branch.pending) {
+      return branch.pending.promise;
+    }
+    const revision = state.view.branchRevision;
+    const epoch = this.currentDocumentEpoch;
+    const token = {};
+    const request: DomGetChildrenRequest = {
+      type: "dom.getChildren",
+      requestId: this.createRequestId(),
+      documentEpoch: epoch,
+      nodeRef,
+      branchRevision: revision,
+    };
+    const promise = (async (): Promise<void> => {
+      try {
+        const response = await this.transport.request(request);
+        const currentNode = this.nodes.get(nodeRef);
+        const currentBranch = this.branches.get(nodeRef);
+        if (
+          !this.isCurrentRecovery(recoveryGeneration) ||
+          !currentBranch ||
+          currentBranch.pending?.token !== token ||
+          this.currentDocumentEpoch !== epoch ||
+          currentNode?.view.branchRevision !== revision
+        ) {
+          return;
+        }
+        if (response.type === "dom.error") {
+          return;
+        }
+        if (
+          response.type !== "dom.children" ||
+          response.requestId !== request.requestId ||
+          response.documentEpoch !== epoch ||
+          response.nodeRef !== nodeRef ||
+          response.branchRevision !== revision
+        ) {
+          return;
+        }
+        this.clearPageChildren(currentBranch);
+        for (const child of response.nodes) {
+          this.upsertNode(child, nodeRef);
+          if (!currentBranch.children.includes(child.nodeRef)) {
+            currentBranch.children.push(child.nodeRef);
+          }
+        }
+        currentBranch.loaded = true;
+        currentBranch.nextCursor = response.nextCursor;
+        this.currentError = undefined;
+        this.invalidateRows();
+      } catch (error) {
+        if (this.isCurrentRecovery(recoveryGeneration)) {
+          this.reportError(error);
+        }
+      } finally {
+        const currentBranch = this.branches.get(nodeRef);
+        if (currentBranch?.pending?.token === token) {
+          currentBranch.pending = undefined;
+        }
+      }
+    })();
+    branch.pending = { token, revision, promise };
+    return promise;
+  }
+
+  private nodeDepth(nodeRef: string): number {
+    let depth = 0;
+    let currentRef: string | undefined = nodeRef;
+    const seen = new Set<string>();
+    while (currentRef && !seen.has(currentRef)) {
+      seen.add(currentRef);
+      depth += 1;
+      currentRef = this.nodes.get(currentRef)?.parentRef;
+    }
+    return depth;
+  }
+
   private async fetchChildren(
     nodeRef: string,
     cursor: string | undefined,
@@ -551,7 +853,8 @@ export class DomTreeController {
     if (
       !state ||
       this.currentDocumentEpoch === undefined ||
-      this.disposed
+      this.disposed ||
+      this.recovering
     ) {
       return;
     }
@@ -717,6 +1020,7 @@ export class DomTreeController {
       const revealChild = branch?.revealChild;
       branch = {
         children: [],
+        recoveredChildren: branch?.recoveredChildren ?? [],
         ...(revealChild ? { revealChild } : {}),
         revision: view.branchRevision,
         loaded: false,
@@ -816,6 +1120,20 @@ export class DomTreeController {
         visited,
       );
     }
+    for (const recoveredChild of branch.recoveredChildren) {
+      if (
+        !branch.children.includes(recoveredChild) &&
+        recoveredChild !== branch.revealChild
+      ) {
+        this.appendRows(
+          recoveredChild,
+          nodeRef,
+          depth + 1,
+          result,
+          visited,
+        );
+      }
+    }
     if (
       branch.nextCursor ||
       branch.pending ||
@@ -904,7 +1222,10 @@ export class DomTreeController {
 
   private clearPageChildren(branch: BranchState): void {
     for (const childRef of branch.children) {
-      if (childRef !== branch.revealChild) {
+      if (
+        childRef !== branch.revealChild &&
+        !branch.recoveredChildren.includes(childRef)
+      ) {
         this.removeSubtree(childRef);
       }
     }
@@ -913,7 +1234,10 @@ export class DomTreeController {
 
   private isPageChild(nodeRef: string): boolean {
     for (const branch of this.branches.values()) {
-      if (branch.children.includes(nodeRef)) {
+      if (
+        branch.children.includes(nodeRef) ||
+        branch.recoveredChildren.includes(nodeRef)
+      ) {
         return true;
       }
     }
@@ -1003,6 +1327,13 @@ export class DomTreeController {
   ): void {
     this.cancelPending(cancellationReason);
     this.generation += 1;
+    this.recovering = false;
+    this.frozenRows = undefined;
+    this.recoverySnapshot = undefined;
+    this.clearLiveState(documentEpoch);
+  }
+
+  private clearLiveState(documentEpoch: number | undefined): void {
     this.rootRequest = undefined;
     this.nodes.clear();
     this.branches.clear();
@@ -1017,6 +1348,7 @@ export class DomTreeController {
     this.currentRevealRef = undefined;
     this.currentError = undefined;
     this.currentDocumentEpoch = documentEpoch;
+    this.invalidateRows();
   }
 
   private cancelPending(reason: string): void {
@@ -1029,6 +1361,10 @@ export class DomTreeController {
 
   private isCurrent(generation: number): boolean {
     return !this.disposed && generation === this.generation;
+  }
+
+  private isCurrentRecovery(generation: number): boolean {
+    return this.recovering && this.isCurrent(generation);
   }
 
   private reportError(error: unknown): void {
@@ -1070,4 +1406,19 @@ function nearestFocusableRow(
     if (isFocusableRow(previous)) return previous;
   }
   return undefined;
+}
+
+function emptyRecoverySnapshot(): DomTreeRecoverySnapshot {
+  return Object.freeze({ expandedLocators: Object.freeze([]) });
+}
+
+function locatorDepth(locator: DomStableLocator): number {
+  return locator.path.length + locator.boundaries.reduce(
+    (total, boundary) => total + boundary.hostPath.length,
+    0,
+  );
+}
+
+function locatorKey(locator: DomStableLocator): string {
+  return JSON.stringify(locator);
 }

@@ -169,10 +169,16 @@ export { DomTreeController } from "./domTreeController.js";
 export type {
   DomTreeControllerOptions,
   DomTreeKey,
+  DomTreeRecoverySnapshot,
   DomTreeRow,
   DomTreeSnapshot,
   DomTreeTransport,
 } from "./domTreeController.js";
+export { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
+export type {
+  DomTreeRecoveryCoordinatorOptions,
+  DomTreeRecoveryTransport,
+} from "./domTreeRecoveryCoordinator.js";
 export {
   DEFAULT_DOM_TREE_OVERSCAN,
   DEFAULT_DOM_TREE_ROW_HEIGHT,
