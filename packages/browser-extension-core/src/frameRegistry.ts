@@ -362,7 +362,7 @@ export class FrameRegistry {
     if (!identitySnapshot || !isObject(rect)) {
       return undefined;
     }
-    let context = this.contexts.get(identitySnapshot.frameRef);
+    let context = this.getContext(identitySnapshot.frameRef);
     if (!context || !sameFrameIdentity(context, identitySnapshot)) {
       return undefined;
     }
@@ -404,13 +404,23 @@ export class FrameRegistry {
     const width = rectWidth.value;
     const height = rectHeight.value;
     while (context.parentFrameRef) {
-      if (!isAuthoritative() || this.contexts.get(context.frameRef) !== context) {
+      const liveContext = this.revalidateContext(context);
+      if (
+        !liveContext ||
+        !isAuthoritative() ||
+        this.contexts.get(context.frameRef) !== context
+      ) {
+        return undefined;
+      }
+      context = liveContext;
+      const parentFrameRef = context.parentFrameRef;
+      if (!parentFrameRef) {
         return undefined;
       }
       const frameElement = context.frameElement;
       const record = this.records.get(context.frameRef);
       const ownership = record?.ownership;
-      const parent = this.contexts.get(context.parentFrameRef);
+      const parent = this.getContext(parentFrameRef);
       if (
         !frameElement ||
         !record ||
@@ -442,7 +452,7 @@ export class FrameRegistry {
     if (!Number.isFinite(right) || !Number.isFinite(bottom)) {
       return undefined;
     }
-    if (!isAuthoritative()) {
+    if (!isAuthoritative() || !this.revalidateContext(targetContext)) {
       return undefined;
     }
     return Object.freeze({

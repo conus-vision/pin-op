@@ -561,12 +561,26 @@ function compareCodeUnits(left: string, right: string): number {
 
 function elementChildAt(parent: Node, siblingIndex: number): Element | undefined {
   if (!Number.isSafeInteger(siblingIndex) || siblingIndex < 0) return undefined;
-  const children = readChildCollection(parent);
+  const children = snapshotChildNodes(parent);
   if (!children) return undefined;
+  const candidate = elementChildAtSnapshot(children, siblingIndex);
+  const verifiedChildren = snapshotChildNodes(parent);
+  if (
+    !candidate ||
+    !verifiedChildren ||
+    !sameChildNodeSnapshot(children, verifiedChildren) ||
+    elementChildAtSnapshot(verifiedChildren, siblingIndex) !== candidate ||
+    readParentNode(candidate) !== parent
+  ) return undefined;
+  return candidate;
+}
+
+function elementChildAtSnapshot(
+  children: readonly Node[],
+  siblingIndex: number,
+): Element | undefined {
   let index = 0;
-  for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
-    const child = readCollectionItem(children.collection, physicalIndex);
-    if (!isNode(child)) return undefined;
+  for (const child of children) {
     if (readNodeType(child) !== 1) continue;
     if (index === siblingIndex) return child as Element;
     index += 1;
@@ -575,7 +589,7 @@ function elementChildAt(parent: Node, siblingIndex: number): Element | undefined
 }
 
 function elementSiblingIndex(parent: Node, target: Element): number | undefined {
-  const children = readChildCollection(parent);
+  const children = snapshotChildNodes(parent);
   if (!children || readParentNode(target) !== parent) return undefined;
   const previous = readPreviousElementSibling(target);
   if (previous === undefined) return undefined;
@@ -601,33 +615,57 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
 function confirmElementSiblingIndex(
   parent: Node,
   target: Element,
-  initialChildren: { readonly collection: object; readonly length: number },
+  initialChildren: readonly Node[],
   expectedIndex: number,
 ): number | undefined {
-  const verifiedChildren = readChildCollection(parent);
-  if (!verifiedChildren || verifiedChildren.length !== initialChildren.length) return undefined;
-  let elementIndex = 0;
-  let targetCount = 0;
-  for (let physicalIndex = 0; physicalIndex < verifiedChildren.length; physicalIndex += 1) {
-    const child = readCollectionItem(verifiedChildren.collection, physicalIndex);
-    if (!isNode(child)) return undefined;
-    if (readNodeType(child) !== 1) continue;
-    if (child === target) {
-      targetCount += 1;
-      if (elementIndex !== expectedIndex) return undefined;
-    } else if (elementIndex === expectedIndex) {
-      return undefined;
-    }
-    elementIndex += 1;
+  const verifiedChildren = snapshotChildNodes(parent);
+  if (!verifiedChildren || !sameChildNodeSnapshot(initialChildren, verifiedChildren)) {
+    return undefined;
   }
-  const finalChildren = readChildCollection(parent);
+  const finalChildren = snapshotChildNodes(parent);
   if (
-    targetCount !== 1 ||
     !finalChildren ||
-    finalChildren.length !== verifiedChildren.length ||
+    !sameChildNodeSnapshot(verifiedChildren, finalChildren) ||
+    !hasExactElementSiblingIndex(finalChildren, target, expectedIndex) ||
     readParentNode(target) !== parent
   ) return undefined;
   return expectedIndex;
+}
+
+function snapshotChildNodes(parent: Node): readonly Node[] | undefined {
+  const children = readChildCollection(parent);
+  if (!children) return undefined;
+  const snapshot: Node[] = [];
+  for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
+    const child = readCollectionItem(children.collection, physicalIndex);
+    if (!isNode(child) || readParentNode(child) !== parent) return undefined;
+    snapshot.push(child);
+  }
+  return Object.freeze(snapshot);
+}
+
+function sameChildNodeSnapshot(left: readonly Node[], right: readonly Node[]): boolean {
+  return left.length === right.length && left.every((node, index) => node === right[index]);
+}
+
+function hasExactElementSiblingIndex(
+  children: readonly Node[],
+  target: Element,
+  expectedIndex: number,
+): boolean {
+  let elementIndex = 0;
+  let targetCount = 0;
+  for (const child of children) {
+    if (readNodeType(child) !== 1) continue;
+    if (child === target) {
+      targetCount += 1;
+      if (elementIndex !== expectedIndex) return false;
+    } else if (elementIndex === expectedIndex) {
+      return false;
+    }
+    elementIndex += 1;
+  }
+  return targetCount === 1;
 }
 
 function readPreviousElementSibling(element: Element): Element | null | undefined {

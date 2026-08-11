@@ -583,31 +583,43 @@ describe("FrameRegistry", () => {
     "rejects stale geometry when an ancestor getter triggers %s",
     (mutation) => {
       const events: FrameLifecycleEvent[] = [];
+      let mutationCalls = 0;
       let mutate = (): void => undefined;
       const ancestor = new FakeStyleElement({
-        onAssignedSlotRead: () => mutate(),
+        onAssignedSlotRead: () => {
+          mutationCalls += 1;
+          mutate();
+        },
       });
       const oldDocument = createDocument();
       const nextDocument = createDocument();
+      const topDocument = createDocument();
+      const registry = new FrameRegistry(topDocument, {
+        maxFrames: 2,
+        onLifecycle: (event) => events.push(event),
+      });
       const frame = createFrame({
         document: oldDocument,
+        ownerDocument: topDocument,
         parentElement: ancestor,
         left: 10,
         top: 20,
       });
-      const registry = new FrameRegistry(createDocument(), {
-        maxFrames: 2,
-        onLifecycle: (event) => events.push(event),
-      });
       const description = registry.describeFrame(frame);
       if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+      expect(registry.getContext(description.frameRef)).toBeDefined();
       if (mutation === "unregister") {
         mutate = () => {
           registry.unregisterFrame(frame);
         };
       } else {
         frame.setDocument(nextDocument);
-        mutate = () => frame.dispatchLoad();
+        let navigated = false;
+        mutate = () => {
+          if (navigated) return;
+          navigated = true;
+          frame.dispatchLoad();
+        };
       }
 
       const translated = registry.toTopViewport(description, {
@@ -619,16 +631,15 @@ describe("FrameRegistry", () => {
 
       expect(translated).toBeUndefined();
       if (mutation === "unregister") {
+        expect(mutationCalls).toBeGreaterThan(0);
         expect(registry.getContext(description.frameRef)).toBeUndefined();
         expect(frame.loadListenerCount).toBe(0);
         expect(events.map((event) => event.type)).toEqual(["registered", "removed"]);
       } else {
-        expect(registry.getContext(description.frameRef)).toMatchObject({
-          frameEpoch: 2,
-          document: nextDocument,
-        });
+        expect(mutationCalls).toBe(0);
+        expect(registry.getContext(description.frameRef)).toBeUndefined();
         expect(frame.loadListenerCount).toBe(1);
-        expect(events.map((event) => event.type)).toEqual(["registered", "navigated"]);
+        expect(events.map((event) => event.type)).toEqual(["registered"]);
       }
     },
   );
@@ -1993,6 +2004,57 @@ describe("FrameRegistry", () => {
       kind: "inaccessible",
       frameRef: locked!.frameRef,
     });
+  });
+
+  it("rejects direct viewport geometry after a silent frame navigation", () => {
+    const topDocument = createDocument();
+    const childDocument = createDocument();
+    const events: string[] = [];
+    const registry = new FrameRegistry(topDocument, {
+      maxFrames: 3,
+      onLifecycle: (event) => events.push(event.type),
+    });
+    const frame = createFrame({
+      document: childDocument,
+      ownerDocument: topDocument,
+      left: 10,
+      top: 20,
+    });
+    const description = registry.describeFrame(frame);
+    if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+
+    frame.setDocument(createDocument());
+
+    expect(registry.toTopViewport(description, { x: 1, y: 2, width: 3, height: 4 }))
+      .toBeUndefined();
+    expect(events).toEqual(["registered"]);
+  });
+
+  it("rejects nested viewport geometry after a silent ancestor navigation", () => {
+    const topDocument = createDocument();
+    const parentDocument = createDocument();
+    const registry = new FrameRegistry(topDocument, { maxFrames: 4 });
+    const parentFrame = createFrame({
+      document: parentDocument,
+      ownerDocument: topDocument,
+      left: 10,
+      top: 20,
+    });
+    const parent = registry.describeFrame(parentFrame);
+    if (parent?.kind !== "accessible") throw new Error("expected accessible parent");
+    const childFrame = createFrame({
+      document: createDocument(),
+      ownerDocument: parentDocument,
+      left: 3,
+      top: 4,
+    });
+    const child = registry.describeFrame(childFrame, parent.frameRef);
+    if (child?.kind !== "accessible") throw new Error("expected accessible child");
+
+    parentFrame.setDocument(createDocument());
+
+    expect(registry.toTopViewport(child, { x: 1, y: 2, width: 3, height: 4 }))
+      .toBeUndefined();
   });
 });
 

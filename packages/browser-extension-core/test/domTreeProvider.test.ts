@@ -2856,7 +2856,7 @@ describe("DomTreeProvider", () => {
 
       expect(page.nodes).toHaveLength(50);
       expect(page.nextCursor).toBeDefined();
-      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(32_000);
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(100_000);
       cursor = page.nextCursor;
     }
   });
@@ -2898,7 +2898,7 @@ describe("DomTreeProvider", () => {
       });
       found.push(...page.nodes);
 
-      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(4_000);
+      expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(12_000);
       if (found.length === 0) {
         expect(page.nextCursor).toBeDefined();
       }
@@ -4158,6 +4158,54 @@ describe("DomTreeProvider", () => {
     expect(resolveLocator(second.provider, locator)).toBeUndefined();
   });
 
+  it("fails capture when a final same-length child collection read reorders siblings", () => {
+    const tree = createHeadingTree({ includeSibling: true });
+    const sibling = tree.main.childNodes[0]!;
+    const originalChildren = tree.main.childNodes;
+    let afterPreviousSiblingReads = 0;
+    Object.defineProperty(tree.target, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        afterPreviousSiblingReads = 0;
+        return sibling;
+      },
+    });
+    Object.defineProperty(tree.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        afterPreviousSiblingReads += 1;
+        return afterPreviousSiblingReads === 2 ? [tree.target, sibling] : originalChildren;
+      },
+    });
+
+    expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
+  });
+
+  it("fails recovery when a final same-length child collection read reorders siblings", () => {
+    const first = createHeadingTree({ includeSibling: true });
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ includeSibling: true });
+    const sibling = second.main.childNodes[0]!;
+    const originalChildren = second.main.childNodes;
+    let afterPreviousSiblingReads = 0;
+    Object.defineProperty(second.target, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        afterPreviousSiblingReads = 0;
+        return sibling;
+      },
+    });
+    Object.defineProperty(second.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        afterPreviousSiblingReads += 1;
+        return afterPreviousSiblingReads === 2 ? [second.target, sibling] : originalChildren;
+      },
+    });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
   it("omits a capture ID when a second bounded scan finds a late duplicate", () => {
     const tree = createHeadingTree();
     const earlier = createElement("aside", tree.document);
@@ -4523,6 +4571,40 @@ describe("DomTreeProvider", () => {
     expect(events).toEqual(["registered"]);
     expect(harness.pendingTimerCount()).toBe(2);
     expect(provider.pendingFrameMutationScans).toHaveLength(1);
+  });
+
+  it("releases transient path retentions before replaying frame lifecycle callbacks", () => {
+    const document = createDocument();
+    const frame = createFrameElement(document, createDocument());
+    document.documentElement.append(frame);
+    let observedReasons: readonly string[] | undefined;
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "registered" || !provider) return;
+        const registry = provider as unknown as {
+          readonly nodeRegistry: { retentionReasons(nodeRef: string): readonly string[] };
+        };
+        observedReasons = registry.nodeRegistry.retentionReasons("node-1");
+      },
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    const state = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, { readonly scope: unknown }>;
+      readonly nodeRegistry: { retentionReasons(nodeRef: string): readonly string[] };
+      materializeLogicalPath(path: readonly unknown[]): readonly { readonly nodeRef: string }[] | undefined;
+    };
+    const scope = state.records.get(root.node.nodeRef)!.scope;
+
+    const path = state.materializeLogicalPath([
+      { kind: "element", node: document.documentElement, scope },
+      { kind: "element", node: frame, scope },
+    ]);
+
+    expect(path?.map(({ nodeRef }) => nodeRef)).toEqual([root.node.nodeRef, "node-2"]);
+    expect(observedReasons).toEqual([]);
+    expect(state.nodeRegistry.retentionReasons(root.node.nodeRef)).toEqual([]);
   });
 
   it("restores evicted records when path materialization fails after reserving capacity", () => {

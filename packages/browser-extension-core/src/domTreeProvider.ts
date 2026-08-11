@@ -1844,6 +1844,8 @@ export class DomTreeProvider {
       if (commit && !commit(parentRef)) {
         throw new Error("path commit was not authoritative");
       }
+      this.releasePathRetentions(temporaryRetentions);
+      temporaryRetentions.clear();
       authorityCommitted = authorityOperation.commit();
       if (!authorityCommitted) return undefined;
       return Object.freeze(views);
