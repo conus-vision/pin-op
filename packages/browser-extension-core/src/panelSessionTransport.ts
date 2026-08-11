@@ -7,6 +7,7 @@ import {
   type SourceNavigationStateMessage,
 } from "@browser2ide/protocol";
 import {
+  isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -36,6 +37,7 @@ export interface PanelIdeDisconnectedState {
 export interface PanelInspectStartedState {
   readonly type: "browser2ide.inspect.started";
   readonly inspectMessageId: string;
+  readonly selectionRevision: number;
 }
 
 interface PanelSessionBinding {
@@ -216,13 +218,19 @@ export class PanelSessionTransport {
   public publishInspectStarted(
     channel: string,
     inspectMessageId: string,
+    selectionRevision: number,
   ): void {
-    if (!this.channels.has(channel) || !isOpaqueId(inspectMessageId)) {
+    if (
+      !this.channels.has(channel) ||
+      !isOpaqueId(inspectMessageId) ||
+      !isSelectionRevision(selectionRevision)
+    ) {
       return;
     }
     const state: PanelInspectStartedState = Object.freeze({
       type: "browser2ide.inspect.started",
       inspectMessageId,
+      selectionRevision,
     });
     try {
       this.options.postPanelMessage(channel, state);

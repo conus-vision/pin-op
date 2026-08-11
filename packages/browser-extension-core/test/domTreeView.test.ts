@@ -611,6 +611,7 @@ function selectionChanged(
   return {
     type: "dom.selectionChanged" as const,
     documentEpoch,
+    selectionRevision: 1,
     nodeRef: ancestorPath.at(-1)?.nodeRef ?? "missing",
     ancestorPath,
   };

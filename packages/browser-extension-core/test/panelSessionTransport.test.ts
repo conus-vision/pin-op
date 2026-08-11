@@ -192,16 +192,24 @@ describe("PanelSessionTransport", () => {
     });
     transport.bind("panel-a", 7);
 
-    transport.publishInspectStarted("panel-a", "inspect-1");
-    transport.publishInspectStarted("panel-missing", "inspect-2");
-    transport.publishInspectStarted("panel-a", "");
-    transport.publishInspectStarted("panel-a", "x".repeat(129));
+    transport.publishInspectStarted("panel-a", "inspect-1", 4);
+    transport.publishInspectStarted("panel-missing", "inspect-2", 4);
+    transport.publishInspectStarted("panel-a", "", 4);
+    transport.publishInspectStarted("panel-a", "x".repeat(129), 4);
+    transport.publishInspectStarted("panel-a", "inspect-negative", -1);
+    transport.publishInspectStarted("panel-a", "inspect-fractional", 1.5);
+    transport.publishInspectStarted(
+      "panel-a",
+      "inspect-unsafe",
+      Number.MAX_SAFE_INTEGER + 1,
+    );
 
     expect(published).toEqual([{
       channel: "panel-a",
       message: {
         type: "browser2ide.inspect.started",
         inspectMessageId: "inspect-1",
+        selectionRevision: 4,
       },
     }]);
   });

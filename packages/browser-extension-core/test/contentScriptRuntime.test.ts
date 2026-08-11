@@ -49,6 +49,7 @@ describe("startContentScriptRuntime", () => {
     expect(onSelection?.({
       nodeRef: "node-card",
       documentEpoch: 1,
+      selectionRevision: 7,
       ancestorPath: [
         {
           nodeRef: "node-layout",
@@ -63,6 +64,7 @@ describe("startContentScriptRuntime", () => {
     onEvent?.({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 7,
       nodeRef: "node-card",
       ancestorPath: [
         {
@@ -79,6 +81,7 @@ describe("startContentScriptRuntime", () => {
     expect(sent[0]).toMatchObject({
       type: "elementSelected",
       contentSessionId: "content-session-a",
+      selectionRevision: 7,
       payload: {
         context: { url: "https://example.test/page" },
         targets: [{ role: "selected" }],
@@ -97,6 +100,7 @@ describe("startContentScriptRuntime", () => {
       event: {
         type: "dom.selectionChanged",
         documentEpoch: 1,
+        selectionRevision: 7,
         nodeRef: "node-card",
         ancestorPath: [
           {

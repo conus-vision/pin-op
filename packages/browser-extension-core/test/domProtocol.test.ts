@@ -116,11 +116,13 @@ describe("DOM protocol", () => {
     expect(parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 4,
       nodeRef: "node-1",
       ancestorPath,
     })).toEqual({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 4,
       nodeRef: "node-1",
       ancestorPath,
     });
@@ -147,7 +149,7 @@ describe("DOM protocol", () => {
   });
 
   it("rejects invalid nonnegative safe integer values", () => {
-    for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const value of ["4", -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => parseDomRequest({
         type: "dom.getRoot",
         requestId: "request-1",
@@ -165,6 +167,13 @@ describe("DOM protocol", () => {
         type: "dom.invalidated",
         documentEpoch: 1,
         branches: [{ nodeRef: "node-1", branchRevision: value }],
+      })).toThrow(DomProtocolError);
+      expect(() => parseDomEvent({
+        type: "dom.selectionChanged",
+        documentEpoch: 1,
+        selectionRevision: value,
+        nodeRef: "node-1",
+        ancestorPath: [nodeView()],
       })).toThrow(DomProtocolError);
     }
   });
@@ -422,6 +431,7 @@ describe("DOM protocol", () => {
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "node-1",
       ancestorPath: Array.from(
         { length: DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH + 1 },
@@ -431,12 +441,14 @@ describe("DOM protocol", () => {
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "node-1",
       ancestorPath: [{ ...nodeView(), extra: true }],
     })).toThrow(DomProtocolError);
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "node-1",
       ancestorPath: [{ ...nodeView(), kind: "text" }],
     })).toThrow(DomProtocolError);
@@ -471,6 +483,7 @@ describe("DOM protocol", () => {
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "node-1",
       ancestorPath: new Array(1),
     })).toThrow(DomProtocolError);
@@ -588,6 +601,7 @@ describe("DOM protocol", () => {
       expect(() => parseDomEvent({
         type: "dom.selectionChanged",
         documentEpoch: 1,
+        selectionRevision: 1,
         nodeRef: "node-1",
         ancestorPath: collectionWithExtraKey([nodeView()], key),
       })).toThrow(DomProtocolError);
@@ -652,6 +666,7 @@ describe("DOM protocol", () => {
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "",
       ancestorPath: [],
     })).toThrow(DomProtocolError);
@@ -715,6 +730,7 @@ describe("DOM protocol", () => {
     const selectionInput = {
       type: "dom.selectionChanged" as const,
       documentEpoch: 1,
+      selectionRevision: 2,
       nodeRef: "node-1",
       ancestorPath: [nodeView({ nodeRef: "document" }), nodeView()],
     };

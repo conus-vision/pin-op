@@ -4,6 +4,7 @@ import {
   SourceNavigationStateMessageSchema,
 } from "@browser2ide/protocol";
 import {
+  isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -360,15 +361,18 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     };
   }
   if (
-    keys.length === 2 &&
+    keys.length === 3 &&
     keys[0] === "inspectMessageId" &&
-    keys[1] === "type" &&
+    keys[1] === "selectionRevision" &&
+    keys[2] === "type" &&
     message.type === "browser2ide.inspect.started" &&
-    isOpaqueId(message.inspectMessageId)
+    isOpaqueId(message.inspectMessageId) &&
+    isSelectionRevision(message.selectionRevision)
   ) {
     return {
       type: message.type,
       inspectMessageId: message.inspectMessageId,
+      selectionRevision: message.selectionRevision,
     };
   }
   if (

@@ -549,6 +549,7 @@ describe("BackgroundRouter", () => {
     expect(localMessagesAtPublish).toContainEqual({
       type: "browser2ide.inspect.started",
       inspectMessageId: "inspect-1",
+      selectionRevision: 1,
     });
     expect(harness.coordinator.published[0]).toEqual({
       windowId: 10,
@@ -556,6 +557,42 @@ describe("BackgroundRouter", () => {
       sourceId: "source-17",
       payload: inspectPayload(),
     });
+  });
+
+  it("requires a bounded selection revision before starting an inspect", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision(DEFAULT_CONTENT_SESSION_ID, 4),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    for (const selectionRevision of [
+      "4",
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      await expect(harness.router.routeMessage(
+        selectedMessageWithRevision(
+          DEFAULT_CONTENT_SESSION_ID,
+          selectionRevision,
+        ),
+        contentSender(17, 10),
+      )).resolves.toBeUndefined();
+    }
+
+    expect(messagesOfType(panel, "browser2ide.inspect.started")).toEqual([{
+      type: "browser2ide.inspect.started",
+      inspectMessageId: "inspect-1",
+      selectionRevision: 4,
+    }]);
+    expect(harness.coordinator.published).toHaveLength(1);
   });
 
   it("records correlation before send and removes it after send failure", async () => {
@@ -595,10 +632,12 @@ describe("BackgroundRouter", () => {
       {
         type: "browser2ide.inspect.started",
         inspectMessageId: "inspect-1",
+        selectionRevision: 1,
       },
       {
         type: "browser2ide.inspect.started",
         inspectMessageId: "inspect-2",
+        selectionRevision: 1,
       },
       {
         type: "browser2ide.ideState",
@@ -639,10 +678,12 @@ describe("BackgroundRouter", () => {
       {
         type: "browser2ide.inspect.started",
         inspectMessageId: "inspect-1",
+        selectionRevision: 1,
       },
       {
         type: "browser2ide.inspect.started",
         inspectMessageId: "inspect-2",
+        selectionRevision: 1,
       },
     ]);
     expect(messagesOfType(panel, "resolution")).toEqual([
@@ -666,10 +707,10 @@ describe("BackgroundRouter", () => {
       contentSender(17, 10),
     );
     harness.router.connectPort(firstLease);
-    const firstEvent = selectionChanged("node-a");
+    const firstEvent = selectionChangedWithRevision("node-a", 20);
 
     await expect(harness.router.routeMessage(
-      selectedMessage(firstSessionId),
+      selectedMessageWithRevision(firstSessionId, 20),
       contentSender(17, 10),
     )).resolves.toEqual({ ok: true });
     await expect(harness.router.routeMessage(
@@ -687,10 +728,10 @@ describe("BackgroundRouter", () => {
       contentSender(17, 10),
     );
     harness.router.connectPort(secondLease);
-    const secondEvent = selectionChanged("node-b");
+    const secondEvent = selectionChangedWithRevision("node-b", 1);
 
     await expect(harness.router.routeMessage(
-      selectedMessage(firstSessionId),
+      selectedMessageWithRevision(firstSessionId, 21),
       contentSender(17, 10),
     )).resolves.toBeUndefined();
     await expect(harness.router.routeMessage(
@@ -698,7 +739,7 @@ describe("BackgroundRouter", () => {
       contentSender(17, 10),
     )).resolves.toBeUndefined();
     await expect(harness.router.routeMessage(
-      selectedMessage(secondSessionId),
+      selectedMessageWithRevision(secondSessionId, 1),
       contentSender(17, 10),
     )).resolves.toEqual({ ok: true });
     await expect(harness.router.routeMessage(
@@ -3517,10 +3558,25 @@ function inspectPayload(): InspectPayload {
 function selectedMessage(
   contentSessionId: string,
   payload: InspectPayload = inspectPayload(),
+  selectionRevision = 1,
 ) {
   return {
     type: "elementSelected" as const,
     contentSessionId,
+    selectionRevision,
+    payload,
+  };
+}
+
+function selectedMessageWithRevision(
+  contentSessionId: string,
+  selectionRevision: unknown,
+  payload: InspectPayload = inspectPayload(),
+) {
+  return {
+    type: "elementSelected" as const,
+    contentSessionId,
+    selectionRevision,
     payload,
   };
 }
@@ -3533,10 +3589,24 @@ function domEventMessage(contentSessionId: string, event: unknown) {
   };
 }
 
+function selectionChangedWithRevision(
+  nodeRef: string,
+  selectionRevision: number,
+) {
+  return {
+    type: "dom.selectionChanged" as const,
+    documentEpoch: 1,
+    selectionRevision,
+    nodeRef,
+    ancestorPath: [],
+  };
+}
+
 function selectionChanged(nodeRef: string) {
   return {
     type: "dom.selectionChanged" as const,
     documentEpoch: 1,
+    selectionRevision: 1,
     nodeRef,
     ancestorPath: [],
   };

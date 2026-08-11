@@ -176,6 +176,7 @@ function publishSelection(
   void options.sendRuntimeMessage({
     type: "elementSelected",
     contentSessionId,
+    selectionRevision: selection.selectionRevision,
     payload: selection.payload,
   }).catch(reportError);
 }

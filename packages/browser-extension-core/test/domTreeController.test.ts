@@ -498,6 +498,7 @@ function selectionEvent(
   return {
     type: "dom.selectionChanged",
     documentEpoch,
+    selectionRevision: 1,
     nodeRef,
     ancestorPath,
   };

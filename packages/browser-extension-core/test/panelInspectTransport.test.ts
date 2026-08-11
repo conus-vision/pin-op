@@ -97,6 +97,7 @@ describe("PanelInspectTransport DOM integration", () => {
     const inspectStarted = {
       type: "browser2ide.inspect.started",
       inspectMessageId: "inspect-1",
+      selectionRevision: 4,
     } as const;
 
     port.emitMessage(inspectStarted);
@@ -107,6 +108,13 @@ describe("PanelInspectTransport DOM integration", () => {
     port.emitMessage(navigationStateWithoutActiveMatch);
     port.emitMessage({ ...inspectStarted, inspectMessageId: "" });
     port.emitMessage({ ...inspectStarted, inspectMessageId: "x".repeat(129) });
+    port.emitMessage({ ...inspectStarted, selectionRevision: "4" });
+    port.emitMessage({ ...inspectStarted, selectionRevision: -1 });
+    port.emitMessage({ ...inspectStarted, selectionRevision: 1.5 });
+    port.emitMessage({
+      ...inspectStarted,
+      selectionRevision: Number.MAX_SAFE_INTEGER + 1,
+    });
     port.emitMessage({ ...inspectStarted, extra: true });
     port.emitMessage({ ...selection, tabId: 999 });
     port.emitMessage({ ...currentResolution, resolutionGeneration: -1 });
@@ -291,6 +299,7 @@ function selectionChanged() {
   return {
     type: "dom.selectionChanged" as const,
     documentEpoch: 1,
+    selectionRevision: 4,
     nodeRef: "node-1",
     ancestorPath: [
       {

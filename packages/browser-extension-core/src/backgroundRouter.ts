@@ -20,6 +20,7 @@ import {
   type InspectSessionInvalidationReason,
 } from "./backgroundInspectSession.js";
 import {
+  isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -344,6 +345,7 @@ export class BackgroundRouter {
     }
     return this.publishSelection(
       selection.payload,
+      selection.selectionRevision,
       selection.contentSessionId,
       sender,
     );
@@ -1444,6 +1446,7 @@ export class BackgroundRouter {
 
   private async publishSelection(
     payload: InspectPayload,
+    selectionRevision: number,
     contentSessionId: ContentSessionId,
     sender: BackgroundMessageSender,
   ): Promise<BackgroundRouteResult | undefined> {
@@ -1488,6 +1491,7 @@ export class BackgroundRouter {
       this.panelSessions.publishInspectStarted(
         refreshed.channel,
         inspectMessageId,
+        selectionRevision,
       );
     } catch (error) {
       this.reportError(error);
@@ -2073,6 +2077,7 @@ function parsePanelWindowCommand(
 
 interface ContentSelectionEnvelope {
   readonly contentSessionId: ContentSessionId;
+  readonly selectionRevision: number;
   readonly payload: InspectPayload;
 }
 
@@ -2086,9 +2091,15 @@ function parseElementSelectedMessage(
 ): ContentSelectionEnvelope | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["type", "contentSessionId", "payload"]) ||
+    !hasOnlyKeys(value, [
+      "type",
+      "contentSessionId",
+      "selectionRevision",
+      "payload",
+    ]) ||
     value.type !== "elementSelected" ||
     !isValidContentSessionId(value.contentSessionId) ||
+    !isSelectionRevision(value.selectionRevision) ||
     !isRecord(value.payload)
   ) {
     return undefined;
@@ -2111,6 +2122,7 @@ function parseElementSelectedMessage(
     return parsed.success
       ? {
           contentSessionId: value.contentSessionId,
+          selectionRevision: value.selectionRevision,
           payload: {
             targets: parsed.data.targets,
             context: parsed.data.context,

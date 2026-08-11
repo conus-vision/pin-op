@@ -9,7 +9,10 @@ import {
   type PanelCommand,
 } from "./panelController.js";
 import { DomTreeController } from "./domTreeController.js";
-import { parseDomEvent } from "./domProtocol.js";
+import {
+  isSelectionRevision,
+  parseDomEvent,
+} from "./domProtocol.js";
 import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
 import { PanelInspectController } from "./panelInspectController.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
@@ -71,6 +74,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   let controller: PanelController;
   let treeController: DomTreeController;
   let treeSessionActive = false;
+  let acceptedSelectionRevision: number | undefined;
+  let activeInspectSelectionRevision: number | undefined;
 
   const inspectTransport = new PanelInspectTransport(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
@@ -151,6 +156,14 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     const inspectStarted = validatedInspectStarted(message);
     const domEvent = validatedDomEvent(message);
     if (inspectStarted) {
+      if (
+        acceptedSelectionRevision !== undefined &&
+        inspectStarted.selectionRevision < acceptedSelectionRevision
+      ) {
+        return;
+      }
+      acceptedSelectionRevision = inspectStarted.selectionRevision;
+      activeInspectSelectionRevision = inspectStarted.selectionRevision;
       sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
       const model = resolutionPresenter.beginCorrelatedInspect(
         inspectStarted.inspectMessageId,
@@ -160,15 +173,25 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         view.renderResolution(model);
       }
     } else if (domEvent) {
-      const treeBeforeEvent = treeController.snapshot();
-      if (
-        domEvent.type === "dom.selectionChanged" &&
-        (treeBeforeEvent.documentEpoch === undefined ||
-          domEvent.documentEpoch >= treeBeforeEvent.documentEpoch) &&
-        (domEvent.documentEpoch !== treeBeforeEvent.documentEpoch ||
-          domEvent.nodeRef !== treeBeforeEvent.selectedRef)
-      ) {
-        sourceNavigationController.invalidate();
+      if (domEvent.type === "dom.selectionChanged") {
+        if (
+          acceptedSelectionRevision !== undefined &&
+          domEvent.selectionRevision < acceptedSelectionRevision
+        ) {
+          return;
+        }
+        if (
+          acceptedSelectionRevision === undefined ||
+          domEvent.selectionRevision > acceptedSelectionRevision
+        ) {
+          acceptedSelectionRevision = domEvent.selectionRevision;
+          activeInspectSelectionRevision = undefined;
+          sourceNavigationController.invalidate();
+        } else if (
+          activeInspectSelectionRevision !== domEvent.selectionRevision
+        ) {
+          sourceNavigationController.invalidate();
+        }
       }
       treeController.handleEvent(domEvent);
       if (domEvent.type === "dom.selectionChanged") {
@@ -228,6 +251,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       void treeController.loadRoot();
     } else if (parseInspectPortInvalidated(message)) {
       const shouldRecover = treeSessionActive;
+      resetSelectionOwnership();
       sourceNavigationController.invalidate();
       treeController.reset();
       resetResolutionState();
@@ -258,6 +282,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
 
   function deactivateTreeSession(): void {
     treeSessionActive = false;
+    resetSelectionOwnership();
     sourceNavigationController.invalidate();
     treeController.reset();
   }
@@ -270,6 +295,11 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   function resetResolutionState(): void {
     diagnostics.clearResolution();
     view.renderResolution(resolutionPresenter.reset());
+  }
+
+  function resetSelectionOwnership(): void {
+    acceptedSelectionRevision = undefined;
+    activeInspectSelectionRevision = undefined;
   }
 
   function dispose(): void {
@@ -327,15 +357,21 @@ function validatedInspectStarted(
 ): PanelInspectStartedState | undefined {
   if (
     !isRecord(message) ||
-    !hasOnlyKeys(message, ["type", "inspectMessageId"]) ||
+    !hasOnlyKeys(message, [
+      "type",
+      "inspectMessageId",
+      "selectionRevision",
+    ]) ||
     message.type !== "browser2ide.inspect.started" ||
-    !isOpaqueId(message.inspectMessageId)
+    !isOpaqueId(message.inspectMessageId) ||
+    !isSelectionRevision(message.selectionRevision)
   ) {
     return undefined;
   }
   return {
     type: message.type,
     inspectMessageId: message.inspectMessageId,
+    selectionRevision: message.selectionRevision,
   };
 }
 

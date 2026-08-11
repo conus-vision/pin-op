@@ -185,6 +185,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 7,
+      selectionRevision: 1,
       nodeRef: "child",
       ancestorPath: [
         domNode("root", "html", true),
@@ -273,6 +274,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main")],
     });
@@ -351,6 +353,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 7,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "button#save.primary")],
     });
@@ -415,6 +418,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 7,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [
         domNode("root", "html", true),
@@ -487,6 +491,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main")],
     });
@@ -587,6 +592,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 7,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "button#late.primary")],
     });
@@ -605,7 +611,7 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
-  it("invalidates old navigation before a new selection inspect starts", async () => {
+  it("invalidates A when B selection arrives before B inspect starts", async () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
@@ -615,17 +621,198 @@ describe("startPanelRuntime", () => {
     showReadySourceNavigation(port, "selected-a", "inspect-a");
     expect(dom.element("source-navigation-footer").hidden).toBe(false);
 
-    port.emitMessage({
-      type: "dom.selectionChanged",
-      documentEpoch: 1,
-      nodeRef: "selected-b",
-      ancestorPath: [domNode("selected-b", "button#new.primary")],
-    });
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#new.primary",
+      2,
+    ));
     dom.element("source-next").dispatch("click");
     await flushAsync();
 
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#new.primary",
+    );
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
+    runtime.dispose();
+  });
+
+  it("preserves B navigation when B inspect completes before its equal selection", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-a", "inspect-a");
+
+    port.emitMessage(inspectStartedWithRevision("inspect-b", 2));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#current.primary",
+      2,
+    ));
+    dom.element("source-next").dispatch("click");
+    await flushAsync();
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
+      type: "browser2ide.source.navigate",
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      direction: "next",
+    }]);
+    runtime.dispose();
+  });
+
+  it("drops an older same-epoch selection without regressing B", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-a", "inspect-a");
+
+    port.emitMessage(inspectStartedWithRevision("inspect-b", 2));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#current.primary",
+      2,
+    ));
+    port.emitMessage(selectionChangedWithRevision(
+      "stale-a",
+      "button#stale.primary",
+      1,
+    ));
+    dom.element("source-previous").dispatch("click");
+    await flushAsync();
+
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#current.primary",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-b",
+    )).toBeDefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "stale-a",
+    )).toBeUndefined();
+    expect(dom.element("source-navigation-counter").value).toBe("1 / 2");
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
+      type: "browser2ide.source.navigate",
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      direction: "previous",
+    }]);
+    runtime.dispose();
+  });
+
+  it("invalidates B when a newer selection arrives", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-a", "inspect-a");
+    port.emitMessage(inspectStartedWithRevision("inspect-b", 2));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#current.primary",
+      2,
+    ));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-c",
+      "button#newer.primary",
+      3,
+    ));
+    dom.element("source-next").dispatch("click");
+    await flushAsync();
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#newer.primary",
+    );
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
+    runtime.dispose();
+  });
+
+  it("accepts a lower revision after inspect invalidation resets ownership", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-old", "inspect-old", 20);
+
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    port.emitMessage(inspectStartedWithRevision("inspect-new-session", 1));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-new-session",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-new-session",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-new-session",
+      "main#replacement",
+      1,
+      0,
+    ));
+    dom.element("source-next").dispatch("click");
+    await flushAsync();
+
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: main#replacement",
+    );
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
+      type: "browser2ide.source.navigate",
+      inspectMessageId: "inspect-new-session",
+      resolutionGeneration: 2,
+      direction: "next",
+    }]);
     runtime.dispose();
   });
 
@@ -638,6 +825,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "button#save")],
     });
@@ -675,6 +863,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main")],
     });
@@ -710,6 +899,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main")],
     });
@@ -748,6 +938,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main.content")],
     });
@@ -818,6 +1009,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "article.card")],
     });
@@ -850,6 +1042,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "article.card")],
     });
@@ -883,6 +1076,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "article.card")],
     });
@@ -920,6 +1114,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "article.card")],
     });
@@ -983,6 +1178,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
+      selectionRevision: 1,
       nodeRef: "selected",
       ancestorPath: [domNode("selected", "main")],
     });
@@ -1378,14 +1574,16 @@ function showReadySourceNavigation(
   port: TestRuntimePort,
   nodeRef: string,
   inspectMessageId: string,
+  selectionRevision = 1,
 ): void {
   port.emitMessage({
     type: "dom.selectionChanged",
     documentEpoch: 1,
+    selectionRevision,
     nodeRef,
     ancestorPath: [domNode(nodeRef, "main")],
   });
-  port.emitMessage(inspectStarted(inspectMessageId));
+  port.emitMessage(inspectStarted(inspectMessageId, selectionRevision));
   port.emitMessage(resolutionMessage({
     inspectMessageId,
     selectedMatchCount: 2,
@@ -1397,10 +1595,36 @@ function showReadySourceNavigation(
   }));
 }
 
-function inspectStarted(inspectMessageId = "inspect-1") {
+function inspectStarted(
+  inspectMessageId = "inspect-1",
+  selectionRevision = 1,
+) {
   return {
     type: "browser2ide.inspect.started" as const,
     inspectMessageId,
+    selectionRevision,
+  };
+}
+
+function inspectStartedWithRevision(
+  inspectMessageId: string,
+  selectionRevision: number,
+) {
+  return inspectStarted(inspectMessageId, selectionRevision);
+}
+
+function selectionChangedWithRevision(
+  nodeRef: string,
+  label: string,
+  selectionRevision: number,
+  documentEpoch = 1,
+) {
+  return {
+    type: "dom.selectionChanged" as const,
+    documentEpoch,
+    selectionRevision,
+    nodeRef,
+    ancestorPath: [domNode(nodeRef, label)],
   };
 }
 

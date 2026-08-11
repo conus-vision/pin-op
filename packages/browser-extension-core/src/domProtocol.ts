@@ -110,6 +110,7 @@ export interface DomHoverChangedEvent {
 export interface DomSelectionChangedEvent {
   readonly type: "dom.selectionChanged";
   readonly documentEpoch: number;
+  readonly selectionRevision: number;
   readonly nodeRef: string;
   readonly ancestorPath: readonly DomNodeView[];
 }
@@ -175,6 +176,7 @@ const DOM_RESPONSE_KEYS = [
 const DOM_EVENT_KEYS = [
   "type",
   "documentEpoch",
+  "selectionRevision",
   "nodeRef",
   "summary",
   "ancestorPath",
@@ -344,15 +346,25 @@ export function parseDomEvent(value: unknown): DomEvent {
           : {}),
       });
     case "dom.selectionChanged":
-      assertKeys(record, ["type", "documentEpoch", "nodeRef", "ancestorPath"], [
+      assertKeys(record, [
         "type",
         "documentEpoch",
+        "selectionRevision",
+        "nodeRef",
+        "ancestorPath",
+      ], [
+        "type",
+        "documentEpoch",
+        "selectionRevision",
         "nodeRef",
         "ancestorPath",
       ]);
       return freeze({
         type: "dom.selectionChanged",
         documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
+        selectionRevision: assertSafeNonnegativeInteger(
+          record.selectionRevision,
+        ),
         nodeRef: assertIdentifier(record.nodeRef),
         ancestorPath: parseAncestorPath(record.ancestorPath),
       });
@@ -370,6 +382,10 @@ export function parseDomEvent(value: unknown): DomEvent {
     default:
       throw invalidMessage();
   }
+}
+
+export function isSelectionRevision(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 function parseNodeView(value: unknown): DomNodeView {

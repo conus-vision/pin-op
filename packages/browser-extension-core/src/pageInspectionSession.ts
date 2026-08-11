@@ -53,6 +53,7 @@ export type PageInspectionDocument = Document & {
 export interface PageInspectionSelection {
   readonly nodeRef: string;
   readonly documentEpoch: number;
+  readonly selectionRevision: number;
   readonly ancestorPath: readonly DomNodeView[];
   readonly payload: InspectPayloadWithDiagnostics;
 }
@@ -469,6 +470,7 @@ export class PageInspectionSession {
       const published = this.publishSelection(Object.freeze({
         nodeRef: selected.nodeRef,
         documentEpoch: selected.documentEpoch,
+        selectionRevision: authority.selectionRevision,
         ancestorPath: selected.ancestorPath,
         payload,
       }), authority);
@@ -775,12 +777,14 @@ export class PageInspectionSession {
       const event: DomSelectionChangedEvent = Object.freeze({
         type: "dom.selectionChanged",
         documentEpoch: next.documentEpoch,
+        selectionRevision: operation,
         nodeRef: next.nodeRef,
         ancestorPath: next.ancestorPath,
       });
       const selection: PageInspectionSelection = Object.freeze({
         nodeRef: next.nodeRef,
         documentEpoch: next.documentEpoch,
+        selectionRevision: operation,
         ancestorPath: next.ancestorPath,
         payload: createdPayload,
       });

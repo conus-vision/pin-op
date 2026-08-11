@@ -50,12 +50,19 @@ describe("PageInspectionSession", () => {
     expect(harness.selections).toHaveLength(2);
     expect(harness.selections.map(({ nodeRef }) => nodeRef))
       .toEqual(["node-2", "node-2"]);
+    expect(harness.selections.map(({ selectionRevision }) => selectionRevision))
+      .toEqual([1, 2]);
     expect(harness.selections.map(({ ancestorPath }) => (
       ancestorPath.map(({ nodeRef }) => nodeRef)
     ))).toEqual([
       ["node-1", "node-2"],
       ["node-1", "node-2"],
     ]);
+    expect(harness.events.flatMap((event) => (
+      event.type === "dom.selectionChanged"
+        ? [event.selectionRevision]
+        : []
+    ))).toEqual([1, 2]);
     expect(harness.session.pickerEnabled).toBe(true);
   });
 
@@ -164,6 +171,8 @@ describe("PageInspectionSession", () => {
     expect(harness.provider.revealCount).toBe(revealCount);
     expect(harness.selections.map(({ nodeRef }) => nodeRef))
       .toEqual(["node-2", "node-2"]);
+    expect(harness.selections.map(({ selectionRevision }) => selectionRevision))
+      .toEqual([1, 1]);
     expect(harness.events.filter(({ type }) => (
       type === "dom.selectionChanged"
     ))).toHaveLength(selectionEventCount);
@@ -258,6 +267,7 @@ describe("PageInspectionSession", () => {
     })).resolves.toEqual([{
       type: "dom.selectionChanged",
       documentEpoch: 3,
+      selectionRevision: 1,
       nodeRef: "node-2",
       ancestorPath: [
         nodeView("node-1", "html"),
@@ -533,6 +543,7 @@ describe("PageInspectionSession", () => {
     })).resolves.toEqual([{
       type: "dom.selectionChanged",
       documentEpoch: 3,
+      selectionRevision: 1,
       nodeRef: "node-2",
       ancestorPath: [
         nodeView("node-1", "html"),
