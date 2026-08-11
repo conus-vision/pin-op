@@ -242,8 +242,13 @@ interface RollbackTimerState {
 
 interface ProviderAuthorityOperation {
   publish(validate?: () => boolean): boolean;
-  finalize(validate?: () => boolean): boolean;
+  finalize(validate?: () => boolean, beforeEnqueue?: () => boolean): boolean;
   rollback(cleanup?: () => void): boolean;
+}
+
+interface PostCommitEffectBatch {
+  readonly snapshot: ProviderAuthoritySnapshot;
+  readonly effects: readonly ProviderOutwardEffect[];
 }
 
 type ProviderOutwardEffect =
@@ -313,6 +318,8 @@ export class DomTreeProvider {
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
+  private readonly postCommitEffectBatches: PostCommitEffectBatch[] = [];
+  private postCommitDeliveryScheduled = false;
   private mutationTimer: DomTreeTimerHandle | undefined;
   private frameMutationScanTimer: DomTreeTimerHandle | undefined;
   private shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -320,9 +327,6 @@ export class DomTreeProvider {
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   private authorityGeneration = 0;
-  private replayingFrameEffect: FrameLifecycleEvent | undefined;
-  private nextPublicationToken = 1;
-  private activePublicationToken: number | undefined;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
   private nextCursor = 1;
@@ -839,9 +843,14 @@ export class DomTreeProvider {
         ancestorPath,
         node,
       );
-      committed = authorityOperation.publish(validate) && authorityOperation.finalize(validate);
+      committed = authorityOperation.publish(validate) && authorityOperation.finalize(
+        validate,
+        () => {
+          transaction!.commit();
+          return true;
+        },
+      );
       if (!committed) return undefined;
-      transaction.commit();
       return Object.freeze({ node, ancestorPath });
     } catch {
       return undefined;
@@ -926,6 +935,7 @@ export class DomTreeProvider {
       throw new RangeError("documentEpoch must be greater than the current epoch");
     }
     this.authorityGeneration += 1;
+    this.postCommitEffectBatches.length = 0;
     if (!this.frameRegistry.resetTopDocument(topDocument, documentEpoch)) {
       throwDomTreeError("node-unavailable");
     }
@@ -1024,6 +1034,7 @@ export class DomTreeProvider {
     }
     this.authorityGeneration += 1;
     this.disposed = true;
+    this.postCommitEffectBatches.length = 0;
     this.cancelScheduledWork();
     this.disconnectAllObservers();
     for (const nodeRef of this.expandedBranches.keys()) {
@@ -2101,69 +2112,45 @@ export class DomTreeProvider {
     const parentBuffer = this.outwardEffectBuffer;
     const buffer = parentBuffer ?? [];
     const ownsBuffer = parentBuffer === undefined;
+    const parentPublicationGuard = this.activePublicationGuard;
+    const publicationGuard = () => (
+      this.isProviderAuthorityCurrent(snapshot) &&
+      (parentPublicationGuard?.() ?? true)
+    );
     if (ownsBuffer) this.outwardEffectBuffer = buffer;
-    const publicationToken = this.nextPublicationToken;
-    this.nextPublicationToken += 1;
+    if (ownsBuffer) this.activePublicationGuard = publicationGuard;
     let closed = false;
     let published = false;
-    let publicationFailed = false;
     return {
-      publish: (validate = () => true) => {
+      publish: (_validate = () => true) => {
         if (closed || published || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
+        // Publishing only seals the internal operation. The complete live proof
+        // happens in finalize, immediately before effects enter the outbox.
+        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
         published = true;
-        if (!ownsBuffer) {
-          publicationFailed = !this.isProviderAuthorityCurrent(snapshot) || !validate();
-          return !publicationFailed;
-        }
-        this.outwardEffectBuffer = undefined;
-        const previousPublicationToken = this.activePublicationToken;
-        const previousPublicationGuard = this.activePublicationGuard;
-        this.activePublicationToken = publicationToken;
-        this.activePublicationGuard = () => (
-          this.activePublicationToken === publicationToken &&
-          this.isProviderAuthorityCurrent(snapshot) &&
-          validate()
-        );
-        try {
-          for (let index = 0; index < buffer.length; index += 1) {
-            const effect = buffer[index]!;
-            if (effect.kind === "frame") this.replayingFrameEffect = effect.event;
-            try {
-              if (!this.emitOutwardEffect(effect)) {
-                publicationFailed = true;
-                buffer.length = 0;
-                return false;
-              }
-            } finally {
-              this.replayingFrameEffect = undefined;
-            }
-            if (
-              this.activePublicationToken !== publicationToken ||
-              !this.isProviderAuthorityCurrent(snapshot) ||
-              !validate()
-            ) {
-              publicationFailed = true;
-              buffer.length = 0;
-              return false;
-            }
-          }
-        } catch {
-          publicationFailed = true;
-          buffer.length = 0;
-          return false;
-        } finally {
-          this.activePublicationToken = previousPublicationToken;
-          this.activePublicationGuard = previousPublicationGuard;
-        }
         return true;
       },
-      finalize: (validate = () => true) => {
-        if (closed || !published || publicationFailed) return false;
+      finalize: (validate = () => true, beforeEnqueue) => {
+        if (closed || !published) return false;
         if (!this.isProviderAuthorityCurrent(snapshot) || !validate()) {
-          publicationFailed = true;
           return false;
         }
+        if (beforeEnqueue) {
+          try {
+            if (!beforeEnqueue()) return false;
+          } catch {
+            return false;
+          }
+          if (!this.isProviderAuthorityCurrent(snapshot) || !validate()) return false;
+        }
+        if (ownsBuffer && this.outwardEffectBuffer !== buffer) return false;
+        if (ownsBuffer && this.activePublicationGuard !== publicationGuard) return false;
         closed = true;
+        if (ownsBuffer) {
+          this.activePublicationGuard = parentPublicationGuard;
+          this.outwardEffectBuffer = undefined;
+          this.enqueuePostCommitEffects(buffer, snapshot);
+        }
         return true;
       },
       rollback: (cleanup) => {
@@ -2201,7 +2188,12 @@ export class DomTreeProvider {
           restored = false;
         } finally {
           closed = true;
-          if (ownsBuffer) this.outwardEffectBuffer = undefined;
+          if (ownsBuffer) {
+            this.outwardEffectBuffer = undefined;
+            if (this.activePublicationGuard === publicationGuard) {
+              this.activePublicationGuard = parentPublicationGuard;
+            }
+          }
         }
         if (ownsBuffer && !published && restored && this.isProviderAuthorityCurrent(snapshot)) {
           for (const event of retainedEvents) this.handleFrameLifecycle(event);
@@ -2858,9 +2850,35 @@ export class DomTreeProvider {
     }
   }
 
-  private emitOutwardEffect(effect: ProviderOutwardEffect): boolean {
+  private enqueuePostCommitEffects(
+    effects: readonly ProviderOutwardEffect[],
+    snapshot: ProviderAuthoritySnapshot,
+  ): void {
+    if (effects.length === 0) return;
+    this.postCommitEffectBatches.push(Object.freeze({
+      snapshot,
+      effects: Object.freeze([...effects]),
+    }));
+    if (this.postCommitDeliveryScheduled) return;
+    this.postCommitDeliveryScheduled = true;
+    globalThis.queueMicrotask(() => this.flushPostCommitEffects());
+  }
+
+  private flushPostCommitEffects(): void {
+    this.postCommitDeliveryScheduled = false;
+    const batches = this.postCommitEffectBatches.splice(0, this.postCommitEffectBatches.length);
+    for (const batch of batches) {
+      if (!this.isProviderAuthorityCurrent(batch.snapshot)) continue;
+      for (const effect of batch.effects) {
+        if (!this.isProviderAuthorityCurrent(batch.snapshot)) break;
+        if (!this.emitCommittedOutwardEffect(effect)) break;
+      }
+    }
+  }
+
+  private emitCommittedOutwardEffect(effect: ProviderOutwardEffect): boolean {
     if (effect.kind === "frame") {
-      return this.handleFrameLifecycle(effect.event);
+      return this.emitFrameLifecycle(effect.event);
     } else if (effect.kind === "invalidated") {
       return this.emitInvalidated(effect.branch);
     } else if (effect.kind === "selected-removed") {
@@ -2868,6 +2886,16 @@ export class DomTreeProvider {
     } else {
       return this.emitMutationSettled();
     }
+  }
+
+  private emitFrameLifecycle(event: FrameLifecycleEvent): boolean {
+    if (this.outwardEffectBuffer) {
+      this.outwardEffectBuffer.push({ kind: "frame", event });
+      return true;
+    }
+    return this.onFrameLifecycle
+      ? this.invokeOutwardCallback(() => this.onFrameLifecycle?.(event))
+      : true;
   }
 
   private registerDiscoveredFrame(frameElement: HTMLIFrameElement): void {
@@ -3167,11 +3195,7 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): boolean {
-    if (this.outwardEffectBuffer) {
-      this.outwardEffectBuffer.push({ kind: "frame", event });
-      return true;
-    }
-    if (this.replayingFrameEffect !== event) {
+    if (!this.outwardEffectBuffer) {
       this.authorityGeneration += 1;
     }
     if (this.externalValueReadDepth > 0 && this.activePublicationGuard) {
@@ -3252,9 +3276,7 @@ export class DomTreeProvider {
         this.queueFrameDiscovery(context.document);
       }
     }
-    return this.onFrameLifecycle
-      ? this.invokeOutwardCallback(() => this.onFrameLifecycle?.(event))
-      : true;
+    return this.emitFrameLifecycle(event);
   }
 
   private cancelScheduledWork(): void {

@@ -4211,11 +4211,13 @@ describe("DomTreeProvider", () => {
     provider.materializeLogicalPath = originalMaterialize;
     expect(resolveLocator(harness.provider, locator)?.node.label)
       .toContain("button#frame_target.action");
+    expect(events).toEqual([]);
+    harness.flushEffects();
     expect(events).toEqual(["registered"]);
     expect(harness.pendingTimerCount()).toBe(1);
   });
 
-  it("does not return locator refs after a registered-frame callback resets authority", () => {
+  it("returns locator refs before a post-commit frame callback resets authority", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
     const document = createDocument();
@@ -4234,13 +4236,15 @@ describe("DomTreeProvider", () => {
     });
     provider = harness.provider;
 
-    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(resolveLocator(harness.provider, locator)).toBeDefined();
+    expect(harness.provider.currentDocumentEpoch).toBe(3);
+    harness.flushEffects();
     expect(harness.provider.currentDocumentEpoch).toBe(4);
     expect(frame.loadListenerCount).toBe(0);
     expect(harness.pendingTimerCount()).toBe(0);
   });
 
-  it("does not return locator refs after a registered-frame callback disposes authority", () => {
+  it("returns locator refs before a post-commit frame callback disposes authority", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
     const document = createDocument();
@@ -4259,12 +4263,13 @@ describe("DomTreeProvider", () => {
     });
     provider = harness.provider;
 
-    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(resolveLocator(harness.provider, locator)).toBeDefined();
+    harness.flushEffects();
     expect(() => harness.provider.getRoot()).toThrowError("session-disposed");
     expect(frame.loadListenerCount).toBe(0);
   });
 
-  it("does not return locator refs after a registered-frame callback navigates authority", () => {
+  it("returns locator refs before a post-commit frame callback navigates authority", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
     const document = createDocument();
@@ -4284,7 +4289,8 @@ describe("DomTreeProvider", () => {
       },
     });
 
-    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(resolveLocator(harness.provider, locator)).toBeDefined();
+    harness.flushEffects();
   });
 
   it("publishes locator effects once for read-only callback reentry", () => {
@@ -4310,11 +4316,13 @@ describe("DomTreeProvider", () => {
     provider = harness.provider;
 
     expect(resolveLocator(harness.provider, locator)?.node.label).toContain("button#frame_target.action");
+    expect(events).toEqual([]);
+    harness.flushEffects();
     expect(events).toEqual(["registered"]);
     expect(observedContexts).toBe(2);
   });
 
-  it("does not return a child page after callback reentry resets authority", () => {
+  it("returns a child page before a post-commit callback resets authority", () => {
     const document = createDocument();
     let armed = false;
     let provider: DomTreeProvider | undefined;
@@ -4330,13 +4338,14 @@ describe("DomTreeProvider", () => {
     document.documentElement.append(createFrameElement(document, createDocument()));
     armed = true;
 
-    expect(() => harness.provider.getChildren({
+    expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "published-child-page",
       documentEpoch: root.documentEpoch,
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,
-    })).toThrowError("node-unavailable");
+    }).nodes).toHaveLength(1);
+    harness.flushEffects();
     expect(harness.provider.currentDocumentEpoch).toBe(4);
   });
 
@@ -4391,7 +4400,7 @@ describe("DomTreeProvider", () => {
       frame.setFrameDocument(createDocument());
       frame.dispatchLoad();
     }],
-  ] as const)("stops ordered frame effect replay after a callback %s authority", (_name, invalidate) => {
+  ] as const)("stops ordered post-commit frame delivery after a callback %s authority", (_name, invalidate) => {
     const document = createDocument();
     const frames = [
       createFrameElement(document, createDocument()),
@@ -4415,13 +4424,14 @@ describe("DomTreeProvider", () => {
     const root = harness.provider.getRoot();
     for (const frame of frames) document.documentElement.append(frame);
 
-    expect(() => harness.provider.getChildren({
+    expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "ordered-frame-effects",
       documentEpoch: root.documentEpoch,
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,
-    })).toThrowError("node-unavailable");
+    }).nodes).toHaveLength(3);
+    harness.flushEffects();
     expect(registered).toHaveLength(1);
   });
 
@@ -4450,11 +4460,12 @@ describe("DomTreeProvider", () => {
     });
 
     expect(response.nodes).toHaveLength(3);
+    harness.flushEffects();
     expect(new Set(registered)).toHaveLength(3);
     expect(registered).toHaveLength(3);
   });
 
-  it("does not return a root changed by its first published callback", () => {
+  it("returns a root before its first post-commit callback changes it", () => {
     const document = createDocument();
     const invalidations: string[] = [];
     const harness = createProviderHarness(document, {
@@ -4476,11 +4487,12 @@ describe("DomTreeProvider", () => {
       return view;
     };
 
-    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
-    expect(invalidations).toHaveLength(1);
+    expect(harness.provider.getRoot().node.label).toBe("html");
+    harness.flushEffects();
+    expect(invalidations).toHaveLength(3);
   });
 
-  it("does not return children replaced by their first published callback", () => {
+  it("returns children before their first post-commit callback replaces them", () => {
     const document = createDocument();
     const frames = [
       createFrameElement(document, createDocument()),
@@ -4501,17 +4513,18 @@ describe("DomTreeProvider", () => {
     const root = harness.provider.getRoot();
     for (const frame of frames) document.documentElement.append(frame);
 
-    expect(() => harness.provider.getChildren({
+    expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "published-child-dom-change",
       documentEpoch: root.documentEpoch,
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,
-    })).toThrowError("node-unavailable");
-    expect(registered).toHaveLength(1);
+    }).nodes).toHaveLength(3);
+    harness.flushEffects();
+    expect(registered).toHaveLength(3);
   });
 
-  it("does not return an ancestor path moved by its first published callback", () => {
+  it("returns an ancestor path before its first post-commit callback moves it", () => {
     const tree = createHeadingTree();
     const root = tree.provider.getRoot();
     const body = onlyChild(tree.provider, root.node, root.documentEpoch, "ancestor-live-body");
@@ -4541,12 +4554,12 @@ describe("DomTreeProvider", () => {
       return view;
     };
 
-    expect(() => tree.provider.ancestorPath(target.nodeRef, root.documentEpoch))
-      .toThrowError("node-unavailable");
-    expect(effects).toBe(1);
+    expect(tree.provider.ancestorPath(target.nodeRef, root.documentEpoch)).toHaveLength(4);
+    flushPostCommitEffects(tree.provider);
+    expect(effects).toBe(3);
   });
 
-  it("does not return a locator result changed by its published callback", () => {
+  it("returns a locator result before its post-commit callback changes it", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
     const document = createDocument();
@@ -4563,10 +4576,12 @@ describe("DomTreeProvider", () => {
       },
     });
 
-    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(resolveLocator(harness.provider, locator)).toBeDefined();
+    harness.flushEffects();
+    expect(target.className).toBe("changed");
   });
 
-  it("rolls back published locator authority without reusing tentative frame identity", () => {
+  it("emits no lifecycle callback for a failed locator transaction", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
     const document = createDocument();
@@ -4578,32 +4593,97 @@ describe("DomTreeProvider", () => {
     childDocument.documentElement.append(target);
     document.documentElement.append(frame);
     const observedFrameRefs: string[] = [];
-    let invalidate = true;
     const harness = createProviderHarness(document, {
       onFrameLifecycle: (event) => {
         if (event.type !== "registered") return;
         observedFrameRefs.push(event.frameRef);
-        if (invalidate) target.className = "changed";
       },
     });
     const state = harness.provider as unknown as {
       readonly records: ReadonlyMap<string, unknown>;
       readonly frameAuthority: { accessibleContexts(): readonly unknown[] };
+      materializeLogicalPath: (...args: readonly unknown[]) => unknown;
     };
     const recordsBefore = state.records.size;
     const contextsBefore = state.frameAuthority.accessibleContexts().length;
 
+    const materialize = state.materializeLogicalPath;
+    state.materializeLogicalPath = () => undefined;
     expect(resolveLocator(harness.provider, locator)).toBeUndefined();
     expect(state.records.size).toBe(recordsBefore);
     expect(state.frameAuthority.accessibleContexts()).toHaveLength(contextsBefore);
     expect(frame.loadListenerCount).toBe(0);
     expect(harness.pendingTimerCount()).toBe(0);
+    expect(observedFrameRefs).toEqual([]);
+    expect((state as unknown as {
+      readonly postCommitEffectBatches: readonly unknown[];
+      readonly postCommitDeliveryScheduled: boolean;
+    }).postCommitEffectBatches).toEqual([]);
+    expect((state as unknown as {
+      readonly postCommitDeliveryScheduled: boolean;
+    }).postCommitDeliveryScheduled).toBe(false);
 
-    invalidate = false;
-    target.className = "action";
+    state.materializeLogicalPath = materialize;
     expect(resolveLocator(harness.provider, locator)?.node.label).toContain("button#frame_target.action");
-    expect(observedFrameRefs).toHaveLength(2);
-    expect(observedFrameRefs[1]).not.toBe(observedFrameRefs[0]);
+    expect(observedFrameRefs).toEqual([]);
+    harness.flushEffects();
+    expect(observedFrameRefs).toHaveLength(1);
+  });
+
+  it.each([
+    ["reset", (provider: DomTreeProvider) => (
+      provider.resetDocument(createDocument() as unknown as Document, 4)
+    )],
+    ["dispose", (provider: DomTreeProvider) => provider.dispose()],
+  ] as const)("drops committed effects when %s occurs before their outbox delivery", (_name, invalidate) => {
+    const document = createDocument();
+    const invalidated: string[] = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch.nodeRef),
+    });
+    const state = harness.provider as unknown as {
+      viewElement(element: Element, ...args: readonly unknown[]): { readonly nodeRef: string; readonly branchRevision: number };
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+    };
+    const viewElement = state.viewElement;
+    state.viewElement = (element, ...args) => {
+      const view = viewElement.call(state, element, ...args);
+      state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+      return view;
+    };
+
+    expect(harness.provider.getRoot().node.label).toBe("html");
+    expect(invalidated).toEqual([]);
+    invalidate(harness.provider);
+    harness.flushEffects();
+    expect(invalidated).toEqual([]);
+  });
+
+  it("holds nested authority-operation effects for the owning operation's outbox", () => {
+    const document = createDocument();
+    const invalidated: string[] = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch.nodeRef),
+    });
+    const state = harness.provider as unknown as {
+      beginProviderAuthorityOperation(): {
+        publish(validate?: () => boolean): boolean;
+        finalize(validate?: () => boolean): boolean;
+      } | undefined;
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+    };
+    const outer = state.beginProviderAuthorityOperation()!;
+    const inner = state.beginProviderAuthorityOperation()!;
+    state.emitInvalidated({ nodeRef: "nested", branchRevision: 1 });
+
+    expect(inner.publish()).toBe(true);
+    expect(inner.finalize()).toBe(true);
+    expect(invalidated).toEqual([]);
+    expect(outer.publish()).toBe(true);
+    expect(outer.finalize()).toBe(true);
+    expect(invalidated).toEqual([]);
+    harness.flushEffects();
+    expect(invalidated).toEqual(["nested"]);
   });
 
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
@@ -4654,10 +4734,13 @@ describe("DomTreeProvider", () => {
         },
       });
     };
+    harness.flushEffects();
     callbacks.length = 0;
     armed = true;
 
-    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+    expect(harness.provider.getRoot().node.label).toBe("html");
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
     expect(callbacks).toEqual(["invalidated"]);
   });
 
@@ -4702,10 +4785,13 @@ describe("DomTreeProvider", () => {
         },
       });
     };
+    harness.flushEffects();
     callbacks.length = 0;
     armed = true;
 
     expect(harness.provider.getRoot().node.label).toBe("html");
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
     expect(callbacks).toEqual([
       "invalidated",
       "invalidated",
@@ -4776,13 +4862,27 @@ describe("DomTreeProvider", () => {
         },
       });
     };
+    harness.flushEffects();
     callbacks.length = 0;
     triggerSelectionRead = true;
     triggerNavigation = true;
 
-    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
-    expect(selectionRead).toBe(true);
-    expect(callbacks).toEqual([]);
+    if (_name === "navigate") {
+      expect(harness.provider.getRoot().node.label).toBe("html");
+      expect(selectionRead).toBe(true);
+      expect(callbacks).toEqual([]);
+      harness.flushEffects();
+      expect(callbacks).toEqual([
+        "invalidated",
+        "invalidated",
+        "selected-removed",
+        "frame",
+      ]);
+    } else {
+      expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+      expect(selectionRead).toBe(true);
+      expect(callbacks).toEqual([]);
+    }
   });
 
   it("keeps selected-ref reads read-only during frame publication", () => {
@@ -4831,10 +4931,13 @@ describe("DomTreeProvider", () => {
         },
       });
     };
+    harness.flushEffects();
     callbacks.length = 0;
 
     expect(harness.provider.getRoot().node.label).toBe("html");
     expect(selectionReads).toBe(1);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
     expect(callbacks).toEqual([
       "invalidated",
       "invalidated",
@@ -4860,7 +4963,7 @@ describe("DomTreeProvider", () => {
     ["given a child", (_document: FakeDocument, parent: FakeElement) => {
       parent.append(createElement("button", parent.ownerDocument));
     }],
-  ] as const)("does not return an empty page when its parent is %s by a callback", (_name, mutate) => {
+  ] as const)("returns an empty page before its parent is %s by a post-commit callback", (_name, mutate) => {
     const document = createDocument();
     const body = createElement("body", document);
     const parent = createElement("main", document);
@@ -4894,13 +4997,15 @@ describe("DomTreeProvider", () => {
       return page;
     };
 
-    expect(() => harness.provider.getChildren({
+    expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "empty-page-live-parent",
       documentEpoch: root.documentEpoch,
       nodeRef: parentView.nodeRef,
       branchRevision: parentView.branchRevision,
-    })).toThrowError("node-unavailable");
+    }).nodes).toEqual([]);
+    expect(callbackCount).toBe(0);
+    harness.flushEffects();
     expect(callbackCount).toBe(1);
   });
 
@@ -4943,6 +5048,8 @@ describe("DomTreeProvider", () => {
       branchRevision: parentView.branchRevision,
     });
     expect(response.nodes).toEqual([]);
+    expect(callbackCount).toBe(0);
+    harness.flushEffects();
     expect(callbackCount).toBe(1);
   });
 
@@ -5608,6 +5715,8 @@ describe("DomTreeProvider", () => {
       nodeRef: hostView.nodeRef,
       branchRevision: hostView.branchRevision + 1,
     });
+    expect(invalidated).toEqual([]);
+    harness.flushEffects();
     expect(invalidated).toEqual([{
       nodeRef: hostView.nodeRef,
       branchRevision: hostView.branchRevision + 1,
@@ -5699,6 +5808,8 @@ describe("DomTreeProvider", () => {
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,
     }).nodes.map(({ label }) => label)).toEqual(["iframe", "aside"]);
+    expect(events).toEqual([]);
+    harness.flushEffects();
     expect(events).toEqual(["registered"]);
     expect(harness.pendingTimerCount()).toBe(2);
     expect(provider.pendingFrameMutationScans).toHaveLength(1);
@@ -5734,6 +5845,8 @@ describe("DomTreeProvider", () => {
     ]);
 
     expect(path?.map(({ nodeRef }) => nodeRef)).toEqual([root.node.nodeRef, "node-2"]);
+    expect(observedReasons).toBeUndefined();
+    harness.flushEffects();
     expect(observedReasons).toEqual([]);
     expect(state.nodeRegistry.retentionReasons(root.node.nodeRef)).toEqual([]);
   });
@@ -6098,6 +6211,10 @@ function resolveStableLocator(
   }).locatorService.resolve(locator);
 }
 
+function flushPostCommitEffects(provider: DomTreeProvider): void {
+  (provider as unknown as { flushPostCommitEffects(): void }).flushPostCommitEffects();
+}
+
 function locatorFor(provider: DomTreeProvider, target: FakeElement): DomStableLocator {
   return provider.revealElement(target as unknown as Element).ancestorPath.at(-1)!.locator;
 }
@@ -6206,6 +6323,7 @@ function createProviderHarness(
   readonly provider: DomTreeProvider;
   readonly observers: TestMutationObserver[];
   readonly flushTimers: () => void;
+  readonly flushEffects: () => void;
   readonly pendingTimerCount: () => number;
 } {
   const observers: TestMutationObserver[] = [];
@@ -6247,6 +6365,9 @@ function createProviderHarness(
       const pending = [...timers.values()];
       timers.clear();
       for (const callback of pending) callback();
+    },
+    flushEffects: () => {
+      (provider as unknown as { flushPostCommitEffects(): void }).flushPostCommitEffects();
     },
     pendingTimerCount: () => timers.size,
   };
