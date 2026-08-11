@@ -334,6 +334,7 @@ export class DomTreeProvider {
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
+  private deferredFrameLifecycleReadCount = 0;
   private nextCursor = 1;
   private frameTracking = false;
   private disposed = false;
@@ -2119,9 +2120,11 @@ export class DomTreeProvider {
     const ownsBuffer = parentBuffer === undefined;
     // Nested operations share the owner journal but own only their suffix.
     const effectSavepoint = buffer.length;
+    const deferredFrameLifecycleReadCount = this.deferredFrameLifecycleReadCount;
     const parentPublicationGuard = this.activePublicationGuard;
     const publicationGuard = () => (
       this.isProviderAuthorityCurrent(snapshot) &&
+      this.deferredFrameLifecycleReadCount === deferredFrameLifecycleReadCount &&
       (parentPublicationGuard?.() ?? true)
     );
     if (ownsBuffer) this.outwardEffectBuffer = buffer;
@@ -2133,13 +2136,13 @@ export class DomTreeProvider {
         if (closed || published || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
         // Publishing only seals the internal operation. The complete live proof
         // happens in finalize, immediately before effects enter the outbox.
-        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+        if (!this.isProviderAuthorityCurrent(snapshot) || !publicationGuard()) return false;
         published = true;
         return true;
       },
       finalize: (validate = () => true, beforeEnqueue) => {
         if (closed || !published) return false;
-        if (!this.isProviderAuthorityCurrent(snapshot) || !validate()) {
+        if (!this.isProviderAuthorityCurrent(snapshot) || !publicationGuard() || !validate()) {
           return false;
         }
         if (beforeEnqueue) {
@@ -2917,9 +2920,19 @@ export class DomTreeProvider {
       return;
     }
     let observer: DomTreeMutationObserver | undefined;
+    const observerTopDocument = this.topDocument;
+    const observerDocumentEpoch = this.documentEpoch;
     try {
       observer = this.createMutationObserver((records) => (
-        this.queueMutations(root, records)
+        observer &&
+        this.isCurrentObserver(
+          root,
+          observer,
+          observerTopDocument,
+          observerDocumentEpoch,
+        )
+          ? this.queueMutations(root, records)
+          : undefined
       ));
       this.observedRootByObserver.set(observer, root);
       observer.observe(root, {
@@ -2939,14 +2952,28 @@ export class DomTreeProvider {
     }
   }
 
+  private isCurrentObserver(
+    root: Node,
+    observer: DomTreeMutationObserver,
+    topDocument: Document | undefined,
+    documentEpoch: number,
+  ): boolean {
+    return !this.disposed &&
+      this.topDocument === topDocument &&
+      this.documentEpoch === documentEpoch &&
+      this.rootObservers.get(root) === observer &&
+      this.observedRootByObserver.get(observer) === root;
+  }
+
   private readSelectedNodeRef(): SelectedNodeRefRead {
     if (!this.getSelectedNodeRef) {
       return Object.freeze({ valid: true, nodeRef: undefined });
     }
-    if (!this.publicationCanContinue()) {
+    if (this.rollbackEffectSuppressionDepth === 0 && !this.publicationCanContinue()) {
       return Object.freeze({ valid: false, nodeRef: undefined });
     }
     let nodeRef: string | undefined;
+    const deferredFrameLifecycleReadCount = this.deferredFrameLifecycleReadCount;
     this.externalValueReadDepth += 1;
     try {
       const selected = this.getSelectedNodeRef();
@@ -2956,7 +2983,10 @@ export class DomTreeProvider {
     } finally {
       this.externalValueReadDepth -= 1;
     }
-    if (!this.publicationCanContinue()) {
+    if (this.rollbackEffectSuppressionDepth === 0 && !this.publicationCanContinue()) {
+      return Object.freeze({ valid: false, nodeRef: undefined });
+    }
+    if (this.deferredFrameLifecycleReadCount !== deferredFrameLifecycleReadCount) {
       return Object.freeze({ valid: false, nodeRef: undefined });
     }
     return Object.freeze({ valid: true, nodeRef });
@@ -3410,10 +3440,16 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): boolean {
+    const deferredFrameLifecycleReadCount = this.deferredFrameLifecycleReadCount;
+    const effectSavepoint = this.outwardEffectBuffer?.length;
     if (!this.outwardEffectBuffer) {
       this.authorityGeneration += 1;
     }
     if (this.externalValueReadDepth > 0 && this.activePublicationGuard) {
+      if (this.outwardEffectBuffer) {
+        this.outwardEffectBuffer.push({ kind: "frame", event });
+        this.deferredFrameLifecycleReadCount += 1;
+      }
       return false;
     }
     if (this.disposed || event.type === "reset") {
@@ -3426,7 +3462,10 @@ export class DomTreeProvider {
       if (!this.releaseFrameIdentity(
         event.frameRef,
         event.type !== "navigated",
-      )) return false;
+      )) {
+        this.journalDeferredFrameLifecycle(event, effectSavepoint, deferredFrameLifecycleReadCount);
+        return false;
+      }
     }
     for (const identity of event.invalidated ?? []) {
       if (!this.releaseFrameIdentity(identity.frameRef, true)) return false;
@@ -3494,18 +3533,52 @@ export class DomTreeProvider {
     return this.emitFrameLifecycle(event);
   }
 
+  private journalDeferredFrameLifecycle(
+    event: FrameLifecycleEvent,
+    effectSavepoint: number | undefined,
+    deferredFrameLifecycleReadCount: number,
+  ): void {
+    const buffer = this.outwardEffectBuffer;
+    if (
+      !buffer ||
+      effectSavepoint === undefined ||
+      this.deferredFrameLifecycleReadCount === deferredFrameLifecycleReadCount
+    ) return;
+    const index = buffer.findIndex((effect, offset) => (
+      offset >= effectSavepoint && effect.kind === "frame"
+    ));
+    buffer.splice(index < 0 ? buffer.length : index, 0, { kind: "frame", event });
+  }
+
   private cancelScheduledWork(): void {
-    if (this.mutationTimer !== undefined) {
-      this.cancelTimeout(this.mutationTimer);
-      this.mutationTimer = undefined;
-    }
-    if (this.shadowScanTimer !== undefined) {
-      this.cancelTimeout(this.shadowScanTimer);
-      this.shadowScanTimer = undefined;
-    }
-    if (this.frameMutationScanTimer !== undefined) {
-      this.cancelTimeout(this.frameMutationScanTimer);
-      this.frameMutationScanTimer = undefined;
+    const authority = {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+      disposed: this.disposed,
+    };
+    const timers: readonly (readonly [keyof RollbackTimerState, DomTreeTimerHandle | undefined])[] = [
+      ["mutationTimer", this.mutationTimer],
+      ["shadowScanTimer", this.shadowScanTimer],
+      ["frameMutationScanTimer", this.frameMutationScanTimer],
+    ];
+    for (const [timer, handle] of timers) {
+      if (handle === undefined || this[timer] !== handle) continue;
+      this[timer] = undefined;
+      try {
+        this.cancelTimeout(handle);
+      } catch {
+        // Continue with the remaining entry handles.
+      }
+      if (
+        this.topDocument !== authority.topDocument ||
+        this.documentEpoch !== authority.documentEpoch ||
+        this.authorityGeneration !== authority.authorityGeneration ||
+        this.disposed !== authority.disposed ||
+        this[timer] !== undefined
+      ) {
+        return;
+      }
     }
   }
 

@@ -3867,6 +3867,44 @@ describe("DomTreeProvider", () => {
     expect(siblingReads).toBeLessThanOrEqual(65_536);
   });
 
+  it("charges bounded class and attribute evidence reads to the shared locator budget", () => {
+    const document = createDocument();
+    let parent = document.documentElement;
+    let target!: FakeElement;
+    let evidenceReads = 0;
+    for (let depth = 0; depth < 53; depth += 1) {
+      const next = createElement(depth === 52 ? "h2" : "section", document);
+      for (let index = 0; index < 255; index += 1) {
+        parent.append(createElement("span", document));
+      }
+      parent.append(next);
+      const classes = Array.from({ length: 256 }, (_, index) => `class-${index}`);
+      const attributes = Array.from({ length: 256 }, (_, index) => ({
+        name: `data-key-${index}`,
+        value: String(index),
+      }));
+      for (const collection of [classes, attributes]) {
+        Object.defineProperty(next, collection === classes ? "classList" : "attributes", {
+          configurable: true,
+          get: () => new Proxy(collection, {
+            get: (value, key) => {
+              if (typeof key === "string" && /^\d+$/.test(key)) evidenceReads += 1;
+              return Reflect.get(value, key);
+            },
+          }),
+        });
+      }
+      parent = next;
+      target = next;
+    }
+    const service = (createProvider(document) as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+
+    expect(() => service.capture(target as unknown as Node, "element")).toThrow();
+    expect(evidenceReads).toBeLessThanOrEqual(65_536);
+  });
+
   it("resolves a captured shadow-root target with a fresh full materialized path", () => {
     const first = createNestedShadowTree();
     const firstUnrelated = createElement("aside", first.document);
@@ -5345,6 +5383,35 @@ describe("DomTreeProvider", () => {
     )).every((observer) => observer.disconnectCount > 0)).toBe(true);
   });
 
+  it("rejects mutation records from a superseded observer instance", () => {
+    const document = createDocument();
+    const frameDocument = createDocument();
+    const frame = createFrameElement(document, frameDocument);
+    document.documentElement.append(frame);
+    const observers: TestMutationObserver[] = [];
+    const harness = createProviderHarness(document, {
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        observers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const state = harness.provider as unknown as {
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+      readonly pendingMutations: readonly unknown[];
+    };
+    const stale = state.rootObservers.get(frameDocument as unknown as Node)!;
+
+    frame.dispatchLoad();
+    expect(state.rootObservers.get(frameDocument as unknown as Node)).not.toBe(stale);
+
+    stale.emitUnchecked([mutationRecord(frameDocument.documentElement)]);
+    expect(state.pendingMutations).toHaveLength(0);
+    expect(observers).toContain(stale);
+  });
+
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
     const document = createDocument();
     const childDocument = createDocument();
@@ -5526,22 +5593,11 @@ describe("DomTreeProvider", () => {
     triggerSelectionRead = true;
     triggerNavigation = true;
 
-    if (_name === "navigate") {
-      expect(harness.provider.getRoot().node.label).toBe("html");
-      expect(selectionRead).toBe(true);
-      expect(callbacks).toEqual([]);
-      harness.flushEffects();
-      expect(callbacks).toEqual([
-        "invalidated",
-        "invalidated",
-        "selected-removed",
-        "frame",
-      ]);
-    } else {
-      expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
-      expect(selectionRead).toBe(true);
-      expect(callbacks).toEqual([]);
-    }
+    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+    expect(selectionRead).toBe(true);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
   });
 
   it("keeps selected-ref reads read-only during frame publication", () => {
@@ -5603,6 +5659,79 @@ describe("DomTreeProvider", () => {
       "selected-removed",
       "frame",
     ]);
+  });
+
+  it("drains a frame navigation triggered by a selected-ref reader during rollback", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const secondDocument = createDocument();
+    const target = createElement("button", firstDocument);
+    firstDocument.documentElement.append(target);
+    const firstFrame = createFrameElement(document, firstDocument);
+    const secondFrame = createFrameElement(document, secondDocument);
+    document.documentElement.append(firstFrame);
+    document.documentElement.append(secondFrame);
+    let selectedRef: string | undefined;
+    let armSelectionRead = false;
+    let secondReplacement: FakeDocument | undefined;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => {
+        if (armSelectionRead) {
+          armSelectionRead = false;
+          secondReplacement = createDocument();
+          secondFrame.setFrameDocument(secondReplacement);
+          secondFrame.dispatchLoad();
+        }
+        return selectedRef;
+      },
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    const root = harness.provider.getRoot();
+    const frames = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "selected-reader-frames",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const firstDocumentView = onlyChild(
+      harness.provider,
+      frames[0]!,
+      root.documentEpoch,
+      "selected-reader-first-document",
+    );
+    const firstRoot = onlyChild(
+      harness.provider,
+      firstDocumentView,
+      root.documentEpoch,
+      "selected-reader-first-root",
+    );
+    selectedRef = onlyChild(
+      harness.provider,
+      firstRoot,
+      root.documentEpoch,
+      "selected-reader-target",
+    ).nodeRef;
+    onlyChild(harness.provider, frames[1]!, root.documentEpoch, "selected-reader-second-document");
+    harness.flushEffects();
+    callbacks.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly frameDocumentsByRef: ReadonlyMap<string, Document>;
+    };
+    const secondContext = harness.provider.frameAuthority.accessibleContexts()
+      .find((context) => context.frameElement === secondFrame)!;
+    const owner = state.beginProviderAuthorityOperation()!;
+    armSelectionRead = true;
+
+    firstFrame.setFrameDocument(createDocument());
+    firstFrame.dispatchLoad();
+
+    expect(owner.rollback()).toBe(true);
+    expect(state.frameDocumentsByRef.get(secondContext.frameRef)).toBe(secondReplacement as unknown as Document);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
   });
 
   it.each([
@@ -6758,6 +6887,54 @@ describe("DomTreeProvider", () => {
     expect(internals.shadowScanTimer).toBeUndefined();
   });
 
+  it("preserves reentrant reset timer ownership while canceling scheduled work", () => {
+    const document = createDocument();
+    const replacement = createDocument();
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+    const state = provider as unknown as ProviderRollbackInternals & {
+      cancelScheduledWork(): void;
+    };
+    state.mutationTimer = 101;
+    state.frameMutationScanTimer = 102;
+    state.shadowScanTimer = 103;
+    let reentered = false;
+    state.cancelTimeout = (handle) => {
+      if (handle !== 101 || reentered) return;
+      reentered = true;
+      provider.resetDocument(replacement as unknown as Document, 4);
+      state.mutationTimer = 201;
+      state.frameMutationScanTimer = 202;
+      state.shadowScanTimer = 203;
+    };
+
+    expect(() => state.cancelScheduledWork()).not.toThrow();
+    expect(state.mutationTimer).toBe(201);
+    expect(state.frameMutationScanTimer).toBe(202);
+    expect(state.shadowScanTimer).toBe(203);
+  });
+
+  it("continues scheduled-work cancellation after a hostile timer throws", () => {
+    const harness = createProviderHarness(createDocument());
+    const state = harness.provider as unknown as ProviderRollbackInternals & {
+      cancelScheduledWork(): void;
+    };
+    const cancelled: unknown[] = [];
+    state.mutationTimer = 101;
+    state.frameMutationScanTimer = 102;
+    state.shadowScanTimer = 103;
+    state.cancelTimeout = (handle) => {
+      cancelled.push(handle);
+      if (handle === 101) throw new Error("hostile cancellation");
+    };
+
+    expect(() => state.cancelScheduledWork()).not.toThrow();
+    expect(cancelled).toEqual([101, 103, 102]);
+    expect(state.mutationTimer).toBeUndefined();
+    expect(state.frameMutationScanTimer).toBeUndefined();
+    expect(state.shadowScanTimer).toBeUndefined();
+  });
+
   it("does not invoke an outward callback after publication authority is already stale", () => {
     const provider = createProvider(createDocument());
     const state = provider as unknown as {
@@ -7084,6 +7261,10 @@ class TestMutationObserver {
   public emit(records: readonly MutationRecord[]): void {
     if (this.disconnectCount > 0) return;
     this.emitCount += 1;
+    this.callback(records);
+  }
+
+  public emitUnchecked(records: readonly MutationRecord[]): void {
     this.callback(records);
   }
 }

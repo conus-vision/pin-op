@@ -536,8 +536,8 @@ function readCanonicalEvidence(
   ) return undefined;
   const rawId = readIdStrict(element);
   if (rawId === READ_FAILED) return undefined;
-  const classes = readCanonicalClasses(element);
-  const attributes = readCanonicalAttributes(element);
+  const classes = readCanonicalClasses(element, budget);
+  const attributes = readCanonicalAttributes(element, budget);
   if (
     !classes ||
     !attributes ||
@@ -551,12 +551,18 @@ function readCanonicalEvidence(
   });
 }
 
-function readCanonicalClasses(element: Element): readonly string[] | undefined {
+function readCanonicalClasses(
+  element: Element,
+  budget: LocatorVisitBudget,
+): readonly string[] | undefined {
   try {
+    if (!budget.visit()) return undefined;
     const classList = element.classList;
+    if (!budget.visit()) return undefined;
     const length = readBoundedCollectionLength(classList, MAX_EVIDENCE_PHYSICAL_SCAN);
     const selected: string[] = [];
     for (let index = 0; index < length; index += 1) {
+      if (!budget.visit()) return undefined;
       const value = readCollectionItem(classList, index);
       if (value === READ_FAILED || typeof value !== "string") return undefined;
       if (boundedNonEmpty(value) !== undefined && !hasWhitespace(value)) {
@@ -574,15 +580,23 @@ function readCanonicalClasses(element: Element): readonly string[] | undefined {
   }
 }
 
-function readCanonicalAttributes(element: Element): readonly DomLocatorAttribute[] | undefined {
+function readCanonicalAttributes(
+  element: Element,
+  budget: LocatorVisitBudget,
+): readonly DomLocatorAttribute[] | undefined {
   try {
+    if (!budget.visit()) return undefined;
     const attributes = element.attributes;
+    if (!budget.visit()) return undefined;
     const length = readBoundedCollectionLength(attributes, MAX_EVIDENCE_PHYSICAL_SCAN);
     const selected: DomLocatorAttribute[] = [];
     for (let index = 0; index < length; index += 1) {
+      if (!budget.visit()) return undefined;
       const attribute = readCollectionItem(attributes, index);
       if (!attribute || attribute === READ_FAILED || typeof attribute !== "object") return undefined;
+      if (!budget.visit()) return undefined;
       const name = readAttributeName(attribute);
+      if (!budget.visit()) return undefined;
       const value = readAttributeValue(attribute);
       if (name === READ_FAILED || value === READ_FAILED) return undefined;
       if (isApprovedAttributeName(name) && boundedText(value) !== undefined) {
@@ -901,6 +915,7 @@ function uniqueIdStatus(
       pending.pop();
       continue;
     }
+    if (!budget.visit()) return READ_FAILED;
     const child = readCollectionItem(current.children!.collection, current.next!++);
     if (!isNode(child)) return READ_FAILED;
     pending.push({ node: child });
