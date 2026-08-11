@@ -175,6 +175,25 @@ export class FrameRegistry {
       : undefined;
   }
 
+  /** Reports exact prior registration, including inaccessible frame records. */
+  public hasExactFrameElementRegistration(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef: string,
+  ): boolean {
+    if (
+      this.state !== "active" ||
+      !isObject(frameElement) ||
+      !isFrameRef(parentFrameRef)
+    ) {
+      return false;
+    }
+    const parent = this.contexts.get(parentFrameRef);
+    if (!parent || readOwnerDocument(frameElement) !== parent.document) {
+      return false;
+    }
+    return this.recordByElement.get(frameElement)?.parentFrameRef === parentFrameRef;
+  }
+
   /** Authorizes one structurally proven frame host without scanning or URL inference. */
   public authorizeExactFrameElement(
     frameElement: HTMLIFrameElement,

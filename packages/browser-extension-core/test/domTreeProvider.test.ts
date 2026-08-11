@@ -3960,6 +3960,126 @@ describe("DomTreeProvider", () => {
     expect(second.frame.loadListenerCount).toBe(0);
   });
 
+  it("keeps pre-existing inaccessible frame authority when locator recovery fails", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree({
+      accessError: new Error("cross-origin"),
+      materialize: false,
+    });
+    const root = second.provider.getRoot();
+    onlyChild(second.provider, root.node, root.documentEpoch, "register-inaccessible-frame");
+
+    expect(second.frame.loadListenerCount).toBe(1);
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+    expect(second.frame.loadListenerCount).toBe(1);
+  });
+
+  it("rolls back recovery frame authority when provider path materialization fails", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree({ materialize: false });
+    const provider = second.provider as unknown as {
+      materializeLogicalPath(): undefined;
+    };
+    provider.materializeLogicalPath = () => undefined;
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+    expect(second.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(second.frame.loadListenerCount).toBe(0);
+  });
+
+  it("preflights every child locator before durable page materialization", () => {
+    const document = createDocument();
+    const first = createElement("article", document);
+    const second = createElement("aside", document);
+    document.documentElement.append(first);
+    document.documentElement.append(second);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const providerState = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { readonly size: number };
+    };
+    const recordCount = providerState.records.size;
+    const referenceCount = providerState.nodeRegistry.size;
+    const originalAttributes = second.attributes;
+    Object.defineProperty(second, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("late hostile child locator");
+      },
+    });
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "atomic-child-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(providerState.records.size).toBe(recordCount);
+    expect(providerState.nodeRegistry.size).toBe(referenceCount);
+    expect(harness.observers).toHaveLength(1);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+
+    Object.defineProperty(second, "attributes", {
+      configurable: true,
+      value: originalAttributes,
+    });
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "recovered-child-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["article", "aside"]);
+  });
+
+  it("restores evicted records when path materialization fails after reserving capacity", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const main = createElement("main", document);
+    const aside = createElement("aside", document);
+    body.append(main);
+    document.documentElement.append(body);
+    document.documentElement.append(aside);
+    const harness = createProviderHarness(document, { maxRecords: 3 });
+    const root = harness.provider.getRoot();
+    const rootChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "capacity-root-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const bodyView = rootChildren.find(({ label }) => label === "body")!;
+    const asideView = rootChildren.find(({ label }) => label === "aside")!;
+    const provider = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, { readonly scope: unknown }>;
+      materializeLogicalPath(path: readonly unknown[]): readonly unknown[] | undefined;
+      materializePathEntry(entry: { readonly node: Node }): unknown;
+    };
+    const originalRefs = [...provider.records.keys()];
+    const scope = provider.records.get(root.node.nodeRef)!.scope;
+    const originalMaterialize = provider.materializePathEntry;
+    provider.materializePathEntry = (entry) => {
+      if (entry.node === main) throw new Error("forced post-reservation failure");
+      return originalMaterialize.call(provider, entry);
+    };
+
+    expect(provider.materializeLogicalPath([
+      { kind: "element", node: document.documentElement, scope },
+      { kind: "element", node: body, scope },
+      { kind: "element", node: main, scope },
+    ])).toBeUndefined();
+    expect([...provider.records.keys()]).toEqual(originalRefs);
+    expect(harness.provider.resolveElement(asideView.nodeRef, root.documentEpoch))
+      .toBeDefined();
+    expect(harness.provider.resolveElement(bodyView.nodeRef, root.documentEpoch))
+      .toBeDefined();
+  });
+
   it("does not materialize references, observers, or frame ownership before capture succeeds", () => {
     const document = createDocument();
     const frame = createFrameElement(document, createDocument());

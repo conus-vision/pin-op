@@ -41,6 +41,12 @@ export interface StableLocatorResolution {
   readonly node: Node;
 }
 
+export interface StableLocatorResolutionTransaction {
+  readonly resolution: StableLocatorResolution;
+  commit(): void;
+  rollback(): void;
+}
+
 export interface DomStableLocatorServiceOptions {
   readonly topDocument: Document;
   readonly frameRegistry: {
@@ -54,6 +60,10 @@ export interface DomStableLocatorServiceOptions {
       frameElement: HTMLIFrameElement,
       parentFrameRef: string,
     ): { readonly document: Document; readonly frameRef: string } | undefined;
+    hasExactFrameElementRegistration(
+      frameElement: HTMLIFrameElement,
+      parentFrameRef: string,
+    ): boolean;
     authorizeExactFrameElement(
       frameElement: HTMLIFrameElement,
       parentFrameRef: string,
@@ -98,6 +108,13 @@ export class DomStableLocatorService {
   }
 
   public resolve(locator: DomStableLocator): StableLocatorResolution | undefined {
+    const transaction = this.beginResolve(locator);
+    if (!transaction) return undefined;
+    transaction.commit();
+    return transaction.resolution;
+  }
+
+  public beginResolve(locator: DomStableLocator): StableLocatorResolutionTransaction | undefined {
     let parsed: DomStableLocator;
     try {
       parsed = parseDomStableLocator(locator);
@@ -110,7 +127,7 @@ export class DomStableLocatorService {
     const seen = new Set<Node>([root]);
     const authorizedFrames: HTMLIFrameElement[] = [];
     let traversed = 0;
-    let resolved: StableLocatorResolution | undefined;
+    let transaction: StableLocatorResolutionTransaction | undefined;
     try {
       for (const boundary of parsed.boundaries) {
         if (root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
@@ -159,24 +176,33 @@ export class DomStableLocatorService {
         root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
       ) return undefined;
       if (parsed.targetKind === "element") {
-        resolved = Object.freeze({ kind: parsed.targetKind, node: target });
+        transaction = this.createResolutionTransaction(
+          Object.freeze({ kind: parsed.targetKind, node: target }),
+          authorizedFrames,
+        );
       } else if (parsed.targetKind === "shadow-root") {
         const shadowRoot = readOpenShadowRoot(target);
-        resolved = shadowRoot && !this.isExcluded(shadowRoot)
-          ? Object.freeze({ kind: parsed.targetKind, node: shadowRoot })
+        transaction = shadowRoot && !this.isExcluded(shadowRoot)
+          ? this.createResolutionTransaction(
+            Object.freeze({ kind: parsed.targetKind, node: shadowRoot }),
+            authorizedFrames,
+          )
           : undefined;
       } else if (isFrameElement(target)) {
         const frame = this.resolveExactFrame(target, context.frameRef);
         if (frame?.created) authorizedFrames.push(target);
         const description = frame?.description;
-        resolved = description?.kind === "accessible" && description.document &&
+        transaction = description?.kind === "accessible" && description.document &&
             !this.isExcluded(description.document)
-          ? Object.freeze({ kind: parsed.targetKind, node: description.document })
+          ? this.createResolutionTransaction(
+            Object.freeze({ kind: parsed.targetKind, node: description.document }),
+            authorizedFrames,
+          )
           : undefined;
       }
-      return resolved;
+      return transaction;
     } finally {
-      if (!resolved) {
+      if (!transaction) {
         for (let index = authorizedFrames.length - 1; index >= 0; index -= 1) {
           try {
             this.frameRegistry.unregisterFrame(authorizedFrames[index]!);
@@ -266,6 +292,10 @@ export class DomStableLocatorService {
     readonly description: { readonly kind: "accessible" | "inaccessible"; readonly document?: Document; readonly frameRef: string };
     readonly created: boolean;
   } | undefined {
+    const existing = this.frameRegistry.hasExactFrameElementRegistration(
+      frameElement,
+      parentFrameRef,
+    );
     const known = this.frameRegistry.getContextForFrameElement(
       frameElement,
       parentFrameRef,
@@ -285,8 +315,33 @@ export class DomStableLocatorService {
       parentFrameRef,
     );
     return description
-      ? Object.freeze({ description, created: true })
+      ? Object.freeze({ description, created: !existing })
       : undefined;
+  }
+
+  private createResolutionTransaction(
+    resolution: StableLocatorResolution,
+    authorizedFrames: readonly HTMLIFrameElement[],
+  ): StableLocatorResolutionTransaction {
+    let active = true;
+    const rollback = (): void => {
+      if (!active) return;
+      active = false;
+      for (let index = authorizedFrames.length - 1; index >= 0; index -= 1) {
+        try {
+          this.frameRegistry.unregisterFrame(authorizedFrames[index]!);
+        } catch {
+          // Failed cleanup cannot turn an unproven locator into a resolution.
+        }
+      }
+    };
+    return Object.freeze({
+      resolution,
+      commit: () => {
+        active = false;
+      },
+      rollback,
+    });
   }
 
   private isExcluded(node: Node): boolean {

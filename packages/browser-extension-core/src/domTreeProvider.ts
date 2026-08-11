@@ -496,15 +496,20 @@ export class DomTreeProvider {
       record!.scope,
       physicalOffset,
     );
+    const locators = page.children.map((child) => this.captureLocator(
+      child.node,
+      child.kind,
+    ));
     const materializedRefs: string[] = [];
     let nodes: readonly DomNodeView[];
     try {
-      nodes = Object.freeze(page.children.map((child) => {
+      nodes = Object.freeze(page.children.map((child, index) => {
+        const locator = locators[index]!;
         const view = child.kind === "element"
-          ? this.viewElement(child.node, record!.scope, request.nodeRef)
+          ? this.viewElement(child.node, record!.scope, request.nodeRef, locator)
           : child.kind === "shadow-root"
-            ? this.viewShadowRoot(child.node, record!.scope, request.nodeRef)
-            : this.viewFrameDocument(child.node, child.scope, request.nodeRef);
+            ? this.viewShadowRoot(child.node, record!.scope, request.nodeRef, locator)
+            : this.viewFrameDocument(child.node, child.scope, request.nodeRef, locator);
         this.retainTransientRecord(view.nodeRef);
         materializedRefs.push(view.nodeRef);
         return view;
@@ -684,13 +689,24 @@ export class DomTreeProvider {
   public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
     this.requireActive();
     this.flushMutationBarrier();
-    const resolved = this.locatorService.resolve(locator);
-    if (!resolved || this.isNodeExcluded(resolved.node)) return undefined;
-    const path = this.logicalPathForResolvedLocator(resolved.kind, resolved.node);
-    const ancestorPath = path ? this.materializeLogicalPath(path) : undefined;
-    const node = ancestorPath?.at(-1);
-    if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
-    return Object.freeze({ node, ancestorPath });
+    const transaction = this.locatorService.beginResolve(locator);
+    if (!transaction) return undefined;
+    let committed = false;
+    try {
+      const resolved = transaction.resolution;
+      if (this.isNodeExcluded(resolved.node)) return undefined;
+      const path = this.logicalPathForResolvedLocator(resolved.kind, resolved.node);
+      const ancestorPath = path ? this.materializeLogicalPath(path) : undefined;
+      const node = ancestorPath?.at(-1);
+      if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
+      transaction.commit();
+      committed = true;
+      return Object.freeze({ node, ancestorPath });
+    } catch {
+      return undefined;
+    } finally {
+      if (!committed) transaction.rollback();
+    }
   }
 
   private logicalPathForResolvedLocator(
@@ -897,14 +913,20 @@ export class DomTreeProvider {
     element: Element,
     scope: NodeScope,
     parentRef?: string,
+    locator = this.captureLocator(element, "element"),
+    newlyRegisteredFrames?: Set<HTMLIFrameElement>,
   ): DomNodeView {
-    const locator = this.captureLocator(element, "element");
     const nodeRef = this.referenceNode(element, scope);
     const existing = this.records.get(nodeRef);
     const frameElement = isFrameElement(element);
+    const frameWasRegistered = frameElement && this.frameRegistry
+      .hasExactFrameElementRegistration(element, scope.frameRef);
     const frame = frameElement
       ? this.describeFrame(element, scope, nodeRef)
       : undefined;
+    if (frameElement && frame && !frameWasRegistered) {
+      newlyRegisteredFrames?.add(element);
+    }
     const expandable = frame?.kind === "accessible" || (
       !frameElement && (
         getOpenShadowRoot(element) !== undefined ||
@@ -936,8 +958,8 @@ export class DomTreeProvider {
     shadowRoot: ShadowRoot,
     scope: NodeScope,
     parentRef?: string,
+    locator = this.captureLocator(shadowRoot, "shadow-root"),
   ): DomNodeView {
-    const locator = this.captureLocator(shadowRoot, "shadow-root");
     const nodeRef = this.referenceNode(shadowRoot, scope);
     const existing = this.records.get(nodeRef);
     this.storeReferencedRecord(nodeRef, {
@@ -961,8 +983,8 @@ export class DomTreeProvider {
     document: Document,
     scope: FrameContext,
     parentRef?: string,
+    locator = this.captureLocator(document, "frame-document"),
   ): DomNodeView {
-    const locator = this.captureLocator(document, "frame-document");
     const nodeRef = this.referenceNode(document, scope);
     this.frameDocumentsByRef.set(scope.frameRef, document);
     this.observeRoot(document);
@@ -1651,6 +1673,8 @@ export class DomTreeProvider {
     ) {
       return undefined;
     }
+    const locators = path.map((entry) => this.captureLocator(entry.node, entry.kind));
+    const metadataSnapshot = this.snapshotMaterializationMetadata();
     const existingRefs = new Map<Node, string>();
     const protectedRefs = new Set<string>(additionallyProtected);
     for (const entry of path) {
@@ -1678,16 +1702,19 @@ export class DomTreeProvider {
     }
     if (!this.reserveRecordCapacity(missingRecords, protectedRefs, fixedRefs)) {
       this.releasePathRetentions(temporaryRetentions);
+      this.restoreMaterializationMetadata(metadataSnapshot);
       return undefined;
     }
 
     const createdRefs = new Set<string>();
     const originalRecords = new Map<string, NodeRecord>();
     const newlyObservedRoots = new Set<Node>();
+    const newlyRegisteredFrames = new Set<HTMLIFrameElement>();
     const views: DomNodeView[] = [];
     let parentRef: string | undefined;
     try {
-      for (const entry of path) {
+      for (let index = 0; index < path.length; index += 1) {
+        const entry = path[index]!;
         const knownRef = existingRefs.get(entry.node);
         if (knownRef) {
           const record = this.records.get(knownRef);
@@ -1697,7 +1724,12 @@ export class DomTreeProvider {
           originalRecords.set(knownRef, record);
         }
         const wasObserved = this.rootObservers.has(entry.node);
-        const view = this.materializePathEntry(entry, parentRef);
+        const view = this.materializePathEntry(
+          entry,
+          parentRef,
+          locators[index]!,
+          newlyRegisteredFrames,
+        );
         if (!wasObserved && this.rootObservers.has(entry.node)) {
           newlyObservedRoots.add(entry.node);
         }
@@ -1733,6 +1765,10 @@ export class DomTreeProvider {
       for (const root of newlyObservedRoots) {
         this.disconnectObserver(root);
       }
+      for (const frameElement of [...newlyRegisteredFrames].reverse()) {
+        this.unregisterDiscoveredFrame(frameElement);
+      }
+      this.restoreMaterializationMetadata(metadataSnapshot);
       return undefined;
     } finally {
       this.releasePathRetentions(temporaryRetentions);
@@ -1877,6 +1913,38 @@ export class DomTreeProvider {
     return true;
   }
 
+  private snapshotMaterializationMetadata() {
+    return {
+      records: [...this.records],
+      branchGenerations: [...this.branchGenerations],
+      exhaustedBranches: [...this.exhaustedBranches],
+      transientRecordRetentions: [...this.transientRecordRetentions],
+      expandedBranches: [...this.expandedBranches],
+      expandedShadowHosts: [...this.expandedShadowHosts],
+      shadowRootRefs: [...this.shadowRootRefs],
+      frameDescriptions: [...this.frameDescriptions],
+      frameDocumentsByRef: [...this.frameDocumentsByRef],
+      ownedFramesByRef: [...this.ownedFramesByRef],
+      inactiveFrameRefs: [...this.inactiveFrameRefs],
+      cursors: [...this.cursors],
+    };
+  }
+
+  private restoreMaterializationMetadata(snapshot: ReturnType<DomTreeProvider["snapshotMaterializationMetadata"]>): void {
+    restoreMap(this.records, snapshot.records);
+    restoreMap(this.branchGenerations, snapshot.branchGenerations);
+    restoreSet(this.exhaustedBranches, snapshot.exhaustedBranches);
+    restoreMap(this.transientRecordRetentions, snapshot.transientRecordRetentions);
+    restoreMap(this.expandedBranches, snapshot.expandedBranches);
+    restoreSet(this.expandedShadowHosts, snapshot.expandedShadowHosts);
+    restoreMap(this.shadowRootRefs, snapshot.shadowRootRefs);
+    restoreMap(this.frameDescriptions, snapshot.frameDescriptions);
+    restoreMap(this.frameDocumentsByRef, snapshot.frameDocumentsByRef);
+    restoreMap(this.ownedFramesByRef, snapshot.ownedFramesByRef);
+    restoreSet(this.inactiveFrameRefs, snapshot.inactiveFrameRefs);
+    restoreMap(this.cursors, snapshot.cursors);
+  }
+
   private retainPathRecord(
     nodeRef: string,
     temporaryRetentions: Set<string>,
@@ -1900,15 +1968,23 @@ export class DomTreeProvider {
   private materializePathEntry(
     entry: LogicalPathEntry,
     parentRef: string | undefined,
+    locator: DomStableLocator,
+    newlyRegisteredFrames: Set<HTMLIFrameElement>,
   ): DomNodeView {
     if (entry.kind === "element") {
-      return this.viewElement(entry.node, entry.scope, parentRef);
+      return this.viewElement(
+        entry.node,
+        entry.scope,
+        parentRef,
+        locator,
+        newlyRegisteredFrames,
+      );
     }
     if (entry.kind === "shadow-root") {
       if (!parentRef) {
         throw new Error("shadow root path is missing its host");
       }
-      const view = this.viewShadowRoot(entry.node, entry.scope, parentRef);
+      const view = this.viewShadowRoot(entry.node, entry.scope, parentRef, locator);
       this.shadowRootRefs.set(parentRef, view.nodeRef);
       this.observeRoot(entry.node);
       return view;
@@ -1920,6 +1996,7 @@ export class DomTreeProvider {
       entry.node,
       entry.scope,
       parentRef,
+      locator,
     );
   }
 
@@ -2638,6 +2715,19 @@ function requirePositiveSafeInteger(value: unknown, name: string): number {
     throw new RangeError(`${name} must be a positive safe integer`);
   }
   return value;
+}
+
+function restoreMap<Key, Value>(
+  target: Map<Key, Value>,
+  entries: readonly (readonly [Key, Value])[],
+): void {
+  target.clear();
+  for (const [key, value] of entries) target.set(key, value);
+}
+
+function restoreSet<Value>(target: Set<Value>, values: readonly Value[]): void {
+  target.clear();
+  for (const value of values) target.add(value);
 }
 
 function createElementLabel(element: Element): string {
