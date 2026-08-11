@@ -686,6 +686,151 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("invalidates reconnect navigation until a new correlation is ready", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-old", "inspect-old");
+    const staleRowNext = rowSourceButton(dom, "source-next");
+
+    port.emitMessage({ type: "browser2ide.windowState", state: "offline" });
+    port.emitMessage({ type: "browser2ide.windowState", state: "offline" });
+    port.emitMessage({
+      type: "browser2ide.windowState",
+      state: "reconnecting",
+    });
+    port.emitMessage({
+      type: "browser2ide.windowState",
+      state: "reconnecting",
+    });
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("source-previous").disabled).toBe(true);
+    expect(dom.element("source-next").disabled).toBe(true);
+    expect(dom.element("dom-tree-spacer").findByData(
+      "part",
+      "source-navigation-controls",
+    )).toBeUndefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-old",
+    )).toBeDefined();
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: main",
+    );
+
+    dom.element("source-next").dispatch("click");
+    dom.element("dom-tree").dispatch("click", { target: staleRowNext });
+    await flushAsync();
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
+
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    port.emitMessage(sourceNavigationState({
+      messageId: "state-old-late",
+      sessionId: "session-old",
+      inspectMessageId: "inspect-old",
+      resolutionGeneration: 1,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+    dom.element("source-previous").dispatch("click");
+    await flushAsync();
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-new",
+      "button#new.primary",
+      2,
+    ));
+    port.emitMessage(inspectStartedWithRevision("inspect-new", 2));
+    port.emitMessage(resolutionMessage({
+      sessionId: "session-new",
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 8,
+      selectedMatchCount: 2,
+    }));
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(false);
+    expect(dom.element("source-previous").disabled).toBe(true);
+    expect(dom.element("source-next").disabled).toBe(true);
+    expect(rowSourceButton(dom, "source-previous").disabled).toBe(true);
+    expect(rowSourceButton(dom, "source-next").disabled).toBe(true);
+
+    port.emitMessage(sourceNavigationState({
+      messageId: "state-new",
+      sessionId: "session-new",
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 8,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    }));
+
+    expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
+    expect(dom.element("source-previous").disabled).toBe(false);
+    expect(dom.element("source-next").disabled).toBe(false);
+    expect(rowSourceButton(dom, "source-previous").disabled).toBe(false);
+    expect(rowSourceButton(dom, "source-next").disabled).toBe(false);
+
+    dom.element("source-next").dispatch("click");
+    dom.element("dom-tree").dispatch("click", {
+      target: rowSourceButton(dom, "source-previous"),
+    });
+    await flushAsync();
+
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([
+      {
+        type: "browser2ide.source.navigate",
+        inspectMessageId: "inspect-new",
+        resolutionGeneration: 8,
+        direction: "next",
+      },
+      {
+        type: "browser2ide.source.navigate",
+        inspectMessageId: "inspect-new",
+        resolutionGeneration: 8,
+        direction: "previous",
+      },
+    ]);
+    runtime.dispose();
+  });
+
+  it.each([
+    "notLinked",
+    "linking",
+    "offline",
+    "reconnecting",
+    "rateLimited",
+    "error",
+  ] as const)("invalidates navigation when window state becomes %s", async (state) => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+    showReadySourceNavigation(port, "selected-old", "inspect-old");
+    const staleRowNext = rowSourceButton(dom, "source-next");
+
+    port.emitMessage({
+      type: "browser2ide.windowState",
+      state,
+      ...(state === "error" ? { displayLinkCode: "48735 07" } : {}),
+    });
+    dom.element("source-next").dispatch("click");
+    dom.element("dom-tree").dispatch("click", { target: staleRowNext });
+    await flushAsync();
+
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("source-previous").disabled).toBe(true);
+    expect(dom.element("source-next").disabled).toBe(true);
+    expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
+    runtime.dispose();
+  });
+
   it("accepts equal-generation cursor updates and rejects mismatched state", async () => {
     const runtime = createRuntime();
     await runtime.ready;

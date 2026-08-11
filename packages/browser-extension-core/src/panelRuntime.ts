@@ -257,6 +257,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       isWindowState(message, "offline") ||
       isWindowState(message, "reconnecting")
     ) {
+      if (!isWindowState(message, "linked")) {
+        sourceNavigationController.invalidate();
+      }
       treeSessionActive = true;
       void treeController.loadRoot();
     } else if (parseInspectPortInvalidated(message)) {
@@ -280,10 +283,15 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     } else if (
       isWindowState(message, "notLinked") ||
       isWindowState(message, "linking") ||
-      isWindowState(message, "rateLimited") ||
-      (isWindowState(message, "error") && !hasDisplayLinkCode(message))
+      isWindowState(message, "rateLimited")
     ) {
       clearLinkedInspectionState();
+    } else if (isWindowState(message, "error")) {
+      if (hasDisplayLinkCode(message)) {
+        sourceNavigationController.invalidate();
+      } else {
+        clearLinkedInspectionState();
+      }
     }
     for (const listener of [...stateListeners]) {
       void Promise.resolve(listener(message)).catch(reportError);
