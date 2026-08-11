@@ -2112,6 +2112,8 @@ export class DomTreeProvider {
     const parentBuffer = this.outwardEffectBuffer;
     const buffer = parentBuffer ?? [];
     const ownsBuffer = parentBuffer === undefined;
+    // Nested operations share the owner journal but own only their suffix.
+    const effectSavepoint = buffer.length;
     const parentPublicationGuard = this.activePublicationGuard;
     const publicationGuard = () => (
       this.isProviderAuthorityCurrent(snapshot) &&
@@ -2156,29 +2158,27 @@ export class DomTreeProvider {
       rollback: (cleanup) => {
         if (closed || (ownsBuffer && !published && this.outwardEffectBuffer !== buffer)) return false;
         let restored = true;
-        let retainedEvents: readonly FrameLifecycleEvent[] = [];
-        const suppressPublishedCleanupEffects = ownsBuffer && published;
-        const previousBuffer = this.outwardEffectBuffer;
-        if (suppressPublishedCleanupEffects) this.outwardEffectBuffer = buffer;
+        const discardEffectsSinceSavepoint = (): boolean => {
+          if (this.outwardEffectBuffer !== buffer) return false;
+          buffer.length = effectSavepoint;
+          return true;
+        };
         try {
           cleanup?.();
         } catch {
           restored = false;
-        } finally {
-          if (suppressPublishedCleanupEffects) {
-            if (this.outwardEffectBuffer === buffer) this.outwardEffectBuffer = previousBuffer;
-            buffer.length = 0;
-          }
         }
+        const operationEffects = this.outwardEffectBuffer === buffer
+          ? Object.freeze(buffer.slice(effectSavepoint))
+          : undefined;
+        if (!operationEffects || !discardEffectsSinceSavepoint()) restored = false;
         try {
           if (!this.isProviderAuthorityCurrent(snapshot)) {
             restored = false;
           } else if (ownsBuffer && !published) {
-            const rolledBackEvents = this.rollbackBufferedFrameRegistrations(buffer, snapshot);
-            if (!rolledBackEvents) {
+            if (!operationEffects || !this.rollbackBufferedFrameRegistrations(operationEffects, snapshot)) {
               restored = false;
             } else {
-              retainedEvents = rolledBackEvents;
               restored = this.restoreProviderAuthority(snapshot) && restored;
             }
           } else {
@@ -2187,16 +2187,14 @@ export class DomTreeProvider {
         } catch {
           restored = false;
         } finally {
+          if (!discardEffectsSinceSavepoint()) restored = false;
           closed = true;
           if (ownsBuffer) {
-            this.outwardEffectBuffer = undefined;
+            if (this.outwardEffectBuffer === buffer) this.outwardEffectBuffer = undefined;
             if (this.activePublicationGuard === publicationGuard) {
               this.activePublicationGuard = parentPublicationGuard;
             }
           }
-        }
-        if (ownsBuffer && !published && restored && this.isProviderAuthorityCurrent(snapshot)) {
-          for (const event of retainedEvents) this.handleFrameLifecycle(event);
         }
         return restored;
       },
