@@ -219,6 +219,9 @@ interface ProviderMaterializationMetadata {
 }
 
 interface ProviderAuthoritySnapshot {
+  readonly topDocument: Document | undefined;
+  readonly documentEpoch: number;
+  readonly authorityGeneration: number;
   readonly nodeRegistry: DomNodeRegistrySnapshot;
   readonly refsByNode: readonly (readonly [Node, string])[];
   readonly rootObservers: readonly (readonly [Node, DomTreeMutationObserver])[];
@@ -226,7 +229,8 @@ interface ProviderAuthoritySnapshot {
 }
 
 interface ProviderAuthorityOperation {
-  commit(): boolean;
+  publish(): boolean;
+  finalize(validate?: () => boolean): boolean;
   rollback(cleanup?: () => void): boolean;
 }
 
@@ -303,6 +307,8 @@ export class DomTreeProvider {
   private shadowScanOffset = 0;
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
+  private authorityGeneration = 0;
+  private replayingFrameEffect: FrameLifecycleEvent | undefined;
   private nextCursor = 1;
   private frameTracking = false;
   private disposed = false;
@@ -440,7 +446,10 @@ export class DomTreeProvider {
         documentEpoch: this.documentEpoch,
         node: this.viewElement(element, context),
       });
-      if (!operation.commit()) {
+      if (
+        !operation.publish() ||
+        !operation.finalize(() => this.validatePublishedViews([response.node], response.documentEpoch))
+      ) {
         throwDomTreeError("node-unavailable");
       }
       committed = true;
@@ -603,7 +612,11 @@ export class DomTreeProvider {
       nodes,
       ...(nextCursor ? { nextCursor } : {}),
     });
-    authorityCommitted = authorityOperation.commit();
+    authorityCommitted = authorityOperation.publish() && authorityOperation.finalize(() => (
+      this.validatePublishedViews(response.nodes, response.documentEpoch) &&
+      this.records.get(request.nodeRef)?.scope.documentEpoch === response.documentEpoch &&
+      this.expandedBranches.get(request.nodeRef)?.revision === response.branchRevision
+    ));
     if (!authorityCommitted) throwDomTreeError("node-unavailable");
     return response;
     } finally {
@@ -656,7 +669,9 @@ export class DomTreeProvider {
         currentRef = record.parentRef;
       }
       const result = Object.freeze(reversed.reverse());
-      committed = authorityOperation.commit();
+      committed = authorityOperation.publish() && authorityOperation.finalize(() => (
+        this.validatePublishedViews(result, documentEpoch)
+      ));
       if (!committed) throwDomTreeError("node-unavailable");
       return result;
     } finally {
@@ -788,9 +803,15 @@ export class DomTreeProvider {
       const ancestorPath = path ? this.materializeLogicalPath(path) : undefined;
       const node = ancestorPath?.at(-1);
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
-      transaction.commit();
-      committed = authorityOperation.commit();
+      const resolvedPath = path;
+      if (!resolvedPath) return undefined;
+      committed = authorityOperation.publish() && authorityOperation.finalize(() => (
+        this.validatePublishedViews(ancestorPath, this.documentEpoch) &&
+        this.validateMaterializedPath(resolvedPath, node.nodeRef) &&
+        ancestorPath.at(-1) === node
+      ));
       if (!committed) return undefined;
+      transaction.commit();
       return Object.freeze({ node, ancestorPath });
     } catch {
       return undefined;
@@ -874,6 +895,7 @@ export class DomTreeProvider {
     ) {
       throw new RangeError("documentEpoch must be greater than the current epoch");
     }
+    this.authorityGeneration += 1;
     if (!this.frameRegistry.resetTopDocument(topDocument, documentEpoch)) {
       throwDomTreeError("node-unavailable");
     }
@@ -970,6 +992,7 @@ export class DomTreeProvider {
     if (this.disposed) {
       return;
     }
+    this.authorityGeneration += 1;
     this.disposed = true;
     this.cancelScheduledWork();
     this.disconnectAllObservers();
@@ -1846,7 +1869,10 @@ export class DomTreeProvider {
       }
       this.releasePathRetentions(temporaryRetentions);
       temporaryRetentions.clear();
-      authorityCommitted = authorityOperation.commit();
+      authorityCommitted = authorityOperation.publish() && authorityOperation.finalize(() => (
+        this.validateMaterializedPath(path, parentRef!) &&
+        this.validatePublishedViews(views, this.documentEpoch)
+      ));
       if (!authorityCommitted) return undefined;
       return Object.freeze(views);
     } catch {
@@ -2020,6 +2046,9 @@ export class DomTreeProvider {
       if (this.refsByNode.get(node) === ref) refsByNode.push([node, ref]);
     }
     return {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
       nodeRegistry,
       refsByNode: Object.freeze(refsByNode),
       rootObservers: Object.freeze([...this.rootObservers]),
@@ -2035,23 +2064,46 @@ export class DomTreeProvider {
     const ownsBuffer = parentBuffer === undefined;
     if (ownsBuffer) this.outwardEffectBuffer = buffer;
     let closed = false;
+    let published = false;
+    let publicationFailed = false;
     return {
-      commit: () => {
-        if (closed || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
-        closed = true;
+      publish: () => {
+        if (closed || published || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
+        published = true;
         if (!ownsBuffer) return true;
         this.outwardEffectBuffer = undefined;
-        for (const effect of buffer) this.emitOutwardEffect(effect);
+        for (const effect of buffer) {
+          if (effect.kind === "frame") this.replayingFrameEffect = effect.event;
+          try {
+            this.emitOutwardEffect(effect);
+          } finally {
+            this.replayingFrameEffect = undefined;
+          }
+        }
+        publicationFailed = !this.isProviderAuthorityCurrent(snapshot);
+        return !publicationFailed;
+      },
+      finalize: (validate = () => true) => {
+        if (closed || !published || publicationFailed) return false;
+        if (!this.isProviderAuthorityCurrent(snapshot) || !validate()) {
+          publicationFailed = true;
+          return false;
+        }
+        closed = true;
         return true;
       },
       rollback: (cleanup) => {
-        if (closed || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
+        if (closed || (ownsBuffer && !published && this.outwardEffectBuffer !== buffer)) return false;
         let restored = true;
         let retainedEvents: readonly FrameLifecycleEvent[] = [];
         try {
           cleanup?.();
         } catch {
           restored = false;
+        }
+        if (ownsBuffer && published) {
+          closed = true;
+          return restored;
         }
         try {
           if (ownsBuffer) retainedEvents = this.rollbackBufferedFrameRegistrations(buffer);
@@ -2068,6 +2120,13 @@ export class DomTreeProvider {
         return restored;
       },
     };
+  }
+
+  private isProviderAuthorityCurrent(snapshot: ProviderAuthoritySnapshot): boolean {
+    return !this.disposed &&
+      this.topDocument === snapshot.topDocument &&
+      this.documentEpoch === snapshot.documentEpoch &&
+      this.authorityGeneration === snapshot.authorityGeneration;
   }
 
   private rollbackBufferedFrameRegistrations(
@@ -2293,6 +2352,29 @@ export class DomTreeProvider {
       actualFinalRef = nodeRef;
     }
     return actualFinalRef === finalParentRef;
+  }
+
+  private validatePublishedViews(
+    views: readonly DomNodeView[],
+    documentEpoch: number,
+  ): boolean {
+    if (this.disposed || this.documentEpoch !== documentEpoch) return false;
+    return views.every((view) => {
+      const record = this.records.get(view.nodeRef);
+      if (
+        !record ||
+        record.kind !== view.kind ||
+        record.scope.documentEpoch !== documentEpoch ||
+        this.nodeRegistry.resolve(view.nodeRef, record.scope) === undefined
+      ) {
+        return false;
+      }
+      if (record.kind === "frame-document") {
+        const context = this.frameRegistry.getContext(record.scope.frameRef);
+        return !!context && sameNodeScope(context, record.scope as FrameContext);
+      }
+      return true;
+    });
   }
 
   private observeRoot(root: Node): void {
@@ -2711,6 +2793,9 @@ export class DomTreeProvider {
     if (this.outwardEffectBuffer) {
       this.outwardEffectBuffer.push({ kind: "frame", event });
       return;
+    }
+    if (this.replayingFrameEffect !== event) {
+      this.authorityGeneration += 1;
     }
     if (this.disposed || event.type === "reset") {
       return;

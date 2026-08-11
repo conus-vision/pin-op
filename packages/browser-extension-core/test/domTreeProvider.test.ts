@@ -4127,6 +4127,173 @@ describe("DomTreeProvider", () => {
     expect(harness.pendingTimerCount()).toBe(1);
   });
 
+  it("does not return locator refs after a registered-frame callback resets authority", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type === "registered") provider?.resetDocument(createDocument() as unknown as Document, 4);
+      },
+    });
+    provider = harness.provider;
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(harness.provider.currentDocumentEpoch).toBe(4);
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("does not return locator refs after a registered-frame callback disposes authority", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type === "registered") provider?.dispose();
+      },
+    });
+    provider = harness.provider;
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(() => harness.provider.getRoot()).toThrowError("session-disposed");
+    expect(frame.loadListenerCount).toBe(0);
+  });
+
+  it("does not return locator refs after a registered-frame callback navigates authority", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type === "registered") {
+          frame.setFrameDocument(createDocument());
+          frame.dispatchLoad();
+        }
+      },
+    });
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+  });
+
+  it("publishes locator effects once for read-only callback reentry", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    const events: string[] = [];
+    let observedContexts = 0;
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        events.push(event.type);
+        observedContexts = provider?.frameAuthority.accessibleContexts().length ?? 0;
+      },
+    });
+    provider = harness.provider;
+
+    expect(resolveLocator(harness.provider, locator)?.node.label).toContain("button#frame_target.action");
+    expect(events).toEqual(["registered"]);
+    expect(observedContexts).toBe(2);
+  });
+
+  it("does not return a child page after callback reentry resets authority", () => {
+    const document = createDocument();
+    let armed = false;
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (armed && event.type === "registered") {
+          provider?.resetDocument(createDocument() as unknown as Document, 4);
+        }
+      },
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    document.documentElement.append(createFrameElement(document, createDocument()));
+    armed = true;
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "published-child-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(harness.provider.currentDocumentEpoch).toBe(4);
+  });
+
+  it("does not return an ancestor path after callback reentry resets authority", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    let armed = false;
+    let provider: DomTreeProvider | undefined;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (armed && event.type === "navigated") {
+          provider?.resetDocument(createDocument() as unknown as Document, 4);
+        }
+      },
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "ancestor-frame");
+    const frameDocument = onlyChild(harness.provider, frameView, root.documentEpoch, "ancestor-document");
+    const targetView = onlyChild(harness.provider, frameDocument, root.documentEpoch, "ancestor-target");
+    const state = harness.provider as unknown as {
+      viewFrameDocument(document: Document, ...args: readonly unknown[]): unknown;
+    };
+    const originalViewFrameDocument = state.viewFrameDocument;
+    let navigated = false;
+    state.viewFrameDocument = (frameDocumentNode, ...args) => {
+      const view = originalViewFrameDocument.call(state, frameDocumentNode, ...args);
+      if (armed && !navigated) {
+        navigated = true;
+        frame.setFrameDocument(createDocument());
+        frame.dispatchLoad();
+      }
+      return view;
+    };
+    armed = true;
+
+    expect(() => harness.provider.ancestorPath(targetView.nodeRef, root.documentEpoch))
+      .toThrowError("node-unavailable");
+    expect(harness.provider.currentDocumentEpoch).toBe(4);
+  });
+
   it("fails capture when a registered frame host is moved or has the wrong parent owner", () => {
     const framed = createFramedButtonTree();
     const service = (framed.provider as unknown as {
