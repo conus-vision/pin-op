@@ -27,9 +27,7 @@ import type {
   DomRootResponse,
 } from "./domProtocol.js";
 import {
-  DOM_STABLE_LOCATOR_VERSION,
-  type DomBoundaryLocator,
-  type DomPathSegment,
+  DomStableLocatorService,
   type DomStableLocator,
 } from "./domStableLocator.js";
 
@@ -45,32 +43,6 @@ const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
 const MAX_SHADOW_CONTAINMENT_DEPTH = 512;
 const SHADOW_SCAN_BATCH_SIZE = 8;
 const SHADOW_SCAN_INTERVAL_MS = 1_000;
-
-const EMPTY_LOCATOR_BOUNDARIES = Object.freeze(
-  [] as DomBoundaryLocator[],
-);
-const EMPTY_LOCATOR_PATH = Object.freeze([] as DomPathSegment[]);
-const EMPTY_LOCATORS: Readonly<Record<DomNodeView["kind"], DomStableLocator>> =
-  Object.freeze({
-    element: Object.freeze({
-      version: DOM_STABLE_LOCATOR_VERSION,
-      targetKind: "element",
-      boundaries: EMPTY_LOCATOR_BOUNDARIES,
-      path: EMPTY_LOCATOR_PATH,
-    }),
-    "shadow-root": Object.freeze({
-      version: DOM_STABLE_LOCATOR_VERSION,
-      targetKind: "shadow-root",
-      boundaries: EMPTY_LOCATOR_BOUNDARIES,
-      path: EMPTY_LOCATOR_PATH,
-    }),
-    "frame-document": Object.freeze({
-      version: DOM_STABLE_LOCATOR_VERSION,
-      targetKind: "frame-document",
-      boundaries: EMPTY_LOCATOR_BOUNDARIES,
-      path: EMPTY_LOCATOR_PATH,
-    }),
-  });
 
 export type DomChildrenRequest = DomGetChildrenRequest;
 
@@ -126,6 +98,11 @@ export interface DomTreeRevealedElement extends DomTreeElementIdentity {
 
 export interface DomTreeResolvedElement extends DomTreeElementIdentity {
   readonly element: Element;
+}
+
+export interface DomTreeResolvedLocator {
+  readonly node: DomNodeView;
+  readonly ancestorPath: readonly DomNodeView[];
 }
 
 export type DomTreeSessionRetention = Extract<
@@ -236,6 +213,7 @@ type LogicalPathEntry =
 export class DomTreeProvider {
   private nodeRegistry: DomNodeRegistry;
   private readonly frameRegistry: FrameRegistry;
+  private locatorService: DomStableLocatorService;
   private topDocument: Document | undefined;
   private readonly records = new Map<string, NodeRecord>();
   private refsByNode = new WeakMap<Node, string>();
@@ -327,6 +305,7 @@ export class DomTreeProvider {
       documentEpoch: this.documentEpoch,
       onLifecycle: (event) => this.handleFrameLifecycle(event),
     });
+    this.locatorService = this.createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
       getContext: (frameRef: string) => this.frameRegistry.getContext(frameRef),
       getContextForDocument: (document: Document) => (
@@ -350,6 +329,30 @@ export class DomTreeProvider {
 
   public get frameAuthority(): DomTreeFrameAuthority {
     return this.frameAuthorityView;
+  }
+
+  private createLocatorService(topDocument: Document): DomStableLocatorService {
+    return new DomStableLocatorService({
+      topDocument,
+      frameRegistry: this.frameRegistry,
+      isExcludedNode: (node) => this.isNodeExcluded(node),
+    });
+  }
+
+  private captureLocator(
+    node: Node,
+    kind: DomNodeView["kind"],
+  ): DomStableLocator {
+    try {
+      return this.locatorService.capture(node, kind);
+    } catch {
+      return Object.freeze({
+        version: 1 as const,
+        targetKind: kind,
+        boundaries: Object.freeze([]),
+        path: Object.freeze([]),
+      });
+    }
   }
 
   private isNodeExcluded(node: Node): boolean {
@@ -683,6 +686,60 @@ export class DomTreeProvider {
     });
   }
 
+  public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
+    this.requireActive();
+    this.flushMutationBarrier();
+    const resolved = this.locatorService.resolve(locator);
+    if (!resolved || this.isNodeExcluded(resolved.node)) return undefined;
+    const path = this.logicalPathForResolvedLocator(resolved.kind, resolved.node);
+    const ancestorPath = path ? this.materializeLogicalPath(path) : undefined;
+    const node = ancestorPath?.at(-1);
+    if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
+    return Object.freeze({ node, ancestorPath });
+  }
+
+  private logicalPathForResolvedLocator(
+    kind: DomStableLocator["targetKind"],
+    node: Node,
+  ): readonly LogicalPathEntry[] | undefined {
+    if (kind === "element") {
+      if (!isElementNode(node)) return undefined;
+      const scope = this.attachedScopeFor(node);
+      if (!scope) return undefined;
+      const parentPath = this.planLogicalParentPath(node, scope);
+      if (!parentPath) return undefined;
+      return Object.freeze([...parentPath, { kind, node, scope }]);
+    }
+    if (kind === "shadow-root") {
+      if (!isOpenShadowRoot(node) || this.isNodeExcluded(node.host)) return undefined;
+      const scope = this.attachedScopeFor(node.host);
+      if (!scope) return undefined;
+      const parentPath = this.planLogicalParentPath(node.host, scope);
+      if (!parentPath) return undefined;
+      return Object.freeze([
+        ...parentPath,
+        { kind: "element" as const, node: node.host, scope },
+        { kind, node, scope },
+      ]);
+    }
+    if (node.nodeType !== 9) return undefined;
+    const context = this.frameRegistry.getContextForDocument(node as Document);
+    const frameElement = context?.frameElement;
+    const parentContext = context?.parentFrameRef
+      ? this.frameRegistry.getContext(context.parentFrameRef)
+      : undefined;
+    const parentPath = frameElement && parentContext
+      ? this.planLogicalParentPath(frameElement, parentContext)
+      : undefined;
+    return context && frameElement && parentPath
+      ? Object.freeze([
+        ...parentPath,
+        { kind: "element" as const, node: frameElement, scope: parentContext! },
+        { kind, node: node as Document, scope: context },
+      ])
+      : undefined;
+  }
+
   public retainNode(
     nodeRef: string,
     documentEpoch: number,
@@ -717,6 +774,7 @@ export class DomTreeProvider {
     if (!this.frameRegistry.resetTopDocument(topDocument, documentEpoch)) {
       throwDomTreeError("node-unavailable");
     }
+    this.locatorService = this.createLocatorService(topDocument);
     this.nodeRegistry.resetDocument(documentEpoch);
     this.cancelScheduledWork();
     this.disconnectAllObservers();
@@ -874,7 +932,7 @@ export class DomTreeProvider {
       expandable,
       ...(frameElement && frame?.kind !== "accessible" ? { inaccessible: true } : {}),
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: EMPTY_LOCATORS.element,
+      locator: this.captureLocator(element, "element"),
     });
   }
 
@@ -898,7 +956,7 @@ export class DomTreeProvider {
       label: "#shadow-root (open)",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: EMPTY_LOCATORS["shadow-root"],
+      locator: this.captureLocator(shadowRoot, "shadow-root"),
     });
   }
 
@@ -924,7 +982,7 @@ export class DomTreeProvider {
       label: "#document",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator: EMPTY_LOCATORS["frame-document"],
+      locator: this.captureLocator(document, "frame-document"),
     });
   }
 

@@ -24,6 +24,7 @@ import {
   type DomHoverChangedEvent,
   type DomSelectionChangedEvent,
 } from "./domProtocol.js";
+import type { DomStableLocator } from "./domStableLocator.js";
 import type {
   FrameContext,
   FrameIdentity,
@@ -63,6 +64,10 @@ export interface PageInspectionTreeProvider {
   readonly frameAuthority: DomTreeFrameAuthority;
   getRoot(expectedEpoch?: number): DomRootResponse;
   getChildren(request: DomGetChildrenRequest): DomChildrenResponse;
+  resolveLocator(locator: DomStableLocator): {
+    readonly node: DomNodeView;
+    readonly ancestorPath: readonly DomNodeView[];
+  } | undefined;
   lookupElement(element: Element): DomTreeElementIdentity | undefined;
   revealElement(element: Element): DomTreeRevealedElement;
   resolveElement(
@@ -505,11 +510,28 @@ export class PageInspectionSession {
         return this.provider.getChildren(parsed);
       }
       if (parsed.type === "dom.resolveLocator") {
-        return errorResponse(
-          "node-unavailable",
-          parsed.requestId,
-          this.provider.currentDocumentEpoch,
-        );
+        try {
+          const resolved = this.provider.resolveLocator(parsed.locator);
+          return resolved
+            ? Object.freeze({
+              type: "dom.locator" as const,
+              requestId: parsed.requestId,
+              documentEpoch: this.provider.currentDocumentEpoch,
+              node: resolved.node,
+              ancestorPath: resolved.ancestorPath,
+            })
+            : errorResponse(
+              "node-unavailable",
+              parsed.requestId,
+              this.provider.currentDocumentEpoch,
+            );
+        } catch {
+          return errorResponse(
+            "node-unavailable",
+            parsed.requestId,
+            this.provider.currentDocumentEpoch,
+          );
+        }
       }
       if (parsed.type === "dom.hover") {
         const event = this.applyHover(

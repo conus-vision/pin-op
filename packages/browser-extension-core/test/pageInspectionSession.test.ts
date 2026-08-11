@@ -496,6 +496,58 @@ describe("PageInspectionSession", () => {
     expect(harness.selections).toHaveLength(1);
   });
 
+  it("returns a frozen locator response without changing selection authority", async () => {
+    const harness = createSessionHarness();
+    const node = nodeView("node-3", "h2#section_title_id1.block_title");
+    harness.provider.locatorResolution = Object.freeze({
+      node,
+      ancestorPath: Object.freeze([
+        nodeView("node-1", "html"),
+        nodeView("node-3", "h2#section_title_id1.block_title"),
+      ]),
+    });
+
+    const response = await harness.session.handle({
+      type: "dom.resolveLocator",
+      requestId: "restore-heading",
+      locator: stableLocator(),
+    });
+
+    expect(response).toEqual({
+      type: "dom.locator",
+      requestId: "restore-heading",
+      documentEpoch: 3,
+      node,
+      ancestorPath: [
+        nodeView("node-1", "html"),
+        nodeView("node-3", "h2#section_title_id1.block_title"),
+      ],
+    });
+    expect(Object.isFrozen(response)).toBe(true);
+    expect(harness.provider.resolveLocatorCount).toBe(1);
+    expect(harness.selections).toEqual([]);
+    expect(harness.events).toEqual([]);
+  });
+
+  it.each([undefined, new Error("page-controlled locator evidence")])(
+    "returns a bounded node-unavailable error for locator resolution failure",
+    async (failure) => {
+      const harness = createSessionHarness();
+      harness.provider.locatorError = failure;
+
+      await expect(harness.session.handle({
+        type: "dom.resolveLocator",
+        requestId: "unavailable-locator",
+        locator: stableLocator(),
+      })).resolves.toEqual({
+        type: "dom.error",
+        requestId: "unavailable-locator",
+        documentEpoch: 3,
+        code: "node-unavailable",
+      });
+    },
+  );
+
   it("routes strict requests through shared selection and hover authority", async () => {
     const harness = createSessionHarness();
 
@@ -1064,6 +1116,12 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   public revealCount = 0;
   public resetCount = 0;
   public rootError: unknown;
+  public locatorError: unknown;
+  public locatorResolution: {
+    readonly node: DomNodeView;
+    readonly ancestorPath: readonly DomNodeView[];
+  } | undefined;
+  public resolveLocatorCount = 0;
   public startFrameTrackingCount = 0;
   public throwOnReveal = false;
   public onResolve: (() => void) | undefined;
@@ -1202,6 +1260,15 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
       branchRevision: request.branchRevision,
       nodes: Object.freeze([]),
     });
+  }
+
+  public resolveLocator(_locator: ReturnType<typeof stableLocator>): {
+    readonly node: DomNodeView;
+    readonly ancestorPath: readonly DomNodeView[];
+  } | undefined {
+    this.resolveLocatorCount += 1;
+    if (this.locatorError) throw this.locatorError;
+    return this.locatorResolution;
   }
 
   public lookupElement(element: Element): DomTreeElementIdentity | undefined {

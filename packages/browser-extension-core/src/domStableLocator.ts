@@ -6,6 +6,8 @@ export const DOM_STABLE_LOCATOR_MAX_ATTRIBUTES = 8;
 export const DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH = 128;
 export const DOM_TREE_RECOVERY_MAX_EXPANDED = 64;
 
+const MAX_ID_SCAN_NODES = 4_096;
+
 export interface DomStableLocator {
   readonly version: 1;
   readonly targetKind: "element" | "shadow-root" | "frame-document";
@@ -29,6 +31,450 @@ export interface DomPathSegment {
 export interface DomLocatorAttribute {
   readonly name: string;
   readonly value: string;
+}
+
+export interface StableLocatorResolution {
+  readonly kind: DomStableLocator["targetKind"];
+  readonly node: Node;
+}
+
+export interface DomStableLocatorServiceOptions {
+  readonly topDocument: Document;
+  readonly frameRegistry: {
+    getContextForDocument(document: Document): {
+      readonly document: Document;
+      readonly frameRef: string;
+      readonly frameElement?: HTMLIFrameElement;
+    } | undefined;
+    getContext(frameRef: string): { readonly document: Document; readonly frameRef: string } | undefined;
+    describeFrame(
+      frameElement: HTMLIFrameElement,
+      parentFrameRef?: string,
+    ): {
+      readonly kind: "accessible" | "inaccessible";
+      readonly document?: Document;
+      readonly frameRef: string;
+    } | undefined;
+  };
+  readonly isExcludedNode: (node: Node) => boolean;
+}
+
+/** Captures and proves browser-local DOM identity without selector or URL fallback. */
+export class DomStableLocatorService {
+  private readonly topDocument: Document;
+  private readonly frameRegistry: DomStableLocatorServiceOptions["frameRegistry"];
+  private readonly isExcludedNode: DomStableLocatorServiceOptions["isExcludedNode"];
+
+  public constructor(options: DomStableLocatorServiceOptions) {
+    this.topDocument = options.topDocument;
+    this.frameRegistry = options.frameRegistry;
+    this.isExcludedNode = options.isExcludedNode;
+  }
+
+  public capture(
+    node: Node,
+    kind: DomStableLocator["targetKind"],
+  ): DomStableLocator {
+    const target = kind === "frame-document"
+      ? this.frameRegistry.getContextForDocument(node as Document)?.frameElement
+      : targetElementFor(node, kind);
+    if (!target || this.isExcluded(target)) throw invalidLocator();
+    const captured = this.captureElement(target, new Set<Node>(), 0);
+    const locator = {
+      version: DOM_STABLE_LOCATOR_VERSION,
+      targetKind: kind,
+      boundaries: captured.boundaries,
+      path: captured.path,
+    } as const;
+    return parseDomStableLocator(locator);
+  }
+
+  public resolve(locator: DomStableLocator): StableLocatorResolution | undefined {
+    let parsed: DomStableLocator;
+    try {
+      parsed = parseDomStableLocator(locator);
+    } catch {
+      return undefined;
+    }
+    let root: Node = this.topDocument;
+    let context = this.frameRegistry.getContextForDocument(this.topDocument);
+    if (!context || this.isExcluded(root)) return undefined;
+    const seen = new Set<Node>([root]);
+    let traversed = 0;
+
+    for (const boundary of parsed.boundaries) {
+      const host = this.resolvePath(root, boundary.hostPath, seen, traversed);
+      traversed += boundary.hostPath.length;
+      if (!host || traversed > DOM_STABLE_LOCATOR_MAX_DEPTH) return undefined;
+      if (boundary.kind === "shadow-root") {
+        const shadowRoot = readOpenShadowRoot(host);
+        if (!shadowRoot || this.isExcluded(shadowRoot) || seen.has(shadowRoot)) {
+          return undefined;
+        }
+        seen.add(shadowRoot);
+        root = shadowRoot;
+        continue;
+      }
+      if (!isFrameElement(host)) return undefined;
+      const description = this.frameRegistry.describeFrame(host, context.frameRef);
+      if (
+        !description ||
+        description.kind !== "accessible" ||
+        !description.document ||
+        this.isExcluded(description.document) ||
+        seen.has(description.document)
+      ) {
+        return undefined;
+      }
+      const childContext = this.frameRegistry.getContext(description.frameRef);
+      if (!childContext || childContext.document !== description.document) return undefined;
+      seen.add(description.document);
+      root = description.document;
+      context = childContext;
+    }
+
+    const target = this.resolvePath(root, parsed.path, seen, traversed);
+    if (!target) return undefined;
+    if (parsed.targetKind === "element") {
+      return Object.freeze({ kind: parsed.targetKind, node: target });
+    }
+    if (parsed.targetKind === "shadow-root") {
+      const shadowRoot = readOpenShadowRoot(target);
+      return shadowRoot && !this.isExcluded(shadowRoot)
+        ? Object.freeze({ kind: parsed.targetKind, node: shadowRoot })
+        : undefined;
+    }
+    if (!isFrameElement(target)) return undefined;
+    const description = this.frameRegistry.describeFrame(target, context.frameRef);
+    return description?.kind === "accessible" && description.document &&
+        !this.isExcluded(description.document)
+      ? Object.freeze({ kind: parsed.targetKind, node: description.document })
+      : undefined;
+  }
+
+  private captureElement(
+    target: Element,
+    seen: Set<Node>,
+    depth: number,
+  ): { readonly boundaries: readonly DomBoundaryLocator[]; readonly path: readonly DomPathSegment[] } {
+    if (depth >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(target)) {
+      throw invalidLocator();
+    }
+    seen.add(target);
+    const root = containingRoot(target, seen);
+    const path = capturePath(root, target, this.isExcludedNode);
+    const nextDepth = depth + path.length;
+    if (nextDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
+    if (root.nodeType === 9) {
+      if (root !== this.topDocument && !this.frameRegistry.getContextForDocument(root as Document)) {
+        throw invalidLocator();
+      }
+      const context = this.frameRegistry.getContextForDocument(root as Document);
+      if (!context || !context.frameElement) {
+        return Object.freeze({ boundaries: Object.freeze([]), path });
+      }
+      const parent = this.captureElement(context.frameElement, seen, nextDepth);
+      return Object.freeze({
+        boundaries: Object.freeze([
+          ...parent.boundaries,
+          Object.freeze({ kind: "frame-document" as const, hostPath: parent.path }),
+        ]),
+        path,
+      });
+    }
+    if (!isOpenShadowRoot(root)) throw invalidLocator();
+    const parent = this.captureElement(root.host, seen, nextDepth);
+    return Object.freeze({
+      boundaries: Object.freeze([
+        ...parent.boundaries,
+        Object.freeze({ kind: "shadow-root" as const, hostPath: parent.path }),
+      ]),
+      path,
+    });
+  }
+
+  private resolvePath(
+    root: Node,
+    path: readonly DomPathSegment[],
+    seen: Set<Node>,
+    traversed: number,
+  ): Element | undefined {
+    if (path.length === 0 || traversed + path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) {
+      return undefined;
+    }
+    let parent = root;
+    for (const segment of path) {
+      const candidate = elementChildAt(parent, segment.siblingIndex);
+      if (
+        !candidate ||
+        seen.has(candidate) ||
+        this.isExcluded(candidate) ||
+        !matchesSegment(candidate, segment)
+      ) {
+        return undefined;
+      }
+      if (segment.id !== undefined && !hasUniqueId(root, segment.id, this.isExcludedNode)) {
+        return undefined;
+      }
+      seen.add(candidate);
+      parent = candidate;
+    }
+    return parent.nodeType === 1 ? parent as Element : undefined;
+  }
+
+  private isExcluded(node: Node): boolean {
+    try {
+      return this.isExcludedNode(node);
+    } catch {
+      return true;
+    }
+  }
+}
+
+function targetElementFor(
+  node: Node,
+  kind: Exclude<DomStableLocator["targetKind"], "frame-document">,
+): Element | undefined {
+  if (kind === "element") return node.nodeType === 1 ? node as Element : undefined;
+  return isOpenShadowRoot(node) ? node.host : undefined;
+}
+
+function containingRoot(target: Element, seen: ReadonlySet<Node>): Node {
+  let current: Node = target;
+  const path = new Set<Node>(seen);
+  for (let depth = 0; depth < DOM_STABLE_LOCATOR_MAX_DEPTH; depth += 1) {
+    const parent = readParentNode(current);
+    if (!parent) throw invalidLocator();
+    if (parent.nodeType === 9 || isOpenShadowRoot(parent)) return parent;
+    if (path.has(parent)) throw invalidLocator();
+    path.add(parent);
+    current = parent;
+  }
+  throw invalidLocator();
+}
+
+function capturePath(
+  root: Node,
+  target: Element,
+  isExcludedNode: (node: Node) => boolean,
+): readonly DomPathSegment[] {
+  const reversed: DomPathSegment[] = [];
+  const seen = new Set<Node>();
+  let current: Node = target;
+  while (current !== root) {
+    if (seen.size >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(current) || current.nodeType !== 1) {
+      throw invalidLocator();
+    }
+    seen.add(current);
+    if (isExcludedNode(current)) throw invalidLocator();
+    const parent = readParentNode(current);
+    if (!parent || parent === current || isExcludedNode(parent)) throw invalidLocator();
+    reversed.push(captureSegment(current as Element, parent));
+    current = parent;
+  }
+  if (reversed.length === 0 || isExcludedNode(root)) throw invalidLocator();
+  return Object.freeze(reversed.reverse());
+}
+
+function captureSegment(element: Element, parent: Node): DomPathSegment {
+  const tagName = readTagName(element);
+  const siblingIndex = elementSiblingIndex(parent, element);
+  if (!tagName || siblingIndex === undefined) throw invalidLocator();
+  const id = boundedNonEmpty(readId(element));
+  const classes = Object.freeze(
+    readClasses(element)
+      .filter((value) => boundedNonEmpty(value) !== undefined && !hasWhitespace(value))
+      .sort()
+      .slice(0, DOM_STABLE_LOCATOR_MAX_CLASSES),
+  );
+  const attributes = Object.freeze(
+    readAttributes(element)
+      .filter(({ name, value }) => isApprovedAttributeName(name) && boundedText(value) !== undefined)
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, DOM_STABLE_LOCATOR_MAX_ATTRIBUTES)
+      .map(({ name, value }) => Object.freeze({ name, value })),
+  );
+  return Object.freeze({
+    tagName,
+    siblingIndex,
+    ...(id === undefined ? {} : { id }),
+    ...(classes.length === 0 ? {} : { classes }),
+    ...(attributes.length === 0 ? {} : { attributes }),
+  });
+}
+
+function elementChildAt(parent: Node, siblingIndex: number): Element | undefined {
+  if (!Number.isSafeInteger(siblingIndex) || siblingIndex < 0) return undefined;
+  let index = 0;
+  for (const child of readChildNodes(parent)) {
+    if (child.nodeType !== 1) continue;
+    if (index === siblingIndex) return child as Element;
+    index += 1;
+  }
+  return undefined;
+}
+
+function elementSiblingIndex(parent: Node, target: Element): number | undefined {
+  const previous = readPreviousElementSibling(target);
+  if (previous !== undefined) {
+    let index = 0;
+    let current: Element | null = target;
+    const seen = new Set<Element>();
+    while (current) {
+      if (seen.has(current) || index >= DOM_STABLE_LOCATOR_MAX_DEPTH * 16) {
+        return undefined;
+      }
+      seen.add(current);
+      current = readPreviousElementSibling(current) ?? null;
+      if (current) index += 1;
+    }
+    return index;
+  }
+  let index = 0;
+  for (const child of readChildNodes(parent)) {
+    if (child.nodeType !== 1) continue;
+    if (child === target) return index;
+    index += 1;
+  }
+  return undefined;
+}
+
+function readPreviousElementSibling(element: Element): Element | null | undefined {
+  try {
+    return "previousElementSibling" in element
+      ? element.previousElementSibling
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function matchesSegment(element: Element, segment: DomPathSegment): boolean {
+  if (readTagName(element) !== segment.tagName) return false;
+  if (segment.id !== undefined && readId(element) !== segment.id) return false;
+  const classes = new Set(readClasses(element));
+  if (segment.classes?.some((value) => !classes.has(value))) return false;
+  const attributes = new Map(readAttributes(element).map(({ name, value }) => [name, value]));
+  return !segment.attributes?.some(({ name, value }) => attributes.get(name) !== value);
+}
+
+function hasUniqueId(
+  root: Node,
+  id: string,
+  isExcludedNode: (node: Node) => boolean,
+): boolean {
+  const pending = [root];
+  const seen = new Set<Node>();
+  let matches = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || seen.has(current) || isExcludedNode(current)) continue;
+    if (seen.size >= MAX_ID_SCAN_NODES) return false;
+    seen.add(current);
+    if (current.nodeType === 1 && readId(current as Element) === id) {
+      matches += 1;
+      if (matches > 1) return false;
+    }
+    const children = readChildNodes(current);
+    for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index]!);
+  }
+  return matches === 1;
+}
+
+function readTagName(element: Element): string | undefined {
+  try {
+    const tagName = element.tagName.toLowerCase();
+    return /^[a-z][a-z0-9._:-]*$/.test(tagName) && tagName.length <= DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH
+      ? tagName
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readId(element: Element): string | undefined {
+  try {
+    return typeof element.id === "string" ? element.id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readClasses(element: Element): readonly string[] {
+  try {
+    return Array.from(element.classList, (value) => String(value));
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
+function readAttributes(element: Element): readonly DomLocatorAttribute[] {
+  try {
+    const values: DomLocatorAttribute[] = [];
+    for (const attribute of Array.from(element.attributes)) {
+      const name = String(attribute.name).toLowerCase();
+      const value = String(attribute.value);
+      values.push(Object.freeze({ name, value }));
+    }
+    return Object.freeze(values);
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
+function readChildNodes(node: Node): readonly Node[] {
+  try {
+    return Array.from(node.childNodes);
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
+function readParentNode(node: Node): Node | undefined {
+  try {
+    return node.parentNode ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readOpenShadowRoot(element: Element): ShadowRoot | undefined {
+  try {
+    const root = element.shadowRoot;
+    return root?.mode === "open" ? root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isOpenShadowRoot(node: Node): node is ShadowRoot {
+  try {
+    return node.nodeType === 11 && (node as ShadowRoot).mode === "open";
+  } catch {
+    return false;
+  }
+}
+
+function isFrameElement(element: Element): element is HTMLIFrameElement {
+  return readTagName(element) === "iframe";
+}
+
+function boundedNonEmpty(value: string | undefined): string | undefined {
+  return value !== undefined && value.length > 0 && value.length <= DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH
+    ? value
+    : undefined;
+}
+
+function boundedText(value: string): string | undefined {
+  return value.length <= DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH ? value : undefined;
+}
+
+function hasWhitespace(value: string): boolean {
+  return /[\t\n\f\r ]/.test(value);
+}
+
+function isApprovedAttributeName(name: string): boolean {
+  return name === "role" || /^(?:aria|data)-[a-z0-9_.:-]+$/.test(name);
 }
 
 const LOCATOR_KEYS = [

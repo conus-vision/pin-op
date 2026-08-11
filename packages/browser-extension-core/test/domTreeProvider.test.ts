@@ -3,6 +3,7 @@ import {
   DomTreeProvider,
   DomTreeProviderError,
 } from "../src/domTreeProvider.js";
+import type { DomStableLocator } from "../src/domStableLocator.js";
 
 describe("DomTreeProvider", () => {
   it("binds default timers to the inspected document window", () => {
@@ -3530,6 +3531,128 @@ describe("DomTreeProvider", () => {
     expect(harness.provider.lookupElement(overlayHost as unknown as Element))
       .toBeUndefined();
   });
+
+  it("resolves an equivalent heading through fresh refs and its complete ancestor path", () => {
+    const first = createHeadingTree({ includeAttributes: false });
+    const unrelated = createElement("aside", first.document);
+    first.document.documentElement.append(unrelated);
+    first.provider.revealElement(unrelated as unknown as Element);
+    const original = first.provider.revealElement(first.target as unknown as Element);
+    const second = createHeadingTree({ includeAttributes: false });
+
+    const restored = resolveLocator(
+      second.provider,
+      original.ancestorPath.at(-1)!.locator,
+    );
+
+    expect(restored?.node.nodeRef).not.toBe(original.nodeRef);
+    expect(restored?.ancestorPath.map(({ label }) => label)).toEqual([
+      "html",
+      "body",
+      "main",
+      "h2#section_title_id1.block_title",
+    ]);
+  });
+
+  it("rejects a locator whose captured ID is duplicated in the current boundary", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+    const duplicate = createElement("h2", second.document);
+    duplicate.id = "section_title_id1";
+    duplicate.className = "block_title";
+    duplicate.setAttribute("data-section", "intro");
+    second.main.append(duplicate);
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("rejects a locator when the exact structural index has a changed tag", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ tagName: "p" });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("rejects a locator when its captured class evidence changes", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ className: "replaced_title" });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it.each([
+    ["data-section", "changed"],
+    ["aria-label", "changed"],
+    ["role", "heading"],
+  ])("rejects a locator when captured %s evidence changes", (name, value) => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ attribute: { name, value } });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("rejects a locator when a structural sibling is missing", () => {
+    const first = createHeadingTree({ includeSibling: true });
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("resolves nested open-shadow paths and rejects a missing shadow boundary", () => {
+    const first = createNestedShadowTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createNestedShadowTree();
+
+    expect(resolveLocator(second.provider, locator)?.node.label)
+      .toBe("button#shadow_target.action");
+
+    const missing = createNestedShadowTree({ attachInnerShadow: false });
+    expect(resolveLocator(missing.provider, locator)).toBeUndefined();
+  });
+
+  it("resolves a registered same-origin frame and rejects an inaccessible replacement", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree();
+
+    expect(resolveLocator(second.provider, locator)?.node.label)
+      .toBe("button#frame_target.action");
+
+    const inaccessible = createFramedButtonTree({
+      accessError: new Error("cross-origin"),
+    });
+    expect(resolveLocator(inaccessible.provider, locator)).toBeUndefined();
+  });
+
+  it("does not consult materialized session refs while resolving a locator", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+    second.provider.resolveElement = () => {
+      throw new Error("stale ref consulted");
+    };
+
+    expect(resolveLocator(second.provider, locator)?.node.label)
+      .toContain("h2#section_title_id1.block_title");
+  });
+
+  it("rejects a locator whose traversal exceeds 64 structural segments", () => {
+    const provider = createProvider(createDocument());
+    const segment = Object.freeze({ tagName: "div", siblingIndex: 0 });
+    const locator = Object.freeze({
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: Object.freeze([]),
+      path: Object.freeze(Array.from({ length: 65 }, () => segment)),
+    });
+
+    expect(resolveLocator(provider, locator)).toBeUndefined();
+  });
 });
 
 function onlyChild(
@@ -3551,6 +3674,83 @@ function onlyChild(
 
 function createProvider(document: FakeDocument): DomTreeProvider {
   return createProviderHarness(document).provider;
+}
+
+function resolveLocator(
+  provider: DomTreeProvider,
+  locator: DomStableLocator,
+): { readonly node: { readonly nodeRef: string; readonly label: string }; readonly ancestorPath: readonly { readonly label: string }[] } | undefined {
+  return (provider as unknown as {
+    resolveLocator(locator: DomStableLocator): { readonly node: { readonly nodeRef: string; readonly label: string }; readonly ancestorPath: readonly { readonly label: string }[] } | undefined;
+  }).resolveLocator(locator);
+}
+
+function locatorFor(provider: DomTreeProvider, target: FakeElement): DomStableLocator {
+  return provider.revealElement(target as unknown as Element).ancestorPath.at(-1)!.locator;
+}
+
+function createHeadingTree(options: {
+  readonly tagName?: string;
+  readonly className?: string;
+  readonly includeSibling?: boolean;
+  readonly includeAttributes?: boolean;
+  readonly attribute?: { readonly name: string; readonly value: string };
+} = {}) {
+  const document = createDocument();
+  const body = createElement("body", document);
+  const main = createElement("main", document);
+  const target = createElement(options.tagName ?? "h2", document);
+  target.id = "section_title_id1";
+  target.className = options.className ?? "block_title";
+  if (options.includeAttributes !== false) {
+    target.setAttribute("data-section", "intro");
+    target.setAttribute("aria-label", "Introduction");
+    target.setAttribute("role", "presentation");
+  }
+  if (options.attribute) target.setAttribute(options.attribute.name, options.attribute.value);
+  document.documentElement.append(body);
+  body.append(main);
+  if (options.includeSibling) main.append(createElement("p", document));
+  main.append(target);
+  return { document, main, target, provider: createProvider(document) };
+}
+
+function createNestedShadowTree(options: { readonly attachInnerShadow?: boolean } = {}) {
+  const document = createDocument();
+  const outer = createElement("article", document);
+  outer.id = "outer_host";
+  const outerShadow = outer.attachShadow();
+  const inner = createElement("section", document);
+  inner.id = "inner_host";
+  outerShadow.append(inner);
+  const target = createElement("button", document);
+  target.id = "shadow_target";
+  target.className = "action";
+  if (options.attachInnerShadow !== false) {
+    inner.attachShadow().append(target);
+  } else {
+    inner.append(target);
+  }
+  document.documentElement.append(outer);
+  return { provider: createProvider(document), target };
+}
+
+function createFramedButtonTree(options: { readonly accessError?: Error } = {}) {
+  const document = createDocument();
+  const childDocument = createDocument();
+  const frame = createFrameElement(document, childDocument, options.accessError);
+  const target = createElement("button", childDocument);
+  target.id = "frame_target";
+  target.className = "action";
+  childDocument.documentElement.append(target);
+  document.documentElement.append(frame);
+  const provider = createProvider(document);
+  const root = provider.getRoot();
+  const frameView = onlyChild(provider, root.node, root.documentEpoch, "frame");
+  if (!options.accessError) {
+    onlyChild(provider, frameView, root.documentEpoch, "frame-document");
+  }
+  return { provider, target };
 }
 
 interface ProviderHarnessOptions {
@@ -3683,11 +3883,13 @@ function attributeMutationRecord(
 class FakeNode {
   public parentNode: FakeNode | null = null;
   public readonly childNodes: FakeNode[] = [];
+  public previousElementSibling: FakeElement | null = null;
 
   public constructor(public readonly nodeType: number) {}
 
   public append(child: FakeNode): void {
     child.parentNode = this;
+    child.previousElementSibling = this.lastElementChild();
     this.childNodes.push(child);
   }
 
@@ -3696,6 +3898,23 @@ class FakeNode {
     if (index < 0) return;
     this.childNodes.splice(index, 1);
     child.parentNode = null;
+    child.previousElementSibling = null;
+    for (let childIndex = index; childIndex < this.childNodes.length; childIndex += 1) {
+      const current = this.childNodes[childIndex]!;
+      current.previousElementSibling = this.lastElementBefore(childIndex);
+    }
+  }
+
+  private lastElementChild(): FakeElement | null {
+    return this.lastElementBefore(this.childNodes.length);
+  }
+
+  private lastElementBefore(end: number): FakeElement | null {
+    for (let index = end - 1; index >= 0; index -= 1) {
+      const candidate = this.childNodes[index];
+      if (candidate?.nodeType === 1) return candidate as FakeElement;
+    }
+    return null;
   }
 
   public contains(candidate: Node): boolean {
