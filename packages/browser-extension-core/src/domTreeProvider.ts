@@ -291,6 +291,7 @@ export class DomTreeProvider {
   private readonly expandedShadowHosts = new Set<string>();
   private readonly shadowRootRefs = new Map<string, string>();
   private readonly rootObservers = new Map<Node, DomTreeMutationObserver>();
+  private readonly observedRootByObserver = new Map<DomTreeMutationObserver, Node>();
   private readonly frameDescriptions = new Map<string, FrameDescription>();
   private frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
   private readonly frameDocumentsByRef = new Map<string, Document>();
@@ -2239,7 +2240,7 @@ export class DomTreeProvider {
       if (!retained) return false;
       retainedEvents.push(...retained);
 
-      if (!this.restoreProviderAuthority(snapshot, retainedEvents)) {
+      if (!this.restoreProviderAuthority(snapshot)) {
         if (
           this.isProviderAuthorityCurrent(snapshot) &&
           this.outwardEffectBuffer === buffer &&
@@ -2288,10 +2289,23 @@ export class DomTreeProvider {
         return false;
       }
       for (const root of requiredObservedRoots) {
-        if (!this.rootObservers.has(root)) return false;
+        const observer = this.rootObservers.get(root);
+        if (!observer || this.observedRootByObserver.get(observer) !== root) {
+          return false;
+        }
       }
-      for (const root of this.rootObservers.keys()) {
-        if (!requiredObservedRoots.has(root)) return false;
+      for (const [root, observer] of this.rootObservers) {
+        if (
+          !requiredObservedRoots.has(root) ||
+          this.observedRootByObserver.get(observer) !== root
+        ) return false;
+      }
+      if (this.observedRootByObserver.size !== this.rootObservers.size) return false;
+      for (const [observer, root] of this.observedRootByObserver) {
+        if (
+          !requiredObservedRoots.has(root) ||
+          this.rootObservers.get(root) !== observer
+        ) return false;
       }
       for (const [frameRef, document] of this.frameDocumentsByRef) {
         const context = this.frameRegistry.getContext(frameRef);
@@ -2401,7 +2415,6 @@ export class DomTreeProvider {
 
   private restoreProviderAuthority(
     snapshot: ProviderAuthoritySnapshot,
-    retainedEvents: readonly FrameLifecycleEvent[] = [],
   ): boolean {
     try {
       if (!this.isProviderAuthorityCurrent(snapshot)) return false;
@@ -2426,27 +2439,6 @@ export class DomTreeProvider {
       }
 
       const expectedObservers = new Map(snapshot.rootObservers);
-      const retainedFrameRefs = new Set(retainedEvents.map(({ frameRef }) => frameRef));
-      const retainedSnapshotDocuments = new Set(snapshot.metadata.frameDocumentsByRef
-        .filter(([frameRef]) => retainedFrameRefs.has(frameRef))
-        .map(([, document]) => document));
-      for (const root of [...this.rootObservers.keys()]) {
-        if (expectedObservers.has(root)) continue;
-        if (!this.isProviderAuthorityCurrent(snapshot)) return false;
-        this.disconnectObserver(root);
-        if (
-          !this.isProviderAuthorityCurrent(snapshot) ||
-          this.rootObservers.get(root) !== undefined
-        ) {
-          return false;
-        }
-      }
-      for (const [root, observer] of expectedObservers) {
-        if (
-          this.rootObservers.get(root) !== observer &&
-          !retainedSnapshotDocuments.has(root as Document)
-        ) return false;
-      }
       if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       if (!this.restoreSnapshotTimers(snapshot)) return false;
       if (!this.isProviderAuthorityCurrent(snapshot)) return false;
@@ -2456,7 +2448,8 @@ export class DomTreeProvider {
       this.refsByNode = new WeakMap<Node, string>();
       for (const [node, ref] of snapshot.refsByNode) this.refsByNode.set(node, ref);
       this.restoreMaterializationMetadata(snapshot.metadata);
-      restoreMap(this.rootObservers, snapshot.rootObservers);
+      if (!this.restoreRootObservers(snapshot, expectedObservers)) return false;
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
       this.frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
       for (const [frameRef, owned] of snapshot.metadata.ownedFramesByRef) {
         this.frameRefsByElement.set(owned.frameElement, frameRef);
@@ -2465,6 +2458,42 @@ export class DomTreeProvider {
     } catch {
       return false;
     }
+  }
+
+  private restoreRootObservers(
+    snapshot: ProviderAuthoritySnapshot,
+    expectedObservers: ReadonlyMap<Node, DomTreeMutationObserver>,
+  ): boolean {
+    if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+    const instances = new Set<DomTreeMutationObserver>([
+      ...this.observedRootByObserver.keys(),
+      ...this.rootObservers.values(),
+    ]);
+    for (const observer of instances) {
+      const root = this.observedRootByObserver.get(observer) ?? findObservedRoot(
+        this.rootObservers,
+        observer,
+      );
+      if (!root) return false;
+      if (expectedObservers.get(root) === observer) continue;
+      if (!this.disconnectObserverInstance(root, observer)) return false;
+      if (!this.isProviderAuthorityCurrent(snapshot)) return false;
+    }
+    for (const [root, observer] of this.rootObservers) {
+      if (expectedObservers.get(root) !== observer) return false;
+    }
+    for (const [observer, root] of this.observedRootByObserver) {
+      if (expectedObservers.get(root) !== observer) return false;
+    }
+    for (const [root, observer] of expectedObservers) {
+      const existingRoot = this.observedRootByObserver.get(observer);
+      if (existingRoot !== undefined && existingRoot !== root) return false;
+      const existingObserver = this.rootObservers.get(root);
+      if (existingObserver !== undefined && existingObserver !== observer) return false;
+      this.rootObservers.set(root, observer);
+      this.observedRootByObserver.set(observer, root);
+    }
+    return this.isProviderAuthorityCurrent(snapshot);
   }
 
   private restoreSnapshotTimers(snapshot: ProviderAuthoritySnapshot): boolean {
@@ -2887,17 +2916,25 @@ export class DomTreeProvider {
     if (this.isNodeExcluded(root) || this.rootObservers.has(root)) {
       return;
     }
+    let observer: DomTreeMutationObserver | undefined;
     try {
-      const observer = this.createMutationObserver((records) => (
+      observer = this.createMutationObserver((records) => (
         this.queueMutations(root, records)
       ));
+      this.observedRootByObserver.set(observer, root);
       observer.observe(root, {
         attributes: true,
         childList: true,
         subtree: true,
       });
+      if (this.observedRootByObserver.get(observer) !== root) return;
+      if (this.rootObservers.has(root)) {
+        this.disconnectObserverInstance(root, observer);
+        return;
+      }
       this.rootObservers.set(root, observer);
     } catch {
+      if (observer) this.disconnectObserverInstance(root, observer);
       // A hostile root cannot be allowed to break the rest of the tree.
     }
   }
@@ -3484,31 +3521,53 @@ export class DomTreeProvider {
   }
 
   private disconnectAllObservers(): void {
-    for (const observer of this.rootObservers.values()) {
-      try {
-        observer.disconnect();
-      } catch {
-        // Ownership is released even if a hostile observer adapter throws.
-      }
+    for (const [observer, root] of [...this.observedRootByObserver]) {
+      this.disconnectObserverInstance(root, observer);
+    }
+    for (const [root, observer] of [...this.rootObservers]) {
+      this.disconnectObserverInstance(root, observer);
     }
     this.rootObservers.clear();
+    this.observedRootByObserver.clear();
   }
 
   private disconnectObserver(root: Node): void {
-    const observer = this.rootObservers.get(root);
-    if (!observer) {
-      return;
+    const observers = new Set<DomTreeMutationObserver>();
+    const tracked = this.rootObservers.get(root);
+    if (tracked) observers.add(tracked);
+    for (const [observer, observedRoot] of this.observedRootByObserver) {
+      if (observedRoot === root) observers.add(observer);
     }
-    this.rootObservers.delete(root);
+    for (const observer of observers) {
+      this.disconnectObserverInstance(root, observer);
+    }
+  }
+
+  private disconnectObserverInstance(
+    root: Node,
+    observer: DomTreeMutationObserver,
+  ): boolean {
+    if (this.rootObservers.get(root) === observer) {
+      this.rootObservers.delete(root);
+    }
+    if (this.observedRootByObserver.get(observer) === root) {
+      this.observedRootByObserver.delete(observer);
+    }
     try {
       observer.disconnect();
+      return true;
     } catch {
       // Ownership is released even if a hostile observer adapter throws.
+      return false;
     }
   }
 
   private disconnectObserversWithin(root: Node): void {
-    for (const observedRoot of [...this.rootObservers.keys()]) {
+    const observedRoots = new Set<Node>([
+      ...this.rootObservers.keys(),
+      ...this.observedRootByObserver.values(),
+    ]);
+    for (const observedRoot of observedRoots) {
       if (
         observedRoot === root ||
         containsNode(root, observedRoot) ||
@@ -3941,4 +4000,14 @@ function isExactOpenShadowRoot(host: Node, candidate: Node): boolean {
   } catch {
     return false;
   }
+}
+
+function findObservedRoot(
+  observers: ReadonlyMap<Node, DomTreeMutationObserver>,
+  candidate: DomTreeMutationObserver,
+): Node | undefined {
+  for (const [root, observer] of observers) {
+    if (observer === candidate) return root;
+  }
+  return undefined;
 }

@@ -5225,6 +5225,126 @@ describe("DomTreeProvider", () => {
     expect(callbacks).toEqual([]);
   });
 
+  it("disconnects a superseded same-document observer before retained replay replaces it", () => {
+    const document = createDocument();
+    const frameDocument = createDocument();
+    const frame = createFrameElement(document, frameDocument);
+    document.documentElement.append(frame);
+    const customObservers: TestMutationObserver[] = [];
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: () => callbacks.push("frame"),
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        customObservers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    callbacks.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    };
+    const initialObserver = state.rootObservers.get(frameDocument as unknown as Node)!;
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.dispatchLoad();
+    const supersededObserver = state.rootObservers.get(frameDocument as unknown as Node)!;
+    expect(supersededObserver).not.toBe(initialObserver);
+
+    expect(owner.rollback()).toBe(true);
+    const replayObserver = state.rootObservers.get(frameDocument as unknown as Node)!;
+    expect(replayObserver).not.toBe(initialObserver);
+    expect(replayObserver).not.toBe(supersededObserver);
+    expect(supersededObserver.disconnectCount).toBe(1);
+    supersededObserver.emit([mutationRecord(frameDocument.documentElement)]);
+    expect(supersededObserver.emitCount).toBe(0);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
+    expect(customObservers).toContain(replayObserver);
+  });
+
+  it("drains a lifecycle event reentered from superseded observer disconnect", () => {
+    const document = createDocument();
+    const frameDocument = createDocument();
+    const frame = createFrameElement(document, frameDocument);
+    document.documentElement.append(frame);
+    const customObservers: TestMutationObserver[] = [];
+    let reentered = false;
+    let armDisconnect = false;
+    const harness = createProviderHarness(document, {
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        const disconnect = observer.disconnect.bind(observer);
+        observer.disconnect = () => {
+          disconnect();
+          if (
+            armDisconnect &&
+            !reentered &&
+            observer.observedTargets.includes(frameDocument)
+          ) {
+            reentered = true;
+            frame.dispatchLoad();
+          }
+        };
+        customObservers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    };
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.dispatchLoad();
+    const supersededObserver = state.rootObservers.get(frameDocument as unknown as Node)!;
+    armDisconnect = true;
+
+    expect(owner.rollback()).toBe(true);
+    expect(reentered).toBe(true);
+    expect(supersededObserver.disconnectCount).toBe(1);
+    expect([...state.rootObservers.keys()]).toEqual([
+      document as unknown as Node,
+      frameDocument as unknown as Node,
+    ]);
+    expect(customObservers).toContain(state.rootObservers.get(frameDocument as unknown as Node)!);
+  });
+
+  it("disconnects every superseded instance across repeated same-document loads", () => {
+    const document = createDocument();
+    const frameDocument = createDocument();
+    const frame = createFrameElement(document, frameDocument);
+    document.documentElement.append(frame);
+    const customObservers: TestMutationObserver[] = [];
+    const harness = createProviderHarness(document, {
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        customObservers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    };
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.dispatchLoad();
+    frame.dispatchLoad();
+
+    expect(owner.rollback()).toBe(true);
+    const currentObserver = state.rootObservers.get(frameDocument as unknown as Node)!;
+    expect(customObservers.filter((observer) => (
+      observer.observedTargets.includes(frameDocument) && observer !== currentObserver
+    )).every((observer) => observer.disconnectCount > 0)).toBe(true);
+  });
+
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
     const document = createDocument();
     const childDocument = createDocument();
@@ -6940,6 +7060,7 @@ class TestMutationObserver {
   private records: MutationRecord[] = [];
   public readonly observedTargets: FakeNode[] = [];
   public disconnectCount = 0;
+  public emitCount = 0;
 
   public constructor(
     private readonly callback: (records: readonly MutationRecord[]) => void,
@@ -6961,6 +7082,8 @@ class TestMutationObserver {
   }
 
   public emit(records: readonly MutationRecord[]): void {
+    if (this.disconnectCount > 0) return;
+    this.emitCount += 1;
     this.callback(records);
   }
 }
