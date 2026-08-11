@@ -224,6 +224,11 @@ interface ProviderAuthoritySnapshot {
   readonly metadata: ProviderMaterializationMetadata;
 }
 
+interface ProviderAuthorityOperation {
+  commit(): boolean;
+  rollback(cleanup?: () => void): boolean;
+}
+
 type LogicalPathEntry =
   | {
       readonly kind: "element";
@@ -284,7 +289,7 @@ export class DomTreeProvider {
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
-  private locatorResolutionEvents: FrameLifecycleEvent[] | undefined;
+  private lifecycleEventBuffer: FrameLifecycleEvent[] | undefined;
   private mutationTimer: DomTreeTimerHandle | undefined;
   private frameMutationScanTimer: DomTreeTimerHandle | undefined;
   private shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -444,8 +449,8 @@ export class DomTreeProvider {
       throwDomTreeError("internal-error");
     }
     const record = this.records.get(request.nodeRef);
-    const authoritySnapshot = this.snapshotProviderAuthority();
-    if (!authoritySnapshot) {
+    const authorityOperation = this.beginProviderAuthorityOperation();
+    if (!authorityOperation) {
       throwDomTreeError("node-unavailable");
     }
     let authorityCommitted = false;
@@ -576,10 +581,11 @@ export class DomTreeProvider {
       nodes,
       ...(nextCursor ? { nextCursor } : {}),
     });
-    authorityCommitted = true;
+    authorityCommitted = authorityOperation.commit();
+    if (!authorityCommitted) throwDomTreeError("node-unavailable");
     return response;
     } finally {
-      if (!authorityCommitted && !this.restoreProviderAuthority(authoritySnapshot)) {
+      if (!authorityCommitted && !authorityOperation.rollback()) {
         throwDomTreeError("node-unavailable");
       }
     }
@@ -734,11 +740,9 @@ export class DomTreeProvider {
   public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
     this.requireActive();
     this.flushMutationBarrier();
-    if (this.locatorResolutionEvents) return undefined;
-    const authoritySnapshot = this.snapshotProviderAuthority();
-    if (!authoritySnapshot) return undefined;
-    const lifecycleEvents: FrameLifecycleEvent[] = [];
-    this.locatorResolutionEvents = lifecycleEvents;
+    if (this.lifecycleEventBuffer) return undefined;
+    const authorityOperation = this.beginProviderAuthorityOperation();
+    if (!authorityOperation) return undefined;
     let transaction: ReturnType<DomStableLocatorService["beginResolve"]>;
     let committed = false;
     try {
@@ -751,17 +755,14 @@ export class DomTreeProvider {
       const node = ancestorPath?.at(-1);
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
       transaction.commit();
-      committed = true;
-      this.locatorResolutionEvents = undefined;
-      for (const event of lifecycleEvents) this.handleFrameLifecycle(event);
+      committed = authorityOperation.commit();
+      if (!committed) return undefined;
       return Object.freeze({ node, ancestorPath });
     } catch {
       return undefined;
     } finally {
       if (!committed) {
-        transaction?.rollback();
-        this.locatorResolutionEvents = undefined;
-        this.restoreProviderAuthority(authoritySnapshot);
+        authorityOperation.rollback(() => transaction?.rollback());
       }
     }
   }
@@ -1730,8 +1731,8 @@ export class DomTreeProvider {
     ) {
       return undefined;
     }
-    const authoritySnapshot = this.snapshotProviderAuthority();
-    if (!authoritySnapshot) return undefined;
+    const authorityOperation = this.beginProviderAuthorityOperation();
+    if (!authorityOperation) return undefined;
     let authorityCommitted = false;
     try {
     const locators = path.map((entry) => this.captureLocator(entry.node, entry.kind));
@@ -1813,7 +1814,8 @@ export class DomTreeProvider {
       if (commit && !commit(parentRef)) {
         throw new Error("path commit was not authoritative");
       }
-      authorityCommitted = true;
+      authorityCommitted = authorityOperation.commit();
+      if (!authorityCommitted) return undefined;
       return Object.freeze(views);
     } catch {
       for (const nodeRef of createdRefs) {
@@ -1836,7 +1838,7 @@ export class DomTreeProvider {
       this.releasePathRetentions(temporaryRetentions);
     }
     } finally {
-      if (!authorityCommitted) this.restoreProviderAuthority(authoritySnapshot);
+      if (!authorityCommitted) authorityOperation.rollback();
     }
   }
 
@@ -1991,6 +1993,74 @@ export class DomTreeProvider {
       rootObservers: Object.freeze([...this.rootObservers]),
       metadata: this.snapshotMaterializationMetadata(),
     };
+  }
+
+  private beginProviderAuthorityOperation(): ProviderAuthorityOperation | undefined {
+    const snapshot = this.snapshotProviderAuthority();
+    if (!snapshot) return undefined;
+    const parentBuffer = this.lifecycleEventBuffer;
+    const buffer = parentBuffer ?? [];
+    const ownsBuffer = parentBuffer === undefined;
+    if (ownsBuffer) this.lifecycleEventBuffer = buffer;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || (ownsBuffer && this.lifecycleEventBuffer !== buffer)) return false;
+        closed = true;
+        if (!ownsBuffer) return true;
+        this.lifecycleEventBuffer = undefined;
+        for (const event of buffer) this.handleFrameLifecycle(event);
+        return true;
+      },
+      rollback: (cleanup) => {
+        if (closed || (ownsBuffer && this.lifecycleEventBuffer !== buffer)) return false;
+        let restored = true;
+        let retainedEvents: readonly FrameLifecycleEvent[] = [];
+        try {
+          cleanup?.();
+        } catch {
+          restored = false;
+        }
+        try {
+          if (ownsBuffer) retainedEvents = this.rollbackBufferedFrameRegistrations(buffer);
+          restored = this.restoreProviderAuthority(snapshot) && restored;
+        } catch {
+          restored = false;
+        } finally {
+          closed = true;
+          if (ownsBuffer) this.lifecycleEventBuffer = undefined;
+        }
+        if (ownsBuffer) {
+          for (const event of retainedEvents) this.handleFrameLifecycle(event);
+        }
+        return restored;
+      },
+    };
+  }
+
+  private rollbackBufferedFrameRegistrations(
+    events: readonly FrameLifecycleEvent[],
+  ): readonly FrameLifecycleEvent[] {
+    const temporaryFrameRefs = new Set(events
+      .filter((event) => event.type === "registered")
+      .map((event) => event.frameRef)
+    );
+    const registeredFrameRefs = [...temporaryFrameRefs].reverse();
+    for (const frameRef of registeredFrameRefs) {
+      this.frameRegistry.unregisterFrame(frameRef);
+    }
+    return Object.freeze(events.flatMap((event) => {
+      if (temporaryFrameRefs.has(event.frameRef)) return [];
+      const invalidated = event.invalidated?.filter((identity) => (
+        !temporaryFrameRefs.has(identity.frameRef)
+      ));
+      if (invalidated?.length === event.invalidated?.length) return [event];
+      const { invalidated: _discarded, ...withoutInvalidated } = event;
+      return [Object.freeze({
+        ...withoutInvalidated,
+        ...(invalidated?.length ? { invalidated: Object.freeze(invalidated) } : {}),
+      })];
+    }));
   }
 
   private restoreProviderAuthority(snapshot: ProviderAuthoritySnapshot): boolean {
@@ -2565,8 +2635,8 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): void {
-    if (this.locatorResolutionEvents) {
-      this.locatorResolutionEvents.push(event);
+    if (this.lifecycleEventBuffer) {
+      this.lifecycleEventBuffer.push(event);
       return;
     }
     if (this.disposed || event.type === "reset") {

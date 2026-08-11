@@ -73,6 +73,7 @@ interface FrameRecord extends FrameIdentity {
   ownership: FrameRecordOwnership | undefined;
   active: boolean;
   document: Document | undefined;
+  contentWindow: Window | undefined;
 }
 
 interface FrameRecordOwnership {
@@ -91,6 +92,8 @@ interface FrameElementAccess {
   readonly addLoadListener: (listener: EventListener) => void;
   readonly removeLoadListener: (listener: EventListener) => void;
   readonly getBoundingClientRect: () => DOMRect;
+  readonly getContentDocument: () => Document | null;
+  readonly getContentWindow: () => Window | null;
 }
 
 type FrameRegistryState = "active" | "mutating" | "disposing" | "disposed";
@@ -99,6 +102,11 @@ const MAX_REF_LENGTH = 24;
 const MAX_GEOMETRY_ANCESTORS = 512;
 const GEOMETRY_DIMENSION_TOLERANCE = 0.5;
 const EMPTY_FRAME_IDENTITIES = Object.freeze([]) as readonly FrameIdentity[];
+
+interface FrameDocumentAccess {
+  readonly document: Document;
+  readonly contentWindow: Window;
+}
 
 export class FrameRegistry {
   private readonly maxFrames: number;
@@ -150,7 +158,8 @@ export class FrameRegistry {
       return undefined;
     }
     const frameRef = this.documentRefs.get(document);
-    return frameRef ? this.contexts.get(frameRef) : undefined;
+    const context = frameRef ? this.contexts.get(frameRef) : undefined;
+    return context?.document === document ? this.revalidateContext(context) : undefined;
   }
 
   /** Returns only a frame context already authorized for this exact host and parent. */
@@ -165,14 +174,15 @@ export class FrameRegistry {
     ) {
       return undefined;
     }
-    const parent = this.contexts.get(parentFrameRef);
+    const parentContext = this.contexts.get(parentFrameRef);
+    const parent = parentContext ? this.revalidateContext(parentContext) : undefined;
     if (!parent || readOwnerDocument(frameElement) !== parent.document) {
       return undefined;
     }
     const record = this.recordByElement.get(frameElement);
-    return record?.parentFrameRef === parentFrameRef
-      ? this.contexts.get(record.frameRef)
-      : undefined;
+    if (!record || record.parentFrameRef !== parentFrameRef) return undefined;
+    const context = this.contexts.get(record.frameRef);
+    return context ? this.revalidateContext(context, parent) : undefined;
   }
 
   /** Reports exact prior registration, including inaccessible frame records. */
@@ -272,6 +282,7 @@ export class FrameRegistry {
         registryRef.deref()?.handleLoadByRef(frameRef);
       };
       const ownership = Object.freeze({ frameElement, access, onLoad });
+      const inspected = this.inspectDocument(access);
       const record: FrameRecord = {
         frameRef,
         frameEpoch: 1,
@@ -279,12 +290,14 @@ export class FrameRegistry {
         parentFrameRef,
         ownership,
         active: false,
-        document: this.inspectDocument(frameElement),
+        document: inspected?.document,
+        contentWindow: inspected?.contentWindow,
       };
       try {
         access.addLoadListener(onLoad);
       } catch {
         record.document = undefined;
+        record.contentWindow = undefined;
         record.ownership = undefined;
         if (!tryRemoveLoadListener({ access, onLoad })) {
           this.nextFrameRef += 1;
@@ -524,11 +537,12 @@ export class FrameRegistry {
       } else {
         this.removeContextOwnership(record);
         record.document = undefined;
+        record.contentWindow = undefined;
         invalidated = this.removeDescendants(record.frameRef);
         if (this.records.get(record.frameRef) !== record) {
           return;
         }
-        const nextDocument = this.inspectDocument(ownership.frameElement);
+        const nextDocument = this.inspectDocument(ownership.access);
         if (
           this.records.get(record.frameRef) !== record ||
           record.ownership !== ownership
@@ -536,7 +550,8 @@ export class FrameRegistry {
           return;
         }
         record.frameEpoch += 1;
-        record.document = nextDocument;
+        record.document = nextDocument?.document;
+        record.contentWindow = nextDocument?.contentWindow;
         this.installContext(record);
         record.active = true;
         eventType = "navigated";
@@ -604,23 +619,54 @@ export class FrameRegistry {
       });
     }
     const context = this.contexts.get(record.frameRef);
-    if (!context) {
-      return undefined;
-    }
+    if (!context) return undefined;
     return Object.freeze({ kind: "accessible" as const, ...context });
   }
 
-  private inspectDocument(frameElement: HTMLIFrameElement): Document | undefined {
+  private revalidateContext(
+    context: FrameContext,
+    expectedParent?: FrameContext,
+  ): FrameContext | undefined {
+    if (!context.parentFrameRef) {
+      return this.top === context && this.contexts.get(context.frameRef) === context
+        ? context
+        : undefined;
+    }
+    const record = this.records.get(context.frameRef);
+    const ownership = record?.ownership;
+    const parent = expectedParent ?? (() => {
+      const parentContext = this.contexts.get(context.parentFrameRef!);
+      return parentContext ? this.revalidateContext(parentContext) : undefined;
+    })();
+    if (
+      !record ||
+      !record.active ||
+      !ownership ||
+      !parent ||
+      record.parentFrameRef !== parent.frameRef ||
+      !sameFrameIdentity(record, context) ||
+      record.document !== context.document ||
+      !record.contentWindow ||
+      this.contexts.get(context.frameRef) !== context ||
+      readOwnerDocument(ownership.frameElement) !== parent.document
+    ) return undefined;
+    const current = this.inspectDocument(ownership.access);
+    return current?.document === context.document && current.contentWindow === record.contentWindow
+      ? context
+      : undefined;
+  }
+
+  private inspectDocument(access: FrameElementAccess): FrameDocumentAccess | undefined {
     try {
-      const document = frameElement.contentDocument;
+      const document = access.getContentDocument();
       if (!document) {
         return undefined;
       }
-      const contentWindow = frameElement.contentWindow;
+      const contentWindow = access.getContentWindow();
       if (!contentWindow || contentWindow.document !== document) {
         return undefined;
       }
-      return document;
+      return Object.freeze({ document, contentWindow });
     } catch {
       return undefined;
     }
@@ -1127,6 +1173,8 @@ function captureFrameElementAccess(value: unknown): FrameElementAccess | undefin
         removeEventListener.call(frameElement, "load", listener);
       },
       getBoundingClientRect: () => getBoundingClientRect.call(frameElement),
+      getContentDocument: () => frameElement.contentDocument,
+      getContentWindow: () => frameElement.contentWindow,
     });
   } catch {
     return undefined;

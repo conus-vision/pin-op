@@ -4100,6 +4100,41 @@ describe("DomTreeProvider", () => {
     expect(resolveLocator(second.provider, locator)).toBeUndefined();
   });
 
+  it("fails capture when a previous-element sibling read throws partway through the chain", () => {
+    const tree = createHeadingTree({ includeSibling: true });
+    const sibling = tree.main.childNodes[0] as FakeElement;
+    Object.defineProperty(sibling, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile previous sibling");
+      },
+    });
+
+    expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
+  });
+
+  it("fails locator resolution when a second uniqueness scan finds a late duplicate", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+    const originalChildren = second.target.childNodes;
+    let inserted = false;
+    Object.defineProperty(second.target, "childNodes", {
+      configurable: true,
+      get: () => {
+        if (!inserted) {
+          inserted = true;
+          const duplicate = createElement("aside", second.document);
+          duplicate.id = second.target.id;
+          second.main.append(duplicate);
+        }
+        return originalChildren;
+      },
+    });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
   it("preflights every child locator before durable page materialization", () => {
     const document = createDocument();
     const first = createElement("article", document);
@@ -4224,6 +4259,54 @@ describe("DomTreeProvider", () => {
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,
     }).nodes.map(({ label }) => label)).toEqual(["article", "aside"]);
+  });
+
+  it("buffers frame lifecycle work until an entire child page commits", () => {
+    const document = createDocument();
+    const frame = createFrameElement(document, createDocument());
+    const second = createElement("aside", document);
+    document.documentElement.append(frame);
+    document.documentElement.append(second);
+    const events: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => events.push(event.type),
+    });
+    const root = harness.provider.getRoot();
+    const provider = harness.provider as unknown as {
+      frameTracking: boolean;
+      readonly pendingFrameMutationScans: readonly unknown[];
+      viewElement(element: Element, ...args: readonly unknown[]): unknown;
+    };
+    provider.frameTracking = true;
+    const originalViewElement = provider.viewElement;
+    provider.viewElement = (element, ...args) => {
+      if (element === second) throw new Error("late hostile child view");
+      return originalViewElement.call(provider, element, ...args);
+    };
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "buffered-frame-failure",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("late hostile child view");
+    expect(events).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+    expect(provider.pendingFrameMutationScans).toHaveLength(0);
+    expect(frame.loadListenerCount).toBe(0);
+
+    provider.viewElement = originalViewElement;
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "buffered-frame-success",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["iframe", "aside"]);
+    expect(events).toEqual(["registered"]);
+    expect(harness.pendingTimerCount()).toBe(2);
+    expect(provider.pendingFrameMutationScans).toHaveLength(1);
   });
 
   it("restores evicted records when path materialization fails after reserving capacity", () => {
@@ -4659,6 +4742,7 @@ class FakeElement extends FakeNode {
 
 class FakeFrameElement extends FakeElement {
   private readonly loadListeners = new Set<EventListener>();
+  private readonly contentWindowValue: { document: FakeDocument | null };
   public contentDocumentReads = 0;
   public contentWindowReads = 0;
 
@@ -4668,6 +4752,7 @@ class FakeFrameElement extends FakeElement {
     private readonly accessError?: Error,
   ) {
     super("IFRAME", ownerDocument);
+    this.contentWindowValue = { document: frameDocument };
   }
 
   public get contentDocument(): Document | null {
@@ -4679,7 +4764,7 @@ class FakeFrameElement extends FakeElement {
   public get contentWindow(): Window | null {
     this.contentWindowReads += 1;
     return this.frameDocument
-      ? ({ document: this.frameDocument } as unknown as Window)
+      ? (this.contentWindowValue as unknown as Window)
       : null;
   }
 
@@ -4711,6 +4796,7 @@ class FakeFrameElement extends FakeElement {
 
   public setFrameDocument(document: FakeDocument | null): void {
     this.frameDocument = document;
+    this.contentWindowValue.document = document;
   }
 
   public dispatchLoad(): void {

@@ -579,8 +579,9 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
   const children = readChildCollection(parent);
   if (!children || readParentNode(target) !== parent) return undefined;
   const previous = readPreviousElementSibling(target);
-  if (previous !== undefined) {
-    let index = 0;
+  if (previous === undefined) return undefined;
+  let siblingIndex = 0;
+  if (previous !== null) {
     let current: Element | null = target;
     const seen = new Set<Element>();
     while (current) {
@@ -588,20 +589,29 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
         return undefined;
       }
       seen.add(current);
-      current = readPreviousElementSibling(current) ?? null;
-      if (current) index += 1;
+      const next = readPreviousElementSibling(current);
+      if (next === undefined) return undefined;
+      if (next !== null && readParentNode(next) !== parent) return undefined;
+      current = next;
+      if (next !== null) siblingIndex += 1;
     }
-    return readParentNode(target) === parent ? index : undefined;
   }
-  let index = 0;
-  for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
-    const child = readCollectionItem(children.collection, physicalIndex);
-    if (!isNode(child)) return undefined;
-    if (readNodeType(child) !== 1) continue;
-    if (child === target) return readParentNode(target) === parent ? index : undefined;
-    index += 1;
-  }
-  return undefined;
+  return confirmElementSiblingIndex(parent, target, children, siblingIndex);
+}
+
+function confirmElementSiblingIndex(
+  parent: Node,
+  target: Element,
+  initialChildren: { readonly collection: object; readonly length: number },
+  expectedIndex: number,
+): number | undefined {
+  const verifiedChildren = readChildCollection(parent);
+  if (
+    !verifiedChildren ||
+    verifiedChildren.length !== initialChildren.length ||
+    readParentNode(target) !== parent
+  ) return undefined;
+  return expectedIndex;
 }
 
 function readPreviousElementSibling(element: Element): Element | null | undefined {
@@ -633,13 +643,30 @@ function matchesSegment(
     return false;
   }
   const verifiedEvidence = readCanonicalEvidence(element, parent, root);
+  if (
+    readTagName(element) !== segment.tagName ||
+    !verifiedEvidence ||
+    !sameCanonicalEvidence(evidence, verifiedEvidence) ||
+    id !== segment.id ||
+    (id !== undefined && !hasUniqueId(root, id))
+  ) return false;
+  const finalEvidence = readCanonicalEvidence(element, parent, root);
   return (
     readTagName(element) === segment.tagName &&
-    !!verifiedEvidence &&
-    evidence.id === verifiedEvidence.id &&
-    sameStringValues(evidence.classes, verifiedEvidence.classes) &&
-    sameAttributes(evidence.attributes, verifiedEvidence.attributes) &&
-    id === segment.id
+    !!finalEvidence &&
+    sameCanonicalEvidence(evidence, finalEvidence) &&
+    elementSiblingIndex(parent, element) === segment.siblingIndex
+  );
+}
+
+function sameCanonicalEvidence(
+  left: CanonicalEvidence,
+  right: CanonicalEvidence,
+): boolean {
+  return (
+    left.id === right.id &&
+    sameStringValues(left.classes, right.classes) &&
+    sameAttributes(left.attributes, right.attributes)
   );
 }
 

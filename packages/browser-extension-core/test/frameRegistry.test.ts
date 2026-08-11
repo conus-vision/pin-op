@@ -1935,6 +1935,34 @@ describe("FrameRegistry", () => {
     expect(registry.describeFrame(child, parentDescription.frameRef)).toBeDefined();
     expect(registry.describeFrame(child, registry.topContext!.frameRef)).toBeUndefined();
   });
+
+  it("does not return cached contexts after live frame access becomes stale", () => {
+    const topDocument = createDocument();
+    const childDocument = createDocument();
+    const replacementDocument = createDocument();
+    const registry = new FrameRegistry(topDocument, { maxFrames: 3 });
+    const frame = createFrame({ document: childDocument, ownerDocument: topDocument });
+    const description = registry.describeFrame(frame);
+    if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+
+    frame.setDocument(replacementDocument);
+    expect(registry.getContextForFrameElement(frame, registry.topContext!.frameRef)).toBeUndefined();
+    expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+
+    frame.setDocument(childDocument);
+    Object.defineProperty(frame, "contentWindow", {
+      configurable: true,
+      get: () => ({ document: childDocument }),
+    });
+    expect(registry.getContextForFrameElement(frame, registry.topContext!.frameRef)).toBeUndefined();
+    delete (frame as unknown as { contentWindow?: unknown }).contentWindow;
+
+    frame.setContentDocumentError(new Error("hostile frame access"));
+    expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    frame.setContentDocumentError(undefined);
+    expect(registry.getContextForFrameElement(frame, registry.topContext!.frameRef))
+      .toMatchObject({ frameRef: description.frameRef, document: childDocument });
+  });
 });
 
 function createDocument(): Document {
@@ -2102,6 +2130,7 @@ class FakeStyleElement {
 
 class FakeFrame {
   private document: Document | null;
+  private readonly contentWindowValue: { document: Document | null };
   private contentDocumentError: Error | undefined;
   private readonly listeners = new Set<EventListener>();
   private readonly removingListeners = new Set<EventListener>();
@@ -2142,6 +2171,7 @@ class FakeFrame {
 
   public constructor(options: FrameOptions) {
     this.document = options.document ?? null;
+    this.contentWindowValue = { document: this.document };
     this.contentDocumentError = options.contentDocumentError;
     this.left = options.left ?? 0;
     this.top = options.top ?? 0;
@@ -2198,7 +2228,7 @@ class FakeFrame {
 
   public get contentWindow(): Window | null {
     this.contentWindowReads += 1;
-    return this.document ? ({ document: this.document } as Window) : null;
+    return this.document ? (this.contentWindowValue as unknown as Window) : null;
   }
 
   public get assignedSlot(): FakeStyleElement | null {
@@ -2259,6 +2289,7 @@ class FakeFrame {
 
   public setDocument(document: Document | null): void {
     this.document = document;
+    this.contentWindowValue.document = document;
   }
 
   public setContentDocumentError(error: Error | undefined): void {
