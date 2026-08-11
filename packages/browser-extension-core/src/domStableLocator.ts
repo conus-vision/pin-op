@@ -78,6 +78,16 @@ export interface DomStableLocatorServiceOptions {
   readonly isExcludedNode: (node: Node) => boolean;
 }
 
+interface CapturedElementPath {
+  readonly boundaries: readonly DomBoundaryLocator[];
+  readonly path: readonly DomPathSegment[];
+  readonly pathDepth: number;
+}
+
+type CaptureRootBoundary =
+  | { readonly kind: "top" }
+  | { readonly kind: "frame-document" | "shadow-root"; readonly host: Element };
+
 /** Captures and proves browser-local DOM identity without selector or URL fallback. */
 export class DomStableLocatorService {
   private readonly topDocument: Document;
@@ -123,80 +133,101 @@ export class DomStableLocatorService {
       return undefined;
     }
     let root: Node = this.topDocument;
-    let context = this.frameRegistry.getContextForDocument(this.topDocument);
-    if (!context || this.isExcluded(root)) return undefined;
+    const topContext = this.frameRegistry.getContextForDocument(this.topDocument);
+    let rootIsDocument = readNodeType(root) === 9;
+    if (!topContext || !rootIsDocument || this.isExcluded(root)) return undefined;
+    let context: { readonly document: Document; readonly frameRef: string } = topContext;
     const seen = new Set<Node>([root]);
     const authorizedFrames: HTMLIFrameElement[] = [];
     let traversed = 0;
     let transaction: StableLocatorResolutionTransaction | undefined;
     try {
       for (const boundary of parsed.boundaries) {
-        if (root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
+        if (rootIsDocument && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
           return undefined;
         }
-        const host = this.resolvePath(root, boundary.hostPath, seen, traversed);
-        traversed += boundary.hostPath.length;
-        if (
-          !host ||
-          traversed > DOM_STABLE_LOCATOR_MAX_DEPTH ||
-          root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
-        ) return undefined;
-        if (boundary.kind === "shadow-root") {
-          const shadowRoot = readOpenShadowRoot(host, seen);
-          if (!shadowRoot || this.isExcluded(shadowRoot)) {
-            return undefined;
+        let shadowRoot: ShadowRoot | undefined;
+        let childDocument: Document | undefined;
+        let childContext: { readonly document: Document; readonly frameRef: string } | undefined;
+        const host = this.resolvePath(root, boundary.hostPath, seen, traversed, (candidate) => {
+          if (boundary.kind === "shadow-root") {
+            shadowRoot = readOpenShadowRoot(candidate, seen);
+            return !!shadowRoot && !this.isExcluded(shadowRoot);
           }
+          if (!isFrameElement(candidate)) return false;
+          const frame = this.resolveExactFrame(candidate, context.frameRef);
+          if (frame?.created) authorizedFrames.push(candidate);
+          const description = frame?.description;
+          if (
+            !description ||
+            description.kind !== "accessible" ||
+            !description.document ||
+            this.isExcluded(description.document) ||
+            seen.has(description.document)
+          ) return false;
+          const resolvedContext = this.frameRegistry.getContext(description.frameRef);
+          if (!resolvedContext || resolvedContext.document !== description.document) return false;
+          childDocument = description.document;
+          childContext = resolvedContext;
+          return true;
+        });
+        traversed += boundary.hostPath.length;
+        if (!host || traversed > DOM_STABLE_LOCATOR_MAX_DEPTH) return undefined;
+        if (boundary.kind === "shadow-root") {
+          if (!shadowRoot) return undefined;
           seen.add(shadowRoot);
           root = shadowRoot;
+          rootIsDocument = false;
           continue;
         }
-        if (!isFrameElement(host)) return undefined;
-        const frame = this.resolveExactFrame(host, context.frameRef);
-        if (frame?.created) authorizedFrames.push(host);
+        if (!childDocument || !childContext) return undefined;
+        seen.add(childDocument);
+        root = childDocument;
+        context = childContext;
+        rootIsDocument = true;
+      }
+
+      if (rootIsDocument && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
+        return undefined;
+      }
+      let targetShadowRoot: ShadowRoot | undefined;
+      let targetFrameDocument: Document | undefined;
+      const target = this.resolvePath(root, parsed.path, seen, traversed, (candidate) => {
+        if (parsed.targetKind === "element") return true;
+        if (parsed.targetKind === "shadow-root") {
+          targetShadowRoot = readOpenShadowRoot(candidate, seen);
+          return !!targetShadowRoot && !this.isExcluded(targetShadowRoot);
+        }
+        if (!isFrameElement(candidate)) return false;
+        const frame = this.resolveExactFrame(candidate, context.frameRef);
+        if (frame?.created) authorizedFrames.push(candidate);
         const description = frame?.description;
         if (
           !description ||
           description.kind !== "accessible" ||
           !description.document ||
-          this.isExcluded(description.document) ||
-          seen.has(description.document)
-        ) return undefined;
-        const childContext = this.frameRegistry.getContext(description.frameRef);
-        if (!childContext || childContext.document !== description.document) return undefined;
-        seen.add(description.document);
-        root = description.document;
-        context = childContext;
-      }
-
-      if (root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root) {
-        return undefined;
-      }
-      const target = this.resolvePath(root, parsed.path, seen, traversed);
-      if (
-        !target ||
-        root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
-      ) return undefined;
+          this.isExcluded(description.document)
+        ) return false;
+        targetFrameDocument = description.document;
+        return true;
+      });
+      if (!target) return undefined;
       if (parsed.targetKind === "element") {
         transaction = this.createResolutionTransaction(
           Object.freeze({ kind: parsed.targetKind, node: target }),
           authorizedFrames,
         );
       } else if (parsed.targetKind === "shadow-root") {
-        const shadowRoot = readOpenShadowRoot(target, seen);
-        transaction = shadowRoot && !this.isExcluded(shadowRoot)
+        transaction = targetShadowRoot
           ? this.createResolutionTransaction(
-            Object.freeze({ kind: parsed.targetKind, node: shadowRoot }),
+            Object.freeze({ kind: parsed.targetKind, node: targetShadowRoot }),
             authorizedFrames,
           )
           : undefined;
-      } else if (isFrameElement(target)) {
-        const frame = this.resolveExactFrame(target, context.frameRef);
-        if (frame?.created) authorizedFrames.push(target);
-        const description = frame?.description;
-        transaction = description?.kind === "accessible" && description.document &&
-            !this.isExcluded(description.document)
+      } else {
+        transaction = targetFrameDocument
           ? this.createResolutionTransaction(
-            Object.freeze({ kind: parsed.targetKind, node: description.document }),
+            Object.freeze({ kind: parsed.targetKind, node: targetFrameDocument }),
             authorizedFrames,
           )
           : undefined;
@@ -219,20 +250,48 @@ export class DomStableLocatorService {
     target: Element,
     seen: Set<Node>,
     depth: number,
-  ): { readonly boundaries: readonly DomBoundaryLocator[]; readonly path: readonly DomPathSegment[] } {
+  ): CapturedElementPath {
     if (depth >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(target)) {
       throw invalidLocator();
     }
     seen.add(target);
     const root = containingRoot(target, seen);
+    const boundary = this.captureRootBoundary(root, seen);
+    // The final page-controlled proof for this root is capturePath. Keep all
+    // root/context work above it and assemble only trusted local values below.
+    if (boundary.kind === "top") {
+      const path = capturePath(root, target, this.isExcludedNode);
+      if (path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
+      return Object.freeze({
+        boundaries: Object.freeze([]),
+        path,
+        pathDepth: path.length,
+      });
+    }
+    const parent = this.captureElement(boundary.host, seen, depth + 1);
     const path = capturePath(root, target, this.isExcludedNode);
-    const nextDepth = depth + path.length;
-    if (nextDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
-    if (root.nodeType === 9) {
+    const pathDepth = parent.pathDepth + path.length;
+    if (pathDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
+    return Object.freeze({
+      boundaries: Object.freeze([
+        ...parent.boundaries,
+        Object.freeze({ kind: boundary.kind, hostPath: parent.path }),
+      ]),
+      path,
+      pathDepth,
+    });
+  }
+
+  private captureRootBoundary(root: Node, seen: Set<Node>): CaptureRootBoundary {
+    const rootType = readNodeType(root);
+    if (rootType === 9) {
+      if (seen.has(root)) throw invalidLocator();
+      seen.add(root);
+      if (this.isExcluded(root)) throw invalidLocator();
       const context = this.frameRegistry.getContextForDocument(root as Document);
       if (!context || !context.frameElement) {
         if (root !== this.topDocument) throw invalidLocator();
-        return Object.freeze({ boundaries: Object.freeze([]), path });
+        return Object.freeze({ kind: "top" as const });
       }
       const parentFrameRef = context.parentFrameRef;
       const parentContext = parentFrameRef
@@ -256,26 +315,13 @@ export class DomStableLocatorService {
       ) {
         throw invalidLocator();
       }
-      const parent = this.captureElement(context.frameElement, seen, nextDepth);
-      return Object.freeze({
-        boundaries: Object.freeze([
-          ...parent.boundaries,
-          Object.freeze({ kind: "frame-document" as const, hostPath: parent.path }),
-        ]),
-        path,
-      });
+      return Object.freeze({ kind: "frame-document" as const, host: context.frameElement });
     }
+    if (rootType !== 11 || this.isExcluded(root)) throw invalidLocator();
     const shadowRoot = exactOpenShadowRoot(root, undefined, seen);
     if (!shadowRoot) throw invalidLocator();
     seen.add(shadowRoot);
-    const parent = this.captureElement(shadowRoot.host, seen, nextDepth);
-    return Object.freeze({
-      boundaries: Object.freeze([
-        ...parent.boundaries,
-        Object.freeze({ kind: "shadow-root" as const, hostPath: parent.path }),
-      ]),
-      path,
-    });
+    return Object.freeze({ kind: "shadow-root" as const, host: shadowRoot.host });
   }
 
   private resolvePath(
@@ -283,25 +329,35 @@ export class DomStableLocatorService {
     path: readonly DomPathSegment[],
     seen: Set<Node>,
     traversed: number,
+    prepareFinal?: (element: Element) => boolean,
   ): Element | undefined {
     if (path.length === 0 || traversed + path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) {
       return undefined;
     }
     let parent = root;
-    for (const segment of path) {
+    let resolved: Element | undefined;
+    for (let index = 0; index < path.length; index += 1) {
+      const segment = path[index]!;
       const candidate = elementChildAt(parent, segment.siblingIndex);
       if (
         !candidate ||
         seen.has(candidate) ||
         this.isExcluded(candidate) ||
-        !matchesSegment(candidate, segment, parent, root)
+        !matchesSegment(
+          candidate,
+          segment,
+          parent,
+          root,
+          index === path.length - 1 ? prepareFinal : undefined,
+        )
       ) {
         return undefined;
       }
       seen.add(candidate);
       parent = candidate;
+      resolved = candidate;
     }
-    return parent.nodeType === 1 ? parent as Element : undefined;
+    return resolved;
   }
 
   private resolveExactFrame(
@@ -413,7 +469,7 @@ function capturePath(
     reversed.push(captureSegment(current as Element, parent, root));
     current = parent;
   }
-  if (reversed.length === 0 || isExcludedNode(root)) throw invalidLocator();
+  if (reversed.length === 0) throw invalidLocator();
   return Object.freeze(reversed.reverse());
 }
 
@@ -578,14 +634,19 @@ function elementChildAt(parent: Node, siblingIndex: number): Element | undefined
   return candidate;
 }
 
+interface ChildNodeSnapshot {
+  readonly node: Node;
+  readonly nodeType: number;
+}
+
 function elementChildAtSnapshot(
-  children: readonly Node[],
+  children: readonly ChildNodeSnapshot[],
   siblingIndex: number,
 ): Element | undefined {
   let index = 0;
   for (const child of children) {
-    if (readNodeType(child) !== 1) continue;
-    if (index === siblingIndex) return child as Element;
+    if (child.nodeType !== 1) continue;
+    if (index === siblingIndex) return child.node as Element;
     index += 1;
   }
   return undefined;
@@ -618,7 +679,7 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
 function confirmElementSiblingIndex(
   parent: Node,
   target: Element,
-  initialChildren: readonly Node[],
+  initialChildren: readonly ChildNodeSnapshot[],
   expectedIndex: number,
 ): number | undefined {
   const verifiedChildren = snapshotChildNodes(parent);
@@ -634,32 +695,40 @@ function confirmElementSiblingIndex(
   return expectedIndex;
 }
 
-function snapshotChildNodes(parent: Node): readonly Node[] | undefined {
+function snapshotChildNodes(parent: Node): readonly ChildNodeSnapshot[] | undefined {
   const children = readChildCollection(parent);
   if (!children) return undefined;
-  const snapshot: Node[] = [];
+  const snapshot: ChildNodeSnapshot[] = [];
   for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
     const child = readCollectionItem(children.collection, physicalIndex);
-    if (!isNode(child)) return undefined;
-    snapshot.push(child);
+    if (!child || typeof child !== "object") return undefined;
+    const node = child as Node;
+    const nodeType = readNodeType(node);
+    if (nodeType === undefined) return undefined;
+    snapshot.push(Object.freeze({ node, nodeType }));
   }
   return Object.freeze(snapshot);
 }
 
-function sameChildNodeSnapshot(left: readonly Node[], right: readonly Node[]): boolean {
-  return left.length === right.length && left.every((node, index) => node === right[index]);
+function sameChildNodeSnapshot(
+  left: readonly ChildNodeSnapshot[],
+  right: readonly ChildNodeSnapshot[],
+): boolean {
+  return left.length === right.length && left.every((child, index) => (
+    child.node === right[index]?.node && child.nodeType === right[index]?.nodeType
+  ));
 }
 
 function hasExactElementSiblingIndex(
-  children: readonly Node[],
+  children: readonly ChildNodeSnapshot[],
   target: Element,
   expectedIndex: number,
 ): boolean {
   let elementIndex = 0;
   let targetCount = 0;
   for (const child of children) {
-    if (readNodeType(child) !== 1) continue;
-    if (child === target) {
+    if (child.nodeType !== 1) continue;
+    if (child.node === target) {
       targetCount += 1;
       if (elementIndex !== expectedIndex) return false;
     } else if (elementIndex === expectedIndex) {
@@ -684,6 +753,7 @@ function matchesSegment(
   segment: DomPathSegment,
   parent: Node,
   root: Node,
+  prepareFinal?: (element: Element) => boolean,
 ): boolean {
   if (readTagName(element) !== segment.tagName) return false;
   const evidence = readCanonicalEvidence(element, parent, root);
@@ -702,6 +772,22 @@ function matchesSegment(
     !sameAttributes(evidence.attributes, segment.attributes)
   ) {
     return false;
+  }
+  if (prepareFinal && !prepareFinal(element)) return false;
+  if (prepareFinal) {
+    const finalEvidence = readCanonicalEvidence(element, parent, root);
+    const finalId = finalEvidence
+      ? stabilizeSegmentIdentity(element, parent, root, segment.tagName, finalEvidence)
+      : READ_FAILED;
+    if (
+      finalId === READ_FAILED ||
+      finalId !== segment.id ||
+      !finalEvidence ||
+      !sameStringValues(finalEvidence.classes, segment.classes) ||
+      !sameAttributes(finalEvidence.attributes, segment.attributes)
+    ) {
+      return false;
+    }
   }
   // Keep the final DOM read as an exact child snapshot proof.
   return elementSiblingIndex(parent, element) === segment.siblingIndex;

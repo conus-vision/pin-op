@@ -4365,6 +4365,101 @@ describe("DomTreeProvider", () => {
     expect(reordered).toBe(true);
   });
 
+  it("does not read the capture root after the final path proof", () => {
+    const tree = createHeadingTree();
+    const html = tree.document.documentElement;
+    let pathProofComplete = false;
+    let mutated = false;
+    Object.defineProperty(html, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        pathProofComplete = true;
+        return null;
+      },
+    });
+    Object.defineProperty(tree.document, "nodeType", {
+      configurable: true,
+      get: () => {
+        if (pathProofComplete && !mutated) {
+          mutated = true;
+          tree.main.remove(tree.target);
+        }
+        return 9;
+      },
+    });
+
+    const service = (tree.provider as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+    const locator = service.capture(tree.target as unknown as Node, "element");
+
+    expect(mutated).toBe(false);
+    Object.defineProperty(tree.document, "nodeType", {
+      configurable: true,
+      value: 9,
+    });
+    expect(resolveStableLocator(tree.provider, locator)).toBeDefined();
+  });
+
+  it("does not read the resolved target after the final segment proof", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const body = createElement("body", document);
+    const main = createElement("main", document);
+    const target = createElement("h2", document);
+    target.id = "section_title_id1";
+    target.className = "block_title";
+    target.setAttribute("data-section", "intro");
+    target.setAttribute("aria-label", "Introduction");
+    target.setAttribute("role", "presentation");
+    const sibling = createElement("p", document);
+    document.documentElement.append(body);
+    body.append(main);
+    main.append(target);
+    main.append(sibling);
+    const provider = createProvider(document);
+    let childReadsAfterPrevious = 0;
+    let previousRead = false;
+    let finalSnapshotComplete = false;
+    let mutated = false;
+    Object.defineProperty(target, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        previousRead = true;
+        childReadsAfterPrevious = 0;
+        return null;
+      },
+    });
+    Object.defineProperty(main, "childNodes", {
+      configurable: true,
+      get: () => {
+        childReadsAfterPrevious += 1;
+        return [target, sibling];
+      },
+    });
+    Object.defineProperty(sibling, "nodeType", {
+      configurable: true,
+      get: () => {
+        if (previousRead && childReadsAfterPrevious === 2) finalSnapshotComplete = true;
+        return 1;
+      },
+    });
+    Object.defineProperty(target, "nodeType", {
+      configurable: true,
+      get: () => {
+        if (finalSnapshotComplete && !mutated) {
+          mutated = true;
+          target.className = "mutated-after-proof";
+        }
+        return 1;
+      },
+    });
+
+    expect(resolveStableLocator(provider, locator)).toBeDefined();
+    expect(mutated).toBe(false);
+  });
+
   it("omits a capture ID when a second bounded scan finds a late duplicate", () => {
     const tree = createHeadingTree();
     const earlier = createElement("aside", tree.document);
