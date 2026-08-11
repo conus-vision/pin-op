@@ -4013,6 +4013,93 @@ describe("DomTreeProvider", () => {
     expect(second.frame.loadListenerCount).toBe(0);
   });
 
+  it("contains temporary locator frame lifecycle effects until resolution commits", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    const events: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => events.push(event.type),
+    });
+    const provider = harness.provider as unknown as {
+      frameTracking: boolean;
+      materializeLogicalPath: (...args: readonly unknown[]) => unknown;
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    provider.frameTracking = true;
+    const originalMaterialize = provider.materializeLogicalPath;
+    provider.materializeLogicalPath = () => undefined;
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+    expect(events).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+    expect(provider.pendingFrameMutationScans).toHaveLength(0);
+    expect(frame.loadListenerCount).toBe(0);
+
+    provider.materializeLogicalPath = originalMaterialize;
+    expect(resolveLocator(harness.provider, locator)?.node.label)
+      .toContain("button#frame_target.action");
+    expect(events).toEqual(["registered"]);
+    expect(harness.pendingTimerCount()).toBe(1);
+  });
+
+  it("fails capture when a registered frame host is moved or has the wrong parent owner", () => {
+    const framed = createFramedButtonTree();
+    const service = (framed.provider as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+    framed.document.documentElement.remove(framed.frame);
+
+    expect(() => service.capture(framed.target as unknown as Node, "element"))
+      .toThrow();
+
+    framed.document.documentElement.append(framed.frame);
+    (framed.frame as unknown as { ownerDocument: FakeDocument }).ownerDocument = createDocument();
+    expect(() => service.capture(framed.target as unknown as Node, "element"))
+      .toThrow();
+  });
+
+  it("rejects capture when a sibling shortcut hides an excessive child collection", () => {
+    const tree = createHeadingTree();
+    tree.target.id = "";
+    const service = (tree.provider as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+    Object.defineProperty(tree.main, "childNodes", {
+      configurable: true,
+      get: () => ({ 0: tree.target, length: 65_537 }),
+    });
+
+    expect(() => service.capture(tree.target as unknown as Node, "element")).toThrow();
+  });
+
+  it("rejects locator resolution when uniqueness scanning mutates verified evidence", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+    const children = second.target.childNodes;
+    let mutated = false;
+    Object.defineProperty(second.target, "childNodes", {
+      configurable: true,
+      get: () => {
+        if (!mutated) {
+          mutated = true;
+          second.target.className = "mutated";
+        }
+        return children;
+      },
+    });
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
   it("preflights every child locator before durable page materialization", () => {
     const document = createDocument();
     const first = createElement("article", document);
@@ -4352,6 +4439,7 @@ function createProviderHarness(
   readonly provider: DomTreeProvider;
   readonly observers: TestMutationObserver[];
   readonly flushTimers: () => void;
+  readonly pendingTimerCount: () => number;
 } {
   const observers: TestMutationObserver[] = [];
   const timers = new Map<number, () => void>();
@@ -4393,6 +4481,7 @@ function createProviderHarness(
       timers.clear();
       for (const callback of pending) callback();
     },
+    pendingTimerCount: () => timers.size,
   };
 }
 

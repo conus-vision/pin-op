@@ -54,6 +54,7 @@ export interface DomStableLocatorServiceOptions {
       readonly document: Document;
       readonly frameRef: string;
       readonly frameElement?: HTMLIFrameElement;
+      readonly parentFrameRef?: string;
     } | undefined;
     getContext(frameRef: string): { readonly document: Document; readonly frameRef: string } | undefined;
     getContextForFrameElement(
@@ -228,12 +229,32 @@ export class DomStableLocatorService {
     const nextDepth = depth + path.length;
     if (nextDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
     if (root.nodeType === 9) {
-      if (root !== this.topDocument && !this.frameRegistry.getContextForDocument(root as Document)) {
-        throw invalidLocator();
-      }
       const context = this.frameRegistry.getContextForDocument(root as Document);
       if (!context || !context.frameElement) {
+        if (root !== this.topDocument) throw invalidLocator();
         return Object.freeze({ boundaries: Object.freeze([]), path });
+      }
+      const parentFrameRef = context.parentFrameRef;
+      const parentContext = parentFrameRef
+        ? this.frameRegistry.getContext(parentFrameRef)
+        : undefined;
+      const exact = parentFrameRef
+        ? this.frameRegistry.getContextForFrameElement(
+          context.frameElement,
+          parentFrameRef,
+        )
+        : undefined;
+      if (
+        !parentContext ||
+        !this.frameRegistry.hasExactFrameElementRegistration(
+          context.frameElement,
+          parentContext.frameRef,
+        ) ||
+        !exact ||
+        exact.frameRef !== context.frameRef ||
+        exact.document !== root
+      ) {
+        throw invalidLocator();
       }
       const parent = this.captureElement(context.frameElement, seen, nextDepth);
       return Object.freeze({
@@ -274,9 +295,6 @@ export class DomStableLocatorService {
         readParentNode(candidate) !== parent ||
         !matchesSegment(candidate, segment, parent, root)
       ) {
-        return undefined;
-      }
-      if (segment.id !== undefined && !hasUniqueId(root, segment.id)) {
         return undefined;
       }
       seen.add(candidate);
@@ -558,6 +576,8 @@ function elementChildAt(parent: Node, siblingIndex: number): Element | undefined
 }
 
 function elementSiblingIndex(parent: Node, target: Element): number | undefined {
+  const children = readChildCollection(parent);
+  if (!children || readParentNode(target) !== parent) return undefined;
   const previous = readPreviousElementSibling(target);
   if (previous !== undefined) {
     let index = 0;
@@ -571,16 +591,14 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
       current = readPreviousElementSibling(current) ?? null;
       if (current) index += 1;
     }
-    return index;
+    return readParentNode(target) === parent ? index : undefined;
   }
-  const children = readChildCollection(parent);
-  if (!children) return undefined;
   let index = 0;
   for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
     const child = readCollectionItem(children.collection, physicalIndex);
     if (!isNode(child)) return undefined;
     if (readNodeType(child) !== 1) continue;
-    if (child === target) return index;
+    if (child === target) return readParentNode(target) === parent ? index : undefined;
     index += 1;
   }
   return undefined;
@@ -606,10 +624,23 @@ function matchesSegment(
   const id = evidence?.id !== undefined && hasUniqueId(root, evidence.id)
     ? evidence.id
     : undefined;
-  return !!evidence &&
-    id === segment.id &&
-    sameStringValues(evidence.classes, segment.classes) &&
-    sameAttributes(evidence.attributes, segment.attributes);
+  if (
+    !evidence ||
+    id !== segment.id ||
+    !sameStringValues(evidence.classes, segment.classes) ||
+    !sameAttributes(evidence.attributes, segment.attributes)
+  ) {
+    return false;
+  }
+  const verifiedEvidence = readCanonicalEvidence(element, parent, root);
+  return (
+    readTagName(element) === segment.tagName &&
+    !!verifiedEvidence &&
+    evidence.id === verifiedEvidence.id &&
+    sameStringValues(evidence.classes, verifiedEvidence.classes) &&
+    sameAttributes(evidence.attributes, verifiedEvidence.attributes) &&
+    id === segment.id
+  );
 }
 
 function hasUniqueId(

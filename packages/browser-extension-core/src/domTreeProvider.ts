@@ -284,6 +284,7 @@ export class DomTreeProvider {
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
+  private locatorResolutionEvents: FrameLifecycleEvent[] | undefined;
   private mutationTimer: DomTreeTimerHandle | undefined;
   private frameMutationScanTimer: DomTreeTimerHandle | undefined;
   private shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -733,10 +734,16 @@ export class DomTreeProvider {
   public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
     this.requireActive();
     this.flushMutationBarrier();
-    const transaction = this.locatorService.beginResolve(locator);
-    if (!transaction) return undefined;
+    if (this.locatorResolutionEvents) return undefined;
+    const authoritySnapshot = this.snapshotProviderAuthority();
+    if (!authoritySnapshot) return undefined;
+    const lifecycleEvents: FrameLifecycleEvent[] = [];
+    this.locatorResolutionEvents = lifecycleEvents;
+    let transaction: ReturnType<DomStableLocatorService["beginResolve"]>;
     let committed = false;
     try {
+      transaction = this.locatorService.beginResolve(locator);
+      if (!transaction) return undefined;
       const resolved = transaction.resolution;
       if (this.isNodeExcluded(resolved.node)) return undefined;
       const path = this.logicalPathForResolvedLocator(resolved.kind, resolved.node);
@@ -745,11 +752,17 @@ export class DomTreeProvider {
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
       transaction.commit();
       committed = true;
+      this.locatorResolutionEvents = undefined;
+      for (const event of lifecycleEvents) this.handleFrameLifecycle(event);
       return Object.freeze({ node, ancestorPath });
     } catch {
       return undefined;
     } finally {
-      if (!committed) transaction.rollback();
+      if (!committed) {
+        transaction?.rollback();
+        this.locatorResolutionEvents = undefined;
+        this.restoreProviderAuthority(authoritySnapshot);
+      }
     }
   }
 
@@ -2552,6 +2565,10 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): void {
+    if (this.locatorResolutionEvents) {
+      this.locatorResolutionEvents.push(event);
+      return;
+    }
     if (this.disposed || event.type === "reset") {
       return;
     }
