@@ -321,6 +321,7 @@ export class DomTreeProvider {
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
   private rollbackEffectSuppressionDepth = 0;
+  private rollbackSuppressedFrameEvent: FrameLifecycleEvent | undefined;
   private readonly postCommitEffectBatches: PostCommitEffectBatch[] = [];
   private postCommitDeliveryScheduled = false;
   private mutationTimer: DomTreeTimerHandle | undefined;
@@ -2266,7 +2267,13 @@ export class DomTreeProvider {
     try {
       for (const event of events) {
         if (!this.isProviderAuthorityCurrent(snapshot)) return false;
-        if (!this.handleFrameLifecycle(event)) return false;
+        const previousSuppressedEvent = this.rollbackSuppressedFrameEvent;
+        this.rollbackSuppressedFrameEvent = event;
+        try {
+          if (!this.handleFrameLifecycle(event)) return false;
+        } finally {
+          this.rollbackSuppressedFrameEvent = previousSuppressedEvent;
+        }
       }
       return this.isProviderAuthorityCurrent(snapshot);
     } finally {
@@ -2276,17 +2283,41 @@ export class DomTreeProvider {
 
   private hasConvergedFrameAuthority(): boolean {
     try {
+      const requiredObservedRoots = this.requiredObservedRoots();
+      if (!requiredObservedRoots || requiredObservedRoots.size !== this.rootObservers.size) {
+        return false;
+      }
+      for (const root of requiredObservedRoots) {
+        if (!this.rootObservers.has(root)) return false;
+      }
+      for (const root of this.rootObservers.keys()) {
+        if (!requiredObservedRoots.has(root)) return false;
+      }
       for (const [frameRef, document] of this.frameDocumentsByRef) {
         const context = this.frameRegistry.getContext(frameRef);
-        if (!context || context.document !== document || !this.rootObservers.has(document)) {
+        const owned = this.ownedFramesByRef.get(frameRef);
+        if (
+          !context ||
+          context.document !== document ||
+          !owned ||
+          context.frameElement !== owned.frameElement ||
+          context.parentFrameRef !== owned.parentFrameRef ||
+          this.frameRefsByElement.get(owned.frameElement) !== frameRef
+        ) {
           return false;
         }
       }
       for (const description of this.frameDescriptions.values()) {
         const context = this.frameRegistry.getContext(description.frameRef);
+        const owned = this.ownedFramesByRef.get(description.frameRef);
+        if (
+          !owned ||
+          this.frameRefsByElement.get(owned.frameElement) !== description.frameRef
+        ) return false;
         if (description.kind === "accessible") {
           if (
             !context ||
+            context.frameElement !== owned.frameElement ||
             context.document !== description.document ||
             context.frameEpoch !== description.frameEpoch ||
             context.documentEpoch !== description.documentEpoch ||
@@ -2301,13 +2332,37 @@ export class DomTreeProvider {
         if (
           !context ||
           context.frameElement !== owned.frameElement ||
-          context.parentFrameRef !== owned.parentFrameRef
+          context.parentFrameRef !== owned.parentFrameRef ||
+          this.frameRefsByElement.get(owned.frameElement) !== frameRef
         ) return false;
       }
       return true;
     } catch {
       return false;
     }
+  }
+
+  private requiredObservedRoots(): ReadonlySet<Node> | undefined {
+    const topDocument = this.topDocument;
+    if (!topDocument) return undefined;
+    const roots = new Set<Node>([topDocument]);
+    for (const document of this.frameDocumentsByRef.values()) {
+      roots.add(document);
+    }
+    for (const [hostRef, shadowRootRef] of this.shadowRootRefs) {
+      const hostRecord = this.records.get(hostRef);
+      const shadowRecord = this.records.get(shadowRootRef);
+      if (!hostRecord || !shadowRecord || shadowRecord.kind !== "shadow-root") {
+        return undefined;
+      }
+      const host = this.nodeRegistry.resolve(hostRef, hostRecord.scope);
+      const shadowRoot = this.nodeRegistry.resolve(shadowRootRef, shadowRecord.scope);
+      if (!host || !shadowRoot || !isExactOpenShadowRoot(host, shadowRoot)) {
+        return undefined;
+      }
+      roots.add(shadowRoot);
+    }
+    return roots;
   }
 
   private rollbackBufferedFrameRegistrations(
@@ -3011,7 +3066,7 @@ export class DomTreeProvider {
 
   private emitFrameLifecycle(event: FrameLifecycleEvent): boolean {
     if (this.outwardEffectBuffer) {
-      if (this.rollbackEffectSuppressionDepth === 0) {
+      if (event !== this.rollbackSuppressedFrameEvent) {
         this.outwardEffectBuffer.push({ kind: "frame", event });
       }
       return true;
@@ -3873,4 +3928,17 @@ function isShadowRootHostedWithin(candidate: Node, root: Node): boolean {
     }
   }
   return false;
+}
+
+function isExactOpenShadowRoot(host: Node, candidate: Node): boolean {
+  try {
+    const element = host as Element;
+    const shadowRoot = candidate as ShadowRoot;
+    return element.nodeType === 1 &&
+      shadowRoot.mode === "open" &&
+      shadowRoot.host === element &&
+      element.shadowRoot === shadowRoot;
+  } catch {
+    return false;
+  }
 }

@@ -5084,6 +5084,147 @@ describe("DomTreeProvider", () => {
     expect(callbacks).toEqual([]);
   });
 
+  it("drains a nested frame navigation from observer installation during retained replay", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const replacement = createDocument();
+    const latest = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    document.documentElement.append(frame);
+    const callbacks: string[] = [];
+    const customObservers: TestMutationObserver[] = [];
+    let armObserver = false;
+    let reentered = false;
+    let replacementObservations = 0;
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: () => callbacks.push("frame"),
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        const observe = observer.observe.bind(observer);
+        observer.observe = (target, options) => {
+          observe(target, options);
+          if (target === replacement as unknown as Node) {
+            replacementObservations += 1;
+          }
+          if (
+            armObserver &&
+            !reentered &&
+            target === replacement as unknown as Node &&
+            replacementObservations > 1
+          ) {
+            reentered = true;
+            frame.setFrameDocument(latest);
+            frame.dispatchLoad();
+          }
+        };
+        customObservers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    callbacks.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly frameDocumentsByRef: ReadonlyMap<string, Document>;
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    };
+    const context = harness.provider.frameAuthority.accessibleContexts()
+      .find((candidate) => candidate.frameElement === frame)!;
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.setFrameDocument(replacement);
+    frame.dispatchLoad();
+    armObserver = true;
+
+    expect(owner.rollback()).toBe(true);
+    expect(reentered).toBe(true);
+    expect(state.frameDocumentsByRef.get(context.frameRef)).toBe(latest as unknown as Document);
+    expect(state.rootObservers.has(replacement as unknown as Node)).toBe(false);
+    expect([...state.rootObservers.keys()]).toEqual([
+      document as unknown as Node,
+      latest as unknown as Node,
+    ]);
+    expect(customObservers.filter((observer) => (
+      observer.observedTargets.includes(replacement)
+    )).every((observer) => observer.disconnectCount === 1)).toBe(true);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
+  });
+
+  it("drains chained observer reentries and removes every stale observer root", () => {
+    const document = createDocument();
+    const firstDocument = createDocument();
+    const secondDocument = createDocument();
+    const thirdDocument = createDocument();
+    const fourthDocument = createDocument();
+    const frame = createFrameElement(document, firstDocument);
+    document.documentElement.append(frame);
+    const callbacks: string[] = [];
+    const customObservers: TestMutationObserver[] = [];
+    let replaying = false;
+    let secondDocumentObservations = 0;
+    const replacements = new Map<Node, FakeDocument>([
+      [secondDocument as unknown as Node, thirdDocument],
+      [thirdDocument as unknown as Node, fourthDocument],
+    ]);
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: () => callbacks.push("frame"),
+      createMutationObserver: (callback) => {
+        const observer = new TestMutationObserver(callback);
+        const observe = observer.observe.bind(observer);
+        observer.observe = (target, options) => {
+          observe(target, options);
+          if (target === secondDocument as unknown as Node) {
+            secondDocumentObservations += 1;
+          }
+          const next = replacements.get(target);
+          if (
+            next &&
+            replaying &&
+            (target !== secondDocument as unknown as Node || secondDocumentObservations > 1)
+          ) {
+            replacements.delete(target);
+            frame.setFrameDocument(next);
+            frame.dispatchLoad();
+          }
+        };
+        customObservers.push(observer);
+        return observer;
+      },
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    callbacks.length = 0;
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      readonly frameDocumentsByRef: ReadonlyMap<string, Document>;
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    };
+    const context = harness.provider.frameAuthority.accessibleContexts()
+      .find((candidate) => candidate.frameElement === frame)!;
+    const owner = state.beginProviderAuthorityOperation()!;
+
+    frame.setFrameDocument(secondDocument);
+    frame.dispatchLoad();
+    replaying = true;
+
+    expect(owner.rollback()).toBe(true);
+    expect(state.frameDocumentsByRef.get(context.frameRef)).toBe(fourthDocument as unknown as Document);
+    expect([...state.rootObservers.keys()]).toEqual([
+      document as unknown as Node,
+      fourthDocument as unknown as Node,
+    ]);
+    expect(customObservers.filter((observer) => (
+      observer.observedTargets.includes(secondDocument) ||
+      observer.observedTargets.includes(thirdDocument)
+    )).every((observer) => observer.disconnectCount === 1)).toBe(true);
+    expect(callbacks).toEqual([]);
+    harness.flushEffects();
+    expect(callbacks).toEqual([]);
+  });
+
   it("stops frame callback fan-out after its first invalidation callback resets authority", () => {
     const document = createDocument();
     const childDocument = createDocument();
@@ -6713,6 +6854,9 @@ function createFramedButtonTree(options: {
 
 interface ProviderHarnessOptions {
   readonly documentEpoch?: number;
+  readonly createMutationObserver?: (
+    callback: (records: readonly MutationRecord[]) => void,
+  ) => TestMutationObserver;
   readonly onInvalidated?: (branch: {
     readonly nodeRef: string;
     readonly branchRevision: number;
@@ -6750,7 +6894,8 @@ function createProviderHarness(
   const providerOptions = {
     documentEpoch: options.documentEpoch ?? 3,
     createMutationObserver: (callback) => {
-      const observer = new TestMutationObserver(callback);
+      const observer = options.createMutationObserver?.(callback) ??
+        new TestMutationObserver(callback);
       observers.push(observer);
       return observer;
     },
