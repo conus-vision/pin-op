@@ -878,13 +878,90 @@ describe("FrameRegistry", () => {
     expect(registry.getContext(child.frameRef)).toBeUndefined();
   });
 
+  it("rejects a child when its final stabilized document read silently changes its parent", () => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: 4 });
+    const parentFrame = createFrame({ document: createDocument() });
+    const parent = registry.describeFrame(parentFrame);
+    if (parent?.kind !== "accessible") throw new Error("expected accessible parent");
+    const childFrame = createFrame({ document: createDocument() });
+    const child = registry.describeFrame(childFrame, parent.frameRef);
+    if (child?.kind !== "accessible") throw new Error("expected accessible child");
+    const childDocument = childFrame.contentDocument!;
+    let reads = 0;
+    Object.defineProperty(childFrame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) parentFrame.setDocument(createDocument());
+        return childDocument;
+      },
+    });
+
+    expect(registry.getContext(child.frameRef)).toBeUndefined();
+  });
+
+  it("rejects a child when its final stabilized document read silently changes its grandparent", () => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: 5 });
+    const grandparentFrame = createFrame({ document: createDocument() });
+    const grandparent = registry.describeFrame(grandparentFrame);
+    if (grandparent?.kind !== "accessible") throw new Error("expected accessible grandparent");
+    const parentFrame = createFrame({ document: createDocument() });
+    const parent = registry.describeFrame(parentFrame, grandparent.frameRef);
+    if (parent?.kind !== "accessible") throw new Error("expected accessible parent");
+    const childFrame = createFrame({ document: createDocument() });
+    const child = registry.describeFrame(childFrame, parent.frameRef);
+    if (child?.kind !== "accessible") throw new Error("expected accessible child");
+    const childDocument = childFrame.contentDocument!;
+    let reads = 0;
+    Object.defineProperty(childFrame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) grandparentFrame.setDocument(createDocument());
+        return childDocument;
+      },
+    });
+
+    expect(registry.getContext(child.frameRef)).toBeUndefined();
+  });
+
+  it("rejects a child when its final stabilized window read silently changes its parent", () => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: 4 });
+    const parentFrame = createFrame({ document: createDocument() });
+    const parent = registry.describeFrame(parentFrame);
+    if (parent?.kind !== "accessible") throw new Error("expected accessible parent");
+    const childFrame = createFrame({ document: createDocument() });
+    const child = registry.describeFrame(childFrame, parent.frameRef);
+    if (child?.kind !== "accessible") throw new Error("expected accessible child");
+    const childWindow = childFrame.contentWindow!;
+    let reads = 0;
+    Object.defineProperty(childFrame, "contentWindow", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) parentFrame.setDocument(createDocument());
+        return childWindow;
+      },
+    });
+
+    expect(registry.getContext(child.frameRef)).toBeUndefined();
+  });
+
   it.each([8, 16, 32])("bounds live authority reads at depth %i", (depth) => {
     const registry = new FrameRegistry(createDocument(), { maxFrames: depth + 2 });
+    const frames: FakeFrame[] = [];
     let parentFrameRef = registry.topContext!.frameRef;
     let leafFrameRef = parentFrameRef;
-    let documentReads = 0;
     for (let index = 0; index < depth; index += 1) {
       const frame = createFrame({ document: createDocument() });
+      const description = registry.describeFrame(frame, parentFrameRef);
+      if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+      frames.push(frame);
+      parentFrameRef = description.frameRef;
+      leafFrameRef = description.frameRef;
+    }
+    let documentReads = 0;
+    for (const frame of frames) {
       const document = frame.contentDocument!;
       Object.defineProperty(frame, "contentDocument", {
         configurable: true,
@@ -894,14 +971,10 @@ describe("FrameRegistry", () => {
           return document;
         },
       });
-      const description = registry.describeFrame(frame, parentFrameRef);
-      if (description?.kind !== "accessible") throw new Error("expected accessible frame");
-      parentFrameRef = description.frameRef;
-      leafFrameRef = description.frameRef;
     }
 
     expect(registry.getContext(leafFrameRef)).toMatchObject({ frameRef: leafFrameRef });
-    expect(documentReads).toBeLessThanOrEqual(depth * depth * 16);
+    expect(documentReads).toBeLessThanOrEqual(depth * depth * 8);
   });
 
   it("invalidates only a loaded frame subtree and retains an unaffected sibling", () => {

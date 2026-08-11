@@ -104,6 +104,7 @@ type FrameRegistryState = "active" | "mutating" | "disposing" | "disposed";
 const MAX_REF_LENGTH = 24;
 const MAX_GEOMETRY_ANCESTORS = 512;
 const MAX_CONTEXT_ANCESTORS = 512;
+const LIVE_CONTEXT_STABILIZATION_PASSES = 2;
 const GEOMETRY_DIMENSION_TOLERANCE = 0.5;
 const EMPTY_FRAME_IDENTITIES = Object.freeze([]) as readonly FrameIdentity[];
 
@@ -778,82 +779,122 @@ export class FrameRegistry {
   }
 
   private validateLiveContextChain(snapshot: ContextChainSnapshot): boolean {
-    return this.isContextChainSnapshotCurrent(snapshot) &&
-      this.validateLiveContextChainPass(snapshot) &&
-      this.validateLiveContextChainPass(snapshot);
+    if (!this.isContextChainSnapshotCurrent(snapshot)) return false;
+    for (let pass = 0; pass < LIVE_CONTEXT_STABILIZATION_PASSES; pass += 1) {
+      if (!this.validateLiveContextChainPass(snapshot)) return false;
+    }
+    return true;
   }
 
   private validateLiveContextChainPass(snapshot: ContextChainSnapshot): boolean {
     for (let index = snapshot.entries.length - 2; index >= 0; index -= 1) {
-      const entry = snapshot.entries[index]!;
-      const parent = snapshot.entries[index + 1]!.context;
-      const record = entry.record;
-      const ownership = entry.ownership;
-      const contentWindow = entry.contentWindow;
-      if (!record || !ownership || !contentWindow || !this.isContextChainSnapshotCurrent(snapshot)) {
-        return false;
-      }
-      const ownerDocument = readOwnerDocument(ownership.frameElement);
-      if (!this.isContextChainSnapshotCurrent(snapshot) || ownerDocument !== parent.document) {
-        return false;
-      }
-      try {
-        const document = ownership.access.getContentDocument();
-        if (!this.isContextChainSnapshotCurrent(snapshot) || document !== entry.context.document) {
-          return false;
-        }
-        const window = ownership.access.getContentWindow();
-        if (!this.isContextChainSnapshotCurrent(snapshot) || window !== contentWindow) {
-          return false;
-        }
-        const windowDocument = window.document;
-        if (!this.isContextChainSnapshotCurrent(snapshot) || windowDocument !== document) {
-          return false;
-        }
-      } catch {
+      if (!this.validateLiveContextEntry(snapshot, index, true)) {
         return false;
       }
     }
     return this.isContextChainSnapshotCurrent(snapshot);
   }
 
-  private isContextChainSnapshotCurrent(snapshot: ContextChainSnapshot): boolean {
+  private validateLiveContextEntry(
+    snapshot: ContextChainSnapshot,
+    index: number,
+    reproveAncestors: boolean,
+  ): boolean {
+    const entry = snapshot.entries[index]!;
+    const parent = snapshot.entries[index + 1]!.context;
+    const record = entry.record;
+    const ownership = entry.ownership;
+    const contentWindow = entry.contentWindow;
+    if (!record || !ownership || !contentWindow || !this.isContextChainEntryCurrent(snapshot, index)) {
+      return false;
+    }
+    const reprove = (): boolean => (
+      !reproveAncestors || this.reproveLiveAncestors(snapshot, index + 1)
+    );
+    const ownerDocument = readOwnerDocument(ownership.frameElement);
     if (
-      this.state !== snapshot.state ||
-      this.structuralRevision !== snapshot.structuralRevision
+      !this.isContextChainEntryCurrent(snapshot, index) ||
+      ownerDocument !== parent.document ||
+      !reprove()
     ) {
       return false;
     }
+    try {
+      const document = ownership.access.getContentDocument();
+      if (
+        !this.isContextChainEntryCurrent(snapshot, index) ||
+        document !== entry.context.document ||
+        !reprove()
+      ) {
+        return false;
+      }
+      const window = ownership.access.getContentWindow();
+      if (
+        !this.isContextChainEntryCurrent(snapshot, index) ||
+        window !== contentWindow ||
+        !reprove()
+      ) {
+        return false;
+      }
+      const windowDocument = window.document;
+      return this.isContextChainEntryCurrent(snapshot, index) &&
+        windowDocument === document &&
+        reprove();
+    } catch {
+      return false;
+    }
+  }
+
+  private reproveLiveAncestors(
+    snapshot: ContextChainSnapshot,
+    firstAncestorIndex: number,
+  ): boolean {
+    for (let index = snapshot.entries.length - 2; index >= firstAncestorIndex; index -= 1) {
+      if (!this.validateLiveContextEntry(snapshot, index, false)) return false;
+    }
+    return this.isContextChainAuthorityCurrent(snapshot);
+  }
+
+  private isContextChainSnapshotCurrent(snapshot: ContextChainSnapshot): boolean {
     for (let index = 0; index < snapshot.entries.length; index += 1) {
-      const entry = snapshot.entries[index]!;
-      if (
-        this.contexts.get(entry.context.frameRef) !== entry.context ||
-        this.documentRefs.get(entry.context.document) !== entry.context.frameRef
-      ) {
-        return false;
-      }
-      if (!entry.record) {
-        if (this.top !== entry.context || index !== snapshot.entries.length - 1) {
-          return false;
-        }
-        continue;
-      }
-      const parent = snapshot.entries[index + 1]?.context;
-      if (
-        !parent ||
-        this.records.get(entry.context.frameRef) !== entry.record ||
-        !entry.record.active ||
-        entry.record.ownership !== entry.ownership ||
-        entry.record.parentFrameRef !== parent.frameRef ||
-        !sameFrameIdentity(entry.record, entry.context) ||
-        entry.record.document !== entry.context.document ||
-        entry.record.contentWindow !== entry.contentWindow ||
-        entry.parent !== parent
-      ) {
-        return false;
-      }
+      if (!this.isContextChainEntryCurrent(snapshot, index)) return false;
     }
     return true;
+  }
+
+  private isContextChainEntryCurrent(
+    snapshot: ContextChainSnapshot,
+    index: number,
+  ): boolean {
+    if (!this.isContextChainAuthorityCurrent(snapshot)) return false;
+    const entry = snapshot.entries[index];
+    if (
+      !entry ||
+      this.contexts.get(entry.context.frameRef) !== entry.context ||
+      this.documentRefs.get(entry.context.document) !== entry.context.frameRef
+    ) {
+      return false;
+    }
+    if (!entry.record) {
+      return this.top === entry.context && index === snapshot.entries.length - 1;
+    }
+    const parent = snapshot.entries[index + 1]?.context;
+    return parent !== undefined &&
+      this.contexts.get(parent.frameRef) === parent &&
+      this.documentRefs.get(parent.document) === parent.frameRef &&
+      this.records.get(entry.context.frameRef) === entry.record &&
+      entry.record.active &&
+      entry.record.ownership === entry.ownership &&
+      entry.record.parentFrameRef === parent.frameRef &&
+      sameFrameIdentity(entry.record, entry.context) &&
+      entry.record.document === entry.context.document &&
+      entry.record.contentWindow === entry.contentWindow &&
+      entry.parent === parent;
+  }
+
+  private isContextChainAuthorityCurrent(snapshot: ContextChainSnapshot): boolean {
+    return this.state === snapshot.state &&
+      this.structuralRevision === snapshot.structuralRevision;
   }
 
   private inspectDocument(

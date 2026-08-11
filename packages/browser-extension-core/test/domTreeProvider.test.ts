@@ -5871,6 +5871,41 @@ describe("DomTreeProvider", () => {
     expect(second.frame.loadListenerCount).toBe(1);
   });
 
+  it("rejects locator recovery when the final child frame read silently changes its parent", () => {
+    const topDocument = createDocument();
+    const parentDocument = createDocument();
+    const childDocument = createDocument();
+    const parentFrame = createFrameElement(topDocument, parentDocument);
+    const childFrame = createFrameElement(parentDocument, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "nested_frame_target";
+    childDocument.documentElement.append(target);
+    parentDocument.documentElement.append(childFrame);
+    topDocument.documentElement.append(parentFrame);
+
+    const provider = createProvider(topDocument);
+    const root = provider.getRoot();
+    const parentFrameView = onlyChild(provider, root.node, root.documentEpoch, "parent-frame");
+    const parentDocumentView = onlyChild(provider, parentFrameView, root.documentEpoch, "parent-document");
+    const childFrameView = onlyChild(provider, parentDocumentView, root.documentEpoch, "child-frame");
+    const childDocumentView = onlyChild(provider, childFrameView, root.documentEpoch, "child-document");
+    const targetView = onlyChild(provider, childDocumentView, root.documentEpoch, "nested-target");
+    const locator = targetView.locator;
+    const stableChildDocument = childFrame.contentDocument;
+    let reads = 0;
+
+    Object.defineProperty(childFrame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) parentFrame.setFrameDocument(createDocument());
+        return stableChildDocument;
+      },
+    });
+
+    expect(resolveStableLocator(provider, locator)).toBeUndefined();
+  });
+
   it("rejects capture when a sibling shortcut hides an excessive child collection", () => {
     const tree = createHeadingTree();
     tree.target.id = "";
