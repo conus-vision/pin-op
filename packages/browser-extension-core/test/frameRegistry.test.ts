@@ -766,6 +766,40 @@ describe("FrameRegistry", () => {
     expect(lockedFrame.contentDocumentReads).toBe(2);
   });
 
+  it("does not return a stale context when contentDocument inspection reenters through load", () => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
+    const document = createDocument();
+    const frame = createFrame({ document });
+    const description = registry.describeFrame(frame);
+    if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+    const stale = registry.getContext(description.frameRef)!;
+    frame.setContentDocumentReadCallback(() => frame.dispatchLoad());
+
+    expect(registry.getContext(description.frameRef)).toBeUndefined();
+    expect(registry.getContext(description.frameRef)).toMatchObject({
+      frameRef: description.frameRef,
+      frameEpoch: stale.frameEpoch + 1,
+      document,
+    });
+  });
+
+  it("does not return a stale context when contentWindow inspection reenters through load", () => {
+    const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
+    const document = createDocument();
+    const frame = createFrame({ document });
+    const description = registry.describeFrame(frame);
+    if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+    const stale = registry.getContext(description.frameRef)!;
+    frame.setContentWindowReadCallback(() => frame.dispatchLoad());
+
+    expect(registry.getContextForDocument(document)).toBeUndefined();
+    expect(registry.getContext(description.frameRef)).toMatchObject({
+      frameRef: description.frameRef,
+      frameEpoch: stale.frameEpoch + 1,
+      document,
+    });
+  });
+
   it("invalidates only a loaded frame subtree and retains an unaffected sibling", () => {
     const registry = new FrameRegistry(createDocument(), { maxFrames: 5 });
     const oldParentDocument = createDocument();
@@ -2265,6 +2299,7 @@ class FakeFrame {
   private readonly invokeLoadOnRemove: boolean;
   private readonly onRemoveLoadListener: (() => void) | undefined;
   private contentDocumentReadCallback: (() => void) | undefined;
+  private contentWindowReadCallback: (() => void) | undefined;
   private readonly width: number;
   private readonly height: number;
   private rootNode: object;
@@ -2350,6 +2385,9 @@ class FakeFrame {
 
   public get contentWindow(): Window | null {
     this.contentWindowReads += 1;
+    const callback = this.contentWindowReadCallback;
+    this.contentWindowReadCallback = undefined;
+    callback?.();
     return this.document ? (this.contentWindowValue as unknown as Window) : null;
   }
 
@@ -2420,6 +2458,10 @@ class FakeFrame {
 
   public setContentDocumentReadCallback(callback: (() => void) | undefined): void {
     this.contentDocumentReadCallback = callback;
+  }
+
+  public setContentWindowReadCallback(callback: (() => void) | undefined): void {
+    this.contentWindowReadCallback = callback;
   }
 
   public setOffset(left: number, top: number): void {

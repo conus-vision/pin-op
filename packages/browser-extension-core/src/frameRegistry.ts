@@ -286,7 +286,13 @@ export class FrameRegistry {
       const onLoad: EventListener = function handleFrameLoad(): void {
         registryRef.deref()?.handleLoadByRef(frameRef);
       };
-      const inspected = this.inspectDocument(access);
+      const registrationRevision = this.structuralRevision;
+      const isRegistrationCurrent = (): boolean => (
+        this.state === "mutating" &&
+        this.structuralRevision === registrationRevision &&
+        this.isStoredContextCurrent(parent, "mutating")
+      );
+      const inspected = this.inspectDocument(access, isRegistrationCurrent);
       try {
         access.addLoadListener(onLoad);
       } catch {
@@ -297,14 +303,14 @@ export class FrameRegistry {
       }
       const verifiedAccess = captureFrameElementAccess(frameElement);
       const verifiedDocument = verifiedAccess
-        ? this.inspectDocument(verifiedAccess)
+        ? this.inspectDocument(verifiedAccess, isRegistrationCurrent)
         : undefined;
       if (
         !verifiedAccess ||
         !sameFrameElementAccess(access, verifiedAccess) ||
         !sameFrameDocumentAccess(inspected, verifiedDocument) ||
-        this.contexts.get(parent.frameRef) !== parent ||
-        this.revalidateContext(parent) !== parent ||
+        !isRegistrationCurrent() ||
+        this.revalidateContext(parent, undefined, "mutating") !== parent ||
         readOwnerDocument(frameElement) !== parent.document
       ) {
         if (!tryRemoveLoadListener({ access, onLoad })) {
@@ -571,10 +577,19 @@ export class FrameRegistry {
         if (this.records.get(record.frameRef) !== record) {
           return;
         }
-        const nextDocument = this.inspectDocument(ownership.access);
+        const loadRevision = this.structuralRevision;
+        const loadEpoch = record.frameEpoch;
+        const isLoadCurrent = (): boolean => (
+          this.state === "mutating" &&
+          this.structuralRevision === loadRevision &&
+          this.records.get(record.frameRef) === record &&
+          record.ownership === ownership &&
+          record.frameEpoch === loadEpoch &&
+          !record.active
+        );
+        const nextDocument = this.inspectDocument(ownership.access, isLoadCurrent);
         if (
-          this.records.get(record.frameRef) !== record ||
-          record.ownership !== ownership
+          !isLoadCurrent()
         ) {
           return;
         }
@@ -667,9 +682,12 @@ export class FrameRegistry {
   private revalidateContext(
     context: FrameContext,
     expectedParent?: FrameContext,
+    requiredState: "active" | "mutating" = "active",
   ): FrameContext | undefined {
     if (!context.parentFrameRef) {
-      return this.top === context && this.contexts.get(context.frameRef) === context
+      return this.state === requiredState &&
+        this.top === context &&
+        this.contexts.get(context.frameRef) === context
         ? context
         : undefined;
     }
@@ -677,7 +695,9 @@ export class FrameRegistry {
     const ownership = record?.ownership;
     const parent = expectedParent ?? (() => {
       const parentContext = this.contexts.get(context.parentFrameRef!);
-      return parentContext ? this.revalidateContext(parentContext) : undefined;
+      return parentContext
+        ? this.revalidateContext(parentContext, undefined, requiredState)
+        : undefined;
     })();
     if (
       !record ||
@@ -688,23 +708,80 @@ export class FrameRegistry {
       !sameFrameIdentity(record, context) ||
       record.document !== context.document ||
       !record.contentWindow ||
-      this.contexts.get(context.frameRef) !== context ||
-      readOwnerDocument(ownership.frameElement) !== parent.document
+      this.contexts.get(context.frameRef) !== context
     ) return undefined;
-    const current = this.inspectDocument(ownership.access);
-    return current?.document === context.document && current.contentWindow === record.contentWindow
+    const structuralRevision = this.structuralRevision;
+    const contentWindow = record.contentWindow;
+    const isAuthoritative = (): boolean => (
+      this.state === requiredState &&
+      this.structuralRevision === structuralRevision &&
+      this.records.get(context.frameRef) === record &&
+      record.active &&
+      record.ownership === ownership &&
+      record.parentFrameRef === parent.frameRef &&
+      sameFrameIdentity(record, context) &&
+      record.document === context.document &&
+      record.contentWindow === contentWindow &&
+      this.contexts.get(context.frameRef) === context &&
+      this.documentRefs.get(context.document) === context.frameRef &&
+      this.isStoredContextCurrent(parent, requiredState)
+    );
+    if (!isAuthoritative()) return undefined;
+    const ownerDocument = readOwnerDocument(ownership.frameElement);
+    if (!isAuthoritative() || ownerDocument !== parent.document) return undefined;
+    const current = this.inspectDocument(ownership.access, isAuthoritative);
+    return isAuthoritative() &&
+      current?.document === context.document && current.contentWindow === contentWindow
       ? context
       : undefined;
   }
 
-  private inspectDocument(access: FrameElementAccess): FrameDocumentAccess | undefined {
+  private isStoredContextCurrent(
+    context: FrameContext,
+    state: "active" | "mutating",
+    seen = new Set<string>(),
+  ): boolean {
+    if (
+      this.state !== state ||
+      seen.has(context.frameRef) ||
+      this.contexts.get(context.frameRef) !== context ||
+      this.documentRefs.get(context.document) !== context.frameRef
+    ) {
+      return false;
+    }
+    if (!context.parentFrameRef) return this.top === context;
+    const record = this.records.get(context.frameRef);
+    if (
+      !record ||
+      !record.active ||
+      !record.ownership ||
+      record.parentFrameRef !== context.parentFrameRef ||
+      !sameFrameIdentity(record, context) ||
+      record.document !== context.document
+    ) {
+      return false;
+    }
+    seen.add(context.frameRef);
+    const parent = this.contexts.get(context.parentFrameRef);
+    return parent ? this.isStoredContextCurrent(parent, state, seen) : false;
+  }
+
+  private inspectDocument(
+    access: FrameElementAccess,
+    isAuthoritative: () => boolean,
+  ): FrameDocumentAccess | undefined {
     try {
+      if (!isAuthoritative()) return undefined;
       const document = access.getContentDocument();
-      if (!document) {
+      if (!isAuthoritative() || !document) {
         return undefined;
       }
       const contentWindow = access.getContentWindow();
-      if (!contentWindow || contentWindow.document !== document) {
+      if (!isAuthoritative() || !contentWindow) {
+        return undefined;
+      }
+      const windowDocument = contentWindow.document;
+      if (!isAuthoritative() || windowDocument !== document) {
         return undefined;
       }
       return Object.freeze({ document, contentWindow });
