@@ -23,6 +23,10 @@ const [, installedAndSourceWorkflow] = developmentGuide.split(
 const [installedProductRunbook, sourceWorkflow] = (
   installedAndSourceWorkflow ?? ""
 ).split(sourceWorkflowHeading);
+const [, sourceNavigationAndLater] = protocolGuide.split("## Source Navigation");
+const [sourceNavigationSection] = (sourceNavigationAndLater ?? "").split(
+  "## Peer State",
+);
 
 test("installed primary path is terminal-free and starts automatically", () => {
   assert.ok(verificationRecord, "0.3.0 candidate verification record is required");
@@ -197,23 +201,43 @@ test("protocol guide contains strict source navigation examples", () => {
 });
 
 test("protocol guide documents targeted repeated selected-only navigation state", () => {
+  assert.ok(sourceNavigationSection, "Source Navigation section is required");
   assert.match(
-    protocolGuide,
+    sourceNavigationSection,
     /source\.navigate[\s\S]*same inspect reply route[\s\S]*same browser connection/i,
   );
   assert.match(
-    protocolGuide,
-    /session[\s\S]*role[\s\S]*source ID[\s\S]*inspectMessageId[\s\S]*resolutionGeneration/i,
+    sourceNavigationSection,
+    /source\.navigate[\s\S]*(?:has no|does not carry)[\s\S]*`source` field/i,
   );
   assert.match(
-    protocolGuide,
+    sourceNavigationSection,
+    /bridge[\s\S]*authenticated\s+sender[\s\S]*role[\s\S]*source[\s\S]*client\s+identity[\s\S]*exact\s+(?:inspect\s+)?reply\s+route/i,
+  );
+  assert.match(
+    sourceNavigationSection,
+    /endpoint correlation[\s\S]*session[\s\S]*window[\s\S]*channel[\s\S]*inspectMessageId[\s\S]*resolutionGeneration/i,
+  );
+  assert.match(
+    sourceNavigationSection,
+    /browser[\s\S]*does not[\s\S]*(?:compare|correlate)[\s\S]*(?:IDE )?source ID/i,
+  );
+  assert.match(
+    sourceNavigationSection,
     /repeated\s+`?source\.navigationState`?[\s\S]*same\s+resolution\s+generation/i,
   );
-  assert.match(protocolGuide, /selected-only/i);
-  assert.match(protocolGuide, /Parent ranges[\s\S]*never[\s\S]*navigation/i);
+  assert.match(sourceNavigationSection, /selected-only/i);
   assert.match(
-    protocolGuide,
+    sourceNavigationSection,
+    /Parent ranges[\s\S]*never[\s\S]*navigation/i,
+  );
+  assert.match(
+    sourceNavigationSection,
     /activeMatchIndex[\s\S]*omitted[\s\S]*(?:before navigation|outside (?:all )?matches)/i,
+  );
+  assert.doesNotMatch(
+    sourceNavigationSection,
+    /browser and IDE[^.]*correlate[^.]*source ID/i,
   );
 });
 

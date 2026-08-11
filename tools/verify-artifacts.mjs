@@ -6,6 +6,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import { createHeadArchiveBuffer } from "./archive-firefox-source.mjs";
+import {
+  assertBrowserPackageRuntimeContract,
+} from "./browser-package-contract.mjs";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 import {
   assertTextEqual,
@@ -426,8 +429,8 @@ function filenameFromPath(path) {
 }
 
 async function verifyBrowser(archive, filename, browser) {
-  assertExactArchivePaths(archive, filename, BROWSER_ARCHIVE_FILES);
-  assertProjectLicense(archive, filename, "LICENSE");
+  validateBrowserArchive(archive, filename, browser);
+
   const noticePath = resolve(repositoryRoot, "extensions", browser, "THIRD_PARTY_NOTICES");
   assertEqualFile(
     archive,
@@ -435,15 +438,19 @@ async function verifyBrowser(archive, filename, browser) {
     "THIRD_PARTY_NOTICES",
     await readFile(noticePath),
   );
+}
 
+export function validateBrowserArchive(archive, filename, browser) {
+  assertExactArchivePaths(archive, filename, BROWSER_ARCHIVE_FILES);
+  assertProjectLicense(archive, filename, "LICENSE");
   verifyBrowserManifest(
     parseJsonFile(archive, filename, "manifest.json"),
     filename,
     browser,
   );
-  parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
-    expectedProtocolVersion: 5,
-    label: `${filename} runtime metadata`,
+  assertBrowserPackageRuntimeContract(archive, {
+    artifactLabel: filename,
+    metadataLabel: `${filename} runtime metadata`,
   });
 }
 

@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startExampleServers } from "../examples/basic-css/server.mjs";
-import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
+import {
+  assertBrowserPackageRuntimeContract,
+} from "./browser-package-contract.mjs";
 import {
   BROWSER_ARCHIVE_FILES,
   assertExactArchivePaths,
@@ -17,35 +19,6 @@ const CDP_TIMEOUT_MS = 5_000;
 const STOP_TIMEOUT_MS = 3_000;
 const POLL_INTERVAL_MS = 100;
 
-const PANEL_HTML_MARKERS = Object.freeze([
-  ["DOM tree asset", 'id="dom-tree"'],
-  ["DOM tree asset", 'id="dom-tree-spacer"'],
-  ["DOM tree asset", 'id="dom-tree-empty"'],
-  ["DOM tree asset", 'role="tree"'],
-  ["linked code asset", 'id="linked-code"'],
-  ["panel asset", 'id="disconnect-button"'],
-  ["panel asset", "Disconnect"],
-  ["picker asset", 'id="inspect-mode"'],
-  ["picker asset", 'aria-label="Select an element"'],
-  ["resolution footer", 'class="panel-footer"'],
-  ["resolution footer", 'id="resolution-status"'],
-  ["source navigation footer", "source-navigation-footer"],
-]);
-const PANEL_CSS_MARKERS = Object.freeze([
-  ["DOM tree style", ".dom-tree-row"],
-  ["DOM tree style", ".is-shadow-root"],
-  ["DOM tree style", ".is-frame-document"],
-  ["DOM tree style", ".is-inaccessible"],
-  ["resolution footer style", ".panel-footer"],
-  ["resolution footer style", '.resolution-status[data-tone="success"]'],
-  ["resolution footer style", '.resolution-status[data-tone="warning"]'],
-  ["resolution footer style", '.resolution-status[data-tone="error"]'],
-  ["source navigation controls", ".source-navigation-controls"],
-]);
-const PANEL_BUNDLE_MARKERS = Object.freeze([
-  ["source navigation state", "source.navigationState"],
-  ["locator recovery", "dom.resolveLocator"],
-]);
 const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   if (document.readyState !== "complete") {
     return { ready: false, locationHref: location.href };
@@ -170,31 +143,11 @@ export function validatePackagedChromeArchive(archive) {
   if (!isBrowser2IDEManifest(manifest)) {
     throw new Error("Chrome artifact does not declare the expected MV3 service worker");
   }
-  assertPackagedInspectorRuntime(archive);
-  return manifest;
-}
-
-function assertPackagedInspectorRuntime(archive) {
-  assertTextMarkers(archive, "dist/panel.html", PANEL_HTML_MARKERS);
-  assertTextMarkers(archive, "dist/panel.css", PANEL_CSS_MARKERS);
-  assertTextMarkers(archive, "dist/panel.js", PANEL_BUNDLE_MARKERS);
-  parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
-    expectedProtocolVersion: 5,
-    label: "Packaged Chrome runtime metadata",
+  assertBrowserPackageRuntimeContract(archive, {
+    artifactLabel: "Packaged Chrome",
+    metadataLabel: "Packaged Chrome runtime metadata",
   });
-}
-
-function assertTextMarkers(archive, path, markers) {
-  const bytes = archive.files.get(path);
-  if (!Buffer.isBuffer(bytes)) {
-    throw new Error(`packaged Chrome smoke artifact is missing ${path}`);
-  }
-  const text = bytes.toString("utf8");
-  for (const [label, marker] of markers) {
-    if (!text.includes(marker)) {
-      throw new Error(`Packaged Chrome ${label} is missing ${marker} in ${path}`);
-    }
-  }
+  return manifest;
 }
 
 export function buildChromeArguments(profileDirectory) {

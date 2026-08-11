@@ -193,6 +193,10 @@ an intent with no source ranges or file identity:
 }
 ```
 
+`source.navigate` has no `source` field. The browser or simulator identity
+comes from its authenticated WebSocket connection, not from an identity field
+visible to the IDE in the navigation intent.
+
 The IDE answers with current cursor state:
 
 ```json
@@ -214,22 +218,30 @@ The IDE answers with current cursor state:
 ```
 
 `source.navigate` uses the same inspect reply route as `resolution`. The bridge
-accepts it only from an authenticated browser or simulator that advertises
-`source-navigation`, is in the same session, and owns the route for that
-`inspectMessageId`. It routes the intent only to capable IDE clients in that
-session. A second browser cannot reuse the correlation, even with the same
-session and inspect ID.
+validates the authenticated sender's role, registered source and client
+identity, session, capability, and ownership of the exact inspect reply route.
+It routes the intent only to capable IDE clients in that session. A second
+browser cannot reuse the correlation, even with the same session and inspect
+ID.
 
 The intent and every corresponding state update stay on the same inspect reply
 route and the same browser connection.
 
 `source.navigationState` is accepted only from an authenticated capable IDE.
-Its `source.id` must equal the authenticated source ID, its session must match
-that connection, and its `inspectMessageId` must still resolve to the exact
-originating browser connection, which must also be capable. Browser and IDE
-code additionally correlate the session, role, source ID, `inspectMessageId`,
-and `resolutionGeneration`; stale or mismatched messages are ignored or fail
-closed.
+The bridge verifies the sender role and client identity, checks that its
+`source.id` equals the registered IDE source, checks its session, and resolves
+its `inspectMessageId` through the exact route to the capable originating
+browser connection.
+
+Endpoint correlation uses only fields and local ownership each endpoint
+actually has. Across the browser and IDE endpoints this includes the
+authenticated session, current browser window and DevTools channel/tab
+ownership, `inspectMessageId`, `resolutionGeneration`, and the IDE's current
+document and selected ranges. The browser correlation store does not compare
+the IDE source ID; the bridge has already authenticated the state sender and
+targeted the route. The IDE cannot validate a browser source ID because
+`source.navigate` carries no such field. Stale, mismatched, or superseded state
+is ignored or fails closed at the layer that owns the relevant correlation.
 
 The route remains live, so repeated `source.navigationState` updates in the
 same resolution generation are valid. This is how manual cursor movement can
