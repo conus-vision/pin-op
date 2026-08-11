@@ -89,6 +89,9 @@ interface FrameListenerDetachment {
 
 interface FrameElementAccess {
   readonly frameElement: HTMLIFrameElement;
+  readonly addLoadListenerMethod: unknown;
+  readonly removeLoadListenerMethod: unknown;
+  readonly getBoundingClientRectMethod: unknown;
   readonly addLoadListener: (listener: EventListener) => void;
   readonly removeLoadListener: (listener: EventListener) => void;
   readonly getBoundingClientRect: () => DOMRect;
@@ -283,8 +286,33 @@ export class FrameRegistry {
       const onLoad: EventListener = function handleFrameLoad(): void {
         registryRef.deref()?.handleLoadByRef(frameRef);
       };
-      const ownership = Object.freeze({ frameElement, access, onLoad });
       const inspected = this.inspectDocument(access);
+      try {
+        access.addLoadListener(onLoad);
+      } catch {
+        if (!tryRemoveLoadListener({ access, onLoad })) {
+          this.nextFrameRef += 1;
+        }
+        return undefined;
+      }
+      const verifiedAccess = captureFrameElementAccess(frameElement);
+      const verifiedDocument = verifiedAccess
+        ? this.inspectDocument(verifiedAccess)
+        : undefined;
+      if (
+        !verifiedAccess ||
+        !sameFrameElementAccess(access, verifiedAccess) ||
+        !sameFrameDocumentAccess(inspected, verifiedDocument) ||
+        this.contexts.get(parent.frameRef) !== parent ||
+        this.revalidateContext(parent) !== parent ||
+        readOwnerDocument(frameElement) !== parent.document
+      ) {
+        if (!tryRemoveLoadListener({ access, onLoad })) {
+          this.nextFrameRef += 1;
+        }
+        return undefined;
+      }
+      const ownership = Object.freeze({ frameElement, access, onLoad });
       const record: FrameRecord = {
         frameRef,
         frameEpoch: 1,
@@ -295,17 +323,6 @@ export class FrameRegistry {
         document: inspected?.document,
         contentWindow: inspected?.contentWindow,
       };
-      try {
-        access.addLoadListener(onLoad);
-      } catch {
-        record.document = undefined;
-        record.contentWindow = undefined;
-        record.ownership = undefined;
-        if (!tryRemoveLoadListener({ access, onLoad })) {
-          this.nextFrameRef += 1;
-        }
-        return undefined;
-      }
       this.bumpStructuralRevision();
       this.records.set(record.frameRef, record);
       this.recordByElement.set(frameElement, record);
@@ -1190,6 +1207,9 @@ function captureFrameElementAccess(value: unknown): FrameElementAccess | undefin
     }
     return Object.freeze({
       frameElement,
+      addLoadListenerMethod: addEventListener,
+      removeLoadListenerMethod: removeEventListener,
+      getBoundingClientRectMethod: getBoundingClientRect,
       addLoadListener: (listener: EventListener) => {
         addEventListener.call(frameElement, "load", listener);
       },
@@ -1242,6 +1262,25 @@ function isFrameRef(value: unknown): value is string {
 
 function isObject(value: unknown): value is object {
   return typeof value === "object" && value !== null;
+}
+
+function sameFrameElementAccess(
+  left: FrameElementAccess,
+  right: FrameElementAccess,
+): boolean {
+  return (
+    left.frameElement === right.frameElement &&
+    left.addLoadListenerMethod === right.addLoadListenerMethod &&
+    left.removeLoadListenerMethod === right.removeLoadListenerMethod &&
+    left.getBoundingClientRectMethod === right.getBoundingClientRectMethod
+  );
+}
+
+function sameFrameDocumentAccess(
+  left: FrameDocumentAccess | undefined,
+  right: FrameDocumentAccess | undefined,
+): boolean {
+  return left?.document === right?.document && left?.contentWindow === right?.contentWindow;
 }
 
 function readOwnerDocument(frameElement: HTMLIFrameElement): Document | undefined {

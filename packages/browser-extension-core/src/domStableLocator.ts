@@ -142,8 +142,8 @@ export class DomStableLocatorService {
           root.nodeType === 9 && this.frameRegistry.getContext(context.frameRef)?.document !== root
         ) return undefined;
         if (boundary.kind === "shadow-root") {
-          const shadowRoot = readOpenShadowRoot(host);
-          if (!shadowRoot || this.isExcluded(shadowRoot) || seen.has(shadowRoot)) {
+          const shadowRoot = readOpenShadowRoot(host, seen);
+          if (!shadowRoot || this.isExcluded(shadowRoot)) {
             return undefined;
           }
           seen.add(shadowRoot);
@@ -182,7 +182,7 @@ export class DomStableLocatorService {
           authorizedFrames,
         );
       } else if (parsed.targetKind === "shadow-root") {
-        const shadowRoot = readOpenShadowRoot(target);
+        const shadowRoot = readOpenShadowRoot(target, seen);
         transaction = shadowRoot && !this.isExcluded(shadowRoot)
           ? this.createResolutionTransaction(
             Object.freeze({ kind: parsed.targetKind, node: shadowRoot }),
@@ -265,8 +265,10 @@ export class DomStableLocatorService {
         path,
       });
     }
-    if (!isOpenShadowRoot(root)) throw invalidLocator();
-    const parent = this.captureElement(root.host, seen, nextDepth);
+    const shadowRoot = exactOpenShadowRoot(root, undefined, seen);
+    if (!shadowRoot) throw invalidLocator();
+    seen.add(shadowRoot);
+    const parent = this.captureElement(shadowRoot.host, seen, nextDepth);
     return Object.freeze({
       boundaries: Object.freeze([
         ...parent.boundaries,
@@ -292,7 +294,6 @@ export class DomStableLocatorService {
         !candidate ||
         seen.has(candidate) ||
         this.isExcluded(candidate) ||
-        readParentNode(candidate) !== parent ||
         !matchesSegment(candidate, segment, parent, root)
       ) {
         return undefined;
@@ -376,7 +377,7 @@ function targetElementFor(
   kind: Exclude<DomStableLocator["targetKind"], "frame-document">,
 ): Element | undefined {
   if (kind === "element") return node.nodeType === 1 ? node as Element : undefined;
-  return isOpenShadowRoot(node) ? node.host : undefined;
+  return exactOpenShadowRoot(node)?.host;
 }
 
 function containingRoot(target: Element, seen: ReadonlySet<Node>): Node {
@@ -385,7 +386,7 @@ function containingRoot(target: Element, seen: ReadonlySet<Node>): Node {
   for (let depth = 0; depth < DOM_STABLE_LOCATOR_MAX_DEPTH; depth += 1) {
     const parent = readParentNode(current);
     if (!parent) throw invalidLocator();
-    if (parent.nodeType === 9 || isOpenShadowRoot(parent)) return parent;
+    if (parent.nodeType === 9 || exactOpenShadowRoot(parent, undefined, path)) return parent;
     if (path.has(parent)) throw invalidLocator();
     path.add(parent);
     current = parent;
@@ -418,11 +419,14 @@ function capturePath(
 
 function captureSegment(element: Element, parent: Node, root: Node): DomPathSegment {
   const tagName = readTagName(element);
-  const siblingIndex = elementSiblingIndex(parent, element);
   const evidence = readCanonicalEvidence(element, parent, root);
-  if (!tagName || siblingIndex === undefined || !evidence) throw invalidLocator();
-  const id = stabilizeSegmentIdentity(element, parent, root, tagName, siblingIndex, evidence);
+  if (!tagName || !evidence) throw invalidLocator();
+  const id = stabilizeSegmentIdentity(element, parent, root, tagName, evidence);
   if (id === READ_FAILED) throw invalidLocator();
+  // This is intentionally last: it proves the saved physical position without
+  // another page-controlled parent/sibling read after the final snapshot.
+  const siblingIndex = elementSiblingIndex(parent, element);
+  if (siblingIndex === undefined) throw invalidLocator();
   return Object.freeze({
     tagName,
     siblingIndex,
@@ -569,8 +573,7 @@ function elementChildAt(parent: Node, siblingIndex: number): Element | undefined
     !candidate ||
     !verifiedChildren ||
     !sameChildNodeSnapshot(children, verifiedChildren) ||
-    elementChildAtSnapshot(verifiedChildren, siblingIndex) !== candidate ||
-    readParentNode(candidate) !== parent
+    elementChildAtSnapshot(verifiedChildren, siblingIndex) !== candidate
   ) return undefined;
   return candidate;
 }
@@ -626,8 +629,7 @@ function confirmElementSiblingIndex(
   if (
     !finalChildren ||
     !sameChildNodeSnapshot(verifiedChildren, finalChildren) ||
-    !hasExactElementSiblingIndex(finalChildren, target, expectedIndex) ||
-    readParentNode(target) !== parent
+    !hasExactElementSiblingIndex(finalChildren, target, expectedIndex)
   ) return undefined;
   return expectedIndex;
 }
@@ -638,7 +640,7 @@ function snapshotChildNodes(parent: Node): readonly Node[] | undefined {
   const snapshot: Node[] = [];
   for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
     const child = readCollectionItem(children.collection, physicalIndex);
-    if (!isNode(child) || readParentNode(child) !== parent) return undefined;
+    if (!isNode(child)) return undefined;
     snapshot.push(child);
   }
   return Object.freeze(snapshot);
@@ -684,7 +686,6 @@ function matchesSegment(
   root: Node,
 ): boolean {
   if (readTagName(element) !== segment.tagName) return false;
-  if (elementSiblingIndex(parent, element) !== segment.siblingIndex) return false;
   const evidence = readCanonicalEvidence(element, parent, root);
   if (!evidence) return false;
   const id = stabilizeSegmentIdentity(
@@ -692,7 +693,6 @@ function matchesSegment(
     parent,
     root,
     segment.tagName,
-    segment.siblingIndex,
     evidence,
   );
   if (
@@ -703,7 +703,8 @@ function matchesSegment(
   ) {
     return false;
   }
-  return true;
+  // Keep the final DOM read as an exact child snapshot proof.
+  return elementSiblingIndex(parent, element) === segment.siblingIndex;
 }
 
 function stabilizeSegmentIdentity(
@@ -711,7 +712,6 @@ function stabilizeSegmentIdentity(
   parent: Node,
   root: Node,
   tagName: string,
-  siblingIndex: number,
   evidence: CanonicalEvidence,
 ): string | undefined | typeof READ_FAILED {
   const firstUnique = evidence.id === undefined
@@ -721,7 +721,6 @@ function stabilizeSegmentIdentity(
   const verifiedEvidence = readCanonicalEvidence(element, parent, root);
   if (
     readTagName(element) !== tagName ||
-    elementSiblingIndex(parent, element) !== siblingIndex ||
     !verifiedEvidence ||
     !sameCanonicalEvidence(evidence, verifiedEvidence)
   ) return READ_FAILED;
@@ -732,7 +731,6 @@ function stabilizeSegmentIdentity(
   const finalEvidence = readCanonicalEvidence(element, parent, root);
   if (
     readTagName(element) !== tagName ||
-    elementSiblingIndex(parent, element) !== siblingIndex ||
     !finalEvidence ||
     !sameCanonicalEvidence(evidence, finalEvidence)
   ) return READ_FAILED;
@@ -886,20 +884,45 @@ function hasExpectedRoot(node: Node, expectedRoot: Node): boolean {
   return current === expectedRoot;
 }
 
-function readOpenShadowRoot(element: Element): ShadowRoot | undefined {
+function readOpenShadowRoot(
+  element: Element,
+  seen?: ReadonlySet<Node>,
+): ShadowRoot | undefined {
   try {
     const root = element.shadowRoot;
-    return root?.mode === "open" ? root : undefined;
+    return exactOpenShadowRoot(root, element, seen);
   } catch {
     return undefined;
   }
 }
 
-function isOpenShadowRoot(node: Node): node is ShadowRoot {
+function exactOpenShadowRoot(
+  node: unknown,
+  expectedHost?: Element,
+  seen?: ReadonlySet<Node>,
+): ShadowRoot | undefined {
   try {
-    return node.nodeType === 11 && (node as ShadowRoot).mode === "open";
+    if (!node || typeof node !== "object") return undefined;
+    const root = node as ShadowRoot;
+    if (root.nodeType !== 11 || root.mode !== "open" || seen?.has(root)) {
+      return undefined;
+    }
+    const host = root.host;
+    if (
+      !host ||
+      host.nodeType !== 1 ||
+      (expectedHost !== undefined && host !== expectedHost) ||
+      host.shadowRoot !== root ||
+      root.parentNode !== null
+    ) {
+      return undefined;
+    }
+    const getRootNode = root.getRootNode;
+    return typeof getRootNode === "function" && getRootNode.call(root) === root
+      ? root
+      : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 

@@ -651,7 +651,7 @@ describe("FrameRegistry", () => {
     const description = registry.registerChildFrame(frame);
 
     expect(description).toMatchObject({ kind: "inaccessible", locked: true });
-    expect(frame.contentDocumentReads).toBe(1);
+    expect(frame.contentDocumentReads).toBe(2);
     expect(frame.contentWindowReads).toBe(0);
     expect(description).not.toHaveProperty("document");
     expect(JSON.parse(JSON.stringify(description!))).not.toHaveProperty("document");
@@ -753,8 +753,8 @@ describe("FrameRegistry", () => {
     expect(Object.isFrozen(accessible)).toBe(true);
     expect(registry.describeFrame(accessibleFrame)).toMatchObject({ frameRef: accessible.frameRef });
     expect(accessibleFrame.loadListenerCount).toBe(1);
-    expect(accessibleFrame.contentDocumentReads).toBe(2);
-    expect(accessibleFrame.contentWindowReads).toBe(2);
+    expect(accessibleFrame.contentDocumentReads).toBe(3);
+    expect(accessibleFrame.contentWindowReads).toBe(3);
 
     const lockedFrame = createFrame({ document: null });
     const locked = registry.describeFrame(lockedFrame);
@@ -763,7 +763,7 @@ describe("FrameRegistry", () => {
     expect(Object.isFrozen(locked)).toBe(true);
     expect(registry.describeFrame(lockedFrame)).toEqual(locked);
     expect(lockedFrame.loadListenerCount).toBe(1);
-    expect(lockedFrame.contentDocumentReads).toBe(1);
+    expect(lockedFrame.contentDocumentReads).toBe(2);
   });
 
   it("invalidates only a loaded frame subtree and retains an unaffected sibling", () => {
@@ -1199,6 +1199,35 @@ describe("FrameRegistry", () => {
     expect(events.map((event) => event.type)).toEqual(["registered"]);
   });
 
+  it.each([
+    ["different accessible document", (frame: FakeFrame, next: Document) => frame.setDocument(next)],
+    ["inaccessible document", (frame: FakeFrame, _next: Document) => frame.setDocument(null)],
+    ["hostile document getter", (frame: FakeFrame, _next: Document) => (
+      frame.setContentDocumentError(new Error("hostile post-listener access"))
+    )],
+  ] as const)(
+    "rejects a frame whose %s changes while installing its listener",
+    (_label, mutate) => {
+      const events: string[] = [];
+      const registry = new FrameRegistry(createDocument(), {
+        maxFrames: 3,
+        onLifecycle: (event) => events.push(event.type),
+      });
+      let frame!: FakeFrame & HTMLIFrameElement;
+      frame = createFrame({
+        document: createDocument(),
+        onAddLoadListener: () => mutate(frame, createDocument()),
+      });
+
+      expect(registry.describeFrame(frame)).toBeUndefined();
+      expect(frame.loadListenerCount).toBe(0);
+      expect(registry.accessibleContexts()).toHaveLength(1);
+      expect(events).toEqual([]);
+      expect(registry.describeFrame(createFrame({ document: createDocument() })))
+        .toMatchObject({ frameRef: "frame-2" });
+    },
+  );
+
   it("blocks registration while unregister detaches a hostile listener", () => {
     const events: FrameLifecycleEvent[] = [];
     const intruderFrame = createFrame({ document: createDocument() });
@@ -1501,8 +1530,8 @@ describe("FrameRegistry", () => {
     frame.dispatchLoad();
 
     expect(registry.describeFrame(frame)).toMatchObject({ kind: "inaccessible", frameRef: first.frameRef });
-    expect(frame.contentDocumentReads).toBe(2);
-    expect(frame.contentWindowReads).toBe(1);
+    expect(frame.contentDocumentReads).toBe(3);
+    expect(frame.contentWindowReads).toBe(2);
     frame.setContentDocumentError(undefined);
     const replacementDocument = createDocument();
     frame.setDocument(replacementDocument);
@@ -1514,8 +1543,8 @@ describe("FrameRegistry", () => {
       frameRef: first.frameRef,
       document: replacementDocument,
     });
-    expect(frame.contentDocumentReads).toBe(4);
-    expect(frame.contentWindowReads).toBe(3);
+    expect(frame.contentDocumentReads).toBe(5);
+    expect(frame.contentWindowReads).toBe(4);
     expect(events).toEqual(["registered:true", "navigated:false", "navigated:true"]);
   });
 

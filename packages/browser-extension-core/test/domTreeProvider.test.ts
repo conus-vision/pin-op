@@ -889,7 +889,7 @@ describe("DomTreeProvider", () => {
       expandable: false,
       inaccessible: true,
     });
-    expect(frame.contentDocumentReads).toBe(1);
+    expect(frame.contentDocumentReads).toBe(2);
     expect(frame.contentWindowReads).toBe(0);
   });
 
@@ -3803,6 +3803,86 @@ describe("DomTreeProvider", () => {
     ]);
   });
 
+  it("rejects malformed shadow-root targets during capture and resolution", () => {
+    const first = createNestedShadowTree();
+    const firstRoot = first.provider.getRoot();
+    const firstHost = onlyChild(first.provider, firstRoot.node, 3, "first-malformed-shadow-host");
+    const firstShadow = onlyChild(first.provider, firstHost, 3, "first-malformed-shadow-root");
+    const second = createNestedShadowTree();
+    const outer = second.document.documentElement.childNodes[0] as FakeElement;
+    const unrelated = createElement("aside", second.document);
+    const unrelatedRoot = unrelated.attachShadow();
+
+    outer.shadowRoot = unrelatedRoot;
+    expect(resolveStableLocator(second.provider, firstShadow.locator)).toBeUndefined();
+
+    const capture = createNestedShadowTree();
+    const captureRoot = capture.provider.getRoot();
+    const captureHost = onlyChild(capture.provider, captureRoot.node, 3, "hostile-shadow-host");
+    const captureShadow = (capture.document.documentElement.childNodes[0] as FakeElement).shadowRoot!;
+    Object.defineProperty(captureShadow, "host", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile shadow host");
+      },
+    });
+    expect(() => onlyChild(
+      capture.provider,
+      captureHost,
+      3,
+      "hostile-shadow-root",
+    )).toThrowError("node-unavailable");
+  });
+
+  it("rejects a cyclic shadow-root target", () => {
+    const first = createNestedShadowTree();
+    const firstRoot = first.provider.getRoot();
+    const firstHost = onlyChild(first.provider, firstRoot.node, 3, "first-cyclic-shadow-host");
+    const firstShadow = onlyChild(first.provider, firstHost, 3, "first-cyclic-shadow-root");
+    const second = createNestedShadowTree();
+    const outer = second.document.documentElement.childNodes[0] as FakeElement;
+    const outerShadow = outer.shadowRoot!;
+
+    Object.defineProperty(outerShadow, "host", {
+      configurable: true,
+      value: outerShadow,
+    });
+
+    expect(resolveStableLocator(second.provider, firstShadow.locator)).toBeUndefined();
+  });
+
+  it("rejects malformed shadow-root boundaries before resolving an element target", () => {
+    const first = createNestedShadowTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createNestedShadowTree();
+    const outer = second.document.documentElement.childNodes[0] as FakeElement;
+    const outerShadow = outer.shadowRoot!;
+
+    Object.defineProperty(outerShadow, "host", {
+      configurable: true,
+      value: outerShadow,
+    });
+    Object.defineProperty(outerShadow, "getRootNode", {
+      configurable: true,
+      value: () => outer,
+    });
+
+    expect(resolveStableLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("rejects a shadow boundary whose host points at a different element", () => {
+    const first = createNestedShadowTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createNestedShadowTree();
+    const outer = second.document.documentElement.childNodes[0] as FakeElement;
+    const unrelated = createElement("aside", second.document);
+    const unrelatedRoot = unrelated.attachShadow();
+
+    outer.shadowRoot = unrelatedRoot;
+
+    expect(resolveStableLocator(second.provider, locator)).toBeUndefined();
+  });
+
   it("resolves a captured frame-document target through its registered exact host", () => {
     const first = createFramedButtonTree({ materialize: false });
     const firstUnrelated = createElement("aside", first.document);
@@ -4204,6 +4284,85 @@ describe("DomTreeProvider", () => {
     });
 
     expect(resolveLocator(second.provider, locator)).toBeUndefined();
+  });
+
+  it("rejects capture when a formerly post-snapshot parent getter reorders same-length siblings", () => {
+    const tree = createHeadingTree({ includeSibling: true });
+    const sibling = tree.main.childNodes[0] as FakeElement;
+    const children = tree.main.childNodes;
+    let childReadsAfterPrevious = 0;
+    let reordered = false;
+    Object.defineProperty(tree.target, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        childReadsAfterPrevious = 0;
+        return sibling;
+      },
+    });
+    Object.defineProperty(tree.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        childReadsAfterPrevious += 1;
+        return children;
+      },
+    });
+    Object.defineProperty(tree.target, "parentNode", {
+      configurable: true,
+      get: () => {
+        if (!reordered && childReadsAfterPrevious === 2) {
+          reordered = true;
+          tree.main.childNodes.splice(0, 2, tree.target, sibling);
+          tree.target.previousElementSibling = null;
+          sibling.previousElementSibling = tree.target;
+        }
+        return tree.main;
+      },
+    });
+
+    const service = (tree.provider as unknown as {
+      readonly locatorService: { capture(node: Node, kind: "element"): DomStableLocator };
+    }).locatorService;
+    expect(() => service.capture(tree.target as unknown as Node, "element")).toThrow("Invalid stable DOM locator");
+    expect(reordered).toBe(true);
+  });
+
+  it("rejects recovery when a formerly post-snapshot parent getter reorders same-length siblings", () => {
+    const first = createHeadingTree({ includeSibling: true });
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree({ includeSibling: true });
+    const sibling = second.main.childNodes[0] as FakeElement;
+    const children = second.main.childNodes;
+    let childReadsAfterPrevious = 0;
+    let reordered = false;
+    Object.defineProperty(second.target, "previousElementSibling", {
+      configurable: true,
+      get: () => {
+        childReadsAfterPrevious = 0;
+        return sibling;
+      },
+    });
+    Object.defineProperty(second.main, "childNodes", {
+      configurable: true,
+      get: () => {
+        childReadsAfterPrevious += 1;
+        return children;
+      },
+    });
+    Object.defineProperty(second.target, "parentNode", {
+      configurable: true,
+      get: () => {
+        if (!reordered && childReadsAfterPrevious === 2) {
+          reordered = true;
+          second.main.childNodes.splice(0, 2, second.target, sibling);
+          second.target.previousElementSibling = null;
+          sibling.previousElementSibling = second.target;
+        }
+        return second.main;
+      },
+    });
+
+    expect(resolveStableLocator(second.provider, locator)).toBeUndefined();
+    expect(reordered).toBe(true);
   });
 
   it("omits a capture ID when a second bounded scan finds a late duplicate", () => {
@@ -4712,6 +4871,15 @@ function resolveLocator(
   }).resolveLocator(locator);
 }
 
+function resolveStableLocator(
+  provider: DomTreeProvider,
+  locator: DomStableLocator,
+): unknown {
+  return (provider as unknown as {
+    readonly locatorService: { resolve(locator: DomStableLocator): unknown };
+  }).locatorService.resolve(locator);
+}
+
 function locatorFor(provider: DomTreeProvider, target: FakeElement): DomStableLocator {
   return provider.revealElement(target as unknown as Element).ancestorPath.at(-1)!.locator;
 }
@@ -5109,6 +5277,10 @@ class FakeShadowRoot extends FakeNode {
 
   public constructor(public readonly host: FakeElement) {
     super(11);
+  }
+
+  public getRootNode(): FakeShadowRoot {
+    return this;
   }
 }
 
