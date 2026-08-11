@@ -2715,23 +2715,19 @@ describe("DomTreeProvider", () => {
     });
   });
 
-  it("bounds element labels as plain display text rather than HTML", () => {
+  it("fails closed rather than delivering a hostile tag with an empty locator", () => {
     const document = createDocument();
     const hostileTagName = `<SCRIPT>${"x".repeat(600)}</SCRIPT>`;
     document.documentElement.append(new FakeElement(hostileTagName, document));
     const provider = createProvider(document);
     const root = provider.getRoot();
 
-    const child = onlyChild(
+    expect(() => onlyChild(
       provider,
       root.node,
       root.documentEpoch,
       "root-children",
-    );
-
-    expect(child.label.length).toBeGreaterThan(0);
-    expect(child.label.length).toBeLessThanOrEqual(512);
-    expect(child.label).not.toMatch(/[<>]/);
+    )).toThrowError("node-unavailable");
   });
 
   it("includes approved identity and attribute names without private values", () => {
@@ -3204,11 +3200,11 @@ describe("DomTreeProvider", () => {
     expect(internals.nodeRegistry.size).toBeLessThanOrEqual(8);
   });
 
-  it("cleans branches and observers beyond the wire path depth on collapse", () => {
+  it("cleans nested branches and observers on collapse", () => {
     const document = createDocument();
     const collapsedRoot = createElement("main", document);
     let current = collapsedRoot;
-    for (let depth = 0; depth < 72; depth += 1) {
+    for (let depth = 0; depth < 60; depth += 1) {
       const child = createElement("section", document);
       current.append(child);
       current = child;
@@ -3232,7 +3228,7 @@ describe("DomTreeProvider", () => {
       branchRevision: root.node.branchRevision,
     }).nodes;
     let deepView = topChildren[0]!;
-    for (let depth = 0; depth < 72; depth += 1) {
+    for (let depth = 0; depth < 60; depth += 1) {
       deepView = onlyChild(
         harness.provider,
         deepView,
@@ -3272,10 +3268,10 @@ describe("DomTreeProvider", () => {
       observer.observedTargets.includes(unrelatedShadow)
     ))!;
 
-    expect(() => harness.provider.ancestorPath(
+    expect(harness.provider.ancestorPath(
       deepShadowView.nodeRef,
       root.documentEpoch,
-    )).toThrowError("node-unavailable");
+    )).toHaveLength(63);
 
     harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
 
@@ -3653,6 +3649,235 @@ describe("DomTreeProvider", () => {
 
     expect(resolveLocator(provider, locator)).toBeUndefined();
   });
+
+  it("never delivers an empty locator when capture cannot prove identity", () => {
+    const hostileDocument = createDocument();
+    hostileDocument.documentElement.append(
+      new FakeElement(`<SCRIPT>${"x".repeat(600)}</SCRIPT>`, hostileDocument),
+    );
+    const hostileProvider = createProvider(hostileDocument);
+    const hostileRoot = hostileProvider.getRoot();
+    expect(() => onlyChild(
+      hostileProvider,
+      hostileRoot.node,
+      hostileRoot.documentEpoch,
+      "hostile-capture",
+    )).toThrowError("node-unavailable");
+
+    const deepDocument = createDocument();
+    let parent = deepDocument.documentElement;
+    for (let depth = 0; depth < 64; depth += 1) {
+      const child = createElement("section", deepDocument);
+      parent.append(child);
+      parent = child;
+    }
+    const deepProvider = createProvider(deepDocument);
+    let view = deepProvider.getRoot().node;
+    for (let depth = 0; depth < 63; depth += 1) {
+      view = onlyChild(deepProvider, view, 3, `deep-${depth}`);
+      expect(view.locator.path).not.toHaveLength(0);
+    }
+    expect(() => onlyChild(deepProvider, view, 3, "too-deep")).toThrowError(
+      "node-unavailable",
+    );
+  });
+
+  it("captures canonical punctuation-bearing attributes in parser order", () => {
+    const first = createHeadingTree({ includeAttributes: false });
+    first.target.setAttribute("data-a_", "underscore");
+    first.target.setAttribute("data-a.0", "dot");
+    first.target.setAttribute("data-a1", "digit");
+    first.target.setAttribute("data-a", "dash");
+    const locator = locatorFor(first.provider, first.target);
+    const attributes = locator.path.at(-1)?.attributes ?? [];
+
+    expect(attributes.map(({ name }) => name)).toEqual([
+      "data-a",
+      "data-a.0",
+      "data-a1",
+      "data-a_",
+    ]);
+
+    const second = createHeadingTree({ includeAttributes: false });
+    second.target.setAttribute("data-a1", "digit");
+    second.target.setAttribute("data-a_", "underscore");
+    second.target.setAttribute("data-a", "dash");
+    second.target.setAttribute("data-a.0", "dot");
+    expect(resolveLocator(second.provider, locator)?.node.kind).toBe("element");
+  });
+
+  it("captures deterministic bounded evidence and rejects oversized hostile collections", () => {
+    const first = createHeadingTree({ includeAttributes: false });
+    for (let index = 9; index >= 0; index -= 1) {
+      first.target.setAttribute(`data-key-${index}`, String(index));
+    }
+    const locator = locatorFor(first.provider, first.target);
+    expect(locator.path.at(-1)?.attributes?.map(({ name }) => name)).toEqual([
+      "data-key-0",
+      "data-key-1",
+      "data-key-2",
+      "data-key-3",
+      "data-key-4",
+      "data-key-5",
+      "data-key-6",
+      "data-key-7",
+    ]);
+
+    const oversized = createHeadingTree({ includeAttributes: false });
+    for (let index = 0; index <= 256; index += 1) {
+      oversized.target.setAttribute(`data-overflow-${index}`, String(index));
+    }
+    expect(() => locatorFor(oversized.provider, oversized.target)).toThrowError(
+      "node-unavailable",
+    );
+  });
+
+  it("delivers only non-empty recoverable locators for ordinary element, shadow, and frame views", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    host.attachShadow().append(createElement("button", document));
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(host);
+    document.documentElement.append(frame);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const [hostView, frameView] = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "ordinary-views",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const shadowView = onlyChild(provider, hostView!, root.documentEpoch, "ordinary-shadow");
+    const frameDocumentView = onlyChild(provider, frameView!, root.documentEpoch, "ordinary-frame");
+
+    for (const view of [root.node, hostView!, shadowView, frameView!, frameDocumentView]) {
+      expect(view.locator.path.length + view.locator.boundaries.length).toBeGreaterThan(0);
+      expect(resolveLocator(provider, view.locator)?.node.kind).toBe(view.kind);
+    }
+  });
+
+  it("captures and resolves a target after more than 1024 preceding siblings", () => {
+    const first = createDocument();
+    let firstTarget!: FakeElement;
+    for (let index = 0; index < 1_025; index += 1) {
+      const sibling = createElement("span", first);
+      first.documentElement.append(sibling);
+      firstTarget = sibling;
+    }
+    firstTarget.id = "wide_target";
+    const locator = locatorFor(createProvider(first), firstTarget);
+
+    const second = createDocument();
+    let secondTarget!: FakeElement;
+    for (let index = 0; index < 1_025; index += 1) {
+      const sibling = createElement("span", second);
+      second.documentElement.append(sibling);
+      secondTarget = sibling;
+    }
+    secondTarget.id = "wide_target";
+    expect(resolveLocator(createProvider(second), locator)?.node.label)
+      .toBe("span#wide_target");
+  });
+
+  it("resolves a captured shadow-root target with a fresh full materialized path", () => {
+    const first = createNestedShadowTree();
+    const firstUnrelated = createElement("aside", first.document);
+    first.document.documentElement.append(firstUnrelated);
+    first.provider.revealElement(firstUnrelated as unknown as Element);
+    first.document.documentElement.remove(firstUnrelated);
+    const firstRoot = first.provider.getRoot();
+    const firstHost = onlyChild(first.provider, firstRoot.node, 3, "first-shadow-host");
+    const firstShadow = onlyChild(first.provider, firstHost, 3, "first-shadow-root");
+    const second = createNestedShadowTree();
+    const secondRoot = second.provider.getRoot();
+    const secondHost = onlyChild(second.provider, secondRoot.node, 3, "second-shadow-host");
+    onlyChild(second.provider, secondHost, 3, "second-shadow-root");
+
+    const restored = resolveLocator(second.provider, firstShadow.locator);
+
+    expect(restored?.node.kind).toBe("shadow-root");
+    expect(restored?.node.nodeRef).not.toBe(firstShadow.nodeRef);
+    expect(restored?.ancestorPath.map(({ kind }) => kind)).toEqual([
+      "element",
+      "element",
+      "shadow-root",
+    ]);
+  });
+
+  it("resolves a captured frame-document target through its registered exact host", () => {
+    const first = createFramedButtonTree({ materialize: false });
+    const firstUnrelated = createElement("aside", first.document);
+    first.document.documentElement.append(firstUnrelated);
+    first.provider.revealElement(firstUnrelated as unknown as Element);
+    first.document.documentElement.remove(firstUnrelated);
+    const firstRoot = first.provider.getRoot();
+    const firstFrame = onlyChild(first.provider, firstRoot.node, 3, "first-frame");
+    const firstDocument = onlyChild(first.provider, firstFrame, 3, "first-frame-document");
+    const second = createFramedButtonTree({
+      materialize: false,
+      includeUnrelatedFrame: true,
+    });
+    expect(second.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+
+    const restored = resolveLocator(second.provider, firstDocument.locator);
+
+    expect(restored?.node.kind).toBe("frame-document");
+    expect(restored?.node.nodeRef).not.toBe(firstDocument.nodeRef);
+    expect(restored?.ancestorPath.map(({ kind }) => kind)).toEqual([
+      "element",
+      "element",
+      "frame-document",
+    ]);
+    expect(second.provider.frameAuthority.accessibleContexts()).toHaveLength(2);
+    expect(second.provider.frameAuthority.accessibleContexts().map(({ document }) => document))
+      .not.toContain(second.unrelatedDocument as unknown as Document);
+  });
+
+  it("fails locator resolution for excluded, inaccessible, and cyclic current DOM", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+
+    const excluded = createHeadingTree();
+    const excludedProvider = createProviderHarness(excluded.document, {
+      isExcludedNode: (node) => node === excluded.target,
+    }).provider;
+    expect(resolveLocator(excludedProvider, locator)).toBeUndefined();
+
+    const framed = createFramedButtonTree();
+    const framedRoot = framed.provider.getRoot();
+    const framedHost = onlyChild(framed.provider, framedRoot.node, 3, "framed-host");
+    const framedDocument = onlyChild(framed.provider, framedHost, 3, "framed-document");
+    const inaccessible = createFramedButtonTree({
+      accessError: new Error("cross-origin"),
+      materialize: false,
+    });
+    expect(resolveLocator(inaccessible.provider, framedDocument.locator)).toBeUndefined();
+
+    const cyclic = createHeadingTree();
+    cyclic.target.parentNode = cyclic.target;
+    expect(resolveLocator(createProvider(cyclic.document), locator)).toBeUndefined();
+  });
+
+  it("fails closed for previous-sibling cycles and inaccessible evidence access", () => {
+    const document = createHeadingTree();
+    document.target.previousElementSibling = document.target;
+    expect(() => locatorFor(document.provider, document.target)).toThrowError(
+      "node-unavailable",
+    );
+
+    const hostile = createHeadingTree();
+    Object.defineProperty(hostile.target, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile attributes");
+      },
+    });
+    expect(() => locatorFor(hostile.provider, hostile.target)).toThrowError(
+      "node-unavailable",
+    );
+  });
 });
 
 function onlyChild(
@@ -3732,10 +3957,14 @@ function createNestedShadowTree(options: { readonly attachInnerShadow?: boolean 
     inner.append(target);
   }
   document.documentElement.append(outer);
-  return { provider: createProvider(document), target };
+  return { document, provider: createProvider(document), target };
 }
 
-function createFramedButtonTree(options: { readonly accessError?: Error } = {}) {
+function createFramedButtonTree(options: {
+  readonly accessError?: Error;
+  readonly materialize?: boolean;
+  readonly includeUnrelatedFrame?: boolean;
+} = {}) {
   const document = createDocument();
   const childDocument = createDocument();
   const frame = createFrameElement(document, childDocument, options.accessError);
@@ -3744,13 +3973,19 @@ function createFramedButtonTree(options: { readonly accessError?: Error } = {}) 
   target.className = "action";
   childDocument.documentElement.append(target);
   document.documentElement.append(frame);
-  const provider = createProvider(document);
-  const root = provider.getRoot();
-  const frameView = onlyChild(provider, root.node, root.documentEpoch, "frame");
-  if (!options.accessError) {
-    onlyChild(provider, frameView, root.documentEpoch, "frame-document");
+  const unrelatedDocument = options.includeUnrelatedFrame ? createDocument() : undefined;
+  if (unrelatedDocument) {
+    document.documentElement.append(createFrameElement(document, unrelatedDocument));
   }
-  return { provider, target };
+  const provider = createProvider(document);
+  if (options.materialize !== false) {
+    const root = provider.getRoot();
+    const frameView = onlyChild(provider, root.node, root.documentEpoch, "frame");
+    if (!options.accessError) {
+      onlyChild(provider, frameView, root.documentEpoch, "frame-document");
+    }
+  }
+  return { document, provider, target, unrelatedDocument };
 }
 
 interface ProviderHarnessOptions {

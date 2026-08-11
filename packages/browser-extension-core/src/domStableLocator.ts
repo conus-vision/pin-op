@@ -7,6 +7,7 @@ export const DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH = 128;
 export const DOM_TREE_RECOVERY_MAX_EXPANDED = 64;
 
 const MAX_ID_SCAN_NODES = 4_096;
+const MAX_EVIDENCE_PHYSICAL_SCAN = 256;
 
 export interface DomStableLocator {
   readonly version: 1;
@@ -47,9 +48,13 @@ export interface DomStableLocatorServiceOptions {
       readonly frameElement?: HTMLIFrameElement;
     } | undefined;
     getContext(frameRef: string): { readonly document: Document; readonly frameRef: string } | undefined;
-    describeFrame(
+    getContextForFrameElement(
       frameElement: HTMLIFrameElement,
-      parentFrameRef?: string,
+      parentFrameRef: string,
+    ): { readonly document: Document; readonly frameRef: string } | undefined;
+    authorizeExactFrameElement(
+      frameElement: HTMLIFrameElement,
+      parentFrameRef: string,
     ): {
       readonly kind: "accessible" | "inaccessible";
       readonly document?: Document;
@@ -116,7 +121,7 @@ export class DomStableLocatorService {
         continue;
       }
       if (!isFrameElement(host)) return undefined;
-      const description = this.frameRegistry.describeFrame(host, context.frameRef);
+      const description = this.resolveExactFrame(host, context.frameRef);
       if (
         !description ||
         description.kind !== "accessible" ||
@@ -145,7 +150,7 @@ export class DomStableLocatorService {
         : undefined;
     }
     if (!isFrameElement(target)) return undefined;
-    const description = this.frameRegistry.describeFrame(target, context.frameRef);
+    const description = this.resolveExactFrame(target, context.frameRef);
     return description?.kind === "accessible" && description.document &&
         !this.isExcluded(description.document)
       ? Object.freeze({ kind: parsed.targetKind, node: description.document })
@@ -222,6 +227,27 @@ export class DomStableLocatorService {
     return parent.nodeType === 1 ? parent as Element : undefined;
   }
 
+  private resolveExactFrame(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef: string,
+  ): { readonly kind: "accessible" | "inaccessible"; readonly document?: Document; readonly frameRef: string } | undefined {
+    const known = this.frameRegistry.getContextForFrameElement(
+      frameElement,
+      parentFrameRef,
+    );
+    if (known) {
+      return Object.freeze({
+        kind: "accessible" as const,
+        document: known.document,
+        frameRef: known.frameRef,
+      });
+    }
+    return this.frameRegistry.authorizeExactFrameElement(
+      frameElement,
+      parentFrameRef,
+    );
+  }
+
   private isExcluded(node: Node): boolean {
     try {
       return this.isExcludedNode(node);
@@ -280,20 +306,9 @@ function captureSegment(element: Element, parent: Node): DomPathSegment {
   const tagName = readTagName(element);
   const siblingIndex = elementSiblingIndex(parent, element);
   if (!tagName || siblingIndex === undefined) throw invalidLocator();
-  const id = boundedNonEmpty(readId(element));
-  const classes = Object.freeze(
-    readClasses(element)
-      .filter((value) => boundedNonEmpty(value) !== undefined && !hasWhitespace(value))
-      .sort()
-      .slice(0, DOM_STABLE_LOCATOR_MAX_CLASSES),
-  );
-  const attributes = Object.freeze(
-    readAttributes(element)
-      .filter(({ name, value }) => isApprovedAttributeName(name) && boundedText(value) !== undefined)
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, DOM_STABLE_LOCATOR_MAX_ATTRIBUTES)
-      .map(({ name, value }) => Object.freeze({ name, value })),
-  );
+  const id = boundedNonEmpty(readCaptureId(element));
+  const classes = captureClasses(element);
+  const attributes = captureAttributes(element);
   return Object.freeze({
     tagName,
     siblingIndex,
@@ -301,6 +316,92 @@ function captureSegment(element: Element, parent: Node): DomPathSegment {
     ...(classes.length === 0 ? {} : { classes }),
     ...(attributes.length === 0 ? {} : { attributes }),
   });
+}
+
+function captureClasses(element: Element): readonly string[] {
+  try {
+    const classList = element.classList;
+    const length = readBoundedCollectionLength(classList);
+    const selected: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const value = readCollectionItem(classList, index);
+      if (typeof value !== "string") throw invalidLocator();
+      if (boundedNonEmpty(value) !== undefined && !hasWhitespace(value)) {
+        insertBoundedCanonical(
+          selected,
+          value,
+          DOM_STABLE_LOCATOR_MAX_CLASSES,
+          (candidate) => candidate,
+        );
+      }
+    }
+    return Object.freeze(selected);
+  } catch {
+    throw invalidLocator();
+  }
+}
+
+function captureAttributes(element: Element): readonly DomLocatorAttribute[] {
+  try {
+    const attributes = element.attributes;
+    const length = readBoundedCollectionLength(attributes);
+    const selected: DomLocatorAttribute[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const attribute = readCollectionItem(attributes, index);
+      if (!attribute || typeof attribute !== "object") throw invalidLocator();
+      const name = String((attribute as { readonly name?: unknown }).name).toLowerCase();
+      const value = String((attribute as { readonly value?: unknown }).value);
+      if (isApprovedAttributeName(name) && boundedText(value) !== undefined) {
+        insertBoundedCanonical(
+          selected,
+          Object.freeze({ name, value }),
+          DOM_STABLE_LOCATOR_MAX_ATTRIBUTES,
+          ({ name: candidate }) => candidate,
+        );
+      }
+    }
+    return Object.freeze(selected);
+  } catch {
+    throw invalidLocator();
+  }
+}
+
+function readBoundedCollectionLength(collection: { readonly length: number }): number {
+  const length = collection.length;
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_EVIDENCE_PHYSICAL_SCAN) {
+    throw invalidLocator();
+  }
+  return length;
+}
+
+function readCollectionItem(collection: object, index: number): unknown {
+  const candidate = collection as {
+    readonly item?: (index: number) => unknown;
+    readonly [index: number]: unknown;
+  };
+  return typeof candidate.item === "function"
+    ? candidate.item(index)
+    : candidate[index];
+}
+
+function insertBoundedCanonical<T>(
+  values: T[],
+  value: T,
+  maximum: number,
+  keyOf: (value: T) => string,
+): void {
+  const key = keyOf(value);
+  let index = 0;
+  while (index < values.length && compareCodeUnits(keyOf(values[index]!), key) < 0) {
+    index += 1;
+  }
+  if (index < values.length && keyOf(values[index]!) === key) return;
+  if (index < maximum) values.splice(index, 0, value);
+  if (values.length > maximum) values.pop();
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function elementChildAt(parent: Node, siblingIndex: number): Element | undefined {
@@ -321,7 +422,7 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
     let current: Element | null = target;
     const seen = new Set<Element>();
     while (current) {
-      if (seen.has(current) || index >= DOM_STABLE_LOCATOR_MAX_DEPTH * 16) {
+      if (seen.has(current)) {
         return undefined;
       }
       seen.add(current);
@@ -352,9 +453,13 @@ function readPreviousElementSibling(element: Element): Element | null | undefine
 function matchesSegment(element: Element, segment: DomPathSegment): boolean {
   if (readTagName(element) !== segment.tagName) return false;
   if (segment.id !== undefined && readId(element) !== segment.id) return false;
-  const classes = new Set(readClasses(element));
+  const classValues = readClasses(element);
+  if (!classValues) return false;
+  const classes = new Set(classValues);
   if (segment.classes?.some((value) => !classes.has(value))) return false;
-  const attributes = new Map(readAttributes(element).map(({ name, value }) => [name, value]));
+  const attributeValues = readAttributes(element);
+  if (!attributeValues) return false;
+  const attributes = new Map(attributeValues.map(({ name, value }) => [name, value]));
   return !segment.attributes?.some(({ name, value }) => attributes.get(name) !== value);
 }
 
@@ -400,15 +505,25 @@ function readId(element: Element): string | undefined {
   }
 }
 
-function readClasses(element: Element): readonly string[] {
+function readCaptureId(element: Element): string | undefined {
   try {
-    return Array.from(element.classList, (value) => String(value));
+    const id = element.id;
+    if (typeof id !== "string") throw invalidLocator();
+    return id;
   } catch {
-    return Object.freeze([]);
+    throw invalidLocator();
   }
 }
 
-function readAttributes(element: Element): readonly DomLocatorAttribute[] {
+function readClasses(element: Element): readonly string[] | undefined {
+  try {
+    return Array.from(element.classList, (value) => String(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function readAttributes(element: Element): readonly DomLocatorAttribute[] | undefined {
   try {
     const values: DomLocatorAttribute[] = [];
     for (const attribute of Array.from(element.attributes)) {
@@ -418,7 +533,7 @@ function readAttributes(element: Element): readonly DomLocatorAttribute[] {
     }
     return Object.freeze(values);
   } catch {
-    return Object.freeze([]);
+    return undefined;
   }
 }
 

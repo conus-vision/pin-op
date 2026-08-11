@@ -153,6 +153,32 @@ export class FrameRegistry {
     return frameRef ? this.contexts.get(frameRef) : undefined;
   }
 
+  /** Returns only a frame context already authorized for this exact host and parent. */
+  public getContextForFrameElement(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef: string,
+  ): FrameContext | undefined {
+    if (
+      this.state !== "active" ||
+      !isObject(frameElement) ||
+      !isFrameRef(parentFrameRef)
+    ) {
+      return undefined;
+    }
+    const record = this.recordByElement.get(frameElement);
+    return record?.parentFrameRef === parentFrameRef
+      ? this.contexts.get(record.frameRef)
+      : undefined;
+  }
+
+  /** Authorizes one structurally proven frame host without scanning or URL inference. */
+  public authorizeExactFrameElement(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef: string,
+  ): FrameDescription | undefined {
+    return this.describeFrame(frameElement, parentFrameRef);
+  }
+
   public accessibleContexts(): readonly FrameContext[] {
     if (this.state !== "active") {
       return Object.freeze([]) as readonly FrameContext[];

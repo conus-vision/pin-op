@@ -346,12 +346,7 @@ export class DomTreeProvider {
     try {
       return this.locatorService.capture(node, kind);
     } catch {
-      return Object.freeze({
-        version: 1 as const,
-        targetKind: kind,
-        boundaries: Object.freeze([]),
-        path: Object.freeze([]),
-      });
+      throwDomTreeError("node-unavailable");
     }
   }
 
