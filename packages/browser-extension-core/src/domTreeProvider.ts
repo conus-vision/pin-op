@@ -2131,7 +2131,7 @@ export class DomTreeProvider {
       branchGenerations: [...this.branchGenerations],
       exhaustedBranches: [...this.exhaustedBranches],
       transientRecordRetentions: [...this.transientRecordRetentions],
-      expandedBranches: [...this.expandedBranches],
+      expandedBranches: snapshotExpandedBranches(this.expandedBranches),
       expandedShadowHosts: [...this.expandedShadowHosts],
       shadowRootRefs: [...this.shadowRootRefs],
       frameDescriptions: [...this.frameDescriptions],
@@ -2143,7 +2143,9 @@ export class DomTreeProvider {
       frameTracking: this.frameTracking,
       shadowScanOffset: this.shadowScanOffset,
       pendingMutations: [...this.pendingMutations],
-      pendingFrameMutationScans: [...this.pendingFrameMutationScans],
+      pendingFrameMutationScans: snapshotPendingFrameMutationScans(
+        this.pendingFrameMutationScans,
+      ),
       mutationTimer: this.mutationTimer,
       frameMutationScanTimer: this.frameMutationScanTimer,
       shadowScanTimer: this.shadowScanTimer,
@@ -2155,7 +2157,7 @@ export class DomTreeProvider {
     restoreMap(this.branchGenerations, snapshot.branchGenerations);
     restoreSet(this.exhaustedBranches, snapshot.exhaustedBranches);
     restoreMap(this.transientRecordRetentions, snapshot.transientRecordRetentions);
-    restoreMap(this.expandedBranches, snapshot.expandedBranches);
+    restoreMap(this.expandedBranches, snapshotExpandedBranches(snapshot.expandedBranches));
     restoreSet(this.expandedShadowHosts, snapshot.expandedShadowHosts);
     restoreMap(this.shadowRootRefs, snapshot.shadowRootRefs);
     restoreMap(this.frameDescriptions, snapshot.frameDescriptions);
@@ -2170,7 +2172,7 @@ export class DomTreeProvider {
     this.pendingFrameMutationScans.splice(
       0,
       this.pendingFrameMutationScans.length,
-      ...snapshot.pendingFrameMutationScans,
+      ...snapshotPendingFrameMutationScans(snapshot.pendingFrameMutationScans),
     );
     this.mutationTimer = snapshot.mutationTimer;
     this.frameMutationScanTimer = snapshot.frameMutationScanTimer;
@@ -2964,6 +2966,25 @@ function restoreMap<Key, Value>(
 function restoreSet<Value>(target: Set<Value>, values: readonly Value[]): void {
   target.clear();
   for (const value of values) target.add(value);
+}
+
+function snapshotExpandedBranches(
+  entries: Iterable<readonly [string, ExpandedBranch]>,
+): readonly (readonly [string, ExpandedBranch])[] {
+  return Object.freeze(Array.from(entries, ([nodeRef, branch]) => (
+    [nodeRef, { scope: branch.scope, revision: branch.revision }] as const
+  )));
+}
+
+function snapshotPendingFrameMutationScans(
+  scans: readonly PendingFrameMutationScan[],
+): readonly PendingFrameMutationScan[] {
+  return Object.freeze(scans.map((scan) => Object.freeze({
+    action: scan.action,
+    ownerRoot: scan.ownerRoot,
+    root: scan.root,
+    stack: scan.stack.map((entry) => ({ ...entry })),
+  })));
 }
 
 function createElementLabel(element: Element): string {

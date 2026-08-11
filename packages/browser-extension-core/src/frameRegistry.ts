@@ -150,7 +150,8 @@ export class FrameRegistry {
     if (this.state !== "active" || !isFrameRef(frameRef)) {
       return undefined;
     }
-    return this.contexts.get(frameRef);
+    const context = this.contexts.get(frameRef);
+    return context ? this.revalidateContext(context) : undefined;
   }
 
   public getContextForDocument(document: Document): FrameContext | undefined {
@@ -174,8 +175,7 @@ export class FrameRegistry {
     ) {
       return undefined;
     }
-    const parentContext = this.contexts.get(parentFrameRef);
-    const parent = parentContext ? this.revalidateContext(parentContext) : undefined;
+    const parent = this.getContext(parentFrameRef);
     if (!parent || readOwnerDocument(frameElement) !== parent.document) {
       return undefined;
     }
@@ -197,7 +197,7 @@ export class FrameRegistry {
     ) {
       return false;
     }
-    const parent = this.contexts.get(parentFrameRef);
+    const parent = this.getContext(parentFrameRef);
     if (!parent || readOwnerDocument(frameElement) !== parent.document) {
       return false;
     }
@@ -217,22 +217,24 @@ export class FrameRegistry {
     ) {
       return undefined;
     }
-    const parent = this.contexts.get(parentFrameRef);
+    const parent = this.getContext(parentFrameRef);
     if (!parent || readOwnerDocument(frameElement) !== parent.document) {
       return undefined;
     }
     const existing = this.recordByElement.get(frameElement);
-    if (existing && existing.parentFrameRef !== parentFrameRef) {
-      return undefined;
-    }
-    return this.describeFrame(frameElement, parentFrameRef);
+    if (!existing) return this.describeFrame(frameElement, parentFrameRef);
+    if (existing.parentFrameRef !== parentFrameRef) return undefined;
+    return this.describeExisting(existing, parent);
   }
 
   public accessibleContexts(): readonly FrameContext[] {
     if (this.state !== "active") {
       return Object.freeze([]) as readonly FrameContext[];
     }
-    return Object.freeze([...this.contexts.values()]);
+    return Object.freeze([...this.contexts.values()].flatMap((context) => {
+      const live = this.revalidateContext(context);
+      return live ? [live] : [];
+    }));
   }
 
   public registerChildFrame(
@@ -256,14 +258,14 @@ export class FrameRegistry {
     ) {
       return undefined;
     }
-    const parent = this.contexts.get(parentFrameRef);
+    const parent = this.getContext(parentFrameRef);
     if (!parent || readOwnerDocument(frameElement) !== parent.document) {
       return undefined;
     }
     const existing = this.recordByElement.get(frameElement);
     if (existing) {
       if (existing.parentFrameRef !== parentFrameRef) return undefined;
-      return this.describe(existing);
+      return this.describeExisting(existing, parent);
     }
     if (this.records.size + 1 >= this.maxFrames) {
       return undefined;
@@ -621,6 +623,18 @@ export class FrameRegistry {
     const context = this.contexts.get(record.frameRef);
     if (!context) return undefined;
     return Object.freeze({ kind: "accessible" as const, ...context });
+  }
+
+  private describeExisting(
+    record: FrameRecord,
+    parent: FrameContext,
+  ): FrameDescription | undefined {
+    if (!record.active || record.parentFrameRef !== parent.frameRef) return undefined;
+    if (!record.document) return this.describe(record);
+    const context = this.contexts.get(record.frameRef);
+    return context && this.revalidateContext(context, parent)
+      ? this.describe(record)
+      : undefined;
   }
 
   private revalidateContext(

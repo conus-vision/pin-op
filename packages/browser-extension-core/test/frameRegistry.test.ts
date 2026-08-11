@@ -742,7 +742,8 @@ describe("FrameRegistry", () => {
     expect(Object.isFrozen(accessible)).toBe(true);
     expect(registry.describeFrame(accessibleFrame)).toMatchObject({ frameRef: accessible.frameRef });
     expect(accessibleFrame.loadListenerCount).toBe(1);
-    expect(accessibleFrame.contentDocumentReads).toBe(1);
+    expect(accessibleFrame.contentDocumentReads).toBe(2);
+    expect(accessibleFrame.contentWindowReads).toBe(2);
 
     const lockedFrame = createFrame({ document: null });
     const locked = registry.describeFrame(lockedFrame);
@@ -1358,7 +1359,7 @@ describe("FrameRegistry", () => {
 
     expect(events).toHaveLength(eventCount);
     expect(registry.getContext(replacement.frameRef)).toMatchObject({ frameEpoch: 1 });
-    expect(replacementFrame.contentDocumentReads).toBe(replacementReads);
+    expect(replacementFrame.contentDocumentReads).toBe(replacementReads + 1);
   });
 
   it("uses a weak registry keyed load callback that stays inert when hostile removal leaks it", () => {
@@ -1502,8 +1503,8 @@ describe("FrameRegistry", () => {
       frameRef: first.frameRef,
       document: replacementDocument,
     });
-    expect(frame.contentDocumentReads).toBe(3);
-    expect(frame.contentWindowReads).toBe(2);
+    expect(frame.contentDocumentReads).toBe(4);
+    expect(frame.contentWindowReads).toBe(3);
     expect(events).toEqual(["registered:true", "navigated:false", "navigated:true"]);
   });
 
@@ -1940,14 +1941,23 @@ describe("FrameRegistry", () => {
     const topDocument = createDocument();
     const childDocument = createDocument();
     const replacementDocument = createDocument();
-    const registry = new FrameRegistry(topDocument, { maxFrames: 3 });
+    const events: string[] = [];
+    const registry = new FrameRegistry(topDocument, {
+      maxFrames: 3,
+      onLifecycle: (event) => events.push(event.type),
+    });
     const frame = createFrame({ document: childDocument, ownerDocument: topDocument });
     const description = registry.describeFrame(frame);
     if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+    const eventCount = events.length;
 
     frame.setDocument(replacementDocument);
+    expect(registry.getContext(description.frameRef)).toBeUndefined();
     expect(registry.getContextForFrameElement(frame, registry.topContext!.frameRef)).toBeUndefined();
     expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    expect(registry.describeFrame(frame)).toBeUndefined();
+    expect(registry.authorizeExactFrameElement(frame, registry.topContext!.frameRef))
+      .toBeUndefined();
 
     frame.setDocument(childDocument);
     Object.defineProperty(frame, "contentWindow", {
@@ -1958,10 +1968,31 @@ describe("FrameRegistry", () => {
     delete (frame as unknown as { contentWindow?: unknown }).contentWindow;
 
     frame.setContentDocumentError(new Error("hostile frame access"));
+    expect(registry.getContext(description.frameRef)).toBeUndefined();
     expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    expect(registry.describeFrame(frame)).toBeUndefined();
+    expect(registry.authorizeExactFrameElement(frame, registry.topContext!.frameRef))
+      .toBeUndefined();
+    expect(events).toHaveLength(eventCount);
+    expect(frame.loadListenerCount).toBe(1);
     frame.setContentDocumentError(undefined);
     expect(registry.getContextForFrameElement(frame, registry.topContext!.frameRef))
       .toMatchObject({ frameRef: description.frameRef, document: childDocument });
+  });
+
+  it("keeps existing inaccessible exact frame authority without live document access", () => {
+    const topDocument = createDocument();
+    const registry = new FrameRegistry(topDocument, { maxFrames: 3 });
+    const frame = createFrame({ document: null, ownerDocument: topDocument });
+    const locked = registry.describeFrame(frame);
+
+    expect(locked).toMatchObject({ kind: "inaccessible", locked: true });
+    expect(registry.authorizeExactFrameElement(frame, registry.topContext!.frameRef))
+      .toMatchObject({ kind: "inaccessible", frameRef: locked!.frameRef });
+    expect(registry.describeFrame(frame)).toMatchObject({
+      kind: "inaccessible",
+      frameRef: locked!.frameRef,
+    });
   });
 });
 

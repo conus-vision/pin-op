@@ -4066,6 +4066,20 @@ describe("DomTreeProvider", () => {
       .toThrow();
   });
 
+  it("rejects stable recovery through a frame whose live document changed before load", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree({ materialize: false });
+    const root = second.provider.getRoot();
+    onlyChild(second.provider, root.node, root.documentEpoch, "register-stale-frame");
+    const context = second.provider.frameAuthority.accessibleContexts().at(-1)!;
+    second.frame.setFrameDocument(createDocument());
+
+    expect(second.provider.frameAuthority.getContext(context.frameRef)).toBeUndefined();
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+    expect(second.frame.loadListenerCount).toBe(1);
+  });
+
   it("rejects capture when a sibling shortcut hides an excessive child collection", () => {
     const tree = createHeadingTree();
     tree.target.id = "";
@@ -4217,6 +4231,59 @@ describe("DomTreeProvider", () => {
     });
     expect(onlyChild(harness.provider, root.node, root.documentEpoch, "retried-first-expansion").label)
       .toBe("article");
+  });
+
+  it("restores an unaliased expanded branch after shadow discovery fails", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    for (let index = 0; index < 51; index += 1) {
+      host.append(createElement("span", document));
+    }
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(harness.provider, root.node, root.documentEpoch, "branch-host");
+    const initialPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "expand-host",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    });
+    const cursor = initialPage.nextCursor!;
+    const shadow = host.attachShadow();
+    const provider = harness.provider as unknown as {
+      readonly expandedBranches: ReadonlyMap<string, { revision: number }>;
+      readonly cursors: ReadonlyMap<string, { readonly branchRevision: number; readonly active: boolean }>;
+    };
+    const before = provider.expandedBranches.get(hostView.nodeRef)!;
+    const beforeCursor = provider.cursors.get(cursor)!;
+    let exposeShadow = true;
+    Object.defineProperty(host, "shadowRoot", {
+      configurable: true,
+      get: () => exposeShadow ? shadow : null,
+    });
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "failed-shadow-discovery",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    })).toThrowError("stale-branch");
+    const restored = provider.expandedBranches.get(hostView.nodeRef)!;
+    expect(restored).not.toBe(before);
+    expect(restored.revision).toBe(hostView.branchRevision);
+    expect(provider.cursors.get(cursor)).toEqual(beforeCursor);
+
+    exposeShadow = false;
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "retried-shadow-discovery",
+      documentEpoch: root.documentEpoch,
+      nodeRef: hostView.nodeRef,
+      branchRevision: hostView.branchRevision,
+    }).nodes).toHaveLength(50);
   });
 
   it("rolls back earlier child views when a later materialization throws", () => {
