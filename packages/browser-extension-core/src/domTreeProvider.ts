@@ -195,6 +195,11 @@ interface OwnedFrame {
   readonly parentFrameRef: string;
 }
 
+interface SelectedNodeRefRead {
+  readonly valid: boolean;
+  readonly nodeRef: string | undefined;
+}
+
 interface ProviderMaterializationMetadata {
   readonly records: readonly (readonly [string, NodeRecord])[];
   readonly branchGenerations: readonly (readonly [string, number])[];
@@ -313,6 +318,7 @@ export class DomTreeProvider {
   private nextPublicationToken = 1;
   private activePublicationToken: number | undefined;
   private activePublicationGuard: (() => boolean) | undefined;
+  private externalValueReadDepth = 0;
   private nextCursor = 1;
   private frameTracking = false;
   private disposed = false;
@@ -1222,7 +1228,11 @@ export class DomTreeProvider {
   }
 
   private protectSelectedRecordPath(): ReadonlySet<string> {
-    const selectedRef = this.readSelectedNodeRef();
+    const selected = this.readSelectedNodeRef();
+    if (!selected.valid) {
+      throwDomTreeError("node-unavailable");
+    }
+    const selectedRef = selected.nodeRef;
     if (!selectedRef) {
       return new Set<string>();
     }
@@ -2649,26 +2659,39 @@ export class DomTreeProvider {
     }
   }
 
-  private readSelectedNodeRef(): string | undefined {
-    try {
-      const nodeRef = this.getSelectedNodeRef?.();
-      return typeof nodeRef === "string" ? nodeRef : undefined;
-    } catch {
-      return undefined;
+  private readSelectedNodeRef(): SelectedNodeRefRead {
+    if (!this.getSelectedNodeRef) {
+      return Object.freeze({ valid: true, nodeRef: undefined });
     }
+    let nodeRef: string | undefined;
+    this.externalValueReadDepth += 1;
+    try {
+      const selected = this.getSelectedNodeRef();
+      nodeRef = typeof selected === "string" ? selected : undefined;
+    } catch {
+      // A selected-ref provider is optional and cannot break ownership cleanup.
+    } finally {
+      this.externalValueReadDepth -= 1;
+    }
+    return Object.freeze({
+      valid: this.publicationCanContinue(),
+      nodeRef,
+    });
   }
 
   private releaseInvalidatedRefs(
     nodeRefs: readonly string[],
     notifySelectedRemoval = true,
-  ): void {
+  ): boolean {
     if (nodeRefs.length === 0) {
-      return;
+      return true;
     }
     const invalidated = new Set(nodeRefs);
-    const selectedRef = notifySelectedRemoval
+    const selected = notifySelectedRemoval
       ? this.readSelectedNodeRef()
-      : undefined;
+      : Object.freeze({ valid: true, nodeRef: undefined });
+    if (!selected.valid) return false;
+    const selectedRef = selected.nodeRef;
     const selectedWasRemoved = selectedRef !== undefined && invalidated.has(selectedRef);
     for (const nodeRef of invalidated) {
       this.expandedBranches.delete(nodeRef);
@@ -2685,12 +2708,13 @@ export class DomTreeProvider {
       }
     }
     this.stopShadowScanIfIdle();
-    if (notifySelectedRemoval && selectedWasRemoved) {
+    if (notifySelectedRemoval && selectedRef !== undefined && selectedWasRemoved) {
       this.pendingSelectedRemoval ??= Object.freeze({
         nodeRef: selectedRef,
         documentEpoch: this.documentEpoch,
       });
     }
+    return true;
   }
 
   private emitPendingSelectedRemoval(): boolean {
@@ -2738,7 +2762,15 @@ export class DomTreeProvider {
     } catch {
       // Consumer callbacks cannot disrupt DOM ownership bookkeeping.
     }
-    return this.activePublicationGuard?.() ?? true;
+    return this.publicationCanContinue();
+  }
+
+  private publicationCanContinue(): boolean {
+    try {
+      return this.activePublicationGuard?.() ?? true;
+    } catch {
+      return false;
+    }
   }
 
   private emitOutwardEffect(effect: ProviderOutwardEffect): boolean {
@@ -3009,7 +3041,7 @@ export class DomTreeProvider {
   private releaseFrameDocuments(
     frameRefs: readonly string[],
     notifySelectedRemoval = true,
-  ): void {
+  ): boolean {
     const documents = new Set<Document>();
     for (const frameRef of frameRefs) {
       const document = this.frameDocumentsByRef.get(frameRef);
@@ -3021,15 +3053,18 @@ export class DomTreeProvider {
     for (const document of documents) {
       this.disconnectObserversWithin(document);
       const invalidated = this.nodeRegistry.invalidateSubtree(document);
-      this.releaseInvalidatedRefs(invalidated, notifySelectedRemoval);
+      if (!this.releaseInvalidatedRefs(invalidated, notifySelectedRemoval)) {
+        return false;
+      }
     }
+    return true;
   }
 
   private releaseFrameIdentity(
     frameRef: string,
     releaseOwnership = false,
-  ): void {
-    this.releaseFrameDocuments([frameRef]);
+  ): boolean {
+    if (!this.releaseFrameDocuments([frameRef])) return false;
     for (const [nodeRef, description] of this.frameDescriptions) {
       if (description.frameRef === frameRef) {
         this.frameDescriptions.delete(nodeRef);
@@ -3043,6 +3078,7 @@ export class DomTreeProvider {
       this.ownedFramesByRef.delete(frameRef);
       this.inactiveFrameRefs.delete(frameRef);
     }
+    return true;
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): boolean {
@@ -3053,6 +3089,9 @@ export class DomTreeProvider {
     if (this.replayingFrameEffect !== event) {
       this.authorityGeneration += 1;
     }
+    if (this.externalValueReadDepth > 0 && this.activePublicationGuard) {
+      return false;
+    }
     if (this.disposed || event.type === "reset") {
       return true;
     }
@@ -3060,13 +3099,13 @@ export class DomTreeProvider {
       .filter(([, description]) => description.frameRef === event.frameRef)
       .map(([nodeRef]) => nodeRef);
     if (event.type !== "registered") {
-      this.releaseFrameIdentity(
+      if (!this.releaseFrameIdentity(
         event.frameRef,
         event.type !== "navigated",
-      );
+      )) return false;
     }
     for (const identity of event.invalidated ?? []) {
-      this.releaseFrameIdentity(identity.frameRef, true);
+      if (!this.releaseFrameIdentity(identity.frameRef, true)) return false;
     }
     if (event.type === "registered" || event.type === "navigated") {
       const context = this.frameRegistry.getContext(event.frameRef);

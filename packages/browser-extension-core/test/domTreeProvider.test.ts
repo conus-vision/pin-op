@@ -4587,6 +4587,135 @@ describe("DomTreeProvider", () => {
   });
 
   it.each([
+    ["reset", (provider: DomTreeProvider, _frame: FakeFrameElement) => {
+      provider.resetDocument(createDocument() as unknown as Document, 4);
+    }],
+    ["dispose", (provider: DomTreeProvider, _frame: FakeFrameElement) => {
+      provider.dispose();
+    }],
+    ["navigate", (_provider: DomTreeProvider, frame: FakeFrameElement) => {
+      frame.setFrameDocument(createDocument());
+      frame.dispatchLoad();
+    }],
+  ] as const)("stops frame publication when the selected-ref reader %s authority", (_name, invalidate) => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const target = createElement("button", childDocument);
+    childDocument.documentElement.append(target);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let selectedRef: string | undefined;
+    let provider: DomTreeProvider | undefined;
+    let triggerSelectionRead = false;
+    let selectionRead = false;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => {
+        if (triggerSelectionRead && !selectionRead) {
+          selectionRead = true;
+          invalidate(provider!, frame);
+        }
+        return selectedRef;
+      },
+      onInvalidated: () => callbacks.push("invalidated"),
+      onSelectedNodeRemoved: () => callbacks.push("selected-removed"),
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "selection-read-frame");
+    const frameDocument = onlyChild(harness.provider, frameView, root.documentEpoch, "selection-read-document");
+    const childRoot = onlyChild(harness.provider, frameDocument, root.documentEpoch, "selection-read-html");
+    const targetView = onlyChild(harness.provider, childRoot, root.documentEpoch, "selection-read-target");
+    selectedRef = targetView.nodeRef;
+    const state = harness.provider as unknown as {
+      beginProviderAuthorityOperation(): { publish(validate?: () => boolean): boolean } | undefined;
+    };
+    const originalBeginOperation = state.beginProviderAuthorityOperation;
+    let triggerNavigation = false;
+    state.beginProviderAuthorityOperation = () => {
+      const operation = originalBeginOperation.call(state);
+      if (!operation) return undefined;
+      return Object.freeze({
+        ...operation,
+        publish: (validate?: () => boolean) => {
+          if (triggerNavigation) {
+            triggerNavigation = false;
+            frame.setFrameDocument(createDocument());
+            frame.dispatchLoad();
+          }
+          return operation.publish(validate);
+        },
+      });
+    };
+    callbacks.length = 0;
+    triggerSelectionRead = true;
+    triggerNavigation = true;
+
+    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+    expect(selectionRead).toBe(true);
+    expect(callbacks).toEqual([]);
+  });
+
+  it("keeps selected-ref reads read-only during frame publication", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const target = createElement("button", childDocument);
+    childDocument.documentElement.append(target);
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    let selectedRef: string | undefined;
+    let selectionReads = 0;
+    const callbacks: string[] = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => {
+        selectionReads += 1;
+        return selectedRef;
+      },
+      onInvalidated: () => callbacks.push("invalidated"),
+      onSelectedNodeRemoved: () => callbacks.push("selected-removed"),
+      onFrameLifecycle: () => callbacks.push("frame"),
+    });
+    const root = harness.provider.getRoot();
+    const frameView = onlyChild(harness.provider, root.node, root.documentEpoch, "selection-read-read-frame");
+    const frameDocument = onlyChild(harness.provider, frameView, root.documentEpoch, "selection-read-read-document");
+    const childRoot = onlyChild(harness.provider, frameDocument, root.documentEpoch, "selection-read-read-html");
+    const targetView = onlyChild(harness.provider, childRoot, root.documentEpoch, "selection-read-read-target");
+    selectedRef = targetView.nodeRef;
+    selectionReads = 0;
+    const state = harness.provider as unknown as {
+      beginProviderAuthorityOperation(): { publish(validate?: () => boolean): boolean } | undefined;
+    };
+    const originalBeginOperation = state.beginProviderAuthorityOperation;
+    let triggerNavigation = true;
+    state.beginProviderAuthorityOperation = () => {
+      const operation = originalBeginOperation.call(state);
+      if (!operation) return undefined;
+      return Object.freeze({
+        ...operation,
+        publish: (validate?: () => boolean) => {
+          if (triggerNavigation) {
+            triggerNavigation = false;
+            frame.setFrameDocument(createDocument());
+            frame.dispatchLoad();
+          }
+          return operation.publish(validate);
+        },
+      });
+    };
+    callbacks.length = 0;
+
+    expect(harness.provider.getRoot().node.label).toBe("html");
+    expect(selectionReads).toBe(1);
+    expect(callbacks).toEqual([
+      "invalidated",
+      "invalidated",
+      "selected-removed",
+      "frame",
+    ]);
+  });
+
+  it.each([
     ["detached", (document: FakeDocument, parent: FakeElement) => {
       (parent.parentNode as FakeElement).remove(parent);
     }],
