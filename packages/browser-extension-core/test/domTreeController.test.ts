@@ -6,6 +6,7 @@ import {
 import type {
   DomChildrenResponse,
   DomEvent,
+  DomLocatorResponse,
   DomNodeView,
   DomRequest,
   DomResponse,
@@ -436,6 +437,7 @@ describe("DomTreeController", () => {
 
     expect(snapshot).toEqual({
       selectedLocator,
+      selectedWasExpanded: false,
       expandedLocators: [locator(1), duplicateLocator],
     });
     expect(controller.snapshot().recovering).toBe(true);
@@ -467,6 +469,7 @@ describe("DomTreeController", () => {
     const snapshot = controller.beginRecovery();
 
     expect(snapshot.selectedLocator).toEqual(locator(2, 63));
+    expect(snapshot.selectedWasExpanded).toBe(true);
     expect(snapshot.expandedLocators).toHaveLength(64);
     expect(snapshot.expandedLocators[0]).toEqual(locator(1));
     expect(snapshot.expandedLocators.slice(1)).toEqual(
@@ -529,6 +532,94 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual(["new-root"]);
     expect(controller.snapshot().recovering).toBe(false);
     expect(changed).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes omitted recovered children after an ordinary live refresh", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [node("old-root")]));
+    const root = locatedNode("new-root", locator(1), true);
+    const recoveredChild = locatedNode(
+      "recovered-child",
+      locator(2, 1),
+      true,
+    );
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(root));
+    controller.installRecoveredPath(locatorResponse(root, [root]), {
+      selected: false,
+      expanded: true,
+    });
+    controller.installRecoveredPath(
+      locatorResponse(recoveredChild, [root, recoveredChild]),
+      { selected: false, expanded: true },
+    );
+    transport.enqueue(childrenResponse(root.nodeRef, 0, [recoveredChild]));
+    transport.enqueue(childrenResponse(recoveredChild.nodeRef, 0, []));
+    await controller.hydrateRecoveredBranches();
+    controller.finishRecovery();
+
+    expect(nodeRefs(controller)).toEqual(["new-root", "recovered-child"]);
+    expect(controller.isExpanded(recoveredChild.nodeRef)).toBe(true);
+
+    transport.enqueue(childrenResponse(root.nodeRef, 1, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 1 }],
+    });
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
+    expect(controller.isExpanded(recoveredChild.nodeRef)).toBe(false);
+    await controller.select(recoveredChild.nodeRef);
+    expect(transport.dispatched).toEqual([]);
+  });
+
+  it("retires an omitted recovered selection when a live selection replaces it", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [node("old-root")]));
+    const root = locatedNode("new-root", locator(1), true);
+    const recoveredSelected = locatedNode(
+      "recovered-selected",
+      locator(2, 1),
+      true,
+    );
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(root));
+    controller.installRecoveredPath(
+      locatorResponse(recoveredSelected, [root, recoveredSelected]),
+      { selected: true, expanded: true },
+    );
+    transport.enqueue(childrenResponse(root.nodeRef, 0, [recoveredSelected]));
+    transport.enqueue(childrenResponse(recoveredSelected.nodeRef, 0, []));
+    await controller.hydrateRecoveredBranches();
+    controller.finishRecovery();
+
+    transport.enqueue(childrenResponse(root.nodeRef, 1, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 1 }],
+    });
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual(["new-root", "recovered-selected"]);
+    expect(controller.snapshot().selectedRef).toBe("recovered-selected");
+
+    const replacement = locatedNode("replacement", locator(2, 2));
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("new-root", locator(1), true, 1),
+      replacement,
+    ]));
+
+    expect(nodeRefs(controller)).toEqual(["new-root", "replacement"]);
+    expect(controller.isExpanded(recoveredSelected.nodeRef)).toBe(false);
+    await controller.select(recoveredSelected.nodeRef);
+    expect(transport.dispatched).toEqual([]);
   });
 
   it("ignores pending responses and further actions after disposal", async () => {
@@ -616,6 +707,20 @@ function rootResponse(
     requestId: "ignored-by-test-transport",
     documentEpoch,
     node: root,
+  };
+}
+
+function locatorResponse(
+  target: DomNodeView,
+  ancestorPath: readonly DomNodeView[],
+  documentEpoch = 1,
+): DomLocatorResponse {
+  return {
+    type: "dom.locator",
+    requestId: "ignored-by-test-transport",
+    documentEpoch,
+    node: target,
+    ancestorPath,
   };
 }
 

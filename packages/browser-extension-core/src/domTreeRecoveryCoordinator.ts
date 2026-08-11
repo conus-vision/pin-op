@@ -81,7 +81,7 @@ export class DomTreeRecoveryCoordinator {
         if (selected) {
           this.controller.installRecoveredPath(selected, {
             selected: true,
-            expanded: false,
+            expanded: snapshot.selectedWasExpanded,
           });
           selectedNodeRef = selected.node.nodeRef;
         }

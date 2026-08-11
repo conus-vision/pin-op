@@ -41,6 +41,7 @@ export interface DomTreeControllerOptions {
 
 export interface DomTreeRecoverySnapshot {
   readonly selectedLocator?: DomStableLocator;
+  readonly selectedWasExpanded: boolean;
   readonly expandedLocators: readonly DomStableLocator[];
 }
 
@@ -354,6 +355,7 @@ export class DomTreeController {
     if (this.disposed || !this.recovering) {
       return;
     }
+    this.commitRecoveredChildren();
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
@@ -716,8 +718,9 @@ export class DomTreeController {
   }
 
   private captureRecoverySnapshot(): DomTreeRecoverySnapshot {
-    const selectedLocator = this.selectedNodeRef
-      ? this.nodes.get(this.selectedNodeRef)?.view.locator
+    const selectedRef = this.selectedNodeRef;
+    const selectedLocator = selectedRef
+      ? this.nodes.get(selectedRef)?.view.locator
       : undefined;
     const ordered = [...this.expanded]
       .map((nodeRef, index) => {
@@ -745,6 +748,8 @@ export class DomTreeController {
     }
     return Object.freeze({
       ...(selectedLocator ? { selectedLocator } : {}),
+      selectedWasExpanded: selectedRef !== undefined &&
+        this.expanded.has(selectedRef),
       expandedLocators: Object.freeze(expandedLocators),
     });
   }
@@ -1232,6 +1237,20 @@ export class DomTreeController {
     branch.children.length = 0;
   }
 
+  private commitRecoveredChildren(): void {
+    for (const branch of this.branches.values()) {
+      for (const childRef of branch.recoveredChildren) {
+        if (
+          childRef !== branch.revealChild &&
+          !branch.children.includes(childRef)
+        ) {
+          branch.children.push(childRef);
+        }
+      }
+      branch.recoveredChildren.length = 0;
+    }
+  }
+
   private isPageChild(nodeRef: string): boolean {
     for (const branch of this.branches.values()) {
       if (
@@ -1409,7 +1428,10 @@ function nearestFocusableRow(
 }
 
 function emptyRecoverySnapshot(): DomTreeRecoverySnapshot {
-  return Object.freeze({ expandedLocators: Object.freeze([]) });
+  return Object.freeze({
+    selectedWasExpanded: false,
+    expandedLocators: Object.freeze([]),
+  });
 }
 
 function locatorDepth(locator: DomStableLocator): number {

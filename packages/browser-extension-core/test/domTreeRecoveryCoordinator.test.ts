@@ -16,6 +16,38 @@ import type {
 import type { DomStableLocator } from "../src/domStableLocator.js";
 
 describe("DomTreeRecoveryCoordinator", () => {
+  it("restores an expanded selection with one locator resolution", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 3);
+    const oldSelected = node("old-selected", selectedLocator, true);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [oldSelected]));
+    transport.enqueue(childrenResponse(oldSelected, [], 1));
+    await controller.expand(oldSelected.nodeRef);
+    transport.requests.length = 0;
+
+    const coordinator = createCoordinator(controller, transport);
+    const newSelected = node("new-selected", selectedLocator, true);
+    const newChild = node("new-child", locator(2, 0));
+    transport.enqueue(rootResponse(newSelected, 2));
+    transport.enqueue(locatorResponse(newSelected, [newSelected], 2));
+    transport.enqueue(childrenResponse(newSelected, [newChild], 2));
+
+    await coordinator.begin();
+
+    expect(transport.requests.filter(isResolveRequest)).toHaveLength(1);
+    expect(transport.requests.filter(isChildrenRequest).map((request) => (
+      request.nodeRef
+    ))).toEqual(["new-selected"]);
+    expect(nodeRefs(controller)).toEqual(["new-selected", "new-child"]);
+    expect(controller.isExpanded("new-selected")).toBe(true);
+    expect(transport.dispatched).toEqual([{
+      type: "dom.select",
+      documentEpoch: 2,
+      nodeRef: "new-selected",
+    }]);
+  });
+
   it("resolves selection first, tolerates an expanded failure, and swaps once", async () => {
     const transport = new TestTransport();
     const observedRows: string[][] = [];
