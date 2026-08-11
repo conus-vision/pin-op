@@ -98,6 +98,7 @@ export interface DomTreeSnapshot {
   readonly documentEpoch?: number;
   readonly selectedRef?: string;
   readonly focusedRef?: string;
+  readonly recoveredFocusRef?: string;
   readonly hoveredRef?: string;
   readonly hoverSummary?: string;
   readonly revealRef?: string;
@@ -161,6 +162,7 @@ export class DomTreeController {
   private recoverySnapshot: DomTreeRecoverySnapshot | undefined;
   private recoveryFocusRef: string | undefined;
   private recoveryFocusRowType: DomTreeRecoveryFocusRowType | undefined;
+  private recoveredFocusRef: string | undefined;
   private recovering = false;
   private generation = 0;
   private requestSequence = 0;
@@ -208,6 +210,9 @@ export class DomTreeController {
       ...(visibleFocusedRef === undefined
         ? {}
         : { focusedRef: visibleFocusedRef }),
+      ...(this.recoveredFocusRef === undefined
+        ? {}
+        : { recoveredFocusRef: this.recoveredFocusRef }),
       ...(visibleHoveredRef === undefined
         ? {}
         : { hoveredRef: visibleHoveredRef }),
@@ -389,7 +394,7 @@ export class DomTreeController {
       return;
     }
     this.commitRecoveredChildren();
-    this.restoreRecoveryFocus();
+    this.recoveredFocusRef = this.restoreRecoveryFocus();
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
@@ -544,6 +549,7 @@ export class DomTreeController {
     if (this.disposed || this.recovering || !this.isVisibleRef(nodeRef)) {
       return;
     }
+    this.recoveredFocusRef = undefined;
     this.focusedNodeRef = nodeRef;
     this.notify();
   }
@@ -740,6 +746,7 @@ export class DomTreeController {
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
     this.recovering = false;
+    this.recoveredFocusRef = undefined;
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
@@ -1046,6 +1053,7 @@ export class DomTreeController {
     if (ancestorPath.length === 0 || ancestorPath.at(-1)?.nodeRef !== nodeRef) {
       return;
     }
+    this.recoveredFocusRef = undefined;
     this.replaceRevealPath(ancestorPath);
     let parentRef: string | undefined;
     for (const [index, view] of ancestorPath.entries()) {
@@ -1329,11 +1337,12 @@ export class DomTreeController {
     }
   }
 
-  private restoreRecoveryFocus(): void {
+  private restoreRecoveryFocus(): string | undefined {
     const nodeRef = this.recoveryFocusRef;
-    if (!nodeRef || !this.nodes.has(nodeRef)) {
+    const state = nodeRef ? this.nodes.get(nodeRef) : undefined;
+    if (!nodeRef || !state || state.view.inaccessible) {
       this.focusedNodeRef = this.rootRef;
-      return;
+      return undefined;
     }
     if (this.recoveryFocusRowType === "load-more") {
       const branch = this.branches.get(nodeRef);
@@ -1344,12 +1353,16 @@ export class DomTreeController {
           (!branch.loaded && branch.children.length === 0)
         )
       );
-      this.focusedNodeRef = hasLoadMoreRow
-        ? `${LOAD_MORE_PREFIX}${nodeRef}`
-        : this.rootRef;
-      return;
+      if (!hasLoadMoreRow) {
+        this.focusedNodeRef = this.rootRef;
+        return undefined;
+      }
+      const loadMoreRef = `${LOAD_MORE_PREFIX}${nodeRef}`;
+      this.focusedNodeRef = loadMoreRef;
+      return loadMoreRef;
     }
     this.focusedNodeRef = nodeRef;
+    return nodeRef;
   }
 
   private isPageChild(nodeRef: string): boolean {
@@ -1457,6 +1470,7 @@ export class DomTreeController {
     this.rootRequest = undefined;
     this.recoveryFocusRef = undefined;
     this.recoveryFocusRowType = undefined;
+    this.recoveredFocusRef = undefined;
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();

@@ -546,6 +546,48 @@ describe("DomTreeController", () => {
     });
   });
 
+  it("publishes the valid focus ref restored by an atomic recovery finish", () => {
+    const transport = new TestTransport();
+    const focusLocator = locator(2, 3);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("old-root", locator(1), true),
+      locatedNode("old-focus", focusLocator),
+    ]));
+    const newRoot = locatedNode("new-root", locator(1), true);
+    const newFocus = locatedNode("new-focus", focusLocator);
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(newRoot, 2));
+    controller.installRecoveredPath(
+      locatorResponse(newFocus, [newRoot, newFocus], 2),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    controller.finishRecovery();
+
+    expect(controller.snapshot()).toMatchObject({
+      focusedRef: "new-focus",
+      recoveredFocusRef: "new-focus",
+    });
+  });
+
+  it("does not publish a recovered focus ref for root fallback", () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      locatedNode("old-root", locator(1), true),
+      locatedNode("old-focus", locator(2, 3)),
+    ]));
+    const newRoot = locatedNode("new-root", locator(1));
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(newRoot, 2));
+    controller.finishRecovery();
+
+    expect(controller.snapshot().focusedRef).toBe("new-root");
+    expect(controller.snapshot().recoveredFocusRef).toBeUndefined();
+  });
+
   it("keeps frozen rows read-only throughout recovery", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true)));

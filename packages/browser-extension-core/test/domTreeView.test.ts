@@ -583,6 +583,197 @@ describe("DomTreeView", () => {
     expect(harness.transport.dispatched).toEqual([]);
   });
 
+  it("prioritizes a distant recovered focus anchor over selection reveal", () => {
+    const harness = createHarness({ clientHeight: 48, overscan: 0 });
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      node("old-focus", "section.focus", true),
+      node("old-selected", "button.selected"),
+    ]));
+    harness.view.focus("old-focus");
+    const newRoot = node("new-root", "html", true);
+    const newSelected = node("new-selected", "button.selected");
+    const focusAncestors = Array.from({ length: 6 }, (_, index) => (
+      node(`new-focus-ancestor-${index}`, `section.focus-${index}`, true)
+    ));
+    const newFocus = node("new-focus", "section.focus");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newSelected, [newRoot, newSelected], 2),
+      { selected: true, expanded: false },
+    );
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        newFocus,
+        [newRoot, ...focusAncestors, newFocus],
+        2,
+      ),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    for (let index = 0; index < 6; index += 1) {
+      const filler = node(`new-filler-${index}`, `aside.filler-${index}`);
+      harness.controller.installRecoveredPath(
+        recoveryLocator(filler, [newRoot, filler], 2),
+        { selected: false, expanded: false },
+      );
+    }
+    harness.controller.finishRecovery();
+
+    const selected = harness.controller.rows().find((row) => (
+      row.nodeRef === "new-selected"
+    ));
+    const spacer = harness.dom.element("dom-tree-spacer");
+    expect(harness.controller.focusedRef).toBe("new-focus");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("new-focus"));
+    expect(spacer.findByData("nodeRef", "new-selected")).toBeUndefined();
+    expect(selected).toMatchObject({ selected: true });
+
+    const recoveredFocusScrollTop = harness.dom.element("dom-tree").scrollTop;
+    harness.view.render();
+
+    expect(harness.dom.element("dom-tree").scrollTop).toBe(
+      recoveredFocusScrollTop,
+    );
+    expect(harness.dom.activeElement).toBe(harness.dom.row("new-focus"));
+    expect(spacer.findByData("nodeRef", "new-selected")).toBeUndefined();
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
+  it("reveals recovered selection when the tree did not own browser focus", () => {
+    const harness = createHarness({ clientHeight: 48, overscan: 0 });
+    const oldRoot = node("old-root", "html", true);
+    const oldFocus = node("old-focus", "section.focus");
+    harness.controller.handleEvent(selectionChanged(1, [oldRoot, oldFocus]));
+    harness.controller.focus("old-focus");
+    const newRoot = node("new-root", "html", true);
+    const selectedAncestors = Array.from({ length: 6 }, (_, index) => (
+      node(`new-selected-ancestor-${index}`, `section.selected-${index}`, true)
+    ));
+    const newSelected = node("new-selected", "button.selected");
+    const newFocus = node("new-focus", "section.focus");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        newSelected,
+        [newRoot, ...selectedAncestors, newSelected],
+        2,
+      ),
+      { selected: true, expanded: false },
+    );
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newFocus, [newRoot, newFocus], 2),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    harness.view.render();
+    harness.controller.finishRecovery();
+
+    expect(harness.dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "new-selected",
+    )).toBeDefined();
+    expect(harness.controller.rows().find((row) => (
+      row.nodeRef === "new-selected"
+    ))).toMatchObject({ selected: true });
+    expect(harness.dom.activeElement).toBeUndefined();
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
+  it("reveals recovered selection when the saved focus anchor is missing", () => {
+    const harness = createHarness({ clientHeight: 48, overscan: 0 });
+    const missingFocus = {
+      ...node("old-focus", "section.missing"),
+      locator: {
+        version: 1 as const,
+        targetKind: "element" as const,
+        boundaries: [],
+        path: [{ tagName: "section", siblingIndex: 9 }],
+      },
+    };
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      missingFocus,
+    ]));
+    harness.view.focus("old-focus");
+    const newRoot = node("new-root", "html", true);
+    const selectedAncestors = Array.from({ length: 6 }, (_, index) => (
+      node(`new-selected-ancestor-${index}`, `section.selected-${index}`, true)
+    ));
+    const newSelected = node("new-selected", "button.selected");
+
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        newSelected,
+        [newRoot, ...selectedAncestors, newSelected],
+        2,
+      ),
+      { selected: true, expanded: false },
+    );
+    harness.controller.finishRecovery();
+
+    expect(harness.dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "new-selected",
+    )).toBeDefined();
+    expect(harness.controller.rows().find((row) => (
+      row.nodeRef === "new-selected"
+    ))).toMatchObject({ selected: true });
+    expect(harness.dom.element("dom-tree").contains(harness.dom.activeElement))
+      .toBe(true);
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
+  it("lets manual browser focus win while revealing recovered selection", () => {
+    const harness = createHarness({ clientHeight: 48, overscan: 0 });
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("old-root", "html", true),
+      node("old-focus", "section.focus"),
+    ]));
+    harness.view.focus("old-focus");
+    harness.controller.beginRecovery();
+    const outside = harness.dom.document.createElement("button") as unknown as FakeElement;
+    outside.focus();
+    const newRoot = node("new-root", "html", true);
+    const selectedAncestors = Array.from({ length: 6 }, (_, index) => (
+      node(`new-selected-ancestor-${index}`, `section.selected-${index}`, true)
+    ));
+    const newSelected = node("new-selected", "button.selected");
+    const newFocus = node("new-focus", "section.focus");
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        newSelected,
+        [newRoot, ...selectedAncestors, newSelected],
+        2,
+      ),
+      { selected: true, expanded: false },
+    );
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newFocus, [newRoot, newFocus], 2),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    harness.controller.finishRecovery();
+
+    expect(harness.dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "new-selected",
+    )).toBeDefined();
+    expect(harness.dom.activeElement).toBe(outside);
+    expect(harness.controller.rows().find((row) => (
+      row.nodeRef === "new-selected"
+    ))).toMatchObject({ selected: true });
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
   it("falls back to the recovered root when the focus anchor is missing", () => {
     const harness = createHarness();
     harness.controller.handleEvent(selectionChanged(1, [

@@ -197,11 +197,26 @@ export class DomTreeView {
     const focusChanged = snapshot.focusedRef !== this.seenFocusedRef;
     const recoveryFinished = this.seenRecovering && !snapshot.recovering;
     this.seenRecovering = snapshot.recovering;
-    if (
+    const allRows = this.controller.rows();
+    const pendingReveal = Boolean(
+      !snapshot.recovering &&
       snapshot.revealRef &&
-      snapshot.revealVersion > this.seenRevealVersion
-    ) {
+      snapshot.revealVersion > this.seenRevealVersion,
+    );
+    const recoveredFocusRow = recoveryFinished &&
+        restoreFocus &&
+        snapshot.recoveredFocusRef === snapshot.focusedRef
+      ? allRows.find((row) => row.nodeRef === snapshot.recoveredFocusRef)
+      : undefined;
+    const restoreRecoveredFocus = Boolean(
+      recoveredFocusRow && isFocusableRow(recoveredFocusRow),
+    );
+    if (pendingReveal) {
       this.seenRevealVersion = snapshot.revealVersion;
+    }
+    if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
+      this.ensureVisible(snapshot.recoveredFocusRef);
+    } else if (pendingReveal && snapshot.revealRef) {
       this.ensureVisible(snapshot.revealRef);
     } else if (
       snapshot.focusedRef &&
@@ -211,7 +226,6 @@ export class DomTreeView {
     }
     this.seenFocusedRef = snapshot.focusedRef;
 
-    const allRows = this.controller.rows();
     const viewportSize = Math.max(
       1,
       Math.ceil(Math.max(this.tree.clientHeight, this.rowHeight) / this.rowHeight),
