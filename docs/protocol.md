@@ -356,17 +356,19 @@ The router enforces direction and authority:
 Browser2IDE is read-only with respect to page-owned content, application state,
 and source code. The browser extension can execute only its packaged extension
 runtime and permitted browser APIs. It can read bounded accessible DOM
-structure, approved attributes, CSSOM evidence, and box geometry. It does not
-modify page-owned content or application state. It cannot fill or submit forms
-or invoke page handlers, and it does not execute page commands or arbitrary
-page scripts received from VS Code or the WebSocket.
+structure, approved attributes, CSSOM evidence, and box geometry.
 
-For visual highlighting, the extension temporarily inserts an isolated
+For visual inspection, the extension temporarily inserts an isolated
 Browser2IDE inspection overlay DOM under a dedicated pointer-inert host with a
-closed shadow root. The overlay and every node it owns are excluded from picker
-targeting, DOM tree inspection, and stable locator capture. The rendered overlay
-is removed when highlighting is disabled or cleared. Its host and any remaining
-overlay DOM are removed when the inspection session is disposed.
+closed shadow root. Overlay-owned nodes are excluded from Browser2IDE inspection
+and stable locator capture. When visual inspection is disabled or cleared, the
+rendered overlay is removed. Disconnecting disposes the inspection session;
+disposal removes its host and any remaining overlay DOM.
+
+Outside that isolated overlay, Browser2IDE does not modify page-owned content or
+application state, and it does not modify source code. It cannot fill or submit
+forms or invoke page handlers, and it does not execute page commands or
+arbitrary page scripts received from VS Code or the WebSocket.
 
 The IDE extension can read the active workspace document and relevant local
 source maps through its source plugins. It can add editor decorations and, only

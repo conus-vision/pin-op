@@ -30,6 +30,70 @@ const [sourceNavigationSection] = (sourceNavigationAndLater ?? "").split(
 const [, readOnlySecuritySection] = protocolGuide.split(
   "## Read-Only Security Model",
 );
+const securityDisclosureContracts = [
+  {
+    name: "temporary overlay insertion",
+    message: "temporary isolated overlay insertion disclosure is required",
+    pattern: completeClause(
+      String.raw`(?:For|During) visual (?:inspection|highlighting), `,
+      String.raw`(?:the (?:browser )?extension|Browser2IDE) temporarily `,
+      String.raw`(?:inserts|adds) an isolated Browser2IDE `,
+      String.raw`(?:inspection )?overlay DOM(?: subtree)?`,
+      String.raw`(?: under (?:a|the) dedicated pointer-inert host`,
+      String.raw`(?: with a closed shadow root)?)?`,
+    ),
+    negation: [/temporarily (?:inserts|adds)/i, "does not insert"],
+  },
+  {
+    name: "inspection and locator exclusion",
+    message: "overlay inspection and locator exclusion disclosure is required",
+    pattern: completeClause(
+      String.raw`(?:All )?(?:Browser2IDE )?overlay-owned nodes `,
+      String.raw`(?:are|remain) excluded from Browser2IDE `,
+      String.raw`(?:DOM tree )?inspection and (?:from )?stable locator capture`,
+    ),
+    negation: [/(?:are|remain) excluded/i, "are not excluded"],
+  },
+  {
+    name: "inspection disable cleanup",
+    message: "inspection disable overlay cleanup disclosure is required",
+    pattern: completeClause(
+      String.raw`(?:When|Once) visual inspection is disabled(?: or cleared)?, `,
+      String.raw`the rendered overlay is (?:removed|cleared)`,
+    ),
+    negation: [/overlay is (?:removed|cleared)/i, "overlay is not removed"],
+  },
+  {
+    name: "disconnect and session disposal cleanup",
+    message: "disconnect and session disposal cleanup disclosure is required",
+    pattern: completeClause(
+      String.raw`(?:Disconnecting|A disconnect) (?:disposes|closes) `,
+      String.raw`the inspection session; (?:that )?disposal `,
+      String.raw`(?:removes|cleans up) (?:its|the) (?:overlay )?host and `,
+      String.raw`(?:any|all) remaining overlay DOM`,
+    ),
+    negation: [/disposal (?:removes|cleans up)/i, "disposal does not remove"],
+  },
+  {
+    name: "page and source immutability",
+    message: "page-owned state and source immutability disclosure is required",
+    pattern: completeClause(
+      String.raw`(?:Outside|Apart from) (?:that|the) isolated `,
+      String.raw`(?:Browser2IDE )?overlay(?: DOM)?, Browser2IDE `,
+      String.raw`(?:does not|never) modify page-owned content or application state, `,
+      String.raw`and (?:it )?(?:does not|never) (?:modify|edit|write) source code`,
+    ),
+    negation: [
+      new RegExp(
+        String.raw`(?:does not|never) modify page-owned content or application state, ` +
+          String.raw`and (?:it )?(?:does not|never) ` +
+          String.raw`(?:modify|edit|write) source code`,
+        "i",
+      ),
+      "may modify page-owned content or application state and source code",
+    ],
+  },
+];
 
 test("installed primary path is terminal-free and starts automatically", () => {
   assert.ok(verificationRecord, "0.3.0 candidate verification record is required");
@@ -263,24 +327,9 @@ test("protocol guide bounds browser-local locator recovery and keeps it off WebS
 
 test("protocol guide states the read-only browser and IDE execution boundary", () => {
   assert.ok(readOnlySecuritySection, "Read-Only Security Model section is required");
+  assertReadOnlySecurityDisclosure(readOnlySecuritySection);
   assert.match(readOnlySecuritySection, /browser[\s\S]*read[\s\S]*(?:DOM|CSS)/i);
-  assert.match(
-    readOnlySecuritySection,
-    /does\s+not\s+modify[\s\S]*page-owned content[\s\S]*application state/i,
-  );
   assert.match(readOnlySecuritySection, /does\s+not\s+execute page commands/i);
-  assert.match(
-    readOnlySecuritySection,
-    /temporarily inserts[\s\S]*isolated\s+Browser2IDE inspection overlay DOM/i,
-  );
-  assert.match(
-    readOnlySecuritySection,
-    /overlay[\s\S]*excluded[\s\S]*inspection[\s\S]*locator capture/i,
-  );
-  assert.match(
-    readOnlySecuritySection,
-    /overlay[\s\S]*removed[\s\S]*disabled[\s\S]*removed[\s\S]*disposed/i,
-  );
   assert.match(readOnlySecuritySection, /IDE[\s\S]*read[\s\S]*workspace/i);
   assert.match(readOnlySecuritySection, /IDE[\s\S]*move[\s\S]*cursor[\s\S]*reveal/i);
   assert.match(readOnlySecuritySection, /cannot[\s\S]*edit or write source files/i);
@@ -294,6 +343,34 @@ test("protocol guide states the read-only browser and IDE execution boundary", (
     readOnlySecuritySection,
     /cannot (?:write or modify|modify) the page DOM/i,
   );
+});
+
+test("protocol overlay disclosure rejects negated or missing clauses", async (t) => {
+  assert.ok(readOnlySecuritySection, "Read-Only Security Model section is required");
+  const clauses = securityClauses(readOnlySecuritySection);
+
+  for (const contract of securityDisclosureContracts) {
+    const clauseIndex = clauses.findIndex((clause) => contract.pattern.test(clause));
+    assert.notEqual(
+      clauseIndex,
+      -1,
+      `source clause is required for ${contract.name} mutation coverage`,
+    );
+
+    await t.test(`rejects negated ${contract.name}`, () => {
+      const mutated = [...clauses];
+      mutated[clauseIndex] = replaceRequired(
+        mutated[clauseIndex],
+        ...contract.negation,
+      );
+      assertDisclosureFailure(mutated, contract.message);
+    });
+
+    await t.test(`rejects missing ${contract.name}`, () => {
+      const mutated = clauses.filter((_, index) => index !== clauseIndex);
+      assertDisclosureFailure(mutated, contract.message);
+    });
+  }
 });
 
 test("privacy and security materials describe the release trust boundaries", () => {
@@ -347,4 +424,46 @@ function jsonExample(type) {
     if (value?.type === type) return value;
   }
   assert.fail(`Missing JSON example for ${type}`);
+}
+
+function completeClause(...fragments) {
+  return new RegExp(`^${fragments.join("")}\\.$`, "i");
+}
+
+function assertReadOnlySecurityDisclosure(section) {
+  for (const { pattern, message } of securityDisclosureContracts) {
+    assertCompletePositiveClause(section, pattern, message);
+  }
+}
+
+function assertCompletePositiveClause(section, pattern, message) {
+  assert.ok(
+    securityClauses(section).some((clause) => pattern.test(clause)),
+    message,
+  );
+}
+
+function securityClauses(section) {
+  return section
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean);
+}
+
+function assertDisclosureFailure(clauses, message) {
+  assert.throws(
+    () => assertReadOnlySecurityDisclosure(clauses.join(" ")),
+    new RegExp(escapeRegex(message)),
+  );
+}
+
+function replaceRequired(value, search, replacement) {
+  const mutated = value.replace(search, replacement);
+  assert.notEqual(mutated, value, `mutation source is missing: ${search}`);
+  return mutated;
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
