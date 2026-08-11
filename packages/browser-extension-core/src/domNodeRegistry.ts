@@ -24,6 +24,24 @@ interface NodeEntry {
   readonly reasons: Set<RetentionReason>;
 }
 
+export interface DomNodeRegistrySnapshot {
+  readonly registry: DomNodeRegistry;
+  readonly documentEpoch: number;
+  readonly nextRef: number;
+  readonly nextSequence: number;
+  readonly structuralRevision: number;
+  readonly entries: readonly DomNodeRegistrySnapshotEntry[];
+}
+
+export interface DomNodeRegistrySnapshotEntry {
+  readonly node: Node;
+  readonly ref: string;
+  readonly scope: NodeScope;
+  readonly weakNode: NodeWeakReference;
+  readonly sequence: number;
+  readonly reasons: readonly RetentionReason[];
+}
+
 type EntryDerefResult =
   | { readonly kind: "live"; readonly node: Node }
   | { readonly kind: "dead" }
@@ -72,6 +90,97 @@ export class DomNodeRegistry {
 
   public get retainedSize(): number {
     return this.retained.size;
+  }
+
+  /** Captures the live authority needed to undo a bounded provider operation. */
+  public snapshot(): DomNodeRegistrySnapshot | undefined {
+    const revision = this.structuralRevision;
+    const entries: DomNodeRegistrySnapshotEntry[] = [];
+    for (const [ref, entry] of this.reverse) {
+      const result = this.dereferenceEntry(ref, entry, entry.scope);
+      if (result.kind !== "live" || this.structuralRevision !== revision) {
+        return undefined;
+      }
+      entries.push(Object.freeze({
+        node: result.node,
+        ref,
+        scope: entry.scope,
+        weakNode: entry.weakNode,
+        sequence: entry.sequence,
+        reasons: Object.freeze([...entry.reasons]),
+      }));
+    }
+    if (this.structuralRevision !== revision) return undefined;
+    return Object.freeze({
+      registry: this,
+      documentEpoch: this.documentEpoch,
+      nextRef: this.nextRef,
+      nextSequence: this.nextSequence,
+      structuralRevision: revision,
+      entries: Object.freeze(entries),
+    });
+  }
+
+  /** Restores a snapshot by rebuilding weak indexes from its live entries. */
+  public restore(snapshot: DomNodeRegistrySnapshot): boolean {
+    if (
+      snapshot.registry !== this ||
+      snapshot.documentEpoch !== this.documentEpoch ||
+      !Number.isSafeInteger(snapshot.nextRef) || snapshot.nextRef < 1 ||
+      !Number.isSafeInteger(snapshot.nextSequence) || snapshot.nextSequence < 1 ||
+      !Number.isSafeInteger(snapshot.structuralRevision) || snapshot.structuralRevision < 0 ||
+      snapshot.entries.length > this.maxReverseEntries
+    ) {
+      return false;
+    }
+    const nextForward = new WeakMap<Node, Map<string, string>>();
+    const nextReverse = new Map<string, NodeEntry>();
+    const nextRetained = new Map<string, Node>();
+    try {
+      for (const snapshotEntry of snapshot.entries) {
+        if (
+          !isNodeLike(snapshotEntry.node) ||
+          !isNodeRef(snapshotEntry.ref) ||
+          !this.isCurrentScope(snapshotEntry.scope) ||
+          deref(snapshotEntry.weakNode) !== snapshotEntry.node ||
+          !Number.isSafeInteger(snapshotEntry.sequence) || snapshotEntry.sequence < 1 ||
+          nextReverse.has(snapshotEntry.ref)
+        ) {
+          return false;
+        }
+        const reasons = new Set(snapshotEntry.reasons);
+        if (
+          reasons.size !== snapshotEntry.reasons.length ||
+          [...reasons].some((reason) => !isRetentionReason(reason))
+        ) {
+          return false;
+        }
+        const refs = nextForward.get(snapshotEntry.node) ?? new Map<string, string>();
+        const scopeKey = createScopeKey(snapshotEntry.scope);
+        if (refs.has(scopeKey)) return false;
+        refs.set(scopeKey, snapshotEntry.ref);
+        nextForward.set(snapshotEntry.node, refs);
+        nextReverse.set(snapshotEntry.ref, {
+          ref: snapshotEntry.ref,
+          scope: snapshotEntry.scope,
+          weakNode: snapshotEntry.weakNode,
+          sequence: snapshotEntry.sequence,
+          reasons,
+        });
+        if (reasons.size > 0) nextRetained.set(snapshotEntry.ref, snapshotEntry.node);
+      }
+    } catch {
+      return false;
+    }
+    this.forward = nextForward;
+    this.reverse.clear();
+    for (const [ref, entry] of nextReverse) this.reverse.set(ref, entry);
+    this.retained.clear();
+    for (const [ref, node] of nextRetained) this.retained.set(ref, node);
+    this.nextRef = snapshot.nextRef;
+    this.nextSequence = snapshot.nextSequence;
+    this.structuralRevision = snapshot.structuralRevision;
+    return true;
   }
 
   public reference(node: Node, scope: NodeScope): string {

@@ -242,13 +242,17 @@ export class FrameRegistry {
       !isObject(frameElement) ||
       !parentFrameRef ||
       !isFrameRef(parentFrameRef) ||
-      !this.contexts.has(parentFrameRef) ||
       this.exhaustedFrameElements.has(frameElement)
     ) {
       return undefined;
     }
+    const parent = this.contexts.get(parentFrameRef);
+    if (!parent || readOwnerDocument(frameElement) !== parent.document) {
+      return undefined;
+    }
     const existing = this.recordByElement.get(frameElement);
     if (existing) {
+      if (existing.parentFrameRef !== parentFrameRef) return undefined;
       return this.describe(existing);
     }
     if (this.records.size + 1 >= this.maxFrames) {

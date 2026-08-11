@@ -3949,6 +3949,30 @@ describe("DomTreeProvider", () => {
     expect(resolveLocator(unreadable.provider, locator)).toBeUndefined();
   });
 
+  it("omits duplicate captured IDs while preserving structural locator recovery", () => {
+    const first = createHeadingTree();
+    const duplicate = createElement("h2", first.document);
+    duplicate.id = first.target.id;
+    duplicate.className = first.target.className;
+    duplicate.setAttribute("data-section", "intro");
+    duplicate.setAttribute("aria-label", "Introduction");
+    duplicate.setAttribute("role", "presentation");
+    first.main.append(duplicate);
+    const locator = locatorFor(first.provider, first.target);
+    expect(locator.path.at(-1)?.id).toBeUndefined();
+
+    const second = createHeadingTree();
+    const secondDuplicate = createElement("h2", second.document);
+    secondDuplicate.id = second.target.id;
+    secondDuplicate.className = second.target.className;
+    secondDuplicate.setAttribute("data-section", "intro");
+    secondDuplicate.setAttribute("aria-label", "Introduction");
+    secondDuplicate.setAttribute("role", "presentation");
+    second.main.append(secondDuplicate);
+    expect(resolveLocator(second.provider, locator)?.node.label)
+      .toContain("h2#section_title_id1.block_title");
+  });
+
   it("rolls back exact frame authorization when later locator proof fails", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);
@@ -4030,6 +4054,85 @@ describe("DomTreeProvider", () => {
     expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "recovered-child-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label)).toEqual(["article", "aside"]);
+  });
+
+  it("rolls back expansion authority when child locator capture fails", () => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    document.documentElement.append(child);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const provider = harness.provider as unknown as {
+      readonly expandedBranches: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { retentionReasons(nodeRef: string): readonly string[] };
+    };
+    const originalAttributes = child.attributes;
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile first expansion locator");
+      },
+    });
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "failed-first-expansion",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(provider.expandedBranches.has(root.node.nodeRef)).toBe(false);
+    expect(provider.nodeRegistry.retentionReasons(root.node.nodeRef)).toEqual([]);
+    expect(harness.observers).toHaveLength(1);
+
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      value: originalAttributes,
+    });
+    expect(onlyChild(harness.provider, root.node, root.documentEpoch, "retried-first-expansion").label)
+      .toBe("article");
+  });
+
+  it("rolls back earlier child views when a later materialization throws", () => {
+    const document = createDocument();
+    const first = createElement("article", document);
+    const second = createElement("aside", document);
+    document.documentElement.append(first);
+    document.documentElement.append(second);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const provider = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly nodeRegistry: { readonly size: number };
+      viewElement(element: Element, ...args: readonly unknown[]): unknown;
+    };
+    const recordCount = provider.records.size;
+    const referenceCount = provider.nodeRegistry.size;
+    const originalViewElement = provider.viewElement;
+    provider.viewElement = (element, ...args) => {
+      if (element === second) throw new Error("late child view failure");
+      return originalViewElement.call(provider, element, ...args);
+    };
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "late-child-view-failure",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("late child view failure");
+    expect(provider.records.size).toBe(recordCount);
+    expect(provider.nodeRegistry.size).toBe(referenceCount);
+    expect(harness.observers).toHaveLength(1);
+
+    provider.viewElement = originalViewElement;
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "retried-late-child-view",
       documentEpoch: root.documentEpoch,
       nodeRef: root.node.nodeRef,
       branchRevision: root.node.branchRevision,

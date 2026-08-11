@@ -403,10 +403,13 @@ function captureSegment(element: Element, parent: Node, root: Node): DomPathSegm
   const siblingIndex = elementSiblingIndex(parent, element);
   const evidence = readCanonicalEvidence(element, parent, root);
   if (!tagName || siblingIndex === undefined || !evidence) throw invalidLocator();
+  const id = evidence.id !== undefined && hasUniqueId(root, evidence.id)
+    ? evidence.id
+    : undefined;
   return Object.freeze({
     tagName,
     siblingIndex,
-    ...(evidence.id === undefined ? {} : { id: evidence.id }),
+    ...(id === undefined ? {} : { id }),
     ...(evidence.classes.length === 0 ? {} : { classes: evidence.classes }),
     ...(evidence.attributes.length === 0 ? {} : { attributes: evidence.attributes }),
   });
@@ -600,8 +603,11 @@ function matchesSegment(
 ): boolean {
   if (readTagName(element) !== segment.tagName) return false;
   const evidence = readCanonicalEvidence(element, parent, root);
+  const id = evidence?.id !== undefined && hasUniqueId(root, evidence.id)
+    ? evidence.id
+    : undefined;
   return !!evidence &&
-    evidence.id === segment.id &&
+    id === segment.id &&
     sameStringValues(evidence.classes, segment.classes) &&
     sameAttributes(evidence.attributes, segment.attributes);
 }

@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
-  FrameRegistry,
+  FrameRegistry as FrameRegistryBase,
   type FrameIdentity,
   type FrameLifecycleEvent,
   type ViewportRect,
 } from "../src/frameRegistry.js";
+
+class FrameRegistry extends FrameRegistryBase {
+  public override describeFrame(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef = this.topContext?.frameRef,
+  ) {
+    const parent = parentFrameRef ? this.getContext(parentFrameRef) : undefined;
+    if (parent && frameElement instanceof FakeFrame) {
+      frameElement.assignDefaultOwnerDocument(parent.document);
+    }
+    return super.describeFrame(frameElement, parentFrameRef);
+  }
+}
 
 describe("FrameRegistry", () => {
   it("exposes a stable top context for the current document epoch", () => {
@@ -513,7 +526,7 @@ describe("FrameRegistry", () => {
         registry.resetTopDocument(nextTopDocument, 1);
       },
     });
-    registry = new FrameRegistry(createDocument(), {
+    registry = new FrameRegistry(frame.ownerDocument, {
       maxFrames: 2,
       onLifecycle: (event) => events.push(event),
     });
@@ -545,7 +558,7 @@ describe("FrameRegistry", () => {
       document: createDocument(),
       ownerDocument: geometryDocument,
     });
-    registry = new FrameRegistry(createDocument(), {
+    registry = new FrameRegistry(geometryDocument, {
       maxFrames: 2,
       onLifecycle: (event) => events.push(event),
     });
@@ -1569,8 +1582,8 @@ describe("FrameRegistry", () => {
   ] satisfies ReadonlyArray<readonly [string, FrameOptions]>) (
     "rejects knowingly unsafe translated geometry for a %s",
     (_label, options) => {
-      const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
       const frame = createFrame({ document: createDocument(), left: 10, top: 20, ...options });
+      const registry = new FrameRegistry(frame.ownerDocument, { maxFrames: 3 });
       const description = registry.describeFrame(frame);
       if (description?.kind !== "accessible") throw new Error("expected accessible frame");
 
@@ -1638,8 +1651,8 @@ describe("FrameRegistry", () => {
   ] satisfies ReadonlyArray<readonly [string, FakeStyleOptions]>) (
     "rejects a shadow host %s even when frame dimensions still match",
     (_label, hostStyle) => {
-      const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
       const ownerDocument = createGeometryDocument();
+      const registry = new FrameRegistry(ownerDocument, { maxFrames: 3 });
       const host = new FakeStyleElement({ ...hostStyle, rootNode: ownerDocument });
       const shadowRoot = { mode: "open", host };
       const frame = createFrame({
@@ -1659,8 +1672,8 @@ describe("FrameRegistry", () => {
   );
 
   it("accepts a light-DOM frame through a neutral assigned slot and shadow ancestry", () => {
-    const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
     const ownerDocument = createGeometryDocument();
+    const registry = new FrameRegistry(ownerDocument, { maxFrames: 3 });
     const host = new FakeStyleElement({ rootNode: ownerDocument });
     const shadowRoot = { mode: "open", host };
     const shadowAncestor = new FakeStyleElement({ rootNode: shadowRoot });
@@ -1692,8 +1705,8 @@ describe("FrameRegistry", () => {
   >) (
     "rejects a slotted frame with a non-neutral %s",
     (_label, slotStyle, ancestorStyle) => {
-      const registry = new FrameRegistry(createDocument(), { maxFrames: 3 });
       const ownerDocument = createGeometryDocument();
+      const registry = new FrameRegistry(ownerDocument, { maxFrames: 3 });
       const host = new FakeStyleElement({ rootNode: ownerDocument });
       const shadowRoot = { mode: "open", host };
       const shadowAncestor = new FakeStyleElement({
@@ -1904,10 +1917,28 @@ describe("FrameRegistry", () => {
     expect(registry.authorizeExactFrameElement(moved, parentDescription.frameRef))
       .toBeUndefined();
   });
+
+  it("rejects describeFrame hosts with a wrong owner or existing parent", () => {
+    const topDocument = createDocument();
+    const registry = new FrameRegistry(topDocument, { maxFrames: 4 });
+    const wrongOwner = createFrame({
+      document: createDocument(),
+      ownerDocument: createDocument(),
+    });
+    expect(registry.describeFrame(wrongOwner)).toBeUndefined();
+
+    const parentDocument = createDocument();
+    const parent = createFrame({ document: parentDocument, ownerDocument: topDocument });
+    const parentDescription = registry.describeFrame(parent);
+    if (parentDescription?.kind !== "accessible") throw new Error("expected parent");
+    const child = createFrame({ document: createDocument(), ownerDocument: parentDocument });
+    expect(registry.describeFrame(child, parentDescription.frameRef)).toBeDefined();
+    expect(registry.describeFrame(child, registry.topContext!.frameRef)).toBeUndefined();
+  });
 });
 
 function createDocument(): Document {
-  return {} as Document;
+  return createGeometryDocument();
 }
 
 type RectField = keyof ViewportRect;
@@ -2085,7 +2116,7 @@ class FakeFrame {
   private contentDocumentReadCallback: (() => void) | undefined;
   private readonly width: number;
   private readonly height: number;
-  private readonly rootNode: object;
+  private rootNode: object;
   private readonly getRootNodeError: Error | undefined;
   private readonly onGetBoundingClientRect: (() => void) | undefined;
   public readonly clientLeft: number;
@@ -2103,7 +2134,9 @@ class FakeFrame {
   public readonly parentElement: FakeStyleElement | null;
   private readonly assignedSlotValue: FakeStyleElement | null;
   private readonly assignedSlotError: Error | undefined;
-  public readonly ownerDocument: Document;
+  public ownerDocument: Document;
+  private readonly hasExplicitOwnerDocument: boolean;
+  private readonly hasExplicitRootNode: boolean;
   public contentDocumentReads = 0;
   public contentWindowReads = 0;
 
@@ -2129,9 +2162,11 @@ class FakeFrame {
     this.parentElement = options.parentElement ?? null;
     this.assignedSlotValue = options.assignedSlot ?? null;
     this.assignedSlotError = options.assignedSlotError;
+    this.hasExplicitOwnerDocument = options.ownerDocument !== undefined || options.geometryUnavailable === true;
     this.ownerDocument = options.geometryUnavailable
       ? ({} as Document)
       : (options.ownerDocument ?? createGeometryDocument());
+    this.hasExplicitRootNode = options.rootNode !== undefined;
     this.rootNode = options.rootNode ?? this.ownerDocument;
     this.getRootNodeError = options.getRootNodeError;
     this.onGetBoundingClientRect = options.onGetBoundingClientRect;
@@ -2141,6 +2176,15 @@ class FakeFrame {
     this.removeListenerError = options.removeListenerError;
     this.invokeLoadOnRemove = options.invokeLoadOnRemove ?? false;
     this.onRemoveLoadListener = options.onRemoveLoadListener;
+  }
+
+  public assignDefaultOwnerDocument(ownerDocument: Document): void {
+    if (this.hasExplicitOwnerDocument) return;
+    this.ownerDocument = ownerDocument;
+    if (!this.hasExplicitRootNode) {
+      this.rootNode = ownerDocument;
+      this.parentElement?.attachToRoot(ownerDocument);
+    }
   }
 
   public get contentDocument(): Document | null {

@@ -1,5 +1,6 @@
 import {
   DomNodeRegistry,
+  type DomNodeRegistrySnapshot,
   type NodeScope,
   type RetentionReason,
 } from "./domNodeRegistry.js";
@@ -193,6 +194,36 @@ interface OwnedFrame {
   readonly parentFrameRef: string;
 }
 
+interface ProviderMaterializationMetadata {
+  readonly records: readonly (readonly [string, NodeRecord])[];
+  readonly branchGenerations: readonly (readonly [string, number])[];
+  readonly exhaustedBranches: readonly string[];
+  readonly transientRecordRetentions: readonly (readonly [string, number])[];
+  readonly expandedBranches: readonly (readonly [string, ExpandedBranch])[];
+  readonly expandedShadowHosts: readonly string[];
+  readonly shadowRootRefs: readonly (readonly [string, string])[];
+  readonly frameDescriptions: readonly (readonly [string, FrameDescription])[];
+  readonly frameDocumentsByRef: readonly (readonly [string, Document])[];
+  readonly ownedFramesByRef: readonly (readonly [string, OwnedFrame])[];
+  readonly inactiveFrameRefs: readonly string[];
+  readonly cursors: readonly (readonly [string, CursorRecord])[];
+  readonly nextCursor: number;
+  readonly frameTracking: boolean;
+  readonly shadowScanOffset: number;
+  readonly pendingMutations: readonly PendingMutationRecord[];
+  readonly pendingFrameMutationScans: readonly PendingFrameMutationScan[];
+  readonly mutationTimer: DomTreeTimerHandle | undefined;
+  readonly frameMutationScanTimer: DomTreeTimerHandle | undefined;
+  readonly shadowScanTimer: DomTreeTimerHandle | undefined;
+}
+
+interface ProviderAuthoritySnapshot {
+  readonly nodeRegistry: DomNodeRegistrySnapshot;
+  readonly refsByNode: readonly (readonly [Node, string])[];
+  readonly rootObservers: readonly (readonly [Node, DomTreeMutationObserver])[];
+  readonly metadata: ProviderMaterializationMetadata;
+}
+
 type LogicalPathEntry =
   | {
       readonly kind: "element";
@@ -226,7 +257,7 @@ export class DomTreeProvider {
   private readonly shadowRootRefs = new Map<string, string>();
   private readonly rootObservers = new Map<Node, DomTreeMutationObserver>();
   private readonly frameDescriptions = new Map<string, FrameDescription>();
-  private readonly frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
+  private frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
   private readonly frameDocumentsByRef = new Map<string, Document>();
   private readonly ownedFramesByRef = new Map<string, OwnedFrame>();
   private readonly inactiveFrameRefs = new Set<string>();
@@ -412,6 +443,12 @@ export class DomTreeProvider {
       throwDomTreeError("internal-error");
     }
     const record = this.records.get(request.nodeRef);
+    const authoritySnapshot = this.snapshotProviderAuthority();
+    if (!authoritySnapshot) {
+      throwDomTreeError("node-unavailable");
+    }
+    let authorityCommitted = false;
+    try {
     const node = record
       ? this.resolveNode(request.nodeRef, record.scope)
       : undefined;
@@ -529,7 +566,7 @@ export class DomTreeProvider {
           physicalOffset: page.nextPhysicalOffset,
         })
       : undefined;
-    return Object.freeze({
+    const response = Object.freeze({
       type: "dom.children",
       requestId: request.requestId,
       documentEpoch: this.documentEpoch,
@@ -538,6 +575,13 @@ export class DomTreeProvider {
       nodes,
       ...(nextCursor ? { nextCursor } : {}),
     });
+    authorityCommitted = true;
+    return response;
+    } finally {
+      if (!authorityCommitted && !this.restoreProviderAuthority(authoritySnapshot)) {
+        throwDomTreeError("node-unavailable");
+      }
+    }
   }
 
   public ancestorPath(
@@ -1673,6 +1717,10 @@ export class DomTreeProvider {
     ) {
       return undefined;
     }
+    const authoritySnapshot = this.snapshotProviderAuthority();
+    if (!authoritySnapshot) return undefined;
+    let authorityCommitted = false;
+    try {
     const locators = path.map((entry) => this.captureLocator(entry.node, entry.kind));
     const metadataSnapshot = this.snapshotMaterializationMetadata();
     const existingRefs = new Map<Node, string>();
@@ -1752,6 +1800,7 @@ export class DomTreeProvider {
       if (commit && !commit(parentRef)) {
         throw new Error("path commit was not authoritative");
       }
+      authorityCommitted = true;
       return Object.freeze(views);
     } catch {
       for (const nodeRef of createdRefs) {
@@ -1772,6 +1821,9 @@ export class DomTreeProvider {
       return undefined;
     } finally {
       this.releasePathRetentions(temporaryRetentions);
+    }
+    } finally {
+      if (!authorityCommitted) this.restoreProviderAuthority(authoritySnapshot);
     }
   }
 
@@ -1913,7 +1965,84 @@ export class DomTreeProvider {
     return true;
   }
 
-  private snapshotMaterializationMetadata() {
+  private snapshotProviderAuthority(): ProviderAuthoritySnapshot | undefined {
+    const nodeRegistry = this.nodeRegistry.snapshot();
+    if (!nodeRegistry) return undefined;
+    const refsByNode: Array<readonly [Node, string]> = [];
+    for (const { node, ref } of nodeRegistry.entries) {
+      if (this.refsByNode.get(node) === ref) refsByNode.push([node, ref]);
+    }
+    return {
+      nodeRegistry,
+      refsByNode: Object.freeze(refsByNode),
+      rootObservers: Object.freeze([...this.rootObservers]),
+      metadata: this.snapshotMaterializationMetadata(),
+    };
+  }
+
+  private restoreProviderAuthority(snapshot: ProviderAuthoritySnapshot): boolean {
+    try {
+      const retainedFrames = new Set(
+        snapshot.metadata.ownedFramesByRef.map(([, owned]) => owned.frameElement),
+      );
+      const newFrames = [...this.ownedFramesByRef.values()]
+        .filter(({ frameElement }) => !retainedFrames.has(frameElement))
+        .map(({ frameElement }) => frameElement)
+        .reverse();
+      for (const frameElement of newFrames) this.unregisterDiscoveredFrame(frameElement);
+
+      const expectedObservers = new Map(snapshot.rootObservers);
+      for (const root of [...this.rootObservers.keys()]) {
+        if (!expectedObservers.has(root)) this.disconnectObserver(root);
+      }
+      for (const [root, observer] of expectedObservers) {
+        if (this.rootObservers.get(root) !== observer) return false;
+      }
+      if (!this.restoreSnapshotTimers(snapshot.metadata)) return false;
+      if (!this.nodeRegistry.restore(snapshot.nodeRegistry)) return false;
+
+      this.refsByNode = new WeakMap<Node, string>();
+      for (const [node, ref] of snapshot.refsByNode) this.refsByNode.set(node, ref);
+      this.restoreMaterializationMetadata(snapshot.metadata);
+      restoreMap(this.rootObservers, snapshot.rootObservers);
+      this.frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
+      for (const [frameRef, owned] of snapshot.metadata.ownedFramesByRef) {
+        this.frameRefsByElement.set(owned.frameElement, frameRef);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private restoreSnapshotTimers(snapshot: ProviderMaterializationMetadata): boolean {
+    if (
+      (snapshot.mutationTimer !== undefined && this.mutationTimer !== snapshot.mutationTimer) ||
+      (snapshot.frameMutationScanTimer !== undefined &&
+        this.frameMutationScanTimer !== snapshot.frameMutationScanTimer) ||
+      (snapshot.shadowScanTimer !== undefined && this.shadowScanTimer !== snapshot.shadowScanTimer)
+    ) {
+      return false;
+    }
+    if (snapshot.mutationTimer === undefined && this.mutationTimer !== undefined) {
+      this.cancelTimeout(this.mutationTimer);
+      this.mutationTimer = undefined;
+    }
+    if (
+      snapshot.frameMutationScanTimer === undefined &&
+      this.frameMutationScanTimer !== undefined
+    ) {
+      this.cancelTimeout(this.frameMutationScanTimer);
+      this.frameMutationScanTimer = undefined;
+    }
+    if (snapshot.shadowScanTimer === undefined && this.shadowScanTimer !== undefined) {
+      this.cancelTimeout(this.shadowScanTimer);
+      this.shadowScanTimer = undefined;
+    }
+    return true;
+  }
+
+  private snapshotMaterializationMetadata(): ProviderMaterializationMetadata {
     return {
       records: [...this.records],
       branchGenerations: [...this.branchGenerations],
@@ -1927,10 +2056,18 @@ export class DomTreeProvider {
       ownedFramesByRef: [...this.ownedFramesByRef],
       inactiveFrameRefs: [...this.inactiveFrameRefs],
       cursors: [...this.cursors],
+      nextCursor: this.nextCursor,
+      frameTracking: this.frameTracking,
+      shadowScanOffset: this.shadowScanOffset,
+      pendingMutations: [...this.pendingMutations],
+      pendingFrameMutationScans: [...this.pendingFrameMutationScans],
+      mutationTimer: this.mutationTimer,
+      frameMutationScanTimer: this.frameMutationScanTimer,
+      shadowScanTimer: this.shadowScanTimer,
     };
   }
 
-  private restoreMaterializationMetadata(snapshot: ReturnType<DomTreeProvider["snapshotMaterializationMetadata"]>): void {
+  private restoreMaterializationMetadata(snapshot: ProviderMaterializationMetadata): void {
     restoreMap(this.records, snapshot.records);
     restoreMap(this.branchGenerations, snapshot.branchGenerations);
     restoreSet(this.exhaustedBranches, snapshot.exhaustedBranches);
@@ -1943,6 +2080,18 @@ export class DomTreeProvider {
     restoreMap(this.ownedFramesByRef, snapshot.ownedFramesByRef);
     restoreSet(this.inactiveFrameRefs, snapshot.inactiveFrameRefs);
     restoreMap(this.cursors, snapshot.cursors);
+    this.nextCursor = snapshot.nextCursor;
+    this.frameTracking = snapshot.frameTracking;
+    this.shadowScanOffset = snapshot.shadowScanOffset;
+    this.pendingMutations.splice(0, this.pendingMutations.length, ...snapshot.pendingMutations);
+    this.pendingFrameMutationScans.splice(
+      0,
+      this.pendingFrameMutationScans.length,
+      ...snapshot.pendingFrameMutationScans,
+    );
+    this.mutationTimer = snapshot.mutationTimer;
+    this.frameMutationScanTimer = snapshot.frameMutationScanTimer;
+    this.shadowScanTimer = snapshot.shadowScanTimer;
   }
 
   private retainPathRecord(
