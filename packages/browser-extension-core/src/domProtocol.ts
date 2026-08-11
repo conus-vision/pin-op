@@ -1,4 +1,8 @@
 import { utf8ByteLength } from "@browser2ide/protocol";
+import {
+  parseDomStableLocator,
+  type DomStableLocator,
+} from "./domStableLocator.js";
 
 export const DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH = 128;
 export const DOM_PROTOCOL_MAX_LABEL_LENGTH = 512;
@@ -25,6 +29,7 @@ export interface DomNodeView {
   readonly expandable: boolean;
   readonly inaccessible?: boolean;
   readonly branchRevision: number;
+  readonly locator: DomStableLocator;
 }
 
 export interface DomInvalidationBranch {
@@ -47,6 +52,12 @@ export interface DomGetChildrenRequest {
   readonly cursor?: string;
 }
 
+export interface DomResolveLocatorRequest {
+  readonly type: "dom.resolveLocator";
+  readonly requestId: string;
+  readonly locator: DomStableLocator;
+}
+
 export interface DomSelectRequest {
   readonly type: "dom.select";
   readonly documentEpoch: number;
@@ -67,6 +78,7 @@ export interface DomClearHoverRequest {
 export type DomRequest =
   | DomGetRootRequest
   | DomGetChildrenRequest
+  | DomResolveLocatorRequest
   | DomSelectRequest
   | DomHoverRequest
   | DomClearHoverRequest;
@@ -88,6 +100,14 @@ export interface DomChildrenResponse {
   readonly nextCursor?: string;
 }
 
+export interface DomLocatorResponse {
+  readonly type: "dom.locator";
+  readonly requestId: string;
+  readonly documentEpoch: number;
+  readonly node: DomNodeView;
+  readonly ancestorPath: readonly DomNodeView[];
+}
+
 export interface DomErrorResponse {
   readonly type: "dom.error";
   readonly requestId?: string;
@@ -98,6 +118,7 @@ export interface DomErrorResponse {
 export type DomResponse =
   | DomRootResponse
   | DomChildrenResponse
+  | DomLocatorResponse
   | DomErrorResponse;
 
 export interface DomHoverChangedEvent {
@@ -159,6 +180,7 @@ const DOM_REQUEST_KEYS = [
   "nodeRef",
   "branchRevision",
   "cursor",
+  "locator",
 ] as const;
 
 const DOM_RESPONSE_KEYS = [
@@ -170,6 +192,7 @@ const DOM_RESPONSE_KEYS = [
   "node",
   "nodes",
   "nextCursor",
+  "ancestorPath",
   "code",
 ] as const;
 
@@ -190,6 +213,7 @@ const DOM_NODE_VIEW_KEYS = [
   "expandable",
   "inaccessible",
   "branchRevision",
+  "locator",
 ] as const;
 
 const DOM_INVALIDATION_BRANCH_KEYS = [
@@ -230,6 +254,17 @@ export function parseDomRequest(value: unknown): DomRequest {
         ...(hasOwn(record, "cursor")
           ? { cursor: assertIdentifier(record.cursor) }
           : {}),
+      });
+    case "dom.resolveLocator":
+      assertKeys(record, ["type", "requestId", "locator"], [
+        "type",
+        "requestId",
+        "locator",
+      ]);
+      return freeze({
+        type: "dom.resolveLocator",
+        requestId: assertIdentifier(record.requestId),
+        locator: parseStableLocator(record.locator),
       });
     case "dom.select":
     case "dom.hover":
@@ -300,6 +335,27 @@ export function parseDomResponse(value: unknown): DomResponse {
         ...(hasOwn(record, "nextCursor")
           ? { nextCursor: assertIdentifier(record.nextCursor) }
           : {}),
+      });
+    case "dom.locator":
+      assertKeys(record, [
+        "type",
+        "requestId",
+        "documentEpoch",
+        "node",
+        "ancestorPath",
+      ], [
+        "type",
+        "requestId",
+        "documentEpoch",
+        "node",
+        "ancestorPath",
+      ]);
+      return freeze({
+        type: "dom.locator",
+        requestId: assertIdentifier(record.requestId),
+        documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
+        node: parseNodeView(record.node),
+        ancestorPath: parseAncestorPath(record.ancestorPath),
       });
     case "dom.error":
       assertKeys(record, ["type", "requestId", "documentEpoch", "code"], [
@@ -397,8 +453,21 @@ function parseNodeView(value: unknown): DomNodeView {
     "expandable",
     "inaccessible",
     "branchRevision",
-  ], ["nodeRef", "kind", "label", "expandable", "branchRevision"]);
+    "locator",
+  ], [
+    "nodeRef",
+    "kind",
+    "label",
+    "expandable",
+    "branchRevision",
+    "locator",
+  ]);
   if (typeof record.kind !== "string" || !DOM_NODE_KINDS.has(record.kind as DomNodeView["kind"])) {
+    throw invalidMessage();
+  }
+  const kind = record.kind as DomNodeView["kind"];
+  const locator = parseStableLocator(record.locator);
+  if (locator.targetKind !== kind) {
     throw invalidMessage();
   }
   if (typeof record.expandable !== "boolean") {
@@ -406,14 +475,23 @@ function parseNodeView(value: unknown): DomNodeView {
   }
   return freeze({
     nodeRef: assertIdentifier(record.nodeRef),
-    kind: record.kind as DomNodeView["kind"],
+    kind,
     label: assertBoundedText(record.label, DOM_PROTOCOL_MAX_LABEL_LENGTH, true),
     expandable: record.expandable,
     ...(hasOwn(record, "inaccessible")
       ? { inaccessible: assertBoolean(record.inaccessible) }
       : {}),
     branchRevision: assertSafeNonnegativeInteger(record.branchRevision),
+    locator,
   });
+}
+
+function parseStableLocator(value: unknown): DomStableLocator {
+  try {
+    return parseDomStableLocator(value);
+  } catch {
+    throw invalidMessage();
+  }
 }
 
 function parseNodeViews(value: unknown): readonly DomNodeView[] {

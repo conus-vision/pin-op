@@ -32,6 +32,40 @@ describe("PanelInspectTransport DOM integration", () => {
     expect(port.sent).toHaveLength(1);
   });
 
+  it("posts stable locator queries and waits for the expected response family", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const request = locatorRequest("locator-1");
+
+    const pending = transport.requestDom(request);
+
+    expect(port.sent).toEqual([request]);
+    port.emitMessage(rootResponse("locator-1"));
+    const state = viState(pending);
+    await Promise.resolve();
+    expect(state.settled).toBe(false);
+
+    port.emitMessage(locatorResponse("locator-1"));
+    await expect(pending).resolves.toEqual(locatorResponse("locator-1"));
+  });
+
+  it("does not consume a root query with a locator response", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-family",
+    });
+
+    port.emitMessage(locatorResponse("root-family"));
+    const state = viState(pending);
+    await Promise.resolve();
+    expect(state.settled).toBe(false);
+
+    port.emitMessage(rootResponse("root-family"));
+    await expect(pending).resolves.toEqual(rootResponse("root-family"));
+  });
+
   it("dispatches validated DOM commands and rejects pending queries on close", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
@@ -291,7 +325,38 @@ function rootResponse(requestId: string) {
       label: "html",
       expandable: true,
       branchRevision: 0,
+      locator: stableLocator({ path: [pathSegment({ tagName: "html" })] }),
     },
+  };
+}
+
+function locatorRequest(requestId: string) {
+  return {
+    type: "dom.resolveLocator" as const,
+    requestId,
+    locator: stableLocator({
+      path: [pathSegment({ tagName: "button", id: "save" })],
+    }),
+  };
+}
+
+function locatorResponse(requestId: string) {
+  const node = {
+    nodeRef: "node-target",
+    kind: "element" as const,
+    label: "button#save",
+    expandable: false,
+    branchRevision: 0,
+    locator: stableLocator({
+      path: [pathSegment({ tagName: "button", id: "save" })],
+    }),
+  };
+  return {
+    type: "dom.locator" as const,
+    requestId,
+    documentEpoch: 2,
+    node,
+    ancestorPath: [node],
   };
 }
 
@@ -308,9 +373,52 @@ function selectionChanged() {
         label: "main#content",
         expandable: true,
         branchRevision: 0,
+        locator: stableLocator({
+          path: [pathSegment({ tagName: "main", id: "content" })],
+        }),
       },
     ],
   };
+}
+
+function stableLocator(overrides: Partial<{
+  version: number;
+  targetKind: string;
+  boundaries: Array<{
+    kind: string;
+    hostPath: ReturnType<typeof pathSegment>[];
+  }>;
+  path: ReturnType<typeof pathSegment>[];
+}> = {}) {
+  return {
+    version: 1,
+    targetKind: "element",
+    boundaries: [],
+    path: [pathSegment()],
+    ...overrides,
+  };
+}
+
+function pathSegment(overrides: Partial<{
+  tagName: string;
+  siblingIndex: number;
+  id: string;
+  classes: string[];
+  attributes: Array<{ name: string; value: string }>;
+}> = {}) {
+  return {
+    tagName: "div",
+    siblingIndex: 0,
+    ...overrides,
+  };
+}
+
+function viState(promise: Promise<unknown>): { settled: boolean } {
+  const state = { settled: false };
+  void promise.finally(() => {
+    state.settled = true;
+  });
+  return state;
 }
 
 function resolution(

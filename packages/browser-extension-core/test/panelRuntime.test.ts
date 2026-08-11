@@ -1513,6 +1513,12 @@ function domNode(nodeRef: string, label: string, expandable = false) {
     label,
     expandable,
     branchRevision: 0,
+    locator: {
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
   };
 }
 

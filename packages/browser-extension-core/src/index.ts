@@ -142,12 +142,29 @@ export type {
   DomInvalidatedEvent,
   DomInvalidationBranch,
   DomNodeView,
+  DomLocatorResponse,
   DomRequest,
+  DomResolveLocatorRequest,
   DomResponse,
   DomRootResponse,
   DomSelectRequest,
   DomSelectionChangedEvent,
 } from "./domProtocol.js";
+export {
+  DOM_STABLE_LOCATOR_MAX_ATTRIBUTES,
+  DOM_STABLE_LOCATOR_MAX_BOUNDARIES,
+  DOM_STABLE_LOCATOR_MAX_CLASSES,
+  DOM_STABLE_LOCATOR_MAX_DEPTH,
+  DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH,
+  DOM_STABLE_LOCATOR_VERSION,
+  DOM_TREE_RECOVERY_MAX_EXPANDED,
+} from "./domStableLocator.js";
+export type {
+  DomBoundaryLocator,
+  DomLocatorAttribute,
+  DomPathSegment,
+  DomStableLocator,
+} from "./domStableLocator.js";
 export { DomTreeController } from "./domTreeController.js";
 export type {
   DomTreeControllerOptions,

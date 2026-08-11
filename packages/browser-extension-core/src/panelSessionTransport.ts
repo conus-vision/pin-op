@@ -305,6 +305,9 @@ function isExpectedResponse(
   if (request.type === "dom.getChildren") {
     return response.type === "dom.children";
   }
+  if (request.type === "dom.resolveLocator") {
+    return response.type === "dom.locator";
+  }
   return false;
 }
 

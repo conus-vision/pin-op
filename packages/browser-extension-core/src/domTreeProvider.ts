@@ -26,6 +26,12 @@ import type {
   DomNodeView,
   DomRootResponse,
 } from "./domProtocol.js";
+import {
+  DOM_STABLE_LOCATOR_VERSION,
+  type DomBoundaryLocator,
+  type DomPathSegment,
+  type DomStableLocator,
+} from "./domStableLocator.js";
 
 const CHILD_PAGE_SIZE = 50;
 const CHILD_PAGE_PHYSICAL_SCAN_LIMIT = 256;
@@ -39,6 +45,32 @@ const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
 const MAX_SHADOW_CONTAINMENT_DEPTH = 512;
 const SHADOW_SCAN_BATCH_SIZE = 8;
 const SHADOW_SCAN_INTERVAL_MS = 1_000;
+
+const EMPTY_LOCATOR_BOUNDARIES = Object.freeze(
+  [] as DomBoundaryLocator[],
+);
+const EMPTY_LOCATOR_PATH = Object.freeze([] as DomPathSegment[]);
+const EMPTY_LOCATORS: Readonly<Record<DomNodeView["kind"], DomStableLocator>> =
+  Object.freeze({
+    element: Object.freeze({
+      version: DOM_STABLE_LOCATOR_VERSION,
+      targetKind: "element",
+      boundaries: EMPTY_LOCATOR_BOUNDARIES,
+      path: EMPTY_LOCATOR_PATH,
+    }),
+    "shadow-root": Object.freeze({
+      version: DOM_STABLE_LOCATOR_VERSION,
+      targetKind: "shadow-root",
+      boundaries: EMPTY_LOCATOR_BOUNDARIES,
+      path: EMPTY_LOCATOR_PATH,
+    }),
+    "frame-document": Object.freeze({
+      version: DOM_STABLE_LOCATOR_VERSION,
+      targetKind: "frame-document",
+      boundaries: EMPTY_LOCATOR_BOUNDARIES,
+      path: EMPTY_LOCATOR_PATH,
+    }),
+  });
 
 export type DomChildrenRequest = DomGetChildrenRequest;
 
@@ -842,6 +874,7 @@ export class DomTreeProvider {
       expandable,
       ...(frameElement && frame?.kind !== "accessible" ? { inaccessible: true } : {}),
       branchRevision: this.branchRevisionFor(nodeRef),
+      locator: EMPTY_LOCATORS.element,
     });
   }
 
@@ -865,6 +898,7 @@ export class DomTreeProvider {
       label: "#shadow-root (open)",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
+      locator: EMPTY_LOCATORS["shadow-root"],
     });
   }
 
@@ -890,6 +924,7 @@ export class DomTreeProvider {
       label: "#document",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
+      locator: EMPTY_LOCATORS["frame-document"],
     });
   }
 

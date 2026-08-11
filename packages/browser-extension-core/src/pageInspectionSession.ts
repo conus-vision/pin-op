@@ -504,6 +504,13 @@ export class PageInspectionSession {
       if (parsed.type === "dom.getChildren") {
         return this.provider.getChildren(parsed);
       }
+      if (parsed.type === "dom.resolveLocator") {
+        return errorResponse(
+          "node-unavailable",
+          parsed.requestId,
+          this.provider.currentDocumentEpoch,
+        );
+      }
       if (parsed.type === "dom.hover") {
         const event = this.applyHover(
           this.resolveHoveredState(parsed.nodeRef, parsed.documentEpoch),

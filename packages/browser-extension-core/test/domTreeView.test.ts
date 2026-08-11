@@ -601,6 +601,12 @@ function node(
     label,
     expandable,
     branchRevision: 0,
+    locator: {
+      version: 1,
+      targetKind: "element",
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
   };
 }
 

@@ -3792,6 +3792,12 @@ function domRoot(requestId: string) {
       label: "html",
       expandable: true,
       branchRevision: 0,
+      locator: {
+        version: 1 as const,
+        targetKind: "element" as const,
+        boundaries: [],
+        path: [{ tagName: "html", siblingIndex: 0 }],
+      },
     },
   };
 }

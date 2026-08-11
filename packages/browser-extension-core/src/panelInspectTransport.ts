@@ -32,6 +32,7 @@ export class PanelInspectTransport {
   private readonly pendingDom = new Map<
     string,
     {
+      readonly request: DomQuery;
       resolve(value: DomResponse): void;
       reject(reason: unknown): void;
     }
@@ -106,7 +107,7 @@ export class PanelInspectTransport {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingDom.set(request.requestId, { resolve, reject });
+      this.pendingDom.set(request.requestId, { request, resolve, reject });
       try {
         connection.port.postMessage(request);
       } catch {
@@ -224,7 +225,11 @@ export class PanelInspectTransport {
       const pending = requestId
         ? this.pendingDom.get(requestId)
         : undefined;
-      if (pending && requestId) {
+      if (
+        pending &&
+        requestId &&
+        isExpectedDomResponse(pending.request, domResponse)
+      ) {
         this.pendingDom.delete(requestId);
         pending.resolve(domResponse);
       } else if (domResponse.type === "dom.error") {
@@ -300,8 +305,32 @@ function validatedDomResponse(message: unknown): DomResponse | undefined {
 
 function isDomQuery(
   request: DomRequest,
-): request is Extract<DomRequest, { readonly requestId: string }> {
-  return request.type === "dom.getRoot" || request.type === "dom.getChildren";
+): request is DomQuery {
+  return request.type === "dom.getRoot" ||
+    request.type === "dom.getChildren" ||
+    request.type === "dom.resolveLocator";
+}
+
+type DomQuery = Extract<DomRequest, { readonly requestId: string }>;
+
+function isExpectedDomResponse(
+  request: DomQuery,
+  response: DomResponse,
+): boolean {
+  if (response.requestId !== request.requestId) {
+    return false;
+  }
+  if (response.type === "dom.error") {
+    return true;
+  }
+  switch (request.type) {
+    case "dom.getRoot":
+      return response.type === "dom.root";
+    case "dom.getChildren":
+      return response.type === "dom.children";
+    case "dom.resolveLocator":
+      return response.type === "dom.locator";
+  }
 }
 
 function validatedPushMessage(message: unknown): unknown | undefined {

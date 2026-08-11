@@ -27,6 +27,44 @@ describe("PanelSessionTransport", () => {
     }]);
   });
 
+  it("keeps stable locator queries browser-local and correlates their response", async () => {
+    const sent: Array<{ tabId: number; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      async sendTabMessage(tabId, message) {
+        sent.push({ tabId, message });
+        return locatorResponse("locator-a");
+      },
+      postPanelMessage: vi.fn(),
+    });
+    transport.bind("panel-a", 7);
+
+    await expect(transport.request("panel-a", locatorRequest("locator-a")))
+      .resolves.toEqual(locatorResponse("locator-a"));
+    expect(sent).toEqual([{
+      tabId: 7,
+      message: locatorRequest("locator-a"),
+    }]);
+  });
+
+  it("maps a malformed stable locator request to invalid-request", async () => {
+    const sendTabMessage = vi.fn();
+    const transport = new PanelSessionTransport({
+      sendTabMessage,
+      postPanelMessage: vi.fn(),
+    });
+    transport.bind("panel-a", 7);
+
+    await expect(transport.request("panel-a", {
+      ...locatorRequest("locator-invalid"),
+      locator: { ...stableLocator(), extra: true },
+    } as unknown as DomRequest)).resolves.toEqual({
+      type: "dom.error",
+      requestId: "locator-invalid",
+      code: "invalid-request",
+    });
+    expect(sendTabMessage).not.toHaveBeenCalled();
+  });
+
   it("never accepts a panel-supplied tab ID", async () => {
     const sendTabMessage = vi.fn(async () => rootResponse("root-a"));
     const transport = new PanelSessionTransport({
@@ -84,6 +122,11 @@ describe("PanelSessionTransport", () => {
       "wrong children response family",
       childrenRequest("children-a"),
       rootResponse("children-a"),
+    ],
+    [
+      "wrong locator response family",
+      locatorRequest("locator-a"),
+      rootResponse("locator-a"),
     ],
   ])("returns a correlated internal error for a %s", async (
     _case,
@@ -246,6 +289,7 @@ function rootResponse(requestId: string) {
       label: "html",
       expandable: true,
       branchRevision: 0,
+      locator: stableLocator({ path: [pathSegment({ tagName: "html" })] }),
     },
   };
 }
@@ -268,6 +312,66 @@ function childrenResponse(requestId: string) {
     nodeRef: "node-root",
     branchRevision: 0,
     nodes: [],
+  };
+}
+
+function locatorRequest(requestId: string) {
+  return {
+    type: "dom.resolveLocator" as const,
+    requestId,
+    locator: stableLocator(),
+  };
+}
+
+function locatorResponse(requestId: string) {
+  const node = {
+    nodeRef: "node-target",
+    kind: "element" as const,
+    label: "button#save",
+    expandable: false,
+    branchRevision: 0,
+    locator: stableLocator({
+      path: [pathSegment({ tagName: "button", id: "save" })],
+    }),
+  };
+  return {
+    type: "dom.locator" as const,
+    requestId,
+    documentEpoch: 2,
+    node,
+    ancestorPath: [node],
+  };
+}
+
+function stableLocator(overrides: Partial<{
+  version: number;
+  targetKind: string;
+  boundaries: Array<{
+    kind: string;
+    hostPath: ReturnType<typeof pathSegment>[];
+  }>;
+  path: ReturnType<typeof pathSegment>[];
+}> = {}) {
+  return {
+    version: 1,
+    targetKind: "element",
+    boundaries: [],
+    path: [pathSegment()],
+    ...overrides,
+  };
+}
+
+function pathSegment(overrides: Partial<{
+  tagName: string;
+  siblingIndex: number;
+  id: string;
+  classes: string[];
+  attributes: Array<{ name: string; value: string }>;
+}> = {}) {
+  return {
+    tagName: "div",
+    siblingIndex: 0,
+    ...overrides,
   };
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as browserExtensionCore from "../src/index.js";
 import {
   BackgroundRouter,
   BackgroundInspectCoordinator,
@@ -50,6 +51,10 @@ import {
 
 describe("browser extension core exports", () => {
   it("exports transport, inspection, and DevTools runtimes", () => {
+    const publicExports = browserExtensionCore as unknown as Record<
+      string,
+      unknown
+    >;
     expect(BrowserBridgeClient).toBeTypeOf("function");
     expect(BackgroundInspectCoordinator).toBeTypeOf("function");
     expect(BackgroundRouter).toBeTypeOf("function");
@@ -65,6 +70,13 @@ describe("browser extension core exports", () => {
     expect(DOM_PROTOCOL_MAX_LABEL_LENGTH).toBe(512);
     expect(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES).toBe(64 * 1024);
     expect(DOM_PROTOCOL_MAX_SUMMARY_LENGTH).toBe(512);
+    expect(publicExports.DOM_STABLE_LOCATOR_VERSION).toBe(1);
+    expect(publicExports.DOM_STABLE_LOCATOR_MAX_DEPTH).toBe(64);
+    expect(publicExports.DOM_STABLE_LOCATOR_MAX_BOUNDARIES).toBe(16);
+    expect(publicExports.DOM_STABLE_LOCATOR_MAX_CLASSES).toBe(8);
+    expect(publicExports.DOM_STABLE_LOCATOR_MAX_ATTRIBUTES).toBe(8);
+    expect(publicExports.DOM_STABLE_LOCATOR_MAX_TOKEN_LENGTH).toBe(128);
+    expect(publicExports.DOM_TREE_RECOVERY_MAX_EXPANDED).toBe(64);
     expect(DomNodeRegistry).toBeTypeOf("function");
     expect(DomPanelView).toBeTypeOf("function");
     expect(DomTreeController).toBeTypeOf("function");

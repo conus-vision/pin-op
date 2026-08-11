@@ -62,6 +62,16 @@ describe("DomTreeProvider", () => {
     const provider = createProvider(document);
     const root = provider.getRoot();
 
+    expect(root.node.locator).toMatchObject({
+      version: 1,
+      targetKind: "element",
+      boundaries: expect.any(Array),
+      path: expect.any(Array),
+    });
+    expect(Object.isFrozen(root.node.locator)).toBe(true);
+    expect(Object.isFrozen(root.node.locator.boundaries)).toBe(true);
+    expect(Object.isFrozen(root.node.locator.path)).toBe(true);
+
     const first = provider.getChildren({
       type: "dom.getChildren",
       requestId: "children-1",
@@ -114,6 +124,8 @@ describe("DomTreeProvider", () => {
       kind: "shadow-root",
       expandable: true,
     }));
+    expect(children.nodes.find((node) => node.kind === "shadow-root")?.locator)
+      .toMatchObject({ version: 1, targetKind: "shadow-root" });
   });
 
   it("invalidates an expanded branch before serving revision two", () => {
@@ -838,6 +850,10 @@ describe("DomTreeProvider", () => {
     expect(frameDocumentView).toMatchObject({
       kind: "frame-document",
       expandable: true,
+      locator: expect.objectContaining({
+        version: 1,
+        targetKind: "frame-document",
+      }),
     });
     expect(harness.observers[1]!.observedTargets).toEqual([childDocument]);
     expect(harness.provider.ancestorPath(childRootView.nodeRef, root.documentEpoch)

@@ -458,6 +458,12 @@ function node(
     label: nodeRef,
     expandable,
     branchRevision,
+    locator: {
+      version: 1,
+      targetKind: "element",
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
   };
 }
 

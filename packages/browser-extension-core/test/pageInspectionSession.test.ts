@@ -537,6 +537,16 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
     }]);
     await expect(harness.session.handle({
+      type: "dom.resolveLocator",
+      requestId: "locator-request",
+      locator: stableLocator(),
+    })).resolves.toEqual({
+      type: "dom.error",
+      requestId: "locator-request",
+      documentEpoch: 3,
+      code: "node-unavailable",
+    });
+    await expect(harness.session.handle({
       type: "dom.select",
       documentEpoch: 3,
       nodeRef: "node-2",
@@ -1394,6 +1404,18 @@ function nodeView(nodeRef: string, label: string): DomNodeView {
     label,
     expandable: false,
     branchRevision: 1,
+    locator: stableLocator(),
+  });
+}
+
+function stableLocator() {
+  return Object.freeze({
+    version: 1 as const,
+    targetKind: "element" as const,
+    boundaries: Object.freeze([]),
+    path: Object.freeze([
+      Object.freeze({ tagName: "div", siblingIndex: 0 }),
+    ]),
   });
 }
 
