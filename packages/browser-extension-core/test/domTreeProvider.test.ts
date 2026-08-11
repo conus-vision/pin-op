@@ -4294,6 +4294,190 @@ describe("DomTreeProvider", () => {
     expect(harness.provider.currentDocumentEpoch).toBe(4);
   });
 
+  it.each([
+    ["reset", (provider: DomTreeProvider, _frame: FakeFrameElement) => (
+      provider.resetDocument(createDocument() as unknown as Document, 4)
+    )],
+    ["dispose", (provider: DomTreeProvider, _frame: FakeFrameElement) => provider.dispose()],
+    ["navigate", (_provider: DomTreeProvider, frame: FakeFrameElement) => {
+      frame.setFrameDocument(createDocument());
+      frame.dispatchLoad();
+    }],
+  ] as const)("stops ordered frame effect replay after a callback %s authority", (_name, invalidate) => {
+    const document = createDocument();
+    const frames = [
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+    ];
+    let provider: DomTreeProvider | undefined;
+    let invalidated = false;
+    const registered: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "registered") return;
+        registered.push(event.frameRef);
+        if (!invalidated) {
+          invalidated = true;
+          invalidate(provider!, frames[0]);
+        }
+      },
+    });
+    provider = harness.provider;
+    const root = harness.provider.getRoot();
+    for (const frame of frames) document.documentElement.append(frame);
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "ordered-frame-effects",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(registered).toHaveLength(1);
+  });
+
+  it("replays all ordered frame effects once for a read-only callback", () => {
+    const document = createDocument();
+    const frames = [
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+    ];
+    const registered: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type === "registered") registered.push(event.frameRef);
+      },
+    });
+    const root = harness.provider.getRoot();
+    for (const frame of frames) document.documentElement.append(frame);
+
+    const response = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "ordered-frame-effects-read-only",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    expect(response.nodes).toHaveLength(3);
+    expect(new Set(registered)).toHaveLength(3);
+    expect(registered).toHaveLength(3);
+  });
+
+  it("does not return a root changed by its first published callback", () => {
+    const document = createDocument();
+    const invalidations: string[] = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => {
+        invalidations.push(branch.nodeRef);
+        if (invalidations.length === 1) document.documentElement.className = "changed";
+      },
+    });
+    const state = harness.provider as unknown as {
+      viewElement(element: Element, ...args: readonly unknown[]): { readonly nodeRef: string; readonly branchRevision: number };
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+    };
+    const originalViewElement = state.viewElement;
+    state.viewElement = (element, ...args) => {
+      const view = originalViewElement.call(state, element, ...args);
+      state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+      state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+      state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+      return view;
+    };
+
+    expect(() => harness.provider.getRoot()).toThrowError("node-unavailable");
+    expect(invalidations).toHaveLength(1);
+  });
+
+  it("does not return children replaced by their first published callback", () => {
+    const document = createDocument();
+    const frames = [
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+      createFrameElement(document, createDocument()),
+    ];
+    const registered: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "registered") return;
+        registered.push(event.frameRef);
+        if (registered.length === 1) {
+          document.documentElement.remove(frames[0]);
+          document.documentElement.append(createFrameElement(document, createDocument()));
+        }
+      },
+    });
+    const root = harness.provider.getRoot();
+    for (const frame of frames) document.documentElement.append(frame);
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "published-child-dom-change",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+    expect(registered).toHaveLength(1);
+  });
+
+  it("does not return an ancestor path moved by its first published callback", () => {
+    const tree = createHeadingTree();
+    const root = tree.provider.getRoot();
+    const body = onlyChild(tree.provider, root.node, root.documentEpoch, "ancestor-live-body");
+    const main = onlyChild(tree.provider, body, root.documentEpoch, "ancestor-live-main");
+    const target = onlyChild(tree.provider, main, root.documentEpoch, "ancestor-live-target");
+    let effects = 0;
+    const state = tree.provider as unknown as {
+      viewElement(element: Element, ...args: readonly unknown[]): { readonly nodeRef: string; readonly branchRevision: number };
+      emitInvalidated(branch: { readonly nodeRef: string; readonly branchRevision: number }): void;
+      onInvalidated: ((branch: { readonly nodeRef: string; readonly branchRevision: number }) => void) | undefined;
+    };
+    const originalViewElement = state.viewElement;
+    state.onInvalidated = () => {
+      effects += 1;
+      if (effects === 1) {
+        tree.main.remove(tree.target);
+        tree.document.documentElement.append(tree.target);
+      }
+    };
+    state.viewElement = (element, ...args) => {
+      const view = originalViewElement.call(state, element, ...args);
+      if (element === tree.target) {
+        state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+        state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+        state.emitInvalidated({ nodeRef: view.nodeRef, branchRevision: view.branchRevision });
+      }
+      return view;
+    };
+
+    expect(() => tree.provider.ancestorPath(target.nodeRef, root.documentEpoch))
+      .toThrowError("node-unavailable");
+    expect(effects).toBe(1);
+  });
+
+  it("does not return a locator result changed by its published callback", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const target = createElement("button", childDocument);
+    target.id = "frame_target";
+    target.className = "action";
+    childDocument.documentElement.append(target);
+    document.documentElement.append(frame);
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type === "registered") target.className = "changed";
+      },
+    });
+
+    expect(resolveLocator(harness.provider, locator)).toBeUndefined();
+  });
+
   it("fails capture when a registered frame host is moved or has the wrong parent owner", () => {
     const framed = createFramedButtonTree();
     const service = (framed.provider as unknown as {

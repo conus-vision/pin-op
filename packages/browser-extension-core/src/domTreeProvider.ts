@@ -30,6 +30,7 @@ import type {
 import {
   DomStableLocatorService,
   type DomStableLocator,
+  type StableLocatorResolution,
 } from "./domStableLocator.js";
 
 const CHILD_PAGE_SIZE = 50;
@@ -229,7 +230,7 @@ interface ProviderAuthoritySnapshot {
 }
 
 interface ProviderAuthorityOperation {
-  publish(): boolean;
+  publish(validate?: () => boolean): boolean;
   finalize(validate?: () => boolean): boolean;
   rollback(cleanup?: () => void): boolean;
 }
@@ -309,6 +310,8 @@ export class DomTreeProvider {
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   private authorityGeneration = 0;
   private replayingFrameEffect: FrameLifecycleEvent | undefined;
+  private nextPublicationToken = 1;
+  private activePublicationToken: number | undefined;
   private nextCursor = 1;
   private frameTracking = false;
   private disposed = false;
@@ -446,10 +449,11 @@ export class DomTreeProvider {
         documentEpoch: this.documentEpoch,
         node: this.viewElement(element, context),
       });
-      if (
-        !operation.publish() ||
-        !operation.finalize(() => this.validatePublishedViews([response.node], response.documentEpoch))
-      ) {
+      const validate = () => this.validateLivePathViews(
+        [response.node],
+        response.documentEpoch,
+      );
+      if (!operation.publish(validate) || !operation.finalize(validate)) {
         throwDomTreeError("node-unavailable");
       }
       committed = true;
@@ -612,11 +616,18 @@ export class DomTreeProvider {
       nodes,
       ...(nextCursor ? { nextCursor } : {}),
     });
-    authorityCommitted = authorityOperation.publish() && authorityOperation.finalize(() => (
-      this.validatePublishedViews(response.nodes, response.documentEpoch) &&
-      this.records.get(request.nodeRef)?.scope.documentEpoch === response.documentEpoch &&
-      this.expandedBranches.get(request.nodeRef)?.revision === response.branchRevision
-    ));
+    const validate = () => this.validateLiveChildPage(
+      node,
+      request.nodeRef,
+      record!.scope,
+      physicalOffset,
+      page,
+      response.nodes,
+      response.documentEpoch,
+      response.branchRevision,
+    );
+    authorityCommitted = authorityOperation.publish(validate) &&
+      authorityOperation.finalize(validate);
     if (!authorityCommitted) throwDomTreeError("node-unavailable");
     return response;
     } finally {
@@ -669,9 +680,8 @@ export class DomTreeProvider {
         currentRef = record.parentRef;
       }
       const result = Object.freeze(reversed.reverse());
-      committed = authorityOperation.publish() && authorityOperation.finalize(() => (
-        this.validatePublishedViews(result, documentEpoch)
-      ));
+      const validate = () => this.validateLivePathViews(result, documentEpoch);
+      committed = authorityOperation.publish(validate) && authorityOperation.finalize(validate);
       if (!committed) throwDomTreeError("node-unavailable");
       return result;
     } finally {
@@ -805,11 +815,15 @@ export class DomTreeProvider {
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
       const resolvedPath = path;
       if (!resolvedPath) return undefined;
-      committed = authorityOperation.publish() && authorityOperation.finalize(() => (
-        this.validatePublishedViews(ancestorPath, this.documentEpoch) &&
-        this.validateMaterializedPath(resolvedPath, node.nodeRef) &&
-        ancestorPath.at(-1) === node
-      ));
+      const validate = () => this.validateLiveResolvedLocator(
+        locator,
+        resolved.kind,
+        resolved.node,
+        resolvedPath,
+        ancestorPath,
+        node,
+      );
+      committed = authorityOperation.publish(validate) && authorityOperation.finalize(validate);
       if (!committed) return undefined;
       transaction.commit();
       return Object.freeze({ node, ancestorPath });
@@ -1869,10 +1883,12 @@ export class DomTreeProvider {
       }
       this.releasePathRetentions(temporaryRetentions);
       temporaryRetentions.clear();
-      authorityCommitted = authorityOperation.publish() && authorityOperation.finalize(() => (
+      const validate = () => (
         this.validateMaterializedPath(path, parentRef!) &&
-        this.validatePublishedViews(views, this.documentEpoch)
-      ));
+        this.validateLiveLogicalPath(path, views, parentRef!, this.documentEpoch)
+      );
+      authorityCommitted = authorityOperation.publish(validate) &&
+        authorityOperation.finalize(validate);
       if (!authorityCommitted) return undefined;
       return Object.freeze(views);
     } catch {
@@ -2063,25 +2079,49 @@ export class DomTreeProvider {
     const buffer = parentBuffer ?? [];
     const ownsBuffer = parentBuffer === undefined;
     if (ownsBuffer) this.outwardEffectBuffer = buffer;
+    const publicationToken = this.nextPublicationToken;
+    this.nextPublicationToken += 1;
     let closed = false;
     let published = false;
     let publicationFailed = false;
     return {
-      publish: () => {
+      publish: (validate = () => true) => {
         if (closed || published || (ownsBuffer && this.outwardEffectBuffer !== buffer)) return false;
         published = true;
-        if (!ownsBuffer) return true;
-        this.outwardEffectBuffer = undefined;
-        for (const effect of buffer) {
-          if (effect.kind === "frame") this.replayingFrameEffect = effect.event;
-          try {
-            this.emitOutwardEffect(effect);
-          } finally {
-            this.replayingFrameEffect = undefined;
-          }
+        if (!ownsBuffer) {
+          publicationFailed = !this.isProviderAuthorityCurrent(snapshot) || !validate();
+          return !publicationFailed;
         }
-        publicationFailed = !this.isProviderAuthorityCurrent(snapshot);
-        return !publicationFailed;
+        this.outwardEffectBuffer = undefined;
+        const previousPublicationToken = this.activePublicationToken;
+        this.activePublicationToken = publicationToken;
+        try {
+          for (let index = 0; index < buffer.length; index += 1) {
+            const effect = buffer[index]!;
+            if (effect.kind === "frame") this.replayingFrameEffect = effect.event;
+            try {
+              this.emitOutwardEffect(effect);
+            } finally {
+              this.replayingFrameEffect = undefined;
+            }
+            if (
+              this.activePublicationToken !== publicationToken ||
+              !this.isProviderAuthorityCurrent(snapshot) ||
+              !validate()
+            ) {
+              publicationFailed = true;
+              buffer.length = 0;
+              return false;
+            }
+          }
+        } catch {
+          publicationFailed = true;
+          buffer.length = 0;
+          return false;
+        } finally {
+          this.activePublicationToken = previousPublicationToken;
+        }
+        return true;
       },
       finalize: (validate = () => true) => {
         if (closed || !published || publicationFailed) return false;
@@ -2375,6 +2415,173 @@ export class DomTreeProvider {
       }
       return true;
     });
+  }
+
+  private validateLiveResolvedLocator(
+    locator: DomStableLocator,
+    kind: DomStableLocator["targetKind"],
+    target: Node,
+    path: readonly LogicalPathEntry[],
+    views: readonly DomNodeView[],
+    node: DomNodeView,
+  ): boolean {
+    const resolved = this.resolveLocatorForLiveValidation(locator);
+    return !!resolved &&
+      resolved.kind === kind &&
+      resolved.node === target &&
+      node.kind === kind &&
+      this.validateMaterializedPath(path, node.nodeRef) &&
+      this.validateLiveLogicalPath(path, views, node.nodeRef, this.documentEpoch);
+  }
+
+  private validateLiveLogicalPath(
+    path: readonly LogicalPathEntry[],
+    views: readonly DomNodeView[],
+    finalRef: string,
+    documentEpoch: number,
+  ): boolean {
+    if (
+      path.length !== views.length ||
+      !this.validatePublishedViews(views, documentEpoch) ||
+      !this.validateLivePathViews(views, documentEpoch)
+    ) {
+      return false;
+    }
+    return path.every((entry, index) => {
+      const view = views[index]!;
+      const record = this.records.get(view.nodeRef);
+      return record?.kind === entry.kind &&
+        record.scope.documentEpoch === documentEpoch &&
+        sameNodeScope(record.scope, entry.scope) &&
+        this.nodeRegistry.resolve(view.nodeRef, record.scope) === entry.node;
+    }) && views.at(-1)?.nodeRef === finalRef;
+  }
+
+  private validateLivePathViews(
+    views: readonly DomNodeView[],
+    documentEpoch: number,
+  ): boolean {
+    if (views.length === 0 || !this.validatePublishedViews(views, documentEpoch)) {
+      return false;
+    }
+    try {
+      const finalView = views.at(-1)!;
+      const finalRecord = this.records.get(finalView.nodeRef);
+      const finalNode = finalRecord
+        ? this.nodeRegistry.resolve(finalView.nodeRef, finalRecord.scope)
+        : undefined;
+      if (!finalRecord || !finalNode) return false;
+      const livePath = this.logicalPathForResolvedLocator(finalRecord.kind, finalNode);
+      if (!livePath || livePath.length !== views.length) return false;
+      for (let index = 0; index < views.length; index += 1) {
+        const view = views[index]!;
+        const entry = livePath[index]!;
+        const record = this.records.get(view.nodeRef);
+        if (
+          !record ||
+          record.kind !== entry.kind ||
+          !sameNodeScope(record.scope, entry.scope) ||
+          this.nodeRegistry.resolve(view.nodeRef, record.scope) !== entry.node
+        ) {
+          return false;
+        }
+      }
+      return this.validateLiveViews(views, documentEpoch);
+    } catch {
+      return false;
+    }
+  }
+
+  private validateLiveChildPage(
+    parent: Node,
+    parentRef: string,
+    scope: NodeScope,
+    physicalOffset: number,
+    expected: LogicalChildPage,
+    views: readonly DomNodeView[],
+    documentEpoch: number,
+    branchRevision: number,
+  ): boolean {
+    try {
+      if (
+        !this.validateLiveViews(views, documentEpoch) ||
+        !this.records.get(parentRef) ||
+        !sameNodeScope(this.records.get(parentRef)!.scope, scope) ||
+        this.expandedBranches.get(parentRef)?.revision !== branchRevision
+      ) {
+        return false;
+      }
+      const current = this.logicalChildPage(parent, parentRef, scope, physicalOffset);
+      if (
+        current.hasMore !== expected.hasMore ||
+        current.nextPhysicalOffset !== expected.nextPhysicalOffset ||
+        current.children.length !== expected.children.length ||
+        current.children.length !== views.length
+      ) {
+        return false;
+      }
+      return current.children.every((child, index) => {
+        const expectedChild = expected.children[index]!;
+        const view = views[index]!;
+        const record = this.records.get(view.nodeRef);
+        return child.kind === expectedChild.kind &&
+          child.node === expectedChild.node &&
+          child.kind === view.kind &&
+          !!record &&
+          this.nodeRegistry.resolve(view.nodeRef, record.scope) === child.node &&
+          (child.kind !== "frame-document" || (
+            expectedChild.kind === "frame-document" &&
+            sameNodeScope(child.scope, expectedChild.scope)
+          ));
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private validateLiveViews(
+    views: readonly DomNodeView[],
+    documentEpoch: number,
+  ): boolean {
+    if (!this.validatePublishedViews(views, documentEpoch)) return false;
+    return views.every((view) => this.validateViewLocator(view));
+  }
+
+  private validateViewLocator(view: DomNodeView): boolean {
+    const record = this.records.get(view.nodeRef);
+    const node = record
+      ? this.nodeRegistry.resolve(view.nodeRef, record.scope)
+      : undefined;
+    const resolved = this.resolveLocatorForLiveValidation(view.locator);
+    return !!record &&
+      !!node &&
+      !!resolved &&
+      resolved.kind === view.kind &&
+      resolved.node === node;
+  }
+
+  private resolveLocatorForLiveValidation(
+    locator: DomStableLocator,
+  ): StableLocatorResolution | undefined {
+    const buffer = this.outwardEffectBuffer ?? [];
+    const previousBuffer = this.outwardEffectBuffer;
+    const effectOffset = buffer.length;
+    if (!previousBuffer) this.outwardEffectBuffer = buffer;
+    let transaction: ReturnType<DomStableLocatorService["beginResolve"]>;
+    try {
+      transaction = this.locatorService.beginResolve(locator);
+      return transaction?.resolution;
+    } catch {
+      return undefined;
+    } finally {
+      try {
+        transaction?.rollback();
+      } catch {
+        // Validation is read-only from the provider's perspective.
+      }
+      buffer.length = effectOffset;
+      if (!previousBuffer) this.outwardEffectBuffer = undefined;
+    }
   }
 
   private observeRoot(root: Node): void {
