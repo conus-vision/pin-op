@@ -2832,6 +2832,7 @@ export class DomTreeProvider {
   }
 
   private invokeOutwardCallback(callback: (() => void) | undefined): boolean {
+    if (!this.publicationCanContinue()) return false;
     try {
       callback?.();
     } catch {

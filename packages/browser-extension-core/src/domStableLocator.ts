@@ -8,8 +8,19 @@ export const DOM_TREE_RECOVERY_MAX_EXPANDED = 64;
 
 const MAX_ID_SCAN_NODES = 4_096;
 const MAX_EVIDENCE_PHYSICAL_SCAN = 256;
-const MAX_CHILD_PHYSICAL_SCAN = 65_536;
+const MAX_CHILD_PHYSICAL_SCAN = 256;
+const MAX_LOCATOR_VISITED_NODES = 65_536;
 const READ_FAILED = Symbol("dom-stable-locator-read-failed");
+
+class LocatorVisitBudget {
+  private remaining = MAX_LOCATOR_VISITED_NODES;
+
+  public visit(): boolean {
+    if (this.remaining <= 0) return false;
+    this.remaining -= 1;
+    return true;
+  }
+}
 
 export interface DomStableLocator {
   readonly version: 1;
@@ -108,7 +119,7 @@ export class DomStableLocatorService {
       ? this.frameRegistry.getContextForDocument(node as Document)?.frameElement
       : targetElementFor(node, kind);
     if (!target || this.isExcluded(target)) throw invalidLocator();
-    const captured = this.captureElement(target, new Set<Node>(), 0);
+    const captured = this.captureElement(target, new Set<Node>(), 0, new LocatorVisitBudget());
     const locator = {
       version: DOM_STABLE_LOCATOR_VERSION,
       targetKind: kind,
@@ -138,6 +149,7 @@ export class DomStableLocatorService {
     if (!topContext || !rootIsDocument || this.isExcluded(root)) return undefined;
     let context: { readonly document: Document; readonly frameRef: string } = topContext;
     const seen = new Set<Node>([root]);
+    const budget = new LocatorVisitBudget();
     const authorizedFrames: HTMLIFrameElement[] = [];
     let traversed = 0;
     let transaction: StableLocatorResolutionTransaction | undefined;
@@ -149,7 +161,7 @@ export class DomStableLocatorService {
         let shadowRoot: ShadowRoot | undefined;
         let childDocument: Document | undefined;
         let childContext: { readonly document: Document; readonly frameRef: string } | undefined;
-        const host = this.resolvePath(root, boundary.hostPath, seen, traversed, (candidate) => {
+        const host = this.resolvePath(root, boundary.hostPath, seen, traversed, budget, (candidate) => {
           if (boundary.kind === "shadow-root") {
             shadowRoot = readOpenShadowRoot(candidate, seen);
             return !!shadowRoot && !this.isExcluded(shadowRoot);
@@ -192,7 +204,7 @@ export class DomStableLocatorService {
       }
       let targetShadowRoot: ShadowRoot | undefined;
       let targetFrameDocument: Document | undefined;
-      const target = this.resolvePath(root, parsed.path, seen, traversed, (candidate) => {
+      const target = this.resolvePath(root, parsed.path, seen, traversed, budget, (candidate) => {
         if (parsed.targetKind === "element") return true;
         if (parsed.targetKind === "shadow-root") {
           targetShadowRoot = readOpenShadowRoot(candidate, seen);
@@ -250,17 +262,18 @@ export class DomStableLocatorService {
     target: Element,
     seen: Set<Node>,
     depth: number,
+    budget: LocatorVisitBudget,
   ): CapturedElementPath {
     if (depth >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(target)) {
       throw invalidLocator();
     }
     seen.add(target);
-    const root = containingRoot(target, seen);
+    const root = containingRoot(target, seen, budget);
     const boundary = this.captureRootBoundary(root, seen);
     // The final page-controlled proof for this root is capturePath. Keep all
     // root/context work above it and assemble only trusted local values below.
     if (boundary.kind === "top") {
-      const path = capturePath(root, target, this.isExcludedNode);
+      const path = capturePath(root, target, this.isExcludedNode, budget);
       if (path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
       return Object.freeze({
         boundaries: Object.freeze([]),
@@ -268,8 +281,8 @@ export class DomStableLocatorService {
         pathDepth: path.length,
       });
     }
-    const parent = this.captureElement(boundary.host, seen, depth + 1);
-    const path = capturePath(root, target, this.isExcludedNode);
+    const parent = this.captureElement(boundary.host, seen, depth + 1, budget);
+    const path = capturePath(root, target, this.isExcludedNode, budget);
     const pathDepth = parent.pathDepth + path.length;
     if (pathDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
     return Object.freeze({
@@ -329,6 +342,7 @@ export class DomStableLocatorService {
     path: readonly DomPathSegment[],
     seen: Set<Node>,
     traversed: number,
+    budget: LocatorVisitBudget,
     prepareFinal?: (element: Element) => boolean,
   ): Element | undefined {
     if (path.length === 0 || traversed + path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) {
@@ -338,7 +352,7 @@ export class DomStableLocatorService {
     let resolved: Element | undefined;
     for (let index = 0; index < path.length; index += 1) {
       const segment = path[index]!;
-      const candidate = elementChildAt(parent, segment.siblingIndex);
+      const candidate = elementChildAt(parent, segment.siblingIndex, budget);
       if (
         !candidate ||
         seen.has(candidate) ||
@@ -348,6 +362,7 @@ export class DomStableLocatorService {
           segment,
           parent,
           root,
+          budget,
           index === path.length - 1 ? prepareFinal : undefined,
         )
       ) {
@@ -436,10 +451,15 @@ function targetElementFor(
   return exactOpenShadowRoot(node)?.host;
 }
 
-function containingRoot(target: Element, seen: ReadonlySet<Node>): Node {
+function containingRoot(
+  target: Element,
+  seen: ReadonlySet<Node>,
+  budget: LocatorVisitBudget,
+): Node {
   let current: Node = target;
   const path = new Set<Node>(seen);
   for (let depth = 0; depth < DOM_STABLE_LOCATOR_MAX_DEPTH; depth += 1) {
+    if (!budget.visit()) throw invalidLocator();
     const parent = readParentNode(current);
     if (!parent) throw invalidLocator();
     if (parent.nodeType === 9 || exactOpenShadowRoot(parent, undefined, path)) return parent;
@@ -454,6 +474,7 @@ function capturePath(
   root: Node,
   target: Element,
   isExcludedNode: (node: Node) => boolean,
+  budget: LocatorVisitBudget,
 ): readonly DomPathSegment[] {
   const reversed: DomPathSegment[] = [];
   const seen = new Set<Node>();
@@ -466,23 +487,28 @@ function capturePath(
     if (isExcludedNode(current)) throw invalidLocator();
     const parent = readParentNode(current);
     if (!parent || parent === current || isExcludedNode(parent)) throw invalidLocator();
-    reversed.push(captureSegment(current as Element, parent, root));
+    reversed.push(captureSegment(current as Element, parent, root, budget));
     current = parent;
   }
   if (reversed.length === 0) throw invalidLocator();
   return Object.freeze(reversed.reverse());
 }
 
-function captureSegment(element: Element, parent: Node, root: Node): DomPathSegment {
+function captureSegment(
+  element: Element,
+  parent: Node,
+  root: Node,
+  budget: LocatorVisitBudget,
+): DomPathSegment {
   const tagName = readTagName(element);
-  const evidence = readCanonicalEvidence(element, parent, root);
-  if (!tagName || !evidence) throw invalidLocator();
-  const id = stabilizeSegmentIdentity(element, parent, root, tagName, evidence);
-  if (id === READ_FAILED) throw invalidLocator();
-  // This is intentionally last: it proves the saved physical position without
-  // another page-controlled parent/sibling read after the final snapshot.
-  const siblingIndex = elementSiblingIndex(parent, element);
+  const siblingIndex = elementSiblingIndex(parent, element, budget);
   if (siblingIndex === undefined) throw invalidLocator();
+  const evidence = readCanonicalEvidence(element, parent, root, budget);
+  if (!tagName || !evidence) throw invalidLocator();
+  // The final uniqueness traversal in stabilizeSegmentIdentity is the last
+  // page-controlled read before an ID anchor is committed.
+  const id = stabilizeSegmentIdentity(element, parent, root, tagName, evidence, budget);
+  if (id === READ_FAILED) throw invalidLocator();
   return Object.freeze({
     tagName,
     siblingIndex,
@@ -502,10 +528,11 @@ function readCanonicalEvidence(
   element: Element,
   expectedParent: Node,
   expectedRoot: Node,
+  budget: LocatorVisitBudget,
 ): CanonicalEvidence | undefined {
   if (
     readParentNode(element) !== expectedParent ||
-    !hasExpectedRoot(element, expectedRoot)
+    !hasExpectedRoot(element, expectedRoot, budget)
   ) return undefined;
   const rawId = readIdStrict(element);
   if (rawId === READ_FAILED) return undefined;
@@ -515,7 +542,7 @@ function readCanonicalEvidence(
     !classes ||
     !attributes ||
     readParentNode(element) !== expectedParent ||
-    !hasExpectedRoot(element, expectedRoot)
+    !hasExpectedRoot(element, expectedRoot, budget)
   ) return undefined;
   return Object.freeze({
     ...(boundedNonEmpty(rawId) === undefined ? {} : { id: boundedNonEmpty(rawId) }),
@@ -619,12 +646,16 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function elementChildAt(parent: Node, siblingIndex: number): Element | undefined {
+function elementChildAt(
+  parent: Node,
+  siblingIndex: number,
+  budget: LocatorVisitBudget,
+): Element | undefined {
   if (!Number.isSafeInteger(siblingIndex) || siblingIndex < 0) return undefined;
-  const children = snapshotChildNodes(parent);
+  const children = snapshotChildNodes(parent, budget);
   if (!children) return undefined;
   const candidate = elementChildAtSnapshot(children, siblingIndex);
-  const verifiedChildren = snapshotChildNodes(parent);
+  const verifiedChildren = snapshotChildNodes(parent, budget);
   if (
     !candidate ||
     !verifiedChildren ||
@@ -652,8 +683,12 @@ function elementChildAtSnapshot(
   return undefined;
 }
 
-function elementSiblingIndex(parent: Node, target: Element): number | undefined {
-  const children = snapshotChildNodes(parent);
+function elementSiblingIndex(
+  parent: Node,
+  target: Element,
+  budget: LocatorVisitBudget,
+): number | undefined {
+  const children = snapshotChildNodes(parent, budget);
   if (!children || readParentNode(target) !== parent) return undefined;
   const previous = readPreviousElementSibling(target);
   if (previous === undefined) return undefined;
@@ -673,7 +708,7 @@ function elementSiblingIndex(parent: Node, target: Element): number | undefined 
       if (next !== null) siblingIndex += 1;
     }
   }
-  return confirmElementSiblingIndex(parent, target, children, siblingIndex);
+  return confirmElementSiblingIndex(parent, target, children, siblingIndex, budget);
 }
 
 function confirmElementSiblingIndex(
@@ -681,12 +716,13 @@ function confirmElementSiblingIndex(
   target: Element,
   initialChildren: readonly ChildNodeSnapshot[],
   expectedIndex: number,
+  budget: LocatorVisitBudget,
 ): number | undefined {
-  const verifiedChildren = snapshotChildNodes(parent);
+  const verifiedChildren = snapshotChildNodes(parent, budget);
   if (!verifiedChildren || !sameChildNodeSnapshot(initialChildren, verifiedChildren)) {
     return undefined;
   }
-  const finalChildren = snapshotChildNodes(parent);
+  const finalChildren = snapshotChildNodes(parent, budget);
   if (
     !finalChildren ||
     !sameChildNodeSnapshot(verifiedChildren, finalChildren) ||
@@ -695,11 +731,15 @@ function confirmElementSiblingIndex(
   return expectedIndex;
 }
 
-function snapshotChildNodes(parent: Node): readonly ChildNodeSnapshot[] | undefined {
+function snapshotChildNodes(
+  parent: Node,
+  budget: LocatorVisitBudget,
+): readonly ChildNodeSnapshot[] | undefined {
   const children = readChildCollection(parent);
   if (!children) return undefined;
   const snapshot: ChildNodeSnapshot[] = [];
   for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
+    if (!budget.visit()) return undefined;
     const child = readCollectionItem(children.collection, physicalIndex);
     if (!child || typeof child !== "object") return undefined;
     const node = child as Node;
@@ -753,17 +793,24 @@ function matchesSegment(
   segment: DomPathSegment,
   parent: Node,
   root: Node,
+  budget: LocatorVisitBudget,
   prepareFinal?: (element: Element) => boolean,
 ): boolean {
+  if (prepareFinal && !prepareFinal(element)) return false;
   if (readTagName(element) !== segment.tagName) return false;
-  const evidence = readCanonicalEvidence(element, parent, root);
+  const siblingIndex = elementSiblingIndex(parent, element, budget);
+  if (siblingIndex !== segment.siblingIndex) return false;
+  const evidence = readCanonicalEvidence(element, parent, root, budget);
   if (!evidence) return false;
+  // This must remain after every structural and final-target proof: the last
+  // scan jointly commits the candidate fingerprint and unique-ID boundary.
   const id = stabilizeSegmentIdentity(
     element,
     parent,
     root,
     segment.tagName,
     evidence,
+    budget,
   );
   if (
     id === READ_FAILED ||
@@ -773,24 +820,7 @@ function matchesSegment(
   ) {
     return false;
   }
-  if (prepareFinal && !prepareFinal(element)) return false;
-  if (prepareFinal) {
-    const finalEvidence = readCanonicalEvidence(element, parent, root);
-    const finalId = finalEvidence
-      ? stabilizeSegmentIdentity(element, parent, root, segment.tagName, finalEvidence)
-      : READ_FAILED;
-    if (
-      finalId === READ_FAILED ||
-      finalId !== segment.id ||
-      !finalEvidence ||
-      !sameStringValues(finalEvidence.classes, segment.classes) ||
-      !sameAttributes(finalEvidence.attributes, segment.attributes)
-    ) {
-      return false;
-    }
-  }
-  // Keep the final DOM read as an exact child snapshot proof.
-  return elementSiblingIndex(parent, element) === segment.siblingIndex;
+  return true;
 }
 
 function stabilizeSegmentIdentity(
@@ -799,12 +829,13 @@ function stabilizeSegmentIdentity(
   root: Node,
   tagName: string,
   evidence: CanonicalEvidence,
+  budget: LocatorVisitBudget,
 ): string | undefined | typeof READ_FAILED {
   const firstUnique = evidence.id === undefined
     ? undefined
-    : uniqueIdStatus(root, evidence.id);
+    : uniqueIdStatus(root, evidence.id, budget);
   if (firstUnique === READ_FAILED) return READ_FAILED;
-  const verifiedEvidence = readCanonicalEvidence(element, parent, root);
+  const verifiedEvidence = readCanonicalEvidence(element, parent, root, budget);
   if (
     readTagName(element) !== tagName ||
     !verifiedEvidence ||
@@ -812,15 +843,21 @@ function stabilizeSegmentIdentity(
   ) return READ_FAILED;
   const secondUnique = evidence.id === undefined
     ? undefined
-    : uniqueIdStatus(root, evidence.id);
+    : uniqueIdStatus(root, evidence.id, budget);
   if (secondUnique === READ_FAILED) return READ_FAILED;
-  const finalEvidence = readCanonicalEvidence(element, parent, root);
+  const finalEvidence = readCanonicalEvidence(element, parent, root, budget);
   if (
     readTagName(element) !== tagName ||
     !finalEvidence ||
     !sameCanonicalEvidence(evidence, finalEvidence)
   ) return READ_FAILED;
-  return firstUnique === true && secondUnique === true ? evidence.id : undefined;
+  const finalUnique = evidence.id === undefined
+    ? undefined
+    : uniqueIdStatus(root, evidence.id, budget);
+  if (finalUnique === READ_FAILED) return READ_FAILED;
+  return firstUnique === true && secondUnique === true && finalUnique === true
+    ? evidence.id
+    : undefined;
 }
 
 function sameCanonicalEvidence(
@@ -837,6 +874,7 @@ function sameCanonicalEvidence(
 function uniqueIdStatus(
   root: Node,
   id: string,
+  budget: LocatorVisitBudget,
 ): boolean | typeof READ_FAILED {
   const pending: Array<{ readonly node: Node; readonly children?: { readonly collection: object; readonly length: number }; next?: number }> = [{ node: root }];
   const seen = new Set<Node>();
@@ -844,7 +882,11 @@ function uniqueIdStatus(
   while (pending.length > 0) {
     const current = pending[pending.length - 1]!;
     if (!current.children) {
-      if (seen.size >= MAX_ID_SCAN_NODES || seen.has(current.node)) return READ_FAILED;
+      if (
+        seen.size >= MAX_ID_SCAN_NODES ||
+        !budget.visit() ||
+        seen.has(current.node)
+      ) return READ_FAILED;
       seen.add(current.node);
       if (readNodeType(current.node) === 1) {
         const currentId = readIdStrict(current.node as Element);
@@ -959,11 +1001,19 @@ function readParentNode(node: Node): Node | undefined {
   }
 }
 
-function hasExpectedRoot(node: Node, expectedRoot: Node): boolean {
+function hasExpectedRoot(
+  node: Node,
+  expectedRoot: Node,
+  budget: LocatorVisitBudget,
+): boolean {
   const seen = new Set<Node>();
   let current: Node | undefined = node;
   while (current && current !== expectedRoot) {
-    if (seen.size >= DOM_STABLE_LOCATOR_MAX_DEPTH || seen.has(current)) return false;
+    if (
+      seen.size >= DOM_STABLE_LOCATOR_MAX_DEPTH ||
+      !budget.visit() ||
+      seen.has(current)
+    ) return false;
     seen.add(current);
     current = readParentNode(current);
   }

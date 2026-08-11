@@ -209,8 +209,9 @@ export class DomNodeRegistry {
       this.forward = nextForward;
       this.reverse = nextReverse;
       this.retained = nextRetained;
-      this.nextRef = snapshot.nextRef;
-      this.nextSequence = snapshot.nextSequence;
+      // Snapshot contents roll back, but issued opaque tokens never do.
+      this.nextRef = Math.max(this.nextRef, snapshot.nextRef);
+      this.nextSequence = Math.max(this.nextSequence, snapshot.nextSequence);
       this.structuralRevision = snapshot.structuralRevision;
       this.bumpAuthorityRevision();
       return true;

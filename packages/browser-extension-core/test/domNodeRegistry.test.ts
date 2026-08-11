@@ -8,7 +8,7 @@ const scope = {
 } as const;
 
 describe("DomNodeRegistry", () => {
-  it("restores live references, retention, and reference allocation from a snapshot", () => {
+  it("restores live references and retention without reusing allocation tokens", () => {
     const registry = new DomNodeRegistry({ maxReverseEntries: 2, documentEpoch: 7 });
     const first = createNode();
     const second = createNode();
@@ -26,7 +26,7 @@ describe("DomNodeRegistry", () => {
     expect(registry.restore(snapshot)).toBe(true);
     expect(registry.resolve(firstRef, scope)).toBe(first);
     expect(registry.retentionReasons(firstRef)).toEqual(["hovered"]);
-    expect(registry.reference(second, scope)).toBe("node-2");
+    expect(registry.reference(second, scope)).toBe("node-4");
   });
 
   it("restores a snapshot without invoking the weak-reference factory again", () => {
@@ -131,7 +131,19 @@ describe("DomNodeRegistry", () => {
     expect(registry.resolve(firstRef, scope)).toBe(first);
     expect(registry.resolve(secondRef, scope)).toBe(second);
     expect(registry.retentionReasons(firstRef)).toEqual(["selected"]);
-    expect(registry.reference(createNode(), scope)).toBe("node-3");
+    expect(registry.reference(createNode(), scope)).toBe("node-4");
+  });
+
+  it("never reissues an escaped tentative token after rollback", () => {
+    const registry = new DomNodeRegistry({ maxReverseEntries: 3, documentEpoch: 7 });
+    const committed = createNode();
+    registry.reference(committed, scope);
+    const snapshot = registry.snapshot();
+    if (!snapshot) throw new Error("expected registry snapshot");
+    const escaped = registry.reference(createNode(), scope);
+
+    expect(registry.restore(snapshot)).toBe(true);
+    expect(registry.reference(createNode(), scope)).not.toBe(escaped);
   });
   it("creates opaque refs scoped to one document and frame epoch", () => {
     const registry = new DomNodeRegistry({ maxReverseEntries: 4, documentEpoch: 7 });

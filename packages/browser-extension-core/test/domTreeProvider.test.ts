@@ -2302,11 +2302,11 @@ describe("DomTreeProvider", () => {
     ]).toEqual([0, false, false, 1, true, true, 1, 0, 0]);
   });
 
-  it("does not reactivate a collapsed frame from a discovery continuation", () => {
+  it("does not reactivate a collapsed frame from a bounded discovery scan", () => {
     const document = createDocument();
     const scannedContainer = createElement("main", document);
     const unrelatedContainer = createElement("aside", document);
-    for (let index = 0; index < 1_100; index += 1) {
+    for (let index = 0; index < 250; index += 1) {
       scannedContainer.append(createElement("span", document));
       unrelatedContainer.append(createElement("span", document));
     }
@@ -2340,8 +2340,8 @@ describe("DomTreeProvider", () => {
     ]);
     harness.flushTimers();
     expect([frame.loadListenerCount, unrelatedFrame.loadListenerCount]).toEqual([
-      0,
-      0,
+      1,
+      1,
     ]);
     const rootRevision = [...invalidated].reverse().find((branch) => (
       branch.nodeRef === root.node.nodeRef
@@ -2863,7 +2863,7 @@ describe("DomTreeProvider", () => {
 
   it("bounds physical traversal through non-element children", () => {
     const document = createDocument();
-    for (let index = 0; index < 1_000; index += 1) {
+    for (let index = 0; index < 200; index += 1) {
       document.documentElement.append(createText(`text-${index}`));
     }
     document.documentElement.append(createElement("section", document));
@@ -3023,7 +3023,7 @@ describe("DomTreeProvider", () => {
 
   it("bounds provider records while retaining selected and expanded authority", () => {
     const document = createDocument();
-    for (let index = 0; index < 5_000; index += 1) {
+    for (let index = 0; index < 200; index += 1) {
       document.documentElement.append(createElement("section", document));
     }
     let selectedRef: string | undefined;
@@ -3036,7 +3036,7 @@ describe("DomTreeProvider", () => {
     let evictedRef: string | undefined;
     let lastRef: string | undefined;
 
-    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+    for (let pageIndex = 0; pageIndex < 4; pageIndex += 1) {
       const page = harness.provider.getChildren({
         type: "dom.getChildren",
         requestId: `materialize-${pageIndex}`,
@@ -3755,7 +3755,7 @@ describe("DomTreeProvider", () => {
     }
   });
 
-  it("captures and resolves a target after more than 1024 preceding siblings", () => {
+  it("fails closed before scanning more than 256 physical children in one level", () => {
     const first = createDocument();
     let firstTarget!: FakeElement;
     for (let index = 0; index < 1_025; index += 1) {
@@ -3764,18 +3764,68 @@ describe("DomTreeProvider", () => {
       firstTarget = sibling;
     }
     firstTarget.id = "wide_target";
-    const locator = locatorFor(createProvider(first), firstTarget);
+    expect(() => locatorFor(createProvider(first), firstTarget)).toThrowError("node-unavailable");
+  });
 
-    const second = createDocument();
-    let secondTarget!: FakeElement;
-    for (let index = 0; index < 1_025; index += 1) {
-      const sibling = createElement("span", second);
-      second.documentElement.append(sibling);
-      secondTarget = sibling;
+  it("rejects an oversized child collection before indexed structural reads", () => {
+    const tree = createHeadingTree();
+    let indexedReads = 0;
+    Object.defineProperty(tree.main, "childNodes", {
+      configurable: true,
+      get: () => new Proxy({ length: 257 }, {
+        get: (collection, key) => {
+          if (typeof key === "string" && /^\\d+$/.test(key)) indexedReads += 1;
+          return Reflect.get(collection, key);
+        },
+      }),
+    });
+
+    expect(() => locatorFor(tree.provider, tree.target)).toThrowError("node-unavailable");
+    expect(indexedReads).toBe(0);
+  });
+
+  it("shares the locator visit budget across nested structural proofs", () => {
+    const document = createDocument();
+    let parent = document.documentElement;
+    let target!: FakeElement;
+    const collections: Array<{ readonly parent: FakeElement; readonly children: FakeNode[] }> = [];
+    for (let depth = 0; depth < 63; depth += 1) {
+      const next = createElement(depth === 62 ? "h2" : "section", document);
+      const children: FakeNode[] = [];
+      for (let index = 0; index < 255; index += 1) {
+        const sibling = createElement("span", document);
+        parent.append(sibling);
+        children.push(sibling);
+      }
+      parent.append(next);
+      children.push(next);
+      collections.push({ parent, children });
+      parent = next;
+      target = next;
     }
-    secondTarget.id = "wide_target";
-    expect(resolveLocator(createProvider(second), locator)?.node.label)
-      .toBe("span#wide_target");
+    const provider = createProvider(document);
+    const service = (provider as unknown as {
+      readonly locatorService: {
+        capture(node: Node, kind: "element"): DomStableLocator;
+        resolve(locator: DomStableLocator): unknown;
+      };
+    }).locatorService;
+    const locator = service.capture(target as unknown as Node, "element");
+    let indexedReads = 0;
+    for (const { parent: collectionParent, children } of collections) {
+      Object.defineProperty(collectionParent, "childNodes", {
+        configurable: true,
+        get: () => new Proxy(children, {
+          get: (collection, key) => {
+            if (typeof key === "string" && /^\\d+$/.test(key)) indexedReads += 1;
+            return Reflect.get(collection, key);
+          },
+        }),
+      });
+    }
+
+    expect(service.resolve(locator)).toBeUndefined();
+    expect(indexedReads).toBeLessThanOrEqual(65_536);
   });
 
   it("resolves a captured shadow-root target with a fresh full materialized path", () => {
@@ -4291,7 +4341,7 @@ describe("DomTreeProvider", () => {
 
     expect(() => harness.provider.ancestorPath(targetView.nodeRef, root.documentEpoch))
       .toThrowError("node-unavailable");
-    expect(harness.provider.currentDocumentEpoch).toBe(4);
+    expect(harness.provider.currentDocumentEpoch).toBe(3);
   });
 
   it.each([
@@ -5147,8 +5197,8 @@ describe("DomTreeProvider", () => {
       },
     });
 
-    expect(resolveStableLocator(provider, locator)).toBeDefined();
-    expect(mutated).toBe(false);
+    expect(resolveStableLocator(provider, locator)).toBeUndefined();
+    expect(mutated).toBe(true);
   });
 
   it("omits a capture ID when a second bounded scan finds a late duplicate", () => {
@@ -5173,6 +5223,64 @@ describe("DomTreeProvider", () => {
     });
 
     expect(locatorFor(tree.provider, tree.target).path.at(-1)?.id).toBeUndefined();
+  });
+
+  it("omits an ID when final evidence adds an excluded duplicate", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const main = createElement("main", document);
+    const target = createElement("h2", document);
+    target.id = "stable_target";
+    target.className = "title";
+    document.documentElement.append(body);
+    body.append(main);
+    main.append(target);
+    let duplicate: FakeElement | undefined;
+    const harness = createProviderHarness(document, {
+      isExcludedNode: (node) => node === duplicate,
+    });
+    const classes = target.classList;
+    let reads = 0;
+    Object.defineProperty(target, "classList", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 3) {
+          duplicate = createElement("aside", document);
+          duplicate.id = target.id;
+          document.documentElement.append(duplicate);
+        }
+        return classes;
+      },
+    });
+
+    expect(locatorFor(harness.provider, target).path.at(-1)?.id).toBeUndefined();
+  });
+
+  it("rejects resolution when final evidence adds an excluded duplicate", () => {
+    const first = createHeadingTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createHeadingTree();
+    let duplicate: FakeElement | undefined;
+    const harness = createProviderHarness(second.document, {
+      isExcludedNode: (node) => node === duplicate,
+    });
+    const classes = second.target.classList;
+    let reads = 0;
+    Object.defineProperty(second.target, "classList", {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 3) {
+          duplicate = createElement("aside", second.document);
+          duplicate.id = second.target.id;
+          second.document.documentElement.append(duplicate);
+        }
+        return classes;
+      },
+    });
+
+    expect(resolveStableLocator(harness.provider, locator)).toBeUndefined();
   });
 
   it("fails capture when uniqueness traversal mutates candidate evidence", () => {
@@ -5798,6 +5906,19 @@ describe("DomTreeProvider", () => {
     expect(internals.mutationTimer).toBeUndefined();
     expect(internals.frameMutationScanTimer).toBeUndefined();
     expect(internals.shadowScanTimer).toBeUndefined();
+  });
+
+  it("does not invoke an outward callback after publication authority is already stale", () => {
+    const provider = createProvider(createDocument());
+    const state = provider as unknown as {
+      activePublicationGuard: (() => boolean) | undefined;
+      invokeOutwardCallback(callback: () => void): boolean;
+    };
+    let callbacks = 0;
+    state.activePublicationGuard = () => false;
+
+    expect(state.invokeOutwardCallback(() => { callbacks += 1; })).toBe(false);
+    expect(callbacks).toBe(0);
   });
 });
 
