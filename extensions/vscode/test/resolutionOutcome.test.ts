@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RESOLUTION_LIMITS,
   type ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   reduceResolutionOutcome,
   toProtocolResolution,

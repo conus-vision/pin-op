@@ -5,27 +5,27 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
 const virtualCss = [
-  ".browser2ide-virtual-unmapped {",
+  ".pinop-virtual-unmapped {",
   "  border: 2px dashed #1769aa;",
   "}",
   "",
 ].join("\n");
 const vendorCss = [
-  ".browser2ide-external-readable {",
+  ".pinop-external-readable {",
   "  box-sizing: border-box;",
   "  border-inline-end: 4px solid #267a4b;",
   "}",
   "",
 ].join("\n");
 const inaccessibleCss = [
-  ".browser2ide-inaccessible-external {",
+  ".pinop-inaccessible-external {",
   "  text-decoration: underline wavy #b42318;",
   "}",
   "",
 ].join("\n");
 const cssomOnlyPrelude = [
-  ".browser2ide-cssom-only {",
-  "  --browser2ide-fixture-source: cssom;",
+  ".pinop-cssom-only {",
+  "  --pinop-fixture-source: cssom;",
   "}",
   "",
 ].join("\n");
@@ -114,7 +114,7 @@ export async function startExampleServers(options = {}) {
         send(
           response,
           200,
-          `${cssomOnlyPrelude}\n@layer browser2ide-cssom-fixture {\n${fallbackCss}\n}\n`,
+          `${cssomOnlyPrelude}\n@layer pinop-cssom-fixture {\n${fallbackCss}\n}\n`,
           "text/css; charset=utf-8",
         );
         return;
@@ -206,7 +206,7 @@ function listeningPort(server) {
 const entryPath = process.argv[1];
 if (entryPath && pathToFileURL(resolve(entryPath)).href === import.meta.url) {
   const servers = await startExampleServers();
-  console.log(`Browser2IDE example: ${servers.pageUrl}`);
+  console.log(`PinOp example: ${servers.pageUrl}`);
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.once(signal, () => {
       void servers.stop().finally(() => process.exit(0));

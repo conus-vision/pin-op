@@ -2,7 +2,7 @@ import type {
   ResolutionDiagnosticCode,
   ResolutionMessage,
   ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 export type ResolutionPresentationKind =
   | "idle"

@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
-  type Browser2IdeMessage,
+  type PinOpMessage,
   type ProtocolErrorCode,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   ClientRegistry,
   createGuardedWebSocketConnection,
@@ -404,10 +404,10 @@ function handleConnection(
       return;
     }
 
-    let message: Browser2IdeMessage;
+    let message: PinOpMessage;
 
     try {
-      message = Browser2IdeMessageSchema.parse(JSON.parse(data.toString()));
+      message = PinOpMessageSchema.parse(JSON.parse(data.toString()));
     } catch {
       sendSocketError(
         connection,
@@ -568,7 +568,7 @@ function handleConnection(
 
 function isAllowedInboundMessage(
   client: RegisteredClient,
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): boolean {
   switch (message.type) {
     case "unlink":
@@ -610,7 +610,7 @@ function isAllowedInboundMessage(
 function handleLinkRequest(
   connection: BridgeConnection,
   authenticator: LinkAuthenticator,
-  message: Extract<Browser2IdeMessage, { type: "linkRequest" }>,
+  message: Extract<PinOpMessage, { type: "linkRequest" }>,
 ): boolean {
   const role = message.source.role;
   if (role !== "browser" && role !== "simulator") {
@@ -655,16 +655,16 @@ function handleLinkRequest(
 
 function sendSocketMessage(
   connection: BridgeConnection,
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): void {
-  const parsed = Browser2IdeMessageSchema.parse(message);
+  const parsed = PinOpMessageSchema.parse(message);
   sendConnectionSafely(connection, JSON.stringify(parsed));
 }
 
 function createPeerStateMessage(
   sessionId: string,
   snapshot: PeerStateSnapshot,
-): Browser2IdeMessage {
+): PinOpMessage {
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "peerState",

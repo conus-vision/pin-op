@@ -3,7 +3,7 @@ import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import { PROTOCOL_VERSION } from "@pinop/protocol";
 import {
   RUNTIME_METADATA_FILENAME,
   serializeRuntimeMetadata,
@@ -104,7 +104,7 @@ async function writeThirdPartyNotices(metafile) {
   const notices = [
     "# Third-Party Notices",
     "",
-    "Browser2IDE includes the following bundled third-party software.",
+    "PinOp includes the following bundled third-party software.",
     `Runtime asset: dist/mappings.wasm (from source-map@${sourceMap.version})`,
     "",
     ...sections.flatMap((section) => [section, ""]),

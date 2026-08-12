@@ -4,7 +4,7 @@ import type {
   ProtocolErrorCode,
   ResolutionDiagnosticCode,
   ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type { ConnectionState } from "./bridgeClient.js";
 import type {
   BridgeManagerState,

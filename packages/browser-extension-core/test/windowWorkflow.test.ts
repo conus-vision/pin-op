@@ -4,7 +4,7 @@ import type {
   ResolutionMessage,
   SourceNavigateMessage,
   SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserWindowLinkStore,
@@ -86,8 +86,8 @@ describe("browser-window workflow", () => {
     expect(instanceA.linkPins).toEqual(["07"]);
     expect(instanceB.linkPins).toEqual(["08"]);
     expect(storage.values).toEqual({
-      "browser2ide.windowLink.10": savedLink(instanceA),
-      "browser2ide.windowLink.20": savedLink(instanceB),
+      "pinop.windowLink.10": savedLink(instanceA),
+      "pinop.windowLink.20": savedLink(instanceB),
     });
 
     for (const [windowId, tabId] of [
@@ -237,7 +237,7 @@ describe("browser-window workflow", () => {
     ).toBe("sent");
     await expect(store.load(20)).resolves.toEqual(savedLink(instanceB));
     expect(storage.values).toEqual({
-      "browser2ide.windowLink.20": savedLink(instanceB),
+      "pinop.windowLink.20": savedLink(instanceB),
     });
 
     panel102.dispose();

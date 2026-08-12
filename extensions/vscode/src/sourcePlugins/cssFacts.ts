@@ -1,9 +1,9 @@
-import type { SelectionSnapshot } from "@browser2ide/plugin-api";
+import type { SelectionSnapshot } from "@pinop/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
   type RuntimeFact,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { declarationEvidenceFromFact } from "./declarationFingerprint.js";
 import type { CssDeclarationEvidence } from "./types.js";
 

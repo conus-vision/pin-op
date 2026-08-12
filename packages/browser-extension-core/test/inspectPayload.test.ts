@@ -1,11 +1,11 @@
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
   InspectContextSchema,
   InspectTargetSchema,
   PROTOCOL_VERSION,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import { createInspectPayload } from "../src/inspectPayload.js";
@@ -117,7 +117,7 @@ describe("createInspectPayload", () => {
     expect(InspectContextSchema.parse(payload.context)).toEqual(payload.context);
 
     const message = fullInspectMessage(payload);
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
       INSPECT_ENVELOPE_MAX_BYTES,
     );
@@ -187,7 +187,7 @@ describe("createInspectPayload", () => {
     }
 
     const message = fullInspectMessage(payload);
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
       INSPECT_ENVELOPE_MAX_BYTES,
     );
@@ -225,7 +225,7 @@ describe("createInspectPayload", () => {
     );
 
     const message = fullInspectMessage(payload);
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
       INSPECT_ENVELOPE_MAX_BYTES,
     );

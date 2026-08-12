@@ -37,7 +37,7 @@ describe("presenter commands", () => {
       (error) => errors.push(error),
     );
 
-    const callback = callbacks.get("browser2ide.revealSourceMatch");
+    const callback = callbacks.get("pinop.revealSourceMatch");
     expect(callback).toBeTypeOf("function");
     callback?.("missing");
     callback?.("current");
@@ -70,7 +70,7 @@ describe("runtime commands", () => {
     });
     expect(harness.clients[0]?.connectCalls).toBe(1);
     expect(harness.clipboard).toEqual(["4873507"]);
-    expect(harness.information).toEqual(["Browser2IDE link code copied."]);
+    expect(harness.information).toEqual(["PinOp link code copied."]);
     expect(harness.information.join(" ")).not.toContain("4873507");
   });
 
@@ -80,7 +80,7 @@ describe("runtime commands", () => {
     await harness.controller.copyLinkCode();
 
     expect(harness.clipboard).toEqual([]);
-    expect(harness.warnings).toEqual(["Browser2IDE is not running."]);
+    expect(harness.warnings).toEqual(["PinOp is not running."]);
   });
 
   it("disposes the client before stopping and creates a fresh client later", async () => {
@@ -190,17 +190,17 @@ describe("runtime commands", () => {
     );
 
     expect([...callbacks.keys()]).toEqual([
-      "browser2ide.start",
-      "browser2ide.stop",
-      "browser2ide.copyLinkCode",
+      "pinop.start",
+      "pinop.stop",
+      "pinop.copyLinkCode",
     ]);
-    await callbacks.get("browser2ide.start")?.();
-    await callbacks.get("browser2ide.copyLinkCode")?.();
-    await callbacks.get("browser2ide.stop")?.();
+    await callbacks.get("pinop.start")?.();
+    await callbacks.get("pinop.copyLinkCode")?.();
+    await callbacks.get("pinop.stop")?.();
     expect(errors).toEqual([]);
 
     harness.manager.startError = new Error("start failed");
-    await callbacks.get("browser2ide.start")?.();
+    await callbacks.get("pinop.start")?.();
     expect(errors).toHaveLength(1);
     registration.dispose();
   });
@@ -220,7 +220,7 @@ describe("runtime commands", () => {
 
 function match(): ResolvedSourceMatch {
   return {
-    pluginId: "browser2ide.scss",
+    pluginId: "pinop.scss",
     targetRole: "selected",
     range: {
       start: { line: 1, character: 2 },

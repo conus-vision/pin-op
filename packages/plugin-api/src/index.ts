@@ -2,7 +2,7 @@ import type {
   InspectContext,
   InspectTarget,
   JsonObject,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 export const SOURCE_PLUGIN_API_VERSION = 1 as const;
 
@@ -107,7 +107,7 @@ export interface SourcePlugin {
   resolve(context: SourcePluginContext): Promise<SourcePluginResult>;
 }
 
-export interface Browser2IDEApi {
+export interface PinOpApi {
   readonly apiVersion: typeof SOURCE_PLUGIN_API_VERSION;
   registerSourcePlugin(plugin: SourcePlugin): Disposable;
 }

@@ -26,7 +26,7 @@
 | VS Code command/config/view/color prefix | `pinop.*` |
 | Chrome workspace package | `pinop-chrome` |
 | Firefox workspace package | `pinop-firefox` |
-| Firefox add-on ID | `pinop@conus.vision` |
+| Firefox add-on ID | `info@conus.vision` |
 | Simulator binary | `pinop-simulator` |
 | Release artifacts | `pinop-{vscode,chrome,firefox,firefox-source}-<version>.*` |
 
@@ -237,15 +237,15 @@ git commit -m "refactor(runtime): rename namespace to pinop"
 - Modify: `extensions/firefox/test/manifest.test.ts`
 - Modify: `extensions/vscode/package.json`
 - Modify: `extensions/vscode/test/manifest.test.ts`
-- Rename: `extensions/vscode/resources/browser2ide.svg` -> `extensions/vscode/resources/pinop.svg`
-- Rename: `packages/browser-extension-core/assets/browser2ide.svg` -> `packages/browser-extension-core/assets/pinop.svg`
+- Modify: `extensions/vscode/resources/pinop.svg`
+- Modify: `packages/browser-extension-core/assets/pinop.svg`
 - Modify: `packages/browser-extension-core/assets/panel.html`
 - Modify: `extensions/chrome/esbuild.mjs`
 - Modify: `extensions/firefox/esbuild.mjs`
 
 - [ ] **Step 1: Update manifest tests first**
 
-Assert all three extension manifests display `PinOp`; VS Code contributes only `pinop.*` identifiers and references `resources/pinop.svg`; Firefox uses `pinop@conus.vision`; repository URLs target `conus-vision/PinOp`; the VS Code homepage is `https://pinop.conus.vision`.
+Assert all three extension manifests display `PinOp`; VS Code contributes only `pinop.*` identifiers and references `resources/pinop.svg`; Firefox uses `info@conus.vision`; repository URLs target `conus-vision/PinOp`; the VS Code homepage is `https://pinop.conus.vision`.
 
 - [ ] **Step 2: Run the manifest tests and confirm RED**
 
@@ -261,7 +261,7 @@ Expected: FAIL on display names, contributed IDs, asset paths, and Firefox ID.
 
 - [ ] **Step 3: Implement manifest and asset changes**
 
-Use `git mv` for both SVGs. Update every manifest contribution and matching implementation reference:
+The logo assets already use their final `pinop.*` filenames. Update every manifest contribution and matching implementation reference:
 
 ```text
 browser2ide.start                 -> pinop.start
@@ -272,7 +272,7 @@ browser2ide.revealSourceMatch     -> pinop.revealSourceMatch
 browser2ide.sessionId             -> pinop.sessionId
 browser2ide.applicableRules       -> pinop.applicableRules
 browser2ide.* color IDs           -> pinop.*
-browser2ide@local                 -> pinop@conus.vision
+browser2ide@local                 -> info@conus.vision
 ```
 
 Use the approved descriptor verbatim in marketplace/browser descriptions where a short description is appropriate. Do not claim editing, automation, or bidirectional control.
@@ -388,7 +388,7 @@ pinop-firefox-0.3.0.xpi
 pinop-firefox-source-0.3.0.zip
 ```
 
-Update expected VSIX extension ID to `conus-vision.pinop`, Firefox ID to `pinop@conus.vision`, display name to `PinOp`, and embedded icon paths to `extension/resources/pinop.svg` and `dist/pinop.svg`.
+Update expected VSIX extension ID to `conus-vision.pinop`, Firefox ID to `info@conus.vision`, display name to `PinOp`, and embedded icon paths to `extension/resources/pinop.svg` and `dist/pinop.svg`.
 
 - [ ] **Step 2: Run release-tool tests and confirm RED**
 
@@ -398,7 +398,7 @@ Expected: FAIL because packagers, validators, workflows, and test fixtures still
 
 - [ ] **Step 3: Update packaging and verification tools**
 
-Change all package outputs, validators, temp-directory prefixes, provenance filenames, release titles, action artifact names, and workflow file references to lowercase `pinop`. Update package filters to the names from Task 1. Change Firefox signing validation to `pinop@conus.vision`. Update notices so their project title and repository URL identify PinOp.
+Change all package outputs, validators, temp-directory prefixes, provenance filenames, release titles, action artifact names, and workflow file references to lowercase `pinop`. Update package filters to the names from Task 1. Change Firefox signing validation to `info@conus.vision`. Update notices so their project title and repository URL identify PinOp.
 
 Do not weaken checksum, provenance, immutable-release, signing, or archive-security checks while renaming strings.
 
@@ -581,7 +581,7 @@ Expected: every command exits 0.
 
 - [ ] **Step 3: Inspect package contents**
 
-Run the repository's artifact verifier and inspect the VSIX/browser manifests inside the archives. Confirm product display `PinOp`, VS Code ID `conus-vision.pinop`, Firefox ID `pinop@conus.vision`, `pinop.svg` asset paths, and exactly the four expected PinOp packages plus checksums.
+Run the repository's artifact verifier and inspect the VSIX/browser manifests inside the archives. Confirm product display `PinOp`, VS Code ID `conus-vision.pinop`, Firefox ID `info@conus.vision`, `pinop.svg` asset paths, and exactly the four expected PinOp packages plus checksums.
 
 - [ ] **Step 4: Re-run the identity guard against tracked files**
 

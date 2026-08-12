@@ -1,12 +1,12 @@
-# Browser2IDE Source Plugin Fixture
+# PinOp Source Plugin Fixture
 
-This private VS Code extension proves that an extension outside the Browser2IDE
+This private VS Code extension proves that an extension outside the PinOp
 core can register a `SourcePlugin` through the public API. It contributes the
-`browser2ide-fixture` language for `.b2i` files and registers plugin ID
-`browser2ide.fixture`.
+`pinop-fixture` language for `.b2i` files and registers plugin ID
+`pinop.fixture`.
 
 Its manifest depends on the canonical core extension ID
-`browser2ide.browser2ide-vscode`. Activation calls the core extension, compares
+`conus-vision.pinop`. Activation calls the core extension, compares
 its API with `SOURCE_PLUGIN_API_VERSION`, and disposes the result of
 `registerSourcePlugin` with the fixture extension context.
 

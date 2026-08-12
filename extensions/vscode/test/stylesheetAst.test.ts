@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SourceDocument } from "@browser2ide/plugin-api";
-import { INSPECT_LIMITS, type CssRuleFact } from "@browser2ide/protocol";
+import type { SourceDocument } from "@pinop/plugin-api";
+import { INSPECT_LIMITS, type CssRuleFact } from "@pinop/protocol";
 import {
   findRulesByFingerprint,
   normalizeSelector,

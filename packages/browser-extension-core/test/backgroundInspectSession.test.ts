@@ -29,7 +29,7 @@ describe("background inspect session", () => {
       () => undefined,
     );
     await session.whenIdle();
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
 
     await session.execute(request("picker-off", false));
@@ -49,7 +49,7 @@ describe("background inspect session", () => {
     expect(calls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "browser2ide.inspect.disposeSession" },
+      { type: "pinop.inspect.disposeSession" },
     ]);
   });
 
@@ -67,7 +67,7 @@ describe("background inspect session", () => {
 
     await expect(session.execute(request("enable", true))).resolves.toEqual({
       result: {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "enable",
         ok: true,
       },
@@ -99,7 +99,7 @@ describe("background inspect session", () => {
 
     await expect(result).resolves.toEqual({
       result: {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "enable",
         ok: false,
         error: "stalePanel",
@@ -108,7 +108,7 @@ describe("background inspect session", () => {
     });
     expect(sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "enable",
         ok: false,
         error: "stalePanel",
@@ -122,7 +122,7 @@ describe("background inspect session", () => {
 
   it("uses its trusted tab and rejects a panel-supplied tab ID", async () => {
     const calls: unknown[] = [];
-    const port = new FakePort("browser2ide.devtools.channel-1");
+    const port = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript(details) {
         calls.push(["inject", details]);
@@ -146,7 +146,7 @@ describe("background inspect session", () => {
     ]);
     expect(port.sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "trusted",
         ok: true,
       },
@@ -156,7 +156,7 @@ describe("background inspect session", () => {
   it("disposes the trusted content session after its panel disconnects during enable", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
-    const port = new FakePort("browser2ide.devtools.channel-1");
+    const port = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript(details) {
         calls.push(["inject", details]);
@@ -182,7 +182,7 @@ describe("background inspect session", () => {
         { target: { tabId: 17 }, files: ["dist/contentScript.js"] },
       ],
       ["tab", 17, { type: "enableInspectMode" }],
-      ["tab", 17, { type: "browser2ide.inspect.disposeSession" }],
+      ["tab", 17, { type: "pinop.inspect.disposeSession" }],
     ]);
     expect(port.sent).toEqual([]);
   });
@@ -190,7 +190,7 @@ describe("background inspect session", () => {
   it("settles a pending request as stale before retiring a live panel session", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
-    const port = new FakePort("browser2ide.devtools.channel-1");
+    const port = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript(details) {
         calls.push(["inject", details]);
@@ -210,7 +210,7 @@ describe("background inspect session", () => {
 
     expect(port.sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "pending-enable",
         ok: false,
         error: "stalePanel",
@@ -223,7 +223,7 @@ describe("background inspect session", () => {
     expect(calls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "browser2ide.inspect.disposeSession" },
+      { type: "pinop.inspect.disposeSession" },
     ]);
     expect(port.sent).toHaveLength(1);
   });
@@ -231,7 +231,7 @@ describe("background inspect session", () => {
   it("serializes enable and disable requests on the owning port", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
-    const port = new FakePort("browser2ide.devtools.channel-1");
+    const port = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript() {
         calls.push("inject");
@@ -258,12 +258,12 @@ describe("background inspect session", () => {
     ]);
     expect(port.sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "enable",
         ok: true,
       },
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "disable",
         ok: true,
       },
@@ -272,7 +272,7 @@ describe("background inspect session", () => {
 
   it("disconnects the content lease only when the owning panel closes", async () => {
     const calls: unknown[] = [];
-    const panelPort = new FakePort("browser2ide.devtools.channel-1");
+    const panelPort = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript() {},
       async sendTabMessage(_tabId, message) {
@@ -287,7 +287,7 @@ describe("background inspect session", () => {
 
     panelPort.emitMessage(request("enable", true));
     await session.whenIdle();
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
 
     panelPort.emitMessage(request("disable", false));
@@ -303,12 +303,12 @@ describe("background inspect session", () => {
     expect(contentLease.disconnected).toBe(true);
     await session.whenIdle();
     expect(calls.at(-1)).toEqual({
-      type: "browser2ide.inspect.disposeSession",
+      type: "pinop.inspect.disposeSession",
     });
   });
 
   it("fails closed and notifies the panel when the content document disappears", async () => {
-    const panelPort = new FakePort("browser2ide.devtools.channel-1");
+    const panelPort = new FakePort("pinop.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript() {},
       async sendTabMessage() {},
@@ -321,17 +321,17 @@ describe("background inspect session", () => {
 
     panelPort.emitMessage(request("enable", true));
     await session.whenIdle();
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
 
     contentLease.emitDisconnect();
 
     expect(panelPort.sent.at(-1)).toEqual({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const nextDocumentLease = new FakePort(
-      "browser2ide.inspect.contentLease",
+      "pinop.inspect.contentLease",
     );
     coordinator.attachContentLease(17, CONTENT_SESSION_B, nextDocumentLease);
     expect(nextDocumentLease.disconnected).toBe(true);
@@ -355,7 +355,7 @@ describe("background inspect session", () => {
     );
     await session.whenIdle();
 
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
     contentLease.emitDisconnect();
 
@@ -385,7 +385,7 @@ describe("background inspect session", () => {
     await session.whenIdle();
 
     expect(lifecycle).toEqual(["injectionFailed"]);
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
     expect(contentLease.disconnected).toBe(true);
   });
@@ -408,8 +408,8 @@ describe("background inspect session", () => {
         }
       },
     });
-    const oldPort = new FakePort("browser2ide.devtools.old");
-    const newPort = new FakePort("browser2ide.devtools.new");
+    const oldPort = new FakePort("pinop.devtools.old");
+    const newPort = new FakePort("pinop.devtools.new");
     attachBackgroundInspectSession(oldPort, coordinator, 17);
     const newSession = attachBackgroundInspectSession(
       newPort,
@@ -419,7 +419,7 @@ describe("background inspect session", () => {
 
     oldPort.emitMessage(request("old", true));
     await flushAsync();
-    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    const contentLease = new FakePort("pinop.inspect.contentLease");
     coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
     newPort.emitMessage(request("new", true));
     oldPort.emitDisconnect();
@@ -433,7 +433,7 @@ describe("background inspect session", () => {
     ]);
     expect(newPort.sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "new",
         ok: true,
       },
@@ -460,7 +460,7 @@ describe("background inspect session", () => {
         }
       },
     });
-    const port = new FakePort("browser2ide.devtools.channel-1");
+    const port = new FakePort("pinop.devtools.channel-1");
     const session = attachBackgroundInspectSession(port, coordinator, 17);
 
     port.emitMessage(request("enable", true));
@@ -478,18 +478,18 @@ describe("background inspect session", () => {
     ]);
     expect(port.sent).toEqual([
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "enable",
         ok: true,
       },
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "disable-1",
         ok: false,
         error: "Inspect mode update failed",
       },
       {
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: "disable-2",
         ok: true,
       },
@@ -546,7 +546,7 @@ class FakeEvent<T extends (...args: never[]) => void> {
 
 function request(requestId: string, enabled: boolean): InspectPortRequest {
   return {
-    type: "browser2ide.inspect.setEnabled",
+    type: "pinop.inspect.setEnabled",
     requestId,
     enabled,
   };

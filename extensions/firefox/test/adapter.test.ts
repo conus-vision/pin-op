@@ -9,7 +9,7 @@ const harness = await vi.hoisted(async () => {
 });
 
 vi.mock("webextension-polyfill", () => ({ default: harness.browser }));
-vi.mock("@browser2ide/browser-extension-core", () => ({
+vi.mock("@pinop/browser-extension-core", () => ({
   startBackgroundRuntime: harness.starts.background,
   startContentScriptRuntime: harness.starts.contentScript,
   startDevtoolsRuntime: harness.starts.devtools,
@@ -20,7 +20,7 @@ vi.mock("@browser2ide/browser-extension-core", () => ({
 describeBrowserAdapterContract(
   {
     platformName: "Firefox",
-    extensionOrigin: "moz-extension://browser2ide",
+    extensionOrigin: "moz-extension://pinop",
     sourcePrefix: "firefox",
     extensionRoot: new URL("../", import.meta.url),
     importBackground: () => import("../src/background.js"),

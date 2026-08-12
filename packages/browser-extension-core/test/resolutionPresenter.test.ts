@@ -3,7 +3,7 @@ import {
   type ResolutionDiagnosticCode,
   type ResolutionMessage,
   type ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   ResolutionPresenter,

@@ -6,12 +6,12 @@ import {
   type SourcePlugin,
   type SourceRange,
   type SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
   type SourceNavigateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type {
   ResolutionInput,
   SourceNavigationStateInput,
@@ -338,8 +338,8 @@ describe("presenter runtime", () => {
     await harness.flush();
 
     expect(harness.registeredPluginIds).toEqual([
-      "browser2ide.css",
-      "browser2ide.scss",
+      "pinop.css",
+      "pinop.scss",
     ]);
     expect(harness.openDocumentCalls).toBe(0);
     expect(harness.runtime.tree.getDocumentUri()).toBe(

@@ -26,13 +26,13 @@ describe("BrowserWindowLinkStore", () => {
     await expect(store.load(10)).resolves.toEqual(first);
     await expect(store.load(20)).resolves.toEqual(second);
     expect(storage.values).toEqual({
-      "browser2ide.windowLink.10": first,
-      "browser2ide.windowLink.20": second,
+      "pinop.windowLink.10": first,
+      "pinop.windowLink.20": second,
     });
   });
 
   it("treats an inherited storage key as absent", async () => {
-    const key = "browser2ide.windowLink.10";
+    const key = "pinop.windowLink.10";
     const removals: string[] = [];
     const storage: SessionStorage = {
       async get() {
@@ -50,7 +50,7 @@ describe("BrowserWindowLinkStore", () => {
   });
 
   it("removes an own storage record whose link fields are inherited", async () => {
-    const key = "browser2ide.windowLink.10";
+    const key = "pinop.windowLink.10";
     const storage = new MemorySessionStorage({
       [key]: Object.create(link()) as BrowserWindowLink,
     });
@@ -130,10 +130,10 @@ describe("BrowserWindowLinkStore", () => {
     ["unknown field", { rawCode: "4873507" }],
     ["short token", { authToken: "short" }],
   ])("cleans up a loaded record with %s", async (_label, override) => {
-    const key = "browser2ide.windowLink.10";
+    const key = "pinop.windowLink.10";
     const storage = new MemorySessionStorage({
       [key]: { ...link(), ...override },
-      "browser2ide.windowLink.20": link({
+      "pinop.windowLink.20": link({
         port: 48_736,
         bridgeInstanceId: INSTANCE_B,
       }),
@@ -143,7 +143,7 @@ describe("BrowserWindowLinkStore", () => {
     await expect(store.load(10)).resolves.toBeUndefined();
     expect(storage.removals).toEqual([key]);
     expect(storage.values[key]).toBeUndefined();
-    expect(storage.values["browser2ide.windowLink.20"]).toBeDefined();
+    expect(storage.values["pinop.windowLink.20"]).toBeDefined();
   });
 
   it("removes only the closed browser window link", async () => {
@@ -161,7 +161,7 @@ describe("BrowserWindowLinkStore", () => {
     await expect(store.load(20)).resolves.toMatchObject({
       bridgeInstanceId: INSTANCE_B,
     });
-    expect(storage.removals).toEqual(["browser2ide.windowLink.10"]);
+    expect(storage.removals).toEqual(["pinop.windowLink.10"]);
   });
 
   it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(

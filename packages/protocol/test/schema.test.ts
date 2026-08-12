@@ -77,7 +77,7 @@ function inspectMessage(targets: readonly unknown[]) {
   };
 }
 
-describe("Browser2IDE protocol schemas", () => {
+describe("PinOp protocol schemas", () => {
   it.each([
     [
       "hello",
@@ -692,7 +692,7 @@ describe("Browser2IDE protocol schemas", () => {
     ).toThrow();
   });
 
-  it("accepts only the structured Browser2IDE error vocabulary", () => {
+  it("accepts only the structured PinOp error vocabulary", () => {
     const codes = [
       "link.invalidCode",
       "link.unreachable",

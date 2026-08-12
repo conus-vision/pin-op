@@ -2,7 +2,7 @@ import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import { PROTOCOL_VERSION } from "@pinop/protocol";
 import {
   normalizeBrowserPackageTimestamps,
   writeBrowserBundleNotices,
@@ -38,10 +38,22 @@ const result = await build({
 
 await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
 
-for (const asset of ["panel.html", "panel.css", "browser2ide.svg"]) {
+for (const asset of ["panel.html", "panel.css", "pinop.svg"]) {
   await copyFile(
     resolve(extensionRoot, `../../packages/browser-extension-core/assets/${asset}`),
     resolve(outdir, asset),
+  );
+}
+
+const iconsOutdir = resolve(outdir, "icons");
+await mkdir(iconsOutdir, { recursive: true });
+for (const size of [16, 32, 48, 96, 128]) {
+  await copyFile(
+    resolve(
+      extensionRoot,
+      `../../packages/browser-extension-core/assets/icons/pinop-${size}.png`,
+    ),
+    resolve(iconsOutdir, `pinop-${size}.png`),
   );
 }
 

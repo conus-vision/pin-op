@@ -30,7 +30,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          SETTINGS_JSON="$RUNNER_TEMP/browser2ide-immutable-releases.json"
+          SETTINGS_JSON="$RUNNER_TEMP/pinop-immutable-releases.json"
           test ! -e "$SETTINGS_JSON"
           gh api --method GET "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$SETTINGS_JSON"
           jq -e '.enabled == true' "$SETTINGS_JSON" > /dev/null
@@ -75,7 +75,7 @@ jobs:
           git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/master
           RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
           printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-          printf 'artifact_name=browser2ide-release-%s-run-%s\n' \
+          printf 'artifact_name=pinop-release-%s-run-%s\n' \
             "$RELEASE_TAG" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Build
@@ -97,7 +97,7 @@ jobs:
         run: corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
 
       - name: Test Chrome manifest and adapter
-        run: corepack pnpm --filter browser2ide-chrome test -- manifest.test.ts adapter.test.ts
+        run: corepack pnpm --filter pinop-chrome test -- manifest.test.ts adapter.test.ts
 
       - name: Package unsigned artifacts
         run: corepack pnpm package
@@ -112,10 +112,10 @@ jobs:
         with:
           name: ${{ steps.release.outputs.artifact_name }}
           path: |
-            artifacts/browser2ide-vscode-${{ steps.release.outputs.version }}.vsix
-            artifacts/browser2ide-chrome-${{ steps.release.outputs.version }}.zip
-            artifacts/browser2ide-firefox-${{ steps.release.outputs.version }}.zip
-            artifacts/browser2ide-firefox-source-${{ steps.release.outputs.version }}.zip
+            artifacts/pinop-vscode-${{ steps.release.outputs.version }}.vsix
+            artifacts/pinop-chrome-${{ steps.release.outputs.version }}.zip
+            artifacts/pinop-firefox-${{ steps.release.outputs.version }}.zip
+            artifacts/pinop-firefox-source-${{ steps.release.outputs.version }}.zip
             artifacts/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -140,10 +140,10 @@ jobs:
           RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -euo pipefail
-          test -f "release-assets/browser2ide-vscode-${RELEASE_VERSION}.vsix"
-          test -f "release-assets/browser2ide-chrome-${RELEASE_VERSION}.zip"
-          test -f "release-assets/browser2ide-firefox-${RELEASE_VERSION}.zip"
-          test -f "release-assets/browser2ide-firefox-source-${RELEASE_VERSION}.zip"
+          test -f "release-assets/pinop-vscode-${RELEASE_VERSION}.vsix"
+          test -f "release-assets/pinop-chrome-${RELEASE_VERSION}.zip"
+          test -f "release-assets/pinop-firefox-${RELEASE_VERSION}.zip"
+          test -f "release-assets/pinop-firefox-source-${RELEASE_VERSION}.zip"
           test -f release-assets/SHA256SUMS
           test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
           (cd release-assets && sha256sum --check --strict SHA256SUMS)
@@ -156,13 +156,13 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$RELEASE_TAG" \
-            "release-assets/browser2ide-vscode-${RELEASE_VERSION}.vsix" \
-            "release-assets/browser2ide-chrome-${RELEASE_VERSION}.zip" \
-            "release-assets/browser2ide-firefox-${RELEASE_VERSION}.zip" \
-            "release-assets/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
+            "release-assets/pinop-vscode-${RELEASE_VERSION}.vsix" \
+            "release-assets/pinop-chrome-${RELEASE_VERSION}.zip" \
+            "release-assets/pinop-firefox-${RELEASE_VERSION}.zip" \
+            "release-assets/pinop-firefox-source-${RELEASE_VERSION}.zip" \
             "release-assets/SHA256SUMS" \
             --draft \
             --verify-tag \
             --target master \
-            --title "Browser2IDE $RELEASE_TAG" \
+            --title "PinOp $RELEASE_TAG" \
             --generate-notes

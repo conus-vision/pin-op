@@ -1,12 +1,12 @@
-# Browser2IDE Security
+# PinOp Security
 
-Browser2IDE is a local, read-only development tool. Its model assumes the
+PinOp is a local, read-only development tool. Its model assumes the
 browser and VS Code extensions run under one trusted desktop user account. It
 does not treat every other process under that account as trusted.
 
 ## Transport Boundary
 
-Browser2IDE has no product HTTP API. Product traffic uses a loopback WebSocket:
+PinOp has no product HTTP API. Product traffic uses a loopback WebSocket:
 
 ```text
 browser extension -> ws://127.0.0.1:<managed-port> -> VS Code extension
@@ -23,7 +23,7 @@ protect against a malicious process already running as the same desktop user.
 
 ## Explicit Browser-Window Linking
 
-Browser2IDE never discovers an IDE. The user clicks the intended VS Code
+PinOp never discovers an IDE. The user clicks the intended VS Code
 window's status item and enters that exact code in one browser window. The first
 five digits identify one loopback port and the final two digits are that bridge
 instance's PIN.
@@ -47,7 +47,7 @@ Five failed PIN attempts trigger a bridge-wide 60-second cooldown. Parallel
 sockets share the limit. Errors do not disclose whether the PIN was correct.
 Unauthenticated connections have ten seconds to finish one valid handshake.
 
-The read-only scope is essential to this risk decision. Browser2IDE does not
+The read-only scope is essential to this risk decision. PinOp does not
 write or edit page/workspace source and does not execute shell, page, workspace,
 or user-supplied commands. Stronger authentication is required before any write,
 remote transport, command execution, or multi-user host is considered.
@@ -108,11 +108,11 @@ not grant `activeTab` access by itself.
 
 Injection requires all of these conditions:
 
-- the Browser2IDE DevTools panel is open for the tab;
+- the PinOp DevTools panel is open for the tab;
 - its browser window has an explicit link;
 - the user enables the page picker or requests the tab's DOM tree.
 
-Browser-protected pages can reject injection. Browser2IDE has no feature that
+Browser-protected pages can reject injection. PinOp has no feature that
 navigates a page, submits forms, edits DOM or source, reads cookies, or invokes
 user-supplied code.
 
@@ -142,7 +142,7 @@ omitted rather than approximated.
 
 ## Bounded Facts Sent To VS Code
 
-Only a valid selection creates protocol facts. Browser2IDE sends bounded facts
+Only a valid selection creates protocol facts. PinOp sends bounded facts
 for the selected element and its immediate parent:
 
 - page URL and route;
@@ -159,7 +159,7 @@ local VS Code window is acceptable.
 
 The browser does not deliberately collect cookies, headers, form-control values,
 DOM text, workspace files, source maps, or source text. Local VS Code plugins
-read workspace source and source maps only for local resolution. Browser2IDE
+read workspace source and source maps only for local resolution. PinOp
 does not upload source or maps to a remote service.
 
 ## Resource Bounds
@@ -185,7 +185,7 @@ rule, a valid source map, and a mapping into the active SCSS document. Missing,
 invalid, unmapped, ambiguous, or other-document cases fail closed and produce a
 bounded footer status.
 
-Browser2IDE does not load executable code from an inspected workspace. A
+PinOp does not load executable code from an inspected workspace. A
 separately installed source plugin is independently trusted VS Code extension
 code. It receives the validated selection, active document, cancellation, and
 bounded workspace discovery/read services. Review third-party plugins and their
@@ -193,7 +193,7 @@ privacy behavior separately.
 
 ## Sensitive Output
 
-Browser2IDE does not deliberately place auth tokens or raw credentials in
+PinOp does not deliberately place auth tokens or raw credentials in
 diagnostics, protocol errors, source-plugin metadata, or inspection facts.
 User-facing errors use bounded, sanitized vocabularies. Page-controlled values
 are not scanned for secret-looking content.

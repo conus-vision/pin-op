@@ -1,4 +1,4 @@
-import { BridgeInstanceIdSchema } from "@browser2ide/protocol";
+import { BridgeInstanceIdSchema } from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   LinkAuthenticator,

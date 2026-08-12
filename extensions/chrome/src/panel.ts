@@ -3,7 +3,7 @@ import {
   sanitizeErrorMessage,
   startPanelRuntime,
   type PanelInspectPort,
-} from "@browser2ide/browser-extension-core";
+} from "@pinop/browser-extension-core";
 
 startPanelRuntime({
   locationSearch: location.search,
@@ -17,5 +17,5 @@ startPanelRuntime({
     return () => window.removeEventListener("unload", listener);
   },
   onError: (error) =>
-    console.error("Browser2IDE panel:", sanitizeErrorMessage(error)),
+    console.error("PinOp panel:", sanitizeErrorMessage(error)),
 });

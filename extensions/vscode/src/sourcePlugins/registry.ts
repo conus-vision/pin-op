@@ -7,11 +7,11 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import {
   JsonObjectSchema,
   type ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type {
   PluginResolutionCandidate,
   ResolvedPluginDiagnostic,

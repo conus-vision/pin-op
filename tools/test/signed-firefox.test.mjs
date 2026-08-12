@@ -8,7 +8,7 @@ import AdmZip from "adm-zip";
 import { verifySignedFirefoxXpi } from "../verify-signed-firefox.mjs";
 
 const version = "0.3.0";
-const geckoId = "browser2ide@local";
+const geckoId = "info@conus.vision";
 const signatureEntries = [
   "META-INF/cose.manifest",
   "META-INF/cose.sig",
@@ -83,10 +83,10 @@ test("signed Firefox XPI validates manifest version and Gecko identity", async (
 });
 
 async function withArchives(callback) {
-  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-signed-xpi-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pinop-signed-xpi-"));
   const manifest = JSON.stringify({
     manifest_version: 3,
-    name: "Browser2IDE",
+    name: "PinOp",
     version,
     browser_specific_settings: { gecko: { id: geckoId } },
   });

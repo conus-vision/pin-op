@@ -5,7 +5,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   BrowserBridgeClient,
   BrowserProtocolError,

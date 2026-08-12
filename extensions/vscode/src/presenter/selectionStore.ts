@@ -1,5 +1,5 @@
-import type { SelectionSnapshot } from "@browser2ide/plugin-api";
-import type { InspectMessage } from "@browser2ide/protocol";
+import type { SelectionSnapshot } from "@pinop/plugin-api";
+import type { InspectMessage } from "@pinop/protocol";
 
 export class SelectionStore {
   private value: SelectionSnapshot | undefined;

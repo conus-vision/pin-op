@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SourceDocument } from "@browser2ide/plugin-api";
+import type { SourceDocument } from "@pinop/plugin-api";
 import { visibleMatches } from "../src/presenter/visibleMatches.js";
 import type { ResolvedSourceMatch } from "../src/sourcePlugins/types.js";
 

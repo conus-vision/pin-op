@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { SelectionStore } from "../src/presenter/selectionStore.js";
 
 describe("SelectionStore", () => {

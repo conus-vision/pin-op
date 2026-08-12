@@ -1,17 +1,17 @@
 name: Bug report
-description: Report a reproducible problem with Browser2IDE.
+description: Report a reproducible problem with PinOp.
 title: "[Bug]: "
 labels:
   - bug
 body:
   - type: markdown
     attributes:
-      value: Thank you for helping us improve Browser2IDE. Remove credentials and sensitive data before submitting.
+      value: Thank you for helping us improve PinOp. Remove credentials and sensitive data before submitting.
   - type: input
-    id: browser2ide_version
+    id: pinop_version
     attributes:
-      label: Browser2IDE version
-      description: Enter the installed Browser2IDE extension version.
+      label: PinOp version
+      description: Enter the installed PinOp extension version.
       placeholder: 0.3.0
     validations:
       required: true
@@ -57,7 +57,7 @@ body:
       label: Steps to reproduce
       description: Provide the smallest reliable sequence that demonstrates the problem.
       placeholder: |
-        1. Start Browser2IDE in VS Code.
+        1. Start PinOp in VS Code.
         2. Link the browser extension.
         3. Inspect an element.
     validations:
@@ -80,7 +80,7 @@ body:
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: Paste relevant Browser2IDE diagnostics after removing credentials and sensitive data. Never include a link code, PIN, or token.
+      description: Paste relevant PinOp diagnostics after removing credentials and sensitive data. Never include a link code, PIN, or token.
       render: shell
     validations:
       required: true
@@ -89,7 +89,7 @@ body:
     attributes:
       label: Credential safety
       options:
-        - label: I removed all Browser2IDE link codes, PINs, and tokens from this report and its attachments.
+        - label: I removed all PinOp link codes, PINs, and tokens from this report and its attachments.
           required: true
     validations:
       required: true

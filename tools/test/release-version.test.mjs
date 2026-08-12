@@ -109,14 +109,14 @@ function releaseVersions(path, contents) {
       ...Object.values(manifest.scripts ?? {}).filter(
         (value) =>
           typeof value === "string" &&
-          /(?:artifacts|browser2ide-(?:chrome|firefox|vscode))/.test(value),
+          /(?:artifacts|pinop-(?:chrome|firefox|vscode))/.test(value),
       ),
     ];
     return semanticVersions(releaseOwnedValues.join("\n"));
   }
 
   const patterns = [
-    /browser2ide-(?:chrome|firefox(?:-source)?|vscode)-(\d+\.\d+\.\d+)\.(?:vsix|xpi|zip)/g,
+    /pinop-(?:chrome|firefox(?:-source)?|vscode)-(\d+\.\d+\.\d+)\.(?:vsix|xpi|zip)/g,
     /\b(?:releaseVersion|VERSION)\s*=\s*["'](\d+\.\d+\.\d+)["']/g,
     /manifest\?\.version\s*===\s*["'](\d+\.\d+\.\d+)["']/g,
   ];
@@ -132,7 +132,7 @@ function semanticVersions(contents) {
 }
 
 async function createVersionFixture(version) {
-  const root = await mkdtemp(resolve(tmpdir(), "browser2ide-version-"));
+  const root = await mkdtemp(resolve(tmpdir(), "pinop-version-"));
   const files = [
     "package.json",
     "extensions/vscode/package.json",

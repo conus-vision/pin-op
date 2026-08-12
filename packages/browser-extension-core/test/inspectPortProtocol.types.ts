@@ -1,4 +1,4 @@
-import type { SourceNavigationStateMessage } from "@browser2ide/protocol";
+import type { SourceNavigationStateMessage } from "@pinop/protocol";
 import type { BackgroundToPanelInspectPortMessage } from "../src/inspectPortProtocol.js";
 
 declare const sourceNavigationState: SourceNavigationStateMessage;

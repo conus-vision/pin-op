@@ -2,7 +2,7 @@ import type {
   ResolutionMessage,
   SourceNavigationDirection,
   SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type { PanelSourceNavigateCommand } from "./inspectPortProtocol.js";
 
 export interface SourceNavigationViewModel {
@@ -111,7 +111,7 @@ export class SourceNavigationController {
       return;
     }
     this.dispatch({
-      type: "browser2ide.source.navigate",
+      type: "pinop.source.navigate",
       inspectMessageId: this.inspectMessageId,
       resolutionGeneration: this.resolutionGeneration,
       direction,

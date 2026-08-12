@@ -1,7 +1,7 @@
 import {
   RESOLUTION_LIMITS,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type {
   DomEvent,
   DomRequest,
@@ -9,7 +9,7 @@ import type {
 } from "./domProtocol.js";
 
 const CONTENT_SESSION_ID_BRAND: unique symbol = Symbol(
-  "browser2ide.contentSessionId",
+  "pinop.contentSessionId",
 );
 
 export type ContentSessionId = string & {
@@ -17,37 +17,37 @@ export type ContentSessionId = string & {
 };
 
 export const INSPECT_CONTENT_LEASE_PORT_PREFIX =
-  "browser2ide.inspect.contentLease.";
+  "pinop.inspect.contentLease.";
 export const CONTENT_SESSION_ID_MAX_LENGTH = 128;
-export const DEVTOOLS_PANEL_PORT_PREFIX = "browser2ide.devtools.";
+export const DEVTOOLS_PANEL_PORT_PREFIX = "pinop.devtools.";
 export const DEVTOOLS_CHANNEL_MAX_LENGTH = 128;
 
 export interface InspectPortRequest {
-  readonly type: "browser2ide.inspect.setEnabled";
+  readonly type: "pinop.inspect.setEnabled";
   readonly requestId: string;
   readonly enabled: boolean;
 }
 
 export type InspectPortResult =
   | {
-      readonly type: "browser2ide.inspect.result";
+      readonly type: "pinop.inspect.result";
       readonly requestId: string;
       readonly ok: true;
     }
   | {
-      readonly type: "browser2ide.inspect.result";
+      readonly type: "pinop.inspect.result";
       readonly requestId: string;
       readonly ok: false;
       readonly error: string;
     };
 
 export interface InspectPortInvalidated {
-  readonly type: "browser2ide.inspect.invalidated";
+  readonly type: "pinop.inspect.invalidated";
   readonly reason: "documentDisconnected";
 }
 
 export interface PanelSourceNavigateCommand {
-  readonly type: "browser2ide.source.navigate";
+  readonly type: "pinop.source.navigate";
   readonly inspectMessageId: string;
   readonly resolutionGeneration: number;
   readonly direction: "previous" | "next";
@@ -174,7 +174,7 @@ export function parseInspectPortRequest(
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["type", "requestId", "enabled"]) ||
-    value.type !== "browser2ide.inspect.setEnabled" ||
+    value.type !== "pinop.inspect.setEnabled" ||
     typeof value.requestId !== "string" ||
     value.requestId.length === 0 ||
     typeof value.enabled !== "boolean"
@@ -193,7 +193,7 @@ export function parseInspectPortResult(
 ): InspectPortResult | undefined {
   if (
     !isRecord(value) ||
-    value.type !== "browser2ide.inspect.result" ||
+    value.type !== "pinop.inspect.result" ||
     typeof value.requestId !== "string" ||
     value.requestId.length === 0 ||
     typeof value.ok !== "boolean"
@@ -225,7 +225,7 @@ export function parseInspectPortInvalidated(
 ): InspectPortInvalidated | undefined {
   return isRecord(value) &&
       hasOnlyKeys(value, ["type", "reason"]) &&
-      value.type === "browser2ide.inspect.invalidated" &&
+      value.type === "pinop.inspect.invalidated" &&
       value.reason === "documentDisconnected"
     ? {
         type: value.type,
@@ -245,7 +245,7 @@ export function parsePanelSourceNavigateCommand(
   ]);
   if (
     !record ||
-    record.type !== "browser2ide.source.navigate" ||
+    record.type !== "pinop.source.navigate" ||
     typeof record.inspectMessageId !== "string" ||
     record.inspectMessageId.length === 0 ||
     record.inspectMessageId.length > RESOLUTION_LIMITS.opaqueIdLength ||

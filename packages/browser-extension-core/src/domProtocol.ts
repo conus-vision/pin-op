@@ -1,4 +1,4 @@
-import { utf8ByteLength } from "@browser2ide/protocol";
+import { utf8ByteLength } from "@pinop/protocol";
 import {
   parseDomStableLocator,
   type DomStableLocator,

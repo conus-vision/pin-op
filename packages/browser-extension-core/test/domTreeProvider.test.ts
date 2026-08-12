@@ -3472,7 +3472,7 @@ describe("DomTreeProvider", () => {
   it("excludes overlay-owned nodes from traversal and mutation discovery", () => {
     const document = createDocument();
     const pageContent = createElement("main", document);
-    const overlayHost = createElement("browser2ide-overlay", document);
+    const overlayHost = createElement("pinop-overlay", document);
     const overlayRoot = overlayHost.attachShadow();
     const overlayArtifact = createElement("div", document);
     overlayRoot.append(overlayArtifact);

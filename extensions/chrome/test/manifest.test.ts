@@ -7,7 +7,8 @@ describe("Chrome extension manifest", () => {
 
     expect(manifest).toMatchObject({
       manifest_version: 3,
-      name: "Browser2IDE",
+      name: "PinOp",
+      description: "Connect browser DevTools to your source code.",
       version: "0.3.0",
       minimum_chrome_version: "116",
       devtools_page: "dist/devtools.html",
@@ -15,6 +16,13 @@ describe("Chrome extension manifest", () => {
     });
     expect(manifest.background).not.toHaveProperty("scripts");
     expect(manifest).not.toHaveProperty("browser_specific_settings");
+    expect(manifest.icons).toEqual({
+      16: "dist/icons/pinop-16.png",
+      32: "dist/icons/pinop-32.png",
+      48: "dist/icons/pinop-48.png",
+      96: "dist/icons/pinop-96.png",
+      128: "dist/icons/pinop-128.png",
+    });
   });
 
   it("declares only the local runtime permissions", () => {

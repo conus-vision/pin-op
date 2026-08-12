@@ -5,8 +5,8 @@ import {
   type SourcePlugin,
   type SourcePluginContext,
   type SourceUriResolution,
-} from "@browser2ide/plugin-api";
-import type { ResolutionStatus } from "@browser2ide/protocol";
+} from "@pinop/plugin-api";
+import type { ResolutionStatus } from "@pinop/protocol";
 import { targetCssFacts } from "./cssFacts.js";
 import {
   canFingerprintFallback,
@@ -20,8 +20,8 @@ import type { StatusAwareSourcePluginResult } from "./types.js";
 const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class CssSourcePlugin implements SourcePlugin {
-  public readonly id = "browser2ide.css";
-  public readonly displayName = "Browser2IDE CSS";
+  public readonly id = "pinop.css";
+  public readonly displayName = "PinOp CSS";
   public readonly apiVersion = SOURCE_PLUGIN_API_VERSION;
   public readonly documentSelectors = [
     { languageId: "css", scheme: "file" },

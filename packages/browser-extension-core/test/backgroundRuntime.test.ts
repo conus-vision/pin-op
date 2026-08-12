@@ -28,8 +28,8 @@ describe("startBackgroundRuntime", () => {
     };
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://browser2ide/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://browser2ide/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
       storage: memoryStorage(),
       executeScript: vi.fn(async () => []),
       sendTabMessage: vi.fn(async () => undefined),
@@ -65,8 +65,8 @@ describe("startBackgroundRuntime", () => {
     const getTab = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 }));
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://browser2ide/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://browser2ide/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
       storage,
       executeScript: vi.fn(async () => []),
       sendTabMessage: vi.fn(async () => undefined),
@@ -86,12 +86,12 @@ describe("startBackgroundRuntime", () => {
 
     await messages.emit(
       {
-        type: "browser2ide.registerDevtools",
+        type: "pinop.registerDevtools",
         channel: "channel-1",
         tabId: 91,
         sourceId: "firefox-source-1",
       },
-      { url: "moz-extension://browser2ide/dist/devtools.html" },
+      { url: "moz-extension://pinop/dist/devtools.html" },
     );
     expect(getTab).toHaveBeenCalledWith(91);
 
@@ -112,13 +112,13 @@ describe("startBackgroundRuntime", () => {
     const attachedTabs = eventHarness();
     const storage = memoryStorage();
     await storage.set({
-      "browser2ide.windowLink.7": validStoredLink(),
-      "browser2ide.windowLink.8": validStoredLink(),
+      "pinop.windowLink.7": validStoredLink(),
+      "pinop.windowLink.8": validStoredLink(),
     });
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://browser2ide/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://browser2ide/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
       storage,
       executeScript: async () => [],
       sendTabMessage: async () => undefined,
@@ -132,8 +132,8 @@ describe("startBackgroundRuntime", () => {
 
     windows.emit(7);
     await flushAsync();
-    expect(await storage.get("browser2ide.windowLink.7")).toEqual({});
-    expect(await storage.get("browser2ide.windowLink.8")).not.toEqual({});
+    expect(await storage.get("pinop.windowLink.7")).toEqual({});
+    expect(await storage.get("pinop.windowLink.8")).not.toEqual({});
     runtime.dispose();
   });
 });
@@ -177,7 +177,7 @@ function validStoredLink(): Record<string, unknown> {
   return {
     url: "ws://127.0.0.1:48735",
     port: 48_735,
-    sessionId: "browser2ide",
+    sessionId: "pinop",
     bridgeInstanceId: "11111111-1111-4111-8111-111111111111",
     authToken: "token-value",
   };

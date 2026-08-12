@@ -41,7 +41,7 @@ export async function registerDevtoolsPanel(
   assertRegistrationOptions(options);
   const announce = async (): Promise<void> => {
     await options.sendRuntimeMessage({
-      type: "browser2ide.registerDevtools",
+      type: "pinop.registerDevtools",
       channel: options.channelId,
       tabId: options.inspectedTabId,
       sourceId: options.sourceId,
@@ -58,8 +58,8 @@ export async function registerDevtoolsPanel(
   let panel: DevtoolsPanelHandle;
   try {
     panel = await options.createPanel(
-      "Browser2IDE",
-      "/dist/browser2ide.svg",
+      "PinOp",
+      "/dist/pinop.svg",
       `/dist/panel.html?channel=${encodeURIComponent(options.channelId)}`,
     );
     panel.addShownListener(onShown);
@@ -152,7 +152,7 @@ function isPanelReadyMessage(value: unknown, channel: string): boolean {
   return (
     isRecord(value) &&
     Object.keys(value).length === 2 &&
-    value.type === "browser2ide.panelReady" &&
+    value.type === "pinop.panelReady" &&
     value.channel === channel
   );
 }

@@ -66,7 +66,7 @@ export function createBrowserAdapterHarness() {
   const panelShown = event();
   const runtimeOrigin = { value: "" };
   const runtimePort = {
-    name: "browser2ide.devtools.test-channel",
+    name: "pinop.devtools.test-channel",
     onMessage: event(),
     onDisconnect: event(),
     postMessage: vi.fn(),
@@ -153,9 +153,9 @@ export function describeBrowserAdapterContract(
       consoleError.mockRestore();
       delete (
         globalThis as typeof globalThis & {
-          __browser2ideContentScript?: unknown;
+          __pinopContentScript?: unknown;
         }
-      ).__browser2ideContentScript;
+      ).__pinopContentScript;
       vi.unstubAllGlobals();
     });
 
@@ -215,7 +215,7 @@ export function describeBrowserAdapterContract(
         runtimeListener,
       );
       const wrappedRuntime = lastRegistered(harness.runtimeMessage);
-      const registration = { type: "browser2ide.registerDevtools" };
+      const registration = { type: "pinop.registerDevtools" };
       await callAsync(wrappedRuntime, registration, {
         url: `${contract.extensionOrigin}/dist/devtools.html`,
         tab: { id: 91, windowId: 17, title: "not forwarded" },
@@ -293,9 +293,9 @@ export function describeBrowserAdapterContract(
       expect(options.location).toBe(globalThis.location);
       expect(options.globalScope).toBe(globalThis);
 
-      call(options.connectRuntimePort, "browser2ide.inspect.contentLease");
+      call(options.connectRuntimePort, "pinop.inspect.contentLease");
       expect(harness.browser.runtime.connect).toHaveBeenCalledWith({
-        name: "browser2ide.inspect.contentLease",
+        name: "pinop.inspect.contentLease",
       });
       await callAsync(options.sendRuntimeMessage, { type: "elementSelected" });
       expect(harness.browser.runtime.sendMessage).toHaveBeenCalledWith({
@@ -415,8 +415,8 @@ export function describeBrowserAdapterContract(
 
       const panel = (await callAsync(
         options.createPanel,
-        "Browser2IDE",
-        "/dist/browser2ide.svg",
+        "PinOp",
+        "/dist/pinop.svg",
         "/dist/panel.html?channel=test",
       )) as Record<string, unknown>;
       const shownListener = vi.fn();
@@ -465,9 +465,9 @@ export function describeBrowserAdapterContract(
       expect(options.locationSearch).toBe("?channel=test-channel");
       expect(options.document).toBe(globalThis.document);
 
-      call(options.connectRuntimePort, "browser2ide.devtools.test-channel");
+      call(options.connectRuntimePort, "pinop.devtools.test-channel");
       expect(harness.browser.runtime.connect).toHaveBeenCalledWith({
-        name: "browser2ide.devtools.test-channel",
+        name: "pinop.devtools.test-channel",
       });
       await callAsync(options.readClipboard);
       expect(clipboard.readText).toHaveBeenCalledOnce();
@@ -538,15 +538,15 @@ export function describeBrowserAdapterContract(
       );
 
       const forbiddenSource = `
-        import { DomTreeController } from "@browser2ide/browser-extension-core";
-        import { PageOverlay } from "@browser2ide/browser-extension-core/pageOverlay.js";
+        import { DomTreeController } from "@pinop/browser-extension-core";
+        import { PageOverlay } from "@pinop/browser-extension-core/pageOverlay.js";
         import type { ResultFormatter } from "./resultFormatter.js";
       `;
       expect(
         adapterImportBoundaryViolations("forbidden.ts", forbiddenSource),
       ).toEqual([
         "forbidden.ts imports unsupported shared symbol DomTreeController",
-        "forbidden.ts imports disallowed module @browser2ide/browser-extension-core/pageOverlay.js",
+        "forbidden.ts imports disallowed module @pinop/browser-extension-core/pageOverlay.js",
         "forbidden.ts imports disallowed module ./resultFormatter.js",
       ]);
     });
@@ -574,9 +574,14 @@ export function describeBrowserPackageContract(
 
       expect(panel).toBe(sharedAsset("panel.html"));
       expect(panelCss).toBe(sharedAsset("panel.css"));
-      expect(packagedBytes(packaged, "dist/browser2ide.svg")).toEqual(
-        Buffer.from(sharedAsset("browser2ide.svg")),
+      expect(packagedBytes(packaged, "dist/pinop.svg")).toEqual(
+        Buffer.from(sharedAsset("pinop.svg")),
       );
+      for (const size of [16, 32, 48, 96, 128]) {
+        expect(packagedBytes(packaged, `dist/icons/pinop-${size}.png`)).toEqual(
+          sharedAssetBytes(`icons/pinop-${size}.png`),
+        );
+      }
       expect(openingTag(panel, "dom-tree")).toMatch(/role="tree"/);
       expect(openingTag(panel, "linked-code")).toMatch(/^<output\b/);
       expect(panel).toMatch(
@@ -610,7 +615,7 @@ export function describeBrowserPackageContract(
         "utf8",
       );
       expect(adapter).not.toContain("PROTOCOL_VERSION");
-      expect(adapter).not.toContain("browser2ide.protocolVersion");
+      expect(adapter).not.toContain("pinop.protocolVersion");
       expect(adapter).not.toContain("document.documentElement");
       const sharedRuntime = readFileSync(
         new URL(
@@ -658,7 +663,12 @@ export function describeBrowserPackageContract(
         "dist/devtools.html",
         "dist/panel.html",
         "dist/panel.css",
-        "dist/browser2ide.svg",
+        "dist/pinop.svg",
+        "dist/icons/pinop-16.png",
+        "dist/icons/pinop-32.png",
+        "dist/icons/pinop-48.png",
+        "dist/icons/pinop-96.png",
+        "dist/icons/pinop-128.png",
         "dist/runtime-metadata.json",
         "LICENSE",
         "THIRD_PARTY_NOTICES",
@@ -717,7 +727,7 @@ export function describeBrowserPackageContract(
       expect(new Set(httpUrls)).toEqual(
         new Set([
           "http://www.w3.org/2000/svg",
-          "https://browser2ide.invalid/",
+          "https://pinop.invalid/",
         ]),
       );
       expect(scripts).toContain("WebSocket");
@@ -879,9 +889,9 @@ function buildPackagedExtension(
   const temporaryBase =
     process.platform === "win32" ? dirname(workspaceRoot) : tmpdir();
   const temporaryDirectory = mkdtempSync(
-    join(temporaryBase, `.browser2ide-${contract.platformName.toLowerCase()}-`),
+    join(temporaryBase, `.pinop-${contract.platformName.toLowerCase()}-`),
   );
-  const archiveName = "browser2ide-contract.zip";
+  const archiveName = "pinop-contract.zip";
   const archivePath = join(temporaryDirectory, archiveName);
 
   try {
@@ -960,13 +970,19 @@ function sharedAsset(name: string): string {
   );
 }
 
+function sharedAssetBytes(name: string): Buffer {
+  return readFileSync(
+    new URL(`../../packages/browser-extension-core/assets/${name}`, import.meta.url),
+  );
+}
+
 function openingTag(panel: string, id: string): string {
   const match = new RegExp(`<[^>]+\\bid="${id}"[^>]*>`).exec(panel);
   expect(match).not.toBeNull();
   return match?.[0] ?? "";
 }
 
-const SHARED_RUNTIME_MODULE = "@browser2ide/browser-extension-core";
+const SHARED_RUNTIME_MODULE = "@pinop/browser-extension-core";
 const PLATFORM_API_MODULE = "webextension-polyfill";
 const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "BackgroundMessageSender",

@@ -27,7 +27,8 @@ const requiredPaths = [
   "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
-  "extension/resources/browser2ide.svg",
+  "extension/resources/pinop.png",
+  "extension/resources/pinop.svg",
 ];
 const forbiddenPath =
   /(?:^|\/)(?:node_modules|src|test)(?:\/|$)|\.vscode-test|\.map$/;
@@ -47,6 +48,14 @@ const manifest = JSON.parse(
 if (manifest.main !== "./dist/extension.cjs") {
   throw new Error(`VSIX manifest has unexpected main: ${manifest.main}`);
 }
+if (manifest.icon !== "resources/pinop.png") {
+  throw new Error(`VSIX manifest has unexpected icon: ${manifest.icon}`);
+}
+assertPngDimensions(
+  entries.get("extension/resources/pinop.png"),
+  "extension/resources/pinop.png",
+  128,
+);
 parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
   expectedProtocolVersion: 5,
   label: "VSIX runtime metadata",
@@ -137,4 +146,18 @@ function readZip(path) {
 
 function compareAscii(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function assertPngDimensions(buffer, label, expectedSize) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24 || !buffer.subarray(0, 8).equals(signature)) {
+    throw new Error(`${label} must be a valid PNG`);
+  }
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  if (width !== expectedSize || height !== expectedSize) {
+    throw new Error(
+      `${label} must be ${expectedSize}x${expectedSize}; received ${width}x${height}`,
+    );
+  }
 }

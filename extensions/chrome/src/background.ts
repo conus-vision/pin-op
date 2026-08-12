@@ -4,7 +4,7 @@ import {
   startBackgroundRuntime,
   type BackgroundMessageSender,
   type BackgroundRuntimePort,
-} from "@browser2ide/browser-extension-core";
+} from "@pinop/browser-extension-core";
 
 startBackgroundRuntime({
   expectedDevtoolsUrl: browser.runtime.getURL("dist/devtools.html"),
@@ -52,7 +52,7 @@ startBackgroundRuntime({
     return () => browser.tabs.onAttached.removeListener(wrapped);
   },
   onError: (error) =>
-    console.error("Browser2IDE background:", sanitizeErrorMessage(error)),
+    console.error("PinOp background:", sanitizeErrorMessage(error)),
 });
 
 interface ChromeMessageSender {

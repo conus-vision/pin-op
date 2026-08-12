@@ -29,10 +29,10 @@ importers:
 
   extensions/chrome:
     dependencies:
-      '@browser2ide/browser-extension-core':
+      '@pinop/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       webextension-polyfill:
@@ -51,10 +51,10 @@ importers:
 
   extensions/firefox:
     dependencies:
-      '@browser2ide/browser-extension-core':
+      '@pinop/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       webextension-polyfill:
@@ -73,7 +73,7 @@ importers:
 
   extensions/source-plugin-fixture:
     dependencies:
-      '@browser2ide/plugin-api':
+      '@pinop/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
     devDependencies:
@@ -89,13 +89,13 @@ importers:
 
   extensions/vscode:
     dependencies:
-      '@browser2ide/bridge':
+      '@pinop/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
-      '@browser2ide/plugin-api':
+      '@pinop/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       postcss:
@@ -147,7 +147,7 @@ importers:
 
   packages/bridge:
     dependencies:
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../protocol
       ws:
@@ -160,7 +160,7 @@ importers:
 
   packages/browser-extension-core:
     dependencies:
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../protocol
       lucide:
@@ -172,7 +172,7 @@ importers:
 
   packages/plugin-api:
     dependencies:
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../protocol
 
@@ -184,14 +184,14 @@ importers:
 
   tools/simulator:
     dependencies:
-      '@browser2ide/protocol':
+      '@pinop/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       ws:
         specifier: ^8.18.0
         version: 8.21.0
     devDependencies:
-      '@browser2ide/bridge':
+      '@pinop/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
       '@types/ws':

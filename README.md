@@ -1,9 +1,10 @@
-# Browser2IDE
+# PinOp
 
-[![CI](https://github.com/conus-vision/Browser2IDE/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/Browser2IDE/actions/workflows/ci.yml)
+[![CI](https://github.com/conus-vision/PinOp/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/PinOp/actions/workflows/ci.yml)
 
-Highlights source code in the IDE that relates to a DOM element selected in
-browser DevTools.
+Connect browser DevTools to your source code.
+
+[pinop.conus.vision](https://pinop.conus.vision)
 
 > Alpha: product and installation details may change before 1.0.
 
@@ -11,9 +12,9 @@ browser DevTools.
 
 The `0.3.0` release is being prepared. A complete GitHub Release will contain:
 
-- `browser2ide-vscode-0.3.0.vsix`;
-- `browser2ide-chrome-0.3.0.zip`;
-- `browser2ide-firefox-0.3.0.xpi`, signed by Mozilla.
+- `pinop-vscode-0.3.0.vsix`;
+- `pinop-chrome-0.3.0.zip`;
+- `pinop-firefox-0.3.0.xpi`, signed by Mozilla.
 
 No signed `0.3.0` XPI or public `0.3.0` release is claimed yet. The Firefox ZIP
 produced by the build is unsigned review input, not a Firefox Stable add-on.
@@ -24,10 +25,10 @@ candidate installation and evidence status.
 
 Normal installed use is terminal-free:
 
-1. Open a local project in VS Code. Browser2IDE starts automatically.
-2. Click the Browser2IDE status item to copy its five-digit port and two-digit
+1. Open a local project in VS Code. PinOp starts automatically.
+2. Click the PinOp status item to copy its five-digit port and two-digit
    PIN.
-3. Open the Browser2IDE DevTools panel in one Firefox or Chrome/Chromium window.
+3. Open the PinOp DevTools panel in one Firefox or Chrome/Chromium window.
 4. Paste the code, select **Link**, and confirm the panel shows the same
    displayed code as VS Code.
 5. Keep the intended CSS or SCSS document active in VS Code.
@@ -89,7 +90,7 @@ Read the [architecture overview](docs/architecture.md),
 
 ## Security And Privacy
 
-Browser2IDE has no analytics, product HTTP service, or remote Browser2IDE
+PinOp has no analytics, product HTTP service, or remote PinOp
 backend. Product traffic uses a loopback-only WebSocket after explicit
 browser-window linking. The two-digit PIN helps prevent accidental local
 cross-linking; it is not strong authentication.
@@ -119,12 +120,12 @@ checks.
 
 ## Status
 
-Browser2IDE remains an alpha. Public browser-store distribution, remote VS Code
+PinOp remains an alpha. Public browser-store distribution, remote VS Code
 hosts, closed-shadow traversal, cross-origin frame traversal, editing, and
 reverse synchronization are outside the current release. See the
 [changelog](CHANGELOG.md) for the `0.3.0` release scope.
 
 ## License
 
-Browser2IDE is available under the [MIT License](LICENSE). Copyright (c) 2026
+PinOp is available under the [MIT License](LICENSE). Copyright (c) 2026
 conus-vision.

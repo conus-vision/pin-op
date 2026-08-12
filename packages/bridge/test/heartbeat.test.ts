@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION } from "@browser2ide/protocol";
+import { PROTOCOL_VERSION } from "@pinop/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ClientRegistry } from "../src/clientRegistry.js";
 import { startHeartbeat } from "../src/heartbeat.js";

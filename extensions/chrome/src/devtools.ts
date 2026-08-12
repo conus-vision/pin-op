@@ -2,7 +2,7 @@ import browser from "webextension-polyfill";
 import {
   sanitizeErrorMessage,
   startDevtoolsRuntime,
-} from "@browser2ide/browser-extension-core";
+} from "@pinop/browser-extension-core";
 
 startDevtoolsRuntime({
   inspectedTabId: browser.devtools.inspectedWindow.tabId,
@@ -26,5 +26,5 @@ startDevtoolsRuntime({
     return () => window.removeEventListener("unload", listener);
   },
   onError: (error) =>
-    console.error("Browser2IDE DevTools:", sanitizeErrorMessage(error)),
+    console.error("PinOp DevTools:", sanitizeErrorMessage(error)),
 });

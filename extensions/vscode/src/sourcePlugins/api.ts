@@ -1,13 +1,13 @@
 import {
   SOURCE_PLUGIN_API_VERSION,
-  type Browser2IDEApi,
+  type PinOpApi,
   type SourcePlugin,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import type { SourcePluginRegistry } from "./registry.js";
 
-export function createBrowser2IDEApi(
+export function createPinOpApi(
   registry: SourcePluginRegistry,
-): Browser2IDEApi {
+): PinOpApi {
   return Object.freeze({
     apiVersion: SOURCE_PLUGIN_API_VERSION,
     registerSourcePlugin: (plugin: SourcePlugin) => registry.register(plugin),

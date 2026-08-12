@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement to a Browser2IDE workflow.
+description: Suggest an improvement to a PinOp workflow.
 title: "[Feature]: "
 labels:
   - enhancement
@@ -25,7 +25,7 @@ body:
     id: proposed_behavior
     attributes:
       label: Proposed behavior
-      description: Describe the behavior you would like Browser2IDE to provide.
+      description: Describe the behavior you would like PinOp to provide.
     validations:
       required: true
   - type: textarea
@@ -39,7 +39,7 @@ body:
     id: api_impact
     attributes:
       label: Protocol or plugin API impact
-      description: Would this change Browser2IDE's protocol or public source plugin API?
+      description: Would this change PinOp's protocol or public source plugin API?
       options:
         - No protocol or plugin API changes
         - Protocol change

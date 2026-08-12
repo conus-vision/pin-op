@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Browser2IDE will be documented in this file.
+All notable changes to PinOp will be documented in this file.
 
 ## [0.3.0] - Unreleased
 
@@ -52,5 +52,5 @@ All notable changes to Browser2IDE will be documented in this file.
 - Made cross-origin frames, closed shadow roots, stale node refs, ambiguous CSS
   fingerprints, and unavailable SCSS mappings fail closed.
 - Documented that the two-digit PIN is accidental-cross-link protection, not
-  strong authentication, and that Browser2IDE cannot write source or execute
+  strong authentication, and that PinOp cannot write source or execute
   commands.

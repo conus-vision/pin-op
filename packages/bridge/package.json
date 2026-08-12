@@ -1,5 +1,5 @@
 {
-  "name": "@browser2ide/bridge",
+  "name": "@pinop/bridge",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,13 +13,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @browser2ide/protocol build && vitest run",
+    "test": "pnpm --filter @pinop/protocol build && vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm run test:types:check",
     "test:types:check": "tsc --noEmit -p test/types.tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@browser2ide/protocol": "workspace:*",
+    "@pinop/protocol": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

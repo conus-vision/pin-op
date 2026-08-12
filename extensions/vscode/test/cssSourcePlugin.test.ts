@@ -4,12 +4,12 @@ import type {
   SelectionSnapshot,
   SourceDocument,
   SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
   type InspectTarget,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { collectCssFacts } from "../../../packages/browser-extension-core/src/collectCssFacts.js";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
 import {
@@ -857,18 +857,18 @@ describe("CssSourcePlugin", () => {
       "utf8",
     )).replace(/\r\n/g, "\n");
     const collected = collectCssFacts(
-      { matches: (selector) => selector === ".browser2ide-path-miss" },
+      { matches: (selector) => selector === ".pinop-path-miss" },
       {
         pageUrl: "http://localhost:4173/",
         styleSheets: [{
           href: "/fallback.css",
           cssRules: [
-            collectorStyleRule(".browser2ide-cssom-only", "--fixture", "cssom"),
+            collectorStyleRule(".pinop-cssom-only", "--fixture", "cssom"),
             {
               cssRules: [
                 collectorStyleRule(".card", "background-color", "rgb(245, 247, 250)"),
                 collectorStyleRule(
-                  ".browser2ide-path-miss",
+                  ".pinop-path-miss",
                   "outline-style",
                   "dashed",
                 ),
@@ -885,7 +885,7 @@ describe("CssSourcePlugin", () => {
     );
     expect(collected.facts).toEqual([
       expect.objectContaining({
-        selector: ".browser2ide-path-miss",
+        selector: ".pinop-path-miss",
         property: "outline-style",
         value: "dashed",
         metadata: expect.objectContaining({ rulePath: "0.1.1" }),
@@ -902,7 +902,7 @@ describe("CssSourcePlugin", () => {
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
     expect(snippets(text, fallback.matches)).toEqual([
       [
-        ".browser2ide-path-miss {",
+        ".pinop-path-miss {",
         "  outline-style: dashed;",
         "}",
       ].join("\n"),

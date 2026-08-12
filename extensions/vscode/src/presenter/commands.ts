@@ -1,4 +1,4 @@
-import type { SourcePosition, SourceRange } from "@browser2ide/plugin-api";
+import type { SourcePosition, SourceRange } from "@pinop/plugin-api";
 import type { ResolvedSourceMatch } from "../sourcePlugins/types.js";
 import type { DisposableLike } from "./decorations.js";
 
@@ -28,7 +28,7 @@ export function registerPresenterCommands(
   reportError: (error: unknown) => void,
 ): DisposableLike {
   return host.registerCommand(
-    "browser2ide.revealSourceMatch",
+    "pinop.revealSourceMatch",
     (sourceMatchId: unknown) => {
       if (typeof sourceMatchId !== "string") return;
       const match = matches.getMatch(sourceMatchId);
@@ -38,7 +38,7 @@ export function registerPresenterCommands(
       const documentUri = matches.getDocumentUri();
       if (!editor || !documentUri || editor.document.uri.toString() !== documentUri) {
         reportError(
-          new Error("Browser2IDE source match is not in the active editor"),
+          new Error("PinOp source match is not in the active editor"),
         );
         return;
       }

@@ -5,7 +5,7 @@ import {
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
   type ClientRole,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";
@@ -2236,11 +2236,11 @@ describe("bridge server network policy", () => {
 
       const firefox = await connect(
         server.getUrl(),
-        "moz-extension://browser2ide-test",
+        "moz-extension://pinop-test",
       );
       const chromium = await connect(
         server.getUrl(),
-        "chrome-extension://browser2ide-test",
+        "chrome-extension://pinop-test",
       );
       const originless = await connect(server.getUrl());
       await Promise.all([

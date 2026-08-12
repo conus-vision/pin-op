@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
   SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
   SourceNavigateMessageSchema,
@@ -56,7 +56,7 @@ describe("source navigation protocol messages", () => {
 
       expect(SourceNavigationDirectionSchema.parse(direction)).toBe(direction);
       expect(SourceNavigateMessageSchema.parse(message)).toEqual(message);
-      expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+      expect(PinOpMessageSchema.parse(message)).toEqual(message);
       expect(parseMessage(message)).toEqual(message);
     },
   );
@@ -65,7 +65,7 @@ describe("source navigation protocol messages", () => {
     const message = sourceNavigationStateMessage();
 
     expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(parseMessage(message)).toEqual(message);
   });
 

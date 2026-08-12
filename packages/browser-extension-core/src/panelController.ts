@@ -17,12 +17,12 @@ export type PanelOperationalState =
 
 export type PanelCommand =
   | {
-      readonly type: "browser2ide.linkWindow";
+      readonly type: "pinop.linkWindow";
       readonly channel: string;
       readonly code: string;
     }
   | {
-      readonly type: "browser2ide.unlinkWindow";
+      readonly type: "pinop.unlinkWindow";
       readonly channel: string;
     };
 
@@ -267,7 +267,7 @@ export class PanelController {
     this.render();
     await this.runCommand(
       {
-        type: "browser2ide.linkWindow",
+        type: "pinop.linkWindow",
         channel: this.channel,
         code,
       },
@@ -302,7 +302,7 @@ export class PanelController {
     this.render();
     await this.runCommand(
       {
-        type: "browser2ide.unlinkWindow",
+        type: "pinop.unlinkWindow",
         channel: this.channel,
       },
       generation,
@@ -327,7 +327,7 @@ export class PanelController {
       if (!this.isCurrent(generation)) {
         return;
       }
-      if (command.type === "browser2ide.linkWindow") {
+      if (command.type === "pinop.linkWindow") {
         this.pendingLinkGeneration = undefined;
         this.displayLinkCode = undefined;
         this.hasLinkIntent = false;
@@ -341,21 +341,21 @@ export class PanelController {
       }
       this.busy = false;
       this.state = "error";
-      this.errorText = "Browser2IDE background is unavailable";
+      this.errorText = "PinOp background is unavailable";
       this.render();
       return;
     }
     if (!this.isCurrent(generation)) {
       return;
     }
-    if (command.type === "browser2ide.linkWindow") {
+    if (command.type === "pinop.linkWindow") {
       this.pendingLinkGeneration = undefined;
     }
     this.busy = false;
     const result = parseCommandResult(response);
     if (!result) {
       if (
-        command.type === "browser2ide.unlinkWindow" &&
+        command.type === "pinop.unlinkWindow" &&
         !this.restoreDisconnect(generation) &&
         this.state === "notLinked"
       ) {
@@ -363,10 +363,10 @@ export class PanelController {
         return;
       }
       this.state = "error";
-      this.errorText = "Browser2IDE background returned an invalid response";
+      this.errorText = "PinOp background returned an invalid response";
     } else if (!result.ok) {
       if (
-        command.type === "browser2ide.linkWindow" &&
+        command.type === "pinop.linkWindow" &&
         result.error !== "busy" &&
         result.error !== "stalePanel"
       ) {
@@ -374,7 +374,7 @@ export class PanelController {
         this.displayLinkCode = undefined;
       }
       if (
-        command.type === "browser2ide.unlinkWindow" &&
+        command.type === "pinop.unlinkWindow" &&
         !this.restoreDisconnect(generation) &&
         this.state === "notLinked"
       ) {
@@ -382,7 +382,7 @@ export class PanelController {
         return;
       }
       this.applyCommandError(result.error);
-    } else if (command.type === "browser2ide.linkWindow") {
+    } else if (command.type === "pinop.linkWindow") {
       this.view.writeLinkCode("");
     } else {
       this.disconnectRollback = undefined;
@@ -478,15 +478,15 @@ export class PanelController {
         return;
       case "stalePanel":
         this.state = "error";
-        this.errorText = "Reopen Browser2IDE DevTools and try again";
+        this.errorText = "Reopen PinOp DevTools and try again";
         return;
       case "busy":
         this.state = "error";
-        this.errorText = "Another Browser2IDE action is still running";
+        this.errorText = "Another PinOp action is still running";
         return;
       case "error":
         this.state = "error";
-        this.errorText = "Browser2IDE could not complete the action";
+        this.errorText = "PinOp could not complete the action";
     }
   }
 
@@ -553,7 +553,7 @@ function parseWindowState(value: unknown): ParsedWindowState | undefined {
     !isRecord(value) ||
     (!hasOnlyKeys(value, ["type", "state"]) &&
       !hasOnlyKeys(value, ["type", "state", "displayLinkCode"])) ||
-    value.type !== "browser2ide.windowState"
+    value.type !== "pinop.windowState"
   ) {
     return undefined;
   }

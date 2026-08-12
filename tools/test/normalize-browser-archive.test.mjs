@@ -7,7 +7,7 @@ import { withTemporaryDirectory } from "./test-helpers.mjs";
 import { normalizeBrowserArchive } from "../normalize-browser-archive.mjs";
 
 test("browser archive normalization sorts files and fixes timestamps", async () => {
-  await withTemporaryDirectory("browser2ide-normalize-", async (directory) => {
+  await withTemporaryDirectory("pinop-normalize-", async (directory) => {
     const path = resolve(directory, "extension.zip");
     const zip = new AdmZip();
     zip.addFile("z.txt", Buffer.from("last"));
@@ -34,7 +34,7 @@ test("browser archive normalization sorts files and fixes timestamps", async () 
 });
 
 test("browser archive normalization canonicalizes text line endings only", async () => {
-  await withTemporaryDirectory("browser2ide-normalize-text-", async (directory) => {
+  await withTemporaryDirectory("pinop-normalize-text-", async (directory) => {
     const path = resolve(directory, "extension.zip");
     const binary = Buffer.from([0x00, 0x0d, 0x0a, 0xff]);
     const zip = new AdmZip();
@@ -58,7 +58,7 @@ test("browser archive normalization canonicalizes text line endings only", async
 });
 
 test("browser archive normalization rejects invalid UTF-8 text atomically", async () => {
-  await withTemporaryDirectory("browser2ide-normalize-utf8-", async (directory) => {
+  await withTemporaryDirectory("pinop-normalize-utf8-", async (directory) => {
     const path = resolve(directory, "extension.zip");
     const zip = new AdmZip();
     zip.addFile("manifest.json", Buffer.from([0xc3, 0x28]));

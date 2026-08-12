@@ -2,7 +2,7 @@ import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isDomResponseForRequest,
@@ -83,7 +83,7 @@ export class PanelInspectTransport {
       this.pendingInspect.set(requestId, { resolve, reject });
       try {
         connection.port.postMessage({
-          type: "browser2ide.inspect.setEnabled",
+          type: "pinop.inspect.setEnabled",
           requestId,
           enabled: command.type === "enableInspectMode",
         } satisfies InspectPortRequest);
@@ -416,7 +416,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     (keys.length === 2 || keys.length === 3) &&
     keys.includes("state") &&
     keys.includes("type") &&
-    message.type === "browser2ide.windowState" &&
+    message.type === "pinop.windowState" &&
     typeof message.state === "string" &&
     WINDOW_STATES.has(message.state)
   ) {
@@ -442,7 +442,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     keys[0] === "inspectMessageId" &&
     keys[1] === "selectionRevision" &&
     keys[2] === "type" &&
-    message.type === "browser2ide.inspect.started" &&
+    message.type === "pinop.inspect.started" &&
     isOpaqueId(message.inspectMessageId) &&
     isSelectionRevision(message.selectionRevision)
   ) {
@@ -457,7 +457,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     keys[0] === "inspectMessageId" &&
     keys[1] === "status" &&
     keys[2] === "type" &&
-    message.type === "browser2ide.ideState" &&
+    message.type === "pinop.ideState" &&
     message.status === "ide-disconnected" &&
     isOpaqueId(message.inspectMessageId)
   ) {

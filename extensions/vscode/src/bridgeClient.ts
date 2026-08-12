@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
@@ -10,7 +10,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 export type ResolutionInput = Pick<
   ResolutionMessage,
@@ -250,7 +250,7 @@ export class BridgeClient {
       return;
     }
 
-    const parsed = Browser2IdeMessageSchema.safeParse(raw);
+    const parsed = PinOpMessageSchema.safeParse(raw);
     if (!parsed.success) {
       this.emitProtocolError(
         localProtocolError("Bridge sent an invalid protocol message"),

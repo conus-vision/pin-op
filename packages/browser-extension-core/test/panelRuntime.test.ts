@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";
@@ -43,9 +43,9 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
 
     expect(ports).toHaveLength(1);
-    expect(ports[0]?.name).toBe("browser2ide.devtools.test-channel");
+    expect(ports[0]?.name).toBe("pinop.devtools.test-channel");
     expect(messages).toEqual([
-      { type: "browser2ide.panelReady", channel: "test-channel" },
+      { type: "pinop.panelReady", channel: "test-channel" },
     ]);
     expect(clipboardReads).toBe(0);
     expect(pressed(dom.element("inspect-mode"))).toBe(false);
@@ -63,7 +63,7 @@ describe("startPanelRuntime", () => {
     expect(clipboardReads).toBe(1);
     expect(dom.element("link-code").value).toBe("");
     expect(messages).toContainEqual({
-      type: "browser2ide.linkWindow",
+      type: "pinop.linkWindow",
       channel: "test-channel",
       code: "4873507",
     });
@@ -74,15 +74,15 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const first = requiredPort(ports, 0);
-    first.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    first.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     first.disconnect();
     await flushAsync();
 
     expect(messages).toEqual([
-      { type: "browser2ide.panelReady", channel: "test-channel" },
-      { type: "browser2ide.panelReady", channel: "test-channel" },
+      { type: "pinop.panelReady", channel: "test-channel" },
+      { type: "pinop.panelReady", channel: "test-channel" },
     ]);
     expect(ports).toHaveLength(2);
     expect(first.onMessage.listenerCount).toBe(0);
@@ -98,7 +98,7 @@ describe("startPanelRuntime", () => {
     const linkResponse = deferred<unknown>();
     runtimeSend = async (message) => {
       messages.push(message);
-      if (isRecord(message) && message.type === "browser2ide.linkWindow") {
+      if (isRecord(message) && message.type === "pinop.linkWindow") {
         linkStarted.resolve(undefined);
         return linkResponse.promise;
       }
@@ -115,7 +115,7 @@ describe("startPanelRuntime", () => {
     expect(linkCode.value).toBe("4873507");
 
     requiredPort(ports, 0).emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
     });
     expect(linkCode.value).toBe("");
@@ -130,7 +130,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     const inspect = dom.element("inspect-mode");
@@ -138,11 +138,11 @@ describe("startPanelRuntime", () => {
     await flushAsync();
 
     const inspectMessages = port.sent.filter((message) => (
-      isRecord(message) && message.type === "browser2ide.inspect.setEnabled"
+      isRecord(message) && message.type === "pinop.inspect.setEnabled"
     ));
     expect(inspectMessages).toHaveLength(1);
     expect(inspectMessages[0]).toMatchObject({
-      type: "browser2ide.inspect.setEnabled",
+      type: "pinop.inspect.setEnabled",
       enabled: true,
     });
     expect(ports).toHaveLength(1);
@@ -153,7 +153,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
 
     expect(
-      dom.element("connection-status").dataset.browser2ideProtocolVersion,
+      dom.element("connection-status").dataset.pinopProtocolVersion,
     ).toBeUndefined();
 
     runtime.dispose();
@@ -165,7 +165,7 @@ describe("startPanelRuntime", () => {
     const port = requiredPort(ports, 0);
     expect(port.sent).toEqual([]);
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     expect(port.sent).toHaveLength(1);
@@ -180,7 +180,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -212,13 +212,13 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     const rootRequest = port.sent.find((message) => (
       isRecord(message) && message.type === "dom.getRoot"
     )) as { readonly requestId: string };
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
+    port.emitMessage({ type: "pinop.windowState", state: "notLinked" });
     port.emitMessage({
       type: "dom.root",
       requestId: rootRequest.requestId,
@@ -236,16 +236,16 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     expect(port.sent.filter(isRootRequest)).toHaveLength(1);
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const requestsBeforeUnlink = port.sent.filter(isRootRequest).length;
-    port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
+    port.emitMessage({ type: "pinop.windowState", state: "notLinked" });
     await flushAsync();
 
     expect(requestsBeforeUnlink).toBe(2);
@@ -257,7 +257,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage(selectionChangedWithRevision(
       "old-selected",
@@ -266,7 +266,7 @@ describe("startPanelRuntime", () => {
     ));
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
 
@@ -324,7 +324,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage(selectionChangedWithRevision(
       "old-selected",
@@ -333,7 +333,7 @@ describe("startPanelRuntime", () => {
       6,
     ));
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const staleRoot = lastRequest(port, "dom.getRoot");
@@ -375,7 +375,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     const initialRoot = lastRequest(port, "dom.getRoot");
     port.emitMessage({
@@ -387,12 +387,12 @@ describe("startPanelRuntime", () => {
     await flushAsync();
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const firstRoot = lastRequest(port, "dom.getRoot");
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const secondRoot = lastRequest(port, "dom.getRoot");
@@ -428,7 +428,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage(selectionChangedWithRevision(
       "old-selected",
@@ -436,7 +436,7 @@ describe("startPanelRuntime", () => {
       1,
     ));
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     const recoveryRoot = lastRequest(port, "dom.getRoot");
@@ -461,7 +461,7 @@ describe("startPanelRuntime", () => {
     const port = requiredPort(ports, 0);
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     await flushAsync();
@@ -474,7 +474,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     port.emitMessage({
       type: "dom.selectionChanged",
       documentEpoch: 1,
@@ -489,7 +489,7 @@ describe("startPanelRuntime", () => {
 
     expect(dom.element("dom-tree-spacer").children).toEqual([]);
     expect(messages).toContainEqual({
-      type: "browser2ide.unlinkWindow",
+      type: "pinop.unlinkWindow",
       channel: "test-channel",
     });
     runtime.dispose();
@@ -499,7 +499,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     const inspect = dom.element("inspect-mode");
@@ -507,10 +507,10 @@ describe("startPanelRuntime", () => {
     await flushAsync();
     const request = port.sent.find((message) =>
       isRecord(message) &&
-      message.type === "browser2ide.inspect.setEnabled"
+      message.type === "pinop.inspect.setEnabled"
     ) as { requestId: string };
     port.emitMessage({
-      type: "browser2ide.inspect.result",
+      type: "pinop.inspect.result",
       requestId: request.requestId,
       ok: true,
     });
@@ -518,7 +518,7 @@ describe("startPanelRuntime", () => {
     expect(pressed(inspect)).toBe(true);
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     await flushAsync();
@@ -532,7 +532,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     requiredPort(ports, 0).emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -549,7 +549,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -617,7 +617,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -671,13 +671,13 @@ describe("startPanelRuntime", () => {
 
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([
       {
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-navigation",
         resolutionGeneration: 5,
         direction: "next",
       },
       {
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-navigation",
         resolutionGeneration: 5,
         direction: "previous",
@@ -690,19 +690,19 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-old", "inspect-old");
     const staleRowNext = rowSourceButton(dom, "source-next");
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "offline" });
-    port.emitMessage({ type: "browser2ide.windowState", state: "offline" });
+    port.emitMessage({ type: "pinop.windowState", state: "offline" });
+    port.emitMessage({ type: "pinop.windowState", state: "offline" });
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "reconnecting",
     });
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "reconnecting",
     });
 
@@ -726,7 +726,7 @@ describe("startPanelRuntime", () => {
     await flushAsync();
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage(sourceNavigationState({
       messageId: "state-old-late",
@@ -784,13 +784,13 @@ describe("startPanelRuntime", () => {
 
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([
       {
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-new",
         resolutionGeneration: 8,
         direction: "next",
       },
       {
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-new",
         resolutionGeneration: 8,
         direction: "previous",
@@ -810,13 +810,13 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-old", "inspect-old");
     const staleRowNext = rowSourceButton(dom, "source-next");
 
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state,
       ...(state === "error" ? { displayLinkCode: "48735 07" } : {}),
     });
@@ -835,7 +835,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -884,20 +884,20 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     showReadySourceNavigation(port, "selected-a", "inspect-a");
     expect(dom.element("source-navigation-footer").hidden).toBe(false);
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
+    port.emitMessage({ type: "pinop.windowState", state: "notLinked" });
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-b", "inspect-b");
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
@@ -924,7 +924,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -964,7 +964,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
 
     showReadySourceNavigation(port, "selected-a", "inspect-a");
@@ -990,7 +990,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-a", "inspect-a");
 
@@ -1017,7 +1017,7 @@ describe("startPanelRuntime", () => {
     expect(dom.element("source-navigation-footer").hidden).toBe(false);
     expect(dom.element("source-navigation-counter").value).toBe("2 / 2");
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
-      type: "browser2ide.source.navigate",
+      type: "pinop.source.navigate",
       inspectMessageId: "inspect-b",
       resolutionGeneration: 5,
       direction: "next",
@@ -1029,7 +1029,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-a", "inspect-a");
 
@@ -1071,7 +1071,7 @@ describe("startPanelRuntime", () => {
     )).toBeUndefined();
     expect(dom.element("source-navigation-counter").value).toBe("1 / 2");
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
-      type: "browser2ide.source.navigate",
+      type: "pinop.source.navigate",
       inspectMessageId: "inspect-b",
       resolutionGeneration: 5,
       direction: "previous",
@@ -1083,7 +1083,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-a", "inspect-a");
     port.emitMessage(inspectStartedWithRevision("inspect-b", 2));
@@ -1124,12 +1124,12 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     showReadySourceNavigation(port, "selected-old", "inspect-old", 20);
 
     port.emitMessage({
-      type: "browser2ide.inspect.invalidated",
+      type: "pinop.inspect.invalidated",
       reason: "documentDisconnected",
     });
     port.emitMessage(inspectStartedWithRevision("inspect-new-session", 1));
@@ -1157,7 +1157,7 @@ describe("startPanelRuntime", () => {
       "Selected: main#replacement",
     );
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([{
-      type: "browser2ide.source.navigate",
+      type: "pinop.source.navigate",
       inspectMessageId: "inspect-new-session",
       resolutionGeneration: 2,
       direction: "next",
@@ -1169,7 +1169,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1207,7 +1207,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1243,7 +1243,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1282,7 +1282,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1317,13 +1317,13 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage(inspectStarted("inspect-old"));
     port.emitMessage(inspectStarted("inspect-current"));
 
     port.emitMessage({
-      type: "browser2ide.ideState",
+      type: "pinop.ideState",
       status: "ide-disconnected",
       inspectMessageId: "inspect-old",
     });
@@ -1332,7 +1332,7 @@ describe("startPanelRuntime", () => {
     );
 
     port.emitMessage({
-      type: "browser2ide.ideState",
+      type: "pinop.ideState",
       status: "ide-disconnected",
       inspectMessageId: "inspect-current",
     });
@@ -1353,7 +1353,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1365,7 +1365,7 @@ describe("startPanelRuntime", () => {
     port.emitMessage(inspectStarted());
     expect(diagnostics.snapshot().resolution).toEqual({ status: "resolving" });
 
-    port.emitMessage({ type: "browser2ide.windowState", state: "notLinked" });
+    port.emitMessage({ type: "pinop.windowState", state: "notLinked" });
     await flushAsync();
 
     expect(diagnostics.snapshot()).toMatchObject({
@@ -1383,7 +1383,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -1397,7 +1397,7 @@ describe("startPanelRuntime", () => {
     });
 
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "error",
       displayLinkCode: "48735 07",
     });
@@ -1417,7 +1417,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -1446,7 +1446,7 @@ describe("startPanelRuntime", () => {
   it("restores only linked identity after Disconnect fails", async () => {
     runtimeSend = async (message) => {
       messages.push(message);
-      if (isRecord(message) && message.type === "browser2ide.unlinkWindow") {
+      if (isRecord(message) && message.type === "pinop.unlinkWindow") {
         return { ok: false, error: "busy" };
       }
       return isCommand(message) ? { ok: true } : undefined;
@@ -1455,7 +1455,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const port = requiredPort(ports, 0);
     port.emitMessage({
-      type: "browser2ide.windowState",
+      type: "pinop.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -1522,7 +1522,7 @@ describe("startPanelRuntime", () => {
     const runtime = createRuntime();
     await runtime.ready;
     const port = requiredPort(ports, 0);
-    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    port.emitMessage({ type: "pinop.windowState", state: "linked" });
     await flushAsync();
     port.emitMessage({
       type: "dom.selectionChanged",
@@ -1838,8 +1838,8 @@ function requiredPort(ports: TestRuntimePort[], index: number): TestRuntimePort 
 function isCommand(message: unknown): boolean {
   return (
     isRecord(message) &&
-    (message.type === "browser2ide.linkWindow" ||
-      message.type === "browser2ide.unlinkWindow")
+    (message.type === "pinop.linkWindow" ||
+      message.type === "pinop.unlinkWindow")
   );
 }
 
@@ -1865,7 +1865,7 @@ function lastRequest(
 }
 
 function isSourceNavigationCommand(value: unknown): boolean {
-  return isRecord(value) && value.type === "browser2ide.source.navigate";
+  return isRecord(value) && value.type === "pinop.source.navigate";
 }
 
 function domNode(nodeRef: string, label: string, expandable = false) {
@@ -1968,7 +1968,7 @@ function inspectStarted(
   selectionRevision = 1,
 ) {
   return {
-    type: "browser2ide.inspect.started" as const,
+    type: "pinop.inspect.started" as const,
     inspectMessageId,
     selectionRevision,
   };

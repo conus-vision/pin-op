@@ -20,23 +20,28 @@ import {
 
 const VERSION = "0.3.0";
 const EXPECTED_ARTIFACTS = new Map([
-  [`browser2ide-vscode-${VERSION}.vsix`, "vscode"],
-  [`browser2ide-chrome-${VERSION}.zip`, "chrome"],
-  [`browser2ide-firefox-${VERSION}.zip`, "firefox"],
-  [`browser2ide-firefox-source-${VERSION}.zip`, "firefox-source"],
+  [`pinop-vscode-${VERSION}.vsix`, "vscode"],
+  [`pinop-chrome-${VERSION}.zip`, "chrome"],
+  [`pinop-firefox-${VERSION}.zip`, "firefox"],
+  [`pinop-firefox-source-${VERSION}.zip`, "firefox-source"],
 ]);
 export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "LICENSE",
   "THIRD_PARTY_NOTICES",
   "manifest.json",
   "dist/background.js",
-  "dist/browser2ide.svg",
   "dist/contentScript.js",
   "dist/devtools.html",
   "dist/devtools.js",
+  "dist/icons/pinop-16.png",
+  "dist/icons/pinop-32.png",
+  "dist/icons/pinop-48.png",
+  "dist/icons/pinop-96.png",
+  "dist/icons/pinop-128.png",
   "dist/panel.css",
   "dist/panel.html",
   "dist/panel.js",
+  "dist/pinop.svg",
   "dist/runtime-metadata.json",
 ]);
 export const VSIX_ARCHIVE_FILES = Object.freeze([
@@ -49,7 +54,8 @@ export const VSIX_ARCHIVE_FILES = Object.freeze([
   "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
-  "extension/resources/browser2ide.svg",
+  "extension/resources/pinop.png",
+  "extension/resources/pinop.svg",
 ]);
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -79,11 +85,19 @@ const REQUIRED_VSIX_CONTENT_TYPES = Object.freeze([
   Object.freeze([".cjs", "application/octet-stream"]),
   Object.freeze([".json", "application/json"]),
   Object.freeze([".md", "text/markdown"]),
+  Object.freeze([".png", "image/png"]),
   Object.freeze([".svg", "image/svg+xml"]),
   Object.freeze([".txt", "text/plain"]),
   Object.freeze([".vsixmanifest", "text/xml"]),
   Object.freeze([".wasm", "application/wasm"]),
 ]);
+const BROWSER_ICONS = Object.freeze({
+  16: "dist/icons/pinop-16.png",
+  32: "dist/icons/pinop-32.png",
+  48: "dist/icons/pinop-48.png",
+  96: "dist/icons/pinop-96.png",
+  128: "dist/icons/pinop-128.png",
+});
 
 export async function verifyArtifacts(arguments_) {
   const artifacts = await collectArtifacts(arguments_);
@@ -448,6 +462,9 @@ export function validateBrowserArchive(archive, filename, browser) {
     filename,
     browser,
   );
+  for (const [size, path] of Object.entries(BROWSER_ICONS)) {
+    assertPngDimensions(archive.files.get(path), `${filename} ${path}`, Number(size));
+  }
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
@@ -458,8 +475,11 @@ function verifyBrowserManifest(manifest, filename, browser) {
   if (manifest.manifest_version !== 3) {
     throw new Error(`${filename} has unexpected manifest_version`);
   }
-  if (manifest.name !== "Browser2IDE") {
+  if (manifest.name !== "PinOp") {
     throw new Error(`${filename} has unexpected manifest name`);
+  }
+  if (!hasExactStringEntries(manifest.icons, BROWSER_ICONS)) {
+    throw new Error(`${filename} has unexpected manifest icons`);
   }
   assertVersion(manifest.version, `${filename} manifest`, VERSION);
   if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.includes("<all_urls>")) {
@@ -508,16 +528,24 @@ export function validateVsixArchive(archive, filename) {
   assertProjectLicense(archive, filename, "extension/LICENSE.txt");
 
   const manifest = parseJsonFile(archive, filename, "extension/package.json");
-  if (manifest.publisher !== "browser2ide") {
+  if (manifest.publisher !== "conus-vision") {
     throw new Error(`${filename} has unexpected extension publisher`);
   }
-  if (manifest.name !== "browser2ide-vscode") {
+  if (manifest.name !== "pinop") {
     throw new Error(`${filename} has unexpected extension name`);
   }
   assertVersion(manifest.version, `${filename} extension`, VERSION);
   if (manifest.main !== "./dist/extension.cjs") {
     throw new Error(`${filename} has unexpected extension main: ${manifest.main}`);
   }
+  if (manifest.icon !== "resources/pinop.png") {
+    throw new Error(`${filename} has unexpected extension icon: ${manifest.icon}`);
+  }
+  assertPngDimensions(
+    archive.files.get("extension/resources/pinop.png"),
+    `${filename} extension/resources/pinop.png`,
+    128,
+  );
   validateVsixXmlMetadata(archive, filename, manifest);
   parseRuntimeMetadata(
     archive.files.get("extension/dist/runtime-metadata.json"),
@@ -854,6 +882,31 @@ function parseJsonFile(archive, filename, path) {
     return JSON.parse(archive.files.get(path).toString("utf8"));
   } catch (error) {
     throw new Error(`${filename} contains invalid JSON in ${path}: ${error.message}`);
+  }
+}
+
+function hasExactStringEntries(actual, expected) {
+  if (actual === null || typeof actual !== "object" || Array.isArray(actual)) {
+    return false;
+  }
+  const expectedEntries = Object.entries(expected);
+  const actualKeys = Object.keys(actual);
+  return actualKeys.length === expectedEntries.length && expectedEntries.every(
+    ([key, value]) => actual[key] === value,
+  );
+}
+
+export function assertPngDimensions(buffer, label, expectedSize) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24 || !buffer.subarray(0, 8).equals(signature)) {
+    throw new Error(`${label} must be a valid PNG`);
+  }
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  if (width !== expectedSize || height !== expectedSize) {
+    throw new Error(
+      `${label} must be ${expectedSize}x${expectedSize}; received ${width}x${height}`,
+    );
   }
 }
 

@@ -9,7 +9,7 @@ import {
   type SourcePlugin,
   type SourceRange,
   type SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 import type {
   SourcePluginDispatch,

@@ -62,13 +62,43 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `browser2ide-${browser}-0.3.0.zip`,
+          `pinop-${browser}-0.3.0.zip`,
           browser,
         ),
         new RegExp(`${label}.*${escapeRegex(marker)}`, "i"),
       );
     });
   }
+
+  test(`common ${browser} artifact verifier requires exact PinOp icons`, () => {
+    const archive = browserArchive(browser);
+    const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
+    manifest.icons[128] = "dist/icons/unexpected.png";
+    archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pinop-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /unexpected manifest icons/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier validates PinOp PNG dimensions`, () => {
+    const archive = browserArchive(browser);
+    archive.files.set("dist/icons/pinop-48.png", Buffer.from("not a png"));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pinop-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /pinop-48\.png.*valid PNG/i,
+    );
+  });
 }
 
 function browserArchive(browser) {
@@ -87,6 +117,17 @@ function browserArchive(browser) {
     "dist/runtime-metadata.json",
     Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
   );
+  for (const size of [16, 32, 48, 96, 128]) {
+    files.set(
+      `dist/icons/pinop-${size}.png`,
+      readFileSync(
+        resolve(
+          repositoryRoot,
+          `packages/browser-extension-core/assets/icons/pinop-${size}.png`,
+        ),
+      ),
+    );
+  }
   return { files, paths: [...BROWSER_ARCHIVE_FILES] };
 }
 

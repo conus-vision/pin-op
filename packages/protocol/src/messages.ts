@@ -517,7 +517,7 @@ export const PongMessageSchema = baseMessageSchema
   })
   .strict();
 
-export const Browser2IdeMessageSchema = z.union([
+export const PinOpMessageSchema = z.union([
   HelloMessageSchema,
   LinkRequestMessageSchema,
   LinkAcceptedMessageSchema,
@@ -571,4 +571,4 @@ export type ProtocolErrorCode = z.infer<typeof ProtocolErrorCodeSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type PingMessage = z.infer<typeof PingMessageSchema>;
 export type PongMessage = z.infer<typeof PongMessageSchema>;
-export type Browser2IdeMessage = z.infer<typeof Browser2IdeMessageSchema>;
+export type PinOpMessage = z.infer<typeof PinOpMessageSchema>;

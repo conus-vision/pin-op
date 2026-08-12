@@ -1,13 +1,13 @@
 import {
-  Browser2IdeMessageSchema,
-  type Browser2IdeMessage,
+  PinOpMessageSchema,
+  type PinOpMessage,
 } from "./messages.js";
 
-export function parseMessage(input: unknown): Browser2IdeMessage {
-  return Browser2IdeMessageSchema.parse(input);
+export function parseMessage(input: unknown): PinOpMessage {
+  return PinOpMessageSchema.parse(input);
 }
 
-export { Browser2IdeMessageSchema };
+export { PinOpMessageSchema };
 export * from "./messages.js";
 export * from "./references.js";
 export * from "./capabilities.js";

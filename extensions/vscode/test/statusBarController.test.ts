@@ -24,7 +24,7 @@ describe("formatVisibleLinkCode", () => {
     [48_735, "７０"],
   ])("rejects invalid port or PIN: %p, %p", (port, pin) => {
     expect(() => formatVisibleLinkCode(port, pin)).toThrow(
-      "Cannot display an invalid Browser2IDE link code",
+      "Cannot display an invalid PinOp link code",
     );
   });
 });
@@ -46,13 +46,13 @@ describe("StatusBarController", () => {
     });
 
     expect(host.primary).toMatchObject({
-      text: "$(radio-tower) Browser2IDE: 48735 07",
-      command: "browser2ide.copyLinkCode",
+      text: "$(radio-tower) PinOp: 48735 07",
+      command: "pinop.copyLinkCode",
     });
     expect(host.toggle).toMatchObject({
       text: "$(debug-stop)",
-      tooltip: "Stop Browser2IDE",
-      command: "browser2ide.stop",
+      tooltip: "Stop PinOp",
+      command: "pinop.stop",
     });
     expect(host.primary.tooltip).toContain("state: running");
     expect(host.primary.tooltip).toContain("URL: ws://127.0.0.1:48735");
@@ -62,10 +62,10 @@ describe("StatusBarController", () => {
   });
 
   it.each([
-    ["stopped", "$(radio-tower) Browser2IDE: Offline", "$(play)", "browser2ide.start", undefined],
-    ["error", "$(radio-tower) Browser2IDE: Offline", "$(play)", "browser2ide.start", undefined],
-    ["starting", "$(radio-tower) Browser2IDE: Starting", "$(sync~spin)", undefined, undefined],
-    ["stopping", "$(radio-tower) Browser2IDE: Stopping", "$(sync~spin)", undefined, undefined],
+    ["stopped", "$(radio-tower) PinOp: Offline", "$(play)", "pinop.start", undefined],
+    ["error", "$(radio-tower) PinOp: Offline", "$(play)", "pinop.start", undefined],
+    ["starting", "$(radio-tower) PinOp: Starting", "$(sync~spin)", undefined, undefined],
+    ["stopping", "$(radio-tower) PinOp: Stopping", "$(sync~spin)", undefined, undefined],
   ] as const)("renders %s controls", (state, primaryText, toggleText, command) => {
     const host = statusHost();
     const controller = new StatusBarController(host);
@@ -92,8 +92,8 @@ describe("StatusBarController", () => {
     controller.render(emptySnapshot("stopped"));
 
     expect(host.primary.command).toBeUndefined();
-    expect(host.toggle.command).toBe("browser2ide.start");
-    expect(host.primary.tooltip).toContain("Browser2IDE state: stopped");
+    expect(host.toggle.command).toBe("pinop.start");
+    expect(host.primary.tooltip).toContain("PinOp state: stopped");
     expect(host.primary.tooltip).not.toContain("ws://127.0.0.1:48735");
   });
 

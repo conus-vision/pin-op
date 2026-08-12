@@ -14,6 +14,9 @@ const installedSmokePath = resolve(
 const installerUrl = new URL("../install-vsix-for-smoke.mjs", import.meta.url);
 const runtimeOptionsUrl = new URL("../vscode-smoke-runtime.mjs", import.meta.url);
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const vscodeIcon = await readFile(
+  resolve(repositoryRoot, "extensions/vscode/resources/pinop.png"),
+);
 const extensionBundleFixture = [
   'const vscode = require("vscode");',
   'const capabilities = ["resolution", "source-navigation"];',
@@ -64,7 +67,7 @@ test("VSIX smoke defaults to stable in the repository runtime cache", async () =
 
 test("VSIX smoke accepts an explicit absolute existing executable override", async () => {
   const resolveRuntimeOptions = await loadRuntimeOptionsResolver();
-  await withTemporaryDirectory("browser2ide-vscode-runtime-", async (directory) => {
+  await withTemporaryDirectory("pinop-vscode-runtime-", async (directory) => {
     const executablePath = join(directory, "Code.exe");
     await writeFile(executablePath, "fixture");
 
@@ -121,8 +124,8 @@ test("VSIX smoke narrowly validates the isolated runtime version", async () => {
 
 test("validated VSIX payload installs under its canonical artifact identity", async () => {
   const installVerifiedVsix = await loadInstaller();
-  await withTemporaryDirectory("browser2ide-vsix-install-", async (directory) => {
-    const artifactPath = join(directory, "browser2ide.vsix");
+  await withTemporaryDirectory("pinop-vsix-install-", async (directory) => {
+    const artifactPath = join(directory, "pinop.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
     writeVsix(artifactPath);
@@ -130,16 +133,16 @@ test("validated VSIX payload installs under its canonical artifact identity", as
     const result = await installVerifiedVsix(artifactPath, extensionsDirectory);
     const expectedDirectory = join(
       extensionsDirectory,
-      "browser2ide.browser2ide-vscode-0.3.0",
+      "conus-vision.pinop-0.3.0",
     );
 
     assert.deepEqual(result, {
       extensionDirectory: expectedDirectory,
-      extensionId: "browser2ide.browser2ide-vscode",
+      extensionId: "conus-vision.pinop",
       version: "0.3.0",
     });
     assert.deepEqual(await readdir(extensionsDirectory), [
-      "browser2ide.browser2ide-vscode-0.3.0",
+      "conus-vision.pinop-0.3.0",
     ]);
     assert.deepEqual(
       JSON.parse(await readFile(join(expectedDirectory, "package.json"), "utf8")),
@@ -158,7 +161,7 @@ test("validated VSIX payload installs under its canonical artifact identity", as
 
 test("VSIX installation rejects a bundle without current navigation capabilities", async () => {
   const installVerifiedVsix = await loadInstaller();
-  await withTemporaryDirectory("browser2ide-vsix-capabilities-", async (directory) => {
+  await withTemporaryDirectory("pinop-vsix-capabilities-", async (directory) => {
     const artifactPath = join(directory, "capabilities.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
@@ -186,7 +189,7 @@ test("VSIX installation rejects unsafe archive entries before extraction", async
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("browser2ide-vsix-unsafe-", async (directory) => {
+      await withTemporaryDirectory("pinop-vsix-unsafe-", async (directory) => {
         const artifactPath = join(directory, "unsafe.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -209,8 +212,9 @@ test("VSIX installation validates identity before deriving its directory", async
     ["publisher", "../outside", /unexpected extension publisher/],
     ["name", "../../outside", /unexpected extension name/],
     ["version", "../0.3.0", /extension version must be 0\.3\.0/],
+    ["icon", "resources/unexpected.png", /unexpected extension icon/],
   ]) {
-    await withTemporaryDirectory("browser2ide-vsix-identity-", async (directory) => {
+    await withTemporaryDirectory("pinop-vsix-identity-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
       const extensionsDirectory = join(directory, "extensions");
       await mkdir(extensionsDirectory);
@@ -231,12 +235,12 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
   for (const [name, xml, expectedError] of [
     [
       "publisher",
-      manifestXml.replace('Publisher="browser2ide"', 'Publisher="other"'),
+      manifestXml.replace('Publisher="conus-vision"', 'Publisher="other"'),
       /extension\.vsixmanifest publisher other does not match extension\/package\.json/,
     ],
     [
       "name",
-      manifestXml.replace('Id="browser2ide-vscode"', 'Id="other"'),
+      manifestXml.replace('Id="pinop"', 'Id="other"'),
       /extension\.vsixmanifest name other does not match extension\/package\.json/,
     ],
     [
@@ -246,7 +250,7 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("browser2ide-vsix-xml-identity-", async (directory) => {
+      await withTemporaryDirectory("pinop-vsix-xml-identity-", async (directory) => {
         const artifactPath = join(directory, "identity.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -260,6 +264,22 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
       });
     });
   }
+});
+
+test("VSIX installation rejects an invalid Marketplace icon", async () => {
+  const installVerifiedVsix = await loadInstaller();
+  await withTemporaryDirectory("pinop-vsix-icon-", async (directory) => {
+    const artifactPath = join(directory, "icon.vsix");
+    const extensionsDirectory = join(directory, "extensions");
+    await mkdir(extensionsDirectory);
+    writeVsix(artifactPath, {}, { icon: Buffer.from("not a png") });
+
+    await assert.rejects(
+      installVerifiedVsix(artifactPath, extensionsDirectory),
+      /pinop\.png.*valid PNG/i,
+    );
+    assert.deepEqual(await readdir(extensionsDirectory), []);
+  });
 });
 
 test("VSIX installation rejects malformed or entity-bearing metadata XML", async (t) => {
@@ -280,14 +300,14 @@ test("VSIX installation rejects malformed or entity-bearing metadata XML", async
       {
         manifestXml: expectedVsixManifestXml().replace(
           "<PackageManifest",
-          '<!DOCTYPE PackageManifest SYSTEM "file:///browser2ide-test">\n<PackageManifest',
+          '<!DOCTYPE PackageManifest SYSTEM "file:///pinop-test">\n<PackageManifest',
         ),
       },
       /extension\.vsixmanifest must not contain a DOCTYPE declaration/,
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("browser2ide-vsix-invalid-xml-", async (directory) => {
+      await withTemporaryDirectory("pinop-vsix-invalid-xml-", async (directory) => {
         const artifactPath = join(directory, "invalid-xml.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -325,7 +345,7 @@ test("VSIX installation requires payload content type declarations", async (t) =
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("browser2ide-vsix-content-types-", async (directory) => {
+      await withTemporaryDirectory("pinop-vsix-content-types-", async (directory) => {
         const artifactPath = join(directory, "content-types.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -369,10 +389,11 @@ async function loadRuntimeOptionsResolver() {
 
 function expectedManifest(overrides = {}) {
   return {
-    name: "browser2ide-vscode",
-    publisher: "browser2ide",
+    name: "pinop",
+    publisher: "conus-vision",
     version: "0.3.0",
     main: "./dist/extension.cjs",
+    icon: "resources/pinop.png",
     ...overrides,
   };
 }
@@ -401,7 +422,8 @@ function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
     ["extension/readme.md", "readme"],
-    ["extension/resources/browser2ide.svg", "<svg></svg>"],
+    ["extension/resources/pinop.svg", "<svg></svg>"],
+    ["extension/resources/pinop.png", archiveOverrides.icon ?? vscodeIcon],
   ]) {
     zip.addFile(name, Buffer.isBuffer(content) ? content : Buffer.from(content));
   }
@@ -412,7 +434,7 @@ function expectedVsixManifestXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Language="en-US" Id="browser2ide-vscode" Version="0.3.0" Publisher="browser2ide" />
+    <Identity Language="en-US" Id="pinop" Version="0.3.0" Publisher="conus-vision" />
   </Metadata>
   <Installation><InstallationTarget Id="Microsoft.VisualStudio.Code"/></Installation>
   <Dependencies/>
@@ -424,7 +446,7 @@ function expectedVsixManifestXml() {
 
 function expectedContentTypesXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".cjs" ContentType="application/octet-stream"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".svg" ContentType="image/svg+xml"/><Default Extension=".txt" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/><Default Extension=".wasm" ContentType="application/wasm"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".cjs" ContentType="application/octet-stream"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".png" ContentType="image/png"/><Default Extension=".svg" ContentType="image/svg+xml"/><Default Extension=".txt" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/><Default Extension=".wasm" ContentType="application/wasm"/></Types>`;
 }
 
 async function writeTraversalVsix(path) {

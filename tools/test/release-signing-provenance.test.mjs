@@ -18,7 +18,7 @@ const xpiSha256 = "d8e8fca2dc0f896fd7cb4cb0031ba249" +
 
 function provenanceInput(overrides = {}) {
   return {
-    repository: "conus-vision/Browser2IDE",
+    repository: "conus-vision/PinOp",
     workflowPath: ".github/workflows/firefox-sign.yml",
     eventName: "workflow_dispatch",
     releaseTag: "v0.3.0",
@@ -39,7 +39,7 @@ function completedRun(overrides = {}) {
     path: ".github/workflows/firefox-sign.yml@refs/heads/master",
     status: "completed",
     conclusion: "success",
-    repository: { full_name: "conus-vision/Browser2IDE" },
+    repository: { full_name: "conus-vision/PinOp" },
     ...overrides,
   });
 }
@@ -47,27 +47,27 @@ function completedRun(overrides = {}) {
 test("signed XPI artifact names are tag and run specific", () => {
   assert.equal(
     createSignedXpiArtifactName("v0.3.0", "12345"),
-    "browser2ide-signed-xpi-v0.3.0-run-12345",
+    "pinop-signed-xpi-v0.3.0-run-12345",
   );
   assert.throws(() => createSignedXpiArtifactName("0.3.0", "12345"), /release tag/i);
   assert.throws(() => createSignedXpiArtifactName("v0.3.0", "0"), /run id/i);
 });
 
 test("signed XPI bundle records and validates the exact AMO-returned bytes", async () => {
-  await withTemporaryDirectory("browser2ide-signed-provenance-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
+  await withTemporaryDirectory("pinop-signed-provenance-", async (directory) => {
+    const sourcePath = resolve(directory, "pinop-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
 
     const created = await createSignedXpiBundle(sourcePath, bundlePath, provenanceInput());
     assert.match(created.xpiSha256, /^[0-9a-f]{64}$/);
-    assert.equal(created.xpiFilename, "browser2ide-firefox-0.3.0.xpi");
+    assert.equal(created.xpiFilename, "pinop-firefox-0.3.0.xpi");
 
     const validated = await validateSignedXpiBundle(
       bundlePath,
       completedRun(),
       {
-        repository: "conus-vision/Browser2IDE",
+        repository: "conus-vision/PinOp",
         workflowPath: ".github/workflows/firefox-sign.yml",
         eventName: "workflow_dispatch",
         releaseTag: "v0.3.0",
@@ -87,8 +87,8 @@ test("signed XPI bundle records and validates the exact AMO-returned bytes", asy
 });
 
 test("publication rejects an unverified digest, a tampered XPI, and extra bundle files", async () => {
-  await withTemporaryDirectory("browser2ide-signed-tamper-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
+  await withTemporaryDirectory("pinop-signed-tamper-", async (directory) => {
+    const sourcePath = resolve(directory, "pinop-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
     const provenance = await createSignedXpiBundle(
@@ -97,7 +97,7 @@ test("publication rejects an unverified digest, a tampered XPI, and extra bundle
       provenanceInput(),
     );
     const expected = {
-      repository: "conus-vision/Browser2IDE",
+      repository: "conus-vision/PinOp",
       workflowPath: ".github/workflows/firefox-sign.yml",
       eventName: "workflow_dispatch",
       releaseTag: "v0.3.0",
@@ -130,8 +130,8 @@ test("publication rejects an unverified digest, a tampered XPI, and extra bundle
 });
 
 test("publication accepts only a completed successful master workflow run", async () => {
-  await withTemporaryDirectory("browser2ide-signed-run-", async (directory) => {
-    const sourcePath = resolve(directory, "browser2ide-firefox-0.3.0.xpi");
+  await withTemporaryDirectory("pinop-signed-run-", async (directory) => {
+    const sourcePath = resolve(directory, "pinop-firefox-0.3.0.xpi");
     const bundlePath = resolve(directory, "bundle");
     await writeFile(sourcePath, "signed xpi bytes");
     const provenance = await createSignedXpiBundle(
@@ -140,7 +140,7 @@ test("publication accepts only a completed successful master workflow run", asyn
       provenanceInput(),
     );
     const expected = {
-      repository: "conus-vision/Browser2IDE",
+      repository: "conus-vision/PinOp",
       workflowPath: ".github/workflows/firefox-sign.yml",
       eventName: "workflow_dispatch",
       releaseTag: "v0.3.0",

@@ -13,8 +13,8 @@ import {
   buildChromeArguments,
   buildChromeSpawnOptions,
   chromeExecutableCandidates,
-  findBrowser2IDEServiceWorker,
-  isBrowser2IDEManifest,
+  findPinOpServiceWorker,
+  isPinOpManifest,
   openCdp,
   verifyFixturePageInChrome,
   shutdownOwnedChildTree,
@@ -60,7 +60,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
     "manifest.json",
     Buffer.from(
       JSON.stringify({
-        name: "Browser2IDE",
+        name: "PinOp",
         version: "0.3.0",
         manifest_version: 3,
         background: { service_worker: "dist/background.js" },
@@ -83,7 +83,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
 test("accepts only the exact validated Chrome runtime archive", () => {
   assert.equal(
     validatePackagedChromeArchive(createArchive()).name,
-    "Browser2IDE",
+    "PinOp",
   );
   assert.throws(
     () =>
@@ -277,7 +277,7 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
 });
 
 test("launch arguments always isolate Chrome in the supplied temporary profile", () => {
-  const profile = resolve("tmp/browser2ide-smoke/profile");
+  const profile = resolve("tmp/pinop-smoke/profile");
   const args = buildChromeArguments(profile);
 
   assert.ok(args.includes(`--user-data-dir=${profile}`));
@@ -464,7 +464,7 @@ test("owned child shutdown detaches surviving child handles before failing", asy
 test("surviving owned child cannot keep the smoke parent command alive", {
   timeout: 10_000,
 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), "browser2ide-survivor-test-"));
+  const root = await mkdtemp(join(tmpdir(), "pinop-survivor-test-"));
   const pidFile = join(root, "owned-child.pid");
   const releaseFile = join(root, "release-owned-child");
   const moduleUrl = pathToFileURL(
@@ -656,9 +656,9 @@ test("CDP runtime errors dispose listeners and reject pending requests", async (
   assert.equal(socket.closeCalls, 1);
 });
 
-test("finds the packaged Browser2IDE MV3 service worker", () => {
+test("finds the packaged PinOp MV3 service worker", () => {
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
-  const target = findBrowser2IDEServiceWorker([
+  const target = findPinOpServiceWorker([
     { type: "page", url: "about:blank" },
     {
       targetId: "worker-1",
@@ -673,7 +673,7 @@ test("finds the packaged Browser2IDE MV3 service worker", () => {
 test("ignores unrelated workers and non-extension targets", () => {
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
   assert.equal(
-    findBrowser2IDEServiceWorker([
+    findPinOpServiceWorker([
       {
         targetId: "worker-1",
         type: "service_worker",
@@ -689,11 +689,11 @@ test("ignores unrelated workers and non-extension targets", () => {
   );
 });
 
-test("rejects ambiguous Browser2IDE service workers", () => {
+test("rejects ambiguous PinOp service workers", () => {
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.throws(
     () =>
-      findBrowser2IDEServiceWorker([
+      findPinOpServiceWorker([
         {
           targetId: "worker-1",
           type: "service_worker",
@@ -705,14 +705,14 @@ test("rejects ambiguous Browser2IDE service workers", () => {
           url: `chrome-extension://${extensionId}/dist/background.js`,
         },
       ], extensionId),
-    /multiple Browser2IDE service workers/,
+    /multiple PinOp service workers/,
   );
 });
 
-test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
+test("recognizes PinOp by the manifest exposed inside its worker", () => {
   assert.equal(
-    isBrowser2IDEManifest({
-      name: "Browser2IDE",
+    isPinOpManifest({
+      name: "PinOp",
       version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
@@ -720,7 +720,7 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
     true,
   );
   assert.equal(
-    isBrowser2IDEManifest({
+    isPinOpManifest({
       name: "Unrelated extension",
       version: "0.3.0",
       manifest_version: 3,

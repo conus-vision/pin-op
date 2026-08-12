@@ -4,16 +4,16 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import WebSocket, { type RawData } from "ws";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   InspectMessageSchema,
   PROTOCOL_VERSION,
   type AuthenticatedMessage,
-  type Browser2IdeMessage,
+  type PinOpMessage,
   type InspectMessage,
   type LinkAcceptedMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
-const DEFAULT_SOURCE_ID = "browser2ide-simulator";
+const DEFAULT_SOURCE_ID = "pinop-simulator";
 const DEFAULT_TIMEOUT_MS = 2_000;
 
 interface BuildInspectOptions {
@@ -396,9 +396,9 @@ function connect(url: string, timeoutMs: number): Promise<WebSocket> {
 
 function sendProtocolMessage(
   socket: WebSocket,
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): Promise<void> {
-  const payload = JSON.stringify(Browser2IdeMessageSchema.parse(message));
+  const payload = JSON.stringify(PinOpMessageSchema.parse(message));
 
   return new Promise((resolve, reject) => {
     socket.send(payload, (error) => {
@@ -411,9 +411,9 @@ function sendProtocolMessage(
   });
 }
 
-function waitForMessage<T extends Browser2IdeMessage>(
+function waitForMessage<T extends PinOpMessage>(
   socket: WebSocket,
-  predicate: (message: Browser2IdeMessage) => message is T,
+  predicate: (message: PinOpMessage) => message is T,
   timeoutMs: number,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -422,9 +422,9 @@ function waitForMessage<T extends Browser2IdeMessage>(
       reject(new Error("Timed out waiting for bridge response"));
     }, timeoutMs);
     const onMessage = (data: RawData) => {
-      let message: Browser2IdeMessage;
+      let message: PinOpMessage;
       try {
-        message = Browser2IdeMessageSchema.parse(JSON.parse(data.toString()));
+        message = PinOpMessageSchema.parse(JSON.parse(data.toString()));
       } catch (error) {
         cleanup();
         reject(new Error("Bridge sent an invalid protocol message", { cause: error }));

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   sendConnectionSafely,
   terminateConnectionSafely,
@@ -33,7 +33,7 @@ export function startHeartbeat(
       }
 
       registry.markPingSent(client.id);
-      const ping = Browser2IdeMessageSchema.parse({
+      const ping = PinOpMessageSchema.parse({
         protocolVersion: PROTOCOL_VERSION,
         type: "ping",
         messageId: randomUUID(),

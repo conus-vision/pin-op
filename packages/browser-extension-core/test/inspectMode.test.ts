@@ -256,7 +256,7 @@ describe("InspectMode", () => {
     const document = new FakeInspectDocument();
     const selected: unknown[] = [];
     const textNode = { nodeType: 3 };
-    const overlayNode = element("DIV", "browser2ide-overlay");
+    const overlayNode = element("DIV", "pinop-overlay");
     const card = element("ARTICLE", "card");
     const mode = new InspectMode({
       document,

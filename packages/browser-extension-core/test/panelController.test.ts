@@ -21,7 +21,7 @@ describe("PanelController", () => {
     expect(harness.view.linkCode).toBe("");
     expect(harness.sent).toEqual([
       {
-        type: "browser2ide.linkWindow",
+        type: "pinop.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -194,7 +194,7 @@ describe("PanelController", () => {
 
     expect(harness.sent).toEqual([
       {
-        type: "browser2ide.unlinkWindow",
+        type: "pinop.unlinkWindow",
         channel: "channel-1",
       },
     ]);
@@ -207,10 +207,10 @@ describe("PanelController", () => {
 
   it.each([
     ["invalidCode", "Enter a valid seven-digit code"],
-    ["stalePanel", "Reopen Browser2IDE DevTools and try again"],
-    ["busy", "Another Browser2IDE action is still running"],
+    ["stalePanel", "Reopen PinOp DevTools and try again"],
+    ["busy", "Another PinOp action is still running"],
     ["rateLimited", "Too many attempts. Try again in one minute."],
-    ["error", "Browser2IDE could not complete the action"],
+    ["error", "PinOp could not complete the action"],
   ] as const)(
     "restores linked identity after unlink returns %s",
     async (error, errorText) => {
@@ -247,7 +247,7 @@ describe("PanelController", () => {
 
     expect(harness.view.current).toMatchObject({
       state: "error",
-      errorText: "Browser2IDE background returned an invalid response",
+      errorText: "PinOp background returned an invalid response",
       displayLinkCode: "48735 07",
       showDisconnect: true,
       inspectDisabled: true,
@@ -267,7 +267,7 @@ describe("PanelController", () => {
 
     expect(harness.view.current).toMatchObject({
       state: "error",
-      errorText: "Browser2IDE background is unavailable",
+      errorText: "PinOp background is unavailable",
       displayLinkCode: "48735 07",
       showDisconnect: true,
       inspectDisabled: true,
@@ -278,7 +278,7 @@ describe("PanelController", () => {
     const unlink = deferred<unknown>();
     const harness = createHarness({
       commandResponse: (message) =>
-        message.type === "browser2ide.unlinkWindow"
+        message.type === "pinop.unlinkWindow"
           ? unlink.promise
           : Promise.resolve({ ok: true }),
     });
@@ -289,7 +289,7 @@ describe("PanelController", () => {
     for (let index = 0; index < 4; index += 1) {
       await Promise.resolve();
     }
-    expect(harness.sent.at(-1)?.type).toBe("browser2ide.unlinkWindow");
+    expect(harness.sent.at(-1)?.type).toBe("pinop.unlinkWindow");
     expect(harness.view.current.showDisconnect).toBe(false);
 
     await harness.emitState("notLinked");
@@ -416,7 +416,7 @@ describe("PanelController", () => {
     const link = deferred<unknown>();
     const harness = createHarness({
       commandResponse: (message) =>
-        message.type === "browser2ide.linkWindow"
+        message.type === "pinop.linkWindow"
           ? link.promise
           : Promise.resolve({ ok: true }),
     });
@@ -427,7 +427,7 @@ describe("PanelController", () => {
     for (let index = 0; index < 4; index += 1) {
       await Promise.resolve();
     }
-    expect(harness.sent[0]?.type).toBe("browser2ide.linkWindow");
+    expect(harness.sent[0]?.type).toBe("pinop.linkWindow");
     await harness.view.actions.onDisconnect();
     link.resolve({ ok: false, error: "rateLimited" });
     await pendingLink;
@@ -534,7 +534,7 @@ function createHarness(options: HarnessOptions = {}) {
       displayLinkCode = linkedState(state) ? "48735 07" : undefined,
     ): Promise<void> {
       await stateListener?.({
-        type: "browser2ide.windowState",
+        type: "pinop.windowState",
         state: state === "connected" ? "linked" : state,
         ...(displayLinkCode ? { displayLinkCode } : {}),
       });

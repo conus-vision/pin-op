@@ -2,8 +2,8 @@ import type {
   PluginDiagnostic,
   SourceMatch,
   SourcePluginResult,
-} from "@browser2ide/plugin-api";
-import type { ResolutionStatus } from "@browser2ide/protocol";
+} from "@pinop/plugin-api";
+import type { ResolutionStatus } from "@pinop/protocol";
 
 export interface ResolvedSourceMatch extends SourceMatch {
   readonly pluginId: string;

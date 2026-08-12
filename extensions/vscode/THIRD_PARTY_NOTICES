@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Browser2IDE includes the following bundled third-party software.
+PinOp includes the following bundled third-party software.
 Runtime asset: dist/mappings.wasm (from source-map@0.7.6)
 
 ## cssesc@3.0.0

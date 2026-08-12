@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
-  type Browser2IdeMessage,
+  type PinOpMessage,
   type ClientRole,
   type ErrorMessage,
   type ProtocolCapability,
   type ProtocolErrorCode,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   sendConnectionSafely,
   supportsCapability,
@@ -20,7 +20,7 @@ export function routeMessage(
   registry: ClientRegistry,
   replyRoutes: ReplyRouteRegistry,
   sender: RegisteredClient,
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): void {
   switch (message.type) {
     case "inspect":
@@ -182,7 +182,7 @@ function routeBrowserReply(
   replyRoutes: ReplyRouteRegistry,
   sender: RegisteredClient,
   message: Extract<
-    Browser2IdeMessage,
+    PinOpMessage,
     { type: "resolution" | "source.navigationState" }
   >,
   requiredRecipientCapability?: ProtocolCapability,
@@ -268,9 +268,9 @@ export function sendError(
 
 export function sendMessage(
   client: RegisteredClient,
-  message: Browser2IdeMessage | ErrorMessage,
+  message: PinOpMessage | ErrorMessage,
 ): boolean {
-  const parsed = Browser2IdeMessageSchema.parse(message);
+  const parsed = PinOpMessageSchema.parse(message);
   return sendConnectionSafely(client.connection, JSON.stringify(parsed));
 }
 
@@ -278,7 +278,7 @@ function sendToRoles(
   registry: ClientRegistry,
   sessionId: string,
   roles: ClientRole[],
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): number {
   let sent = 0;
   for (const role of roles) {
@@ -293,7 +293,7 @@ function sendToRoles(
 
 function sendToClients(
   clients: readonly RegisteredClient[],
-  message: Browser2IdeMessage,
+  message: PinOpMessage,
 ): number {
   let sent = 0;
   for (const client of clients) {

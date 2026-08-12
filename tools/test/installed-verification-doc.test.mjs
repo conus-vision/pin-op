@@ -36,8 +36,8 @@ const securityDisclosureContracts = [
     message: "temporary isolated overlay insertion disclosure is required",
     pattern: completeClause(
       String.raw`(?:For|During) visual (?:inspection|highlighting), `,
-      String.raw`(?:the (?:browser )?extension|Browser2IDE) temporarily `,
-      String.raw`(?:inserts|adds) an isolated Browser2IDE `,
+      String.raw`(?:the (?:browser )?extension|PinOp) temporarily `,
+      String.raw`(?:inserts|adds) an isolated PinOp `,
       String.raw`(?:inspection )?overlay DOM(?: subtree)?`,
       String.raw`(?: under (?:a|the) dedicated pointer-inert host`,
       String.raw`(?: with a closed shadow root)?)?`,
@@ -48,8 +48,8 @@ const securityDisclosureContracts = [
     name: "inspection and locator exclusion",
     message: "overlay inspection and locator exclusion disclosure is required",
     pattern: completeClause(
-      String.raw`(?:All )?(?:Browser2IDE )?overlay-owned nodes `,
-      String.raw`(?:are|remain) excluded from Browser2IDE `,
+      String.raw`(?:All )?(?:PinOp )?overlay-owned nodes `,
+      String.raw`(?:are|remain) excluded from PinOp `,
       String.raw`(?:DOM tree )?inspection and (?:from )?stable locator capture`,
     ),
     negation: [/(?:are|remain) excluded/i, "are not excluded"],
@@ -79,7 +79,7 @@ const securityDisclosureContracts = [
     message: "page-owned state and source immutability disclosure is required",
     pattern: completeClause(
       String.raw`(?:Outside|Apart from) (?:that|the) isolated `,
-      String.raw`(?:Browser2IDE )?overlay(?: DOM)?, Browser2IDE `,
+      String.raw`(?:PinOp )?overlay(?: DOM)?, PinOp `,
       String.raw`(?:does not|never) modify page-owned content or application state, `,
       String.raw`and (?:it )?(?:does not|never) (?:modify|edit|write) source code`,
     ),
@@ -110,7 +110,7 @@ test("installed primary path is terminal-free and starts automatically", () => {
   assert.match(primaryPath, /Install from VSIX/);
   assert.match(primaryPath, /Load unpacked/);
   assert.match(primaryPath, /Install Add-on From File/);
-  assert.match(primaryPath, /click the Browser2IDE status item/i);
+  assert.match(primaryPath, /click the PinOp status item/i);
   assert.match(primaryPath, /five-digit port[\s\S]*two-digit PIN/i);
 });
 
@@ -141,28 +141,28 @@ test("MVP runbook uses flat downloaded filenames for installed packages", () => 
   assert.doesNotMatch(installedProductRunbook, /artifacts[\\/]/i);
   assert.match(
     installedProductRunbook,
-    /`browser2ide-vscode-0\.3\.0\.vsix`/,
+    /`pinop-vscode-0\.3\.0\.vsix`/,
   );
   assert.match(
     installedProductRunbook,
-    /`browser2ide-chrome-0\.3\.0\.zip`/,
+    /`pinop-chrome-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Load unpacked/);
   assert.match(
     installedProductRunbook,
-    /`browser2ide-firefox-0\.3\.0\.zip`/,
+    /`pinop-firefox-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Temporary Add-on|about:debugging/i);
   assert.match(
     installedProductRunbook,
-    /signed[\s\S]*`browser2ide-firefox-0\.3\.0\.xpi`/i,
+    /signed[\s\S]*`pinop-firefox-0\.3\.0\.xpi`/i,
   );
 });
 
 test("normal Inspector workflow is explicit and scoped to one browser window", () => {
   const normalFlow = `${installedProductRunbook}\n${primaryPath}\n${usageGuide}\n${vscodeReadme}`;
   assert.match(normalFlow, /open the project/i);
-  assert.match(normalFlow, /Browser2IDE DevTools panel/i);
+  assert.match(normalFlow, /PinOp DevTools panel/i);
   assert.match(normalFlow, /Paste[\s\S]*Link/i);
   assert.match(normalFlow, /same displayed code/i);
   assert.match(normalFlow, /picker/i);
@@ -398,6 +398,10 @@ test("0.3.0 record marks unperformed external evidence pending", () => {
 });
 
 test("README points to concise repository and verification material", () => {
+  assert.match(readme, /^# PinOp\r?\n/);
+  assert.match(readme, /Connect browser DevTools to your source code\./);
+  assert.match(readme, /https:\/\/pinop\.conus\.vision/);
+  assert.match(readme, /https:\/\/github\.com\/conus-vision\/PinOp/);
   assert.match(readme, /docs\/installed-verification\.md/);
   assert.match(readme, /docs\/mvp-usage\.md/);
   assert.match(readme, /docs\/architecture\.md/);
@@ -405,10 +409,10 @@ test("README points to concise repository and verification material", () => {
   assert.match(readme, /CONTRIBUTING\.md/);
   assert.match(readme, /SECURITY\.md/);
   assert.match(readme, /MIT License/);
-  assert.doesNotMatch(readme, /browser2ide-(?:linking\.png|inspect\.gif)/);
+  assert.doesNotMatch(readme, /pinop-(?:linking\.png|inspect\.gif)/);
   assert.match(
     developmentGuide,
-    /^# Browser2IDE MVP Verification\r?\n/,
+    /^# PinOp MVP Verification\r?\n/,
   );
   assert.match(developmentGuide, /## Installed Product Verification/);
   assert.match(developmentGuide, /## Development And Source Workflow/);

@@ -239,7 +239,7 @@ test("release guide makes the protected AMO environment and digest handoff manda
   assert.match(environment, /Settings[\s\S]+Releases[\s\S]+Enable release immutability/i);
   assert.match(
     environment,
-    /gh api --method PUT repos\/conus-vision\/Browser2IDE\/immutable-releases/,
+    /gh api --method PUT repos\/conus-vision\/PinOp\/immutable-releases/,
   );
   assert.match(environment, /future releases/i);
   assert.match(environment, /`release-settings`/);

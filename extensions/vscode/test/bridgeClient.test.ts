@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   SourceNavigationStateMessageSchema,
   type SourceNavigateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeClient,

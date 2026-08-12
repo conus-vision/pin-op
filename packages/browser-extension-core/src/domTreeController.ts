@@ -135,7 +135,7 @@ interface FocusAnchor {
   readonly index: number;
 }
 
-const LOAD_MORE_PREFIX = "browser2ide:load-more:";
+const LOAD_MORE_PREFIX = "pinop:load-more:";
 
 export class DomTreeController {
   private readonly transport: DomTreeTransport;

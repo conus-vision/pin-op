@@ -4,7 +4,7 @@ import {
   startContentScriptRuntime,
   type ContentInspectPort,
   type ContentScriptDocument,
-} from "@browser2ide/browser-extension-core";
+} from "@pinop/browser-extension-core";
 
 startContentScriptRuntime({
   globalScope: globalThis,
@@ -22,5 +22,5 @@ startContentScriptRuntime({
     return () => browser.runtime.onMessage.removeListener(wrapped);
   },
   onError: (error) =>
-    console.error("Browser2IDE content script:", sanitizeErrorMessage(error)),
+    console.error("PinOp content script:", sanitizeErrorMessage(error)),
 });

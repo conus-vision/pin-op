@@ -1,5 +1,5 @@
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   ClientSourceSchema,
   PROTOCOL_VERSION,
   SourceNavigateMessageSchema,
@@ -10,7 +10,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 export class BrowserProtocolError extends Error {
   public readonly name = "BrowserProtocolError";
@@ -274,7 +274,7 @@ export class BrowserBridgeClient {
       return "not-connected";
     }
     const safePayload = withoutInternalRoutingMetadata(payload);
-    const message = Browser2IdeMessageSchema.safeParse({
+    const message = PinOpMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
       messageId: inspectMessageId,
@@ -380,7 +380,7 @@ export class BrowserBridgeClient {
       );
       return;
     }
-    const parsed = Browser2IdeMessageSchema.safeParse(raw);
+    const parsed = PinOpMessageSchema.safeParse(raw);
     if (!parsed.success) {
       this.fail(
         new BrowserProtocolError(
@@ -518,7 +518,7 @@ export class BrowserBridgeClient {
   }
 
   private send(message: unknown): void {
-    this.socket?.send(JSON.stringify(Browser2IdeMessageSchema.parse(message)));
+    this.socket?.send(JSON.stringify(PinOpMessageSchema.parse(message)));
   }
 
   private fail(error: Error): void {

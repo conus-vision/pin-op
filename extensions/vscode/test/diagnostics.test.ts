@@ -3,7 +3,7 @@ import {
   PROTOCOL_VERSION,
   type ErrorMessage,
   type InspectMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   DiagnosticsTracker,
   writeBridgeDiagnostics,
@@ -67,7 +67,7 @@ describe("DiagnosticsTracker", () => {
       expect.stringMatching(/^lastInspect=.+ targets=2 facts=3$/),
       "resolution status=matched generation=2 document=card.scss selected=1 parent=1 inaccessible=1 codes=resolver.source-read-failed",
       "sources matches=2 pluginDiagnostics=1",
-      "sourceDiagnostic browser2ide.scss scss.sourceMapMissing warning: SCSS source map was not found",
+      "sourceDiagnostic pinop.scss scss.sourceMapMissing warning: SCSS source map was not found",
       "protocolError=none",
     ]);
   });
@@ -79,7 +79,7 @@ describe("DiagnosticsTracker", () => {
       ...resolution(),
       matches: [],
       diagnostics: [{
-        pluginId: "browser2ide.scss",
+        pluginId: "pinop.scss",
         code: "scss.generatedReadFailed",
         message: `Could not read ${localPath}`,
         severity: "error",
@@ -196,7 +196,7 @@ function resolution(): SourceResolution {
     documentVersion: 1,
     matches: [
       {
-        pluginId: "browser2ide.scss",
+        pluginId: "pinop.scss",
         targetRole: "selected",
         range: { start: { line: 0, character: 0 }, end: { line: 2, character: 1 } },
         label: ".card",
@@ -205,7 +205,7 @@ function resolution(): SourceResolution {
         confidence: "sourcemap",
       },
       {
-        pluginId: "browser2ide.scss",
+        pluginId: "pinop.scss",
         targetRole: "parent",
         range: { start: { line: 4, character: 0 }, end: { line: 6, character: 1 } },
         label: ".layout",
@@ -216,7 +216,7 @@ function resolution(): SourceResolution {
     ],
     diagnostics: [
       {
-        pluginId: "browser2ide.scss",
+        pluginId: "pinop.scss",
         code: "scss.sourceMapMissing",
         message: "SCSS source map was not found",
         severity: "warning",

@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedReleaseArtifactPatterns = Object.freeze([
-  /^browser2ide-chrome-\d+\.\d+\.\d+\.zip$/,
-  /^browser2ide-firefox-\d+\.\d+\.\d+\.(?:xpi|zip)$/,
-  /^browser2ide-firefox-source-\d+\.\d+\.\d+\.zip$/,
-  /^browser2ide-vscode-\d+\.\d+\.\d+\.vsix$/,
+  /^pinop-chrome-\d+\.\d+\.\d+\.zip$/,
+  /^pinop-firefox-\d+\.\d+\.\d+\.(?:xpi|zip)$/,
+  /^pinop-firefox-source-\d+\.\d+\.\d+\.zip$/,
+  /^pinop-vscode-\d+\.\d+\.\d+\.vsix$/,
   /^SHA256SUMS$/,
 ]);
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Browser2IDE is a local, read-only bridge from browser DevTools inspection to
+PinOp is a local, read-only bridge from browser DevTools inspection to
 source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
 protocol version is `5`.
 
@@ -8,7 +8,7 @@ protocol version is `5`.
 
 ### DevTools Panel
 
-Firefox and Chrome/Chromium build the same Browser2IDE panel from the shared
+Firefox and Chrome/Chromium build the same PinOp panel from the shared
 browser core. The panel owns:
 
 - explicit browser-window link controls and the displayed port-plus-PIN code;
@@ -87,7 +87,7 @@ separately installed VS Code extensions.
 
 Source lookup first chooses a workspace strategy. Workspace-bound resolution is
 selected when the document or stylesheet URL path begins with an open workspace
-folder name. Browser2IDE strips that leading segment once and searches only that
+folder name. PinOp strips that leading segment once and searches only that
 folder. For example, `http://localhost/_ORB/` and
 `/_ORB/wp-content/themes/orbiter/style.css?v=7` bind source lookup to the open
 `_ORB` folder, so duplicate basenames elsewhere do not create ambiguity. The
@@ -170,7 +170,7 @@ cross-linking; it is not strong authentication. The bridge checks extension
 origins, handshake order, roles, session identity, message size, and schemas.
 
 VS Code and installed source plugins can read workspace documents. Separately
-installed plugins are independently trusted extension code. Browser2IDE itself
+installed plugins are independently trusted extension code. PinOp itself
 has no remote service and exposes no write, page mutation, source edit, or
 arbitrary command path.
 

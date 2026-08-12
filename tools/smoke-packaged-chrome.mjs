@@ -74,7 +74,7 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   try {
     const rule = fallback && findStyleRule(
       fallback.cssRules,
-      ".browser2ide-path-miss",
+      ".pinop-path-miss",
     );
     if (rule) {
       pathMiss = {
@@ -103,7 +103,7 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
 
 export const CHROME_ARCHIVE_FILES = BROWSER_ARCHIVE_FILES;
 
-export function findBrowser2IDEServiceWorker(targets, extensionId) {
+export function findPinOpServiceWorker(targets, extensionId) {
   if (!/^[a-p]{32}$/.test(extensionId)) {
     throw new Error("Chrome returned an invalid extension id");
   }
@@ -114,14 +114,14 @@ export function findBrowser2IDEServiceWorker(targets, extensionId) {
       target.url === `chrome-extension://${extensionId}${SERVICE_WORKER_PATH}`,
   );
   if (matches.length > 1) {
-    throw new Error("Chrome exposed multiple Browser2IDE service workers");
+    throw new Error("Chrome exposed multiple PinOp service workers");
   }
   return matches[0];
 }
 
-export function isBrowser2IDEManifest(manifest) {
+export function isPinOpManifest(manifest) {
   return (
-    manifest?.name === "Browser2IDE" &&
+    manifest?.name === "PinOp" &&
     manifest?.version === "0.3.0" &&
     manifest?.manifest_version === 3 &&
     manifest?.background?.service_worker === "dist/background.js"
@@ -140,7 +140,7 @@ export function validatePackagedChromeArchive(archive) {
   } catch (error) {
     throw new Error(`Chrome artifact contains invalid manifest.json: ${error.message}`);
   }
-  if (!isBrowser2IDEManifest(manifest)) {
+  if (!isPinOpManifest(manifest)) {
     throw new Error("Chrome artifact does not declare the expected MV3 service worker");
   }
   assertBrowserPackageRuntimeContract(archive, {
@@ -401,7 +401,7 @@ export async function smokePackagedChrome(artifactArgument) {
   return runSmokeOperationWithCleanup(
     async () => {
       try {
-        smokeRoot = await mkdtemp(join(tmpdir(), "browser2ide-chrome-smoke-"));
+        smokeRoot = await mkdtemp(join(tmpdir(), "pinop-chrome-smoke-"));
         const extensionDirectory = join(smokeRoot, "extension");
         const profileDirectory = join(smokeRoot, "profile");
         await Promise.all([
@@ -455,7 +455,7 @@ export async function smokePackagedChrome(artifactArgument) {
           resolve(installed.path) !== resolve(extensionDirectory)
         ) {
           throw new Error(
-            "Chrome did not report the expected unpacked Browser2IDE extension",
+            "Chrome did not report the expected unpacked PinOp extension",
           );
         }
         await waitForServiceWorker(cdp, chrome, extensionId);
@@ -652,7 +652,7 @@ async function waitForServiceWorker(cdp, process_, extensionId) {
     assertChildRunning(process_, undefined, "the service worker loaded");
     const { targetInfos } = await cdp.send("Target.getTargets");
     lastTargets = targetInfos;
-    const target = findBrowser2IDEServiceWorker(targetInfos, extensionId);
+    const target = findPinOpServiceWorker(targetInfos, extensionId);
     if (target) return target;
     await delay(POLL_INTERVAL_MS);
   }
@@ -661,7 +661,7 @@ async function waitForServiceWorker(cdp, process_, extensionId) {
     .filter(Boolean)
     .join(", ");
   throw new Error(
-    `Timed out waiting for the packaged Browser2IDE service worker; CDP targets: ${summary || "none"}`,
+    `Timed out waiting for the packaged PinOp service worker; CDP targets: ${summary || "none"}`,
   );
 }
 

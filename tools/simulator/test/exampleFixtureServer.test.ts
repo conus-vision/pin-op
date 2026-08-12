@@ -31,13 +31,13 @@ describe("basic CSS example server", () => {
         'id="normal-click-count"',
         'id="fixture-card"',
         'style="--inline-accent: #b42318"',
-        'class="browser2ide-path-miss"',
+        'class="pinop-path-miss"',
         'class="duplicate-selector"',
         'class="active-media-rule"',
         'class="runtime-injected-style"',
-        'class="browser2ide-virtual-unmapped"',
-        'class="browser2ide-external-readable"',
-        'class="browser2ide-inaccessible-external"',
+        'class="pinop-virtual-unmapped"',
+        'class="pinop-external-readable"',
+        'class="pinop-inaccessible-external"',
       ]) {
         expect(page).toContain(marker);
       }
@@ -117,25 +117,25 @@ describe("basic CSS example server", () => {
       expect(servedFallback).not.toBe(localFallback);
       expect(servedFallback).toBe(
         [
-          ".browser2ide-cssom-only {",
-          "  --browser2ide-fixture-source: cssom;",
+          ".pinop-cssom-only {",
+          "  --pinop-fixture-source: cssom;",
           "}",
           "",
-          "@layer browser2ide-cssom-fixture {",
+          "@layer pinop-cssom-fixture {",
           localFallback,
           "}",
           "",
         ].join("\n"),
       );
-      expect(servedFallback).toContain(".browser2ide-cssom-only");
-      expect(servedFallback).toContain(".browser2ide-path-miss");
+      expect(servedFallback).toContain(".pinop-cssom-only");
+      expect(servedFallback).toContain(".pinop-path-miss");
       expect(servedFallback).toContain(".duplicate-selector");
       expect(servedFallback.match(/\.duplicate-selector\s*\{/g)).toHaveLength(2);
 
       const virtualCss = await responseText(
         new URL("virtual.css", servers.pageUrl),
       );
-      expect(virtualCss).toContain(".browser2ide-virtual-unmapped");
+      expect(virtualCss).toContain(".pinop-virtual-unmapped");
 
       const vendorResponse = await fetch(servers.vendorCssUrl);
       expect(vendorResponse.status).toBe(200);
@@ -143,7 +143,7 @@ describe("basic CSS example server", () => {
         "*",
       );
       await expect(vendorResponse.text()).resolves.toContain(
-        ".browser2ide-external-readable",
+        ".pinop-external-readable",
       );
 
       const inaccessibleResponse = await fetch(inaccessibleCssUrl);
@@ -152,7 +152,7 @@ describe("basic CSS example server", () => {
         inaccessibleResponse.headers.get("access-control-allow-origin"),
       ).toBeNull();
       await expect(inaccessibleResponse.text()).resolves.toContain(
-        ".browser2ide-inaccessible-external",
+        ".pinop-inaccessible-external",
       );
 
       const missingPageResource = await fetch(

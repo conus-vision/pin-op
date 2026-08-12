@@ -46,7 +46,7 @@ import {
   startPanelRuntime,
   virtualTreeRows,
   WindowConnectionCoordinator,
-} from "@browser2ide/browser-extension-core";
+} from "@pinop/browser-extension-core";
 
 assert.equal(typeof BrowserBridgeClient, "function");
 assert.equal(typeof BackgroundInspectCoordinator, "function");

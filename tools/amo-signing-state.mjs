@@ -29,7 +29,7 @@ export function createAmoStateArtifactName(tag, runId) {
   if (!/^[1-9]\d*$/.test(runId)) {
     throw new Error("GitHub run id must be a positive integer");
   }
-  return `browser2ide-amo-state-${tag}-run-${runId}`;
+  return `pinop-amo-state-${tag}-run-${runId}`;
 }
 
 export function parseAmoUploadState(source) {

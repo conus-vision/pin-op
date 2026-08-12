@@ -3,7 +3,7 @@ import type {
   ClientRole,
   ClientSource,
   ProtocolCapability,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import WebSocket from "ws";
 
 export interface BridgeConnection {

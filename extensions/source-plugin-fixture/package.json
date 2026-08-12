@@ -1,7 +1,7 @@
 {
-  "name": "source-plugin-fixture",
-  "displayName": "Browser2IDE Source Plugin Fixture",
-  "publisher": "browser2ide",
+  "name": "pinop-source-plugin-fixture",
+  "displayName": "PinOp Source Plugin Fixture",
+  "publisher": "conus-vision",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,16 +10,16 @@
   },
   "main": "./dist/extension.cjs",
   "extensionDependencies": [
-    "browser2ide.browser2ide-vscode"
+    "conus-vision.pinop"
   ],
   "activationEvents": [
-    "onLanguage:browser2ide-fixture"
+    "onLanguage:pinop-fixture"
   ],
   "contributes": {
     "languages": [
       {
-        "id": "browser2ide-fixture",
-        "extensions": [".b2i"]
+        "id": "pinop-fixture",
+        "extensions": [".pinop-fixture"]
       }
     ]
   },
@@ -30,7 +30,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@browser2ide/plugin-api": "workspace:*"
+    "@pinop/plugin-api": "workspace:*"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DomRequest } from "../src/domProtocol.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
@@ -298,7 +298,7 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{
       channel: "panel-a",
       message: {
-        type: "browser2ide.inspect.started",
+        type: "pinop.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 4,
       },

@@ -3,7 +3,7 @@ import type {
   ResolutionDiagnosticCode,
   ResolutionMessage,
   ResolutionStatus,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type { BrowserConnectionState } from "./bridgeClient.js";
 
 export interface PanelErrorSummary {
@@ -129,7 +129,7 @@ function sanitizedErrorMessage(error: PanelErrorSummary): string {
     return error.message;
   }
   return (
-    PROTOCOL_ERROR_MESSAGES[error.code] ?? "Browser2IDE protocol error"
+    PROTOCOL_ERROR_MESSAGES[error.code] ?? "PinOp protocol error"
   );
 }
 

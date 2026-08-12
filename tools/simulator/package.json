@@ -1,12 +1,12 @@
 {
-  "name": "@browser2ide/simulator",
+  "name": "@pinop/simulator",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/sendInspect.js",
   "types": "./dist/sendInspect.d.ts",
   "bin": {
-    "browser2ide-simulator": "./dist/sendInspect.js"
+    "pinop-simulator": "./dist/sendInspect.js"
   },
   "exports": {
     ".": {
@@ -16,17 +16,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run",
+    "test": "pnpm --filter @pinop/protocol build && pnpm --filter @pinop/bridge build && vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
     "send": "pnpm run build && node dist/sendInspect.js send"
   },
   "dependencies": {
-    "@browser2ide/protocol": "workspace:*",
+    "@pinop/protocol": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@browser2ide/bridge": "workspace:*",
+    "@pinop/bridge": "workspace:*",
     "@types/ws": "^8.5.12"
   }
 }

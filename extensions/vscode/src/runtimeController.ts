@@ -68,13 +68,13 @@ export class ExtensionRuntimeController {
   async copyLinkCode(): Promise<void> {
     const snapshot = this.options.manager.snapshot();
     if (snapshot.state !== "running" || !snapshot.linkCode) {
-      await this.options.showWarningMessage("Browser2IDE is not running.");
+      await this.options.showWarningMessage("PinOp is not running.");
       return;
     }
 
     await this.options.writeClipboard(snapshot.linkCode);
     await this.options.showInformationMessage(
-      "Browser2IDE link code copied.",
+      "PinOp link code copied.",
     );
   }
 
@@ -107,7 +107,7 @@ export class ExtensionRuntimeController {
     const credentials = this.options.manager.getIdeCredentials();
     if (!snapshot.url || !credentials) {
       await this.options.manager.stop();
-      throw new Error("Browser2IDE bridge did not provide IDE credentials");
+      throw new Error("PinOp bridge did not provide IDE credentials");
     }
 
     let nextClient: RuntimeClientLike | undefined;
@@ -162,13 +162,13 @@ export function registerRuntimeCommands(
   >,
 ): DisposableLike {
   const registrations = [
-    host.registerCommand("browser2ide.start", () =>
+    host.registerCommand("pinop.start", () =>
       runCommand(() => controller.start(), host.reportError),
     ),
-    host.registerCommand("browser2ide.stop", () =>
+    host.registerCommand("pinop.stop", () =>
       runCommand(() => controller.stop(), host.reportError),
     ),
-    host.registerCommand("browser2ide.copyLinkCode", () =>
+    host.registerCommand("pinop.copyLinkCode", () =>
       runCommand(() => controller.copyLinkCode(), host.reportError),
     ),
   ];

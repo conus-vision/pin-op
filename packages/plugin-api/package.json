@@ -1,5 +1,5 @@
 {
-  "name": "@browser2ide/plugin-api",
+  "name": "@pinop/plugin-api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -18,6 +18,6 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@browser2ide/protocol": "workspace:*"
+    "@pinop/protocol": "workspace:*"
   }
 }

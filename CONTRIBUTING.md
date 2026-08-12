@@ -1,6 +1,6 @@
-# Contributing To Browser2IDE
+# Contributing To PinOp
 
-Thank you for contributing. Browser2IDE is an alpha, so changes should preserve
+Thank you for contributing. PinOp is an alpha, so changes should preserve
 the explicit browser-window link, read-only protocol, and local trust boundary.
 
 ## Prerequisites

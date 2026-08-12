@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Browser2IDEApi } from "@browser2ide/plugin-api";
+import type { PinOpApi } from "@pinop/plugin-api";
 import {
   BridgeClient,
   ResolutionClientRouter,
@@ -34,8 +34,8 @@ let diagnostics: DiagnosticsTracker | undefined;
 
 export async function activate(
   context: vscode.ExtensionContext,
-): Promise<Browser2IDEApi> {
-  output = vscode.window.createOutputChannel("Browser2IDE");
+): Promise<PinOpApi> {
+  output = vscode.window.createOutputChannel("PinOp");
   diagnostics = new DiagnosticsTracker();
   const resolutionClients = new ResolutionClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
@@ -51,7 +51,7 @@ export async function activate(
   presenterRuntime = runtime;
 
   const configuration = readBridgeConfiguration(
-    vscode.workspace.getConfiguration("browser2ide"),
+    vscode.workspace.getConfiguration("pinop"),
   );
   manager = new BridgeManager({ configuration });
 
@@ -130,7 +130,7 @@ export async function activate(
         void controller.dispose().catch(reportRuntimeError);
       },
     },
-    vscode.commands.registerCommand("browser2ide.openDiagnostics", () => {
+    vscode.commands.registerCommand("pinop.openDiagnostics", () => {
       if (output && manager && diagnostics) {
         writeBridgeDiagnostics(
           output,
@@ -166,7 +166,7 @@ export async function deactivate(): Promise<void> {
 function reportRuntimeError(error: unknown): void {
   clientState = "error";
   const code = errorCode(error);
-  output?.appendLine(`Browser2IDE operation failed${code ? ` (${code})` : ""}`);
+  output?.appendLine(`PinOp operation failed${code ? ` (${code})` : ""}`);
 }
 
 function reportPresenterError(error: unknown): void {
@@ -209,7 +209,7 @@ function createPresenterHost(): PresenterRuntimeHost {
     overviewRulerLaneRight: vscode.OverviewRulerLane.Right,
     registerTreeDataProvider: (provider) =>
       vscode.window.registerTreeDataProvider(
-        "browser2ide.applicableRules",
+        "pinop.applicableRules",
         provider,
       ),
     registerCommand: (command, callback) =>

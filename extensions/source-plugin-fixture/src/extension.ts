@@ -1,16 +1,16 @@
 import * as vscode from "vscode";
 import {
   SOURCE_PLUGIN_API_VERSION,
-  type Browser2IDEApi,
+  type PinOpApi,
   type SourcePlugin,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 
 const plugin: SourcePlugin = {
-  id: "browser2ide.fixture",
-  displayName: "Browser2IDE Fixture",
+  id: "pinop.fixture",
+  displayName: "PinOp Fixture",
   apiVersion: SOURCE_PLUGIN_API_VERSION,
   documentSelectors: [
-    { languageId: "browser2ide-fixture", scheme: "file" },
+    { languageId: "pinop-fixture", scheme: "file" },
   ],
   supportedFactKinds: ["fixture.source"],
   async resolve(context) {
@@ -34,14 +34,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<{
   readonly registered: boolean;
   readonly coreApiVersion: number;
 }> {
-  const core = vscode.extensions.getExtension<Browser2IDEApi>(
-    "browser2ide.browser2ide-vscode",
+  const core = vscode.extensions.getExtension<PinOpApi>(
+    "conus-vision.pinop",
   );
-  if (!core) throw new Error("Browser2IDE core extension is unavailable");
+  if (!core) throw new Error("PinOp core extension is unavailable");
 
   const api = await core.activate();
   if (api.apiVersion !== SOURCE_PLUGIN_API_VERSION) {
-    throw new Error(`Unsupported Browser2IDE API version: ${api.apiVersion}`);
+    throw new Error(`Unsupported PinOp API version: ${api.apiVersion}`);
   }
   context.subscriptions.push(api.registerSourcePlugin(plugin));
   return { registered: true, coreApiVersion: api.apiVersion };

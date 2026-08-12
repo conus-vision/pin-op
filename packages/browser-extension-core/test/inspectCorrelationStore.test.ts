@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import { InspectCorrelationStore } from "../src/inspectCorrelationStore.js";
 

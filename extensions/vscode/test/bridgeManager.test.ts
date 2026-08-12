@@ -4,7 +4,7 @@ import {
   LinkAuthenticator,
   type BridgeServerOptions,
   type LinkAuthenticatorOptions,
-} from "@browser2ide/bridge";
+} from "@pinop/bridge";
 import { BridgeClient } from "../src/bridgeClient.js";
 import {
   BridgeManager,

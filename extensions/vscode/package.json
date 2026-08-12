@@ -1,12 +1,14 @@
 {
-  "name": "browser2ide-vscode",
-  "publisher": "browser2ide",
-  "displayName": "Browser2IDE",
+  "name": "pinop",
+  "publisher": "conus-vision",
+  "displayName": "PinOp",
+  "description": "Connect browser DevTools to your source code.",
   "version": "0.3.0",
   "license": "MIT",
-  "repository": "https://github.com/conus-vision/Browser2IDE.git",
-  "homepage": "https://github.com/conus-vision/Browser2IDE#readme",
-  "bugs": "https://github.com/conus-vision/Browser2IDE/issues",
+  "repository": "https://github.com/conus-vision/PinOp.git",
+  "homepage": "https://pinop.conus.vision",
+  "bugs": "https://github.com/conus-vision/PinOp/issues",
+  "icon": "resources/pinop.png",
   "categories": [
     "Other",
     "Programming Languages"
@@ -33,46 +35,46 @@
   "contributes": {
     "commands": [
       {
-        "command": "browser2ide.start",
-        "title": "Browser2IDE: Start"
+        "command": "pinop.start",
+        "title": "PinOp: Start"
       },
       {
-        "command": "browser2ide.stop",
-        "title": "Browser2IDE: Stop"
+        "command": "pinop.stop",
+        "title": "PinOp: Stop"
       },
       {
-        "command": "browser2ide.copyLinkCode",
-        "title": "Browser2IDE: Copy Link Code"
+        "command": "pinop.copyLinkCode",
+        "title": "PinOp: Copy Link Code"
       },
       {
-        "command": "browser2ide.openDiagnostics",
-        "title": "Browser2IDE: Open Diagnostics"
+        "command": "pinop.openDiagnostics",
+        "title": "PinOp: Open Diagnostics"
       },
       {
-        "command": "browser2ide.revealSourceMatch",
-        "title": "Browser2IDE: Reveal Source Match"
+        "command": "pinop.revealSourceMatch",
+        "title": "PinOp: Reveal Source Match"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "browser2ide",
-          "title": "Browser2IDE",
-          "icon": "resources/browser2ide.svg"
+          "id": "pinop",
+          "title": "PinOp",
+          "icon": "resources/pinop.svg"
         }
       ]
     },
     "views": {
-      "browser2ide": [
+      "pinop": [
         {
-          "id": "browser2ide.applicableRules",
+          "id": "pinop.applicableRules",
           "name": "Applicable Sources"
         }
       ]
     },
     "colors": [
       {
-        "id": "browser2ide.selectedRuleBackground",
+        "id": "pinop.selectedRuleBackground",
         "description": "Background for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#2EA04322",
@@ -81,7 +83,7 @@
         }
       },
       {
-        "id": "browser2ide.selectedRuleBorder",
+        "id": "pinop.selectedRuleBorder",
         "description": "Border for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#3FB950",
@@ -90,7 +92,7 @@
         }
       },
       {
-        "id": "browser2ide.parentRuleBackground",
+        "id": "pinop.parentRuleBackground",
         "description": "Background for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#2F81F722",
@@ -99,7 +101,7 @@
         }
       },
       {
-        "id": "browser2ide.parentRuleBorder",
+        "id": "pinop.parentRuleBorder",
         "description": "Border for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#58A6FF",
@@ -109,9 +111,9 @@
       }
     ],
     "configuration": {
-      "title": "Browser2IDE",
+      "title": "PinOp",
       "properties": {
-        "browser2ide.sessionId": {
+        "pinop.sessionId": {
           "type": "string",
           "default": "default"
         }
@@ -121,17 +123,17 @@
   "scripts": {
     "vscode:prepublish": "pnpm run build",
     "package": "node ./package-vsix.mjs",
-    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/browser2ide-vscode-0.3.0.vsix",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pinop-vscode-0.3.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
-    "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run --exclude \"test/integration/**\"",
-    "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",
+    "test": "pnpm --filter @pinop/protocol build && pnpm --filter @pinop/bridge build && vitest run --exclude \"test/integration/**\"",
+    "test:integration": "pnpm run build && pnpm --filter pinop-source-plugin-fixture build && vscode-test --label sourcePluginApi",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@browser2ide/bridge": "workspace:*",
-    "@browser2ide/plugin-api": "workspace:*",
-    "@browser2ide/protocol": "workspace:*",
+    "@pinop/bridge": "workspace:*",
+    "@pinop/plugin-api": "workspace:*",
+    "@pinop/protocol": "workspace:*",
     "postcss": "8.5.16",
     "postcss-selector-parser": "7.1.0",
     "postcss-scss": "4.0.9",

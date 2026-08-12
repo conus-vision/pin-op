@@ -5,7 +5,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,
@@ -31,7 +31,7 @@ const AUTH_TOKEN_B = "b".repeat(32);
 describe("WindowConnectionCoordinator", () => {
   it("opens one client for all panels in one browser window", async () => {
     const storage = new MemorySessionStorage({
-      "browser2ide.windowLink.10": windowLink({
+      "pinop.windowLink.10": windowLink({
         port: 48_736,
         bridgeInstanceId: INSTANCE_B,
       }),
@@ -773,12 +773,12 @@ describe("WindowConnectionCoordinator", () => {
     expect(storage.getCalls).toBe(1);
 
     const unlinking = harness.coordinator.unlinkWindow(10);
-    storage.resolveGet({ "browser2ide.windowLink.10": windowLink() });
+    storage.resolveGet({ "pinop.windowLink.10": windowLink() });
     await unlinking;
     await harness.flush();
 
     expect(harness.createdClients).toHaveLength(0);
-    expect(storage.values).not.toHaveProperty("browser2ide.windowLink.10");
+    expect(storage.values).not.toHaveProperty("pinop.windowLink.10");
     expect(harness.coordinator.state(10)).toBe("notLinked");
     registration.dispose();
   });
@@ -822,7 +822,7 @@ describe("WindowConnectionCoordinator", () => {
     expect(storage.getCalls).toBe(1);
 
     harness.coordinator.dispose();
-    storage.resolveGet({ "browser2ide.windowLink.10": windowLink() });
+    storage.resolveGet({ "pinop.windowLink.10": windowLink() });
     await harness.flush();
 
     expect(harness.createdClients).toHaveLength(0);

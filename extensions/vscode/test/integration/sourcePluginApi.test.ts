@@ -1,12 +1,12 @@
 import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
 
-suite("Browser2IDE external source plugin API", () => {
+suite("PinOp external source plugin API", () => {
   test("activates the fixture through the public core API", async () => {
     const fixture = vscode.extensions.getExtension<{
       readonly registered: boolean;
       readonly coreApiVersion: number;
-    }>("browser2ide.source-plugin-fixture");
+    }>("conus-vision.pinop-source-plugin-fixture");
 
     assert.ok(
       fixture,

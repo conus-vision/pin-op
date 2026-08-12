@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { SourceRange } from "@browser2ide/plugin-api";
+import type { SourceRange } from "@pinop/plugin-api";
 import type { SourceResolution } from "../sourcePlugins/types.js";
 
 export type DecorationRole = "primary" | "context";
@@ -125,25 +125,25 @@ function semanticStyles(
   return {
     primary: {
       backgroundColor: host.createThemeColor(
-        "browser2ide.selectedRuleBackground",
+        "pinop.selectedRuleBackground",
       ),
-      borderColor: host.createThemeColor("browser2ide.selectedRuleBorder"),
+      borderColor: host.createThemeColor("pinop.selectedRuleBorder"),
       borderStyle: "solid",
       borderWidth: "0 0 0 2px",
       overviewRulerColor: host.createThemeColor(
-        "browser2ide.selectedRuleBorder",
+        "pinop.selectedRuleBorder",
       ),
       overviewRulerLane: host.overviewRulerLaneRight,
     },
     context: {
       backgroundColor: host.createThemeColor(
-        "browser2ide.parentRuleBackground",
+        "pinop.parentRuleBackground",
       ),
-      borderColor: host.createThemeColor("browser2ide.parentRuleBorder"),
+      borderColor: host.createThemeColor("pinop.parentRuleBorder"),
       borderStyle: "solid",
       borderWidth: "0 0 0 2px",
       overviewRulerColor: host.createThemeColor(
-        "browser2ide.parentRuleBorder",
+        "pinop.parentRuleBorder",
       ),
       overviewRulerLane: host.overviewRulerLaneRight,
     },

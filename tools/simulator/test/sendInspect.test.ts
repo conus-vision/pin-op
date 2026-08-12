@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import inspectCardFixture from "../fixtures/inspect-card.json";
 import {
   buildInspectMessage,
@@ -28,7 +28,7 @@ describe("inspect-card fixture", () => {
       sourceId: "simulator-test",
     });
 
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(message).toMatchObject({
       protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
@@ -118,7 +118,7 @@ describe("sendInspect CLI parsing", () => {
       command: "send",
       linkCode: "48735-07",
       fixture: "inspect-card",
-      sourceId: "browser2ide-simulator",
+      sourceId: "pinop-simulator",
     });
   });
 

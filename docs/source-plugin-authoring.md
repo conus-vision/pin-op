@@ -1,30 +1,30 @@
-# Browser2IDE Source Plugin Authoring
+# PinOp Source Plugin Authoring
 
 Source plugins connect runtime facts from a browser selection to ranges in the
 active VS Code document. A plugin is a separately installed VS Code extension;
-Browser2IDE never loads plugin code or packages from the inspected workspace.
+PinOp never loads plugin code or packages from the inspected workspace.
 
 Only CSS and SCSS plugins ship as production implementations today. The public
 API is intentionally general enough for framework and template integrations.
 
 ## Extension Setup
 
-Declare the Browser2IDE core extension as a dependency. The canonical extension
-identifier is `browser2ide.browser2ide-vscode`.
+Declare the PinOp core extension as a dependency. The canonical extension
+identifier is `conus-vision.pinop`.
 
 ```json
 {
   "publisher": "example",
-  "name": "browser2ide-twig",
+  "name": "pinop-twig",
   "version": "0.1.0",
   "engines": { "vscode": "^1.85.0" },
   "main": "./dist/extension.cjs",
-  "extensionDependencies": ["browser2ide.browser2ide-vscode"],
+  "extensionDependencies": ["conus-vision.pinop"],
   "activationEvents": ["onLanguage:twig"]
 }
 ```
 
-During repository development, depend on `@browser2ide/plugin-api` with
+During repository development, depend on `@pinop/plugin-api` with
 `workspace:*`. After the first package release, use its published compatible
 semver range. Keep `vscode` external when bundling. The API package contains
 plain TypeScript contracts and can be imported by tests without starting VS
@@ -41,10 +41,10 @@ match.
 import * as vscode from "vscode";
 import {
   SOURCE_PLUGIN_API_VERSION,
-  type Browser2IDEApi,
+  type PinOpApi,
   type SourceMatch,
   type SourcePlugin,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 
 const twigPlugin: SourcePlugin = {
   id: "example.twig-source",
@@ -117,14 +117,14 @@ const twigPlugin: SourcePlugin = {
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  const core = vscode.extensions.getExtension<Browser2IDEApi>(
-    "browser2ide.browser2ide-vscode",
+  const core = vscode.extensions.getExtension<PinOpApi>(
+    "conus-vision.pinop",
   );
-  if (!core) throw new Error("Browser2IDE core extension is unavailable");
+  if (!core) throw new Error("PinOp core extension is unavailable");
 
   const api = await core.activate();
   if (api.apiVersion !== SOURCE_PLUGIN_API_VERSION) {
-    throw new Error(`Unsupported Browser2IDE API version: ${api.apiVersion}`);
+    throw new Error(`Unsupported PinOp API version: ${api.apiVersion}`);
   }
 
   context.subscriptions.push(api.registerSourcePlugin(twigPlugin));
@@ -138,7 +138,7 @@ the core can clear results when the extension is deactivated.
 
 ## Resolution Contract
 
-Browser2IDE uses document-first dispatch:
+PinOp uses document-first dispatch:
 
 1. The current browser selection is retained independently of the editor.
 2. The active document filters plugins by `languageId` and URI scheme.
@@ -272,7 +272,7 @@ A valid WordPress ACF block fact:
 ```
 
 The current phase defines the wire envelope but not a browser-side third-party
-producer API. Framework facts can come from a Browser2IDE browser adapter or
+producer API. Framework facts can come from a PinOp browser adapter or
 development-only application instrumentation.
 
 ## Ecosystem Recipes
@@ -323,12 +323,12 @@ stronger confidence.
 
 ## Versioning And Distribution
 
-The repository's `0.1.0` `@browser2ide/plugin-api` and
-`@browser2ide/protocol` packages are currently private workspace packages. The
+The repository's `0.1.0` `@pinop/plugin-api` and
+`@pinop/protocol` packages are currently private workspace packages. The
 fixture proves the cross-extension runtime boundary, but an independently
 published Marketplace plugin cannot consume them from npm yet.
 
-Before third-party distribution, Browser2IDE will publish both packages
+Before third-party distribution, PinOp will publish both packages
 together, replace internal `workspace:*` references with compatible semver
 ranges in the published manifests, and document the supported core extension
 version. Package semver describes source/package compatibility;
@@ -354,6 +354,6 @@ corepack pnpm test:integration
 ```
 
 That command builds the core and fixture, launches VS Code 1.124.2, activates
-the external fixture through `browser2ide.browser2ide-vscode`, and verifies API
+the external fixture through `conus-vision.pinop`, and verifies API
 version and registration. Node.js 22 or newer is required by the integration
 test runner.

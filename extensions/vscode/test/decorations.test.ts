@@ -12,12 +12,12 @@ describe("source decorations", () => {
     harness.manager.update(
       harness.firstEditor,
       snapshot([
-        resolvedMatch("selected", shared, "browser2ide.scss"),
-        resolvedMatch("parent", shared, "browser2ide.scss"),
+        resolvedMatch("selected", shared, "pinop.scss"),
+        resolvedMatch("parent", shared, "pinop.scss"),
         resolvedMatch(
           "parent",
           range(4, 0, 6, 1),
-          "browser2ide.scss",
+          "pinop.scss",
         ),
       ]),
     );

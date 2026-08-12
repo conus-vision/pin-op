@@ -26,7 +26,7 @@ const runtimeOptions = await resolveVSCodeTestRuntimeOptions(
   repositoryRoot,
 );
 
-const smokeRoot = await mkdtemp(join(tmpdir(), "browser2ide-vsix-smoke-"));
+const smokeRoot = await mkdtemp(join(tmpdir(), "pinop-vsix-smoke-"));
 const extensionsDirectory = join(smokeRoot, "extensions");
 const userDataDirectory = join(smokeRoot, "user-data");
 const harnessDirectory = join(smokeRoot, "harness");
@@ -42,8 +42,8 @@ try {
   await installVerifiedVsix(artifactPath, extensionsDirectory);
 
   const harnessManifest = {
-    name: "browser2ide-installed-smoke",
-    publisher: "browser2ide-smoke",
+    name: "pinop-installed-smoke",
+    publisher: "pinop-smoke",
     version: "0.0.0",
     engines: { vscode: "^1.85.0" },
     main: "./extension.cjs",
@@ -67,9 +67,9 @@ try {
         'const { join } = require("node:path");',
         "exports.run = async function () {",
         "  const extension = vscode.extensions.getExtension(",
-        '    "browser2ide.browser2ide-vscode",',
+        '    "conus-vision.pinop",',
         "  );",
-        '  if (!extension) throw new Error("Installed Browser2IDE VSIX was not found");',
+        '  if (!extension) throw new Error("Installed PinOp VSIX was not found");',
         "  const metadataText = readFileSync(",
         '    join(extension.extensionPath, "dist", "runtime-metadata.json"),',
         '    "utf8",',
@@ -78,14 +78,14 @@ try {
         "  try {",
         "    metadata = JSON.parse(metadataText);",
         "  } catch (error) {",
-        '    throw new Error(`Installed Browser2IDE metadata is invalid JSON: ${error.message}`);',
+        '    throw new Error(`Installed PinOp metadata is invalid JSON: ${error.message}`);',
         "  }",
         "  const metadataKeys = Object.keys(metadata).sort();",
         '  if (JSON.stringify(metadataKeys) !== JSON.stringify(["protocolVersion", "schemaVersion"])) {',
-        '    throw new Error(`Installed Browser2IDE metadata has unexpected keys: ${metadataKeys.join(", ")}`);',
+        '    throw new Error(`Installed PinOp metadata has unexpected keys: ${metadataKeys.join(", ")}`);',
         "  }",
         "  if (metadata.schemaVersion !== 1 || metadata.protocolVersion !== 5) {",
-        '    throw new Error(`Installed Browser2IDE metadata expected schema 1/protocol 5, found ${metadata.schemaVersion}/${metadata.protocolVersion}`);',
+        '    throw new Error(`Installed PinOp metadata expected schema 1/protocol 5, found ${metadata.schemaVersion}/${metadata.protocolVersion}`);',
         "  }",
         "  const bundleText = readFileSync(",
         '    join(extension.extensionPath, "dist", "extension.cjs"),',
@@ -93,16 +93,16 @@ try {
         "  );",
         '  for (const marker of ["source-navigation", "source.navigate", "source.navigationState"]) {',
         "    if (!bundleText.includes(marker)) {",
-        '      throw new Error(`Installed Browser2IDE bundle is missing ${marker}`);',
+        '      throw new Error(`Installed PinOp bundle is missing ${marker}`);',
         "    }",
         "  }",
         "  const api = await extension.activate();",
-        '  if (!extension.isActive) throw new Error("Browser2IDE did not activate");',
+        '  if (!extension.isActive) throw new Error("PinOp did not activate");',
         '  if (!api || typeof api.registerSourcePlugin !== "function") {',
-        '    throw new Error("Browser2IDE returned an invalid public API");',
+        '    throw new Error("PinOp returned an invalid public API");',
         "  }",
-        '  console.log("INSTALLED_VSIX_PROTOCOL_V5_OK browser2ide.browser2ide-vscode");',
-        '  console.log("INSTALLED_VSIX_ACTIVATION_OK browser2ide.browser2ide-vscode");',
+        '  console.log("INSTALLED_VSIX_PROTOCOL_V5_OK conus-vision.pinop");',
+        '  console.log("INSTALLED_VSIX_ACTIVATION_OK conus-vision.pinop");',
         "};",
         "",
       ].join("\n"),

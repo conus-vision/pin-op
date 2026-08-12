@@ -83,7 +83,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          SETTINGS_JSON="$RUNNER_TEMP/browser2ide-immutable-releases.json"
+          SETTINGS_JSON="$RUNNER_TEMP/pinop-immutable-releases.json"
           test ! -e "$SETTINGS_JSON"
           gh api --method GET "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$SETTINGS_JSON"
           jq -e '.enabled == true' "$SETTINGS_JSON" > /dev/null
@@ -130,7 +130,7 @@ jobs:
           RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
           printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           printf 'release_commit=%s\n' "$TAG_COMMIT" >> "$GITHUB_OUTPUT"
-          printf 'unsigned_artifact_name=browser2ide-unsigned-release-%s-run-%s\n' \
+          printf 'unsigned_artifact_name=pinop-unsigned-release-%s-run-%s\n' \
             "$RELEASE_TAG" "$CURRENT_RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Build
@@ -152,7 +152,7 @@ jobs:
         run: corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
 
       - name: Test Chrome manifest and adapter
-        run: corepack pnpm --filter browser2ide-chrome test -- manifest.test.ts adapter.test.ts
+        run: corepack pnpm --filter pinop-chrome test -- manifest.test.ts adapter.test.ts
 
       - name: Rebuild and verify unsigned artifacts
         run: corepack pnpm package
@@ -168,8 +168,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-validation-release"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-validation-release.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-validation-release"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-validation-release.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -183,8 +183,8 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-validation-release"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-validation-release.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-validation-release"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-validation-release.json"
           if [[ "$MODE" = "sign" ]]; then
             RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs unsigned \
               "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" \
@@ -194,10 +194,10 @@ jobs:
               "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" \
               --compare-unsigned-artifacts artifacts)"
             node tools/verify-signed-firefox.mjs \
-              "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
-              "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+              "$RELEASE_DIR/pinop-firefox-${RELEASE_VERSION}.zip" \
+              "$RELEASE_DIR/pinop-firefox-${RELEASE_VERSION}.xpi" \
               "$RELEASE_VERSION" \
-              "browser2ide@local"
+              "info@conus.vision"
           fi
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
           printf 'release_database_id=%s\n' "$RELEASE_DATABASE_ID" >> "$GITHUB_OUTPUT"
@@ -207,10 +207,10 @@ jobs:
           set -euo pipefail
           test ! -e release-bundle
           mkdir -p release-bundle/artifacts release-bundle/tools
-          cp -- artifacts/browser2ide-vscode-${{ steps.release.outputs.version }}.vsix release-bundle/artifacts/
-          cp -- artifacts/browser2ide-chrome-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
-          cp -- artifacts/browser2ide-firefox-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
-          cp -- artifacts/browser2ide-firefox-source-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/pinop-vscode-${{ steps.release.outputs.version }}.vsix release-bundle/artifacts/
+          cp -- artifacts/pinop-chrome-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/pinop-firefox-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/pinop-firefox-source-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
           cp -- artifacts/SHA256SUMS release-bundle/artifacts/
           cp -- \
             tools/release-policy.mjs \
@@ -283,8 +283,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-signing-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-signing-unsigned.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -297,8 +297,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-signing-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-signing-unsigned.json"
           node release-bundle/tools/verify-release-assets.mjs unsigned \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
@@ -315,7 +315,7 @@ jobs:
           RESUME_RUN_ID: ${{ inputs.resume_run_id }}
         run: |
           set -euo pipefail
-          RUN_JSON="$RUNNER_TEMP/browser2ide-resume-run.json"
+          RUN_JSON="$RUNNER_TEMP/pinop-resume-run.json"
           test ! -e "$RUN_JSON"
           gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${RESUME_RUN_ID}" > "$RUN_JSON"
 
@@ -323,7 +323,7 @@ jobs:
         if: inputs.resume_run_id != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: browser2ide-amo-state-${{ inputs.tag }}-run-${{ inputs.resume_run_id }}
+          name: pinop-amo-state-${{ inputs.tag }}-run-${{ inputs.resume_run_id }}
           path: extensions/firefox
           github-token: ${{ github.token }}
           run-id: ${{ inputs.resume_run_id }}
@@ -340,7 +340,7 @@ jobs:
           node tools/amo-signing-state.mjs validate-resume \
             extensions/firefox/.amo-upload-uuid \
             extensions/firefox/.amo-upload-provenance.json \
-            "$RUNNER_TEMP/browser2ide-resume-run.json" \
+            "$RUNNER_TEMP/pinop-resume-run.json" \
             "$GITHUB_REPOSITORY" \
             ".github/workflows/firefox-sign.yml" \
             "workflow_dispatch" \
@@ -374,7 +374,7 @@ jobs:
             --channel=unlisted \
             --source-dir=. \
             --artifacts-dir=../../artifacts/firefox-signed \
-            --upload-source-code="../../release-bundle/artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
+            --upload-source-code="../../release-bundle/artifacts/pinop-firefox-source-${RELEASE_VERSION}.zip" \
             --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**" \
             --no-config-discovery \
             --no-input \
@@ -392,7 +392,7 @@ jobs:
           WORKFLOW_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          STATE_DIRECTORY="$RUNNER_TEMP/browser2ide-amo-state"
+          STATE_DIRECTORY="$RUNNER_TEMP/pinop-amo-state"
           test ! -e "$STATE_DIRECTORY"
           node tools/amo-signing-state.mjs preserve-bundle \
             extensions/firefox/.amo-upload-uuid \
@@ -409,8 +409,8 @@ jobs:
         if: always() && steps.preserve_state.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: browser2ide-amo-state-${{ inputs.tag }}-run-${{ github.run_id }}
-          path: ${{ runner.temp }}/browser2ide-amo-state/
+          name: pinop-amo-state-${{ inputs.tag }}-run-${{ github.run_id }}
+          path: ${{ runner.temp }}/pinop-amo-state/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
@@ -422,14 +422,14 @@ jobs:
           set -euo pipefail
           mapfile -d '' -t XPI_FILES < <(find artifacts/firefox-signed -maxdepth 1 -type f -name '*.xpi' -print0)
           test "${#XPI_FILES[@]}" -eq 1
-          SIGNED_XPI="artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+          SIGNED_XPI="artifacts/pinop-firefox-${RELEASE_VERSION}.xpi"
           test ! -e "$SIGNED_XPI"
           mv -- "${XPI_FILES[0]}" "$SIGNED_XPI"
           node tools/verify-signed-firefox.mjs \
-            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/pinop-firefox-${RELEASE_VERSION}.zip" \
             "$SIGNED_XPI" \
             "$RELEASE_VERSION" \
-            "browser2ide@local"
+            "info@conus.vision"
 
       - name: Create immutable signed XPI provenance
         id: provenance
@@ -443,10 +443,10 @@ jobs:
           WORKFLOW_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          PROVENANCE_DIR="$RUNNER_TEMP/browser2ide-signed-xpi-provenance"
+          PROVENANCE_DIR="$RUNNER_TEMP/pinop-signed-xpi-provenance"
           ARTIFACT_NAME="$(node tools/release-signing-provenance.mjs artifact-name "$RELEASE_TAG" "$CURRENT_RUN_ID")"
           XPI_SHA256="$(node tools/release-signing-provenance.mjs create-bundle \
-            "artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "artifacts/pinop-firefox-${RELEASE_VERSION}.xpi" \
             "$PROVENANCE_DIR" \
             "$GITHUB_REPOSITORY" \
             ".github/workflows/firefox-sign.yml" \
@@ -465,7 +465,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.provenance.outputs.artifact_name }}
-          path: ${{ runner.temp }}/browser2ide-signed-xpi-provenance/
+          path: ${{ runner.temp }}/pinop-signed-xpi-provenance/
           if-no-files-found: error
           retention-days: 90
 
@@ -522,8 +522,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-unsigned"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-unsigned.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-attach-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-attach-unsigned.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -536,8 +536,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-unsigned"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-unsigned.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-attach-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-attach-unsigned.json"
           node release-bundle/tools/verify-release-assets.mjs unsigned \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
@@ -551,7 +551,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          cp -- "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi" release-bundle/artifacts/
+          cp -- "signed-xpi-provenance/pinop-firefox-${RELEASE_VERSION}.xpi" release-bundle/artifacts/
           node release-bundle/tools/write-checksums.mjs release-bundle/artifacts
 
       - name: Upload signed XPI to draft
@@ -561,7 +561,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           gh release upload "$RELEASE_TAG" \
-            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "release-bundle/artifacts/pinop-firefox-${RELEASE_VERSION}.xpi" \
             release-bundle/artifacts/SHA256SUMS \
             --clobber
 
@@ -571,8 +571,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-signed"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-signed.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-attach-signed"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-attach-signed.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -585,8 +585,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-signed"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-signed.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-attach-signed"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-attach-signed.json"
           node release-bundle/tools/verify-release-assets.mjs signed \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
@@ -595,8 +595,8 @@ jobs:
             --compare-all release-bundle/artifacts
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
           cmp -- \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
-            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+            "$RELEASE_DIR/pinop-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/pinop-firefox-${RELEASE_VERSION}.xpi"
 
   publish:
     needs: validate
@@ -622,14 +622,14 @@ jobs:
           SIGN_RUN_ID: ${{ inputs.sign_run_id }}
         run: |
           set -euo pipefail
-          RUN_JSON="$RUNNER_TEMP/browser2ide-sign-run.json"
+          RUN_JSON="$RUNNER_TEMP/pinop-sign-run.json"
           test ! -e "$RUN_JSON"
           gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${SIGN_RUN_ID}" > "$RUN_JSON"
 
       - name: Restore immutable signed XPI provenance
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: browser2ide-signed-xpi-${{ inputs.tag }}-run-${{ inputs.sign_run_id }}
+          name: pinop-signed-xpi-${{ inputs.tag }}-run-${{ inputs.sign_run_id }}
           path: signed-xpi-provenance
           github-token: ${{ github.token }}
           run-id: ${{ inputs.sign_run_id }}
@@ -646,7 +646,7 @@ jobs:
           set -euo pipefail
           RELEASE_DATABASE_ID="$(node release-bundle/tools/release-signing-provenance.mjs validate-publish \
             signed-xpi-provenance \
-            "$RUNNER_TEMP/browser2ide-sign-run.json" \
+            "$RUNNER_TEMP/pinop-sign-run.json" \
             "$GITHUB_REPOSITORY" \
             ".github/workflows/firefox-sign.yml" \
             "workflow_dispatch" \
@@ -663,8 +663,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-publish-initial"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-publish-initial.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -677,8 +677,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
+          RELEASE_DIR="$RUNNER_TEMP/pinop-publish-initial"
+          RELEASE_JSON="$RUNNER_TEMP/pinop-publish-initial.json"
           node release-bundle/tools/verify-release-assets.mjs signed \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
@@ -687,8 +687,8 @@ jobs:
             --compare-unsigned-artifacts release-bundle/artifacts
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
           cmp -- \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
-            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+            "$RELEASE_DIR/pinop-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/pinop-firefox-${RELEASE_VERSION}.xpi"
 
       - name: Verify and publish immutable release by ID
         env:
@@ -703,16 +703,16 @@ jobs:
           set -euo pipefail
           [[ "$EXPECTED_RELEASE_DATABASE_ID" =~ ^[1-9][0-9]*$ ]]
 
-          BEFORE_JSON="$RUNNER_TEMP/browser2ide-publication-before.json"
-          PATCH_JSON="$RUNNER_TEMP/browser2ide-publication-after-patch.json"
-          AFTER_JSON="$RUNNER_TEMP/browser2ide-publication-after.json"
-          BEFORE_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json"
-          PATCH_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after-patch.fingerprint.json"
-          AFTER_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
-          BEFORE_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-before.checksums.json"
-          AFTER_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after.checksums.json"
-          BEFORE_DIR="$RUNNER_TEMP/browser2ide-publication-before-assets"
-          AFTER_DIR="$RUNNER_TEMP/browser2ide-publication-after-assets"
+          BEFORE_JSON="$RUNNER_TEMP/pinop-publication-before.json"
+          PATCH_JSON="$RUNNER_TEMP/pinop-publication-after-patch.json"
+          AFTER_JSON="$RUNNER_TEMP/pinop-publication-after.json"
+          BEFORE_FINGERPRINT="$RUNNER_TEMP/pinop-publication-before.fingerprint.json"
+          PATCH_FINGERPRINT="$RUNNER_TEMP/pinop-publication-after-patch.fingerprint.json"
+          AFTER_FINGERPRINT="$RUNNER_TEMP/pinop-publication-after.fingerprint.json"
+          BEFORE_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/pinop-publication-before.checksums.json"
+          AFTER_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/pinop-publication-after.checksums.json"
+          BEFORE_DIR="$RUNNER_TEMP/pinop-publication-before-assets"
+          AFTER_DIR="$RUNNER_TEMP/pinop-publication-after-assets"
           for PATH_TO_CREATE in \
             "$BEFORE_JSON" \
             "$PATCH_JSON" \
@@ -729,11 +729,11 @@ jobs:
           mkdir "$BEFORE_DIR" "$AFTER_DIR"
 
           ASSET_NAMES=(
-            "browser2ide-chrome-${RELEASE_VERSION}.zip"
-            "browser2ide-firefox-${RELEASE_VERSION}.zip"
-            "browser2ide-firefox-${RELEASE_VERSION}.xpi"
-            "browser2ide-firefox-source-${RELEASE_VERSION}.zip"
-            "browser2ide-vscode-${RELEASE_VERSION}.vsix"
+            "pinop-chrome-${RELEASE_VERSION}.zip"
+            "pinop-firefox-${RELEASE_VERSION}.zip"
+            "pinop-firefox-${RELEASE_VERSION}.xpi"
+            "pinop-firefox-source-${RELEASE_VERSION}.zip"
+            "pinop-vscode-${RELEASE_VERSION}.vsix"
             "SHA256SUMS"
           )
 
@@ -766,17 +766,17 @@ jobs:
             "$BEFORE_DIR" "$RELEASE_VERSION" \
             > "$BEFORE_CHECKSUM_FINGERPRINT"
           (cd "$BEFORE_DIR" && sha256sum --check --strict SHA256SUMS)
-          cmp -- "$BEFORE_DIR/browser2ide-chrome-${RELEASE_VERSION}.zip" \
-            "release-bundle/artifacts/browser2ide-chrome-${RELEASE_VERSION}.zip"
-          cmp -- "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
-            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.zip"
-          cmp -- "$BEFORE_DIR/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
-            "release-bundle/artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip"
-          cmp -- "$BEFORE_DIR/browser2ide-vscode-${RELEASE_VERSION}.vsix" \
-            "release-bundle/artifacts/browser2ide-vscode-${RELEASE_VERSION}.vsix"
-          cmp -- "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
-            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
-          test "$(sha256sum "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" | cut -d ' ' -f 1)" = \
+          cmp -- "$BEFORE_DIR/pinop-chrome-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/pinop-chrome-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/pinop-firefox-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/pinop-firefox-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/pinop-firefox-source-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/pinop-firefox-source-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/pinop-vscode-${RELEASE_VERSION}.vsix" \
+            "release-bundle/artifacts/pinop-vscode-${RELEASE_VERSION}.vsix"
+          cmp -- "$BEFORE_DIR/pinop-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/pinop-firefox-${RELEASE_VERSION}.xpi"
+          test "$(sha256sum "$BEFORE_DIR/pinop-firefox-${RELEASE_VERSION}.xpi" | cut -d ' ' -f 1)" = \
             "$VERIFIED_XPI_SHA256"
 
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}" \
@@ -798,11 +798,11 @@ jobs:
             "$EXPECTED_RELEASE_TARGET" \
             > "$AFTER_FINGERPRINT"
           cmp -- \
-            "$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json" \
-            "$RUNNER_TEMP/browser2ide-publication-after-patch.fingerprint.json"
+            "$RUNNER_TEMP/pinop-publication-before.fingerprint.json" \
+            "$RUNNER_TEMP/pinop-publication-after-patch.fingerprint.json"
           cmp -- \
-            "$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json" \
-            "$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
+            "$RUNNER_TEMP/pinop-publication-before.fingerprint.json" \
+            "$RUNNER_TEMP/pinop-publication-after.fingerprint.json"
 
           download_release_assets "$AFTER_JSON" "$AFTER_DIR"
           env -u GH_TOKEN node release-bundle/tools/verify-publication-checksums.mjs \
@@ -813,5 +813,5 @@ jobs:
             cmp -- "$BEFORE_DIR/$asset_name" "$AFTER_DIR/$asset_name"
           done
           cmp -- \
-            "$RUNNER_TEMP/browser2ide-publication-before.checksums.json" \
-            "$RUNNER_TEMP/browser2ide-publication-after.checksums.json"
+            "$RUNNER_TEMP/pinop-publication-before.checksums.json" \
+            "$RUNNER_TEMP/pinop-publication-after.checksums.json"

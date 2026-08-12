@@ -9,12 +9,13 @@ describe("Firefox extension manifest", () => {
 
     expect(manifest).toMatchObject({
       manifest_version: 3,
-      name: "Browser2IDE",
+      name: "PinOp",
+      description: "Connect browser DevTools to your source code.",
       devtools_page: "dist/devtools.html",
       background: { scripts: ["dist/background.js"] },
       browser_specific_settings: {
         gecko: {
-          id: "browser2ide@local",
+          id: "info@conus.vision",
           strict_min_version: "142.0",
           data_collection_permissions: {
             required: ["websiteContent", "websiteActivity"],
@@ -23,6 +24,13 @@ describe("Firefox extension manifest", () => {
       },
     });
     expect(manifest.background.service_worker).toBeUndefined();
+    expect(manifest.icons).toEqual({
+      16: "dist/icons/pinop-16.png",
+      32: "dist/icons/pinop-32.png",
+      48: "dist/icons/pinop-48.png",
+      96: "dist/icons/pinop-96.png",
+      128: "dist/icons/pinop-128.png",
+    });
     expect(manifest.permissions).toEqual([
       "activeTab",
       "clipboardRead",

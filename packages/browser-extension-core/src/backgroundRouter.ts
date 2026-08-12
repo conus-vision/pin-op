@@ -7,7 +7,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   BrowserProtocolError,
   type InspectPayload,
@@ -208,12 +208,12 @@ interface PanelCommandRecord {
 
 type PanelWindowCommand =
   | {
-      readonly type: "browser2ide.linkWindow";
+      readonly type: "pinop.linkWindow";
       readonly channel: string;
       readonly code: string;
     }
   | {
-      readonly type: "browser2ide.unlinkWindow";
+      readonly type: "pinop.unlinkWindow";
       readonly channel: string;
     };
 
@@ -964,7 +964,7 @@ export class BackgroundRouter {
     }
     try {
       record.port.postMessage({
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId: request.requestId,
         ok: false,
         error: "stalePanel",
@@ -993,7 +993,7 @@ export class BackgroundRouter {
       return { ok: false, error: "busy" };
     }
 
-    if (command.type === "browser2ide.linkWindow") {
+    if (command.type === "pinop.linkWindow") {
       try {
         parseLinkCode(command.code);
       } catch {
@@ -1051,7 +1051,7 @@ export class BackgroundRouter {
       dispatchedBinding = refreshed;
       dispatchedCommand = dispatchedRecord;
 
-      if (command.type === "browser2ide.linkWindow") {
+      if (command.type === "pinop.linkWindow") {
         await this.coordinator.linkWindow(
           refreshed.windowId,
           command.code,
@@ -1102,7 +1102,7 @@ export class BackgroundRouter {
       }
       const commandError = sanitizedCommandError(error);
       if (commandError === "error") {
-        this.reportError(new Error("Browser2IDE panel command failed"));
+        this.reportError(new Error("PinOp panel command failed"));
       }
       return { ok: false, error: commandError };
     } finally {
@@ -1427,7 +1427,7 @@ export class BackgroundRouter {
     }
     try {
       record.port.postMessage({
-        type: "browser2ide.inspect.result",
+        type: "pinop.inspect.result",
         requestId,
         ok: false,
         error: "stalePanel",
@@ -1615,7 +1615,7 @@ export class BackgroundRouter {
         state,
       );
       const windowStateMessage: Record<string, unknown> = {
-        type: "browser2ide.windowState",
+        type: "pinop.windowState",
         state,
       };
       if (displayLinkCode !== undefined) {
@@ -2029,7 +2029,7 @@ function parseRegistrationMessage(
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["type", "channel", "tabId", "sourceId"]) ||
-    value.type !== "browser2ide.registerDevtools" ||
+    value.type !== "pinop.registerDevtools" ||
     !isValidDevtoolsChannel(value.channel) ||
     !isBrowserId(value.tabId) ||
     typeof value.sourceId !== "string"
@@ -2057,23 +2057,23 @@ function parsePanelWindowCommand(
     return undefined;
   }
   if (
-    value.type === "browser2ide.linkWindow" &&
+    value.type === "pinop.linkWindow" &&
     hasOnlyKeys(value, ["type", "channel", "code"]) &&
     typeof value.code === "string" &&
     /^[0-9]{7}$/.test(value.code)
   ) {
     return {
-      type: "browser2ide.linkWindow",
+      type: "pinop.linkWindow",
       channel: value.channel,
       code: value.code,
     };
   }
   if (
-    value.type === "browser2ide.unlinkWindow" &&
+    value.type === "pinop.unlinkWindow" &&
     hasOnlyKeys(value, ["type", "channel"])
   ) {
     return {
-      type: "browser2ide.unlinkWindow",
+      type: "pinop.unlinkWindow",
       channel: value.channel,
     };
   }
@@ -2146,7 +2146,7 @@ function parseContentDomEventMessage(
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["type", "contentSessionId", "event"]) ||
-    value.type !== "browser2ide.dom.event" ||
+    value.type !== "pinop.dom.event" ||
     !isValidContentSessionId(value.contentSessionId)
   ) {
     return undefined;

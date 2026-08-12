@@ -3,7 +3,7 @@ import {
   INSPECT_LIMITS,
   RuntimeFactSchema,
   type CssRuleFact,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { collectCssFacts } from "../src/collectCssFacts.js";
 
 describe("collectCssFacts", () => {

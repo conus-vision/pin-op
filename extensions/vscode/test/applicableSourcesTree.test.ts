@@ -15,14 +15,14 @@ describe("ApplicableSourcesTreeDataProvider", () => {
     const selected = resolvedMatch(
       "selected",
       range(0, 0, 2, 1),
-      "browser2ide.scss",
+      "pinop.scss",
       ".card",
       "sourcemap",
     );
     const parent = resolvedMatch(
       "parent",
       range(4, 0, 6, 1),
-      "browser2ide.scss",
+      "pinop.scss",
       ".layout",
       "sourcemap",
     );
@@ -41,12 +41,12 @@ describe("ApplicableSourcesTreeDataProvider", () => {
       "SCSS source map was not found",
     ]);
     expect(items.map((item) => item.description)).toEqual([
-      "sourcemap - browser2ide.scss",
-      "sourcemap - browser2ide.scss",
-      "warning - browser2ide.scss",
+      "sourcemap - pinop.scss",
+      "sourcemap - pinop.scss",
+      "warning - pinop.scss",
     ]);
     expect(items[0]?.command).toEqual({
-      command: "browser2ide.revealSourceMatch",
+      command: "pinop.revealSourceMatch",
       title: "Reveal Source Match",
       arguments: [stableSourceMatchId(snapshot([selected]), selected)],
     });
@@ -113,7 +113,7 @@ function resolvedMatch(
 
 function diagnostic(code: string): ResolvedPluginDiagnostic {
   return {
-    pluginId: "browser2ide.scss",
+    pluginId: "pinop.scss",
     code,
     message: "SCSS source map was not found",
     severity: "warning",

@@ -14,7 +14,7 @@ export interface StatusBarHost {
 }
 
 const INVALID_LINK_CODE_MESSAGE =
-  "Cannot display an invalid Browser2IDE link code";
+  "Cannot display an invalid PinOp link code";
 
 export function formatVisibleLinkCode(port: number, pin: string): string {
   if (
@@ -48,29 +48,29 @@ export class StatusBarController {
 
     switch (snapshot.state) {
       case "running":
-        primary.text = `$(radio-tower) Browser2IDE: ${formatVisibleLinkCode(
+        primary.text = `$(radio-tower) PinOp: ${formatVisibleLinkCode(
           snapshot.port ?? Number.NaN,
           snapshot.pin ?? "",
         )}`;
-        primary.command = "browser2ide.copyLinkCode";
+        primary.command = "pinop.copyLinkCode";
         toggle.text = "$(debug-stop)";
-        toggle.tooltip = "Stop Browser2IDE";
-        toggle.command = "browser2ide.stop";
+        toggle.tooltip = "Stop PinOp";
+        toggle.command = "pinop.stop";
         return;
       case "starting":
-        primary.text = "$(radio-tower) Browser2IDE: Starting";
+        primary.text = "$(radio-tower) PinOp: Starting";
         toggle.text = "$(sync~spin)";
         return;
       case "stopping":
-        primary.text = "$(radio-tower) Browser2IDE: Stopping";
+        primary.text = "$(radio-tower) PinOp: Stopping";
         toggle.text = "$(sync~spin)";
         return;
       case "stopped":
       case "error":
-        primary.text = "$(radio-tower) Browser2IDE: Offline";
+        primary.text = "$(radio-tower) PinOp: Offline";
         toggle.text = "$(play)";
-        toggle.tooltip = "Start Browser2IDE";
-        toggle.command = "browser2ide.start";
+        toggle.tooltip = "Start PinOp";
+        toggle.command = "pinop.start";
         return;
     }
   }
@@ -84,7 +84,7 @@ export class StatusBarController {
 }
 
 function tooltipFor(snapshot: BridgeSnapshot): string {
-  const details = [`Browser2IDE state: ${snapshot.state}`];
+  const details = [`PinOp state: ${snapshot.state}`];
   if (snapshot.url !== undefined) details.push(`URL: ${snapshot.url}`);
   if (snapshot.sessionId !== undefined) {
     details.push(`session: ${snapshot.sessionId}`);

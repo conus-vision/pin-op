@@ -234,11 +234,11 @@ function expectedReleaseAssetNames(version, includeSignedXpi) {
   }
   return [
     "SHA256SUMS",
-    `browser2ide-chrome-${version}.zip`,
-    `browser2ide-firefox-${version}.zip`,
-    `browser2ide-firefox-source-${version}.zip`,
-    `browser2ide-vscode-${version}.vsix`,
-    ...(includeSignedXpi ? [`browser2ide-firefox-${version}.xpi`] : []),
+    `pinop-chrome-${version}.zip`,
+    `pinop-firefox-${version}.zip`,
+    `pinop-firefox-source-${version}.zip`,
+    `pinop-vscode-${version}.vsix`,
+    ...(includeSignedXpi ? [`pinop-firefox-${version}.xpi`] : []),
   ].sort(compareAscii);
 }
 

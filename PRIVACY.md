@@ -1,13 +1,13 @@
 # Privacy
 
-Browser2IDE has no analytics, telemetry pipeline, account system, or remote
-Browser2IDE service. It exposes no product HTTP endpoint. Product traffic uses
+PinOp has no analytics, telemetry pipeline, account system, or remote
+PinOp service. It exposes no product HTTP endpoint. Product traffic uses
 only a loopback WebSocket between an explicitly linked browser window and the
 local VS Code window selected by the user.
 
 ## Data Sent To VS Code
 
-For a selected element and its immediate DOM parent, Browser2IDE can send these
+For a selected element and its immediate DOM parent, PinOp can send these
 bounded inspection facts:
 
 - the full page URL and route;
@@ -22,11 +22,11 @@ URLs, routes, identifiers, attributes, CSS, and source metadata may contain
 personal data, secrets, or framework state. Do not inspect sensitive pages
 unless sending those values to the linked local VS Code window is acceptable.
 
-Browser2IDE does not deliberately collect cookies, request or response headers,
+PinOp does not deliberately collect cookies, request or response headers,
 form values, DOM text, source-map contents, or workspace source text. The
 browser side sends stylesheet identity and rule evidence. Local VS Code source
 plugins may then read relevant workspace files and source maps to resolve the
-active document. Browser2IDE does not upload workspace source or source maps to
+active document. PinOp does not upload workspace source or source maps to
 a remote service.
 
 ## Browser-Local Inspector Data
@@ -35,7 +35,7 @@ The DOM tree stays browser-local. Element labels, browser-local node refs,
 expansion pages, selection paths, document epochs, branch revisions, and the
 box-model overlay are exchanged only among the DevTools panel, extension
 background, and inspected-tab content runtime. They are not sent over the
-Browser2IDE product WebSocket.
+PinOp product WebSocket.
 
 DOM tree labels show bounded tag, ID, class, and approved attribute names; they
 do not include attribute values or DOM text. Open shadow roots and same-origin
@@ -79,10 +79,10 @@ the picker. Browser-protected pages can still reject injection.
 
 ## Read-Only Design
 
-Browser2IDE does not write or edit page or workspace source and does not execute
+PinOp does not write or edit page or workspace source and does not execute
 page, shell, workspace, or user-supplied commands. It highlights source ranges
 in the document already active in VS Code. These commitments apply to
-Browser2IDE-operated components, not to separately installed source plugins.
+PinOp-operated components, not to separately installed source plugins.
 
 ## Source Plugins
 

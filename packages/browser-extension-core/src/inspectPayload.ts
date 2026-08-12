@@ -1,7 +1,7 @@
 import {
   INSPECT_LIMITS,
   type InspectTarget,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type { InspectPayload } from "./bridgeClient.js";
 import {
   collectCssFacts,

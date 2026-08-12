@@ -1,23 +1,23 @@
 import type {
-  Browser2IdeMessage,
+  PinOpMessage,
   EmptyMetadata,
   PeerStateMessage,
   ResolutionMessage,
   SourceNavigateMessage,
   SourceNavigationDirection,
   SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 // @ts-expect-error Legacy reference envelopes are not part of protocol v5.
-type RemovedReferencesMessage = import("@browser2ide/protocol").ReferencesMessage;
+type RemovedReferencesMessage = import("@pinop/protocol").ReferencesMessage;
 // @ts-expect-error Legacy command envelopes are not part of protocol v5.
-type RemovedCommandMessage = import("@browser2ide/protocol").CommandMessage;
+type RemovedCommandMessage = import("@pinop/protocol").CommandMessage;
 // @ts-expect-error Legacy open-source commands are not part of protocol v5.
-type RemovedOpenSourceCommandMessage = import("@browser2ide/protocol").OpenSourceCommandMessage;
+type RemovedOpenSourceCommandMessage = import("@pinop/protocol").OpenSourceCommandMessage;
 // @ts-expect-error Legacy highlight commands are not part of protocol v5.
-type RemovedHighlightCommandMessage = import("@browser2ide/protocol").HighlightElementCommandMessage;
+type RemovedHighlightCommandMessage = import("@pinop/protocol").HighlightElementCommandMessage;
 // @ts-expect-error Legacy source references are not publicly exported.
-type RemovedSourceReference = import("@browser2ide/protocol").SourceReference;
+type RemovedSourceReference = import("@pinop/protocol").SourceReference;
 
 const emptyMetadata: EmptyMetadata = {};
 
@@ -133,24 +133,24 @@ readonlySourceNavigationState.activeMatchIndex = 1;
 // @ts-expect-error SourceNavigationStateMessage source fields are readonly.
 readonlySourceNavigationState.source.id = "other-ide";
 
-declare const readonlyUnionMessage: Browser2IdeMessage;
+declare const readonlyUnionMessage: PinOpMessage;
 
 if (readonlyUnionMessage.type === "resolution") {
-  // @ts-expect-error Browser2IdeMessage resolution branches are readonly.
+  // @ts-expect-error PinOpMessage resolution branches are readonly.
   readonlyUnionMessage.source.id = "other-ide";
 }
 
 if (readonlyUnionMessage.type === "peerState") {
-  // @ts-expect-error Browser2IdeMessage peer-state branches are readonly.
+  // @ts-expect-error PinOpMessage peer-state branches are readonly.
   readonlyUnionMessage.connected = false;
 }
 
 if (readonlyUnionMessage.type === "source.navigate") {
-  // @ts-expect-error Browser2IdeMessage source-navigation intents are readonly.
+  // @ts-expect-error PinOpMessage source-navigation intents are readonly.
   readonlyUnionMessage.direction = "previous";
 }
 
 if (readonlyUnionMessage.type === "source.navigationState") {
-  // @ts-expect-error Browser2IdeMessage source-navigation states are deeply readonly.
+  // @ts-expect-error PinOpMessage source-navigation states are deeply readonly.
   readonlyUnionMessage.source.id = "other-ide";
 }

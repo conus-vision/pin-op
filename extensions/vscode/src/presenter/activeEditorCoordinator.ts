@@ -3,11 +3,11 @@ import type {
   SelectionSnapshot,
   SourceDocument,
   SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import {
   RESOLUTION_LIMITS,
   type InspectMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   adaptSourceDocument,
   type TextDocumentLike,
@@ -277,7 +277,7 @@ export class ActiveEditorCoordinator implements Disposable {
       if (!this.isCurrent(selection, workGeneration, abort.signal)) return;
       this.reportError(error);
       const diagnostic: ResolvedPluginDiagnostic = {
-        pluginId: "browser2ide.presenter",
+        pluginId: "pinop.presenter",
         code: "plugin.exception",
         message: localErrorMessage(error),
         severity: "error",
@@ -366,7 +366,7 @@ function failureCandidate(
   status: PluginResolutionCandidate["status"],
 ): PluginResolutionCandidate {
   return {
-    pluginId: "browser2ide.presenter",
+    pluginId: "pinop.presenter",
     status,
     matches: [],
     diagnostics: [],
@@ -420,7 +420,7 @@ function invalidRangeDiagnostics(
 ): readonly ResolvedPluginDiagnostic[] {
   if (rejectedMatchCount === 0) return [];
   return [{
-    pluginId: "browser2ide.presenter",
+    pluginId: "pinop.presenter",
     code: "plugin.invalidRange",
     message: `${rejectedMatchCount} source match range(s) were outside the active document`,
     severity: "warning",

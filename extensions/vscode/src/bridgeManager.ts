@@ -4,7 +4,7 @@ import {
   type BridgeServer,
   type BridgeServerOptions,
   type LinkAuthenticatorOptions,
-} from "@browser2ide/bridge";
+} from "@pinop/bridge";
 import type { BridgeConfiguration } from "./config.js";
 
 export const MANAGED_PORT_START = 48_735;
@@ -316,7 +316,7 @@ function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function addressInUseError(): NodeJS.ErrnoException {
-  const error = new Error("All Browser2IDE managed ports are in use") as NodeJS.ErrnoException;
+  const error = new Error("All PinOp managed ports are in use") as NodeJS.ErrnoException;
   error.code = "EADDRINUSE";
   return error;
 }

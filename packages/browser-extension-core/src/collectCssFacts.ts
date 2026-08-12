@@ -2,7 +2,7 @@ import {
   INSPECT_LIMITS,
   type CssRuleFact,
   type ProtocolErrorCode,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   boundedLength,
   consumeJsonBudget,

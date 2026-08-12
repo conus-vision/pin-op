@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import {
   BridgeInstanceIdSchema,
   type ClientRole,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   createAuthorizedToken,
   tokensEqual,

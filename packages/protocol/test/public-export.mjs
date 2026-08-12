@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import * as protocolExports from "@browser2ide/protocol";
+import * as protocolExports from "@pinop/protocol";
 import {
   AuthenticatedMessageSchema,
   BridgeInstanceIdSchema,
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   EmptyMetadataSchema,
   LinkAcceptedMessageSchema,
   LinkRequestMessageSchema,
@@ -22,7 +22,7 @@ import {
   SourceNavigationStateMessageSchema,
   UnlinkMessageSchema,
   parseMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 
 const ping = {
   protocolVersion: PROTOCOL_VERSION,
@@ -34,7 +34,7 @@ const ping = {
 
 assert.deepEqual(parseMessage(ping), ping);
 assert.equal(PROTOCOL_VERSION, 5);
-assert.equal(typeof Browser2IdeMessageSchema.parse, "function");
+assert.equal(typeof PinOpMessageSchema.parse, "function");
 assert.equal(typeof BridgeInstanceIdSchema.parse, "function");
 assert.equal(typeof EmptyMetadataSchema.parse, "function");
 assert.equal(typeof LinkRequestMessageSchema.parse, "function");
@@ -118,7 +118,7 @@ const legacyMessages = [
 
 for (const message of legacyMessages) {
   assert.equal(
-    Browser2IdeMessageSchema.safeParse(message).success,
+    PinOpMessageSchema.safeParse(message).success,
     false,
     `${message.type}/${message.command ?? "references"} must be rejected`,
   );

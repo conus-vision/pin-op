@@ -30,7 +30,7 @@ export {
   ErrorMessageSchema,
   PingMessageSchema,
   PongMessageSchema,
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
 } from "./messages.js";
 export type {
   EmptyMetadata,
@@ -62,7 +62,7 @@ export type {
   ErrorMessage,
   PingMessage,
   PongMessage,
-  Browser2IdeMessage,
+  PinOpMessage,
 } from "./messages.js";
 export * from "./references.js";
 export * from "./capabilities.js";

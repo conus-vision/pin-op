@@ -2,7 +2,7 @@ import type {
   SourceResolutionStrategy,
   SourceUriResolution,
   SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import type { ActiveDocumentSourceKind } from "./types.js";
 
 export interface UriLike {

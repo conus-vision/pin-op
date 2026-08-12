@@ -5,8 +5,8 @@ import {
   type SourcePlugin,
   type SourcePluginContext,
   type SourceUriResolution,
-} from "@browser2ide/plugin-api";
-import type { ResolutionStatus } from "@browser2ide/protocol";
+} from "@pinop/plugin-api";
+import type { ResolutionStatus } from "@pinop/protocol";
 import { targetCssFacts, type TargetCssFact } from "./cssFacts.js";
 import {
   findMatchingCssRules,
@@ -21,8 +21,8 @@ import type { StatusAwareSourcePluginResult } from "./types.js";
 const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class ScssSourcePlugin implements SourcePlugin {
-  public readonly id = "browser2ide.scss";
-  public readonly displayName = "Browser2IDE SCSS";
+  public readonly id = "pinop.scss";
+  public readonly displayName = "PinOp SCSS";
   public readonly apiVersion = SOURCE_PLUGIN_API_VERSION;
   public readonly documentSelectors = [
     { languageId: "scss", scheme: "file" },

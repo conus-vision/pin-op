@@ -3,7 +3,7 @@ import {
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
@@ -377,7 +377,7 @@ describe("PanelInspectTransport DOM integration", () => {
     const currentNavigationState = sourceNavigationState(2, 0);
     const navigationStateWithoutActiveMatch = sourceNavigationState(0);
     const inspectStarted = {
-      type: "browser2ide.inspect.started",
+      type: "pinop.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 4,
     } as const;
@@ -503,7 +503,7 @@ describe("PanelInspectTransport source navigation", () => {
 });
 
 class FakePort implements PanelInspectPort {
-  public readonly name = "browser2ide.devtools.channel-1";
+  public readonly name = "pinop.devtools.channel-1";
   public readonly sent: unknown[] = [];
   public readonly onMessage = new FakeEvent<(message: unknown) => void>();
   public readonly onDisconnect = new FakeEvent<() => void>();
@@ -555,7 +555,7 @@ class FakeEvent<T extends (...args: never[]) => void> {
 
 function sourceNavigateCommand(direction: "previous" | "next") {
   return {
-    type: "browser2ide.source.navigate" as const,
+    type: "pinop.source.navigate" as const,
     inspectMessageId: "inspect-1",
     resolutionGeneration: 2,
     direction,

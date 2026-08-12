@@ -21,7 +21,7 @@ const validState = {
 const releaseCommit = "1".repeat(40);
 const workflowCommit = "2".repeat(40);
 const validProvenanceInput = {
-  repository: "conus-vision/Browser2IDE",
+  repository: "conus-vision/PinOp",
   workflowPath: ".github/workflows/firefox-sign.yml",
   eventName: "workflow_dispatch",
   releaseTag: "v0.3.0",
@@ -37,13 +37,13 @@ const validRun = {
   path: ".github/workflows/firefox-sign.yml@master",
   status: "completed",
   conclusion: "failure",
-  repository: { full_name: "conus-vision/Browser2IDE" },
+  repository: { full_name: "conus-vision/PinOp" },
 };
 
 test("AMO state artifact names use only a validated tag and positive run id", () => {
   assert.equal(
     createAmoStateArtifactName("v0.3.0", "123456789"),
-    "browser2ide-amo-state-v0.3.0-run-123456789",
+    "pinop-amo-state-v0.3.0-run-123456789",
   );
 
   for (const runId of ["", "0", "01", "-1", "1.5", "12x", " 12", "12\n"] ) {
@@ -104,7 +104,7 @@ test("resume provenance is bound to repository, workflow, event, tag, commits, a
   );
 
   for (const [key, value] of [
-    ["repository", "attacker/Browser2IDE"],
+    ["repository", "attacker/PinOp"],
     ["workflowPath", ".github/workflows/other.yml"],
     ["eventName", "push"],
     ["releaseTag", "v0.2.1"],
@@ -122,7 +122,7 @@ test("resume provenance is bound to repository, workflow, event, tag, commits, a
   }
 
   for (const runMutation of [
-    { repository: { full_name: "attacker/Browser2IDE" } },
+    { repository: { full_name: "attacker/PinOp" } },
     { path: ".github/workflows/other.yml" },
     { path: ".github/workflows/firefox-sign.yml@../../unsafe" },
     { path: ".github/workflows/firefox-sign.yml@@master" },
@@ -145,7 +145,7 @@ test("resume provenance is bound to repository, workflow, event, tag, commits, a
 });
 
 test("preserve command writes a canonical hidden state file without extra fields", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-amo-state-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pinop-amo-state-"));
   try {
     const source = resolve(directory, "source.json");
     const destination = resolve(directory, "artifact", ".amo-upload-uuid");
@@ -165,7 +165,7 @@ test("preserve command writes a canonical hidden state file without extra fields
 });
 
 test("preserve bundle writes sanitized state and validated provenance together", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-amo-bundle-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pinop-amo-bundle-"));
   try {
     const source = resolve(directory, "source.json");
     const destination = resolve(directory, "artifact");
@@ -200,7 +200,7 @@ test("preserve bundle writes sanitized state and validated provenance together",
 });
 
 test("preserve command does not emit an artifact for missing or unsafe state", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-amo-state-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pinop-amo-state-"));
   try {
     const missingDestination = resolve(directory, "missing", ".amo-upload-uuid");
     const missing = runTool("preserve", resolve(directory, "absent"), missingDestination);

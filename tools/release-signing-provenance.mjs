@@ -29,12 +29,12 @@ const PROVENANCE_KEYS = [
 
 export function createSignedXpiArtifactName(tag, runId) {
   parseReleaseTag(tag);
-  return `browser2ide-signed-xpi-${tag}-run-${positiveInteger(runId, "Sign run id")}`;
+  return `pinop-signed-xpi-${tag}-run-${positiveInteger(runId, "Sign run id")}`;
 }
 
 export async function createSignedXpiBundle(xpiPath, destinationDirectory, input) {
   const version = parseReleaseTag(input?.releaseTag ?? "");
-  const expectedFilename = `browser2ide-firefox-${version}.xpi`;
+  const expectedFilename = `pinop-firefox-${version}.xpi`;
   const source = resolve(xpiPath);
   const sourceStats = await assertRegularFile(source, "Signed XPI");
   if (sourceStats.size <= 0 || sourceStats.size > MAX_SIGNED_XPI_BYTES) {
@@ -121,7 +121,7 @@ export function createSignedXpiProvenance(input) {
   if (!COMMIT_PATTERN.test(input?.workflowCommit ?? "")) {
     throw new Error("Invalid signed XPI provenance workflow commit");
   }
-  const xpiFilename = `browser2ide-firefox-${version}.xpi`;
+  const xpiFilename = `pinop-firefox-${version}.xpi`;
   if (input?.xpiFilename !== xpiFilename || !HASH_PATTERN.test(input?.xpiSha256 ?? "")) {
     throw new Error("Invalid signed XPI provenance artifact");
   }

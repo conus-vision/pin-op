@@ -5,7 +5,7 @@ import {
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   isDomResponseForRequest,
   isSelectionRevision,
@@ -30,13 +30,13 @@ export interface PanelSessionTransportOptions {
 }
 
 export interface PanelIdeDisconnectedState {
-  readonly type: "browser2ide.ideState";
+  readonly type: "pinop.ideState";
   readonly status: "ide-disconnected";
   readonly inspectMessageId: string;
 }
 
 export interface PanelInspectStartedState {
-  readonly type: "browser2ide.inspect.started";
+  readonly type: "pinop.inspect.started";
   readonly inspectMessageId: string;
   readonly selectionRevision: number;
 }
@@ -155,7 +155,7 @@ export class PanelSessionTransport {
     const pending = (async (): Promise<boolean> => {
       try {
         const result = await this.options.sendTabMessage(binding.tabId, {
-          type: "browser2ide.inspect.republish",
+          type: "pinop.inspect.republish",
         });
         return this.channels.get(channel) === binding && result !== false;
       } catch {
@@ -205,7 +205,7 @@ export class PanelSessionTransport {
       return;
     }
     const state: PanelIdeDisconnectedState = Object.freeze({
-      type: "browser2ide.ideState",
+      type: "pinop.ideState",
       status: "ide-disconnected",
       inspectMessageId,
     });
@@ -229,7 +229,7 @@ export class PanelSessionTransport {
       return;
     }
     const state: PanelInspectStartedState = Object.freeze({
-      type: "browser2ide.inspect.started",
+      type: "pinop.inspect.started",
       inspectMessageId,
       selectionRevision,
     });

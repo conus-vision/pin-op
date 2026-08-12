@@ -1,6 +1,6 @@
-# Browser2IDE Protocol
+# PinOp Protocol
 
-Browser2IDE carries bounded inspection evidence from one explicitly linked
+PinOp carries bounded inspection evidence from one explicitly linked
 browser window to local VS Code and returns source-resolution and navigation
 state only to the originating browser connection.
 
@@ -54,7 +54,7 @@ browser extension -> ws://127.0.0.1:<managed-port> -> VS Code extension
 ```
 
 The VS Code bridge binds only to `127.0.0.1` and chooses the first available
-port from `48735` through `48834`. Browser2IDE exposes no product HTTP API and
+port from `48735` through `48834`. PinOp exposes no product HTTP API and
 the browser does not scan the port range.
 
 Ordinary protocol messages are strict objects with a non-empty `messageId`, a
@@ -353,19 +353,19 @@ The router enforces direction and authority:
 
 ## Read-Only Security Model
 
-Browser2IDE is read-only with respect to page-owned content, application state,
+PinOp is read-only with respect to page-owned content, application state,
 and source code. The browser extension can execute only its packaged extension
 runtime and permitted browser APIs. It can read bounded accessible DOM
 structure, approved attributes, CSSOM evidence, and box geometry.
 
 For visual inspection, the extension temporarily inserts an isolated
-Browser2IDE inspection overlay DOM under a dedicated pointer-inert host with a
-closed shadow root. Overlay-owned nodes are excluded from Browser2IDE inspection
+PinOp inspection overlay DOM under a dedicated pointer-inert host with a
+closed shadow root. Overlay-owned nodes are excluded from PinOp inspection
 and stable locator capture. When visual inspection is disabled or cleared, the
 rendered overlay is removed. Disconnecting disposes the inspection session;
 disposal removes its host and any remaining overlay DOM.
 
-Outside that isolated overlay, Browser2IDE does not modify page-owned content or
+Outside that isolated overlay, PinOp does not modify page-owned content or
 application state, and it does not modify source code. It cannot fill or submit
 forms or invoke page handlers, and it does not execute page commands or
 arbitrary page scripts received from VS Code or the WebSocket.

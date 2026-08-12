@@ -1,4 +1,4 @@
-import type { CssRuleFact } from "@browser2ide/protocol";
+import type { CssRuleFact } from "@pinop/protocol";
 import type {
   CssDeclarationEvidence,
   NormalizedDeclaration,

@@ -2,7 +2,7 @@ import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   createPanelIcons,
   PanelController,
@@ -138,7 +138,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     }
     const pending = options
       .sendRuntimeMessage({
-        type: "browser2ide.panelReady",
+        type: "pinop.panelReady",
         channel,
       })
       .then(() => {
@@ -402,7 +402,7 @@ function validatedInspectStarted(
       "inspectMessageId",
       "selectionRevision",
     ]) ||
-    message.type !== "browser2ide.inspect.started" ||
+    message.type !== "pinop.inspect.started" ||
     !isOpaqueId(message.inspectMessageId) ||
     !isSelectionRevision(message.selectionRevision)
   ) {
@@ -430,14 +430,14 @@ function validatedSourceNavigationState(message: unknown): boolean {
 function isIdeDisconnected(
   message: unknown,
 ): message is {
-  readonly type: "browser2ide.ideState";
+  readonly type: "pinop.ideState";
   readonly status: "ide-disconnected";
   readonly inspectMessageId: string;
 } {
   return Boolean(
     isRecord(message) &&
     hasOnlyKeys(message, ["type", "status", "inspectMessageId"]) &&
-    message.type === "browser2ide.ideState" &&
+    message.type === "pinop.ideState" &&
     message.status === "ide-disconnected" &&
     isOpaqueId(message.inspectMessageId),
   );
@@ -447,7 +447,7 @@ function isWindowState(message: unknown, state: string): boolean {
   return Boolean(
     message &&
     typeof message === "object" &&
-    (message as Record<string, unknown>).type === "browser2ide.windowState" &&
+    (message as Record<string, unknown>).type === "pinop.windowState" &&
     (message as Record<string, unknown>).state === state,
   );
 }

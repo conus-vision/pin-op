@@ -1,7 +1,7 @@
 import {
   MANAGED_BRIDGE_PORT_END,
   MANAGED_BRIDGE_PORT_START,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { z } from "zod";
 
 export interface BrowserWindowLink {
@@ -92,7 +92,7 @@ export class BrowserWindowLinkStore {
 }
 
 function storageKey(windowId: number): string {
-  return `browser2ide.windowLink.${browserWindowIdSchema.parse(windowId)}`;
+  return `pinop.windowLink.${browserWindowIdSchema.parse(windowId)}`;
 }
 
 function hasOwnLinkFields(

@@ -1,21 +1,21 @@
 import type * as vscode from "vscode";
 import type {
-  Browser2IDEApi,
+  PinOpApi,
   Disposable,
   SourcePosition,
   SourceRange,
   SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import type {
   InspectMessage,
   SourceNavigateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type {
   ResolutionInput,
   SourceNavigationStateInput,
 } from "../bridgeClient.js";
 import type { DiagnosticsTracker } from "../diagnostics.js";
-import { createBrowser2IDEApi } from "../sourcePlugins/api.js";
+import { createPinOpApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
 import { ScssSourcePlugin } from "../sourcePlugins/scssSourcePlugin.js";
@@ -92,7 +92,7 @@ export interface PresenterRuntimeOptions {
 }
 
 export interface PresenterRuntime extends DisposableLike {
-  readonly api: Browser2IDEApi;
+  readonly api: PinOpApi;
   readonly tree: ApplicableSourcesTreeDataProvider;
   select(message: InspectMessage): void;
   navigate(message: SourceNavigateMessage): void;
@@ -104,7 +104,7 @@ export function createPresenterRuntime(
 ): PresenterRuntime {
   const { host } = options;
   const registry = options.registry ?? new SourcePluginRegistry();
-  const api = createBrowser2IDEApi(registry);
+  const api = createPinOpApi(registry);
   const builtIns: Disposable[] = [
     registry.register(new CssSourcePlugin()),
     registry.register(new ScssSourcePlugin()),

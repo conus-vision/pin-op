@@ -1,12 +1,12 @@
 import {
-  Browser2IdeMessageSchema,
+  PinOpMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
   SourceNavigateMessageSchema,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserBridgeClient,
@@ -222,7 +222,7 @@ describe("BrowserBridgeClient", () => {
       ),
     ).toBe("sent");
     const inspect = JSON.parse(harness.sockets[0].sent[1]);
-    expect(Browser2IdeMessageSchema.parse(inspect)).toEqual(inspect);
+    expect(PinOpMessageSchema.parse(inspect)).toEqual(inspect);
     expect(inspect).toMatchObject({
       type: "inspect",
       messageId: "inspect-card",
@@ -346,7 +346,7 @@ describe("BrowserBridgeClient", () => {
     const serialized = harness.sockets[0].sent[1] ?? "";
     const message = JSON.parse(serialized);
 
-    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(PinOpMessageSchema.parse(message)).toEqual(message);
     expect(message).not.toHaveProperty("nodeRef");
     expect(message).not.toHaveProperty("ancestorPath");
     expect(JSON.stringify(message.targets[0].facts[0])).toBe(

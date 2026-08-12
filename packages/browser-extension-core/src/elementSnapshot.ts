@@ -1,7 +1,7 @@
 import {
   INSPECT_LIMITS,
   type InspectSubject,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   boundedPageUrl,
   consumeJsonBudget,

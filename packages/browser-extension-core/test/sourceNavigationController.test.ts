@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { SourceNavigationController } from "../src/sourceNavigationController.js";
 
@@ -157,13 +157,13 @@ describe("SourceNavigationController", () => {
 
     expect(dispatch.mock.calls).toEqual([
       [{
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-current",
         resolutionGeneration: 7,
         direction: "previous",
       }],
       [{
-        type: "browser2ide.source.navigate",
+        type: "pinop.source.navigate",
         inspectMessageId: "inspect-current",
         resolutionGeneration: 7,
         direction: "next",

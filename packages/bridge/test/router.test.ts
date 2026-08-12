@@ -1,8 +1,8 @@
 import {
   PROTOCOL_VERSION,
-  type Browser2IdeMessage,
+  type PinOpMessage,
   type ProtocolCapability,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import { describe, expect, it } from "vitest";
 import * as clientRegistry from "../src/clientRegistry.js";
 import { ReplyRouteRegistry } from "../src/replyRouteRegistry.js";
@@ -33,7 +33,7 @@ function client(
   };
 }
 
-const inspectMessage: Extract<Browser2IdeMessage, { type: "inspect" }> = {
+const inspectMessage: Extract<PinOpMessage, { type: "inspect" }> = {
   protocolVersion: PROTOCOL_VERSION,
   type: "inspect",
   messageId: "inspect-1",
@@ -53,7 +53,7 @@ const inspectMessage: Extract<Browser2IdeMessage, { type: "inspect" }> = {
 };
 
 const simulatorInspectMessage: Extract<
-  Browser2IdeMessage,
+  PinOpMessage,
   { type: "inspect" }
 > = {
   ...inspectMessage,

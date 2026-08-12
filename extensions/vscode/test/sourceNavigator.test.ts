@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { SourcePosition, SourceRange } from "@browser2ide/plugin-api";
+import type { SourcePosition, SourceRange } from "@pinop/plugin-api";
 import {
   PROTOCOL_VERSION,
   type SourceNavigateMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import type { SourceNavigationStateInput } from "../src/bridgeClient.js";
 import {
   replacePrimarySelection,

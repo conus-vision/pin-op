@@ -4,11 +4,11 @@ import type {
   SelectionSnapshot,
   SourceDocument,
   SourceWorkspace,
-} from "@browser2ide/plugin-api";
+} from "@pinop/plugin-api";
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
-} from "@browser2ide/protocol";
+} from "@pinop/protocol";
 import {
   ActiveEditorCoordinator,
   type ActiveEditorLike,
