@@ -43,8 +43,8 @@ professional developer tool requires.
 | Pronunciation | pin-op |
 | Name meaning | Plug IN & OPerate |
 | Product address | `pinop.conus.vision` |
+| Source repository | `github.com/conus-vision/PinOp` |
 | Temporary descriptor | Connect browser DevTools to your source code. |
-| Transitional reference | PinOp, formerly Browser2IDE |
 
 The expansion **Plug IN & OPerate** is the origin and philosophy of the name,
 not the public slogan. Public messaging should lead with the user benefit;
@@ -80,14 +80,17 @@ PinOp
 Connect browser DevTools to your source code.
 ```
 
-For the first two public releases after the rename, migration-oriented surfaces
-such as the repository introduction, release notes, and marketplace description
-will include `formerly Browser2IDE`. It will not become part of the permanent
-display name.
+PinOp launches as the sole public product name. Browser2IDE was neither
+advertised nor publicly released, so public surfaces will not use a transitional
+`formerly Browser2IDE` label. The existing GitHub repository has been renamed to
+`conus-vision/PinOp`; product metadata and documentation will point directly to
+that canonical location.
 
-Existing users must be able to recognize that PinOp is the continuation of
-Browser2IDE. Redirects and migration notes should preserve old links where the
-hosting platform permits them.
+No compatibility aliases, identifier migrations, or legacy artifact names are
+required. Code, package, extension, protocol, configuration, and release
+identifiers may be renamed together before the first public release. The rollout
+must still update all coupled producers, consumers, tests, and documentation in
+one verified change so mixed identities cannot ship.
 
 ## Slogan Requirements
 
@@ -123,8 +126,8 @@ clearance.
 ## Scope
 
 This design establishes the product name, meaning, casing, address,
-positioning, transition language, and requirements for the future slogan. It
-does not authorize or specify:
+repository, clean pre-launch rename policy, and requirements for the future
+slogan. It does not authorize or specify:
 
 - code, package, extension, repository, or publisher identifier changes;
 - domain or DNS configuration;
@@ -143,9 +146,9 @@ The brand rollout will be considered internally consistent when:
 1. user-facing product references use `PinOp` with the approved casing;
 2. technical identifiers use lowercase `pinop` only where convention requires;
 3. the canonical product link is `pinop.conus.vision`;
-4. the temporary descriptor accurately describes the read-only browser-to-source
+4. source and issue links use `github.com/conus-vision/PinOp`;
+5. the temporary descriptor accurately describes the read-only browser-to-source
    workflow;
-5. transition material identifies PinOp as the continuation of Browser2IDE for
-   the first two public releases;
-6. no public message expands current capabilities beyond documented support;
-7. a final slogan is adopted only after it satisfies the requirements above.
+6. public product surfaces contain no Browser2IDE compatibility branding;
+7. no public message expands current capabilities beyond documented support;
+8. a final slogan is adopted only after it satisfies the requirements above.
