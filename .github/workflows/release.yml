@@ -21,7 +21,11 @@ jobs:
       contents: read
     outputs:
       artifact_name: ${{ steps.release.outputs.artifact_name }}
+      chrome_basename: ${{ steps.release.outputs.chrome_basename }}
+      firefox_source_basename: ${{ steps.release.outputs.firefox_source_basename }}
+      firefox_zip_basename: ${{ steps.release.outputs.firefox_zip_basename }}
       version: ${{ steps.release.outputs.version }}
+      vscode_basename: ${{ steps.release.outputs.vscode_basename }}
 
     steps:
       - name: Require immutable repository releases
@@ -30,7 +34,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          SETTINGS_JSON="$RUNNER_TEMP/pinop-immutable-releases.json"
+          SETTINGS_JSON="$RUNNER_TEMP/pin-op-immutable-releases.json"
           test ! -e "$SETTINGS_JSON"
           gh api --method GET "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$SETTINGS_JSON"
           jq -e '.enabled == true' "$SETTINGS_JSON" > /dev/null
@@ -75,8 +79,13 @@ jobs:
           git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/master
           RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
           printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-          printf 'artifact_name=pinop-release-%s-run-%s\n' \
+          printf 'artifact_name=pin-op-release-%s-run-%s\n' \
             "$RELEASE_TAG" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'vscode_basename=pin-op-vscode-%s.vsix\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'chrome_basename=pin-op-chrome-%s.zip\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'firefox_zip_basename=pin-op-firefox-%s.zip\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'firefox_source_basename=pin-op-firefox-source-%s.zip\n' \
+            "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: corepack pnpm build
@@ -112,10 +121,10 @@ jobs:
         with:
           name: ${{ steps.release.outputs.artifact_name }}
           path: |
-            artifacts/pinop-vscode-${{ steps.release.outputs.version }}.vsix
-            artifacts/pinop-chrome-${{ steps.release.outputs.version }}.zip
-            artifacts/pinop-firefox-${{ steps.release.outputs.version }}.zip
-            artifacts/pinop-firefox-source-${{ steps.release.outputs.version }}.zip
+            artifacts/${{ steps.release.outputs.vscode_basename }}
+            artifacts/${{ steps.release.outputs.chrome_basename }}
+            artifacts/${{ steps.release.outputs.firefox_zip_basename }}
+            artifacts/${{ steps.release.outputs.firefox_source_basename }}
             artifacts/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -127,6 +136,11 @@ jobs:
     permissions:
       actions: read
       contents: write
+    env:
+      CHROME_BASENAME: ${{ needs.package.outputs.chrome_basename }}
+      FIREFOX_SOURCE_BASENAME: ${{ needs.package.outputs.firefox_source_basename }}
+      FIREFOX_ZIP_BASENAME: ${{ needs.package.outputs.firefox_zip_basename }}
+      VSCODE_BASENAME: ${{ needs.package.outputs.vscode_basename }}
 
     steps:
       - name: Restore verified draft assets
@@ -136,14 +150,12 @@ jobs:
           path: release-assets
 
       - name: Require the exact draft asset set
-        env:
-          RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -euo pipefail
-          test -f "release-assets/pinop-vscode-${RELEASE_VERSION}.vsix"
-          test -f "release-assets/pinop-chrome-${RELEASE_VERSION}.zip"
-          test -f "release-assets/pinop-firefox-${RELEASE_VERSION}.zip"
-          test -f "release-assets/pinop-firefox-source-${RELEASE_VERSION}.zip"
+          test -f "release-assets/$VSCODE_BASENAME"
+          test -f "release-assets/$CHROME_BASENAME"
+          test -f "release-assets/$FIREFOX_ZIP_BASENAME"
+          test -f "release-assets/$FIREFOX_SOURCE_BASENAME"
           test -f release-assets/SHA256SUMS
           test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
           (cd release-assets && sha256sum --check --strict SHA256SUMS)
@@ -152,17 +164,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -euo pipefail
           gh release create "$RELEASE_TAG" \
-            "release-assets/pinop-vscode-${RELEASE_VERSION}.vsix" \
-            "release-assets/pinop-chrome-${RELEASE_VERSION}.zip" \
-            "release-assets/pinop-firefox-${RELEASE_VERSION}.zip" \
-            "release-assets/pinop-firefox-source-${RELEASE_VERSION}.zip" \
+            "release-assets/$VSCODE_BASENAME" \
+            "release-assets/$CHROME_BASENAME" \
+            "release-assets/$FIREFOX_ZIP_BASENAME" \
+            "release-assets/$FIREFOX_SOURCE_BASENAME" \
             "release-assets/SHA256SUMS" \
             --draft \
             --verify-tag \
             --target master \
-            --title "PinOp $RELEASE_TAG" \
+            --title "Pin-op $RELEASE_TAG" \
             --generate-notes

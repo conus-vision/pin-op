@@ -161,17 +161,24 @@ test("Firefox publish requires exact sign-run provenance and manually verified X
   assert.match(gate.run, /\^\[0-9a-f\]\{64\}\$/);
 
   const publishSteps = workflow.jobs.publish.steps;
+  const artifactNames = stepIndex(publishSteps, "Define publication artifact handoffs");
   const fetchRun = stepIndex(publishSteps, "Fetch trusted signing run metadata");
   const restore = stepIndex(publishSteps, "Restore immutable signed XPI provenance");
   const validate = stepIndex(publishSteps, "Validate exact manually verified signed XPI");
   const firstRelease = stepIndex(publishSteps, "Download signed draft for publication");
   const publish = stepIndex(publishSteps, "Verify and publish immutable release by ID");
-  assert.ok(fetchRun < restore && restore < validate && validate < firstRelease);
+  assert.ok(artifactNames < fetchRun && fetchRun < restore);
+  assert.ok(restore < validate && validate < firstRelease);
   assert.ok(firstRelease < publish);
   assert.equal(publish, publishSteps.length - 1);
   assert.equal(publishSteps[restore].with["run-id"], "${{ inputs.sign_run_id }}");
-  assert.match(publishSteps[restore].with.name, /inputs\.tag/);
-  assert.match(publishSteps[restore].with.name, /inputs\.sign_run_id/);
+  assert.equal(
+    publishSteps[restore].with.name,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
+  assert.equal(publishSteps[artifactNames].env.RELEASE_TAG, "${{ inputs.tag }}");
+  assert.equal(publishSteps[artifactNames].env.SIGN_RUN_ID, "${{ inputs.sign_run_id }}");
+  assert.match(publishSteps[artifactNames].run, /release-signing-provenance\.mjs artifact-name/);
   assert.match(publishSteps[validate].run, /release-signing-provenance\.mjs validate-publish/);
   assert.match(publishSteps[validate].run, /VERIFIED_XPI_SHA256/);
   assert.match(publishSteps[validate].run, /SIGN_RUN_ID/);
@@ -220,11 +227,25 @@ test("Firefox publish requires exact sign-run provenance and manually verified X
   assert.ok(provenanceUpload.uses.startsWith("actions/upload-artifact@"));
   assert.equal(provenanceUpload.with.overwrite, undefined);
   assert.ok(provenanceUpload.with["retention-days"] >= 30);
-  assert.match(provenanceUpload.with.name, /steps\.provenance\.outputs\.artifact_name/);
+  assert.equal(
+    provenanceUpload.with.name,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
+  const signingArtifactNames = workflow.jobs.sign.steps.find(
+    (step) => step.name === "Define signing artifact handoffs",
+  );
+  assert.match(signingArtifactNames.run, /release-signing-provenance\.mjs artifact-name/);
+  assert.equal(
+    workflow.jobs.sign.outputs.signed_artifact_name,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
   const createProvenance = workflow.jobs.sign.steps.find(
     (step) => step.name === "Create immutable signed XPI provenance",
   );
-  assert.match(createProvenance.run, /artifact-name/);
+  assert.equal(
+    createProvenance.env.SIGNED_PROVENANCE_ARTIFACT_NAME,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
   assert.match(createProvenance.env.CURRENT_RUN_ID, /github\.run_id/);
 });
 

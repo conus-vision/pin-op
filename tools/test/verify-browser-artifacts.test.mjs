@@ -62,7 +62,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pinop-${browser}-0.3.0.zip`,
+          `pin-op-${browser}-0.3.0.zip`,
           browser,
         ),
         new RegExp(`${label}.*${escapeRegex(marker)}`, "i"),
@@ -79,7 +79,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pinop-${browser}-0.3.0.zip`,
+        `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
       /unexpected manifest icons/i,
@@ -93,7 +93,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pinop-${browser}-0.3.0.zip`,
+        `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
       /pin-op-48\.png.*valid PNG/i,
@@ -109,7 +109,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pinop-${browser}-0.3.0.zip`,
+        `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
       /unexpected manifest name/i,
@@ -129,7 +129,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pinop-${browser}-0.3.0.zip`,
+        `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
       /panel must reference \.\/pin-op\.svg/i,
@@ -146,7 +146,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pinop-${browser}-0.3.0.zip`,
+        `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
       /panel must present Pin-op in its title and heading/i,
@@ -161,7 +161,7 @@ test("common Firefox artifact verifier preserves the Gecko extension ID", () => 
   archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
 
   assert.throws(
-    () => validateBrowserArchive(archive, "pinop-firefox-0.3.0.zip", "firefox"),
+    () => validateBrowserArchive(archive, "pin-op-firefox-0.3.0.zip", "firefox"),
     /unexpected Firefox Gecko ID/i,
   );
 });

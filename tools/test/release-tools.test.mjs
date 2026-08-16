@@ -19,7 +19,7 @@ const repositoryRoot = resolve(
   "../..",
 );
 
-test("prepackage removes only regular PinOp release outputs", async () => {
+test("prepackage removes only regular Pin-op release outputs", async () => {
   const rootPackage = JSON.parse(
     await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
   );
@@ -28,21 +28,26 @@ test("prepackage removes only regular PinOp release outputs", async () => {
     "node tools/prepare-artifacts.mjs",
   );
 
-  const root = await mkdtemp(resolve(tmpdir(), "pinop-prepare-"));
+  const root = await mkdtemp(resolve(tmpdir(), "pin-op-prepare-"));
   const artifactDirectory = resolve(root, "artifacts");
-  const lookalikeDirectory = "pinop-chrome-9.9.9.zip";
-  const preservedFiles = ["pinop-chrome-latest.zip", "release-notes.txt"];
+  const lookalikeDirectory = "pin-op-chrome-9.9.9.zip";
+  const legacySlug = ["pin", "op"].join("");
+  const preservedFiles = [
+    "pin-op-chrome-latest.zip",
+    `${legacySlug}-chrome-0.2.0.zip`,
+    "release-notes.txt",
+  ];
   const generatedFiles = [
     "SHA256SUMS",
-    "pinop-chrome-0.2.0.zip",
-    "pinop-firefox-0.2.0.xpi",
-    "pinop-firefox-0.2.0.zip",
-    "pinop-firefox-source-0.2.0.zip",
-    "pinop-vscode-0.2.0.vsix",
+    "pin-op-chrome-0.2.0.zip",
+    "pin-op-firefox-0.2.0.xpi",
+    "pin-op-firefox-0.2.0.zip",
+    "pin-op-firefox-source-0.2.0.zip",
+    "pin-op-vscode-0.2.0.vsix",
   ];
   const outsideArtifactDirectory = resolve(
     root,
-    "pinop-chrome-0.2.0.zip",
+    "pin-op-chrome-0.2.0.zip",
   );
 
   try {
@@ -81,14 +86,14 @@ test("prepackage removes only regular PinOp release outputs", async () => {
 });
 
 test("artifact verifier rejects a directory missing required release artifacts", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-verify-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-verify-"));
   try {
     const result = runTool("verify-artifacts.mjs", directory);
 
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /Missing required release artifacts: .*pinop-vscode-0\.3\.0\.vsix/,
+      /Missing required release artifacts: .*pin-op-vscode-0\.3\.0\.vsix/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -96,7 +101,7 @@ test("artifact verifier rejects a directory missing required release artifacts",
 });
 
 test("checksum writer hashes sorted regular top-level artifact files", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-checksums-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-checksums-"));
   try {
     await writeFile(resolve(directory, "z.zip"), "zipped\n");
     await writeFile(resolve(directory, "a.vsix"), "vsix\n");

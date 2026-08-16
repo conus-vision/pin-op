@@ -25,7 +25,7 @@
     "package:chrome": "pnpm --filter pin-op-chrome run package",
     "package:firefox": "pnpm --filter pin-op-firefox run package",
     "package:firefox-source": "node tools/archive-firefox-source.mjs",
-    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/pinop-chrome-0.3.0.zip",
+    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.3.0.zip",
     "smoke:vscode-package": "pnpm --filter pin-op run smoke:vsix",
     "artifacts:verify": "node tools/verify-artifacts.mjs artifacts",
     "artifacts:checksums": "node tools/write-checksums.mjs artifacts"

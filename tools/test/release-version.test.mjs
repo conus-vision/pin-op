@@ -109,14 +109,14 @@ function releaseVersions(path, contents) {
       ...Object.values(manifest.scripts ?? {}).filter(
         (value) =>
           typeof value === "string" &&
-          /(?:artifacts|pinop-(?:chrome|firefox|vscode))/.test(value),
+          /(?:artifacts|pin-op-(?:chrome|firefox|vscode))/.test(value),
       ),
     ];
     return semanticVersions(releaseOwnedValues.join("\n"));
   }
 
   const patterns = [
-    /pinop-(?:chrome|firefox(?:-source)?|vscode)-(\d+\.\d+\.\d+)\.(?:vsix|xpi|zip)/g,
+    /pin-op-(?:chrome|firefox(?:-source)?|vscode)-(\d+\.\d+\.\d+)\.(?:vsix|xpi|zip)/g,
     /\b(?:releaseVersion|VERSION)\s*=\s*["'](\d+\.\d+\.\d+)["']/g,
     /manifest\?\.version\s*===\s*["'](\d+\.\d+\.\d+)["']/g,
   ];
@@ -132,7 +132,7 @@ function semanticVersions(contents) {
 }
 
 async function createVersionFixture(version) {
-  const root = await mkdtemp(resolve(tmpdir(), "pinop-version-"));
+  const root = await mkdtemp(resolve(tmpdir(), "pin-op-version-"));
   const files = [
     "package.json",
     "extensions/vscode/package.json",

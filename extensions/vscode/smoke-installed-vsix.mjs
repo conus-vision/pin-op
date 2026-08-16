@@ -26,7 +26,7 @@ const runtimeOptions = await resolveVSCodeTestRuntimeOptions(
   repositoryRoot,
 );
 
-const smokeRoot = await mkdtemp(join(tmpdir(), "pinop-vsix-smoke-"));
+const smokeRoot = await mkdtemp(join(tmpdir(), "pin-op-vsix-smoke-"));
 const extensionsDirectory = join(smokeRoot, "extensions");
 const userDataDirectory = join(smokeRoot, "user-data");
 const harnessDirectory = join(smokeRoot, "harness");
@@ -42,8 +42,8 @@ try {
   await installVerifiedVsix(artifactPath, extensionsDirectory);
 
   const harnessManifest = {
-    name: "pinop-installed-smoke",
-    publisher: "pinop-smoke",
+    name: "pin-op-installed-smoke",
+    publisher: "pin-op-smoke",
     version: "0.0.0",
     engines: { vscode: "^1.85.0" },
     main: "./extension.cjs",

@@ -13,8 +13,8 @@ import {
   buildChromeArguments,
   buildChromeSpawnOptions,
   chromeExecutableCandidates,
-  findPinOpServiceWorker,
-  isPinOpManifest,
+  findProductServiceWorker,
+  isProductManifest,
   openCdp,
   verifyFixturePageInChrome,
   shutdownOwnedChildTree,
@@ -277,7 +277,7 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
 });
 
 test("launch arguments always isolate Chrome in the supplied temporary profile", () => {
-  const profile = resolve("tmp/pinop-smoke/profile");
+  const profile = resolve("tmp/pin-op-smoke/profile");
   const args = buildChromeArguments(profile);
 
   assert.ok(args.includes(`--user-data-dir=${profile}`));
@@ -464,7 +464,7 @@ test("owned child shutdown detaches surviving child handles before failing", asy
 test("surviving owned child cannot keep the smoke parent command alive", {
   timeout: 10_000,
 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), "pinop-survivor-test-"));
+  const root = await mkdtemp(join(tmpdir(), "pin-op-survivor-test-"));
   const pidFile = join(root, "owned-child.pid");
   const releaseFile = join(root, "release-owned-child");
   const moduleUrl = pathToFileURL(
@@ -658,7 +658,7 @@ test("CDP runtime errors dispose listeners and reject pending requests", async (
 
 test("finds the packaged Pin-op MV3 service worker", () => {
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
-  const target = findPinOpServiceWorker([
+  const target = findProductServiceWorker([
     { type: "page", url: "about:blank" },
     {
       targetId: "worker-1",
@@ -673,7 +673,7 @@ test("finds the packaged Pin-op MV3 service worker", () => {
 test("ignores unrelated workers and non-extension targets", () => {
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
   assert.equal(
-    findPinOpServiceWorker([
+    findProductServiceWorker([
       {
         targetId: "worker-1",
         type: "service_worker",
@@ -693,7 +693,7 @@ test("rejects ambiguous Pin-op service workers", () => {
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.throws(
     () =>
-      findPinOpServiceWorker([
+      findProductServiceWorker([
         {
           targetId: "worker-1",
           type: "service_worker",
@@ -711,7 +711,7 @@ test("rejects ambiguous Pin-op service workers", () => {
 
 test("recognizes Pin-op by the manifest exposed inside its worker", () => {
   assert.equal(
-    isPinOpManifest({
+    isProductManifest({
       name: "Pin-op",
       version: "0.3.0",
       manifest_version: 3,
@@ -720,7 +720,7 @@ test("recognizes Pin-op by the manifest exposed inside its worker", () => {
     true,
   );
   assert.equal(
-    isPinOpManifest({
+    isProductManifest({
       name: "Unrelated extension",
       version: "0.3.0",
       manifest_version: 3,

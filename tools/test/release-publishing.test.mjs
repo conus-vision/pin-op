@@ -15,13 +15,13 @@ const {
 
 const version = "0.3.0";
 const databaseId = "987654321";
-const unsignedName = `pinop-firefox-${version}.zip`;
-const signedName = `pinop-firefox-${version}.xpi`;
+const unsignedName = `pin-op-firefox-${version}.zip`;
+const signedName = `pin-op-firefox-${version}.xpi`;
 const unsignedNames = [
-  `pinop-chrome-${version}.zip`,
+  `pin-op-chrome-${version}.zip`,
   unsignedName,
-  `pinop-firefox-source-${version}.zip`,
-  `pinop-vscode-${version}.vsix`,
+  `pin-op-firefox-source-${version}.zip`,
+  `pin-op-vscode-${version}.vsix`,
   "SHA256SUMS",
 ];
 const signedNames = [...unsignedNames, signedName];
@@ -31,10 +31,10 @@ const publicationContents = new Map(
 );
 const completePublicationManifest = checksumManifest(publicationContents);
 const original = [
-  `${"1".repeat(64)}  pinop-chrome-${version}.zip`,
+  `${"1".repeat(64)}  pin-op-chrome-${version}.zip`,
   `${"2".repeat(64)}  ${unsignedName}`,
-  `${"3".repeat(64)}  pinop-firefox-source-${version}.zip`,
-  `${"4".repeat(64)}  pinop-vscode-${version}.vsix`,
+  `${"3".repeat(64)}  pin-op-firefox-source-${version}.zip`,
+  `${"4".repeat(64)}  pin-op-vscode-${version}.vsix`,
   "",
 ].join("\n");
 
@@ -96,7 +96,7 @@ test("publication checksum manifest requires exactly five binary artifacts", () 
 });
 
 test("publication checksum verifier rejects partial and replaced manifests", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-publication-checksums-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-publication-checksums-"));
   try {
     for (const [name, contents] of publicationContents) {
       await writeFile(resolve(directory, name), contents);
@@ -140,11 +140,11 @@ test("publication checksum verifier rejects partial and replaced manifests", asy
 
 test("draft release must contain signed and unsigned Firefox artifacts with checksums", () => {
   const names = [
-    `pinop-chrome-${version}.zip`,
+    `pin-op-chrome-${version}.zip`,
     unsignedName,
     signedName,
-    `pinop-firefox-source-${version}.zip`,
-    `pinop-vscode-${version}.vsix`,
+    `pin-op-firefox-source-${version}.zip`,
+    `pin-op-vscode-${version}.vsix`,
     "SHA256SUMS",
   ];
   const checksums = original.replace(
@@ -310,7 +310,7 @@ test("REST publication identity rejects recreation and metadata drift", () => {
 });
 
 test("publication verifier CLI emits the same identity before and after PATCH", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-publication-release-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-publication-release-"));
   try {
     const beforePath = resolve(directory, "before.json");
     const afterPath = resolve(directory, "after.json");
@@ -331,7 +331,7 @@ test("publication verifier CLI emits the same identity before and after PATCH", 
 });
 
 test("release asset verifier CLI requires an explicit unsigned phase", async () => {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-unsigned-release-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-unsigned-release-"));
   try {
     const remoteDirectory = resolve(directory, "remote");
     const localDirectory = resolve(directory, "local");

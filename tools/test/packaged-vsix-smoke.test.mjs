@@ -115,7 +115,7 @@ test("VSIX smoke defaults to stable in the repository runtime cache", async () =
 
 test("VSIX smoke accepts an explicit absolute existing executable override", async () => {
   const resolveRuntimeOptions = await loadRuntimeOptionsResolver();
-  await withTemporaryDirectory("pinop-vscode-runtime-", async (directory) => {
+  await withTemporaryDirectory("pin-op-vscode-runtime-", async (directory) => {
     const executablePath = join(directory, "Code.exe");
     await writeFile(executablePath, "fixture");
 
@@ -172,7 +172,7 @@ test("VSIX smoke narrowly validates the isolated runtime version", async () => {
 
 test("validated VSIX payload installs under its canonical artifact identity", async () => {
   const installVerifiedVsix = await loadInstaller();
-  await withTemporaryDirectory("pinop-vsix-install-", async (directory) => {
+  await withTemporaryDirectory("pin-op-vsix-install-", async (directory) => {
     const artifactPath = join(directory, "pin-op.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
@@ -209,7 +209,7 @@ test("validated VSIX payload installs under its canonical artifact identity", as
 
 test("VSIX installation rejects a bundle without current navigation capabilities", async () => {
   const installVerifiedVsix = await loadInstaller();
-  await withTemporaryDirectory("pinop-vsix-capabilities-", async (directory) => {
+  await withTemporaryDirectory("pin-op-vsix-capabilities-", async (directory) => {
     const artifactPath = join(directory, "capabilities.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
@@ -237,7 +237,7 @@ test("VSIX installation rejects unsafe archive entries before extraction", async
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("pinop-vsix-unsafe-", async (directory) => {
+      await withTemporaryDirectory("pin-op-vsix-unsafe-", async (directory) => {
         const artifactPath = join(directory, "unsafe.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -266,7 +266,7 @@ test("VSIX installation validates identity before deriving its directory", async
     ["version", "../0.3.0", /extension version must be 0\.3\.0/],
     ["icon", "resources/unexpected.png", /unexpected extension icon/],
   ]) {
-    await withTemporaryDirectory("pinop-vsix-identity-", async (directory) => {
+    await withTemporaryDirectory("pin-op-vsix-identity-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
       const extensionsDirectory = join(directory, "extensions");
       await mkdir(extensionsDirectory);
@@ -284,7 +284,7 @@ test("VSIX installation validates identity before deriving its directory", async
 for (const mutation of contributedIdentityMutations) {
   test(`common VSIX verifier rejects legacy ${mutation.name}`, async () => {
     const installVerifiedVsix = await loadInstaller();
-    await withTemporaryDirectory("pinop-vsix-contribution-", async (directory) => {
+    await withTemporaryDirectory("pin-op-vsix-contribution-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
       const extensionsDirectory = join(directory, "extensions");
       await mkdir(extensionsDirectory);
@@ -301,7 +301,7 @@ for (const mutation of contributedIdentityMutations) {
   });
 
   test(`direct VSIX verifier rejects legacy ${mutation.name}`, async () => {
-    await withTemporaryDirectory("pinop-direct-vsix-contribution-", async (directory) => {
+    await withTemporaryDirectory("pin-op-direct-vsix-contribution-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
       const manifest = expectedManifest();
       mutation.mutate(manifest);
@@ -343,7 +343,7 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("pinop-vsix-xml-identity-", async (directory) => {
+      await withTemporaryDirectory("pin-op-vsix-xml-identity-", async (directory) => {
         const artifactPath = join(directory, "identity.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -361,7 +361,7 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
 
 test("VSIX installation rejects an invalid Marketplace icon", async () => {
   const installVerifiedVsix = await loadInstaller();
-  await withTemporaryDirectory("pinop-vsix-icon-", async (directory) => {
+  await withTemporaryDirectory("pin-op-vsix-icon-", async (directory) => {
     const artifactPath = join(directory, "icon.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
@@ -393,14 +393,14 @@ test("VSIX installation rejects malformed or entity-bearing metadata XML", async
       {
         manifestXml: expectedVsixManifestXml().replace(
           "<PackageManifest",
-          '<!DOCTYPE PackageManifest SYSTEM "file:///pinop-test">\n<PackageManifest',
+          '<!DOCTYPE PackageManifest SYSTEM "file:///pin-op-test">\n<PackageManifest',
         ),
       },
       /extension\.vsixmanifest must not contain a DOCTYPE declaration/,
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("pinop-vsix-invalid-xml-", async (directory) => {
+      await withTemporaryDirectory("pin-op-vsix-invalid-xml-", async (directory) => {
         const artifactPath = join(directory, "invalid-xml.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);
@@ -438,7 +438,7 @@ test("VSIX installation requires payload content type declarations", async (t) =
     ],
   ]) {
     await t.test(name, async () => {
-      await withTemporaryDirectory("pinop-vsix-content-types-", async (directory) => {
+      await withTemporaryDirectory("pin-op-vsix-content-types-", async (directory) => {
         const artifactPath = join(directory, "content-types.vsix");
         const extensionsDirectory = join(directory, "extensions");
         await mkdir(extensionsDirectory);

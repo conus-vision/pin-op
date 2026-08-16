@@ -103,7 +103,7 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
 
 export const CHROME_ARCHIVE_FILES = BROWSER_ARCHIVE_FILES;
 
-export function findPinOpServiceWorker(targets, extensionId) {
+export function findProductServiceWorker(targets, extensionId) {
   if (!/^[a-p]{32}$/.test(extensionId)) {
     throw new Error("Chrome returned an invalid extension id");
   }
@@ -119,7 +119,7 @@ export function findPinOpServiceWorker(targets, extensionId) {
   return matches[0];
 }
 
-export function isPinOpManifest(manifest) {
+export function isProductManifest(manifest) {
   return (
     manifest?.name === "Pin-op" &&
     manifest?.version === "0.3.0" &&
@@ -140,7 +140,7 @@ export function validatePackagedChromeArchive(archive) {
   } catch (error) {
     throw new Error(`Chrome artifact contains invalid manifest.json: ${error.message}`);
   }
-  if (!isPinOpManifest(manifest)) {
+  if (!isProductManifest(manifest)) {
     throw new Error("Chrome artifact does not declare the expected MV3 service worker");
   }
   assertBrowserPackageRuntimeContract(archive, {
@@ -401,7 +401,7 @@ export async function smokePackagedChrome(artifactArgument) {
   return runSmokeOperationWithCleanup(
     async () => {
       try {
-        smokeRoot = await mkdtemp(join(tmpdir(), "pinop-chrome-smoke-"));
+        smokeRoot = await mkdtemp(join(tmpdir(), "pin-op-chrome-smoke-"));
         const extensionDirectory = join(smokeRoot, "extension");
         const profileDirectory = join(smokeRoot, "profile");
         await Promise.all([
@@ -652,7 +652,7 @@ async function waitForServiceWorker(cdp, process_, extensionId) {
     assertChildRunning(process_, undefined, "the service worker loaded");
     const { targetInfos } = await cdp.send("Target.getTargets");
     lastTargets = targetInfos;
-    const target = findPinOpServiceWorker(targetInfos, extensionId);
+    const target = findProductServiceWorker(targetInfos, extensionId);
     if (target) return target;
     await delay(POLL_INTERVAL_MS);
   }

@@ -24,7 +24,7 @@ import {
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("archive reader rejects a compressed ZIP bomb before extraction", async () => {
-  await withTemporaryDirectory("pinop-zip-bomb-", async (directory) => {
+  await withTemporaryDirectory("pin-op-zip-bomb-", async (directory) => {
     const path = resolve(directory, "bomb.zip");
     const payload = Buffer.alloc(MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES + 1, 0x41);
     const zip = new AdmZip();
@@ -111,7 +111,7 @@ test("ZIP metadata preflight rejects ZIP64 sentinels and invalid EOCD records", 
 });
 
 test("runtime allowlists reject every additional entry", async () => {
-  await withTemporaryDirectory("pinop-extra-", async (directory) => {
+  await withTemporaryDirectory("pin-op-extra-", async (directory) => {
     const path = resolve(directory, "runtime.zip");
     writeZip(path, [
       ["manifest.json", "{}"],
@@ -132,7 +132,7 @@ test("runtime allowlists reject every additional entry", async () => {
 });
 
 test("archive reader rejects credential paths", async () => {
-  await withTemporaryDirectory("pinop-credential-", async (directory) => {
+  await withTemporaryDirectory("pin-op-credential-", async (directory) => {
     const path = resolve(directory, "credential.zip");
     writeZip(path, [["config/private.pem", "private key material"]]);
 
@@ -144,7 +144,7 @@ test("archive reader rejects credential paths", async () => {
 });
 
 test("archive reader rejects traversal and absolute entry names", async () => {
-  await withTemporaryDirectory("pinop-path-", async (directory) => {
+  await withTemporaryDirectory("pin-op-path-", async (directory) => {
     const traversalPath = resolve(directory, "traversal.zip");
     const traversal = new AdmZip();
     traversal.addFile("xx/evil.txt", Buffer.from("bad"));
@@ -167,7 +167,7 @@ test("archive reader rejects traversal and absolute entry names", async () => {
 });
 
 test("archive reader rejects case-insensitive path collisions", async () => {
-  await withTemporaryDirectory("pinop-case-", async (directory) => {
+  await withTemporaryDirectory("pin-op-case-", async (directory) => {
     const path = resolve(directory, "case.zip");
     writeZip(path, [["LICENSE", "one"], ["license", "two"]]);
 
@@ -179,7 +179,7 @@ test("archive reader rejects case-insensitive path collisions", async () => {
 });
 
 test("archive reader rejects ZIP entries marked as symbolic links", async () => {
-  await withTemporaryDirectory("pinop-symlink-", async (directory) => {
+  await withTemporaryDirectory("pin-op-symlink-", async (directory) => {
     const path = resolve(directory, "symlink.zip");
     const zip = new AdmZip();
     zip.addFile("link", Buffer.from("target"));
@@ -202,7 +202,7 @@ test("source verification rejects omissions additions and changed blobs", async 
   ]);
   const readBlob = async () => expectedContent;
 
-  await withTemporaryDirectory("pinop-source-", async (directory) => {
+  await withTemporaryDirectory("pin-op-source-", async (directory) => {
     const omissionPath = resolve(directory, "omission.zip");
     writeZip(omissionPath, []);
     await assert.rejects(
@@ -259,7 +259,7 @@ test("source verification rejects symlink submodule and unsupported HEAD modes",
 });
 
 test("source verification matches a real git archive of the linked worktree HEAD", async () => {
-  await withTemporaryDirectory("pinop-head-", async (directory) => {
+  await withTemporaryDirectory("pin-op-head-", async (directory) => {
     const archivePath = resolve(directory, "head.zip");
     await writeFile(archivePath, createHeadArchiveBuffer(repositoryRoot));
 
@@ -276,7 +276,7 @@ test("source verification matches a real git archive of the linked worktree HEAD
 });
 
 test("source identity rejects an executable-mode-only ZIP metadata change", async () => {
-  await withTemporaryDirectory("pinop-mode-", async (directory) => {
+  await withTemporaryDirectory("pin-op-mode-", async (directory) => {
     const originalPath = resolve(directory, "original.zip");
     const changedPath = resolve(directory, "changed.zip");
     const original = createHeadArchiveBuffer(repositoryRoot);

@@ -88,7 +88,7 @@ test("release versions must match the expected product version", () => {
 });
 
 test("checksum artifact names must be printable ASCII", () => {
-  assert.doesNotThrow(() => assertAsciiFilename("pinop-firefox-0.3.0.zip"));
+  assert.doesNotThrow(() => assertAsciiFilename("pin-op-firefox-0.3.0.zip"));
   assert.throws(() => assertAsciiFilename("bröwser.zip"), /printable ASCII/);
   assert.throws(() => assertAsciiFilename("line\nbreak.zip"), /printable ASCII/);
 });

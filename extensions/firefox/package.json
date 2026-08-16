@@ -6,7 +6,7 @@
   "scripts": {
     "build:deps": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/browser-extension-core build",
     "build": "pnpm run build:deps && tsc --noEmit -p tsconfig.json && node ./esbuild.mjs",
-    "package": "pnpm run build && web-ext build --overwrite-dest --artifacts-dir ../../artifacts --filename pinop-firefox-0.3.0.zip --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs src test \"src/**\" \"test/**\" && node ../../tools/normalize-browser-archive.mjs ../../artifacts/pinop-firefox-0.3.0.zip",
+    "package": "pnpm run build && web-ext build --overwrite-dest --artifacts-dir ../../artifacts --filename pin-op-firefox-0.3.0.zip --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs src test \"src/**\" \"test/**\" && node ../../tools/normalize-browser-archive.mjs ../../artifacts/pin-op-firefox-0.3.0.zip",
     "test": "pnpm run build:deps && vitest run",
     "typecheck": "pnpm run build:deps && tsc --noEmit -p tsconfig.json",
     "lint": "pnpm run build:deps && tsc --noEmit -p tsconfig.json"

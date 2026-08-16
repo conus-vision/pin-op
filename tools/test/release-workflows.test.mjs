@@ -6,6 +6,79 @@ import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "../..");
 
+test("release workflows and package scripts use canonical Pin-op names", async () => {
+  const [ciSource, releaseSource, firefoxSource, rootPackageSource] = await Promise.all([
+    readFile(resolve(root, ".github/workflows/ci.yml"), "utf8"),
+    readFile(resolve(root, ".github/workflows/release.yml"), "utf8"),
+    readFile(resolve(root, ".github/workflows/firefox-sign.yml"), "utf8"),
+    readFile(resolve(root, "package.json"), "utf8"),
+  ]);
+  const rootPackage = JSON.parse(rootPackageSource);
+  const legacyArtifactPrefix = ["pin", "op", "-"].join("");
+
+  assert.equal(
+    rootPackage.scripts["smoke:chrome-package"],
+    "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.3.0.zip",
+  );
+  for (const source of [ciSource, releaseSource, firefoxSource, rootPackageSource]) {
+    assert.equal(source.toLowerCase().includes(legacyArtifactPrefix), false);
+  }
+  assert.match(ciSource, /--filter pin-op-chrome test/);
+  assert.match(releaseSource, /--title "Pin-op \$RELEASE_TAG"/);
+});
+
+test("Firefox artifact handoffs reject a signed-XPI attach mutation", async () => {
+  const source = await readFile(resolve(root, ".github/workflows/firefox-sign.yml"), "utf8");
+  assertFirefoxArtifactHandoffs(YAML.parse(source));
+
+  const canonicalCopy =
+    'cp -- "$SIGNED_XPI_PROVENANCE_DIRECTORY/$SIGNED_XPI_BASENAME" release-bundle/artifacts/';
+  const mutatedCopy =
+    'cp -- "$SIGNED_XPI_PROVENANCE_DIRECTORY/pin-op-firefox-${RELEASE_VERSION}.zip" release-bundle/artifacts/';
+  const mutatedSource = source.replace(canonicalCopy, mutatedCopy);
+  assert.notEqual(mutatedSource, source, "the signed-XPI attach mutation must apply");
+  assert.throws(
+    () => assertFirefoxArtifactHandoffs(YAML.parse(mutatedSource)),
+    (error) => error?.code === "ERR_ASSERTION",
+  );
+});
+
+test("release draft artifact handoffs reuse exact canonical outputs", async () => {
+  const workflow = YAML.parse(
+    await readFile(resolve(root, ".github/workflows/release.yml"), "utf8"),
+  );
+  const packageJob = workflow.jobs.package;
+  const release = namedStep(packageJob.steps, "Verify annotated tag and product versions");
+  const preserve = namedStep(packageJob.steps, "Preserve immutable draft assets");
+
+  for (const [output, definition] of Object.entries(RELEASE_ARTIFACT_OUTPUTS)) {
+    assert.equal(packageJob.outputs[output], `\${{ steps.release.outputs.${output} }}`);
+    assert.match(release.run, new RegExp(escapeRegex(`printf '${output}=${definition}\\n'`)));
+  }
+  assert.deepEqual(preserve.with.path.trim().split("\n"), [
+    "artifacts/${{ steps.release.outputs.vscode_basename }}",
+    "artifacts/${{ steps.release.outputs.chrome_basename }}",
+    "artifacts/${{ steps.release.outputs.firefox_zip_basename }}",
+    "artifacts/${{ steps.release.outputs.firefox_source_basename }}",
+    "artifacts/SHA256SUMS",
+  ]);
+
+  const draftJob = workflow.jobs.create_draft;
+  assert.deepEqual(draftJob.env, {
+    CHROME_BASENAME: "${{ needs.package.outputs.chrome_basename }}",
+    FIREFOX_SOURCE_BASENAME: "${{ needs.package.outputs.firefox_source_basename }}",
+    FIREFOX_ZIP_BASENAME: "${{ needs.package.outputs.firefox_zip_basename }}",
+    VSCODE_BASENAME: "${{ needs.package.outputs.vscode_basename }}",
+  });
+  const exact = namedStep(draftJob.steps, "Require the exact draft asset set");
+  const create = namedStep(draftJob.steps, "Create draft release");
+  for (const variable of Object.keys(draftJob.env)) {
+    assert.match(exact.run, new RegExp(escapeRegex(`release-assets/$${variable}`)));
+    assert.match(create.run, new RegExp(escapeRegex(`release-assets/$${variable}`)));
+  }
+  assert.doesNotMatch(`${exact.run}\n${create.run}`, /pin-op-(?:vscode|chrome|firefox)/);
+});
+
 test("tag workflow verifies artifacts before a minimal job creates the draft", async () => {
   const source = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
   const workflow = YAML.parse(source);
@@ -89,7 +162,10 @@ test("Firefox signing preserves resume state and rechecks the draft before AMO",
 
   const restoreState = signSteps[stepIndex(signSteps, "Restore prior AMO upload state")];
   assert.equal(restoreState.with["run-id"], "${{ inputs.resume_run_id }}");
-  assert.match(restoreState.with.name, /inputs\.resume_run_id/);
+  assert.equal(
+    restoreState.with.name,
+    "${{ steps.artifact_names.outputs.resume_amo_state_artifact_name }}",
+  );
   const validateResume = signSteps[
     stepIndex(signSteps, "Validate restored AMO upload state and provenance")
   ];
@@ -256,6 +332,170 @@ function stepIndex(steps, name) {
   return index;
 }
 
+const RELEASE_ARTIFACT_OUTPUTS = {
+  vscode_basename: "pin-op-vscode-%s.vsix",
+  chrome_basename: "pin-op-chrome-%s.zip",
+  firefox_zip_basename: "pin-op-firefox-%s.zip",
+  firefox_source_basename: "pin-op-firefox-source-%s.zip",
+};
+
+function namedStep(steps, name) {
+  return steps[stepIndex(steps, name)];
+}
+
+function assertFirefoxArtifactHandoffs(workflow) {
+  const attachJob = workflow.jobs.attach;
+  assert.deepEqual(attachJob.env, {
+    SIGNED_XPI_BASENAME: "${{ needs.validate.outputs.firefox_xpi_basename }}",
+    SIGNED_XPI_PROVENANCE_DIRECTORY: "signed-xpi-provenance",
+  });
+  const attachRestore = namedStep(attachJob.steps, "Restore immutable signed XPI provenance");
+  assert.equal(attachRestore.with.name, "${{ needs.sign.outputs.signed_artifact_name }}");
+  assert.equal(attachRestore.with.path, "${{ env.SIGNED_XPI_PROVENANCE_DIRECTORY }}");
+  const attachValidate = namedStep(attachJob.steps, "Validate current signed XPI provenance");
+  assert.match(attachValidate.run, /validate-current \\\n\s+"\$SIGNED_XPI_PROVENANCE_DIRECTORY"/);
+  const prepare = namedStep(attachJob.steps, "Prepare exact signed release assets");
+  assert.match(
+    prepare.run,
+    /cp -- "\$SIGNED_XPI_PROVENANCE_DIRECTORY\/\$SIGNED_XPI_BASENAME" release-bundle\/artifacts\//,
+  );
+  assert.doesNotMatch(prepare.run, /pin-op-firefox|RELEASE_VERSION/);
+  const upload = namedStep(attachJob.steps, "Upload signed XPI to draft");
+  assert.match(upload.run, /release-bundle\/artifacts\/\$SIGNED_XPI_BASENAME/);
+  assert.doesNotMatch(upload.run, /pin-op-firefox|RELEASE_VERSION/);
+  const verify = namedStep(attachJob.steps, "Verify exact signed draft after upload");
+  assert.match(verify.run, /"\$RELEASE_DIR\/\$SIGNED_XPI_BASENAME"/);
+  assert.match(
+    verify.run,
+    /"\$SIGNED_XPI_PROVENANCE_DIRECTORY\/\$SIGNED_XPI_BASENAME"/,
+  );
+
+  const validateJob = workflow.jobs.validate;
+  const release = namedStep(validateJob.steps, "Verify checkout is the requested annotated release tag");
+  for (const [output, definition] of Object.entries({
+    ...RELEASE_ARTIFACT_OUTPUTS,
+    firefox_xpi_basename: "pin-op-firefox-%s.xpi",
+  })) {
+    assert.equal(validateJob.outputs[output], `\${{ steps.release.outputs.${output} }}`);
+    assert.match(release.run, new RegExp(escapeRegex(`printf '${output}=${definition}\\n'`)));
+  }
+  const prepareBundle = namedStep(
+    validateJob.steps,
+    "Prepare immutable unsigned release bundle",
+  );
+  assert.deepEqual(prepareBundle.env, {
+    CHROME_BASENAME: "${{ steps.release.outputs.chrome_basename }}",
+    FIREFOX_SOURCE_BASENAME: "${{ steps.release.outputs.firefox_source_basename }}",
+    FIREFOX_ZIP_BASENAME: "${{ steps.release.outputs.firefox_zip_basename }}",
+    VSCODE_BASENAME: "${{ steps.release.outputs.vscode_basename }}",
+  });
+  for (const variable of Object.keys(prepareBundle.env)) {
+    assert.match(prepareBundle.run, new RegExp(escapeRegex(`artifacts/$${variable}`)));
+  }
+  assert.doesNotMatch(prepareBundle.run, /pin-op-(?:vscode|chrome|firefox)/);
+
+  const signJob = workflow.jobs.sign;
+  const names = namedStep(signJob.steps, "Define signing artifact handoffs");
+  assert.equal(names.id, "artifact_names");
+  assert.match(names.run, /amo-signing-state\.mjs artifact-name/);
+  assert.match(names.run, /release-signing-provenance\.mjs artifact-name/);
+  assert.match(names.run, /amo_state_directory_name=pin-op-amo-state/);
+  assert.match(names.run, /signed_provenance_directory_name=pin-op-signed-xpi-provenance/);
+  const restoreState = namedStep(signJob.steps, "Restore prior AMO upload state");
+  assert.equal(
+    restoreState.with.name,
+    "${{ steps.artifact_names.outputs.resume_amo_state_artifact_name }}",
+  );
+  const preserveState = namedStep(signJob.steps, "Prepare available AMO upload state for preservation");
+  assert.equal(
+    preserveState.env.AMO_STATE_DIRECTORY_NAME,
+    "${{ steps.artifact_names.outputs.amo_state_directory_name }}",
+  );
+  assert.match(preserveState.run, /STATE_DIRECTORY="\$RUNNER_TEMP\/\$AMO_STATE_DIRECTORY_NAME"/);
+  const uploadState = namedStep(signJob.steps, "Preserve available AMO upload state");
+  assert.equal(
+    uploadState.with.name,
+    "${{ steps.artifact_names.outputs.amo_state_artifact_name }}",
+  );
+  assert.equal(
+    uploadState.with.path,
+    "${{ runner.temp }}/${{ steps.artifact_names.outputs.amo_state_directory_name }}/",
+  );
+  const createProvenance = namedStep(signJob.steps, "Create immutable signed XPI provenance");
+  assert.equal(
+    createProvenance.env.SIGNED_XPI_BASENAME,
+    "${{ needs.validate.outputs.firefox_xpi_basename }}",
+  );
+  assert.equal(
+    createProvenance.env.SIGNED_PROVENANCE_DIRECTORY_NAME,
+    "${{ steps.artifact_names.outputs.signed_provenance_directory_name }}",
+  );
+  assert.match(createProvenance.run, /"artifacts\/\$SIGNED_XPI_BASENAME"/);
+  assert.match(
+    createProvenance.run,
+    /PROVENANCE_DIR="\$RUNNER_TEMP\/\$SIGNED_PROVENANCE_DIRECTORY_NAME"/,
+  );
+  const uploadProvenance = namedStep(signJob.steps, "Preserve immutable signed XPI provenance");
+  assert.equal(
+    uploadProvenance.with.name,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
+  assert.equal(
+    uploadProvenance.with.path,
+    "${{ runner.temp }}/${{ steps.artifact_names.outputs.signed_provenance_directory_name }}/",
+  );
+
+  const publishJob = workflow.jobs.publish;
+  assert.deepEqual(publishJob.env, {
+    CHROME_BASENAME: "${{ needs.validate.outputs.chrome_basename }}",
+    FIREFOX_SOURCE_BASENAME: "${{ needs.validate.outputs.firefox_source_basename }}",
+    FIREFOX_XPI_BASENAME: "${{ needs.validate.outputs.firefox_xpi_basename }}",
+    FIREFOX_ZIP_BASENAME: "${{ needs.validate.outputs.firefox_zip_basename }}",
+    SIGNED_XPI_PROVENANCE_DIRECTORY: "signed-xpi-provenance",
+    VSCODE_BASENAME: "${{ needs.validate.outputs.vscode_basename }}",
+  });
+  const publicationNames = namedStep(
+    publishJob.steps,
+    "Define publication artifact handoffs",
+  );
+  assert.equal(publicationNames.id, "artifact_names");
+  assert.match(publicationNames.run, /release-signing-provenance\.mjs artifact-name/);
+  const publishRestore = namedStep(publishJob.steps, "Restore immutable signed XPI provenance");
+  assert.equal(
+    publishRestore.with.name,
+    "${{ steps.artifact_names.outputs.signed_provenance_artifact_name }}",
+  );
+  assert.equal(publishRestore.with.path, "${{ env.SIGNED_XPI_PROVENANCE_DIRECTORY }}");
+  const publishValidate = namedStep(
+    publishJob.steps,
+    "Validate exact manually verified signed XPI",
+  );
+  assert.match(
+    publishValidate.run,
+    /validate-publish \\\n\s+"\$SIGNED_XPI_PROVENANCE_DIRECTORY"/,
+  );
+  const publishVerify = namedStep(
+    publishJob.steps,
+    "Verify signed draft identity for publication",
+  );
+  assert.match(publishVerify.run, /"\$RELEASE_DIR\/\$FIREFOX_XPI_BASENAME"/);
+  assert.match(
+    publishVerify.run,
+    /"\$SIGNED_XPI_PROVENANCE_DIRECTORY\/\$FIREFOX_XPI_BASENAME"/,
+  );
+  const publish = namedStep(publishJob.steps, "Verify and publish immutable release by ID");
+  for (const variable of [
+    "CHROME_BASENAME",
+    "FIREFOX_ZIP_BASENAME",
+    "FIREFOX_XPI_BASENAME",
+    "FIREFOX_SOURCE_BASENAME",
+    "VSCODE_BASENAME",
+  ]) {
+    assert.match(publish.run, new RegExp(`\\$${variable}`));
+  }
+  assert.doesNotMatch(publish.run, /pin-op-(?:vscode|chrome|firefox)/);
+}
+
 function assertNoRepositoryCodeWithGhToken(steps) {
   for (const step of steps) {
     if (!Object.hasOwn(step.env ?? {}, "GH_TOKEN")) continue;
@@ -270,4 +510,8 @@ function assertNoRepositoryCodeWithGhToken(steps) {
       );
     }
   }
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

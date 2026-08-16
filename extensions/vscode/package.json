@@ -123,7 +123,7 @@
   "scripts": {
     "vscode:prepublish": "pnpm run build",
     "package": "node ./package-vsix.mjs",
-    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pinop-vscode-0.3.0.vsix",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pin-op-vscode-0.3.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter pin-op-source-plugin-fixture build && vscode-test --label sourcePluginApi",

@@ -21,10 +21,10 @@ import {
 
 const VERSION = "0.3.0";
 const EXPECTED_ARTIFACTS = new Map([
-  [`pinop-vscode-${VERSION}.vsix`, "vscode"],
-  [`pinop-chrome-${VERSION}.zip`, "chrome"],
-  [`pinop-firefox-${VERSION}.zip`, "firefox"],
-  [`pinop-firefox-source-${VERSION}.zip`, "firefox-source"],
+  [`pin-op-vscode-${VERSION}.vsix`, "vscode"],
+  [`pin-op-chrome-${VERSION}.zip`, "chrome"],
+  [`pin-op-firefox-${VERSION}.zip`, "firefox"],
+  [`pin-op-firefox-source-${VERSION}.zip`, "firefox-source"],
 ]);
 export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "LICENSE",

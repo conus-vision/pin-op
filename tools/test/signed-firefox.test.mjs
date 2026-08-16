@@ -83,7 +83,7 @@ test("signed Firefox XPI validates manifest version and Gecko identity", async (
 });
 
 async function withArchives(callback) {
-  const directory = await mkdtemp(resolve(tmpdir(), "pinop-signed-xpi-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "pin-op-signed-xpi-"));
   const manifest = JSON.stringify({
     manifest_version: 3,
     name: "Pin-op",
