@@ -27,19 +27,21 @@ export function probeProtocolVersion(payload: unknown): ProtocolVersionProbe {
     return { compatible: false };
   }
 
-  let receivedVersion: unknown;
+  let descriptor: PropertyDescriptor | undefined;
   try {
-    if (
-      Array.isArray(payload) ||
-      !Object.prototype.hasOwnProperty.call(payload, "protocolVersion")
-    ) {
+    if (Array.isArray(payload)) {
       return { compatible: false };
     }
-    receivedVersion = Reflect.get(payload, "protocolVersion");
+    descriptor = Object.getOwnPropertyDescriptor(payload, "protocolVersion");
   } catch {
     return { compatible: false };
   }
 
+  if (!descriptor || !("value" in descriptor)) {
+    return { compatible: false };
+  }
+
+  const receivedVersion = descriptor.value as unknown;
   if (!isBoundedProtocolVersion(receivedVersion)) {
     return { compatible: false };
   }

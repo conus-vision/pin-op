@@ -33,12 +33,39 @@ describe("protocol version compatibility helpers", () => {
     expect(probeProtocolVersion(payload)).toEqual({ compatible: false });
   });
 
-  it("does not throw for malicious objects or getters", () => {
+  it("rejects accessors without invoking their getters", () => {
+    let getterInvocationCount = 0;
     const getter = Object.defineProperty({}, "protocolVersion", {
       get() {
-        throw new Error("do not invoke me");
+        getterInvocationCount += 1;
+        return PROTOCOL_VERSION;
       },
     });
+
+    expect(probeProtocolVersion(getter)).toEqual({ compatible: false });
+    expect(getterInvocationCount).toBe(0);
+  });
+
+  it("reads proxy data descriptors without invoking get traps", () => {
+    let proxyGetInvocationCount = 0;
+    const proxy = new Proxy(
+      { protocolVersion: PROTOCOL_VERSION },
+      {
+        get() {
+          proxyGetInvocationCount += 1;
+          return PROTOCOL_VERSION;
+        },
+      },
+    );
+
+    expect(probeProtocolVersion(proxy)).toEqual({
+      receivedVersion: PROTOCOL_VERSION,
+      compatible: true,
+    });
+    expect(proxyGetInvocationCount).toBe(0);
+  });
+
+  it("does not throw for malicious or revoked proxies", () => {
     const proxy = new Proxy(
       {},
       {
@@ -53,8 +80,6 @@ describe("protocol version compatibility helpers", () => {
     const revokedProxy = Proxy.revocable({}, {});
     revokedProxy.revoke();
 
-    expect(() => probeProtocolVersion(getter)).not.toThrow();
-    expect(probeProtocolVersion(getter)).toEqual({ compatible: false });
     expect(() => probeProtocolVersion(proxy)).not.toThrow();
     expect(probeProtocolVersion(proxy)).toEqual({ compatible: false });
     expect(() => probeProtocolVersion(revokedProxy.proxy)).not.toThrow();
