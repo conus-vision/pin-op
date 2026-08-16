@@ -8,7 +8,11 @@ import {
   LinkAcceptedMessageSchema,
   LinkRequestMessageSchema,
   PeerStateMessageSchema,
+  PageRefreshMessageSchema,
+  PageRefreshModeSchema,
+  PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
   ProtocolCapability,
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
@@ -17,11 +21,23 @@ import {
   ResolutionSourceSchema,
   ResolutionStatusSchema,
   SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+  SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
+  SOURCE_PRESENTATION_LIMITS,
+  SourceDocumentSchema,
+  SourceExcerptConfidenceSchema,
+  SourceExcerptSchema,
+  SourceExcerptTargetRoleSchema,
+  SourceMatchesMessageSchema,
   SourceNavigateMessageSchema,
   SourceNavigationDirectionSchema,
   SourceNavigationStateMessageSchema,
+  SourceOpenMessageSchema,
   UnlinkMessageSchema,
+  createSourceMatchesMessageSchema,
+  parseProtocolMismatchReason,
   parseMessage,
+  probeProtocolVersion,
+  protocolMismatchReason,
 } from "@pin-op/protocol";
 
 const ping = {
@@ -33,7 +49,7 @@ const ping = {
 };
 
 assert.deepEqual(parseMessage(ping), ping);
-assert.equal(PROTOCOL_VERSION, 5);
+assert.equal(PROTOCOL_VERSION, 6);
 assert.equal(typeof PinOpMessageSchema.parse, "function");
 assert.equal(typeof BridgeInstanceIdSchema.parse, "function");
 assert.equal(typeof EmptyMetadataSchema.parse, "function");
@@ -46,12 +62,38 @@ assert.equal(typeof ResolutionDiagnosticCodeSchema.parse, "function");
 assert.equal(typeof ResolutionStatusSchema.parse, "function");
 assert.equal(typeof ResolutionMessageSchema.parse, "function");
 assert.equal(typeof PeerStateMessageSchema.parse, "function");
+assert.equal(typeof PageRefreshModeSchema.parse, "function");
+assert.equal(typeof PageRefreshMessageSchema.parse, "function");
+assert.equal(typeof SourceExcerptSchema.parse, "function");
+assert.equal(typeof SourceExcerptTargetRoleSchema.parse, "function");
+assert.equal(typeof SourceExcerptConfidenceSchema.parse, "function");
+assert.equal(typeof SourceDocumentSchema.parse, "function");
+assert.equal(typeof createSourceMatchesMessageSchema, "function");
+assert.equal(typeof SourceMatchesMessageSchema.parse, "function");
+assert.equal(typeof SourceOpenMessageSchema.parse, "function");
+assert.equal(typeof PresentationSettingsMessageSchema.parse, "function");
 assert.equal(typeof SourceNavigationDirectionSchema.parse, "function");
 assert.equal(typeof SourceNavigateMessageSchema.parse, "function");
 assert.equal(typeof SourceNavigationStateMessageSchema.parse, "function");
 assert.equal(ProtocolCapability.SourceNavigation, "source-navigation");
+assert.equal(ProtocolCapability.AutoRefresh, "auto-refresh");
+assert.equal(ProtocolCapability.SourcePresentation, "source-presentation");
+assert.equal(ProtocolCapability.PresentationSettings, "presentation-settings");
 assert.equal(RESOLUTION_ENVELOPE_MAX_BYTES, 16 * 1024);
 assert.equal(SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES, 16 * 1024);
+assert.equal(SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES, 256 * 1024);
+assert.equal(SOURCE_PRESENTATION_LIMITS.matches, 32);
+assert.equal(SOURCE_PRESENTATION_LIMITS.textBytes, 8 * 1024);
+assert.equal(SOURCE_PRESENTATION_LIMITS.textLines, 80);
+assert.equal(PROTOCOL_MISMATCH_CLOSE_CODE, 1002);
+assert.deepEqual(probeProtocolVersion({ protocolVersion: 6 }), {
+  receivedVersion: 6,
+  compatible: true,
+});
+assert.deepEqual(parseProtocolMismatchReason(protocolMismatchReason(5)), {
+  expectedVersion: 6,
+  receivedVersion: 5,
+});
 assert.equal(typeof RESOLUTION_LIMITS.opaqueIdLength, "number");
 assert.equal(typeof RESOLUTION_LIMITS.labelLength, "number");
 assert.equal(typeof RESOLUTION_LIMITS.languageIdLength, "number");

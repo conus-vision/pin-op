@@ -318,7 +318,7 @@ describe("resolution protocol messages", () => {
     ).toThrow();
   });
 
-  it("publishes the v4 resolution bounds", () => {
+  it("publishes the resolution bounds", () => {
     expect(RESOLUTION_LIMITS.opaqueIdLength).toBe(128);
     expect(RESOLUTION_LIMITS.labelLength).toBe(128);
     expect(RESOLUTION_LIMITS.languageIdLength).toBe(64);
@@ -383,10 +383,10 @@ describe("resolution protocol messages", () => {
     expect(schemaBelowLimit.safeParse(message).success).toBe(false);
   });
 
-  it("rejects protocol v3 resolution messages", () => {
+  it("rejects protocol v5 resolution messages", () => {
     expect(() =>
       ResolutionMessageSchema.parse(
-        resolutionMessage({ protocolVersion: 3 }),
+        resolutionMessage({ protocolVersion: 5 }),
       ),
     ).toThrow();
   });

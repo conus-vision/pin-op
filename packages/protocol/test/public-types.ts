@@ -2,19 +2,24 @@ import type {
   PinOpMessage,
   EmptyMetadata,
   PeerStateMessage,
+  PageRefreshMessage,
+  PresentationSettingsMessage,
   ResolutionMessage,
+  SourceExcerpt,
+  SourceMatchesMessage,
   SourceNavigateMessage,
   SourceNavigationDirection,
   SourceNavigationStateMessage,
+  SourceOpenMessage,
 } from "@pin-op/protocol";
 
-// @ts-expect-error Legacy reference envelopes are not part of protocol v5.
+// @ts-expect-error Legacy reference envelopes are not part of protocol v6.
 type RemovedReferencesMessage = import("@pin-op/protocol").ReferencesMessage;
-// @ts-expect-error Legacy command envelopes are not part of protocol v5.
+// @ts-expect-error Legacy command envelopes are not part of protocol v6.
 type RemovedCommandMessage = import("@pin-op/protocol").CommandMessage;
-// @ts-expect-error Legacy open-source commands are not part of protocol v5.
+// @ts-expect-error Legacy open-source commands are not part of protocol v6.
 type RemovedOpenSourceCommandMessage = import("@pin-op/protocol").OpenSourceCommandMessage;
-// @ts-expect-error Legacy highlight commands are not part of protocol v5.
+// @ts-expect-error Legacy highlight commands are not part of protocol v6.
 type RemovedHighlightCommandMessage = import("@pin-op/protocol").HighlightElementCommandMessage;
 // @ts-expect-error Legacy source references are not publicly exported.
 type RemovedSourceReference = import("@pin-op/protocol").SourceReference;
@@ -25,7 +30,7 @@ const emptyMetadata: EmptyMetadata = {};
 const nonEmptyMetadata: EmptyMetadata = { extra: true };
 
 const resolution: ResolutionMessage = {
-  protocolVersion: 5,
+  protocolVersion: 6,
   type: "resolution",
   messageId: "resolution-1",
   sessionId: "session-1",
@@ -47,7 +52,7 @@ const resolutionWithMetadata: ResolutionMessage = {
 };
 
 const peerState: PeerStateMessage = {
-  protocolVersion: 5,
+  protocolVersion: 6,
   type: "peerState",
   messageId: "peer-state-1",
   sessionId: "session-1",
@@ -70,7 +75,7 @@ const nextDirection: SourceNavigationDirection = "next";
 const unsupportedDirection: SourceNavigationDirection = "first";
 
 const sourceNavigate: SourceNavigateMessage = {
-  protocolVersion: 5,
+  protocolVersion: 6,
   type: "source.navigate",
   messageId: "source-navigate-1",
   sessionId: "session-1",
@@ -81,7 +86,7 @@ const sourceNavigate: SourceNavigateMessage = {
 };
 
 const sourceNavigationStateWithoutActiveMatch: SourceNavigationStateMessage = {
-  protocolVersion: 5,
+  protocolVersion: 6,
   type: "source.navigationState",
   messageId: "source-navigation-state-1",
   sessionId: "session-1",
@@ -95,6 +100,66 @@ const sourceNavigationStateWithoutActiveMatch: SourceNavigationStateMessage = {
 const sourceNavigationStateWithActiveMatch: SourceNavigationStateMessage = {
   ...sourceNavigationStateWithoutActiveMatch,
   activeMatchIndex: 0,
+  activeMatchId: "match-1",
+};
+
+const pageRefresh: PageRefreshMessage = {
+  protocolVersion: 6,
+  type: "page.refresh",
+  messageId: "refresh-1",
+  sessionId: "session-1",
+  source: { role: "ide", id: "vscode-1" },
+  refreshGeneration: 1,
+  mode: "styles",
+  metadata: emptyMetadata,
+};
+
+const sourceExcerpt: SourceExcerpt = {
+  matchId: "match-1",
+  targetRole: "selected",
+  label: "App.tsx:1",
+  kind: "component",
+  relation: "renders",
+  confidence: "exact",
+  startLine: 1,
+  endLine: 2,
+  text: "export function App() {}",
+  truncated: false,
+};
+
+const sourceMatches: SourceMatchesMessage = {
+  protocolVersion: 6,
+  type: "source.matches",
+  messageId: "matches-1",
+  sessionId: "session-1",
+  source: { role: "ide", id: "vscode-1" },
+  inspectMessageId: "inspect-1",
+  resolutionGeneration: 1,
+  document: { label: "App.tsx", languageId: "typescriptreact" },
+  matches: [sourceExcerpt],
+  omittedMatchCount: 0,
+  metadata: emptyMetadata,
+};
+
+const sourceOpen: SourceOpenMessage = {
+  protocolVersion: 6,
+  type: "source.open",
+  messageId: "open-1",
+  sessionId: "session-1",
+  inspectMessageId: "inspect-1",
+  resolutionGeneration: 1,
+  matchId: "match-1",
+  metadata: emptyMetadata,
+};
+
+const presentationSettings: PresentationSettingsMessage = {
+  protocolVersion: 6,
+  type: "presentation.settings",
+  messageId: "settings-1",
+  sessionId: "session-1",
+  inspectMessageId: "inspect-1",
+  ideHighlightEnabled: true,
+  metadata: emptyMetadata,
 };
 
 void nonEmptyMetadata;
@@ -104,6 +169,10 @@ void previousDirection;
 void unsupportedDirection;
 void sourceNavigate;
 void sourceNavigationStateWithActiveMatch;
+void pageRefresh;
+void sourceMatches;
+void sourceOpen;
+void presentationSettings;
 
 declare const readonlyResolution: ResolutionMessage;
 
@@ -130,6 +199,8 @@ declare const readonlySourceNavigationState: SourceNavigationStateMessage;
 
 // @ts-expect-error SourceNavigationStateMessage fields are readonly.
 readonlySourceNavigationState.activeMatchIndex = 1;
+// @ts-expect-error SourceNavigationStateMessage fields are readonly.
+readonlySourceNavigationState.activeMatchId = "match-2";
 // @ts-expect-error SourceNavigationStateMessage source fields are readonly.
 readonlySourceNavigationState.source.id = "other-ide";
 

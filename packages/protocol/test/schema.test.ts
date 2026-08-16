@@ -71,6 +71,7 @@ function inspectMessage(targets: readonly unknown[]) {
     messageId: "inspect-v3",
     sessionId: "session-1",
     source,
+    ideHighlightEnabled: true,
     targets,
     context: { url: "http://localhost:3000/", metadata: {} },
     metadata: {},
@@ -148,6 +149,7 @@ describe("Pin-op protocol schemas", () => {
         messageId: "msg-inspect",
         sessionId: "session-1",
         source,
+        ideHighlightEnabled: true,
         targets: [
           {
             role: "selected",
@@ -273,12 +275,18 @@ describe("Pin-op protocol schemas", () => {
       Resolution: "resolution",
       Link: "link",
       SourceNavigation: "source-navigation",
+      AutoRefresh: "auto-refresh",
+      SourcePresentation: "source-presentation",
+      PresentationSettings: "presentation-settings",
     });
     expect(ProtocolCapabilitySchema.options).toEqual([
       "inspect",
       "resolution",
       "link",
       "source-navigation",
+      "auto-refresh",
+      "source-presentation",
+      "presentation-settings",
     ]);
   });
 
@@ -317,6 +325,16 @@ describe("Pin-op protocol schemas", () => {
     ]);
 
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it("requires an explicit IDE highlight preference on inspect", () => {
+    const { ideHighlightEnabled: _ideHighlightEnabled, ...message } =
+      inspectMessage([target("selected", 0, ".card", runtimeFacts)]);
+
+    expect(() => parseMessage(message)).toThrow();
+    expect(
+      parseMessage({ ...message, ideHighlightEnabled: false }),
+    ).toMatchObject({ ideHighlightEnabled: false });
   });
 
   it("exports practical inspect collection limits", () => {
@@ -650,10 +668,10 @@ describe("Pin-op protocol schemas", () => {
     expect(() => parseMessage(inspectMessage(targets))).toThrow();
   });
 
-  it("rejects the preceding protocol version", () => {
+  it("rejects protocol v5", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: PROTOCOL_VERSION - 1,
+        protocolVersion: 5,
         type: "ping",
         messageId: "old-ping",
         sentAt: "2026-07-11T00:00:00.000Z",
@@ -742,6 +760,7 @@ describe("Pin-op protocol schemas", () => {
         messageId: "msg-inspect-nested-facts",
         sessionId: "session-1",
         source,
+        ideHighlightEnabled: true,
         targets: [
           {
             role: "selected",

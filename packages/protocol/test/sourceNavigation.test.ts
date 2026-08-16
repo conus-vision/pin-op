@@ -43,6 +43,7 @@ function sourceNavigationStateMessage(
     resolutionGeneration: 3,
     selectedMatchCount: 4,
     activeMatchIndex: 1,
+    activeMatchId: "match-2",
     metadata: {},
     ...overrides,
   };
@@ -70,11 +71,26 @@ describe("source navigation protocol messages", () => {
   });
 
   it("allows the active match index to be absent outside every match", () => {
-    const { activeMatchIndex: _activeMatchIndex, ...message } =
+    const {
+      activeMatchIndex: _activeMatchIndex,
+      activeMatchId: _activeMatchId,
+      ...message
+    } =
       sourceNavigationStateMessage();
 
     expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it("allows a bounded active match ID", () => {
+    expect(
+      SourceNavigationStateMessageSchema.parse(sourceNavigationStateMessage()),
+    ).toMatchObject({ activeMatchId: "match-2" });
+    expect(() =>
+      SourceNavigationStateMessageSchema.parse(
+        sourceNavigationStateMessage({ activeMatchId: "x".repeat(129) }),
+      ),
+    ).toThrow();
   });
 
   it.each([

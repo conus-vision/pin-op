@@ -8,9 +8,11 @@ import {
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
   SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+  SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
+  SOURCE_PRESENTATION_LIMITS,
 } from "./limits.js";
 
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;
 
 export type EmptyMetadata = Readonly<Record<string, never>>;
 
@@ -219,6 +221,7 @@ export const InspectMessageSchema = baseMessageSchema
     type: z.literal("inspect"),
     sessionId: z.string().min(1),
     source: ClientSourceSchema,
+    ideHighlightEnabled: z.boolean(),
     targets: z
       .array(InspectTargetSchema)
       .min(1)
@@ -300,7 +303,7 @@ export const ResolutionStatusSchema = z.enum([
   "error",
 ]);
 
-const ResolutionDocumentSchema = z
+export const SourceDocumentSchema = z
   .object({
     label: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
     languageId: z
@@ -322,7 +325,7 @@ export function createResolutionMessageSchema(
       source: ResolutionSourceSchema,
       inspectMessageId: opaqueIdSchema,
       resolutionGeneration: generationSchema,
-      document: ResolutionDocumentSchema.optional(),
+      document: SourceDocumentSchema.optional(),
       status: ResolutionStatusSchema,
       selectedMatchCount: countSchema,
       parentMatchCount: countSchema,
@@ -379,6 +382,157 @@ export function createResolutionMessageSchema(
 
 export const ResolutionMessageSchema = createResolutionMessageSchema();
 
+export const PageRefreshModeSchema = z.enum(["styles", "reload"]);
+
+const pageRefreshMessageObjectSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    type: z.literal("page.refresh"),
+    messageId: opaqueIdSchema,
+    sessionId: opaqueIdSchema,
+    source: ResolutionSourceSchema,
+    refreshGeneration: generationSchema,
+    mode: PageRefreshModeSchema,
+    metadata: EmptyMetadataSchema,
+  })
+  .strict();
+
+export const PageRefreshMessageSchema =
+  pageRefreshMessageObjectSchema.transform(
+    (message): DeepReadonly<z.infer<typeof pageRefreshMessageObjectSchema>> =>
+      message,
+  );
+
+export const SourceExcerptTargetRoleSchema = z.enum(["selected", "parent"]);
+
+export const SourceExcerptConfidenceSchema = z.enum([
+  "exact",
+  "sourcemap",
+  "instrumented",
+  "heuristic",
+  "unknown",
+]);
+
+const sourceExcerptObjectSchema = z
+  .object({
+    matchId: opaqueIdSchema,
+    targetRole: SourceExcerptTargetRoleSchema,
+    label: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
+    kind: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
+    relation: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
+    confidence: SourceExcerptConfidenceSchema,
+    startLine: z.number().int().min(1).max(RESOLUTION_LIMITS.count),
+    endLine: z.number().int().min(1).max(RESOLUTION_LIMITS.count),
+    text: z.string(),
+    truncated: z.boolean(),
+  })
+  .strict();
+
+export const SourceExcerptSchema = sourceExcerptObjectSchema
+  .superRefine((excerpt, context) => {
+    if (excerpt.endLine < excerpt.startLine) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endLine"],
+        message: "source excerpt end line must not be before start line",
+      });
+    }
+
+    if (utf8ByteLength(excerpt.text) > SOURCE_PRESENTATION_LIMITS.textBytes) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "source excerpt text exceeds UTF-8 byte limit",
+      });
+    }
+
+    const logicalLineCount = excerpt.text.split(/\r\n|\r|\n/).length;
+    if (logicalLineCount > SOURCE_PRESENTATION_LIMITS.textLines) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "source excerpt text exceeds logical line limit",
+      });
+    }
+  })
+  .transform(
+    (excerpt): DeepReadonly<z.infer<typeof sourceExcerptObjectSchema>> =>
+      excerpt,
+  );
+
+export function createSourceMatchesMessageSchema(
+  envelopeMaxBytes = SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
+) {
+  const schema = z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("source.matches"),
+      messageId: opaqueIdSchema,
+      sessionId: opaqueIdSchema,
+      source: ResolutionSourceSchema,
+      inspectMessageId: opaqueIdSchema,
+      resolutionGeneration: generationSchema,
+      document: SourceDocumentSchema,
+      matches: z
+        .array(SourceExcerptSchema)
+        .max(SOURCE_PRESENTATION_LIMITS.matches),
+      omittedMatchCount: countSchema,
+      metadata: EmptyMetadataSchema,
+    })
+    .strict();
+
+  return schema
+    .superRefine((message, context) => {
+      addSerializedBudgetIssue(
+        message,
+        context,
+        envelopeMaxBytes,
+        "source.matches",
+      );
+    })
+    .transform((message): DeepReadonly<z.infer<typeof schema>> => message);
+}
+
+export const SourceMatchesMessageSchema = createSourceMatchesMessageSchema();
+
+const sourceOpenMessageObjectSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    type: z.literal("source.open"),
+    messageId: opaqueIdSchema,
+    sessionId: opaqueIdSchema,
+    inspectMessageId: opaqueIdSchema,
+    resolutionGeneration: generationSchema,
+    matchId: opaqueIdSchema,
+    metadata: EmptyMetadataSchema,
+  })
+  .strict();
+
+export const SourceOpenMessageSchema = sourceOpenMessageObjectSchema.transform(
+  (message): DeepReadonly<z.infer<typeof sourceOpenMessageObjectSchema>> =>
+    message,
+);
+
+const presentationSettingsMessageObjectSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    type: z.literal("presentation.settings"),
+    messageId: opaqueIdSchema,
+    sessionId: opaqueIdSchema,
+    inspectMessageId: opaqueIdSchema,
+    ideHighlightEnabled: z.boolean(),
+    metadata: EmptyMetadataSchema,
+  })
+  .strict();
+
+export const PresentationSettingsMessageSchema =
+  presentationSettingsMessageObjectSchema.transform(
+    (
+      message,
+    ): DeepReadonly<z.infer<typeof presentationSettingsMessageObjectSchema>> =>
+      message,
+  );
+
 export const SourceNavigationDirectionSchema = z.enum(["previous", "next"]);
 
 export function createSourceNavigateMessageSchema(
@@ -428,6 +582,7 @@ export function createSourceNavigationStateMessageSchema(
       resolutionGeneration: generationSchema,
       selectedMatchCount: countSchema,
       activeMatchIndex: countSchema.optional(),
+      activeMatchId: opaqueIdSchema.optional(),
       metadata: EmptyMetadataSchema,
     })
     .strict();
@@ -524,6 +679,10 @@ export const PinOpMessageSchema = z.union([
   AuthenticatedMessageSchema,
   UnlinkMessageSchema,
   InspectMessageSchema,
+  PageRefreshMessageSchema,
+  SourceMatchesMessageSchema,
+  SourceOpenMessageSchema,
+  PresentationSettingsMessageSchema,
   SourceNavigateMessageSchema,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
@@ -551,12 +710,27 @@ export type AuthenticatedMessage = z.infer<
 >;
 export type UnlinkMessage = z.infer<typeof UnlinkMessageSchema>;
 export type InspectMessage = z.infer<typeof InspectMessageSchema>;
+export type PageRefreshMode = z.infer<typeof PageRefreshModeSchema>;
+export type PageRefreshMessage = z.infer<typeof PageRefreshMessageSchema>;
 export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>;
 export type ResolutionDiagnosticCode = z.infer<
   typeof ResolutionDiagnosticCodeSchema
 >;
 export type ResolutionStatus = z.infer<typeof ResolutionStatusSchema>;
 export type ResolutionMessage = z.infer<typeof ResolutionMessageSchema>;
+export type SourceExcerptTargetRole = z.infer<
+  typeof SourceExcerptTargetRoleSchema
+>;
+export type SourceExcerptConfidence = z.infer<
+  typeof SourceExcerptConfidenceSchema
+>;
+export type SourceExcerpt = z.infer<typeof SourceExcerptSchema>;
+export type SourceDocument = z.infer<typeof SourceDocumentSchema>;
+export type SourceMatchesMessage = z.infer<typeof SourceMatchesMessageSchema>;
+export type SourceOpenMessage = z.infer<typeof SourceOpenMessageSchema>;
+export type PresentationSettingsMessage = z.infer<
+  typeof PresentationSettingsMessageSchema
+>;
 export type SourceNavigationDirection = z.infer<
   typeof SourceNavigationDirectionSchema
 >;

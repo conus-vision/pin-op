@@ -1,6 +1,7 @@
 export const INSPECT_ENVELOPE_MAX_BYTES = 768 * 1024;
 export const RESOLUTION_ENVELOPE_MAX_BYTES = 16 * 1024;
 export const SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES = 16 * 1024;
+export const SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES = 256 * 1024;
 
 export const INSPECT_LIMITS = {
   targets: 2,
@@ -31,4 +32,10 @@ export const RESOLUTION_LIMITS = {
   generation: 0x7fffffff,
   count: 0x7fffffff,
   diagnosticCodes: 8,
+} as const;
+
+export const SOURCE_PRESENTATION_LIMITS = {
+  matches: 32,
+  textBytes: 8 * 1024,
+  textLines: 80,
 } as const;
