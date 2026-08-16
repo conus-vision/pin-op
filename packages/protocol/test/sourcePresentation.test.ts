@@ -44,6 +44,24 @@ function sourceMatchesMessage(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function sourceMatchesMessageWithSerializedBytes(targetBytes: number) {
+  const emptyMatches = Array.from(
+    { length: SOURCE_PRESENTATION_LIMITS.matches },
+    (_, index) => excerpt({ matchId: `match-${index}`, text: "" }),
+  );
+  const emptyMessage = sourceMatchesMessage({ matches: emptyMatches });
+  const emptyBytes = Buffer.byteLength(JSON.stringify(emptyMessage), "utf8");
+  const textBytes = targetBytes - emptyBytes;
+  const textBytesPerMatch = Math.floor(textBytes / emptyMatches.length);
+  const remainder = textBytes % emptyMatches.length;
+  const matches = emptyMatches.map((match, index) => ({
+    ...match,
+    text: "x".repeat(textBytesPerMatch + (index < remainder ? 1 : 0)),
+  }));
+
+  return sourceMatchesMessage({ matches });
+}
+
 function sourceOpenMessage(overrides: Record<string, unknown> = {}) {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -198,6 +216,36 @@ describe("source presentation protocol messages", () => {
     expect(
       createSourceMatchesMessageSchema(bytes - 1).safeParse(message).success,
     ).toBe(false);
+  });
+
+  it("enforces the production source matches envelope boundary", () => {
+    const atLimit = sourceMatchesMessageWithSerializedBytes(
+      SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
+    );
+    const overLimit = sourceMatchesMessageWithSerializedBytes(
+      SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES + 1,
+    );
+
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(
+      SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
+    );
+    expect(SourceMatchesMessageSchema.safeParse(atLimit).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(overLimit), "utf8")).toBe(
+      SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES + 1,
+    );
+    const result = SourceMatchesMessageSchema.safeParse(overLimit);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: [],
+            message: "source.matches message exceeds serialized byte limit",
+          }),
+        ]),
+      );
+    }
   });
 
   it("parses strict source-open intents with only match identity", () => {

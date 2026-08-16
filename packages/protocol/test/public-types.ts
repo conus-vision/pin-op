@@ -4,6 +4,7 @@ import type {
   PeerStateMessage,
   PageRefreshMessage,
   PresentationSettingsMessage,
+  ProtocolVersionProbe,
   ResolutionMessage,
   SourceExcerpt,
   SourceMatchesMessage,
@@ -162,6 +163,11 @@ const presentationSettings: PresentationSettingsMessage = {
   metadata: emptyMetadata,
 };
 
+const protocolVersionProbe: ProtocolVersionProbe = {
+  receivedVersion: 6,
+  compatible: true,
+};
+
 void nonEmptyMetadata;
 void resolutionWithMetadata;
 void peerStateWithMetadata;
@@ -173,6 +179,25 @@ void pageRefresh;
 void sourceMatches;
 void sourceOpen;
 void presentationSettings;
+void protocolVersionProbe;
+
+// @ts-expect-error ProtocolVersionProbe fields are readonly.
+protocolVersionProbe.receivedVersion = 5;
+// @ts-expect-error ProtocolVersionProbe fields are readonly.
+protocolVersionProbe.compatible = false;
+
+type ParsedProtocolMismatch = NonNullable<
+  ReturnType<
+    typeof import("@pin-op/protocol").parseProtocolMismatchReason
+  >
+>;
+
+declare const readonlyProtocolMismatch: ParsedProtocolMismatch;
+
+// @ts-expect-error Parsed protocol mismatch fields are readonly.
+readonlyProtocolMismatch.expectedVersion = 5;
+// @ts-expect-error Parsed protocol mismatch fields are readonly.
+readonlyProtocolMismatch.receivedVersion = 6;
 
 declare const readonlyResolution: ResolutionMessage;
 

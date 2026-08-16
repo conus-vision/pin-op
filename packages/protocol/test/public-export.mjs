@@ -13,6 +13,7 @@ import {
   PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
   PROTOCOL_MISMATCH_CLOSE_CODE,
+  PROTOCOL_VERSION_PROBE_MAX_BYTES,
   ProtocolCapability,
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
@@ -86,7 +87,8 @@ assert.equal(SOURCE_PRESENTATION_LIMITS.matches, 32);
 assert.equal(SOURCE_PRESENTATION_LIMITS.textBytes, 8 * 1024);
 assert.equal(SOURCE_PRESENTATION_LIMITS.textLines, 80);
 assert.equal(PROTOCOL_MISMATCH_CLOSE_CODE, 1002);
-assert.deepEqual(probeProtocolVersion({ protocolVersion: 6 }), {
+assert.equal(PROTOCOL_VERSION_PROBE_MAX_BYTES, 768 * 1024);
+assert.deepEqual(probeProtocolVersion(JSON.stringify({ protocolVersion: 6 })), {
   receivedVersion: 6,
   compatible: true,
 });

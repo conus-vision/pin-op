@@ -1,7 +1,9 @@
 import { utf8ByteLength } from "./json.js";
+import { INSPECT_ENVELOPE_MAX_BYTES } from "./limits.js";
 import { PROTOCOL_VERSION } from "./messages.js";
 
 export const PROTOCOL_MISMATCH_CLOSE_CODE = 1002;
+export const PROTOCOL_VERSION_PROBE_MAX_BYTES = INSPECT_ENVELOPE_MAX_BYTES;
 
 const MAX_PROTOCOL_VERSION = 0x7fffffff;
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -9,8 +11,8 @@ const CLOSE_REASON_PATTERN =
   /^pin-op protocol mismatch; expected=(\d+); received=(\d+|unknown)$/;
 
 export interface ProtocolVersionProbe {
-  receivedVersion?: number;
-  compatible: boolean;
+  readonly receivedVersion?: number;
+  readonly compatible: boolean;
 }
 
 function isBoundedProtocolVersion(value: unknown): value is number {
@@ -23,20 +25,29 @@ function isBoundedProtocolVersion(value: unknown): value is number {
 }
 
 export function probeProtocolVersion(payload: unknown): ProtocolVersionProbe {
-  if (typeof payload !== "object" || payload === null) {
+  if (
+    typeof payload !== "string" ||
+    payload.length > PROTOCOL_VERSION_PROBE_MAX_BYTES ||
+    utf8ByteLength(payload) > PROTOCOL_VERSION_PROBE_MAX_BYTES
+  ) {
     return { compatible: false };
   }
 
-  let descriptor: PropertyDescriptor | undefined;
+  let parsed: unknown;
   try {
-    if (Array.isArray(payload)) {
-      return { compatible: false };
-    }
-    descriptor = Object.getOwnPropertyDescriptor(payload, "protocolVersion");
+    parsed = JSON.parse(payload) as unknown;
   } catch {
     return { compatible: false };
   }
 
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { compatible: false };
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(
+    parsed,
+    "protocolVersion",
+  );
   if (!descriptor || !("value" in descriptor)) {
     return { compatible: false };
   }
@@ -61,7 +72,12 @@ export function protocolMismatchReason(receivedVersion?: number): string {
 
 export function parseProtocolMismatchReason(
   reason: string,
-): { expectedVersion: number; receivedVersion?: number } | undefined {
+):
+  | {
+      readonly expectedVersion: number;
+      readonly receivedVersion?: number;
+    }
+  | undefined {
   if (
     typeof reason !== "string" ||
     reason.length > MAX_CLOSE_REASON_BYTES ||
