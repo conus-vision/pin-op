@@ -206,7 +206,7 @@ function listeningPort(server) {
 const entryPath = process.argv[1];
 if (entryPath && pathToFileURL(resolve(entryPath)).href === import.meta.url) {
   const servers = await startExampleServers();
-  console.log(`PinOp example: ${servers.pageUrl}`);
+  console.log(`Pin-op example: ${servers.pageUrl}`);
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.once(signal, () => {
       void servers.stop().finally(() => process.exit(0));

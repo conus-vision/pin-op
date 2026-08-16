@@ -77,7 +77,7 @@ function inspectMessage(targets: readonly unknown[]) {
   };
 }
 
-describe("PinOp protocol schemas", () => {
+describe("Pin-op protocol schemas", () => {
   it.each([
     [
       "hello",
@@ -692,7 +692,7 @@ describe("PinOp protocol schemas", () => {
     ).toThrow();
   });
 
-  it("accepts only the structured PinOp error vocabulary", () => {
+  it("accepts only the structured Pin-op error vocabulary", () => {
     const codes = [
       "link.invalidCode",
       "link.unreachable",

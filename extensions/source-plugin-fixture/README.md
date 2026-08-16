@@ -1,8 +1,8 @@
-# PinOp Source Plugin Fixture
+# Pin-op Source Plugin Fixture
 
-This private VS Code extension proves that an extension outside the PinOp
+This private VS Code extension proves that an extension outside the Pin-op
 core can register a `SourcePlugin` through the public API. It contributes the
-`pin-op-fixture` language for `.b2i` files and registers plugin ID
+`pin-op-fixture` language for `.pin-op-fixture` files and registers plugin ID
 `pin-op.fixture`.
 
 Its manifest depends on the canonical core extension ID

@@ -1,21 +1,21 @@
-# PinOp Source Plugin Authoring
+# Pin-op Source Plugin Authoring
 
 Source plugins connect runtime facts from a browser selection to ranges in the
 active VS Code document. A plugin is a separately installed VS Code extension;
-PinOp never loads plugin code or packages from the inspected workspace.
+Pin-op never loads plugin code or packages from the inspected workspace.
 
 Only CSS and SCSS plugins ship as production implementations today. The public
 API is intentionally general enough for framework and template integrations.
 
 ## Extension Setup
 
-Declare the PinOp core extension as a dependency. The canonical extension
+Declare the Pin-op core extension as a dependency. The canonical extension
 identifier is `conus-vision.pin-op`.
 
 ```json
 {
   "publisher": "example",
-  "name": "pinop-twig",
+  "name": "pin-op-twig",
   "version": "0.1.0",
   "engines": { "vscode": "^1.85.0" },
   "main": "./dist/extension.cjs",
@@ -120,11 +120,11 @@ export async function activate(
   const core = vscode.extensions.getExtension<PinOpApi>(
     "conus-vision.pin-op",
   );
-  if (!core) throw new Error("PinOp core extension is unavailable");
+  if (!core) throw new Error("Pin-op core extension is unavailable");
 
   const api = await core.activate();
   if (api.apiVersion !== SOURCE_PLUGIN_API_VERSION) {
-    throw new Error(`Unsupported PinOp API version: ${api.apiVersion}`);
+    throw new Error(`Unsupported Pin-op API version: ${api.apiVersion}`);
   }
 
   context.subscriptions.push(api.registerSourcePlugin(twigPlugin));
@@ -138,7 +138,7 @@ the core can clear results when the extension is deactivated.
 
 ## Resolution Contract
 
-PinOp uses document-first dispatch:
+Pin-op uses document-first dispatch:
 
 1. The current browser selection is retained independently of the editor.
 2. The active document filters plugins by `languageId` and URI scheme.
@@ -272,7 +272,7 @@ A valid WordPress ACF block fact:
 ```
 
 The current phase defines the wire envelope but not a browser-side third-party
-producer API. Framework facts can come from a PinOp browser adapter or
+producer API. Framework facts can come from a Pin-op browser adapter or
 development-only application instrumentation.
 
 ## Ecosystem Recipes
@@ -328,7 +328,7 @@ The repository's `0.1.0` `@pin-op/plugin-api` and
 fixture proves the cross-extension runtime boundary, but an independently
 published Marketplace plugin cannot consume them from npm yet.
 
-Before third-party distribution, PinOp will publish both packages
+Before third-party distribution, Pin-op will publish both packages
 together, replace internal `workspace:*` references with compatible semver
 ranges in the published manifests, and document the supported core extension
 version. Package semver describes source/package compatibility;

@@ -1,4 +1,4 @@
-# PinOp MVP Verification
+# Pin-op MVP Verification
 
 This runbook separates installed-product acceptance from optional source-checkout
 development. The manual sections describe expected acceptance steps. They have
@@ -7,7 +7,7 @@ manual, installed-product, signed-package, screenshot, or release check passed.
 
 ## Installed Product Verification
 
-Installed PinOp needs no source checkout or terminal. There is no
+Installed Pin-op needs no source checkout or terminal. There is no
 separate bridge process: the installed VS Code extension starts automatically
 when a local project opens and exposes its start/stop and link-code control in
 the VS Code status bar.
@@ -17,31 +17,31 @@ the VS Code status bar.
 Use candidates from one trusted build or draft release and compare each file to
 that draft's `SHA256SUMS` before installing:
 
-- `pinop-vscode-0.3.0.vsix`;
-- `pinop-chrome-0.3.0.zip`;
-- `pinop-firefox-0.3.0.zip` for a Firefox Temporary Add-on;
-- a Mozilla-signed `pinop-firefox-0.3.0.xpi`, when available, for a
+- `pin-op-vscode-0.3.0.vsix`;
+- `pin-op-chrome-0.3.0.zip`;
+- `pin-op-firefox-0.3.0.zip` for a Firefox Temporary Add-on;
+- a Mozilla-signed `pin-op-firefox-0.3.0.xpi`, when available, for a
   persistent Firefox Stable installation.
 
 Install the VSIX with **Extensions > Install from VSIX...**. Open a local
-project and confirm PinOp starts automatically. Its status bar control
+project and confirm Pin-op starts automatically. Its status bar control
 must show a five-digit port and two-digit PIN, such as `48735 07`; clicking it
 copies the seven digits without the space.
 
 For Chrome/Chromium 116 or newer, extract
-`pinop-chrome-0.3.0.zip`, open `chrome://extensions`, enable
+`pin-op-chrome-0.3.0.zip`, open `chrome://extensions`, enable
 Developer mode, choose **Load unpacked**, and select the extracted directory
 containing `manifest.json`. Confirm version `0.3.0`, no extension-card errors,
-the PinOp DevTools panel, and persistence after a complete browser
+the Pin-op DevTools panel, and persistence after a complete browser
 restart.
 
 Firefox Stable supports the unsigned
-`pinop-firefox-0.3.0.zip` only as a temporary check. Extract it,
+`pin-op-firefox-0.3.0.zip` only as a temporary check. Extract it,
 open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**,
-and select its `manifest.json`. Confirm the PinOp panel and version
+and select its `manifest.json`. Confirm the Pin-op panel and version
 `0.3.0`; expect the Temporary Add-on to disappear after Firefox exits. For a
 persistent check, use **Install Add-on From File...** with the exact
-Mozilla-signed `pinop-firefox-0.3.0.xpi`, then restart every Firefox
+Mozilla-signed `pin-op-firefox-0.3.0.xpi`, then restart every Firefox
 process and confirm it remains enabled. Do not treat the unsigned ZIP as
 signed-XPI evidence.
 
@@ -52,9 +52,9 @@ Association is explicit and window-scoped:
 Each browser window is associated with one VS Code window by that VS Code
 window's five-digit port and two-digit PIN code.
 
-1. Open the project in VS Code Window A and click its PinOp status bar
+1. Open the project in VS Code Window A and click its Pin-op status bar
    control to copy the current port/code.
-2. In Browser Window A, open DevTools and the **PinOp** panel. Confirm
+2. In Browser Window A, open DevTools and the **Pin-op** panel. Confirm
    `Not linked`, paste or type Window A's code, and select **Link**.
 3. Confirm `Connected` and the same grouped port/code in Browser Window A and
    VS Code Window A. That exact code associates this browser window with this
@@ -89,7 +89,7 @@ here. This document does not claim these checks were performed or passed.
    the expanded branch and selection restore without a root-only flash, and
    source navigation resumes against the new browser-local refs.
 7. Change or remove the selected node so its stable identity is changed or
-   ambiguous, then reload or invalidate its branch. Confirm PinOp safely
+   ambiguous, then reload or invalidate its branch. Confirm Pin-op safely
    resets instead of selecting a nearby element.
 8. During recovery, trigger a second invalidation and then make a manual
    selection. Confirm the second invalidation supersedes older recovery work
@@ -112,7 +112,7 @@ separate from installed-product use and may use development hosts, package
 scripts, and local fixture servers.
 
 HTTP in this workflow serves only fixture and stylesheet/frame resources.
-PinOp product traffic remains a loopback WebSocket.
+Pin-op product traffic remains a loopback WebSocket.
 
 ## Prerequisites
 
@@ -196,7 +196,7 @@ code --new-window --extensionDevelopmentPath="$PWD/extensions/vscode" "$PWD"
 
 Call them IDE A and IDE B. In both:
 
-1. Confirm PinOp starts automatically.
+1. Confirm Pin-op starts automatically.
 2. Confirm the status item shows a grouped port and two-digit PIN.
 3. Confirm the windows show different current codes.
 4. Click each status item and associate its clipboard value with A or B.
@@ -210,7 +210,7 @@ From another source-workflow shell, create one disposable profile and preserve i
 this verification run:
 
 ```powershell
-$firefoxProfile = Join-Path $env:TEMP ("pinop-0.3.0-" + [guid]::NewGuid().ToString("N"))
+$firefoxProfile = Join-Path $env:TEMP ("pin-op-0.3.0-" + [guid]::NewGuid().ToString("N"))
 corepack pnpm exec web-ext run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --firefox-profile "$firefoxProfile" --profile-create-if-missing --keep-profile-changes --start-url http://127.0.0.1:4173/
 ```
 
@@ -232,7 +232,7 @@ Chrome/Chromium.
 
 ### Link Explicit Windows
 
-1. Open the PinOp DevTools panel in Browser Window A. Confirm `Not linked`.
+1. Open the Pin-op DevTools panel in Browser Window A. Confirm `Not linked`.
 2. Paste or enter IDE A's code and select **Link**.
 3. Confirm `Connected` and the same grouped code displayed by IDE A.
 4. Link Browser Window B independently to IDE B.
@@ -300,7 +300,7 @@ Without another browser selection:
 3. Activate `index.html` and confirm `Unsupported active file: html`.
 4. Close every editor and select again; confirm `No active editor`.
 
-Exercise `.pinop-path-miss` with CSS active. Confirm the unique CSS
+Exercise `.pin-op-path-miss` with CSS active. Confirm the unique CSS
 fingerprint fallback resolves. Select `.duplicate-selector` and confirm
 `Ambiguous rule match` rather than an arbitrary range.
 
@@ -322,13 +322,13 @@ Development Host workflow:
    `wp-content/themes/orbiter/style.scss`, its generated `style.css`, and a
    usable inline or external source map from that CSS into the SCSS file. Leave
    the project's other `style.css` files in place as duplicate basenames.
-3. In the already linked Firefox PinOp panel, load
+3. In the already linked Firefox Pin-op panel, load
    `http://localhost/_ORB/` and inspect `.home_slide_title`. Confirm its CSS
    comes from `/_ORB/wp-content/themes/orbiter/style.css?v=7`.
 4. Keep the mapped `wp-content/themes/orbiter/style.scss` active in VS Code and
    confirm complete SCSS blocks, including their closing braces, are
    highlighted.
-5. Run **PinOp: Open Diagnostics**. Confirm the exact strategy message
+5. Run **Pin-op: Open Diagnostics**. Confirm the exact strategy message
    `Workspace-bound: _ORB` and `resolution status=matched`, not
    `resolution status=source-ambiguous`.
 6. Separately confirm the Firefox DevTools footer does not show
@@ -336,7 +336,7 @@ Development Host workflow:
 
 Return to the repository fixture at `http://127.0.0.1:4173/`, activate
 `examples/basic-css/src/layout.scss`, and select `.card.featured`. Run
-**PinOp: Open Diagnostics** and confirm the exact strategy message
+**Pin-op: Open Diagnostics** and confirm the exact strategy message
 `Automatic source matching`.
 
 ### Window Isolation And Peer State
@@ -358,8 +358,8 @@ Manifest V3 service-worker heartbeat path.
 
 Inspect extension background tools:
 
-- Firefox: `about:debugging#/runtime/this-firefox` > PinOp > Inspect;
-- Chrome: `chrome://extensions` > PinOp > service worker.
+- Firefox: `about:debugging#/runtime/this-firefox` > Pin-op > Inspect;
+- Chrome: `chrome://extensions` > Pin-op > service worker.
 
 List keys only, never values containing tokens:
 
@@ -368,7 +368,7 @@ Object.keys(await browser.storage.session.get(null))
 Object.keys(await chrome.storage.session.get(null))
 ```
 
-Confirm one `pinop.windowLink.<windowId>` key per linked browser window.
+Confirm one `pin-op.windowLink.<windowId>` key per linked browser window.
 Disconnect or close Window A and confirm only its key disappears. Restart the
 complete browser profile and confirm no prior window-link key survives. A newly
 opened panel must start `Not linked`.
@@ -376,7 +376,7 @@ opened panel must start `Not linked`.
 ## Cleanup
 
 1. Turn off page pickers and select **Disconnect** in each browser window.
-2. Stop PinOp in both VS Code windows.
+2. Stop Pin-op in both VS Code windows.
 3. Close the development hosts and development-loaded browsers.
 4. Stop the fixture and Firefox development process with `Ctrl+C`.
 

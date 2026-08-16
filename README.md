@@ -1,34 +1,45 @@
-# PinOp
+# Pin-op
 
-[![CI](https://github.com/conus-vision/PinOp/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/PinOp/actions/workflows/ci.yml)
+[![CI](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml)
 
 Connect browser DevTools to your source code.
 
-[pinop.conus.vision](https://pinop.conus.vision)
+[pin-op.conus.vision](https://pin-op.conus.vision) ·
+[Repository](https://github.com/conus-vision/pin-op)
 
 > Alpha: product and installation details may change before 1.0.
 
 ## Install
 
-The `0.3.0` release is being prepared. A complete GitHub Release will contain:
+The `0.3.0` release is being prepared. A complete GitHub Release will contain
+six public assets:
 
-- `pinop-vscode-0.3.0.vsix`;
-- `pinop-chrome-0.3.0.zip`;
-- `pinop-firefox-0.3.0.xpi`, signed by Mozilla.
+- `pin-op-vscode-0.3.0.vsix`;
+- `pin-op-chrome-0.3.0.zip`;
+- `pin-op-firefox-0.3.0.zip`, unsigned Mozilla-review input;
+- `pin-op-firefox-0.3.0.xpi`, signed by Mozilla;
+- `pin-op-firefox-source-0.3.0.zip`, the corresponding source archive;
+- `SHA256SUMS`, checksums for the five packaged artifacts.
+
+Use `SHA256SUMS` to verify the downloaded release artifacts before installing
+them.
 
 No signed `0.3.0` XPI or public `0.3.0` release is claimed yet. The Firefox ZIP
 produced by the build is unsigned review input, not a Firefox Stable add-on.
 Follow the [installed artifact guide](docs/installed-verification.md) for
 candidate installation and evidence status.
 
+The VS Code extension ID is `conus-vision.pin-op`. Workspace packages use the
+`@pin-op/*` scope.
+
 ## Use
 
 Normal installed use is terminal-free:
 
-1. Open a local project in VS Code. PinOp starts automatically.
-2. Click the PinOp status item to copy its five-digit port and two-digit
+1. Open a local project in VS Code. Pin-op starts automatically.
+2. Click the Pin-op status item to copy its five-digit port and two-digit
    PIN.
-3. Open the PinOp DevTools panel in one Firefox or Chrome/Chromium window.
+3. Open the Pin-op DevTools panel in one Firefox or Chrome/Chromium window.
 4. Paste the code, select **Link**, and confirm the panel shows the same
    displayed code as VS Code.
 5. Keep the intended CSS or SCSS document active in VS Code.
@@ -90,7 +101,7 @@ Read the [architecture overview](docs/architecture.md),
 
 ## Security And Privacy
 
-PinOp has no analytics, product HTTP service, or remote PinOp
+Pin-op has no analytics, product HTTP service, or remote Pin-op
 backend. Product traffic uses a loopback-only WebSocket after explicit
 browser-window linking. The two-digit PIN helps prevent accidental local
 cross-linking; it is not strong authentication.
@@ -118,14 +129,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for all contributor gates and
 [development-host verification](docs/mvp-verification.md) for browser parity
 checks.
 
+Report product problems in the
+[Pin-op issue tracker](https://github.com/conus-vision/pin-op/issues).
+
 ## Status
 
-PinOp remains an alpha. Public browser-store distribution, remote VS Code
+Pin-op remains an alpha. Public browser-store distribution, remote VS Code
 hosts, closed-shadow traversal, cross-origin frame traversal, editing, and
 reverse synchronization are outside the current release. See the
 [changelog](CHANGELOG.md) for the `0.3.0` release scope.
 
 ## License
 
-PinOp is available under the [MIT License](LICENSE). Copyright (c) 2026
+Pin-op is available under the [MIT License](LICENSE). Copyright (c) 2026
 conus-vision.

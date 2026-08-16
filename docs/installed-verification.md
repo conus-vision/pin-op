@@ -1,7 +1,7 @@
-# PinOp Installed Artifact Verification
+# Pin-op Installed Artifact Verification
 
 This is the terminal-free installation and acceptance runbook for the
-PinOp `0.3.0` release candidate. Normal use has no separate PinOp
+Pin-op `0.3.0` release candidate. Normal use has no separate Pin-op
 process: open a local project and the VS Code extension starts automatically.
 
 ## Candidate Files
@@ -9,31 +9,31 @@ process: open a local project and the VS Code extension starts automatically.
 Obtain all files from the repository owner or one trusted draft release and
 keep them with that draft's `SHA256SUMS`:
 
-- `pinop-vscode-0.3.0.vsix`;
-- `pinop-chrome-0.3.0.zip`;
-- `pinop-firefox-0.3.0.xpi`, signed by Mozilla.
+- `pin-op-vscode-0.3.0.vsix`;
+- `pin-op-chrome-0.3.0.zip`;
+- `pin-op-firefox-0.3.0.xpi`, signed by Mozilla.
 
-The unsigned `pinop-firefox-0.3.0.zip` is build and Mozilla-review input.
+The unsigned `pin-op-firefox-0.3.0.zip` is build and Mozilla-review input.
 It is not a persistent Firefox Stable add-on and cannot replace the signed XPI.
 
 ## Privacy And Security Before Testing
 
-PinOp is read-only. Product traffic uses a loopback WebSocket between one
+Pin-op is read-only. Product traffic uses a loopback WebSocket between one
 explicitly linked browser window and local VS Code; there is no product HTTP or
-remote PinOp service. The two-digit PIN protects against accidental local
+remote Pin-op service. The two-digit PIN protects against accidental local
 cross-linking, not a malicious process running as the same desktop user.
 
 One selection can send bounded facts for the selected element and its immediate
 parent: full page URL/route, IDs, classes, permitted `data-*`, `aria-*`, and
 `role` names and values, CSS declarations and stylesheet identity, and bounded
-development metadata. These values are not content-redacted. PinOp does
+development metadata. These values are not content-redacted. Pin-op does
 not deliberately read cookies, headers, form values, DOM text, workspace source
 text, or source-map contents in the browser.
 
 The DOM tree, browser-local node refs, child pages, and box-model geometry stay
 inside the browser extension. Cross-origin frames are locked, and closed shadow
 roots are not traversed. Local VS Code source plugins can read relevant
-workspace files and source maps to resolve the active document; PinOp does
+workspace files and source maps to resolve the active document; Pin-op does
 not upload them. Separately installed source plugins are independent trusted VS
 Code extensions and may have their own data behavior.
 
@@ -44,15 +44,15 @@ local VS Code window is acceptable. Read the [privacy policy](../PRIVACY.md),
 ## Install VS Code
 
 1. Open VS Code and choose **Manage > Profiles > Create Profile**.
-2. Create an empty profile named `PinOp 0.3.0 Candidate` and select it.
+2. Create an empty profile named `Pin-op 0.3.0 Candidate` and select it.
 3. Open Extensions, confirm no unrelated user extension is enabled, open the
    view menu, and choose **Install from VSIX...**.
-4. Select `pinop-vscode-0.3.0.vsix`, accept the prompt, and restart VS Code
+4. Select `pin-op-vscode-0.3.0.vsix`, accept the prompt, and restart VS Code
    in the same profile.
-5. Open a local project folder. Confirm PinOp starts automatically and
-   shows a status item such as `PinOp: 48735 07` plus a stop icon.
-6. Click the PinOp status item. Confirm VS Code reports
-   `PinOp link code copied.`
+5. Open a local project folder. Confirm Pin-op starts automatically and
+   shows a status item such as `Pin-op: 48735 07` plus a stop icon.
+6. Click the Pin-op status item. Confirm VS Code reports
+   `Pin-op link code copied.`
 
 The status item shows a five-digit port followed by a two-digit PIN. Its copied
 value has no space, for example `4873507`. Each local VS Code window owns a
@@ -60,11 +60,11 @@ different bridge instance and current code.
 
 ## Install Chrome Or Chromium
 
-1. Extract `pinop-chrome-0.3.0.zip` into a permanent candidate folder.
+1. Extract `pin-op-chrome-0.3.0.zip` into a permanent candidate folder.
 2. Open `chrome://extensions` in current Chrome/Chromium 116 or newer.
 3. Enable **Developer mode** and choose **Load unpacked**.
 4. Select the extracted folder containing `manifest.json`.
-5. Confirm the PinOp card reports version `0.3.0` with no errors.
+5. Confirm the Pin-op card reports version `0.3.0` with no errors.
 6. Restart the complete browser and confirm the extension remains installed.
 
 ## Install Firefox Stable
@@ -74,8 +74,8 @@ until that exact file exists.
 
 1. Open Firefox Stable 142 or newer and open Add-ons Manager.
 2. Open its tools menu and choose **Install Add-on From File...**.
-3. Select `pinop-firefox-0.3.0.xpi` and approve its permissions.
-4. Confirm PinOp `0.3.0` is enabled.
+3. Select `pin-op-firefox-0.3.0.xpi` and approve its permissions.
+4. Confirm Pin-op `0.3.0` is enabled.
 5. Restart every Firefox process and confirm the signed add-on remains enabled.
 
 ## Normal Inspector Flow
@@ -84,9 +84,9 @@ Run this flow once in Firefox Stable and once in current Chrome/Chromium:
 
 1. Open the project in the intended local VS Code window and keep its intended
    CSS or SCSS document active.
-2. Click the PinOp status item to copy its port and PIN.
+2. Click the Pin-op status item to copy its port and PIN.
 3. Open one normal browser window, open DevTools for the test page, and select
-   the **PinOp** DevTools panel.
+   the **Pin-op** DevTools panel.
 4. Confirm `Not linked`, choose Paste or enter the code, then select **Link**.
 5. Confirm `Connected` and confirm the same displayed code appears in the panel
    and VS Code.
@@ -170,8 +170,8 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 ## Stop, Restart, And Session Cleanup
 
 1. Select the stop icon in VS Code A. Confirm its status becomes
-   `PinOp: Offline` and Browser A reports `Linked IDE offline`.
-2. Start PinOp again from the adjacent icon. Confirm a fresh code appears
+   `Pin-op: Offline` and Browser A reports `Linked IDE offline`.
+2. Start Pin-op again from the adjacent icon. Confirm a fresh code appears
    and stale browser credentials do not attach to the new bridge instance.
 3. Enter the new code to reconnect explicitly.
 4. End the complete browser session, reopen it, and confirm previous browser
@@ -188,7 +188,7 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 
 ## Troubleshooting
 
-- **No status code:** confirm PinOp `0.3.0` is enabled in the candidate
+- **No status code:** confirm Pin-op `0.3.0` is enabled in the candidate
   profile, reopen the local project, and select the start icon if offline.
 - **Paste denied:** enter the same seven digits manually; spaces are optional.
 - **Link rejected:** copy the current code again from the intended VS Code
@@ -198,7 +198,7 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 - **No overlay:** confirm the panel is connected, enable the picker, and use an
   ordinary page element. Unsafe geometry can fail closed.
 - **No highlights:** keep the expected CSS/SCSS document active and read the
-  footer. PinOp never switches source files automatically.
+  footer. Pin-op never switches source files automatically.
 - **Firefox rejects the file:** verify it is Mozilla's signed `.xpi`; the
   unsigned `.zip` cannot be installed persistently in Firefox Stable.
 

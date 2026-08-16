@@ -7,7 +7,7 @@ import {
 } from "../src/index.js";
 
 describe("managed bridge ports", () => {
-  it("exports the one hundred ports owned by PinOp", () => {
+  it("exports the one hundred ports owned by Pin-op", () => {
     expect(MANAGED_BRIDGE_PORT_START).toBe(48_735);
     expect(MANAGED_BRIDGE_PORT_COUNT).toBe(100);
     expect(MANAGED_BRIDGE_PORT_END).toBe(48_834);

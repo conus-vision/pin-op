@@ -1,17 +1,17 @@
-# PinOp Usage
+# Pin-op Usage
 
-Normal use with installed PinOp extensions is terminal-free. Contributor
+Normal use with installed Pin-op extensions is terminal-free. Contributor
 commands belong in [development-host verification](mvp-verification.md), not in
 the installed workflow.
 
 ## Link One Browser Window
 
 1. Open the project in the local VS Code window that should receive selections.
-   PinOp starts automatically.
-2. Find a status item such as `PinOp: 48735 07` and click it. VS Code
+   Pin-op starts automatically.
+2. Find a status item such as `Pin-op: 48735 07` and click it. VS Code
    copies the ungrouped code, `4873507` in this example.
 3. Open DevTools for the page in Firefox Stable or current Chrome/Chromium, then
-   open the **PinOp** DevTools panel in that browser window.
+   open the **Pin-op** DevTools panel in that browser window.
 4. Select Paste, or enter the code manually, and select **Link**.
 5. Confirm the panel reports `Connected` and shows the same displayed code as
    the VS Code status item.
@@ -23,7 +23,7 @@ The visual space separates the five-digit port from the two-digit PIN. Leading
 zeroes in the PIN matter. Clipboard access occurs only after Paste is selected;
 manual entry remains available when it is denied.
 
-PinOp does not discover IDEs or scan localhost ports. A code links exactly
+Pin-op does not discover IDEs or scan localhost ports. A code links exactly
 one browser window to the VS Code window that displayed it. Tabs in that browser
 window can reuse its session link; another browser window must be linked
 separately.
@@ -99,12 +99,12 @@ session disposal invalidate stale work rather than reusing it.
 
 ## Source Highlighting
 
-PinOp sends one selected target and, when available, its immediate DOM
+Pin-op sends one selected target and, when available, its immediate DOM
 parent. VS Code retains the latest valid selection and resolves it only against
 the active document. It does not open, close, or switch editor tabs.
 
 Source lookup is workspace-bound when the document or stylesheet URL path
-begins with an open workspace folder name. PinOp strips that leading
+begins with an open workspace folder name. Pin-op strips that leading
 segment once and searches only that folder. For example,
 `http://localhost/_ORB/` with
 `/_ORB/wp-content/themes/orbiter/style.css?v=7` binds to the open `_ORB` folder;
@@ -113,7 +113,7 @@ duplicate basenames elsewhere do not make the source ambiguous.
 When neither URL identifies an open folder, source lookup remains automatic
 across all open folders, using exact-path and unique-basename matching. This is
 a convenience trade-off: the user accepts the risk of a coincidental automatic
-mapping. Applicable Sources and **PinOp: Open Diagnostics** report the
+mapping. Applicable Sources and **Pin-op: Open Diagnostics** report the
 strategy with the exact local text `Workspace-bound: <folder>` (for example,
 `Workspace-bound: _ORB`) or `Automatic source matching`.
 
@@ -167,7 +167,7 @@ the retained selection, so read the footer again after changing the active file.
 
 The status bar has the code item and an adjacent stop/start icon:
 
-- click `PinOp: <port> <PIN>` to copy the code;
+- click `Pin-op: <port> <PIN>` to copy the code;
 - click Stop to shut down that VS Code window's bridge;
 - click Start while offline to create a fresh bridge and code.
 

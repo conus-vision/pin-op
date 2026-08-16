@@ -1,4 +1,4 @@
-# PinOp Release Guide
+# Pin-op Release Guide
 
 This is the owner runbook for signed public releases. Version `0.3.0` is the
 current release candidate. Its external signing and installed-product evidence is
@@ -13,14 +13,14 @@ AMO credentials until this setup exists.
 1. Protect `master` with a branch ruleset (or branch protection) that requires CI,
    blocks force-pushes and deletion, and limits bypasses. Protect `v*` tags from
    update or deletion and limit who can create them.
-2. Enable GitHub release immutability before creating any PinOp release. On
+2. Enable GitHub release immutability before creating any Pin-op release. On
    the repository page, open **Settings**, scroll to **Releases**, and select
    **Enable release immutability**. An owner can perform the same mandatory setup
    and verify it with GitHub CLI:
 
    ```bash
-   gh api --method PUT repos/conus-vision/PinOp/immutable-releases
-   gh api --method GET repos/conus-vision/PinOp/immutable-releases --jq '.enabled'
+   gh api --method PUT repos/conus-vision/pin-op/immutable-releases
+   gh api --method GET repos/conus-vision/pin-op/immutable-releases --jq '.enabled'
    ```
 
    The GET command must print `true`; both release workflows fail closed otherwise.
@@ -32,7 +32,7 @@ AMO credentials until this setup exists.
    protected `v*` tags. Add at least one required reviewer who is not the person
    dispatching the workflow or creating the tag, and enable **Prevent self-review**.
 4. Create a fine-grained personal access token scoped only to
-   `conus-vision/PinOp`, with **Administration: Read-only** and no additional
+   `conus-vision/pin-op`, with **Administration: Read-only** and no additional
    repository permission beyond GitHub's required metadata access. Add it as the
    `RELEASE_SETTINGS_TOKEN` environment secret inside `release-settings` only after
    its deployment restrictions, required reviewer, and disabled self-review are
@@ -137,7 +137,7 @@ $releaseFiles = @(
   'docs/release.md'
   'docs/security.md'
 )
-rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|pinop-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|PinOp\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
+rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|pin-op-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|Pin-op\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
 node tools/verify-release-version.mjs v0.3.0
 ```
 
@@ -174,7 +174,7 @@ that the protected `amo-signing` environment and its required reviewer are ready
 Create and inspect an annotated tag:
 
 ```powershell
-git tag -a v0.3.0 -m "PinOp 0.3.0"
+git tag -a v0.3.0 -m "Pin-op 0.3.0"
 git cat-file -t refs/tags/v0.3.0
 git push origin master
 git push origin v0.3.0
@@ -194,10 +194,10 @@ gate and uploads an immutable short-lived workflow artifact. A separate minimal
 the exact five-file set and checksums, and creates a GitHub draft containing:
 
 ```text
-pinop-chrome-X.Y.Z.zip
-pinop-firefox-X.Y.Z.zip
-pinop-firefox-source-X.Y.Z.zip
-pinop-vscode-X.Y.Z.vsix
+pin-op-chrome-X.Y.Z.zip
+pin-op-firefox-X.Y.Z.zip
+pin-op-firefox-source-X.Y.Z.zip
+pin-op-vscode-X.Y.Z.vsix
 SHA256SUMS
 ```
 
@@ -240,7 +240,7 @@ signature metadata. Firefox Stable installation is a separate required test.
 The sign job then creates an immutable 90-day artifact containing only:
 
 ```text
-pinop-firefox-X.Y.Z.xpi
+pin-op-firefox-X.Y.Z.xpi
 signed-xpi-provenance.json
 ```
 
@@ -269,11 +269,11 @@ the draft identity, and the later manual Firefox Stable test.
 Download all six draft assets and validate `SHA256SUMS`. Complete
 `docs/installed-verification.md` without development launchers. In particular:
 
-1. install `pinop-firefox-X.Y.Z.xpi` in Firefox Stable and restart Firefox;
+1. install `pin-op-firefox-X.Y.Z.xpi` in Firefox Stable and restart Firefox;
 2. install the VSIX and load the Chrome ZIP in current Chrome or Chromium;
 3. open a project and confirm that the VS Code service starts without a terminal;
 4. click the VS Code status item to copy the port and two-digit PIN, then paste it
-   into PinOp DevTools in one browser window and confirm the same display code;
+   into Pin-op DevTools in one browser window and confirm the same display code;
 5. in the active document, which must be the intended CSS or SCSS file, verify the
    visual picker and box-model overlay, lazy DOM tree boundaries, and
    selected-element plus immediate-parent multi-range highlighting;
@@ -285,13 +285,13 @@ Download all six draft assets and validate `SHA256SUMS`. Complete
 Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
 
 ```powershell
-(Get-FileHash .\pinop-firefox-0.3.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\pin-op-firefox-0.3.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
 Linux or Git Bash:
 
 ```bash
-sha256sum pinop-firefox-0.3.0.xpi
+sha256sum pin-op-firefox-0.3.0.xpi
 ```
 
 The value must exactly match the digest in the signing workflow summary and
@@ -333,11 +333,11 @@ compares the immutable public assets. It receives no AMO secret and does not sig
 again. Confirm the public release contains only:
 
 ```text
-pinop-chrome-X.Y.Z.zip
-pinop-firefox-X.Y.Z.zip
-pinop-firefox-X.Y.Z.xpi
-pinop-firefox-source-X.Y.Z.zip
-pinop-vscode-X.Y.Z.vsix
+pin-op-chrome-X.Y.Z.zip
+pin-op-firefox-X.Y.Z.zip
+pin-op-firefox-X.Y.Z.xpi
+pin-op-firefox-source-X.Y.Z.zip
+pin-op-vscode-X.Y.Z.vsix
 SHA256SUMS
 ```
 

@@ -13,7 +13,7 @@ reviewed source commit when reporting or reproducing an issue.
 ## Report A Vulnerability
 
 Report vulnerabilities privately through
-[GitHub private vulnerability reporting](https://github.com/conus-vision/PinOp/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/conus-vision/pin-op/security/advisories/new).
 Include the affected product version, protocol version, browser and VS Code
 versions, reproduction steps, impact, and any suggested mitigation.
 
@@ -22,13 +22,13 @@ vulnerability. Coordinate public disclosure after a fix or mitigation exists.
 
 ## Security Model
 
-PinOp is a local, read-only tool. Product traffic is an authenticated
+Pin-op is a local, read-only tool. Product traffic is an authenticated
 loopback WebSocket; there is no product HTTP service. Linking is an explicit
 browser-window action. The two-digit PIN provides accidental-cross-link
 protection, not strong authentication against another process running as the
 same desktop user.
 
-Browser credentials and the displayed code use session storage. PinOp
+Browser credentials and the displayed code use session storage. Pin-op
 sends bounded facts but does not upload source, write files, edit the DOM, or
 execute commands. The DOM tree stays browser-local; cross-origin frames and
 closed shadow roots fail closed. Reports involving link/session handling,

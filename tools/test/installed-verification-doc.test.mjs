@@ -13,6 +13,40 @@ const architectureGuide = await readFile("docs/architecture.md", "utf8");
 const protocolGuide = await readFile("docs/protocol.md", "utf8");
 const securityGuide = await readFile("docs/security.md", "utf8");
 const vscodeReadme = await readFile("extensions/vscode/README.md", "utf8");
+const activeIdentityPaths = [
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "PRIVACY.md",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/bug-report.yml",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature-request.yml",
+  ".github/pull_request_template.md",
+  "docs/architecture.md",
+  "docs/firefox-source-submission.md",
+  "docs/installed-verification.md",
+  "docs/mvp-usage.md",
+  "docs/mvp-verification.md",
+  "docs/protocol.md",
+  "docs/release.md",
+  "docs/security.md",
+  "docs/source-plugin-authoring.md",
+  "extensions/source-plugin-fixture/README.md",
+  "extensions/vscode/README.md",
+  "examples/basic-css/index.html",
+  "examples/basic-css/server.mjs",
+];
+const activeIdentityDocuments = await Promise.all(
+  activeIdentityPaths.map(async (path) => ({
+    path,
+    content: await readFile(path, "utf8"),
+  })),
+);
+const legacyProductDisplay = ["Pin", "Op"].join("");
+const legacyTechnicalSlug = ["pin", "op"].join("");
+const legacyOriginalDisplay = ["Browser", "2", "IDE"].join("");
+const legacyOriginalSlug = ["browser", "2", "ide"].join("");
 const recordHeading = "## 0.3.0 Candidate Verification Record";
 const [primaryPath, verificationRecord] = installedGuide.split(recordHeading);
 const installedRunbookHeading = "## Installed Product Verification";
@@ -36,8 +70,8 @@ const securityDisclosureContracts = [
     message: "temporary isolated overlay insertion disclosure is required",
     pattern: completeClause(
       String.raw`(?:For|During) visual (?:inspection|highlighting), `,
-      String.raw`(?:the (?:browser )?extension|PinOp) temporarily `,
-      String.raw`(?:inserts|adds) an isolated PinOp `,
+      String.raw`(?:the (?:browser )?extension|Pin-op) temporarily `,
+      String.raw`(?:inserts|adds) an isolated Pin-op `,
       String.raw`(?:inspection )?overlay DOM(?: subtree)?`,
       String.raw`(?: under (?:a|the) dedicated pointer-inert host`,
       String.raw`(?: with a closed shadow root)?)?`,
@@ -48,8 +82,8 @@ const securityDisclosureContracts = [
     name: "inspection and locator exclusion",
     message: "overlay inspection and locator exclusion disclosure is required",
     pattern: completeClause(
-      String.raw`(?:All )?(?:PinOp )?overlay-owned nodes `,
-      String.raw`(?:are|remain) excluded from PinOp `,
+      String.raw`(?:All )?(?:Pin-op )?overlay-owned nodes `,
+      String.raw`(?:are|remain) excluded from Pin-op `,
       String.raw`(?:DOM tree )?inspection and (?:from )?stable locator capture`,
     ),
     negation: [/(?:are|remain) excluded/i, "are not excluded"],
@@ -79,7 +113,7 @@ const securityDisclosureContracts = [
     message: "page-owned state and source immutability disclosure is required",
     pattern: completeClause(
       String.raw`(?:Outside|Apart from) (?:that|the) isolated `,
-      String.raw`(?:PinOp )?overlay(?: DOM)?, PinOp `,
+      String.raw`(?:Pin-op )?overlay(?: DOM)?, Pin-op `,
       String.raw`(?:does not|never) modify page-owned content or application state, `,
       String.raw`and (?:it )?(?:does not|never) (?:modify|edit|write) source code`,
     ),
@@ -110,7 +144,7 @@ test("installed primary path is terminal-free and starts automatically", () => {
   assert.match(primaryPath, /Install from VSIX/);
   assert.match(primaryPath, /Load unpacked/);
   assert.match(primaryPath, /Install Add-on From File/);
-  assert.match(primaryPath, /click the PinOp status item/i);
+  assert.match(primaryPath, /click the Pin-op status item/i);
   assert.match(primaryPath, /five-digit port[\s\S]*two-digit PIN/i);
 });
 
@@ -141,28 +175,28 @@ test("MVP runbook uses flat downloaded filenames for installed packages", () => 
   assert.doesNotMatch(installedProductRunbook, /artifacts[\\/]/i);
   assert.match(
     installedProductRunbook,
-    /`pinop-vscode-0\.3\.0\.vsix`/,
+    /`pin-op-vscode-0\.3\.0\.vsix`/,
   );
   assert.match(
     installedProductRunbook,
-    /`pinop-chrome-0\.3\.0\.zip`/,
+    /`pin-op-chrome-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Load unpacked/);
   assert.match(
     installedProductRunbook,
-    /`pinop-firefox-0\.3\.0\.zip`/,
+    /`pin-op-firefox-0\.3\.0\.zip`/,
   );
   assert.match(installedProductRunbook, /Temporary Add-on|about:debugging/i);
   assert.match(
     installedProductRunbook,
-    /signed[\s\S]*`pinop-firefox-0\.3\.0\.xpi`/i,
+    /signed[\s\S]*`pin-op-firefox-0\.3\.0\.xpi`/i,
   );
 });
 
 test("normal Inspector workflow is explicit and scoped to one browser window", () => {
   const normalFlow = `${installedProductRunbook}\n${primaryPath}\n${usageGuide}\n${vscodeReadme}`;
   assert.match(normalFlow, /open the project/i);
-  assert.match(normalFlow, /PinOp DevTools panel/i);
+  assert.match(normalFlow, /Pin-op DevTools panel/i);
   assert.match(normalFlow, /Paste[\s\S]*Link/i);
   assert.match(normalFlow, /same displayed code/i);
   assert.match(normalFlow, /picker/i);
@@ -397,11 +431,28 @@ test("0.3.0 record marks unperformed external evidence pending", () => {
   assert.doesNotMatch(verificationRecord, /[0-9a-f]{64}/i);
 });
 
-test("README points to concise repository and verification material", () => {
-  assert.match(readme, /^# PinOp\r?\n/);
+test("README points to the canonical Pin-op product and repository", () => {
+  assert.match(readme, /^# Pin-op\r?\n/);
   assert.match(readme, /Connect browser DevTools to your source code\./);
-  assert.match(readme, /https:\/\/pinop\.conus\.vision/);
-  assert.match(readme, /https:\/\/github\.com\/conus-vision\/PinOp/);
+  assert.match(readme, /https:\/\/pin-op\.conus\.vision/);
+  assert.match(
+    readme,
+    /\[Repository\]\(https:\/\/github\.com\/conus-vision\/pin-op\)/,
+  );
+  assert.match(readme, /https:\/\/github\.com\/conus-vision\/pin-op\/issues/);
+  assert.match(readme, /`conus-vision\.pin-op`/);
+  assert.match(readme, /`@pin-op\//);
+  assert.match(readme, /`pin-op-vscode-0\.3\.0\.vsix`/);
+  assert.match(readme, /`pin-op-chrome-0\.3\.0\.zip`/);
+  assert.match(readme, /`pin-op-firefox-0\.3\.0\.zip`/);
+  assert.match(readme, /`pin-op-firefox-0\.3\.0\.xpi`/);
+  assert.match(readme, /`pin-op-firefox-source-0\.3\.0\.zip`/);
+  assert.match(readme, /six public assets/i);
+  assert.match(readme, /`SHA256SUMS`/);
+  assert.match(
+    readme,
+    /`SHA256SUMS`[\s\S]*verify[\s\S]*(?:downloaded|release) artifacts/i,
+  );
   assert.match(readme, /docs\/installed-verification\.md/);
   assert.match(readme, /docs\/mvp-usage\.md/);
   assert.match(readme, /docs\/architecture\.md/);
@@ -409,10 +460,10 @@ test("README points to concise repository and verification material", () => {
   assert.match(readme, /CONTRIBUTING\.md/);
   assert.match(readme, /SECURITY\.md/);
   assert.match(readme, /MIT License/);
-  assert.doesNotMatch(readme, /pinop-(?:linking\.png|inspect\.gif)/);
+  assert.doesNotMatch(readme, /pin-op-(?:linking\.png|inspect\.gif)/);
   assert.match(
     developmentGuide,
-    /^# PinOp MVP Verification\r?\n/,
+    /^# Pin-op MVP Verification\r?\n/,
   );
   assert.match(developmentGuide, /## Installed Product Verification/);
   assert.match(developmentGuide, /## Development And Source Workflow/);
@@ -422,12 +473,69 @@ test("README points to concise repository and verification material", () => {
   assert.doesNotMatch(sourceWorkflow, /terminal [1-9]|--pairing-code/i);
 });
 
+test("active documentation uses only the canonical Pin-op identity", () => {
+  for (const { path, content } of activeIdentityDocuments) {
+    for (const pattern of legacyIdentityPatterns()) {
+      assert.doesNotMatch(content, pattern, `${path}: ${pattern}`);
+    }
+  }
+});
+
+for (const mutation of [
+  "pinop",
+  "Pinop",
+  "PINOP",
+  "PinOp",
+  "corepack pnpm --filter pinop build",
+  "corepack pnpm --filter Pinop build",
+  "https://github.com/conus-vision/pinop",
+  "https://pinop.conus.vision",
+  "artifacts/pinop-vscode-0.3.0.vsix",
+  "docs/pinop/setup.md",
+]) {
+  test(`legacy identity detector rejects ${JSON.stringify(mutation)}`, () => {
+    assert.equal(hasLegacyIdentity(mutation), true, mutation);
+  });
+}
+
+test("legacy identity detector allows real PascalCase API symbols", () => {
+  for (const identifier of [
+    "PinOpApi",
+    "PinOpMessage",
+    "PinOpMessageSchema",
+    "createPinOpApi",
+    "pinOpClient",
+  ]) {
+    assert.equal(hasLegacyIdentity(identifier), false, identifier);
+  }
+});
+
 function jsonExample(type) {
   for (const match of protocolGuide.matchAll(/```json\s*([\s\S]*?)```/g)) {
     const value = JSON.parse(match[1]);
     if (value?.type === type) return value;
   }
   assert.fail(`Missing JSON example for ${type}`);
+}
+
+function hasLegacyIdentity(content) {
+  return legacyIdentityPatterns().some((pattern) => pattern.test(content));
+}
+
+function legacyIdentityPatterns() {
+  return [
+    new RegExp(`\\b${legacyProductDisplay}\\b`),
+    new RegExp(
+      `(?:^|[^A-Za-z0-9])${legacyTechnicalSlug}(?=$|[^A-Za-z0-9])`,
+      "i",
+    ),
+    new RegExp(`\\b${legacyOriginalDisplay}\\b`),
+    new RegExp(`${legacyOriginalSlug}(?=[._/-]|\\b)`, "i"),
+    new RegExp(
+      `formerly\\s+(?:${legacyProductDisplay}|${legacyOriginalDisplay})`,
+      "i",
+    ),
+  ];
 }
 
 function completeClause(...fragments) {
