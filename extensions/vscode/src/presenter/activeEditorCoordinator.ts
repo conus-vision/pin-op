@@ -277,7 +277,7 @@ export class ActiveEditorCoordinator implements Disposable {
       if (!this.isCurrent(selection, workGeneration, abort.signal)) return;
       this.reportError(error);
       const diagnostic: ResolvedPluginDiagnostic = {
-        pluginId: "pinop.presenter",
+        pluginId: "pin-op.presenter",
         code: "plugin.exception",
         message: localErrorMessage(error),
         severity: "error",
@@ -366,7 +366,7 @@ function failureCandidate(
   status: PluginResolutionCandidate["status"],
 ): PluginResolutionCandidate {
   return {
-    pluginId: "pinop.presenter",
+    pluginId: "pin-op.presenter",
     status,
     matches: [],
     diagnostics: [],
@@ -420,7 +420,7 @@ function invalidRangeDiagnostics(
 ): readonly ResolvedPluginDiagnostic[] {
   if (rejectedMatchCount === 0) return [];
   return [{
-    pluginId: "pinop.presenter",
+    pluginId: "pin-op.presenter",
     code: "plugin.invalidRange",
     message: `${rejectedMatchCount} source match range(s) were outside the active document`,
     severity: "warning",

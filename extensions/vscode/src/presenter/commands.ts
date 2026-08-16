@@ -28,7 +28,7 @@ export function registerPresenterCommands(
   reportError: (error: unknown) => void,
 ): DisposableLike {
   return host.registerCommand(
-    "pinop.revealSourceMatch",
+    "pin-op.revealSourceMatch",
     (sourceMatchId: unknown) => {
       if (typeof sourceMatchId !== "string") return;
       const match = matches.getMatch(sourceMatchId);

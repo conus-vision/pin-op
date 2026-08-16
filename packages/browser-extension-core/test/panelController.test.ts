@@ -21,7 +21,7 @@ describe("PanelController", () => {
     expect(harness.view.linkCode).toBe("");
     expect(harness.sent).toEqual([
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -194,7 +194,7 @@ describe("PanelController", () => {
 
     expect(harness.sent).toEqual([
       {
-        type: "pinop.unlinkWindow",
+        type: "pin-op.unlinkWindow",
         channel: "channel-1",
       },
     ]);
@@ -278,7 +278,7 @@ describe("PanelController", () => {
     const unlink = deferred<unknown>();
     const harness = createHarness({
       commandResponse: (message) =>
-        message.type === "pinop.unlinkWindow"
+        message.type === "pin-op.unlinkWindow"
           ? unlink.promise
           : Promise.resolve({ ok: true }),
     });
@@ -289,7 +289,7 @@ describe("PanelController", () => {
     for (let index = 0; index < 4; index += 1) {
       await Promise.resolve();
     }
-    expect(harness.sent.at(-1)?.type).toBe("pinop.unlinkWindow");
+    expect(harness.sent.at(-1)?.type).toBe("pin-op.unlinkWindow");
     expect(harness.view.current.showDisconnect).toBe(false);
 
     await harness.emitState("notLinked");
@@ -416,7 +416,7 @@ describe("PanelController", () => {
     const link = deferred<unknown>();
     const harness = createHarness({
       commandResponse: (message) =>
-        message.type === "pinop.linkWindow"
+        message.type === "pin-op.linkWindow"
           ? link.promise
           : Promise.resolve({ ok: true }),
     });
@@ -427,7 +427,7 @@ describe("PanelController", () => {
     for (let index = 0; index < 4; index += 1) {
       await Promise.resolve();
     }
-    expect(harness.sent[0]?.type).toBe("pinop.linkWindow");
+    expect(harness.sent[0]?.type).toBe("pin-op.linkWindow");
     await harness.view.actions.onDisconnect();
     link.resolve({ ok: false, error: "rateLimited" });
     await pendingLink;
@@ -534,7 +534,7 @@ function createHarness(options: HarnessOptions = {}) {
       displayLinkCode = linkedState(state) ? "48735 07" : undefined,
     ): Promise<void> {
       await stateListener?.({
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state: state === "connected" ? "linked" : state,
         ...(displayLinkCode ? { displayLinkCode } : {}),
       });

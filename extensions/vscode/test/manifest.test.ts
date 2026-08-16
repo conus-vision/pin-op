@@ -56,30 +56,30 @@ describe("VS Code extension manifest", () => {
     expect(manifest.extensionKind).toEqual(["ui"]);
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
-      "pinop.start",
-      "pinop.stop",
-      "pinop.copyLinkCode",
-      "pinop.openDiagnostics",
-      "pinop.revealSourceMatch",
+      "pin-op.start",
+      "pin-op.stop",
+      "pin-op.copyLinkCode",
+      "pin-op.openDiagnostics",
+      "pin-op.revealSourceMatch",
     ]);
     expect(manifest.contributes.configuration.properties).toEqual({
-      "pinop.sessionId": { type: "string", default: "default" },
+      "pin-op.sessionId": { type: "string", default: "default" },
     });
 
     expect(manifest.contributes.viewsContainers.activitybar).toContainEqual({
-      id: "pinop",
+      id: "pin-op",
       title: "PinOp",
       icon: "resources/pinop.svg",
     });
-    expect(manifest.contributes.views.pinop).toContainEqual({
-      id: "pinop.applicableRules",
+    expect(manifest.contributes.views["pin-op"]).toContainEqual({
+      id: "pin-op.applicableRules",
       name: "Applicable Sources",
     });
     expect(manifest.contributes.colors.map(({ id }) => id)).toEqual([
-      "pinop.selectedRuleBackground",
-      "pinop.selectedRuleBorder",
-      "pinop.parentRuleBackground",
-      "pinop.parentRuleBorder",
+      "pin-op.selectedRuleBackground",
+      "pin-op.selectedRuleBorder",
+      "pin-op.parentRuleBackground",
+      "pin-op.parentRuleBorder",
     ]);
     const activityIcon = new URL("../resources/pinop.svg", import.meta.url);
     expect(existsSync(activityIcon)).toBe(true);

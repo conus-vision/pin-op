@@ -83,7 +83,7 @@ export class PanelInspectTransport {
       this.pendingInspect.set(requestId, { resolve, reject });
       try {
         connection.port.postMessage({
-          type: "pinop.inspect.setEnabled",
+          type: "pin-op.inspect.setEnabled",
           requestId,
           enabled: command.type === "enableInspectMode",
         } satisfies InspectPortRequest);
@@ -416,7 +416,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     (keys.length === 2 || keys.length === 3) &&
     keys.includes("state") &&
     keys.includes("type") &&
-    message.type === "pinop.windowState" &&
+    message.type === "pin-op.windowState" &&
     typeof message.state === "string" &&
     WINDOW_STATES.has(message.state)
   ) {
@@ -442,7 +442,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     keys[0] === "inspectMessageId" &&
     keys[1] === "selectionRevision" &&
     keys[2] === "type" &&
-    message.type === "pinop.inspect.started" &&
+    message.type === "pin-op.inspect.started" &&
     isOpaqueId(message.inspectMessageId) &&
     isSelectionRevision(message.selectionRevision)
   ) {
@@ -457,7 +457,7 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
     keys[0] === "inspectMessageId" &&
     keys[1] === "status" &&
     keys[2] === "type" &&
-    message.type === "pinop.ideState" &&
+    message.type === "pin-op.ideState" &&
     message.status === "ide-disconnected" &&
     isOpaqueId(message.inspectMessageId)
   ) {

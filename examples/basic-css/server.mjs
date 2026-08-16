@@ -5,27 +5,27 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
 const virtualCss = [
-  ".pinop-virtual-unmapped {",
+  ".pin-op-virtual-unmapped {",
   "  border: 2px dashed #1769aa;",
   "}",
   "",
 ].join("\n");
 const vendorCss = [
-  ".pinop-external-readable {",
+  ".pin-op-external-readable {",
   "  box-sizing: border-box;",
   "  border-inline-end: 4px solid #267a4b;",
   "}",
   "",
 ].join("\n");
 const inaccessibleCss = [
-  ".pinop-inaccessible-external {",
+  ".pin-op-inaccessible-external {",
   "  text-decoration: underline wavy #b42318;",
   "}",
   "",
 ].join("\n");
 const cssomOnlyPrelude = [
-  ".pinop-cssom-only {",
-  "  --pinop-fixture-source: cssom;",
+  ".pin-op-cssom-only {",
+  "  --pin-op-fixture-source: cssom;",
   "}",
   "",
 ].join("\n");
@@ -114,7 +114,7 @@ export async function startExampleServers(options = {}) {
         send(
           response,
           200,
-          `${cssomOnlyPrelude}\n@layer pinop-cssom-fixture {\n${fallbackCss}\n}\n`,
+          `${cssomOnlyPrelude}\n@layer pin-op-cssom-fixture {\n${fallbackCss}\n}\n`,
           "text/css; charset=utf-8",
         );
         return;

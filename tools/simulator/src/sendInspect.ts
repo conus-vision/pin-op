@@ -13,7 +13,7 @@ import {
   type LinkAcceptedMessage,
 } from "@pin-op/protocol";
 
-const DEFAULT_SOURCE_ID = "pinop-simulator";
+const DEFAULT_SOURCE_ID = "pin-op-simulator";
 const DEFAULT_TIMEOUT_MS = 2_000;
 
 interface BuildInspectOptions {

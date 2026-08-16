@@ -31,13 +31,13 @@ describe("basic CSS example server", () => {
         'id="normal-click-count"',
         'id="fixture-card"',
         'style="--inline-accent: #b42318"',
-        'class="pinop-path-miss"',
+        'class="pin-op-path-miss"',
         'class="duplicate-selector"',
         'class="active-media-rule"',
         'class="runtime-injected-style"',
-        'class="pinop-virtual-unmapped"',
-        'class="pinop-external-readable"',
-        'class="pinop-inaccessible-external"',
+        'class="pin-op-virtual-unmapped"',
+        'class="pin-op-external-readable"',
+        'class="pin-op-inaccessible-external"',
       ]) {
         expect(page).toContain(marker);
       }
@@ -117,25 +117,25 @@ describe("basic CSS example server", () => {
       expect(servedFallback).not.toBe(localFallback);
       expect(servedFallback).toBe(
         [
-          ".pinop-cssom-only {",
-          "  --pinop-fixture-source: cssom;",
+          ".pin-op-cssom-only {",
+          "  --pin-op-fixture-source: cssom;",
           "}",
           "",
-          "@layer pinop-cssom-fixture {",
+          "@layer pin-op-cssom-fixture {",
           localFallback,
           "}",
           "",
         ].join("\n"),
       );
-      expect(servedFallback).toContain(".pinop-cssom-only");
-      expect(servedFallback).toContain(".pinop-path-miss");
+      expect(servedFallback).toContain(".pin-op-cssom-only");
+      expect(servedFallback).toContain(".pin-op-path-miss");
       expect(servedFallback).toContain(".duplicate-selector");
       expect(servedFallback.match(/\.duplicate-selector\s*\{/g)).toHaveLength(2);
 
       const virtualCss = await responseText(
         new URL("virtual.css", servers.pageUrl),
       );
-      expect(virtualCss).toContain(".pinop-virtual-unmapped");
+      expect(virtualCss).toContain(".pin-op-virtual-unmapped");
 
       const vendorResponse = await fetch(servers.vendorCssUrl);
       expect(vendorResponse.status).toBe(200);
@@ -143,7 +143,7 @@ describe("basic CSS example server", () => {
         "*",
       );
       await expect(vendorResponse.text()).resolves.toContain(
-        ".pinop-external-readable",
+        ".pin-op-external-readable",
       );
 
       const inaccessibleResponse = await fetch(inaccessibleCssUrl);
@@ -152,7 +152,7 @@ describe("basic CSS example server", () => {
         inaccessibleResponse.headers.get("access-control-allow-origin"),
       ).toBeNull();
       await expect(inaccessibleResponse.text()).resolves.toContain(
-        ".pinop-inaccessible-external",
+        ".pin-op-inaccessible-external",
       );
 
       const missingPageResource = await fetch(

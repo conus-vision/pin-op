@@ -138,7 +138,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     }
     const pending = options
       .sendRuntimeMessage({
-        type: "pinop.panelReady",
+        type: "pin-op.panelReady",
         channel,
       })
       .then(() => {
@@ -402,7 +402,7 @@ function validatedInspectStarted(
       "inspectMessageId",
       "selectionRevision",
     ]) ||
-    message.type !== "pinop.inspect.started" ||
+    message.type !== "pin-op.inspect.started" ||
     !isOpaqueId(message.inspectMessageId) ||
     !isSelectionRevision(message.selectionRevision)
   ) {
@@ -430,14 +430,14 @@ function validatedSourceNavigationState(message: unknown): boolean {
 function isIdeDisconnected(
   message: unknown,
 ): message is {
-  readonly type: "pinop.ideState";
+  readonly type: "pin-op.ideState";
   readonly status: "ide-disconnected";
   readonly inspectMessageId: string;
 } {
   return Boolean(
     isRecord(message) &&
     hasOnlyKeys(message, ["type", "status", "inspectMessageId"]) &&
-    message.type === "pinop.ideState" &&
+    message.type === "pin-op.ideState" &&
     message.status === "ide-disconnected" &&
     isOpaqueId(message.inspectMessageId),
   );
@@ -447,7 +447,7 @@ function isWindowState(message: unknown, state: string): boolean {
   return Boolean(
     message &&
     typeof message === "object" &&
-    (message as Record<string, unknown>).type === "pinop.windowState" &&
+    (message as Record<string, unknown>).type === "pin-op.windowState" &&
     (message as Record<string, unknown>).state === state,
   );
 }

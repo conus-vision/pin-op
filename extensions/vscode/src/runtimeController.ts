@@ -162,13 +162,13 @@ export function registerRuntimeCommands(
   >,
 ): DisposableLike {
   const registrations = [
-    host.registerCommand("pinop.start", () =>
+    host.registerCommand("pin-op.start", () =>
       runCommand(() => controller.start(), host.reportError),
     ),
-    host.registerCommand("pinop.stop", () =>
+    host.registerCommand("pin-op.stop", () =>
       runCommand(() => controller.stop(), host.reportError),
     ),
-    host.registerCommand("pinop.copyLinkCode", () =>
+    host.registerCommand("pin-op.copyLinkCode", () =>
       runCommand(() => controller.copyLinkCode(), host.reportError),
     ),
   ];

@@ -41,7 +41,7 @@ export async function registerDevtoolsPanel(
   assertRegistrationOptions(options);
   const announce = async (): Promise<void> => {
     await options.sendRuntimeMessage({
-      type: "pinop.registerDevtools",
+      type: "pin-op.registerDevtools",
       channel: options.channelId,
       tabId: options.inspectedTabId,
       sourceId: options.sourceId,
@@ -152,7 +152,7 @@ function isPanelReadyMessage(value: unknown, channel: string): boolean {
   return (
     isRecord(value) &&
     Object.keys(value).length === 2 &&
-    value.type === "pinop.panelReady" &&
+    value.type === "pin-op.panelReady" &&
     value.channel === channel
   );
 }

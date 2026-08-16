@@ -86,7 +86,7 @@ describe("startBackgroundRuntime", () => {
 
     await messages.emit(
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "channel-1",
         tabId: 91,
         sourceId: "firefox-source-1",
@@ -112,8 +112,8 @@ describe("startBackgroundRuntime", () => {
     const attachedTabs = eventHarness();
     const storage = memoryStorage();
     await storage.set({
-      "pinop.windowLink.7": validStoredLink(),
-      "pinop.windowLink.8": validStoredLink(),
+      "pin-op.windowLink.7": validStoredLink(),
+      "pin-op.windowLink.8": validStoredLink(),
     });
 
     const runtime = startBackgroundRuntime({
@@ -132,8 +132,8 @@ describe("startBackgroundRuntime", () => {
 
     windows.emit(7);
     await flushAsync();
-    expect(await storage.get("pinop.windowLink.7")).toEqual({});
-    expect(await storage.get("pinop.windowLink.8")).not.toEqual({});
+    expect(await storage.get("pin-op.windowLink.7")).toEqual({});
+    expect(await storage.get("pin-op.windowLink.8")).not.toEqual({});
     runtime.dispose();
   });
 });

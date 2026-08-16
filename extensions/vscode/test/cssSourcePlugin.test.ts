@@ -857,18 +857,18 @@ describe("CssSourcePlugin", () => {
       "utf8",
     )).replace(/\r\n/g, "\n");
     const collected = collectCssFacts(
-      { matches: (selector) => selector === ".pinop-path-miss" },
+      { matches: (selector) => selector === ".pin-op-path-miss" },
       {
         pageUrl: "http://localhost:4173/",
         styleSheets: [{
           href: "/fallback.css",
           cssRules: [
-            collectorStyleRule(".pinop-cssom-only", "--fixture", "cssom"),
+            collectorStyleRule(".pin-op-cssom-only", "--fixture", "cssom"),
             {
               cssRules: [
                 collectorStyleRule(".card", "background-color", "rgb(245, 247, 250)"),
                 collectorStyleRule(
-                  ".pinop-path-miss",
+                  ".pin-op-path-miss",
                   "outline-style",
                   "dashed",
                 ),
@@ -885,7 +885,7 @@ describe("CssSourcePlugin", () => {
     );
     expect(collected.facts).toEqual([
       expect.objectContaining({
-        selector: ".pinop-path-miss",
+        selector: ".pin-op-path-miss",
         property: "outline-style",
         value: "dashed",
         metadata: expect.objectContaining({ rulePath: "0.1.1" }),
@@ -902,7 +902,7 @@ describe("CssSourcePlugin", () => {
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
     expect(snippets(text, fallback.matches)).toEqual([
       [
-        ".pinop-path-miss {",
+        ".pin-op-path-miss {",
         "  outline-style: dashed;",
         "}",
       ].join("\n"),

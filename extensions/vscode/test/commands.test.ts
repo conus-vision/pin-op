@@ -37,7 +37,7 @@ describe("presenter commands", () => {
       (error) => errors.push(error),
     );
 
-    const callback = callbacks.get("pinop.revealSourceMatch");
+    const callback = callbacks.get("pin-op.revealSourceMatch");
     expect(callback).toBeTypeOf("function");
     callback?.("missing");
     callback?.("current");
@@ -190,17 +190,17 @@ describe("runtime commands", () => {
     );
 
     expect([...callbacks.keys()]).toEqual([
-      "pinop.start",
-      "pinop.stop",
-      "pinop.copyLinkCode",
+      "pin-op.start",
+      "pin-op.stop",
+      "pin-op.copyLinkCode",
     ]);
-    await callbacks.get("pinop.start")?.();
-    await callbacks.get("pinop.copyLinkCode")?.();
-    await callbacks.get("pinop.stop")?.();
+    await callbacks.get("pin-op.start")?.();
+    await callbacks.get("pin-op.copyLinkCode")?.();
+    await callbacks.get("pin-op.stop")?.();
     expect(errors).toEqual([]);
 
     harness.manager.startError = new Error("start failed");
-    await callbacks.get("pinop.start")?.();
+    await callbacks.get("pin-op.start")?.();
     expect(errors).toHaveLength(1);
     registration.dispose();
   });
@@ -220,7 +220,7 @@ describe("runtime commands", () => {
 
 function match(): ResolvedSourceMatch {
   return {
-    pluginId: "pinop.scss",
+    pluginId: "pin-op.scss",
     targetRole: "selected",
     range: {
       start: { line: 1, character: 2 },

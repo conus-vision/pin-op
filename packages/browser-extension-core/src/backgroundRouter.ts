@@ -208,12 +208,12 @@ interface PanelCommandRecord {
 
 type PanelWindowCommand =
   | {
-      readonly type: "pinop.linkWindow";
+      readonly type: "pin-op.linkWindow";
       readonly channel: string;
       readonly code: string;
     }
   | {
-      readonly type: "pinop.unlinkWindow";
+      readonly type: "pin-op.unlinkWindow";
       readonly channel: string;
     };
 
@@ -964,7 +964,7 @@ export class BackgroundRouter {
     }
     try {
       record.port.postMessage({
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId: request.requestId,
         ok: false,
         error: "stalePanel",
@@ -993,7 +993,7 @@ export class BackgroundRouter {
       return { ok: false, error: "busy" };
     }
 
-    if (command.type === "pinop.linkWindow") {
+    if (command.type === "pin-op.linkWindow") {
       try {
         parseLinkCode(command.code);
       } catch {
@@ -1051,7 +1051,7 @@ export class BackgroundRouter {
       dispatchedBinding = refreshed;
       dispatchedCommand = dispatchedRecord;
 
-      if (command.type === "pinop.linkWindow") {
+      if (command.type === "pin-op.linkWindow") {
         await this.coordinator.linkWindow(
           refreshed.windowId,
           command.code,
@@ -1427,7 +1427,7 @@ export class BackgroundRouter {
     }
     try {
       record.port.postMessage({
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId,
         ok: false,
         error: "stalePanel",
@@ -1615,7 +1615,7 @@ export class BackgroundRouter {
         state,
       );
       const windowStateMessage: Record<string, unknown> = {
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state,
       };
       if (displayLinkCode !== undefined) {
@@ -2029,7 +2029,7 @@ function parseRegistrationMessage(
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["type", "channel", "tabId", "sourceId"]) ||
-    value.type !== "pinop.registerDevtools" ||
+    value.type !== "pin-op.registerDevtools" ||
     !isValidDevtoolsChannel(value.channel) ||
     !isBrowserId(value.tabId) ||
     typeof value.sourceId !== "string"
@@ -2057,23 +2057,23 @@ function parsePanelWindowCommand(
     return undefined;
   }
   if (
-    value.type === "pinop.linkWindow" &&
+    value.type === "pin-op.linkWindow" &&
     hasOnlyKeys(value, ["type", "channel", "code"]) &&
     typeof value.code === "string" &&
     /^[0-9]{7}$/.test(value.code)
   ) {
     return {
-      type: "pinop.linkWindow",
+      type: "pin-op.linkWindow",
       channel: value.channel,
       code: value.code,
     };
   }
   if (
-    value.type === "pinop.unlinkWindow" &&
+    value.type === "pin-op.unlinkWindow" &&
     hasOnlyKeys(value, ["type", "channel"])
   ) {
     return {
-      type: "pinop.unlinkWindow",
+      type: "pin-op.unlinkWindow",
       channel: value.channel,
     };
   }
@@ -2146,7 +2146,7 @@ function parseContentDomEventMessage(
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["type", "contentSessionId", "event"]) ||
-    value.type !== "pinop.dom.event" ||
+    value.type !== "pin-op.dom.event" ||
     !isValidContentSessionId(value.contentSessionId)
   ) {
     return undefined;

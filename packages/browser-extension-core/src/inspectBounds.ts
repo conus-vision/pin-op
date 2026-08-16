@@ -5,7 +5,7 @@ import {
 } from "@pin-op/protocol";
 
 const INSPECT_ENVELOPE_RESERVE_BYTES = 256 * 1024;
-const URL_VALIDATION_BASE = "https://pinop.invalid/";
+const URL_VALIDATION_BASE = "https://pin-op.invalid/";
 
 export const INSPECT_COLLECTION_MAX_BYTES =
   INSPECT_ENVELOPE_MAX_BYTES - INSPECT_ENVELOPE_RESERVE_BYTES;

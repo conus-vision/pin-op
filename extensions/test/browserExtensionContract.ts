@@ -66,7 +66,7 @@ export function createBrowserAdapterHarness() {
   const panelShown = event();
   const runtimeOrigin = { value: "" };
   const runtimePort = {
-    name: "pinop.devtools.test-channel",
+    name: "pin-op.devtools.test-channel",
     onMessage: event(),
     onDisconnect: event(),
     postMessage: vi.fn(),
@@ -153,9 +153,9 @@ export function describeBrowserAdapterContract(
       consoleError.mockRestore();
       delete (
         globalThis as typeof globalThis & {
-          __pinopContentScript?: unknown;
+          __pinOpContentScript?: unknown;
         }
-      ).__pinopContentScript;
+      ).__pinOpContentScript;
       vi.unstubAllGlobals();
     });
 
@@ -215,7 +215,7 @@ export function describeBrowserAdapterContract(
         runtimeListener,
       );
       const wrappedRuntime = lastRegistered(harness.runtimeMessage);
-      const registration = { type: "pinop.registerDevtools" };
+      const registration = { type: "pin-op.registerDevtools" };
       await callAsync(wrappedRuntime, registration, {
         url: `${contract.extensionOrigin}/dist/devtools.html`,
         tab: { id: 91, windowId: 17, title: "not forwarded" },
@@ -293,9 +293,9 @@ export function describeBrowserAdapterContract(
       expect(options.location).toBe(globalThis.location);
       expect(options.globalScope).toBe(globalThis);
 
-      call(options.connectRuntimePort, "pinop.inspect.contentLease");
+      call(options.connectRuntimePort, "pin-op.inspect.contentLease");
       expect(harness.browser.runtime.connect).toHaveBeenCalledWith({
-        name: "pinop.inspect.contentLease",
+        name: "pin-op.inspect.contentLease",
       });
       await callAsync(options.sendRuntimeMessage, { type: "elementSelected" });
       expect(harness.browser.runtime.sendMessage).toHaveBeenCalledWith({
@@ -465,9 +465,9 @@ export function describeBrowserAdapterContract(
       expect(options.locationSearch).toBe("?channel=test-channel");
       expect(options.document).toBe(globalThis.document);
 
-      call(options.connectRuntimePort, "pinop.devtools.test-channel");
+      call(options.connectRuntimePort, "pin-op.devtools.test-channel");
       expect(harness.browser.runtime.connect).toHaveBeenCalledWith({
-        name: "pinop.devtools.test-channel",
+        name: "pin-op.devtools.test-channel",
       });
       await callAsync(options.readClipboard);
       expect(clipboard.readText).toHaveBeenCalledOnce();
@@ -615,7 +615,7 @@ export function describeBrowserPackageContract(
         "utf8",
       );
       expect(adapter).not.toContain("PROTOCOL_VERSION");
-      expect(adapter).not.toContain("pinop.protocolVersion");
+      expect(adapter).not.toContain("pin-op.protocolVersion");
       expect(adapter).not.toContain("document.documentElement");
       const sharedRuntime = readFileSync(
         new URL(
@@ -727,7 +727,7 @@ export function describeBrowserPackageContract(
       expect(new Set(httpUrls)).toEqual(
         new Set([
           "http://www.w3.org/2000/svg",
-          "https://pinop.invalid/",
+          "https://pin-op.invalid/",
         ]),
       );
       expect(scripts).toContain("WebSocket");

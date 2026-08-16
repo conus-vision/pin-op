@@ -17,12 +17,12 @@ export type PanelOperationalState =
 
 export type PanelCommand =
   | {
-      readonly type: "pinop.linkWindow";
+      readonly type: "pin-op.linkWindow";
       readonly channel: string;
       readonly code: string;
     }
   | {
-      readonly type: "pinop.unlinkWindow";
+      readonly type: "pin-op.unlinkWindow";
       readonly channel: string;
     };
 
@@ -267,7 +267,7 @@ export class PanelController {
     this.render();
     await this.runCommand(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: this.channel,
         code,
       },
@@ -302,7 +302,7 @@ export class PanelController {
     this.render();
     await this.runCommand(
       {
-        type: "pinop.unlinkWindow",
+        type: "pin-op.unlinkWindow",
         channel: this.channel,
       },
       generation,
@@ -327,7 +327,7 @@ export class PanelController {
       if (!this.isCurrent(generation)) {
         return;
       }
-      if (command.type === "pinop.linkWindow") {
+      if (command.type === "pin-op.linkWindow") {
         this.pendingLinkGeneration = undefined;
         this.displayLinkCode = undefined;
         this.hasLinkIntent = false;
@@ -348,14 +348,14 @@ export class PanelController {
     if (!this.isCurrent(generation)) {
       return;
     }
-    if (command.type === "pinop.linkWindow") {
+    if (command.type === "pin-op.linkWindow") {
       this.pendingLinkGeneration = undefined;
     }
     this.busy = false;
     const result = parseCommandResult(response);
     if (!result) {
       if (
-        command.type === "pinop.unlinkWindow" &&
+        command.type === "pin-op.unlinkWindow" &&
         !this.restoreDisconnect(generation) &&
         this.state === "notLinked"
       ) {
@@ -366,7 +366,7 @@ export class PanelController {
       this.errorText = "PinOp background returned an invalid response";
     } else if (!result.ok) {
       if (
-        command.type === "pinop.linkWindow" &&
+        command.type === "pin-op.linkWindow" &&
         result.error !== "busy" &&
         result.error !== "stalePanel"
       ) {
@@ -374,7 +374,7 @@ export class PanelController {
         this.displayLinkCode = undefined;
       }
       if (
-        command.type === "pinop.unlinkWindow" &&
+        command.type === "pin-op.unlinkWindow" &&
         !this.restoreDisconnect(generation) &&
         this.state === "notLinked"
       ) {
@@ -382,7 +382,7 @@ export class PanelController {
         return;
       }
       this.applyCommandError(result.error);
-    } else if (command.type === "pinop.linkWindow") {
+    } else if (command.type === "pin-op.linkWindow") {
       this.view.writeLinkCode("");
     } else {
       this.disconnectRollback = undefined;
@@ -553,7 +553,7 @@ function parseWindowState(value: unknown): ParsedWindowState | undefined {
     !isRecord(value) ||
     (!hasOnlyKeys(value, ["type", "state"]) &&
       !hasOnlyKeys(value, ["type", "state", "displayLinkCode"])) ||
-    value.type !== "pinop.windowState"
+    value.type !== "pin-op.windowState"
   ) {
     return undefined;
   }

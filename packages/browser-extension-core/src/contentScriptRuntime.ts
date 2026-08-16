@@ -17,8 +17,8 @@ import {
   type PageInspectionSessionOptions,
 } from "./pageInspectionSession.js";
 
-const CONTENT_RUNTIME_KEY = Symbol.for("pinop.contentScriptRuntime");
-const CONTENT_RUNTIME_BRAND = Symbol.for("pinop.contentScriptRuntime.brand");
+const CONTENT_RUNTIME_KEY = Symbol.for("pin-op.contentScriptRuntime");
+const CONTENT_RUNTIME_BRAND = Symbol.for("pin-op.contentScriptRuntime.brand");
 
 export type ContentScriptDocument = InspectDocument & {
   readonly styleSheets: CssDocumentSource["styleSheets"];
@@ -112,13 +112,13 @@ export function startContentScriptRuntime(
       }
       return undefined;
     }
-    if (isExactTypeMessage(message, "pinop.inspect.republish")) {
+    if (isExactTypeMessage(message, "pin-op.inspect.republish")) {
       return session.republishSelection().catch((error) => {
         reportError(error);
         return false;
       });
     }
-    if (isExactTypeMessage(message, "pinop.inspect.disposeSession")) {
+    if (isExactTypeMessage(message, "pin-op.inspect.disposeSession")) {
       runtime.dispose();
       return undefined;
     }
@@ -188,7 +188,7 @@ function publishDomEvent(
   reportError: (error: unknown) => void,
 ): void {
   void options.sendRuntimeMessage({
-    type: "pinop.dom.event",
+    type: "pin-op.dom.event",
     contentSessionId,
     event,
   }).catch(reportError);

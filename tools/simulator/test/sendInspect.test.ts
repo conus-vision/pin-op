@@ -118,7 +118,7 @@ describe("sendInspect CLI parsing", () => {
       command: "send",
       linkCode: "48735-07",
       fixture: "inspect-card",
-      sourceId: "pinop-simulator",
+      sourceId: "pin-op-simulator",
     });
   });
 

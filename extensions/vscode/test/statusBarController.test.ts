@@ -47,12 +47,12 @@ describe("StatusBarController", () => {
 
     expect(host.primary).toMatchObject({
       text: "$(radio-tower) PinOp: 48735 07",
-      command: "pinop.copyLinkCode",
+      command: "pin-op.copyLinkCode",
     });
     expect(host.toggle).toMatchObject({
       text: "$(debug-stop)",
       tooltip: "Stop PinOp",
-      command: "pinop.stop",
+      command: "pin-op.stop",
     });
     expect(host.primary.tooltip).toContain("state: running");
     expect(host.primary.tooltip).toContain("URL: ws://127.0.0.1:48735");
@@ -62,8 +62,8 @@ describe("StatusBarController", () => {
   });
 
   it.each([
-    ["stopped", "$(radio-tower) PinOp: Offline", "$(play)", "pinop.start", undefined],
-    ["error", "$(radio-tower) PinOp: Offline", "$(play)", "pinop.start", undefined],
+    ["stopped", "$(radio-tower) PinOp: Offline", "$(play)", "pin-op.start", undefined],
+    ["error", "$(radio-tower) PinOp: Offline", "$(play)", "pin-op.start", undefined],
     ["starting", "$(radio-tower) PinOp: Starting", "$(sync~spin)", undefined, undefined],
     ["stopping", "$(radio-tower) PinOp: Stopping", "$(sync~spin)", undefined, undefined],
   ] as const)("renders %s controls", (state, primaryText, toggleText, command) => {
@@ -92,7 +92,7 @@ describe("StatusBarController", () => {
     controller.render(emptySnapshot("stopped"));
 
     expect(host.primary.command).toBeUndefined();
-    expect(host.toggle.command).toBe("pinop.start");
+    expect(host.toggle.command).toBe("pin-op.start");
     expect(host.primary.tooltip).toContain("PinOp state: stopped");
     expect(host.primary.tooltip).not.toContain("ws://127.0.0.1:48735");
   });

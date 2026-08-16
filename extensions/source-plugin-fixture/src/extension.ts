@@ -6,11 +6,11 @@ import {
 } from "@pin-op/plugin-api";
 
 const plugin: SourcePlugin = {
-  id: "pinop.fixture",
+  id: "pin-op.fixture",
   displayName: "PinOp Fixture",
   apiVersion: SOURCE_PLUGIN_API_VERSION,
   documentSelectors: [
-    { languageId: "pinop-fixture", scheme: "file" },
+    { languageId: "pin-op-fixture", scheme: "file" },
   ],
   supportedFactKinds: ["fixture.source"],
   async resolve(context) {

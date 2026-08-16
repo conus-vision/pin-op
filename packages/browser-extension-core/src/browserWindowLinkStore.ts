@@ -92,7 +92,7 @@ export class BrowserWindowLinkStore {
 }
 
 function storageKey(windowId: number): string {
-  return `pinop.windowLink.${browserWindowIdSchema.parse(windowId)}`;
+  return `pin-op.windowLink.${browserWindowIdSchema.parse(windowId)}`;
 }
 
 function hasOwnLinkFields(

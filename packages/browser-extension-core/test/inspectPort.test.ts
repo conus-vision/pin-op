@@ -11,19 +11,24 @@ import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 describe("panel inspect transport", () => {
   it("creates and parses strict document-scoped content lease names", () => {
     expect(createInspectContentLeasePortName("content-session-1")).toBe(
-      "pinop.inspect.contentLease.content-session-1",
+      "pin-op.inspect.contentLease.content-session-1",
     );
     expect(
       parseInspectContentLeasePortName(
-        "pinop.inspect.contentLease.content-session-1",
+        "pin-op.inspect.contentLease.content-session-1",
       ),
     ).toBe("content-session-1");
     expect(
-      parseInspectContentLeasePortName("pinop.inspect.contentLease"),
+      parseInspectContentLeasePortName("pin-op.inspect.contentLease"),
     ).toBeUndefined();
     expect(
       parseInspectContentLeasePortName(
-        "pinop.inspect.contentLease.content/session",
+        "pin-op.inspect.contentLease.content/session",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseInspectContentLeasePortName(
+        `${"pin"}op.inspect.contentLease.content-session-1`,
       ),
     ).toBeUndefined();
     expect(() => createInspectContentLeasePortName("content/session"))
@@ -32,19 +37,22 @@ describe("panel inspect transport", () => {
 
   it("creates and validates canonical channel-only port names", () => {
     expect(createDevtoolsPanelPortName("channel-1")).toBe(
-      "pinop.devtools.channel-1",
+      "pin-op.devtools.channel-1",
     );
     expect(
-      parseDevtoolsPanelPortName("pinop.devtools.channel-1"),
+      parseDevtoolsPanelPortName("pin-op.devtools.channel-1"),
     ).toBe("channel-1");
-    expect(parseDevtoolsPanelPortName("pinop.devtools.")).toBeUndefined();
+    expect(parseDevtoolsPanelPortName("pin-op.devtools.")).toBeUndefined();
     expect(
-      parseDevtoolsPanelPortName("pinop.devtools.channel/1"),
+      parseDevtoolsPanelPortName("pin-op.devtools.channel/1"),
     ).toBeUndefined();
     expect(
-      parseDevtoolsPanelPortName(`pinop.devtools.${"a".repeat(129)}`),
+      parseDevtoolsPanelPortName(`pin-op.devtools.${"a".repeat(129)}`),
     ).toBeUndefined();
-    expect(parseDevtoolsPanelPortName("pinop.inspect")).toBeUndefined();
+    expect(parseDevtoolsPanelPortName("pin-op.inspect")).toBeUndefined();
+    expect(
+      parseDevtoolsPanelPortName(`${"pin"}op.devtools.channel-1`),
+    ).toBeUndefined();
   });
 
   it.each(["previous", "next"] as const)(
@@ -137,14 +145,14 @@ describe("panel inspect transport", () => {
     });
     expect(port.sent).toEqual([
       {
-        type: "pinop.inspect.setEnabled",
+        type: "pin-op.inspect.setEnabled",
         requestId: "1",
         enabled: true,
       },
     ]);
 
     port.emitMessage({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "1",
       ok: true,
     });
@@ -188,7 +196,7 @@ describe("panel inspect transport", () => {
       type: "enableInspectMode",
     });
     ports[1].emitMessage({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "2",
       ok: true,
     });
@@ -215,40 +223,40 @@ describe("panel inspect transport", () => {
 
     transport.connect();
     ports[0].emitMessage({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "notLinked",
     });
     ports[0].disconnect();
     transport.connect();
     ports[1].emitMessage({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
     ports[1].emitMessage({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "notLinked",
       displayLinkCode: "48735 07",
     });
     ports[1].emitMessage({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "error",
       displayLinkCode: "48735 07",
     });
     ports[0].emitMessage({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "error",
     });
 
     expect(received).toEqual([
-      { type: "pinop.windowState", state: "notLinked" },
+      { type: "pin-op.windowState", state: "notLinked" },
       {
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state: "linked",
         displayLinkCode: "48735 07",
       },
       {
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state: "error",
         displayLinkCode: "48735 07",
       },
@@ -258,7 +266,7 @@ describe("panel inspect transport", () => {
 
 function sourceNavigateCommand(direction: "previous" | "next") {
   return {
-    type: "pinop.source.navigate" as const,
+    type: "pin-op.source.navigate" as const,
     inspectMessageId: "inspect-1",
     resolutionGeneration: 3,
     direction,

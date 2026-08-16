@@ -13,13 +13,13 @@
     "conus-vision.pin-op"
   ],
   "activationEvents": [
-    "onLanguage:pinop-fixture"
+    "onLanguage:pin-op-fixture"
   ],
   "contributes": {
     "languages": [
       {
-        "id": "pinop-fixture",
-        "extensions": [".pinop-fixture"]
+        "id": "pin-op-fixture",
+        "extensions": [".pin-op-fixture"]
       }
     ]
   },

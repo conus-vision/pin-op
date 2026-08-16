@@ -74,7 +74,7 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   try {
     const rule = fallback && findStyleRule(
       fallback.cssRules,
-      ".pinop-path-miss",
+      ".pin-op-path-miss",
     );
     if (rule) {
       pathMiss = {

@@ -86,8 +86,8 @@ describe("browser-window workflow", () => {
     expect(instanceA.linkPins).toEqual(["07"]);
     expect(instanceB.linkPins).toEqual(["08"]);
     expect(storage.values).toEqual({
-      "pinop.windowLink.10": savedLink(instanceA),
-      "pinop.windowLink.20": savedLink(instanceB),
+      "pin-op.windowLink.10": savedLink(instanceA),
+      "pin-op.windowLink.20": savedLink(instanceB),
     });
 
     for (const [windowId, tabId] of [
@@ -237,7 +237,7 @@ describe("browser-window workflow", () => {
     ).toBe("sent");
     await expect(store.load(20)).resolves.toEqual(savedLink(instanceB));
     expect(storage.values).toEqual({
-      "pinop.windowLink.20": savedLink(instanceB),
+      "pin-op.windowLink.20": savedLink(instanceB),
     });
 
     panel102.dispose();

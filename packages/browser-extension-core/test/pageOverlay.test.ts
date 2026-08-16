@@ -360,7 +360,7 @@ describe("PageOverlay", () => {
       { left: "110px", top: "230px", width: "50px", height: "10px" },
     ]);
     const label = findElements(environment.document).find(
-      (candidate) => candidate.getAttribute("data-pinop-label") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-label") === "",
     );
     expect(label?.textContent).toMatch(/ 50 x 20$/);
     expect(label?.style.left).toBe("110px");
@@ -402,8 +402,8 @@ describe("PageOverlay", () => {
     const host = findOverlayHost(environment.document);
     const visualNodes = findElementsIn(host.attachedShadowRoot!).filter(
       (candidate) =>
-        candidate.getAttribute("data-pinop-box") !== null ||
-        candidate.getAttribute("data-pinop-label") === "",
+        candidate.getAttribute("data-pin-op-box") !== null ||
+        candidate.getAttribute("data-pin-op-label") === "",
     );
     expect(visualNodes).toHaveLength(accepted ? count * 4 + 1 : 0);
     expect(environment.document.defaultView.listenerCount("scroll")).toBe(
@@ -765,7 +765,7 @@ describe("PageOverlay", () => {
     environment.animation.flush();
 
     const label = findElements(environment.document).find(
-      (candidate) => candidate.getAttribute("data-pinop-label") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-label") === "",
     );
     expect(label).toBeDefined();
     expect(label?.textContent).toContain("button#target\"><img-src=x-onerror=alert(1)>");
@@ -803,7 +803,7 @@ describe("PageOverlay", () => {
     }
 
     const label = findElements(environment.document).find(
-      (candidate) => candidate.getAttribute("data-pinop-label") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-label") === "",
     );
     expect(Math.max(...lowercasedLengths)).toBe(64);
     expect(lowercasedLengths).not.toContain(4_096);
@@ -820,7 +820,7 @@ describe("PageOverlay", () => {
     overlay.show(element, environment.identity);
     environment.animation.flush();
     const label = findElements(environment.document).find(
-      (candidate) => candidate.getAttribute("data-pinop-label") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-label") === "",
     );
     const labelText = label?.firstChild;
     if (!label || !labelText) throw new Error("expected label text node");
@@ -866,7 +866,7 @@ describe("PageOverlay", () => {
     expect(root.parentNode).toBe(shadowRoot);
     expect(readAllBoxGeometry(environment.document, "border")).toHaveLength(1);
     expect(environment.document.createdElements.filter(
-      (candidate) => candidate.getAttribute("data-pinop-page-overlay") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-page-overlay") === "",
     )).toEqual([host]);
     expect(overlay.ownsNode(shadowRoot as unknown as Node)).toBe(true);
     expect(overlay.ownsNode(root as unknown as Node)).toBe(true);
@@ -1087,7 +1087,7 @@ describe("PageOverlay", () => {
     expect(environment.document.defaultView.listenerCount("resize")).toBe(0);
     expect(readAllBoxGeometry(environment.document, "border")).toEqual([]);
     expect(findElements(environment.document).some(
-      (candidate) => candidate.getAttribute("data-pinop-label") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-label") === "",
     )).toBe(false);
     const readsAfterClear = element.clientRectReads;
     environment.document.defaultView.dispatch("scroll");
@@ -1117,7 +1117,7 @@ describe("PageOverlay", () => {
     const host = findOverlayHost(environment.document);
     const shadowRoot = host.attachedShadowRoot!;
     const ownedLayer = findElementsIn(shadowRoot).find(
-      (candidate) => candidate.getAttribute("data-pinop-box") === "border",
+      (candidate) => candidate.getAttribute("data-pin-op-box") === "border",
     )!;
     environment.document.defaultView.dispatch("resize");
     const readsBeforeDispose = element.clientRectReads;
@@ -1141,7 +1141,7 @@ describe("PageOverlay", () => {
     expect(element.clientRectReads).toBe(readsBeforeDispose);
     expect(environment.document.documentElement.childNodes).not.toContain(host);
     expect(environment.document.createdElements.filter(
-      (candidate) => candidate.getAttribute("data-pinop-page-overlay") === "",
+      (candidate) => candidate.getAttribute("data-pin-op-page-overlay") === "",
     )).toEqual([host]);
     expect(overlay.ownsNode(element)).toBe(false);
   });
@@ -1189,10 +1189,10 @@ describe("PageOverlay", () => {
       expect(() => environment.animation.flush()).not.toThrow();
       expect(reentered).toBe(true);
       expect(findElementsIn(shadowRoot).filter(
-        (candidate) => candidate.getAttribute("data-pinop-box") !== null,
+        (candidate) => candidate.getAttribute("data-pin-op-box") !== null,
       )).toEqual([]);
       expect(findElementsIn(shadowRoot).some(
-        (candidate) => candidate.getAttribute("data-pinop-label") === "",
+        (candidate) => candidate.getAttribute("data-pin-op-label") === "",
       )).toBe(false);
       expect(environment.document.defaultView.listenerCount("scroll")).toBe(0);
       expect(environment.document.defaultView.listenerCount("resize")).toBe(0);
@@ -1338,7 +1338,7 @@ describe("PageOverlay", () => {
     expect(element.clientRectReads).toBe(0);
     expect(environment.document.documentElement.childNodes.some(
       (node) => node instanceof FakeElement &&
-        node.getAttribute("data-pinop-page-overlay") === "",
+        node.getAttribute("data-pin-op-page-overlay") === "",
     )).toBe(false);
   });
 
@@ -1968,7 +1968,7 @@ function readBoxGeometry(
   box: "margin" | "border" | "padding" | "content",
 ): Record<string, string> | undefined {
   const layer = findElements(document).find(
-    (element) => element.getAttribute("data-pinop-box") === box,
+    (element) => element.getAttribute("data-pin-op-box") === box,
   );
   return layer
     ? {
@@ -1985,7 +1985,7 @@ function readAllBoxGeometry(
   box: "margin" | "border" | "padding" | "content",
 ): Record<string, string>[] {
   return findElements(document)
-    .filter((element) => element.getAttribute("data-pinop-box") === box)
+    .filter((element) => element.getAttribute("data-pin-op-box") === box)
     .map((element) => ({
       left: element.style.left,
       top: element.style.top,
@@ -2015,7 +2015,7 @@ function findOverlayHost(document: FakeDocument): FakeElement {
 
 function findOverlayHosts(document: FakeDocument): FakeElement[] {
   return findElements(document).filter(
-    (element) => element.getAttribute("data-pinop-page-overlay") === "",
+    (element) => element.getAttribute("data-pin-op-page-overlay") === "",
   );
 }
 

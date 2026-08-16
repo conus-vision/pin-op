@@ -35,46 +35,46 @@
   "contributes": {
     "commands": [
       {
-        "command": "pinop.start",
+        "command": "pin-op.start",
         "title": "PinOp: Start"
       },
       {
-        "command": "pinop.stop",
+        "command": "pin-op.stop",
         "title": "PinOp: Stop"
       },
       {
-        "command": "pinop.copyLinkCode",
+        "command": "pin-op.copyLinkCode",
         "title": "PinOp: Copy Link Code"
       },
       {
-        "command": "pinop.openDiagnostics",
+        "command": "pin-op.openDiagnostics",
         "title": "PinOp: Open Diagnostics"
       },
       {
-        "command": "pinop.revealSourceMatch",
+        "command": "pin-op.revealSourceMatch",
         "title": "PinOp: Reveal Source Match"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "pinop",
+          "id": "pin-op",
           "title": "PinOp",
           "icon": "resources/pinop.svg"
         }
       ]
     },
     "views": {
-      "pinop": [
+      "pin-op": [
         {
-          "id": "pinop.applicableRules",
+          "id": "pin-op.applicableRules",
           "name": "Applicable Sources"
         }
       ]
     },
     "colors": [
       {
-        "id": "pinop.selectedRuleBackground",
+        "id": "pin-op.selectedRuleBackground",
         "description": "Background for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#2EA04322",
@@ -83,7 +83,7 @@
         }
       },
       {
-        "id": "pinop.selectedRuleBorder",
+        "id": "pin-op.selectedRuleBorder",
         "description": "Border for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#3FB950",
@@ -92,7 +92,7 @@
         }
       },
       {
-        "id": "pinop.parentRuleBackground",
+        "id": "pin-op.parentRuleBackground",
         "description": "Background for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#2F81F722",
@@ -101,7 +101,7 @@
         }
       },
       {
-        "id": "pinop.parentRuleBorder",
+        "id": "pin-op.parentRuleBorder",
         "description": "Border for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#58A6FF",
@@ -113,7 +113,7 @@
     "configuration": {
       "title": "PinOp",
       "properties": {
-        "pinop.sessionId": {
+        "pin-op.sessionId": {
           "type": "string",
           "default": "default"
         }

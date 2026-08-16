@@ -111,7 +111,7 @@ export class SourceNavigationController {
       return;
     }
     this.dispatch({
-      type: "pinop.source.navigate",
+      type: "pin-op.source.navigate",
       inspectMessageId: this.inspectMessageId,
       resolutionGeneration: this.resolutionGeneration,
       direction,

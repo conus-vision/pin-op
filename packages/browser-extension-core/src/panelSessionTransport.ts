@@ -30,13 +30,13 @@ export interface PanelSessionTransportOptions {
 }
 
 export interface PanelIdeDisconnectedState {
-  readonly type: "pinop.ideState";
+  readonly type: "pin-op.ideState";
   readonly status: "ide-disconnected";
   readonly inspectMessageId: string;
 }
 
 export interface PanelInspectStartedState {
-  readonly type: "pinop.inspect.started";
+  readonly type: "pin-op.inspect.started";
   readonly inspectMessageId: string;
   readonly selectionRevision: number;
 }
@@ -155,7 +155,7 @@ export class PanelSessionTransport {
     const pending = (async (): Promise<boolean> => {
       try {
         const result = await this.options.sendTabMessage(binding.tabId, {
-          type: "pinop.inspect.republish",
+          type: "pin-op.inspect.republish",
         });
         return this.channels.get(channel) === binding && result !== false;
       } catch {
@@ -205,7 +205,7 @@ export class PanelSessionTransport {
       return;
     }
     const state: PanelIdeDisconnectedState = Object.freeze({
-      type: "pinop.ideState",
+      type: "pin-op.ideState",
       status: "ide-disconnected",
       inspectMessageId,
     });
@@ -229,7 +229,7 @@ export class PanelSessionTransport {
       return;
     }
     const state: PanelInspectStartedState = Object.freeze({
-      type: "pinop.inspect.started",
+      type: "pin-op.inspect.started",
       inspectMessageId,
       selectionRevision,
     });

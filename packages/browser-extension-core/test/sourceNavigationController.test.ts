@@ -157,13 +157,13 @@ describe("SourceNavigationController", () => {
 
     expect(dispatch.mock.calls).toEqual([
       [{
-        type: "pinop.source.navigate",
+        type: "pin-op.source.navigate",
         inspectMessageId: "inspect-current",
         resolutionGeneration: 7,
         direction: "previous",
       }],
       [{
-        type: "pinop.source.navigate",
+        type: "pin-op.source.navigate",
         inspectMessageId: "inspect-current",
         resolutionGeneration: 7,
         direction: "next",

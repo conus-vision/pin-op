@@ -2,8 +2,8 @@
 
 This private VS Code extension proves that an extension outside the PinOp
 core can register a `SourcePlugin` through the public API. It contributes the
-`pinop-fixture` language for `.b2i` files and registers plugin ID
-`pinop.fixture`.
+`pin-op-fixture` language for `.b2i` files and registers plugin ID
+`pin-op.fixture`.
 
 Its manifest depends on the canonical core extension ID
 `conus-vision.pin-op`. Activation calls the core extension, compares

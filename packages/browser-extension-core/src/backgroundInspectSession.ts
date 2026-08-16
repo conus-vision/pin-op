@@ -105,7 +105,7 @@ export class BackgroundInspectCoordinator {
     return this.enqueue(state, async () => {
       try {
         await this.api.sendTabMessage(tabId, {
-          type: "pinop.inspect.disposeSession",
+          type: "pin-op.inspect.disposeSession",
         });
       } catch {
         // Disconnecting the content lease already makes the session inert.
@@ -307,14 +307,14 @@ export class BackgroundInspectSession {
     void operation.then(
       () => {
         this.finishRequest(pending, {
-          type: "pinop.inspect.result",
+          type: "pin-op.inspect.result",
           requestId: request.requestId,
           ok: true,
         });
       },
       () => {
         this.finishRequest(pending, {
-          type: "pinop.inspect.result",
+          type: "pin-op.inspect.result",
           requestId: request.requestId,
           ok: false,
           error: "Inspect mode update failed",
@@ -352,7 +352,7 @@ export class BackgroundInspectSession {
     for (const pending of [...this.pendingRequests]) {
       this.pendingRequests.delete(pending);
       const result: InspectPortResult = {
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId: pending.requestId,
         ok: false,
         error,
@@ -383,7 +383,7 @@ export class BackgroundInspectSession {
     }
     try {
       this.sendMessage({
-        type: "pinop.inspect.invalidated",
+        type: "pin-op.inspect.invalidated",
         reason: "documentDisconnected",
       });
     } finally {

@@ -51,7 +51,7 @@ export async function activate(
   presenterRuntime = runtime;
 
   const configuration = readBridgeConfiguration(
-    vscode.workspace.getConfiguration("pinop"),
+    vscode.workspace.getConfiguration("pin-op"),
   );
   manager = new BridgeManager({ configuration });
 
@@ -130,7 +130,7 @@ export async function activate(
         void controller.dispose().catch(reportRuntimeError);
       },
     },
-    vscode.commands.registerCommand("pinop.openDiagnostics", () => {
+    vscode.commands.registerCommand("pin-op.openDiagnostics", () => {
       if (output && manager && diagnostics) {
         writeBridgeDiagnostics(
           output,
@@ -209,7 +209,7 @@ function createPresenterHost(): PresenterRuntimeHost {
     overviewRulerLaneRight: vscode.OverviewRulerLane.Right,
     registerTreeDataProvider: (provider) =>
       vscode.window.registerTreeDataProvider(
-        "pinop.applicableRules",
+        "pin-op.applicableRules",
         provider,
       ),
     registerCommand: (command, callback) =>

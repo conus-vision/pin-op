@@ -1018,7 +1018,7 @@ export class PageOverlay {
 }
 
 function configureHost(host: HTMLElement): void {
-  host.setAttribute("data-pinop-page-overlay", "");
+  host.setAttribute("data-pin-op-page-overlay", "");
   setImportantStyle(host, "all", "initial");
   setVisualSafety(host, true);
   setImportantStyle(host, "position", "fixed");
@@ -1041,7 +1041,7 @@ function configureRoot(root: HTMLElement): void {
 }
 
 function configureRenderContainer(container: HTMLElement): void {
-  container.setAttribute("data-pinop-render", "");
+  container.setAttribute("data-pin-op-render", "");
   container.style.all = "initial";
   setVisualSafety(container);
   container.style.position = "absolute";
@@ -1057,7 +1057,7 @@ function configureLayer(
   box: keyof typeof BOX_COLORS,
   geometry: LayerGeometry,
 ): void {
-  layer.setAttribute("data-pinop-box", box);
+  layer.setAttribute("data-pin-op-box", box);
   layer.style.all = "initial";
   setVisualSafety(layer);
   layer.style.position = "absolute";
@@ -1067,7 +1067,7 @@ function configureLayer(
 }
 
 function configureLabel(label: HTMLElement): void {
-  label.setAttribute("data-pinop-label", "");
+  label.setAttribute("data-pin-op-label", "");
   label.style.all = "initial";
   setVisualSafety(label);
   label.style.position = "absolute";

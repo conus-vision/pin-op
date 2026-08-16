@@ -298,7 +298,7 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{
       channel: "panel-a",
       message: {
-        type: "pinop.inspect.started",
+        type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 4,
       },

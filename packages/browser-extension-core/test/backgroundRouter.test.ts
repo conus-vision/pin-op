@@ -86,7 +86,7 @@ describe("BackgroundRouter", () => {
     });
     expect(port.sent).toEqual([
       {
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state: "notLinked",
       },
     ]);
@@ -106,7 +106,7 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
 
     expect(port.sent.at(-1)).toEqual({
-      type: "pinop.windowState",
+      type: "pin-op.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
     });
@@ -204,7 +204,7 @@ describe("BackgroundRouter", () => {
 
   it("bounds pending ports and disconnects malformed, duplicate, and overflow ports", () => {
     const harness = createHarness({ maxPanelPorts: 2 });
-    const malformed = harness.port("pinop.devtools.bad/channel");
+    const malformed = harness.port("pin-op.devtools.bad/channel");
     const wrongPage = harness.panelPort("wrong-page", {
       url: "moz-extension://pinop/dist/other.html?channel=wrong-page",
     });
@@ -399,7 +399,7 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
     expect(recoveredPort.sent).toEqual([
       {
-        type: "pinop.windowState",
+        type: "pin-op.windowState",
         state: "notLinked",
       },
     ]);
@@ -547,7 +547,7 @@ describe("BackgroundRouter", () => {
     );
 
     expect(localMessagesAtPublish).toContainEqual({
-      type: "pinop.inspect.started",
+      type: "pin-op.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 1,
     });
@@ -587,8 +587,8 @@ describe("BackgroundRouter", () => {
       )).resolves.toBeUndefined();
     }
 
-    expect(messagesOfType(panel, "pinop.inspect.started")).toEqual([{
-      type: "pinop.inspect.started",
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([{
+      type: "pin-op.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 4,
     }]);
@@ -626,28 +626,28 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "resolution")).toHaveLength(1);
     expect(panel.sent.filter((message) =>
       isRecord(message) &&
-      (message.type === "pinop.inspect.started" ||
-        message.type === "pinop.ideState")
+      (message.type === "pin-op.inspect.started" ||
+        message.type === "pin-op.ideState")
     )).toEqual([
       {
-        type: "pinop.inspect.started",
+        type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 1,
       },
       {
-        type: "pinop.inspect.started",
+        type: "pin-op.inspect.started",
         inspectMessageId: "inspect-2",
         selectionRevision: 1,
       },
       {
-        type: "pinop.ideState",
+        type: "pin-op.ideState",
         status: "ide-disconnected",
         inspectMessageId: "inspect-2",
       },
     ]);
-    expect(messagesOfType(panel, "pinop.ideState")).toEqual([
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([
       {
-        type: "pinop.ideState",
+        type: "pin-op.ideState",
         status: "ide-disconnected",
         inspectMessageId: "inspect-2",
       },
@@ -674,14 +674,14 @@ describe("BackgroundRouter", () => {
     harness.resolutions.emit(resolution("inspect-1", 9));
     harness.resolutions.emit(resolution("inspect-2", 1));
 
-    expect(messagesOfType(panel, "pinop.inspect.started")).toEqual([
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
       {
-        type: "pinop.inspect.started",
+        type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 1,
       },
       {
-        type: "pinop.inspect.started",
+        type: "pin-op.inspect.started",
         inspectMessageId: "inspect-2",
         selectionRevision: 1,
       },
@@ -776,9 +776,9 @@ describe("BackgroundRouter", () => {
     harness.resolutions.emit(resolution("inspect-1", 1));
 
     expect(messagesOfType(panel, "resolution")).toEqual([]);
-    expect(messagesOfType(panel, "pinop.ideState")).toEqual([
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([
       {
-        type: "pinop.ideState",
+        type: "pin-op.ideState",
         status: "ide-disconnected",
         inspectMessageId: "inspect-1",
       },
@@ -1023,8 +1023,8 @@ describe("BackgroundRouter", () => {
       sourceNavigationState("inspect-1", 2, 0),
     );
 
-    expect(messagesOfType(panel, "pinop.ideState")).toEqual([{
-      type: "pinop.ideState",
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([{
+      type: "pin-op.ideState",
       status: "ide-disconnected",
       inspectMessageId: "inspect-1",
     }]);
@@ -1056,8 +1056,8 @@ describe("BackgroundRouter", () => {
       sourceNavigationState("inspect-1", 2, 0),
     );
 
-    expect(messagesOfType(panel, "pinop.ideState")).toEqual([{
-      type: "pinop.ideState",
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([{
+      type: "pin-op.ideState",
       status: "ide-disconnected",
       inspectMessageId: "inspect-1",
     }]);
@@ -1087,7 +1087,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls).toContainEqual([
       "tab",
       17,
-      { type: "pinop.inspect.republish" },
+      { type: "pin-op.inspect.republish" },
     ]);
   });
 
@@ -1173,7 +1173,7 @@ describe("BackgroundRouter", () => {
       sendTabMessage: async (tabId, message) => {
         if (
           isRecord(message) &&
-          message.type === "pinop.inspect.republish"
+          message.type === "pin-op.inspect.republish"
         ) {
           await harness.router.routeMessage(
             selectedMessage(DEFAULT_CONTENT_SESSION_ID),
@@ -1216,7 +1216,7 @@ describe("BackgroundRouter", () => {
       sendTabMessage: async (tabId, message) => {
         if (
           isRecord(message) &&
-          message.type === "pinop.inspect.republish"
+          message.type === "pin-op.inspect.republish"
         ) {
           await harness.router.routeMessage(
             selectedMessage(DEFAULT_CONTENT_SESSION_ID),
@@ -1267,7 +1267,7 @@ describe("BackgroundRouter", () => {
       sendTabMessage: async (tabId, message) => {
         if (
           isRecord(message) &&
-          message.type === "pinop.inspect.republish"
+          message.type === "pin-op.inspect.republish"
         ) {
           republishResults.push(await harness.router.routeMessage(
             selectedMessage(DEFAULT_CONTENT_SESSION_ID),
@@ -1390,7 +1390,7 @@ describe("BackgroundRouter", () => {
     ]);
     expect(messagesOfType(panelB, "peerState")).toEqual([]);
     expect(harness.inspectCalls).toEqual([
-      ["tab", 17, { type: "pinop.inspect.republish" }],
+      ["tab", 17, { type: "pin-op.inspect.republish" }],
     ]);
   });
 
@@ -1407,7 +1407,7 @@ describe("BackgroundRouter", () => {
       "source-17",
     );
     panel.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "picker-off",
       enabled: false,
     });
@@ -1545,7 +1545,7 @@ describe("BackgroundRouter", () => {
       "source-17",
     );
     panel.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "blocking-enable",
       enabled: true,
     });
@@ -1746,13 +1746,13 @@ describe("BackgroundRouter", () => {
     );
 
     panelPort.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "spoof",
       tabId: 99,
       enabled: true,
     });
     panelPort.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "trusted",
       enabled: true,
     });
@@ -1792,7 +1792,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "pinop.inspect.disposeSession" },
+      { type: "pin-op.inspect.disposeSession" },
     ]);
     await harness.router.routeMessage(
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
@@ -1808,7 +1808,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.linkWindow",
+          type: "pin-op.linkWindow",
           channel: "channel-1",
           code: "4873507",
         },
@@ -1818,7 +1818,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
@@ -1852,7 +1852,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.linkWindow",
+          type: "pin-op.linkWindow",
           channel: "channel-1",
           code: "4873507",
         },
@@ -1864,14 +1864,14 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
       ),
     ).resolves.toEqual({ ok: true });
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "moved-enable",
       enabled: true,
     });
@@ -1891,7 +1891,7 @@ describe("BackgroundRouter", () => {
       [
         "tab",
         17,
-        { type: "pinop.inspect.disposeSession" },
+        { type: "pin-op.inspect.disposeSession" },
       ],
       ["inject", { target: { tabId: 17 }, files: ["dist/contentScript.js"] }],
       ["tab", 17, { type: "enableInspectMode" }],
@@ -1923,7 +1923,7 @@ describe("BackgroundRouter", () => {
     tabs.delete(17);
 
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "closed-enable",
       enabled: true,
     });
@@ -1932,7 +1932,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
@@ -1950,13 +1950,13 @@ describe("BackgroundRouter", () => {
       [
         "tab",
         17,
-        { type: "pinop.inspect.disposeSession" },
+        { type: "pin-op.inspect.disposeSession" },
       ],
     ]);
     expect(harness.coordinator.unlinks).toEqual([]);
     expect(harness.coordinator.activeSources()).toEqual([]);
     expect(port.sent).toContainEqual({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "closed-enable",
       ok: false,
       error: "stalePanel",
@@ -1982,7 +1982,7 @@ describe("BackgroundRouter", () => {
 
     const command = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -2000,7 +2000,7 @@ describe("BackgroundRouter", () => {
     const harness = createHarness();
     await harness.registerAndConnect("channel-1", 17, "source-17");
     const link = {
-      type: "pinop.linkWindow",
+      type: "pin-op.linkWindow",
       channel: "channel-1",
       code: "4873507",
     } as const;
@@ -2025,7 +2025,7 @@ describe("BackgroundRouter", () => {
     expect(
       await harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
           tabId: 99,
         },
@@ -2047,7 +2047,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.linkWindow",
+          type: "pin-op.linkWindow",
           channel: "channel-1",
           code: "0999907",
         },
@@ -2059,7 +2059,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
@@ -2077,7 +2077,7 @@ describe("BackgroundRouter", () => {
       expect(
         await harness.router.routeMessage(
           {
-            type: "pinop.linkWindow",
+            type: "pin-op.linkWindow",
             channel: "channel-1",
             code,
           },
@@ -2095,7 +2095,7 @@ describe("BackgroundRouter", () => {
     });
     await harness.registerAndConnect("channel-1", 17, "source-17");
     const message = {
-      type: "pinop.linkWindow",
+      type: "pin-op.linkWindow",
       channel: "channel-1",
       code: "4873507",
     } as const;
@@ -2131,7 +2131,7 @@ describe("BackgroundRouter", () => {
     await expect(
       rateLimited.router.routeMessage(
         {
-          type: "pinop.linkWindow",
+          type: "pin-op.linkWindow",
           channel: "channel-1",
           code: "4873507",
         },
@@ -2149,7 +2149,7 @@ describe("BackgroundRouter", () => {
     await expect(
       failed.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
@@ -2177,7 +2177,7 @@ describe("BackgroundRouter", () => {
     );
     const result = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -2203,7 +2203,7 @@ describe("BackgroundRouter", () => {
     );
     const result = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -2245,12 +2245,12 @@ describe("BackgroundRouter", () => {
       const command = harness.router.routeMessage(
         kind === "link"
           ? {
-              type: "pinop.linkWindow",
+              type: "pin-op.linkWindow",
               channel: "channel-1",
               code: "4873507",
             }
           : {
-              type: "pinop.unlinkWindow",
+              type: "pin-op.unlinkWindow",
               channel: "channel-1",
             },
         panelSender("channel-1"),
@@ -2314,12 +2314,12 @@ describe("BackgroundRouter", () => {
       const command = harness.router.routeMessage(
         kind === "link"
           ? {
-              type: "pinop.linkWindow",
+              type: "pin-op.linkWindow",
               channel: "channel-1",
               code: "4873507",
             }
           : {
-              type: "pinop.unlinkWindow",
+              type: "pin-op.unlinkWindow",
               channel: "channel-1",
             },
         panelSender("channel-1"),
@@ -2379,12 +2379,12 @@ describe("BackgroundRouter", () => {
       const command = harness.router.routeMessage(
         kind === "link"
           ? {
-              type: "pinop.linkWindow",
+              type: "pin-op.linkWindow",
               channel: "channel-1",
               code: "4873507",
             }
           : {
-              type: "pinop.unlinkWindow",
+              type: "pin-op.unlinkWindow",
               channel: "channel-1",
             },
         panelSender("channel-1"),
@@ -2433,12 +2433,12 @@ describe("BackgroundRouter", () => {
       const command = harness.router.routeMessage(
         kind === "link"
           ? {
-              type: "pinop.linkWindow",
+              type: "pin-op.linkWindow",
               channel: "channel-1",
               code: "4873507",
             }
           : {
-              type: "pinop.unlinkWindow",
+              type: "pin-op.unlinkWindow",
               channel: "channel-1",
             },
         panelSender("channel-1"),
@@ -2481,7 +2481,7 @@ describe("BackgroundRouter", () => {
     const oldRegistration = harness.coordinator.registrations[0];
     const command = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -2567,7 +2567,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "pinop.inspect.disposeSession" },
+      { type: "pin-op.inspect.disposeSession" },
     ]);
     expect(port.disconnected).toBe(false);
   });
@@ -2677,7 +2677,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "pinop.inspect.disposeSession" },
+      { type: "pin-op.inspect.disposeSession" },
     ]);
     const callsAfterUnlink = harness.inspectCalls.length;
     port.emitMessage({ type: "dom.getRoot", requestId: "after-unlink" });
@@ -2779,7 +2779,7 @@ describe("BackgroundRouter", () => {
     await harness.attachContentSession(17);
     const command = harness.router.routeMessage(
       {
-        type: "pinop.unlinkWindow",
+        type: "pin-op.unlinkWindow",
         channel: "channel-1",
       },
       panelSender("channel-1"),
@@ -2812,7 +2812,7 @@ describe("BackgroundRouter", () => {
     await harness.attachContentSession(17);
     const command = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -2855,7 +2855,7 @@ describe("BackgroundRouter", () => {
     );
     await harness.attachContentSession(17);
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "pending-enable",
       enabled: true,
     });
@@ -2870,13 +2870,13 @@ describe("BackgroundRouter", () => {
     ).resolves.toBeUndefined();
 
     expect(port.sent).toContainEqual({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "pending-enable",
       ok: false,
       error: "stalePanel",
     });
     expect(port.sent).not.toContainEqual({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "pending-enable",
       ok: true,
     });
@@ -2886,7 +2886,7 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
 
     expect(port.sent).not.toContainEqual({
-      type: "pinop.inspect.result",
+      type: "pin-op.inspect.result",
       requestId: "pending-enable",
       ok: true,
     });
@@ -2899,7 +2899,7 @@ describe("BackgroundRouter", () => {
         },
       ],
       ["tab", 17, { type: "enableInspectMode" }],
-      ["tab", 17, { type: "pinop.inspect.disposeSession" }],
+      ["tab", 17, { type: "pin-op.inspect.disposeSession" }],
       [
         "inject",
         {
@@ -2934,7 +2934,7 @@ describe("BackgroundRouter", () => {
       "source-17",
     );
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "detached-enable",
       enabled: true,
     });
@@ -2945,7 +2945,7 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.activeSources()).toEqual([]);
     expect(inspectResults(port)).toEqual([
       {
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId: "detached-enable",
         ok: false,
         error: "stalePanel",
@@ -2978,7 +2978,7 @@ describe("BackgroundRouter", () => {
       [
         "tab",
         17,
-        { type: "pinop.inspect.disposeSession" },
+        { type: "pin-op.inspect.disposeSession" },
       ],
       [
         "inject",
@@ -3018,7 +3018,7 @@ describe("BackgroundRouter", () => {
         "source-17",
       );
       port.emitMessage({
-        type: "pinop.inspect.setEnabled",
+        type: "pin-op.inspect.setEnabled",
         requestId: `quiet-${stage}`,
         enabled: true,
       });
@@ -3032,7 +3032,7 @@ describe("BackgroundRouter", () => {
 
       expect(inspectResults(port)).toEqual([
         {
-          type: "pinop.inspect.result",
+          type: "pin-op.inspect.result",
           requestId: `quiet-${stage}`,
           ok: false,
           error: "stalePanel",
@@ -3082,7 +3082,7 @@ describe("BackgroundRouter", () => {
         "source-17",
       );
       port.emitMessage({
-        type: "pinop.inspect.setEnabled",
+        type: "pin-op.inspect.setEnabled",
         requestId: `failed-${stage}`,
         enabled: true,
       });
@@ -3096,7 +3096,7 @@ describe("BackgroundRouter", () => {
 
       expect(inspectResults(port)).toEqual([
         {
-          type: "pinop.inspect.result",
+          type: "pin-op.inspect.result",
           requestId: `failed-${stage}`,
           ok: false,
           error: "stalePanel",
@@ -3133,7 +3133,7 @@ describe("BackgroundRouter", () => {
       "source-17",
     );
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "enable-before-disable",
       enabled: true,
     });
@@ -3141,7 +3141,7 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
 
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "quiet-disable",
       enabled: false,
     });
@@ -3153,12 +3153,12 @@ describe("BackgroundRouter", () => {
 
     expect(inspectResults(port)).toEqual([
       {
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId: "enable-before-disable",
         ok: true,
       },
       {
-        type: "pinop.inspect.result",
+        type: "pin-op.inspect.result",
         requestId: "quiet-disable",
         ok: false,
         error: "stalePanel",
@@ -3183,7 +3183,7 @@ describe("BackgroundRouter", () => {
     );
     const staleLink = harness.router.routeMessage(
       {
-        type: "pinop.linkWindow",
+        type: "pin-op.linkWindow",
         channel: "channel-1",
         code: "4873507",
       },
@@ -3197,7 +3197,7 @@ describe("BackgroundRouter", () => {
     await expect(
       harness.router.routeMessage(
         {
-          type: "pinop.unlinkWindow",
+          type: "pin-op.unlinkWindow",
           channel: "channel-1",
         },
         panelSender("channel-1"),
@@ -3239,7 +3239,7 @@ describe("BackgroundRouter", () => {
       "source-17",
     );
     port.emitMessage({
-      type: "pinop.inspect.setEnabled",
+      type: "pin-op.inspect.setEnabled",
       requestId: "enable",
       enabled: true,
     });
@@ -3262,7 +3262,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "pinop.inspect.disposeSession" },
+      { type: "pin-op.inspect.disposeSession" },
     ]);
   });
 });
@@ -3610,7 +3610,7 @@ class FakeEvent<T extends (...args: never[]) => void> {
 
 function registerMessage(channel: string, tabId: number, sourceId: string) {
   return {
-    type: "pinop.registerDevtools",
+    type: "pin-op.registerDevtools",
     channel,
     tabId,
     sourceId,
@@ -3673,7 +3673,7 @@ function selectedMessageWithRevision(
 
 function domEventMessage(contentSessionId: string, event: unknown) {
   return {
-    type: "pinop.dom.event" as const,
+    type: "pin-op.dom.event" as const,
     contentSessionId,
     event,
   };
@@ -3705,13 +3705,13 @@ function selectionChanged(nodeRef: string) {
 function inspectResults(port: FakePort): unknown[] {
   return port.sent.filter(
     (message) =>
-      isRecord(message) && message.type === "pinop.inspect.result",
+      isRecord(message) && message.type === "pin-op.inspect.result",
   );
 }
 
 function windowStates(port: FakePort): unknown[] {
   return port.sent.flatMap((message) =>
-    isRecord(message) && message.type === "pinop.windowState"
+    isRecord(message) && message.type === "pin-op.windowState"
       ? [message.state]
       : [],
   );
@@ -3782,7 +3782,7 @@ function republishCallCount(calls: readonly unknown[]): number {
     (call) =>
       Array.isArray(call) &&
       isRecord(call[2]) &&
-      call[2].type === "pinop.inspect.republish",
+      call[2].type === "pin-op.inspect.republish",
   ).length;
 }
 
@@ -3819,7 +3819,7 @@ function panelSourceNavigation(
   resolutionGeneration = 2,
 ) {
   return {
-    type: "pinop.source.navigate" as const,
+    type: "pin-op.source.navigate" as const,
     inspectMessageId,
     resolutionGeneration,
     direction,

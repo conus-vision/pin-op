@@ -52,10 +52,10 @@ export class StatusBarController {
           snapshot.port ?? Number.NaN,
           snapshot.pin ?? "",
         )}`;
-        primary.command = "pinop.copyLinkCode";
+        primary.command = "pin-op.copyLinkCode";
         toggle.text = "$(debug-stop)";
         toggle.tooltip = "Stop PinOp";
-        toggle.command = "pinop.stop";
+        toggle.command = "pin-op.stop";
         return;
       case "starting":
         primary.text = "$(radio-tower) PinOp: Starting";
@@ -70,7 +70,7 @@ export class StatusBarController {
         primary.text = "$(radio-tower) PinOp: Offline";
         toggle.text = "$(play)";
         toggle.tooltip = "Start PinOp";
-        toggle.command = "pinop.start";
+        toggle.command = "pin-op.start";
         return;
     }
   }

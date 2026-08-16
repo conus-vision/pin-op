@@ -40,33 +40,33 @@ describe("registerDevtoolsPanel", () => {
     ]);
     expect(sent).toEqual([
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "channel-1",
         tabId: 42,
         sourceId: "firefox-source-1",
       },
     ]);
-    runtimeListener?.({ type: "pinop.panelReady", channel: "other" });
+    runtimeListener?.({ type: "pin-op.panelReady", channel: "other" });
     runtimeListener?.({
-      type: "pinop.panelReady",
+      type: "pin-op.panelReady",
       channel: "channel-1",
     });
     onShown?.();
     expect(sent).toEqual([
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "channel-1",
         tabId: 42,
         sourceId: "firefox-source-1",
       },
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "channel-1",
         tabId: 42,
         sourceId: "firefox-source-1",
       },
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "channel-1",
         tabId: 42,
         sourceId: "firefox-source-1",
@@ -130,7 +130,7 @@ describe("startDevtoolsRuntime", () => {
     await runtime.ready;
     expect(sent).toEqual([
       {
-        type: "pinop.registerDevtools",
+        type: "pin-op.registerDevtools",
         channel: "id-1",
         tabId: 42,
         sourceId: "firefox-id-2",

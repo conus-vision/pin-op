@@ -95,7 +95,7 @@ describe("startContentScriptRuntime", () => {
     expect(publicInspectPayload).not.toContain("dom.selectionChanged");
     expect(publicInspectPayload).not.toContain("dom.getRoot");
     expect(sent[1]).toEqual({
-      type: "pinop.dom.event",
+      type: "pin-op.dom.event",
       contentSessionId: "content-session-a",
       event: {
         type: "dom.selectionChanged",
@@ -225,7 +225,7 @@ describe("startContentScriptRuntime", () => {
       },
     });
 
-    await runtimeMessages.emit({ type: "pinop.inspect.republish" });
+    await runtimeMessages.emit({ type: "pin-op.inspect.republish" });
     expect(pageSession.republishSelection).toHaveBeenCalledOnce();
 
     const onEvent = sessionOptions?.onEvent as
@@ -239,7 +239,7 @@ describe("startContentScriptRuntime", () => {
     });
     await flushAsync();
     expect(sent).toContainEqual({
-      type: "pinop.dom.event",
+      type: "pin-op.dom.event",
       contentSessionId,
       event: {
         type: "dom.hoverChanged",

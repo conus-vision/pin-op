@@ -20,7 +20,7 @@ import type { StatusAwareSourcePluginResult } from "./types.js";
 const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class CssSourcePlugin implements SourcePlugin {
-  public readonly id = "pinop.css";
+  public readonly id = "pin-op.css";
   public readonly displayName = "PinOp CSS";
   public readonly apiVersion = SOURCE_PLUGIN_API_VERSION;
   public readonly documentSelectors = [

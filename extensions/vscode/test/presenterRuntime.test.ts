@@ -338,8 +338,8 @@ describe("presenter runtime", () => {
     await harness.flush();
 
     expect(harness.registeredPluginIds).toEqual([
-      "pinop.css",
-      "pinop.scss",
+      "pin-op.css",
+      "pin-op.scss",
     ]);
     expect(harness.openDocumentCalls).toBe(0);
     expect(harness.runtime.tree.getDocumentUri()).toBe(

@@ -60,11 +60,11 @@ export class ApplicableSourcesTreeDataProvider {
           match.targetRole === "selected" ? "check" : "symbol-color",
         ),
         command: {
-          command: "pinop.revealSourceMatch",
+          command: "pin-op.revealSourceMatch",
           title: "Reveal Source Match",
           arguments: [sourceMatchId],
         },
-        contextValue: "pinop.sourceMatch",
+        contextValue: "pin-op.sourceMatch",
         sourceMatchId,
         match,
       } satisfies ApplicableSourceTreeItem;
@@ -74,7 +74,7 @@ export class ApplicableSourcesTreeDataProvider {
       description: `${diagnostic.severity} - ${diagnostic.pluginId}`,
       tooltip: `${diagnostic.code}: ${diagnostic.message}`,
       iconPath: this.createThemeIcon(diagnosticIcon(diagnostic)),
-      contextValue: "pinop.pluginDiagnostic",
+      contextValue: "pin-op.pluginDiagnostic",
       diagnostic,
     }) satisfies ApplicableSourceTreeItem);
     this.items = [...matchItems, ...diagnosticItems];

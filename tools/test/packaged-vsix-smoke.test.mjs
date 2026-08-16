@@ -125,7 +125,7 @@ test("VSIX smoke narrowly validates the isolated runtime version", async () => {
 test("validated VSIX payload installs under its canonical artifact identity", async () => {
   const installVerifiedVsix = await loadInstaller();
   await withTemporaryDirectory("pinop-vsix-install-", async (directory) => {
-    const artifactPath = join(directory, "pinop.vsix");
+    const artifactPath = join(directory, "pin-op.vsix");
     const extensionsDirectory = join(directory, "extensions");
     await mkdir(extensionsDirectory);
     writeVsix(artifactPath);
