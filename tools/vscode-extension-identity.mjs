@@ -16,6 +16,15 @@ const EXPECTED_COMMAND_TITLES = new Map([
   ["pin-op.revealSourceMatch", "Pin-op: Reveal Source Match"],
 ]);
 
+const EXPECTED_COLOR_IDS = Object.freeze([
+  "pinOp.selectedRuleBackground",
+  "pinOp.selectedRuleBorder",
+  "pinOp.parentRuleBackground",
+  "pinOp.parentRuleBorder",
+]);
+const EXPECTED_COLOR_ID_SET = new Set(EXPECTED_COLOR_IDS);
+const COLOR_ID_PATTERN = /^[A-Za-z0-9.]+$/;
+
 export function assertVsCodeExtensionIdentity(manifest, label) {
   for (const [field, expected] of Object.entries(EXPECTED_FIELDS)) {
     if (manifest?.[field] !== expected) {
@@ -47,6 +56,34 @@ export function assertVsCodeExtensionIdentity(manifest, label) {
     const command = commands.find((candidate) => candidate?.command === commandId);
     if (command?.title !== expectedTitle) {
       throw new Error(`${label} command ${commandId} has unexpected title`);
+    }
+  }
+
+  const colors = manifest.contributes?.colors;
+  if (!Array.isArray(colors)) {
+    throw new Error(`${label} has unexpected extension color IDs`);
+  }
+  const colorIds = colors.map((color) => color?.id);
+  const uniqueColorIds = new Set();
+  for (const colorId of colorIds) {
+    if (
+      typeof colorId !== "string" ||
+      colorId.startsWith(".") ||
+      !COLOR_ID_PATTERN.test(colorId)
+    ) {
+      throw new Error(`${label} has invalid color ID ${String(colorId)}`);
+    }
+    if (uniqueColorIds.has(colorId)) {
+      throw new Error(`${label} has duplicate color ID ${colorId}`);
+    }
+    uniqueColorIds.add(colorId);
+    if (!EXPECTED_COLOR_ID_SET.has(colorId)) {
+      throw new Error(`${label} has unexpected color ID ${colorId}`);
+    }
+  }
+  for (const expectedColorId of EXPECTED_COLOR_IDS) {
+    if (!uniqueColorIds.has(expectedColorId)) {
+      throw new Error(`${label} is missing color ID ${expectedColorId}`);
     }
   }
 

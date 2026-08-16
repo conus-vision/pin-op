@@ -125,25 +125,25 @@ function semanticStyles(
   return {
     primary: {
       backgroundColor: host.createThemeColor(
-        "pin-op.selectedRuleBackground",
+        "pinOp.selectedRuleBackground",
       ),
-      borderColor: host.createThemeColor("pin-op.selectedRuleBorder"),
+      borderColor: host.createThemeColor("pinOp.selectedRuleBorder"),
       borderStyle: "solid",
       borderWidth: "0 0 0 2px",
       overviewRulerColor: host.createThemeColor(
-        "pin-op.selectedRuleBorder",
+        "pinOp.selectedRuleBorder",
       ),
       overviewRulerLane: host.overviewRulerLaneRight,
     },
     context: {
       backgroundColor: host.createThemeColor(
-        "pin-op.parentRuleBackground",
+        "pinOp.parentRuleBackground",
       ),
-      borderColor: host.createThemeColor("pin-op.parentRuleBorder"),
+      borderColor: host.createThemeColor("pinOp.parentRuleBorder"),
       borderStyle: "solid",
       borderWidth: "0 0 0 2px",
       overviewRulerColor: host.createThemeColor(
-        "pin-op.parentRuleBorder",
+        "pinOp.parentRuleBorder",
       ),
       overviewRulerLane: host.overviewRulerLaneRight,
     },

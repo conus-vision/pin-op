@@ -74,7 +74,7 @@
     },
     "colors": [
       {
-        "id": "pin-op.selectedRuleBackground",
+        "id": "pinOp.selectedRuleBackground",
         "description": "Background for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#2EA04322",
@@ -83,7 +83,7 @@
         }
       },
       {
-        "id": "pin-op.selectedRuleBorder",
+        "id": "pinOp.selectedRuleBorder",
         "description": "Border for rules matching the selected DOM element.",
         "defaults": {
           "dark": "#3FB950",
@@ -92,7 +92,7 @@
         }
       },
       {
-        "id": "pin-op.parentRuleBackground",
+        "id": "pinOp.parentRuleBackground",
         "description": "Background for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#2F81F722",
@@ -101,7 +101,7 @@
         }
       },
       {
-        "id": "pin-op.parentRuleBorder",
+        "id": "pinOp.parentRuleBorder",
         "description": "Border for rules matching the immediate DOM parent.",
         "defaults": {
           "dark": "#58A6FF",

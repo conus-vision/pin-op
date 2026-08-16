@@ -6,6 +6,19 @@ import {
 import type { ResolvedSourceMatch, SourceResolution } from "../src/sourcePlugins/types.js";
 
 describe("source decorations", () => {
+  it("uses the contributed Pin-op color IDs", () => {
+    const harness = decorationHarness();
+
+    expect(harness.themeColorIds).toEqual([
+      "pinOp.selectedRuleBackground",
+      "pinOp.selectedRuleBorder",
+      "pinOp.selectedRuleBorder",
+      "pinOp.parentRuleBackground",
+      "pinOp.parentRuleBorder",
+      "pinOp.parentRuleBorder",
+    ]);
+  });
+
   it("decorates every selected range and distinct non-overlapping parent ranges", () => {
     const harness = decorationHarness();
     const shared = range(0, 0, 2, 1);
@@ -61,10 +74,14 @@ describe("source decorations", () => {
 
 function decorationHarness() {
   const disposed: DecorationRole[] = [];
+  const themeColorIds: string[] = [];
   const firstEditor = editor("file:///src/app.css");
   const secondEditor = editor("file:///src/card.scss");
   const manager = new SourceDecorationManager({
-    createThemeColor: (id) => ({ id }),
+    createThemeColor: (id) => {
+      themeColorIds.push(id);
+      return { id };
+    },
     overviewRulerLaneRight: 4,
     createDecorationType(_options, role) {
       return { role, dispose: () => disposed.push(role) };
@@ -79,6 +96,7 @@ function decorationHarness() {
     firstEditor,
     secondEditor,
     disposed,
+    themeColorIds,
     rangesFor(candidate: ReturnType<typeof editor>, role: DecorationRole) {
       return candidate.calls.filter((call) => call.type.role === role).at(-1)
         ?.ranges ?? [];

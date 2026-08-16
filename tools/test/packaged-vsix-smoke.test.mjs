@@ -40,7 +40,7 @@ const extensionBundleFixture = [
 ].join("\n");
 const legacyDisplayName = ["Pin", "Op"].join("");
 const legacyAssetStem = ["pin", "op"].join("");
-const contributedIdentityMutations = [
+const invalidContributionMutations = [
   {
     name: "activity bar icon",
     mutate(manifest) {
@@ -70,6 +70,49 @@ const contributedIdentityMutations = [
       manifest.contributes.configuration.title = legacyDisplayName;
     },
     expectedError: /unexpected configuration title/i,
+  },
+  {
+    name: "hyphenated color ID",
+    mutate(manifest) {
+      manifest.contributes.colors[0].id = "pin-op.selectedRuleBackground";
+    },
+    expectedError: /invalid color ID pin-op\.selectedRuleBackground/i,
+  },
+  {
+    name: "leading-dot color ID",
+    mutate(manifest) {
+      manifest.contributes.colors[0].id = ".pinOp.selectedRuleBackground";
+    },
+    expectedError: /invalid color ID \.pinOp\.selectedRuleBackground/i,
+  },
+  {
+    name: "noncanonical color ID",
+    mutate(manifest) {
+      manifest.contributes.colors[0].id = "pinOp.otherRuleBackground";
+    },
+    expectedError: /unexpected color ID pinOp\.otherRuleBackground/i,
+  },
+  {
+    name: "missing color ID",
+    mutate(manifest) {
+      manifest.contributes.colors.pop();
+    },
+    expectedError: /missing color ID pinOp\.parentRuleBorder/i,
+  },
+  {
+    name: "extra color ID",
+    mutate(manifest) {
+      manifest.contributes.colors.push({ id: "pinOp.extraRuleBorder" });
+    },
+    expectedError: /unexpected color ID pinOp\.extraRuleBorder/i,
+  },
+  {
+    name: "duplicate color ID",
+    mutate(manifest) {
+      manifest.contributes.colors[3].id =
+        manifest.contributes.colors[0].id;
+    },
+    expectedError: /duplicate color ID pinOp\.selectedRuleBackground/i,
   },
 ];
 
@@ -281,8 +324,45 @@ test("VSIX installation validates identity before deriving its directory", async
   }
 });
 
-for (const mutation of contributedIdentityMutations) {
-  test(`common VSIX verifier rejects legacy ${mutation.name}`, async () => {
+test("common VSIX verifier accepts reordered canonical color IDs", async () => {
+  const installVerifiedVsix = await loadInstaller();
+  await withTemporaryDirectory("pin-op-vsix-reordered-colors-", async (directory) => {
+    const artifactPath = join(directory, "reordered.vsix");
+    const extensionsDirectory = join(directory, "extensions");
+    await mkdir(extensionsDirectory);
+    const manifest = expectedManifest();
+    manifest.contributes.colors.reverse();
+    writeVsix(artifactPath, manifest);
+
+    const result = await installVerifiedVsix(artifactPath, extensionsDirectory);
+
+    assert.equal(result.extensionId, "conus-vision.pin-op");
+  });
+});
+
+test("direct VSIX verifier accepts reordered canonical color IDs", async () => {
+  await withTemporaryDirectory("pin-op-direct-vsix-reordered-colors-", async (directory) => {
+    const artifactPath = join(directory, "reordered.vsix");
+    const manifest = expectedManifest();
+    manifest.contributes.colors.reverse();
+    writeVsix(artifactPath, manifest);
+
+    const result = spawnSync(
+      process.execPath,
+      [directVerifierPath, artifactPath],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+
+    assert.equal(
+      result.status,
+      0,
+      `reordered archive was rejected:\n${result.stdout}${result.stderr}`,
+    );
+  });
+});
+
+for (const mutation of invalidContributionMutations) {
+  test(`common VSIX verifier rejects invalid ${mutation.name}`, async () => {
     const installVerifiedVsix = await loadInstaller();
     await withTemporaryDirectory("pin-op-vsix-contribution-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
@@ -300,7 +380,7 @@ for (const mutation of contributedIdentityMutations) {
     });
   });
 
-  test(`direct VSIX verifier rejects legacy ${mutation.name}`, async () => {
+  test(`direct VSIX verifier rejects invalid ${mutation.name}`, async () => {
     await withTemporaryDirectory("pin-op-direct-vsix-contribution-", async (directory) => {
       const artifactPath = join(directory, "identity.vsix");
       const manifest = expectedManifest();
@@ -514,6 +594,12 @@ function expectedManifest(overrides = {}) {
           "pin-op.sessionId": { type: "string", default: "default" },
         },
       },
+      colors: [
+        { id: "pinOp.selectedRuleBackground" },
+        { id: "pinOp.selectedRuleBorder" },
+        { id: "pinOp.parentRuleBackground" },
+        { id: "pinOp.parentRuleBorder" },
+      ],
     },
     ...overrides,
   };

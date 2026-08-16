@@ -55,8 +55,16 @@ test("VS Code manifest declares the complete Pin-op identity", () => {
   const colors = manifest.contributes.colors;
   assert.ok(Array.isArray(colors));
   assert.ok(colors.length > 0);
-  for (const color of colors) {
-    assert.match(color.id, /^pin-op\./);
+  const colorIds = colors.map(({ id }) => id);
+  assert.deepEqual(colorIds, [
+    "pinOp.selectedRuleBackground",
+    "pinOp.selectedRuleBorder",
+    "pinOp.parentRuleBackground",
+    "pinOp.parentRuleBorder",
+  ]);
+  for (const colorId of colorIds) {
+    assert.match(colorId, /^[A-Za-z0-9.]+$/);
+    assert.equal(colorId.startsWith("."), false);
   }
 });
 

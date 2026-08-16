@@ -78,12 +78,17 @@ describe("VS Code extension manifest", () => {
       id: "pin-op.applicableRules",
       name: "Applicable Sources",
     });
-    expect(manifest.contributes.colors.map(({ id }) => id)).toEqual([
-      "pin-op.selectedRuleBackground",
-      "pin-op.selectedRuleBorder",
-      "pin-op.parentRuleBackground",
-      "pin-op.parentRuleBorder",
+    const colorIds = manifest.contributes.colors.map(({ id }) => id);
+    expect(colorIds).toEqual([
+      "pinOp.selectedRuleBackground",
+      "pinOp.selectedRuleBorder",
+      "pinOp.parentRuleBackground",
+      "pinOp.parentRuleBorder",
     ]);
+    for (const colorId of colorIds) {
+      expect(colorId).toMatch(/^[A-Za-z0-9.]+$/);
+      expect(colorId.startsWith(".")).toBe(false);
+    }
     expect(manifest.contributes.configuration).toMatchObject({ title: "Pin-op" });
     const activityIcon = new URL("../resources/pin-op.svg", import.meta.url);
     expect(existsSync(activityIcon)).toBe(true);
