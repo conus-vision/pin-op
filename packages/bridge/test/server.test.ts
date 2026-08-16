@@ -2236,11 +2236,11 @@ describe("bridge server network policy", () => {
 
       const firefox = await connect(
         server.getUrl(),
-        "moz-extension://pinop-test",
+        "moz-extension://pin-op-test",
       );
       const chromium = await connect(
         server.getUrl(),
-        "chrome-extension://pinop-test",
+        "chrome-extension://pin-op-test",
       );
       const originless = await connect(server.getUrl());
       await Promise.all([

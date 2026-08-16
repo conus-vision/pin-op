@@ -28,8 +28,8 @@ describe("startBackgroundRuntime", () => {
     };
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
       storage: memoryStorage(),
       executeScript: vi.fn(async () => []),
       sendTabMessage: vi.fn(async () => undefined),
@@ -65,8 +65,8 @@ describe("startBackgroundRuntime", () => {
     const getTab = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 }));
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
       storage,
       executeScript: vi.fn(async () => []),
       sendTabMessage: vi.fn(async () => undefined),
@@ -91,7 +91,7 @@ describe("startBackgroundRuntime", () => {
         tabId: 91,
         sourceId: "firefox-source-1",
       },
-      { url: "moz-extension://pinop/dist/devtools.html" },
+      { url: "moz-extension://pin-op/dist/devtools.html" },
     );
     expect(getTab).toHaveBeenCalledWith(91);
 
@@ -117,8 +117,8 @@ describe("startBackgroundRuntime", () => {
     });
 
     const runtime = startBackgroundRuntime({
-      expectedDevtoolsUrl: "moz-extension://pinop/dist/devtools.html",
-      expectedPanelUrl: "moz-extension://pinop/dist/panel.html",
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
       storage,
       executeScript: async () => [],
       sendTabMessage: async () => undefined,
@@ -177,7 +177,7 @@ function validStoredLink(): Record<string, unknown> {
   return {
     url: "ws://127.0.0.1:48735",
     port: 48_735,
-    sessionId: "pinop",
+    sessionId: "pin-op",
     bridgeInstanceId: "11111111-1111-4111-8111-111111111111",
     authToken: "token-value",
   };

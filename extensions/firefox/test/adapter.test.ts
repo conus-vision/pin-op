@@ -20,7 +20,7 @@ vi.mock("@pin-op/browser-extension-core", () => ({
 describeBrowserAdapterContract(
   {
     platformName: "Firefox",
-    extensionOrigin: "moz-extension://pinop",
+    extensionOrigin: "moz-extension://pin-op",
     sourcePrefix: "firefox",
     extensionRoot: new URL("../", import.meta.url),
     importBackground: () => import("../src/background.js"),

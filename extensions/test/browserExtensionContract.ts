@@ -889,9 +889,9 @@ function buildPackagedExtension(
   const temporaryBase =
     process.platform === "win32" ? dirname(workspaceRoot) : tmpdir();
   const temporaryDirectory = mkdtempSync(
-    join(temporaryBase, `.pinop-${contract.platformName.toLowerCase()}-`),
+    join(temporaryBase, `.pin-op-${contract.platformName.toLowerCase()}-`),
   );
-  const archiveName = "pinop-contract.zip";
+  const archiveName = "pin-op-contract.zip";
   const archivePath = join(temporaryDirectory, archiveName);
 
   try {

@@ -20,7 +20,7 @@ vi.mock("@pin-op/browser-extension-core", () => ({
 describeBrowserAdapterContract(
   {
     platformName: "Chrome",
-    extensionOrigin: "chrome-extension://pinop",
+    extensionOrigin: "chrome-extension://pin-op",
     sourcePrefix: "chrome",
     extensionRoot: new URL("../", import.meta.url),
     importBackground: () => import("../src/background.js"),

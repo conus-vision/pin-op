@@ -45,6 +45,8 @@ const activeIdentityDocuments = await Promise.all(
 );
 const legacyProductDisplay = ["Pin", "Op"].join("");
 const legacyTechnicalSlug = ["pin", "op"].join("");
+const legacyTechnicalTitle = ["Pin", "op"].join("");
+const legacyTechnicalUpper = ["PIN", "OP"].join("");
 const legacyOriginalDisplay = ["Browser", "2", "IDE"].join("");
 const legacyOriginalSlug = ["browser", "2", "ide"].join("");
 const recordHeading = "## 0.3.0 Candidate Verification Record";
@@ -482,16 +484,16 @@ test("active documentation uses only the canonical Pin-op identity", () => {
 });
 
 for (const mutation of [
-  "pinop",
-  "Pinop",
-  "PINOP",
-  "PinOp",
-  "corepack pnpm --filter pinop build",
-  "corepack pnpm --filter Pinop build",
-  "https://github.com/conus-vision/pinop",
-  "https://pinop.conus.vision",
-  "artifacts/pinop-vscode-0.3.0.vsix",
-  "docs/pinop/setup.md",
+  legacyTechnicalSlug,
+  legacyTechnicalTitle,
+  legacyTechnicalUpper,
+  legacyProductDisplay,
+  `corepack pnpm --filter ${legacyTechnicalSlug} build`,
+  `corepack pnpm --filter ${legacyTechnicalTitle} build`,
+  `https://github.com/conus-vision/${legacyTechnicalSlug}`,
+  `https://${legacyTechnicalSlug}.conus.vision`,
+  `artifacts/${legacyTechnicalSlug}-vscode-0.3.0.vsix`,
+  `docs/${legacyTechnicalSlug}/setup.md`,
 ]) {
   test(`legacy identity detector rejects ${JSON.stringify(mutation)}`, () => {
     assert.equal(hasLegacyIdentity(mutation), true, mutation);

@@ -31,8 +31,8 @@ import type {
   PanelRegistration,
 } from "../src/windowConnectionCoordinator.js";
 
-const DEVTOOLS_URL = "moz-extension://pinop/dist/devtools.html";
-const PANEL_URL = "moz-extension://pinop/dist/panel.html";
+const DEVTOOLS_URL = "moz-extension://pin-op/dist/devtools.html";
+const PANEL_URL = "moz-extension://pin-op/dist/panel.html";
 const DEFAULT_CONTENT_SESSION_ID = "content-session-default";
 
 describe("BackgroundRouter", () => {
@@ -206,7 +206,7 @@ describe("BackgroundRouter", () => {
     const harness = createHarness({ maxPanelPorts: 2 });
     const malformed = harness.port("pin-op.devtools.bad/channel");
     const wrongPage = harness.panelPort("wrong-page", {
-      url: "moz-extension://pinop/dist/other.html?channel=wrong-page",
+      url: "moz-extension://pin-op/dist/other.html?channel=wrong-page",
     });
     const first = harness.panelPort("first");
     const duplicate = harness.panelPort("first");
