@@ -3,7 +3,6 @@ import {
   PinOpMessageSchema,
   PROTOCOL_VERSION,
   type PinOpMessage,
-  type ClientRole,
   type ErrorMessage,
   type ProtocolErrorCode,
 } from "@pin-op/protocol";
@@ -26,33 +25,39 @@ export function routeMessage(
 ): void {
   switch (message.type) {
     case "inspect":
-      if (sender.source.role === "browser" || sender.source.role === "simulator") {
-        const registration = replyRoutes.register(
-          message.sessionId,
-          message.messageId,
-          sender.id,
-        );
-        if (registration.status === "collision") {
-          sendError(
-            sender,
-            "protocol.invalidMessage",
-            "Message does not match protocol",
-          );
-          return;
-        }
+      if (
+        (sender.source.role !== "browser" &&
+          sender.source.role !== "simulator") ||
+        message.sessionId !== sender.sessionId ||
+        message.source.role !== sender.source.role ||
+        message.source.id !== sender.source.id ||
+        !supportsCapability(sender, "inspect")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
 
-        if (sendToRoles(registry, sender.sessionId, ["ide"], message) === 0) {
-          if (registration.status === "created") {
-            registration.rollback();
-          }
-          sendError(
-            sender,
-            "bridge.noIdeClient",
-            "No IDE client is connected to this session",
-          );
-        } else {
-          registration.commit();
-        }
+      const registration = replyRoutes.register(
+        message.sessionId,
+        message.messageId,
+        sender.id,
+      );
+      if (registration.status === "collision") {
+        sendInvalid(sender);
+        return;
+      }
+
+      const resolutionClients = registry
+        .findBySessionAndRole(message.sessionId, "ide")
+        .filter((client) => supportsCapability(client, "resolution"));
+      if (sendToClients(resolutionClients, message) === 0) {
+        registration.rollback();
+        sendNoIde(sender);
+        return;
+      }
+
+      if (!registration.commit()) {
+        sendInvalid(sender);
       }
       return;
     case "resolution":
@@ -406,23 +411,6 @@ export function sendMessage(
 ): boolean {
   const parsed = PinOpMessageSchema.parse(message);
   return sendConnectionSafely(client.connection, JSON.stringify(parsed));
-}
-
-function sendToRoles(
-  registry: ClientRegistry,
-  sessionId: string,
-  roles: ClientRole[],
-  message: PinOpMessage,
-): number {
-  let sent = 0;
-  for (const role of roles) {
-    for (const client of registry.findBySessionAndRole(sessionId, role)) {
-      if (sendMessage(client, message)) {
-        sent += 1;
-      }
-    }
-  }
-  return sent;
 }
 
 function sendToClients(

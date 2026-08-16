@@ -14,7 +14,7 @@ function client(
   role: "browser" | "ide" | "simulator",
   sessionId: string,
   capabilities: readonly ProtocolCapability[] =
-    role === "ide" ? ["resolution"] : [],
+    role === "ide" ? ["resolution"] : ["inspect"],
   sourceId = `${role}-source`,
 ) {
   const sent: unknown[] = [];
@@ -143,6 +143,86 @@ describe("bridge router and registry", () => {
       }),
     ]);
   });
+
+  it("does not route inspect to an IDE without resolution capability", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client("browser", "session-1", ["inspect"]);
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1", []);
+    registry.add(ideConnection);
+
+    routeMessage(registry, routes, browser, inspectMessage);
+
+    expect(ideConnection.sent).toEqual([]);
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noIdeClient" }),
+    ]);
+    expect(routes.peek("session-1", "inspect-1")).toBeUndefined();
+  });
+
+  it("fails closed when inspect admission changes before commit", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client("browser", "session-1");
+    const browser = registry.add(browserConnection);
+    const ideConnection = client("ide", "session-1");
+    ideConnection.connection.send = (payload: string) => {
+      ideConnection.sent.push(JSON.parse(payload));
+      routes.removeClient("intervening-client");
+      return true;
+    };
+    registry.add(ideConnection);
+
+    routeMessage(registry, routes, browser, inspectMessage);
+
+    expect(ideConnection.sent).toEqual([inspectMessage]);
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(routes.peek("session-1", "inspect-1")).toBeUndefined();
+  });
+
+  it.each([
+    ["session", { ...inspectMessage, sessionId: "session-2" }, ["inspect"]],
+    [
+      "source ID",
+      {
+        ...inspectMessage,
+        source: { ...inspectMessage.source, id: "forged-browser" },
+      },
+      ["inspect"],
+    ],
+    ["inspect capability", inspectMessage, []],
+  ] as const)(
+    "rejects direct inspect with mismatched sender %s",
+    (_case, message, capabilities) => {
+      const registry = new ClientRegistry();
+      const routes = new ReplyRouteRegistry();
+      const browserConnection = client(
+        "browser",
+        "session-1",
+        capabilities,
+      );
+      const browser = registry.add(browserConnection);
+      const ideConnection = client("ide", "session-1", ["resolution"]);
+      registry.add(ideConnection);
+
+      routeMessage(registry, routes, browser, message);
+
+      expect(ideConnection.sent).toEqual([]);
+      expect(browserConnection.sent).toEqual([
+        expect.objectContaining({
+          type: "error",
+          code: "protocol.invalidMessage",
+        }),
+      ]);
+      expect(routes.peek(message.sessionId, message.messageId)).toBeUndefined();
+    },
+  );
 
   it("contains recipient send failures", () => {
     const registry = new ClientRegistry();

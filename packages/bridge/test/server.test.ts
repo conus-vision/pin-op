@@ -1475,6 +1475,70 @@ describe("bridge server authenticated envelope identity", () => {
     }
   });
 
+  it("leaves inspect routes unchanged when connected IDEs lack resolution", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const replyRoutes = new ReplyRouteRegistry();
+    const server = createBridgeServer({ port: 0, authenticator, replyRoutes });
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        ide,
+        { ...hello(ideToken.value, "ide"), capabilities: [] },
+        "authenticated",
+      );
+      const browser = await connect(server.getUrl());
+      await sendJsonAndExpectType(browser, hello(browserToken), "authenticated");
+      const ideInspects = listenForJsonMessages(
+        ide,
+        (message) => message.type === "inspect",
+      );
+      const browserErrors = listenForJsonMessages(
+        browser,
+        (message) => message.type === "error",
+      );
+      const browserEntry = server.registry
+        .all()
+        .find((client) => client.source.role === "browser");
+      if (!browserEntry) {
+        throw new Error("Expected authenticated browser");
+      }
+      browserEntry.missedPongs = 1;
+
+      browser.send(JSON.stringify(inspectMessage("incapable-ide")));
+      browser.send(
+        JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          type: "pong",
+          messageId: "inspect-capability-barrier",
+          pingMessageId: "ping-1",
+          sentAt: STARTED_AT.toISOString(),
+          metadata: {},
+        }),
+      );
+      await eventually(() => expect(browserEntry.missedPongs).toBe(0));
+
+      expect(ideInspects.messages).toEqual([]);
+      expect(browserErrors.messages).toEqual([
+        expect.objectContaining({
+          type: "error",
+          code: "bridge.noIdeClient",
+        }),
+      ]);
+      expect(
+        replyRoutes.peek(SESSION_ID, "inspect-incapable-ide"),
+      ).toBeUndefined();
+      ideInspects.dispose();
+      browserErrors.dispose();
+      await Promise.all([closeSocket(browser), closeSocket(ide)]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("delivers resolutions only to the originating authenticated client", async () => {
     const authenticator = createAuthenticator();
     const browserAToken = acceptedToken(authenticator);
