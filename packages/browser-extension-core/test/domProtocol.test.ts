@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { utf8ByteLength } from "@pinop/protocol";
+import { utf8ByteLength } from "@pin-op/protocol";
 import {
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,

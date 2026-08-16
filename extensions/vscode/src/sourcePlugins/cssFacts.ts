@@ -1,9 +1,9 @@
-import type { SelectionSnapshot } from "@pinop/plugin-api";
+import type { SelectionSnapshot } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
   type RuntimeFact,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { declarationEvidenceFromFact } from "./declarationFingerprint.js";
 import type { CssDeclarationEvidence } from "./types.js";
 

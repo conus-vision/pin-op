@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import type { ClientRole } from "@pinop/protocol";
+import type { ClientRole } from "@pin-op/protocol";
 
 export interface AuthorizedToken {
   readonly sessionId: string;

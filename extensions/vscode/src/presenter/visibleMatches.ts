@@ -1,4 +1,4 @@
-import type { SourceDocument, SourcePosition } from "@pinop/plugin-api";
+import type { SourceDocument, SourcePosition } from "@pin-op/plugin-api";
 import type { ResolvedSourceMatch } from "../sourcePlugins/types.js";
 
 export interface VisibleMatchResult {

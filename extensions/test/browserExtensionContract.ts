@@ -538,15 +538,15 @@ export function describeBrowserAdapterContract(
       );
 
       const forbiddenSource = `
-        import { DomTreeController } from "@pinop/browser-extension-core";
-        import { PageOverlay } from "@pinop/browser-extension-core/pageOverlay.js";
+        import { DomTreeController } from "@pin-op/browser-extension-core";
+        import { PageOverlay } from "@pin-op/browser-extension-core/pageOverlay.js";
         import type { ResultFormatter } from "./resultFormatter.js";
       `;
       expect(
         adapterImportBoundaryViolations("forbidden.ts", forbiddenSource),
       ).toEqual([
         "forbidden.ts imports unsupported shared symbol DomTreeController",
-        "forbidden.ts imports disallowed module @pinop/browser-extension-core/pageOverlay.js",
+        "forbidden.ts imports disallowed module @pin-op/browser-extension-core/pageOverlay.js",
         "forbidden.ts imports disallowed module ./resultFormatter.js",
       ]);
     });
@@ -982,7 +982,7 @@ function openingTag(panel: string, id: string): string {
   return match?.[0] ?? "";
 }
 
-const SHARED_RUNTIME_MODULE = "@pinop/browser-extension-core";
+const SHARED_RUNTIME_MODULE = "@pin-op/browser-extension-core";
 const PLATFORM_API_MODULE = "webextension-polyfill";
 const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "BackgroundMessageSender",

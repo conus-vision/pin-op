@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { PinOpApi } from "@pinop/plugin-api";
+import type { PinOpApi } from "@pin-op/plugin-api";
 import {
   BridgeClient,
   ResolutionClientRouter,

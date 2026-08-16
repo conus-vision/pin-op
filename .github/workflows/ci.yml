@@ -65,7 +65,7 @@ jobs:
         run: corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
 
       - name: Test Chrome manifest and adapter
-        run: corepack pnpm --filter pinop-chrome test -- manifest.test.ts adapter.test.ts
+        run: corepack pnpm --filter pin-op-chrome test -- manifest.test.ts adapter.test.ts
 
       - name: Package release artifacts
         run: corepack pnpm package

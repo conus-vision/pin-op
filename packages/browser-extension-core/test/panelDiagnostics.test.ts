@@ -1,7 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";
 

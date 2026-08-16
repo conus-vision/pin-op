@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { SourceNavigationController } from "../src/sourceNavigationController.js";
 

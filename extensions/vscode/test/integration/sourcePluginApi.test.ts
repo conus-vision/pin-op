@@ -6,7 +6,7 @@ suite("PinOp external source plugin API", () => {
     const fixture = vscode.extensions.getExtension<{
       readonly registered: boolean;
       readonly coreApiVersion: number;
-    }>("conus-vision.pinop-source-plugin-fixture");
+    }>("conus-vision.pin-op-source-plugin-fixture");
 
     assert.ok(
       fixture,

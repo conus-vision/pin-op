@@ -2,7 +2,7 @@ import type {
   SourceResolutionStrategy,
   SourceUriResolution,
   SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import type { ActiveDocumentSourceKind } from "./types.js";
 
 export interface UriLike {

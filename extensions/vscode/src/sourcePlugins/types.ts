@@ -2,8 +2,8 @@ import type {
   PluginDiagnostic,
   SourceMatch,
   SourcePluginResult,
-} from "@pinop/plugin-api";
-import type { ResolutionStatus } from "@pinop/protocol";
+} from "@pin-op/plugin-api";
+import type { ResolutionStatus } from "@pin-op/protocol";
 
 export interface ResolvedSourceMatch extends SourceMatch {
   readonly pluginId: string;

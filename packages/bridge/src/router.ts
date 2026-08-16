@@ -7,7 +7,7 @@ import {
   type ErrorMessage,
   type ProtocolCapability,
   type ProtocolErrorCode,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   sendConnectionSafely,
   supportsCapability,

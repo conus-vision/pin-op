@@ -2,7 +2,7 @@ import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isDomResponseForRequest,

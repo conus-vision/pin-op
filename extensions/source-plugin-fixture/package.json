@@ -1,5 +1,5 @@
 {
-  "name": "pinop-source-plugin-fixture",
+  "name": "pin-op-source-plugin-fixture",
   "displayName": "PinOp Source Plugin Fixture",
   "publisher": "conus-vision",
   "version": "0.1.0",
@@ -10,7 +10,7 @@
   },
   "main": "./dist/extension.cjs",
   "extensionDependencies": [
-    "conus-vision.pinop"
+    "conus-vision.pin-op"
   ],
   "activationEvents": [
     "onLanguage:pinop-fixture"
@@ -30,7 +30,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@pinop/plugin-api": "workspace:*"
+    "@pin-op/plugin-api": "workspace:*"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

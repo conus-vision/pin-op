@@ -1,4 +1,4 @@
-import type { SourcePosition, SourceRange } from "@pinop/plugin-api";
+import type { SourcePosition, SourceRange } from "@pin-op/plugin-api";
 import type { ResolvedSourceMatch } from "../sourcePlugins/types.js";
 import type { DisposableLike } from "./decorations.js";
 

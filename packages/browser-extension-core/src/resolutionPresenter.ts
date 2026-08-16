@@ -2,7 +2,7 @@ import type {
   ResolutionDiagnosticCode,
   ResolutionMessage,
   ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 export type ResolutionPresentationKind =
   | "idle"

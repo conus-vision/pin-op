@@ -3,7 +3,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
   PinOpMessageSchema,
   PROTOCOL_VERSION,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import inspectCardFixture from "../fixtures/inspect-card.json";
 import {
   buildInspectMessage,

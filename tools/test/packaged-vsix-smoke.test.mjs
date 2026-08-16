@@ -133,16 +133,16 @@ test("validated VSIX payload installs under its canonical artifact identity", as
     const result = await installVerifiedVsix(artifactPath, extensionsDirectory);
     const expectedDirectory = join(
       extensionsDirectory,
-      "conus-vision.pinop-0.3.0",
+      "conus-vision.pin-op-0.3.0",
     );
 
     assert.deepEqual(result, {
       extensionDirectory: expectedDirectory,
-      extensionId: "conus-vision.pinop",
+      extensionId: "conus-vision.pin-op",
       version: "0.3.0",
     });
     assert.deepEqual(await readdir(extensionsDirectory), [
-      "conus-vision.pinop-0.3.0",
+      "conus-vision.pin-op-0.3.0",
     ]);
     assert.deepEqual(
       JSON.parse(await readFile(join(expectedDirectory, "package.json"), "utf8")),
@@ -240,7 +240,7 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
     ],
     [
       "name",
-      manifestXml.replace('Id="pinop"', 'Id="other"'),
+      manifestXml.replace('Id="pin-op"', 'Id="other"'),
       /extension\.vsixmanifest name other does not match extension\/package\.json/,
     ],
     [
@@ -389,7 +389,7 @@ async function loadRuntimeOptionsResolver() {
 
 function expectedManifest(overrides = {}) {
   return {
-    name: "pinop",
+    name: "pin-op",
     publisher: "conus-vision",
     version: "0.3.0",
     main: "./dist/extension.cjs",
@@ -434,7 +434,7 @@ function expectedVsixManifestXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Language="en-US" Id="pinop" Version="0.3.0" Publisher="conus-vision" />
+    <Identity Language="en-US" Id="pin-op" Version="0.3.0" Publisher="conus-vision" />
   </Metadata>
   <Installation><InstallationTarget Id="Microsoft.VisualStudio.Code"/></Installation>
   <Dependencies/>

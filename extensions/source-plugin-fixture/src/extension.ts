@@ -3,7 +3,7 @@ import {
   SOURCE_PLUGIN_API_VERSION,
   type PinOpApi,
   type SourcePlugin,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 
 const plugin: SourcePlugin = {
   id: "pinop.fixture",
@@ -35,7 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<{
   readonly coreApiVersion: number;
 }> {
   const core = vscode.extensions.getExtension<PinOpApi>(
-    "conus-vision.pinop",
+    "conus-vision.pin-op",
   );
   if (!core) throw new Error("PinOp core extension is unavailable");
 

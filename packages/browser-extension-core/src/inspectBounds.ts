@@ -2,7 +2,7 @@ import {
   INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
   utf8ByteLength,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 const INSPECT_ENVELOPE_RESERVE_BYTES = 256 * 1024;
 const URL_VALIDATION_BASE = "https://pinop.invalid/";

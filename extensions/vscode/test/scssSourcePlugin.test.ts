@@ -6,8 +6,8 @@ import type {
   SourceDocument,
   SourceMatch,
   SourceWorkspace,
-} from "@pinop/plugin-api";
-import type { CssRuleFact, InspectTarget } from "@pinop/protocol";
+} from "@pin-op/plugin-api";
+import type { CssRuleFact, InspectTarget } from "@pin-op/protocol";
 import { ScssSourcePlugin } from "../src/sourcePlugins/scssSourcePlugin.js";
 import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SourceDocument } from "@pinop/plugin-api";
-import { INSPECT_LIMITS, type CssRuleFact } from "@pinop/protocol";
+import type { SourceDocument } from "@pin-op/plugin-api";
+import { INSPECT_LIMITS, type CssRuleFact } from "@pin-op/protocol";
 import {
   findRulesByFingerprint,
   normalizeSelector,

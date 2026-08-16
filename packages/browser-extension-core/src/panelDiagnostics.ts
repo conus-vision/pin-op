@@ -3,7 +3,7 @@ import type {
   ResolutionDiagnosticCode,
   ResolutionMessage,
   ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type { BrowserConnectionState } from "./bridgeClient.js";
 
 export interface PanelErrorSummary {

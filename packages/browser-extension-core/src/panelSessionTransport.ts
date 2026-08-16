@@ -5,7 +5,7 @@ import {
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   isDomResponseForRequest,
   isSelectionRevision,

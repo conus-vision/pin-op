@@ -39,14 +39,14 @@ describe("VS Code extension manifest", () => {
     expect(manifest.main).toBe("./dist/extension.cjs");
     expect(manifest.activationEvents).toContain("onStartupFinished");
     expect(manifest).toMatchObject({
-      name: "pinop",
+      name: "pin-op",
       displayName: "PinOp",
       description: "Connect browser DevTools to your source code.",
       publisher: "conus-vision",
       version: "0.3.0",
       license: "MIT",
-      repository: "https://github.com/conus-vision/PinOp.git",
-      homepage: "https://pinop.conus.vision",
+      repository: "https://github.com/conus-vision/pin-op.git",
+      homepage: "https://pin-op.conus.vision",
       icon: "resources/pinop.png",
       extensionKind: ["ui"],
     });

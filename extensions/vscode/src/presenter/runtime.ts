@@ -5,11 +5,11 @@ import type {
   SourcePosition,
   SourceRange,
   SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import type {
   InspectMessage,
   SourceNavigateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type {
   ResolutionInput,
   SourceNavigationStateInput,

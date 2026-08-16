@@ -1,5 +1,5 @@
 {
-  "name": "@pinop/bridge",
+  "name": "@pin-op/bridge",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,13 +13,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @pinop/protocol build && vitest run",
+    "test": "pnpm --filter @pin-op/protocol build && vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm run test:types:check",
     "test:types:check": "tsc --noEmit -p test/types.tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@pinop/protocol": "workspace:*",
+    "@pin-op/protocol": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

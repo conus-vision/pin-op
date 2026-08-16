@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { SourceRange } from "@pinop/plugin-api";
+import type { SourceRange } from "@pin-op/plugin-api";
 import type { SourceResolution } from "../sourcePlugins/types.js";
 
 export type DecorationRole = "primary" | "context";

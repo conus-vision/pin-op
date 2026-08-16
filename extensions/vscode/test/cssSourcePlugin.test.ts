@@ -4,12 +4,12 @@ import type {
   SelectionSnapshot,
   SourceDocument,
   SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
   type InspectTarget,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { collectCssFacts } from "../../../packages/browser-extension-core/src/collectCssFacts.js";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
 import {

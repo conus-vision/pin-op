@@ -6,12 +6,12 @@ import {
   type SourcePlugin,
   type SourceRange,
   type SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
   type SourceNavigateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type {
   ResolutionInput,
   SourceNavigationStateInput,

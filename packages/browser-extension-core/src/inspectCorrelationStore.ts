@@ -4,7 +4,7 @@ import {
   SourceNavigationStateMessageSchema,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
 
 export const DEFAULT_MAX_INSPECT_CORRELATIONS = 256;

@@ -9,7 +9,7 @@ import {
   type SourcePlugin,
   type SourceRange,
   type SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 import type {
   SourcePluginDispatch,

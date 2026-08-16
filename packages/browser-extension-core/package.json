@@ -1,5 +1,5 @@
 {
-  "name": "@pinop/browser-extension-core",
+  "name": "@pin-op/browser-extension-core",
   "version": "0.3.0",
   "private": true,
   "type": "module",
@@ -13,14 +13,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @pinop/protocol build && vitest run && pnpm run build && node test/public-export.mjs",
-    "test:public": "pnpm --filter @pinop/protocol build && pnpm run build && node test/public-export.mjs",
+    "test": "pnpm --filter @pin-op/protocol build && vitest run && pnpm run build && node test/public-export.mjs",
+    "test:public": "pnpm --filter @pin-op/protocol build && pnpm run build && node test/public-export.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm run test:types:check",
     "test:types:check": "tsc --noEmit -p test/types.tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@pinop/protocol": "workspace:*",
+    "@pin-op/protocol": "workspace:*",
     "lucide": "0.468.0",
     "zod": "^3.25.76"
   }

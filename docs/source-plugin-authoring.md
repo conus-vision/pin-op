@@ -10,7 +10,7 @@ API is intentionally general enough for framework and template integrations.
 ## Extension Setup
 
 Declare the PinOp core extension as a dependency. The canonical extension
-identifier is `conus-vision.pinop`.
+identifier is `conus-vision.pin-op`.
 
 ```json
 {
@@ -19,12 +19,12 @@ identifier is `conus-vision.pinop`.
   "version": "0.1.0",
   "engines": { "vscode": "^1.85.0" },
   "main": "./dist/extension.cjs",
-  "extensionDependencies": ["conus-vision.pinop"],
+  "extensionDependencies": ["conus-vision.pin-op"],
   "activationEvents": ["onLanguage:twig"]
 }
 ```
 
-During repository development, depend on `@pinop/plugin-api` with
+During repository development, depend on `@pin-op/plugin-api` with
 `workspace:*`. After the first package release, use its published compatible
 semver range. Keep `vscode` external when bundling. The API package contains
 plain TypeScript contracts and can be imported by tests without starting VS
@@ -44,7 +44,7 @@ import {
   type PinOpApi,
   type SourceMatch,
   type SourcePlugin,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 
 const twigPlugin: SourcePlugin = {
   id: "example.twig-source",
@@ -118,7 +118,7 @@ export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   const core = vscode.extensions.getExtension<PinOpApi>(
-    "conus-vision.pinop",
+    "conus-vision.pin-op",
   );
   if (!core) throw new Error("PinOp core extension is unavailable");
 
@@ -323,8 +323,8 @@ stronger confidence.
 
 ## Versioning And Distribution
 
-The repository's `0.1.0` `@pinop/plugin-api` and
-`@pinop/protocol` packages are currently private workspace packages. The
+The repository's `0.1.0` `@pin-op/plugin-api` and
+`@pin-op/protocol` packages are currently private workspace packages. The
 fixture proves the cross-extension runtime boundary, but an independently
 published Marketplace plugin cannot consume them from npm yet.
 
@@ -354,6 +354,6 @@ corepack pnpm test:integration
 ```
 
 That command builds the core and fixture, launches VS Code 1.124.2, activates
-the external fixture through `conus-vision.pinop`, and verifies API
+the external fixture through `conus-vision.pin-op`, and verifies API
 version and registration. Node.js 22 or newer is required by the integration
 test runner.

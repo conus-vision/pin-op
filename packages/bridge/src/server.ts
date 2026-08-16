@@ -6,7 +6,7 @@ import {
   PROTOCOL_VERSION,
   type PinOpMessage,
   type ProtocolErrorCode,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   ClientRegistry,
   createGuardedWebSocketConnection,

@@ -1,5 +1,5 @@
-import type { SourcePosition, SourceRange } from "@pinop/plugin-api";
-import type { SourceNavigateMessage } from "@pinop/protocol";
+import type { SourcePosition, SourceRange } from "@pin-op/plugin-api";
+import type { SourceNavigateMessage } from "@pin-op/protocol";
 import type { SourceNavigationStateSender } from "../bridgeClient.js";
 import type { ResolvedSourceMatch } from "../sourcePlugins/types.js";
 import type { DisposableLike } from "./decorations.js";

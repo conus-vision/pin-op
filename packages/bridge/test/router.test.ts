@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type PinOpMessage,
   type ProtocolCapability,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import * as clientRegistry from "../src/clientRegistry.js";
 import { ReplyRouteRegistry } from "../src/replyRouteRegistry.js";

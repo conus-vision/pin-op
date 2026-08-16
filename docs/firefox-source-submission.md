@@ -16,7 +16,7 @@ The root `package.json` pins `pnpm@9.15.0` in `packageManager`, and the committe
 corepack enable
 corepack pnpm --version
 corepack pnpm install --frozen-lockfile
-corepack pnpm --filter pinop-firefox run build
+corepack pnpm --filter pin-op-firefox run build
 ```
 
 The version command must print `9.15.0`. The build output is written to `extensions/firefox/dist/` and contains the bundled scripts, DevTools panel assets, `pinop.svg`, and the `icons/pinop-*.png` extension icons.
@@ -24,7 +24,7 @@ The version command must print `9.15.0`. The build output is written to `extensi
 ## Create The Submission ZIP
 
 ```sh
-corepack pnpm --filter pinop-firefox run package
+corepack pnpm --filter pin-op-firefox run package
 ```
 
 The unsigned extension is written to `artifacts/pinop-firefox-0.3.0.zip`. The package command repeats the Firefox build before invoking the repository-pinned `web-ext@10.4.0` with its source and test exclusions.

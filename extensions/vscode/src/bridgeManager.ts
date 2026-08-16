@@ -4,7 +4,7 @@ import {
   type BridgeServer,
   type BridgeServerOptions,
   type LinkAuthenticatorOptions,
-} from "@pinop/bridge";
+} from "@pin-op/bridge";
 import type { BridgeConfiguration } from "./config.js";
 
 export const MANAGED_PORT_START = 48_735;

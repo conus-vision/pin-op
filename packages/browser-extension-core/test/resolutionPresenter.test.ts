@@ -3,7 +3,7 @@ import {
   type ResolutionDiagnosticCode,
   type ResolutionMessage,
   type ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
   ResolutionPresenter,

@@ -13,11 +13,11 @@ import type {
   SourceDocument,
   SourcePosition,
   SourceRange,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { BoundedLruCache } from "./boundedLruCache.js";
 import {
   parseBrowserRulePath,

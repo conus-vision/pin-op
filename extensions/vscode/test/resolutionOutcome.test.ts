@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RESOLUTION_LIMITS,
   type ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   reduceResolutionOutcome,
   toProtocolResolution,

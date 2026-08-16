@@ -2,7 +2,7 @@ import browser from "webextension-polyfill";
 import {
   sanitizeErrorMessage,
   startDevtoolsRuntime,
-} from "@pinop/browser-extension-core";
+} from "@pin-op/browser-extension-core";
 
 startDevtoolsRuntime({
   inspectedTabId: browser.devtools.inspectedWindow.tabId,

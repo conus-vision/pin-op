@@ -1,12 +1,12 @@
 {
-  "name": "@pinop/simulator",
+  "name": "@pin-op/simulator",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/sendInspect.js",
   "types": "./dist/sendInspect.d.ts",
   "bin": {
-    "pinop-simulator": "./dist/sendInspect.js"
+    "pin-op-simulator": "./dist/sendInspect.js"
   },
   "exports": {
     ".": {
@@ -16,17 +16,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @pinop/protocol build && pnpm --filter @pinop/bridge build && vitest run",
+    "test": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/bridge build && vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
     "send": "pnpm run build && node dist/sendInspect.js send"
   },
   "dependencies": {
-    "@pinop/protocol": "workspace:*",
+    "@pin-op/protocol": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@pinop/bridge": "workspace:*",
+    "@pin-op/bridge": "workspace:*",
     "@types/ws": "^8.5.12"
   }
 }

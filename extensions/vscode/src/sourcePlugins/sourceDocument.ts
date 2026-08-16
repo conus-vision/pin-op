@@ -1,4 +1,4 @@
-import type { SourceDocument } from "@pinop/plugin-api";
+import type { SourceDocument } from "@pin-op/plugin-api";
 
 export interface TextDocumentLike {
   readonly uri: { toString(): string };

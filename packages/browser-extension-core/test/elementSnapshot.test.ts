@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INSPECT_LIMITS,
   InspectSubjectSchema,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { createElementSnapshot } from "../src/elementSnapshot.js";
 
 describe("createElementSnapshot", () => {

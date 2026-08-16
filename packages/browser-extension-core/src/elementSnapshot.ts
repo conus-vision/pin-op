@@ -1,7 +1,7 @@
 import {
   INSPECT_LIMITS,
   type InspectSubject,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   boundedPageUrl,
   consumeJsonBudget,

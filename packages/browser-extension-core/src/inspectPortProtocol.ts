@@ -1,7 +1,7 @@
 import {
   RESOLUTION_LIMITS,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type {
   DomEvent,
   DomRequest,

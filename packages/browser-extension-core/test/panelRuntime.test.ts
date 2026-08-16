@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";

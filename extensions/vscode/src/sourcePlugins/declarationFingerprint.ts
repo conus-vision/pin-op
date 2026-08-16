@@ -1,4 +1,4 @@
-import type { CssRuleFact } from "@pinop/protocol";
+import type { CssRuleFact } from "@pin-op/protocol";
 import type {
   CssDeclarationEvidence,
   NormalizedDeclaration,

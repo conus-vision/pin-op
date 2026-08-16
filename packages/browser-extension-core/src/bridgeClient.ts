@@ -10,7 +10,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 export class BrowserProtocolError extends Error {
   public readonly name = "BrowserProtocolError";

@@ -153,7 +153,7 @@ corepack pnpm test:integration
 corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
-corepack pnpm --filter pinop-chrome test -- manifest.test.ts adapter.test.ts
+corepack pnpm --filter pin-op-chrome test -- manifest.test.ts adapter.test.ts
 corepack pnpm package
 git diff --check
 git diff --exit-code

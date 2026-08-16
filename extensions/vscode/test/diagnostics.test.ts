@@ -3,7 +3,7 @@ import {
   PROTOCOL_VERSION,
   type ErrorMessage,
   type InspectMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   DiagnosticsTracker,
   writeBridgeDiagnostics,

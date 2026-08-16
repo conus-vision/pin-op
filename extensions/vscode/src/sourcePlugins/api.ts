@@ -2,7 +2,7 @@ import {
   SOURCE_PLUGIN_API_VERSION,
   type PinOpApi,
   type SourcePlugin,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import type { SourcePluginRegistry } from "./registry.js";
 
 export function createPinOpApi(

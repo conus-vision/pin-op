@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type {
   PluginDiagnostic,
   SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   SourceMapConsumer,
   type RawSourceMap,

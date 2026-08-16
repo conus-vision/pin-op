@@ -4,7 +4,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,

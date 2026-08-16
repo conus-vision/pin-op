@@ -4,7 +4,7 @@ import {
   startContentScriptRuntime,
   type ContentInspectPort,
   type ContentScriptDocument,
-} from "@pinop/browser-extension-core";
+} from "@pin-op/browser-extension-core";
 
 startContentScriptRuntime({
   globalScope: globalThis,

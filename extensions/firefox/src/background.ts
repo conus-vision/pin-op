@@ -4,7 +4,7 @@ import {
   startBackgroundRuntime,
   type BackgroundMessageSender,
   type BackgroundRuntimePort,
-} from "@pinop/browser-extension-core";
+} from "@pin-op/browser-extension-core";
 
 startBackgroundRuntime({
   expectedDevtoolsUrl: browser.runtime.getURL("dist/devtools.html"),

@@ -3,11 +3,11 @@ import type {
   SelectionSnapshot,
   SourceDocument,
   SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   RESOLUTION_LIMITS,
   type InspectMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   adaptSourceDocument,
   type TextDocumentLike,

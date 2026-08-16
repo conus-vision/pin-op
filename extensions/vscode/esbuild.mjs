@@ -3,7 +3,7 @@ import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { PROTOCOL_VERSION } from "@pinop/protocol";
+import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import {
   RUNTIME_METADATA_FILENAME,
   serializeRuntimeMetadata,

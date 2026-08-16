@@ -3,7 +3,7 @@ import {
   sanitizeErrorMessage,
   startPanelRuntime,
   type PanelInspectPort,
-} from "@pinop/browser-extension-core";
+} from "@pin-op/browser-extension-core";
 
 startPanelRuntime({
   locationSearch: location.search,

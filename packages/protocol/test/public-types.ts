@@ -6,18 +6,18 @@ import type {
   SourceNavigateMessage,
   SourceNavigationDirection,
   SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 // @ts-expect-error Legacy reference envelopes are not part of protocol v5.
-type RemovedReferencesMessage = import("@pinop/protocol").ReferencesMessage;
+type RemovedReferencesMessage = import("@pin-op/protocol").ReferencesMessage;
 // @ts-expect-error Legacy command envelopes are not part of protocol v5.
-type RemovedCommandMessage = import("@pinop/protocol").CommandMessage;
+type RemovedCommandMessage = import("@pin-op/protocol").CommandMessage;
 // @ts-expect-error Legacy open-source commands are not part of protocol v5.
-type RemovedOpenSourceCommandMessage = import("@pinop/protocol").OpenSourceCommandMessage;
+type RemovedOpenSourceCommandMessage = import("@pin-op/protocol").OpenSourceCommandMessage;
 // @ts-expect-error Legacy highlight commands are not part of protocol v5.
-type RemovedHighlightCommandMessage = import("@pinop/protocol").HighlightElementCommandMessage;
+type RemovedHighlightCommandMessage = import("@pin-op/protocol").HighlightElementCommandMessage;
 // @ts-expect-error Legacy source references are not publicly exported.
-type RemovedSourceReference = import("@pinop/protocol").SourceReference;
+type RemovedSourceReference = import("@pin-op/protocol").SourceReference;
 
 const emptyMetadata: EmptyMetadata = {};
 

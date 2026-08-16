@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   PinOpMessageSchema,
   PROTOCOL_VERSION,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   sendConnectionSafely,
   terminateConnectionSafely,

@@ -531,7 +531,7 @@ export function validateVsixArchive(archive, filename) {
   if (manifest.publisher !== "conus-vision") {
     throw new Error(`${filename} has unexpected extension publisher`);
   }
-  if (manifest.name !== "pinop") {
+  if (manifest.name !== "pin-op") {
     throw new Error(`${filename} has unexpected extension name`);
   }
   assertVersion(manifest.version, `${filename} extension`, VERSION);

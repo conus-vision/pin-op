@@ -7,11 +7,11 @@ import {
   type SourceMatch,
   type SourcePlugin,
   type SourceWorkspace,
-} from "@pinop/plugin-api";
+} from "@pin-op/plugin-api";
 import {
   JsonObjectSchema,
   type ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type {
   PluginResolutionCandidate,
   ResolvedPluginDiagnostic,

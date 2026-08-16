@@ -6,14 +6,14 @@ core can register a `SourcePlugin` through the public API. It contributes the
 `pinop.fixture`.
 
 Its manifest depends on the canonical core extension ID
-`conus-vision.pinop`. Activation calls the core extension, compares
+`conus-vision.pin-op`. Activation calls the core extension, compares
 its API with `SOURCE_PLUGIN_API_VERSION`, and disposes the result of
 `registerSourcePlugin` with the fixture extension context.
 
 Build the fixture from the repository root:
 
 ```powershell
-corepack pnpm --filter source-plugin-fixture build
+corepack pnpm --filter pin-op-source-plugin-fixture build
 ```
 
 Run the real cross-extension test with Node.js 22 or newer:

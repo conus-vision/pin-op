@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DomRequest } from "../src/domProtocol.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";

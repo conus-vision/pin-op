@@ -3,7 +3,7 @@ import {
   type ResolutionDiagnosticCode,
   type ResolutionMessage,
   type ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type {
   PluginResolutionCandidate,
   ResolvedPluginDiagnostic,

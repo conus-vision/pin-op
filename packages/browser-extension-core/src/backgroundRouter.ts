@@ -7,7 +7,7 @@ import {
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   BrowserProtocolError,
   type InspectPayload,

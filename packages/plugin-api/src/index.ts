@@ -2,7 +2,7 @@ import type {
   InspectContext,
   InspectTarget,
   JsonObject,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 export const SOURCE_PLUGIN_API_VERSION = 1 as const;
 

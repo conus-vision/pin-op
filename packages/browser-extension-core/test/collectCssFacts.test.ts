@@ -3,7 +3,7 @@ import {
   INSPECT_LIMITS,
   RuntimeFactSchema,
   type CssRuleFact,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { collectCssFacts } from "../src/collectCssFacts.js";
 
 describe("collectCssFacts", () => {

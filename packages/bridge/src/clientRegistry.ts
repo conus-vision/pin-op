@@ -3,7 +3,7 @@ import type {
   ClientRole,
   ClientSource,
   ProtocolCapability,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import WebSocket from "ws";
 
 export interface BridgeConnection {

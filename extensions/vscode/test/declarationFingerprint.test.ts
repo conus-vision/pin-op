@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CssRuleFact } from "@pinop/protocol";
+import type { CssRuleFact } from "@pin-op/protocol";
 import {
   declarationEvidenceFromFact,
   declarationFingerprint,

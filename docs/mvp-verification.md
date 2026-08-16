@@ -136,7 +136,7 @@ corepack pnpm test:integration
 corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
-corepack pnpm --filter pinop-chrome test -- manifest.test.ts adapter.test.ts
+corepack pnpm --filter pin-op-chrome test -- manifest.test.ts adapter.test.ts
 corepack pnpm package
 git diff --check
 ```
@@ -157,8 +157,8 @@ to launch Chrome without one of those display paths.
 The focused browser-core suite can be useful while iterating:
 
 ```powershell
-corepack pnpm --filter @pinop/protocol build
-corepack pnpm --filter @pinop/browser-extension-core exec vitest run test/windowWorkflow.test.ts test/pageOverlay.test.ts test/domTreeProvider.test.ts test/domTreeController.test.ts
+corepack pnpm --filter @pin-op/protocol build
+corepack pnpm --filter @pin-op/browser-extension-core exec vitest run test/windowWorkflow.test.ts test/pageOverlay.test.ts test/domTreeProvider.test.ts test/domTreeController.test.ts
 ```
 
 ## Build And Serve The Fixture

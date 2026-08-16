@@ -4,7 +4,7 @@ import type {
   ProtocolErrorCode,
   ResolutionDiagnosticCode,
   ResolutionStatus,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type { ConnectionState } from "./bridgeClient.js";
 import type {
   BridgeManagerState,

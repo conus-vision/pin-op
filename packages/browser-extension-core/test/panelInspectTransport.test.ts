@@ -3,7 +3,7 @@ import {
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,

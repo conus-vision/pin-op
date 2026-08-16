@@ -1,4 +1,4 @@
-import { BridgeInstanceIdSchema } from "@pinop/protocol";
+import { BridgeInstanceIdSchema } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
   LinkAuthenticator,

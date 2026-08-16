@@ -1,4 +1,4 @@
-import { utf8ByteLength } from "@pinop/protocol";
+import { utf8ByteLength } from "@pin-op/protocol";
 import {
   parseDomStableLocator,
   type DomStableLocator,

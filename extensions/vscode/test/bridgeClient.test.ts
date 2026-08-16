@@ -2,7 +2,7 @@ import {
   PROTOCOL_VERSION,
   SourceNavigationStateMessageSchema,
   type SourceNavigateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeClient,

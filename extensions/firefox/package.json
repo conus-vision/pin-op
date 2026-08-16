@@ -1,10 +1,10 @@
 {
-  "name": "pinop-firefox",
+  "name": "pin-op-firefox",
   "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build:deps": "pnpm --filter @pinop/protocol build && pnpm --filter @pinop/browser-extension-core build",
+    "build:deps": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/browser-extension-core build",
     "build": "pnpm run build:deps && tsc --noEmit -p tsconfig.json && node ./esbuild.mjs",
     "package": "pnpm run build && web-ext build --overwrite-dest --artifacts-dir ../../artifacts --filename pinop-firefox-0.3.0.zip --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs src test \"src/**\" \"test/**\" && node ../../tools/normalize-browser-archive.mjs ../../artifacts/pinop-firefox-0.3.0.zip",
     "test": "pnpm run build:deps && vitest run",
@@ -12,8 +12,8 @@
     "lint": "pnpm run build:deps && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@pinop/browser-extension-core": "workspace:*",
-    "@pinop/protocol": "workspace:*",
+    "@pin-op/browser-extension-core": "workspace:*",
+    "@pin-op/protocol": "workspace:*",
     "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {

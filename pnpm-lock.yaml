@@ -29,10 +29,10 @@ importers:
 
   extensions/chrome:
     dependencies:
-      '@pinop/browser-extension-core':
+      '@pin-op/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       webextension-polyfill:
@@ -51,10 +51,10 @@ importers:
 
   extensions/firefox:
     dependencies:
-      '@pinop/browser-extension-core':
+      '@pin-op/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       webextension-polyfill:
@@ -73,7 +73,7 @@ importers:
 
   extensions/source-plugin-fixture:
     dependencies:
-      '@pinop/plugin-api':
+      '@pin-op/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
     devDependencies:
@@ -89,13 +89,13 @@ importers:
 
   extensions/vscode:
     dependencies:
-      '@pinop/bridge':
+      '@pin-op/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
-      '@pinop/plugin-api':
+      '@pin-op/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       postcss:
@@ -147,7 +147,7 @@ importers:
 
   packages/bridge:
     dependencies:
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../protocol
       ws:
@@ -160,7 +160,7 @@ importers:
 
   packages/browser-extension-core:
     dependencies:
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../protocol
       lucide:
@@ -172,7 +172,7 @@ importers:
 
   packages/plugin-api:
     dependencies:
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../protocol
 
@@ -184,14 +184,14 @@ importers:
 
   tools/simulator:
     dependencies:
-      '@pinop/protocol':
+      '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       ws:
         specifier: ^8.18.0
         version: 8.21.0
     devDependencies:
-      '@pinop/bridge':
+      '@pin-op/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
       '@types/ws':

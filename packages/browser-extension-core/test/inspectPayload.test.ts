@@ -5,7 +5,7 @@ import {
   InspectContextSchema,
   InspectTargetSchema,
   PROTOCOL_VERSION,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import { createInspectPayload } from "../src/inspectPayload.js";

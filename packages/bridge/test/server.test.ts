@@ -5,7 +5,7 @@ import {
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
   type ClientRole,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";

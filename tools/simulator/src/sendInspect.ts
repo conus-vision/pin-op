@@ -11,7 +11,7 @@ import {
   type PinOpMessage,
   type InspectMessage,
   type LinkAcceptedMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 const DEFAULT_SOURCE_ID = "pinop-simulator";
 const DEFAULT_TIMEOUT_MS = 2_000;

@@ -5,8 +5,8 @@ import {
   type SourcePlugin,
   type SourcePluginContext,
   type SourceUriResolution,
-} from "@pinop/plugin-api";
-import type { ResolutionStatus } from "@pinop/protocol";
+} from "@pin-op/plugin-api";
+import type { ResolutionStatus } from "@pin-op/protocol";
 import { targetCssFacts } from "./cssFacts.js";
 import {
   canFingerprintFallback,

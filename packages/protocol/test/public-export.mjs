@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import * as protocolExports from "@pinop/protocol";
+import * as protocolExports from "@pin-op/protocol";
 import {
   AuthenticatedMessageSchema,
   BridgeInstanceIdSchema,
@@ -22,7 +22,7 @@ import {
   SourceNavigationStateMessageSchema,
   UnlinkMessageSchema,
   parseMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 const ping = {
   protocolVersion: PROTOCOL_VERSION,

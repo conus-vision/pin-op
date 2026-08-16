@@ -2,7 +2,7 @@ import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import {
   createPanelIcons,
   PanelController,

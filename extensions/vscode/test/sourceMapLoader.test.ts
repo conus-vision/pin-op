@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SourceMapConsumer, SourceMapGenerator } from "source-map";
-import type { SourceWorkspace } from "@pinop/plugin-api";
+import type { SourceWorkspace } from "@pin-op/plugin-api";
 import {
   SOURCE_MAP_CACHE_LIMIT,
   SourceMapLoader,

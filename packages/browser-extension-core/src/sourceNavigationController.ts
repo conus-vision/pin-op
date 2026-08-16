@@ -2,7 +2,7 @@ import type {
   ResolutionMessage,
   SourceNavigationDirection,
   SourceNavigationStateMessage,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 import type { PanelSourceNavigateCommand } from "./inspectPortProtocol.js";
 
 export interface SourceNavigationViewModel {

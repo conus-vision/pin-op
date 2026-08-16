@@ -2,7 +2,7 @@ import {
   isManagedBridgePort,
   MANAGED_BRIDGE_PORT_END,
   MANAGED_BRIDGE_PORT_START,
-} from "@pinop/protocol";
+} from "@pin-op/protocol";
 
 export interface ParsedLinkCode {
   readonly value: string;
