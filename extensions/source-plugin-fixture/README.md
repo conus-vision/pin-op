@@ -1,14 +1,14 @@
 # Pin-op Source Plugin Fixture
 
 This private VS Code extension proves that an extension outside the Pin-op
-core can register a `SourcePlugin` through the public API. It contributes the
-`pin-op-fixture` language for `.pin-op-fixture` files and registers plugin ID
-`pin-op.fixture`.
+core can register a `SourcePlugin` and `RefreshClassifier` through public API
+version 2. It contributes the `pin-op-fixture` language for `.pin-op-fixture`
+files and registers IDs `pin-op.fixture` and `pin-op.fixture.refresh`.
 
 Its manifest depends on the canonical core extension ID
 `conus-vision.pin-op`. Activation calls the core extension, compares
-its API with `SOURCE_PLUGIN_API_VERSION`, and disposes the result of
-`registerSourcePlugin` with the fixture extension context.
+its API with `SOURCE_PLUGIN_API_VERSION`, and disposes both registrations with
+the fixture extension context.
 
 Build the fixture from the repository root:
 

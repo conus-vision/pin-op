@@ -19,6 +19,7 @@ import {
   type PresenterRuntimeHost,
 } from "./presenter/runtime.js";
 import { replacePrimarySelection } from "./presenter/sourceNavigator.js";
+import { RefreshClassifierRegistry } from "./refresh/refreshClassifierRegistry.js";
 import {
   ExtensionRuntimeController,
   registerRuntimeCommands,
@@ -39,9 +40,11 @@ export async function activate(
   diagnostics = new DiagnosticsTracker();
   const resolutionClients = new ResolutionClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
+  const refreshClassifierRegistry = new RefreshClassifierRegistry();
 
   const runtime = createPresenterRuntime({
     host: createPresenterHost(),
+    refreshClassifierRegistry,
     diagnostics,
     sendResolution: (resolution) =>
       resolutionClients.sendResolution(resolution),

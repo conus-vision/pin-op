@@ -209,8 +209,8 @@ describe("SourcePluginRegistry", () => {
     );
     expect(() =>
       registry.register({
-        ...plugin({ id: "future" }),
-        apiVersion: 2 as typeof SOURCE_PLUGIN_API_VERSION,
+        ...plugin({ id: "legacy" }),
+        apiVersion: 1 as typeof SOURCE_PLUGIN_API_VERSION,
       }),
     ).toThrow(/unsupported API version/);
 

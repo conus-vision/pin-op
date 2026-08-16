@@ -15,6 +15,7 @@ import type {
   SourceNavigationStateInput,
 } from "../bridgeClient.js";
 import type { DiagnosticsTracker } from "../diagnostics.js";
+import { RefreshClassifierRegistry } from "../refresh/refreshClassifierRegistry.js";
 import { createPinOpApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
@@ -80,6 +81,7 @@ export interface PresenterRuntimeHost
 export interface PresenterRuntimeOptions {
   readonly host: PresenterRuntimeHost;
   readonly registry?: SourcePluginRegistry;
+  readonly refreshClassifierRegistry?: RefreshClassifierRegistry;
   readonly workspace?: SourceWorkspace;
   readonly diagnostics?: Pick<
     DiagnosticsTracker,
@@ -104,7 +106,9 @@ export function createPresenterRuntime(
 ): PresenterRuntime {
   const { host } = options;
   const registry = options.registry ?? new SourcePluginRegistry();
-  const api = createPinOpApi(registry);
+  const refreshClassifierRegistry = options.refreshClassifierRegistry ??
+    new RefreshClassifierRegistry();
+  const api = createPinOpApi(registry, refreshClassifierRegistry);
   const builtIns: Disposable[] = [
     registry.register(new CssSourcePlugin()),
     registry.register(new ScssSourcePlugin()),

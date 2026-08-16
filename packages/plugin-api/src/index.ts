@@ -4,7 +4,7 @@ import type {
   JsonObject,
 } from "@pin-op/protocol";
 
-export const SOURCE_PLUGIN_API_VERSION = 1 as const;
+export const SOURCE_PLUGIN_API_VERSION = 2 as const;
 
 export interface Disposable {
   dispose(): void;
@@ -107,7 +107,20 @@ export interface SourcePlugin {
   resolve(context: SourcePluginContext): Promise<SourcePluginResult>;
 }
 
+export type RefreshMode = "styles" | "reload";
+
+export interface RefreshClassifierInput {
+  readonly uri: string;
+  readonly languageId: string;
+}
+
+export interface RefreshClassifier {
+  readonly id: string;
+  classify(input: RefreshClassifierInput): RefreshMode | undefined;
+}
+
 export interface PinOpApi {
   readonly apiVersion: typeof SOURCE_PLUGIN_API_VERSION;
   registerSourcePlugin(plugin: SourcePlugin): Disposable;
+  registerRefreshClassifier(classifier: RefreshClassifier): Disposable;
 }

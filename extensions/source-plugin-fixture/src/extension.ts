@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import {
   SOURCE_PLUGIN_API_VERSION,
   type PinOpApi,
+  type RefreshClassifier,
   type SourcePlugin,
 } from "@pin-op/plugin-api";
 
@@ -30,8 +31,14 @@ const plugin: SourcePlugin = {
   },
 };
 
+const refreshClassifier: RefreshClassifier = {
+  id: "pin-op.fixture.refresh",
+  classify: () => undefined,
+};
+
 export async function activate(context: vscode.ExtensionContext): Promise<{
-  readonly registered: boolean;
+  readonly sourcePluginRegistered: boolean;
+  readonly refreshClassifierRegistered: boolean;
   readonly coreApiVersion: number;
 }> {
   const core = vscode.extensions.getExtension<PinOpApi>(
@@ -44,5 +51,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<{
     throw new Error(`Unsupported Pin-op API version: ${api.apiVersion}`);
   }
   context.subscriptions.push(api.registerSourcePlugin(plugin));
-  return { registered: true, coreApiVersion: api.apiVersion };
+  context.subscriptions.push(
+    api.registerRefreshClassifier(refreshClassifier),
+  );
+  return {
+    sourcePluginRegistered: true,
+    refreshClassifierRegistered: true,
+    coreApiVersion: api.apiVersion,
+  };
 }

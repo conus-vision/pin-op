@@ -18,6 +18,7 @@ import type {
 } from "../src/bridgeClient.js";
 import { SourceDecorationManager } from "../src/presenter/decorations.js";
 import { createPresenterRuntime } from "../src/presenter/runtime.js";
+import { RefreshClassifierRegistry } from "../src/refresh/refreshClassifierRegistry.js";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 
 describe("presenter runtime", () => {
@@ -361,6 +362,24 @@ describe("presenter runtime", () => {
     expect(harness.runtime.tree.getMatches()).toEqual([]);
   });
 
+  it("registers refresh classifiers into the injected registry", () => {
+    const refreshClassifierRegistry = new RefreshClassifierRegistry();
+    const harness = runtimeHarness({
+      activeLanguageId: "fixture",
+      refreshClassifierRegistry,
+    });
+
+    harness.runtime.api.registerRefreshClassifier({
+      id: "fixture.refresh",
+      classify: () => "reload",
+    });
+
+    expect(refreshClassifierRegistry.classify({
+      uri: "file:///workspace/app.fixture",
+      languageId: "fixture",
+    })).toBe("reload");
+  });
+
   it("disposes coordinator, commands, tree, decorations, and built-ins", () => {
     const harness = runtimeHarness({ activeLanguageId: "css" });
     harness.runtime.dispose();
@@ -381,6 +400,7 @@ describe("presenter runtime", () => {
 
 function runtimeHarness(options: {
   readonly activeLanguageId: string;
+  readonly refreshClassifierRegistry?: RefreshClassifierRegistry;
   readonly sendError?: Error;
   readonly navigationSendError?: Error;
   readonly diagnosticRecordError?: Error;
@@ -417,6 +437,7 @@ function runtimeHarness(options: {
   let primaryCursor: SourcePosition = { line: 0, character: 0 };
   const runtime = createPresenterRuntime({
     registry,
+    refreshClassifierRegistry: options.refreshClassifierRegistry,
     workspace: workspace(),
     diagnostics: {
       recordResolution: (...arguments_) => {

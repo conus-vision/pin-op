@@ -131,10 +131,52 @@ export async function activate(
 }
 ```
 
-`SOURCE_PLUGIN_API_VERSION` is currently `1`. Reject an incompatible core API
+`SOURCE_PLUGIN_API_VERSION` is currently `2`. Reject an incompatible core API
 before registration. Plugin IDs must be globally unique; duplicate IDs fail at
 registration. Dispose the returned registration with the extension context so
 the core can clear results when the extension is deactivated.
+
+## Classify Refreshes
+
+API version 2 also lets an extension classify the refresh needed after one of
+its source files changes. A classifier is separate from a source resolver and
+has its own globally unique ID:
+
+```ts
+import type {
+  RefreshClassifier,
+  RefreshMode,
+} from "@pin-op/plugin-api";
+
+const twigRefreshClassifier: RefreshClassifier = {
+  id: "example.twig-refresh",
+  classify({ languageId }): RefreshMode | undefined {
+    return languageId === "twig" ? "reload" : undefined;
+  },
+};
+
+context.subscriptions.push(
+  api.registerRefreshClassifier(twigRefreshClassifier),
+);
+```
+
+Classification is synchronous. The immutable input contains only the canonical
+document `uri` and `languageId`; it provides no source text, document handle,
+workspace service, or asynchronous boundary. Keep classification deterministic
+and do not perform file reads, network requests, parsing, or other I/O.
+
+Core classifies `.css`, `.scss`, `.sass`, and `.less` path suffixes as
+`styles`. It classifies `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, and
+`.php` as `reload`. Suffix matching is case-insensitive and uses the parsed URI
+pathname, so query strings and fragments do not affect the result. Invalid URIs
+and other suffixes have no built-in classification.
+
+All built-in and registered results are combined. Any `reload` result wins;
+otherwise any `styles` result wins; otherwise the result is `undefined`.
+Registration order does not change that precedence. One throwing classifier
+does not block built-ins or other classifiers. Dispose the classifier
+registration with the extension context to stop future classification; core
+built-ins remain active.
 
 ## Resolution Contract
 

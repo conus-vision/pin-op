@@ -4,7 +4,8 @@ import * as vscode from "vscode";
 suite("Pin-op external source plugin API", () => {
   test("activates the fixture through the public core API", async () => {
     const fixture = vscode.extensions.getExtension<{
-      readonly registered: boolean;
+      readonly sourcePluginRegistered: boolean;
+      readonly refreshClassifierRegistered: boolean;
       readonly coreApiVersion: number;
     }>("conus-vision.pin-op-source-plugin-fixture");
 
@@ -13,7 +14,8 @@ suite("Pin-op external source plugin API", () => {
       "fixture extension must be loaded as a development extension",
     );
     const exported = await fixture.activate();
-    assert.equal(exported.registered, true);
-    assert.equal(exported.coreApiVersion, 1);
+    assert.equal(exported.sourcePluginRegistered, true);
+    assert.equal(exported.refreshClassifierRegistered, true);
+    assert.equal(exported.coreApiVersion, 2);
   });
 });
