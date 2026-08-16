@@ -30,6 +30,11 @@ interface StoredRoute {
   matchIds: Set<string>;
 }
 
+interface RemovalAuthority {
+  revoked: boolean;
+  readonly connectionIds: readonly string[];
+}
+
 export interface ReplyRouteRegistryOptions {
   readonly maxRoutesPerClient?: number;
 }
@@ -39,6 +44,8 @@ export class ReplyRouteRegistry {
   private readonly routes = new Map<string, Map<string, StoredRoute>>();
   private readonly routesByClient = new Map<string, Map<string, undefined>>();
   private readonly routesByIde = new Map<string, Set<string>>();
+  private readonly removalAuthorities = new Map<symbol, RemovalAuthority>();
+  private readonly removalAuthoritiesByClient = new Map<string, Set<symbol>>();
 
   constructor(options: ReplyRouteRegistryOptions = {}) {
     const maxRoutesPerClient = options.maxRoutesPerClient ?? 256;
@@ -89,25 +96,37 @@ export class ReplyRouteRegistry {
     this.routes.set(sessionId, nextSessionRoutes);
     const createdRouteKey = this.routeKey(sessionId, inspectMessageId);
     clientRoutes.set(createdRouteKey, undefined);
+    if (evictedRoute) {
+      this.trackRemovalAuthority(admissionId, [
+        evictedRoute.originConnectionId,
+        ...(evictedRoute.ideConnectionId
+          ? [evictedRoute.ideConnectionId]
+          : []),
+      ]);
+    }
     let settled = false;
     let rolledBack = false;
     return {
       status: "created",
-      commit() {
+      commit: () => {
         settled = true;
+        this.releaseRemovalAuthority(admissionId);
       },
       rollback: () => {
         if (settled || rolledBack) {
           return;
         }
         rolledBack = true;
+        const restorationAllowed =
+          !this.removalAuthorities.get(admissionId)?.revoked;
         this.rollbackCreatedRoute(
           createdRouteKey,
           connectionId,
           admissionId,
-          evictedRoute,
+          restorationAllowed ? evictedRoute : undefined,
           previousClientRouteKeys,
         );
+        this.releaseRemovalAuthority(admissionId);
       },
     };
   }
@@ -214,6 +233,7 @@ export class ReplyRouteRegistry {
   }
 
   removeClient(connectionId: string): void {
+    this.revokeRemovalAuthorities(connectionId);
     const routeKeys = new Set([
       ...(this.routesByClient.get(connectionId)?.keys() ?? []),
       ...(this.routesByIde.get(connectionId) ?? []),
@@ -227,6 +247,8 @@ export class ReplyRouteRegistry {
     this.routes.clear();
     this.routesByClient.clear();
     this.routesByIde.clear();
+    this.removalAuthorities.clear();
+    this.removalAuthoritiesByClient.clear();
   }
 
   private getClientRoutes(connectionId: string): Map<string, undefined> {
@@ -249,6 +271,50 @@ export class ReplyRouteRegistry {
     const created = new Set<string>();
     this.routesByIde.set(connectionId, created);
     return created;
+  }
+
+  private trackRemovalAuthority(
+    admissionId: symbol,
+    connectionIds: readonly string[],
+  ): void {
+    const uniqueConnectionIds = [...new Set(connectionIds)];
+    this.removalAuthorities.set(admissionId, {
+      revoked: false,
+      connectionIds: uniqueConnectionIds,
+    });
+    for (const connectionId of uniqueConnectionIds) {
+      const admissions =
+        this.removalAuthoritiesByClient.get(connectionId) ?? new Set<symbol>();
+      admissions.add(admissionId);
+      this.removalAuthoritiesByClient.set(connectionId, admissions);
+    }
+  }
+
+  private revokeRemovalAuthorities(connectionId: string): void {
+    for (const admissionId of this.removalAuthoritiesByClient.get(
+      connectionId,
+    ) ?? []) {
+      const authority = this.removalAuthorities.get(admissionId);
+      if (authority) {
+        authority.revoked = true;
+      }
+    }
+  }
+
+  private releaseRemovalAuthority(admissionId: symbol): void {
+    const authority = this.removalAuthorities.get(admissionId);
+    if (!authority) {
+      return;
+    }
+
+    this.removalAuthorities.delete(admissionId);
+    for (const connectionId of authority.connectionIds) {
+      const admissions = this.removalAuthoritiesByClient.get(connectionId);
+      admissions?.delete(admissionId);
+      if (admissions?.size === 0) {
+        this.removalAuthoritiesByClient.delete(connectionId);
+      }
+    }
   }
 
   private createRegistration(
@@ -276,6 +342,8 @@ export class ReplyRouteRegistry {
     if (storedRoute === undefined || !sessionRoutes) {
       return;
     }
+
+    this.releaseRemovalAuthority(storedRoute.admissionId);
 
     sessionRoutes.delete(inspectMessageId);
     if (sessionRoutes.size === 0) {

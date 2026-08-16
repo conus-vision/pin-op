@@ -283,4 +283,45 @@ describe("reply route registry", () => {
     routes.removeClient("ide-1");
     expect(routes.get("session-1", "inspect-a")).toBeUndefined();
   });
+
+  it("does not restore an evicted route after its IDE owner is removed", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 4);
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      4,
+      ["match-a"],
+    );
+
+    const registration = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    routes.removeClient("ide-1");
+    registration.rollback();
+
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+  });
+
+  it("does not restore an evicted route after its browser origin is removed", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 4);
+
+    const registration = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    routes.removeClient("browser-1");
+    registration.rollback();
+
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+  });
 });

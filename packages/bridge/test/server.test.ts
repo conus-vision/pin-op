@@ -1374,7 +1374,7 @@ describe("bridge server authenticated envelope identity", () => {
   );
 
   it.each(["browser", "simulator"] as const)(
-    "routes multiplexed inspect source IDs from one authenticated %s socket",
+    "rejects a spoofed inspect source ID from an authenticated %s",
     async (role) => {
       const authenticator = createAuthenticator();
       const senderToken = acceptedToken(authenticator, role);
@@ -1396,29 +1396,84 @@ describe("bridge server authenticated envelope identity", () => {
           "authenticated",
         );
 
-        const firstRouted = nextJsonMessageBeforeClose(ide, sender, "inspect");
-        sender.send(JSON.stringify(inspectMessage("panel-101", role)));
-        await expect(firstRouted).resolves.toMatchObject({
-          type: "inspect",
-          sessionId: SESSION_ID,
-          source: { role, id: "panel-101" },
-        });
+        const routed = listenForJsonMessages(
+          ide,
+          (message) => message.type === "inspect",
+        );
+        const errors = listenForJsonMessages(
+          sender,
+          (message) => message.type === "error",
+        );
+        const closed = once(sender, "close");
+        sender.send(JSON.stringify(inspectMessage("spoofed", role, "spoofed")));
+        await ideErrorBarrier(ide, `spoofed-inspect-${role}`);
 
-        const secondRouted = nextJsonMessageBeforeClose(ide, sender, "inspect");
-        sender.send(JSON.stringify(inspectMessage("panel-102", role)));
-        await expect(secondRouted).resolves.toMatchObject({
-          type: "inspect",
-          sessionId: SESSION_ID,
-          source: { role, id: "panel-102" },
-        });
-
-        expect(sender.readyState).toBe(WebSocket.OPEN);
-        await Promise.all([closeSocket(sender), closeSocket(ide)]);
+        expect(routed.messages).toEqual([]);
+        await closed;
+        expect(errors.messages).toEqual([
+          expect.objectContaining({
+            type: "error",
+            code: "protocol.invalidMessage",
+            details: { fatal: true },
+          }),
+        ]);
+        routed.dispose();
+        errors.dispose();
+        await closeSocket(ide);
       } finally {
         await server.stop();
       }
     },
   );
+
+  it("rejects inspect from a browser without the inspect capability", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
+      const browser = await connect(server.getUrl());
+      await sendJsonAndExpectType(
+        browser,
+        { ...hello(browserToken), capabilities: [] },
+        "authenticated",
+      );
+      const routed = listenForJsonMessages(
+        ide,
+        (message) => message.type === "inspect",
+      );
+      const errors = listenForJsonMessages(
+        browser,
+        (message) => message.type === "error",
+      );
+      const closed = once(browser, "close");
+      browser.send(JSON.stringify(inspectMessage()));
+      await ideErrorBarrier(ide, "incapable-inspect-browser");
+
+      expect(routed.messages).toEqual([]);
+      await closed;
+      expect(errors.messages).toEqual([
+        expect.objectContaining({
+          type: "error",
+          code: "protocol.invalidMessage",
+          details: { fatal: true },
+        }),
+      ]);
+      routed.dispose();
+      errors.dispose();
+      await closeSocket(ide);
+    } finally {
+      await server.stop();
+    }
+  });
 
   it("delivers resolutions only to the originating authenticated client", async () => {
     const authenticator = createAuthenticator();
@@ -2466,13 +2521,14 @@ function unlink(messageId = "unlink-1") {
 }
 
 function inspectMessage(
-  sourceId = "browser-source",
+  markerId = "browser-source",
   role: "browser" | "simulator" = "browser",
+  sourceId = `${role}-source`,
 ) {
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
-    messageId: `inspect-${sourceId}`,
+    messageId: `inspect-${markerId}`,
     sessionId: SESSION_ID,
     source: { ...source(role), id: sourceId },
     ideHighlightEnabled: true,
