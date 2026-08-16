@@ -13,7 +13,8 @@ const { ClientRegistry } = clientRegistry;
 function client(
   role: "browser" | "ide" | "simulator",
   sessionId: string,
-  capabilities: readonly ProtocolCapability[] = [],
+  capabilities: readonly ProtocolCapability[] =
+    role === "ide" ? ["resolution"] : [],
   sourceId = `${role}-source`,
 ) {
   const sent: unknown[] = [];
@@ -39,6 +40,7 @@ const inspectMessage: Extract<PinOpMessage, { type: "inspect" }> = {
   messageId: "inspect-1",
   sessionId: "session-1",
   source: { role: "browser", id: "browser-source", metadata: {} },
+  ideHighlightEnabled: true,
   targets: [
     {
       role: "selected",
@@ -276,6 +278,7 @@ describe("bridge router and registry", () => {
     registry.add(incapableIdeConnection);
     registry.add(otherIdeConnection);
     routes.register("session-1", "inspect-a", browserA.id).commit();
+    routes.claimResolution("session-1", "inspect-a", ideA.id, 4);
 
     const navigate = {
       protocolVersion: PROTOCOL_VERSION,
@@ -290,7 +293,7 @@ describe("bridge router and registry", () => {
     routeMessage(registry, routes, browserA, navigate);
 
     expect(ideAConnection.sent).toEqual([navigate]);
-    expect(ideBConnection.sent).toEqual([navigate]);
+    expect(ideBConnection.sent).toEqual([]);
     expect(incapableIdeConnection.sent).toEqual([]);
     expect(otherIdeConnection.sent).toEqual([]);
     expect(browserAConnection.sent).toEqual([]);
@@ -318,7 +321,7 @@ describe("bridge router and registry", () => {
     expect(otherBrowserConnection.sent).toEqual([]);
     expect(simulatorConnection.sent).toEqual([]);
     expect(ideAConnection.sent).toEqual([navigate]);
-    expect(ideBConnection.sent).toEqual([navigate]);
+    expect(ideBConnection.sent).toEqual([]);
     expect(incapableIdeConnection.sent).toEqual([]);
     expect(otherIdeConnection.sent).toEqual([]);
   });
@@ -332,6 +335,7 @@ describe("bridge router and registry", () => {
     const ideConnection = client("ide", "session-1", ["source-navigation"]);
     const ide = registry.add(ideConnection);
     routes.register("session-1", "inspect-a", browser.id).commit();
+    routes.claimResolution("session-1", "inspect-a", ide.id, 1);
 
     routeMessage(registry, routes, ide, {
       protocolVersion: PROTOCOL_VERSION,
@@ -428,8 +432,9 @@ describe("bridge router and registry", () => {
     );
     const browser = registry.add(browserConnection);
     const incapableIdeConnection = client("ide", "session-1");
-    registry.add(incapableIdeConnection);
+    const incapableIde = registry.add(incapableIdeConnection);
     routes.register("session-1", "inspect-a", browser.id).commit();
+    routes.claimResolution("session-1", "inspect-a", incapableIde.id, 1);
 
     routeMessage(registry, routes, browser, {
       protocolVersion: PROTOCOL_VERSION,
@@ -459,8 +464,9 @@ describe("bridge router and registry", () => {
     const browser = registry.add(browserConnection);
     const ideConnection = client("ide", "session-1", ["source-navigation"]);
     ideConnection.connection.send = () => false;
-    registry.add(ideConnection);
+    const ide = registry.add(ideConnection);
     routes.register("session-1", "inspect-a", browser.id).commit();
+    routes.claimResolution("session-1", "inspect-a", ide.id, 1);
 
     routeMessage(registry, routes, browser, {
       protocolVersion: PROTOCOL_VERSION,
@@ -706,6 +712,7 @@ describe("bridge router and registry", () => {
     const ideConnection = client("ide", "session-1", ["source-navigation"]);
     const ide = registry.add(ideConnection);
     routes.register("session-1", "inspect-a", browser.id).commit();
+    routes.claimResolution("session-1", "inspect-a", ide.id, 1);
 
     routeMessage(registry, routes, ide, {
       protocolVersion: PROTOCOL_VERSION,
@@ -812,6 +819,7 @@ describe("bridge router and registry", () => {
     const ideConnection = client("ide", "session-1", ["source-navigation"]);
     const ide = registry.add(ideConnection);
     routes.register("session-1", "inspect-a", browser.id).commit();
+    routes.claimResolution("session-1", "inspect-a", ide.id, 1);
 
     routeMessage(registry, routes, ide, {
       protocolVersion: PROTOCOL_VERSION,

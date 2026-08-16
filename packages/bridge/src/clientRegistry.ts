@@ -9,7 +9,7 @@ import WebSocket from "ws";
 export interface BridgeConnection {
   send(payload: string): boolean;
   terminate(): void;
-  close?: () => void;
+  close?: (code?: number, reason?: string) => void;
 }
 
 export function createGuardedWebSocketConnection(
@@ -36,7 +36,7 @@ export function createGuardedWebSocketConnection(
     terminate() {
       terminateWebSocket(socket);
     },
-    close() {
+    close(code, reason) {
       if (
         socket.readyState === WebSocket.CLOSING ||
         socket.readyState === WebSocket.CLOSED
@@ -45,7 +45,7 @@ export function createGuardedWebSocketConnection(
       }
 
       try {
-        socket.close();
+        socket.close(code, reason);
       } catch {
         terminateWebSocket(socket);
       }

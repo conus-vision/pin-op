@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import {
   INSPECT_ENVELOPE_MAX_BYTES,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
   PROTOCOL_VERSION,
+  protocolMismatchReason,
   type ClientRole,
 } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
@@ -1557,6 +1559,18 @@ describe("bridge server authenticated envelope identity", () => {
           messageId: "inspect-navigation-origin",
         });
 
+        const routedResolution = nextJsonMessageOfType(sender, "resolution");
+        ide.send(
+          JSON.stringify({
+            ...resolutionMessage("inspect-navigation-origin"),
+            resolutionGeneration: 2,
+          }),
+        );
+        await expect(routedResolution).resolves.toMatchObject({
+          type: "resolution",
+          resolutionGeneration: 2,
+        });
+
         const navigate = sourceNavigateMessage({
           inspectMessageId: "inspect-navigation-origin",
         });
@@ -1597,6 +1611,18 @@ describe("bridge server authenticated envelope identity", () => {
       await expect(routedInspect).resolves.toMatchObject({
         type: "inspect",
         messageId: "inspect-navigation-state-origin",
+      });
+
+      const routedResolution = nextJsonMessageOfType(browser, "resolution");
+      ide.send(
+        JSON.stringify({
+          ...resolutionMessage("inspect-navigation-state-origin"),
+          resolutionGeneration: 2,
+        }),
+      );
+      await expect(routedResolution).resolves.toMatchObject({
+        type: "resolution",
+        resolutionGeneration: 2,
       });
 
       const navigationState = sourceNavigationStateMessage({
@@ -2155,14 +2181,14 @@ describe("bridge server network policy", () => {
 
     try {
       const atLimit = await connect(server.getUrl());
-      const acceptedAtLimit = nextJsonMessageOfType(atLimit, "error");
+      const receivedAtLimit: string[] = [];
+      atLimit.on("message", (data) => receivedAtLimit.push(data.toString()));
       const atLimitClosed = once(atLimit, "close");
       atLimit.send(Buffer.alloc(BRIDGE_MAX_PAYLOAD_BYTES, 0x61));
-      await expect(acceptedAtLimit).resolves.toMatchObject({
-        type: "error",
-        code: "protocol.invalidMessage",
-      });
-      await atLimitClosed;
+      const [atLimitCode, atLimitReason] = await atLimitClosed;
+      expect(atLimitCode).toBe(PROTOCOL_MISMATCH_CLOSE_CODE);
+      expect(atLimitReason.toString()).toBe(protocolMismatchReason());
+      expect(receivedAtLimit).toEqual([]);
 
       const overLimit = await connect(server.getUrl());
       const received: unknown[] = [];
@@ -2449,6 +2475,7 @@ function inspectMessage(
     messageId: `inspect-${sourceId}`,
     sessionId: SESSION_ID,
     source: { ...source(role), id: sourceId },
+    ideHighlightEnabled: true,
     targets: [
       {
         role: "selected",

@@ -184,4 +184,103 @@ describe("reply route registry", () => {
 
     expect(routes.resolve("session-1", "inspect-a")).toBe("browser-1");
   });
+
+  it("claims one authoritative IDE and advances only its generation", () => {
+    const routes = new ReplyRouteRegistry();
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+
+    expect(
+      routes.claimResolution("session-1", "inspect-a", "ide-1", 2),
+    ).toMatchObject({
+      originConnectionId: "browser-1",
+      ideConnectionId: "ide-1",
+      resolutionGeneration: 2,
+    });
+    expect(
+      routes.claimResolution("session-1", "inspect-a", "ide-2", 2),
+    ).toBeUndefined();
+    expect(
+      routes.claimResolution("session-1", "inspect-a", "ide-1", 1),
+    ).toBeUndefined();
+    expect(
+      routes.claimResolution("session-1", "inspect-a", "ide-1", 3),
+    ).toMatchObject({
+      ideConnectionId: "ide-1",
+      resolutionGeneration: 3,
+    });
+  });
+
+  it("clears match IDs on generation advance and replaces them atomically", () => {
+    const routes = new ReplyRouteRegistry();
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 2);
+
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["a", "b"],
+    );
+    expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(
+      new Set(["a", "b"]),
+    );
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["c"],
+    );
+    expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(
+      new Set(["c"]),
+    );
+
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 3);
+    expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(new Set());
+  });
+
+  it("removes routes through both origin and owner reverse indexes", () => {
+    const routes = new ReplyRouteRegistry();
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 1);
+    routes.register("session-1", "inspect-b", "browser-2").commit();
+    routes.claimResolution("session-1", "inspect-b", "ide-2", 1);
+
+    routes.removeClient("ide-1");
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeDefined();
+
+    routes.removeClient("browser-2");
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+  });
+
+  it("restores authority metadata and both indexes after LRU rollback", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 4);
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      4,
+      ["match-a"],
+    );
+
+    const registration = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    registration.rollback();
+
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      originConnectionId: "browser-1",
+      ideConnectionId: "ide-1",
+      resolutionGeneration: 4,
+      matchIds: new Set(["match-a"]),
+    });
+    routes.removeClient("ide-1");
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+  });
 });

@@ -4,6 +4,9 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   PinOpMessageSchema,
   PROTOCOL_VERSION,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
+  probeProtocolVersion,
+  protocolMismatchReason,
   type PinOpMessage,
   type ProtocolErrorCode,
 } from "@pin-op/protocol";
@@ -393,10 +396,10 @@ function handleConnection(
     return client;
   };
 
-  const closeConnection = (): void => {
+  const closeConnection = (code?: number, reason?: string): void => {
     closing = true;
     clearHandshakeTimer();
-    connection.close?.();
+    connection.close?.(code, reason);
   };
 
   socket.on("message", (data) => {
@@ -404,10 +407,20 @@ function handleConnection(
       return;
     }
 
+    const payload = data.toString();
+    const versionProbe = probeProtocolVersion(payload);
+    if (!versionProbe.compatible) {
+      closeConnection(
+        PROTOCOL_MISMATCH_CLOSE_CODE,
+        protocolMismatchReason(versionProbe.receivedVersion),
+      );
+      return;
+    }
+
     let message: PinOpMessage;
 
     try {
-      message = PinOpMessageSchema.parse(JSON.parse(data.toString()));
+      message = PinOpMessageSchema.parse(JSON.parse(payload));
     } catch {
       sendSocketError(
         connection,
@@ -584,7 +597,29 @@ function isAllowedInboundMessage(
       return (
         client.source.role === "ide" &&
         message.sessionId === client.sessionId &&
-        message.source.id === client.source.id
+        message.source.id === client.source.id &&
+        supportsCapability(client, "resolution")
+      );
+    case "source.matches":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id &&
+        supportsCapability(client, "source-presentation")
+      );
+    case "source.open":
+      return (
+        (client.source.role === "browser" ||
+          client.source.role === "simulator") &&
+        message.sessionId === client.sessionId &&
+        supportsCapability(client, "source-presentation")
+      );
+    case "presentation.settings":
+      return (
+        (client.source.role === "browser" ||
+          client.source.role === "simulator") &&
+        message.sessionId === client.sessionId &&
+        supportsCapability(client, "presentation-settings")
       );
     case "source.navigate":
       return (
@@ -599,6 +634,13 @@ function isAllowedInboundMessage(
         message.sessionId === client.sessionId &&
         message.source.id === client.source.id &&
         supportsCapability(client, "source-navigation")
+      );
+    case "page.refresh":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id &&
+        supportsCapability(client, "auto-refresh")
       );
     case "pong":
       return true;

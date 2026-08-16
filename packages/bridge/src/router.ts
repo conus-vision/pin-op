@@ -5,7 +5,6 @@ import {
   type PinOpMessage,
   type ClientRole,
   type ErrorMessage,
-  type ProtocolCapability,
   type ProtocolErrorCode,
 } from "@pin-op/protocol";
 import {
@@ -14,7 +13,10 @@ import {
   type ClientRegistry,
   type RegisteredClient,
 } from "./clientRegistry.js";
-import { ReplyRouteRegistry } from "./replyRouteRegistry.js";
+import {
+  ReplyRouteRegistry,
+  type ReplyRoute,
+} from "./replyRouteRegistry.js";
 
 export function routeMessage(
   registry: ClientRegistry,
@@ -56,7 +58,8 @@ export function routeMessage(
     case "resolution":
       if (
         sender.source.role !== "ide" ||
-        message.source.id !== sender.source.id
+        message.source.id !== sender.source.id ||
+        !supportsCapability(sender, "resolution")
       ) {
         sendError(
           sender,
@@ -75,8 +78,140 @@ export function routeMessage(
         return;
       }
 
-      routeBrowserReply(registry, replyRoutes, sender, message);
+      const claimedRoute = replyRoutes.claimResolution(
+        message.sessionId,
+        message.inspectMessageId,
+        sender.id,
+        message.resolutionGeneration,
+      );
+      if (!claimedRoute) {
+        sendNoBrowser(sender);
+        return;
+      }
+
+      const resolutionRecipient = getOriginRecipient(registry, claimedRoute);
+      if (!resolutionRecipient || !sendMessage(resolutionRecipient, message)) {
+        replyRoutes.remove(message.sessionId, message.inspectMessageId);
+        sendNoBrowser(sender);
+      }
       return;
+    case "source.matches": {
+      if (
+        sender.source.role !== "ide" ||
+        message.source.id !== sender.source.id ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "source-presentation")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const route = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
+      const recipient = route ? getOriginRecipient(registry, route) : undefined;
+      if (
+        !route ||
+        route.ideConnectionId !== sender.id ||
+        route.resolutionGeneration !== message.resolutionGeneration ||
+        !recipient ||
+        !supportsCapability(recipient, "source-presentation")
+      ) {
+        sendNoBrowser(sender);
+        return;
+      }
+
+      const updatedRoute = replyRoutes.replaceMatchIds(
+        message.sessionId,
+        message.inspectMessageId,
+        sender.id,
+        message.resolutionGeneration,
+        message.matches.map((match) => match.matchId),
+      );
+      if (!updatedRoute || !sendMessage(recipient, message)) {
+        if (updatedRoute) {
+          replyRoutes.remove(message.sessionId, message.inspectMessageId);
+        }
+        sendNoBrowser(sender);
+      }
+      return;
+    }
+    case "source.open": {
+      if (
+        (sender.source.role !== "browser" &&
+          sender.source.role !== "simulator") ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "source-presentation")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const route = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
+      if (
+        !route ||
+        route.originConnectionId !== sender.id ||
+        route.resolutionGeneration !== message.resolutionGeneration ||
+        !route.matchIds.has(message.matchId)
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const recipient = getIdeRecipient(registry, route);
+      if (
+        !recipient ||
+        !supportsCapability(recipient, "source-presentation")
+      ) {
+        sendNoIde(sender);
+        return;
+      }
+
+      replyRoutes.resolve(message.sessionId, message.inspectMessageId);
+      if (!sendMessage(recipient, message)) {
+        sendNoIde(sender);
+      }
+      return;
+    }
+    case "presentation.settings": {
+      if (
+        (sender.source.role !== "browser" &&
+          sender.source.role !== "simulator") ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "presentation-settings")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const route = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
+      if (!route || route.originConnectionId !== sender.id) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const recipient = getIdeRecipient(registry, route);
+      if (
+        !recipient ||
+        !supportsCapability(recipient, "presentation-settings")
+      ) {
+        sendNoIde(sender);
+        return;
+      }
+
+      replyRoutes.resolve(message.sessionId, message.inspectMessageId);
+      if (!sendMessage(recipient, message)) {
+        sendNoIde(sender);
+      }
+      return;
+    }
     case "source.navigate":
       if (
         (sender.source.role !== "browser" &&
@@ -92,50 +227,31 @@ export function routeMessage(
         return;
       }
 
+      const navigationRoute = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
       if (
-        replyRoutes.peek(message.sessionId, message.inspectMessageId) !==
-        sender.id
+        !navigationRoute ||
+        navigationRoute.originConnectionId !== sender.id ||
+        navigationRoute.resolutionGeneration !== message.resolutionGeneration
       ) {
-        sendError(
-          sender,
-          "protocol.invalidMessage",
-          "Message does not match protocol",
-        );
+        sendInvalid(sender);
         return;
       }
 
-      const recipients = registry
-        .findBySessionAndRole(message.sessionId, "ide")
-        .filter((client) => supportsCapability(client, "source-navigation"));
-      if (recipients.length === 0) {
-        sendError(
-          sender,
-          "bridge.noIdeClient",
-          "No IDE client is connected to this session",
-        );
+      const navigationRecipient = getIdeRecipient(registry, navigationRoute);
+      if (
+        !navigationRecipient ||
+        !supportsCapability(navigationRecipient, "source-navigation")
+      ) {
+        sendNoIde(sender);
         return;
       }
 
-      if (
-        replyRoutes.resolve(message.sessionId, message.inspectMessageId) !==
-        sender.id
-      ) {
-        sendError(
-          sender,
-          "protocol.invalidMessage",
-          "Message does not match protocol",
-        );
-        return;
-      }
-
-      if (
-        sendToClients(recipients, message) === 0
-      ) {
-        sendError(
-          sender,
-          "bridge.noIdeClient",
-          "No IDE client is connected to this session",
-        );
+      replyRoutes.resolve(message.sessionId, message.inspectMessageId);
+      if (!sendMessage(navigationRecipient, message)) {
+        sendNoIde(sender);
       }
       return;
     case "source.navigationState":
@@ -161,12 +277,49 @@ export function routeMessage(
         return;
       }
 
-      routeBrowserReply(
-        registry,
-        replyRoutes,
-        sender,
+      const stateRoute = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
+      const stateRecipient = stateRoute
+        ? getOriginRecipient(registry, stateRoute)
+        : undefined;
+      if (
+        !stateRoute ||
+        stateRoute.ideConnectionId !== sender.id ||
+        stateRoute.resolutionGeneration !== message.resolutionGeneration ||
+        (message.activeMatchId !== undefined &&
+          !stateRoute.matchIds.has(message.activeMatchId)) ||
+        !stateRecipient ||
+        !supportsCapability(stateRecipient, "source-navigation")
+      ) {
+        sendNoBrowser(sender);
+        return;
+      }
+
+      replyRoutes.resolve(message.sessionId, message.inspectMessageId);
+      if (!sendMessage(stateRecipient, message)) {
+        replyRoutes.remove(message.sessionId, message.inspectMessageId);
+        sendNoBrowser(sender);
+      }
+      return;
+    case "page.refresh":
+      if (
+        sender.source.role !== "ide" ||
+        message.source.id !== sender.source.id ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "auto-refresh")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      sendToClients(
+        [
+          ...registry.findBySessionAndRole(message.sessionId, "browser"),
+          ...registry.findBySessionAndRole(message.sessionId, "simulator"),
+        ].filter((client) => supportsCapability(client, "auto-refresh")),
         message,
-        "source-navigation",
       );
       return;
     case "error":
@@ -177,76 +330,57 @@ export function routeMessage(
   }
 }
 
-function routeBrowserReply(
+function getOriginRecipient(
   registry: ClientRegistry,
-  replyRoutes: ReplyRouteRegistry,
-  sender: RegisteredClient,
-  message: Extract<
-    PinOpMessage,
-    { type: "resolution" | "source.navigationState" }
-  >,
-  requiredRecipientCapability?: ProtocolCapability,
-): void {
-  const connectionId = requiredRecipientCapability
-    ? replyRoutes.peek(message.sessionId, message.inspectMessageId)
-    : replyRoutes.resolve(message.sessionId, message.inspectMessageId);
-  if (connectionId === undefined) {
-    sendError(
-      sender,
-      "bridge.noBrowserClient",
-      "No browser client is connected to this session",
-    );
-    return;
-  }
-
-  const recipient = registry.get(connectionId);
+  route: ReplyRoute,
+): RegisteredClient | undefined {
+  const recipient = registry.get(route.originConnectionId);
   if (
     !recipient ||
-    recipient.sessionId !== message.sessionId ||
+    recipient.sessionId !== route.sessionId ||
     (recipient.source.role !== "browser" && recipient.source.role !== "simulator")
   ) {
-    replyRoutes.remove(message.sessionId, message.inspectMessageId);
-    sendError(
-      sender,
-      "bridge.noBrowserClient",
-      "No browser client is connected to this session",
-    );
-    return;
+    return undefined;
   }
+  return recipient;
+}
 
+function getIdeRecipient(
+  registry: ClientRegistry,
+  route: ReplyRoute,
+): RegisteredClient | undefined {
+  if (route.ideConnectionId === undefined) {
+    return undefined;
+  }
+  const recipient = registry.get(route.ideConnectionId);
   if (
-    requiredRecipientCapability &&
-    !supportsCapability(recipient, requiredRecipientCapability)
+    !recipient ||
+    recipient.sessionId !== route.sessionId ||
+    recipient.source.role !== "ide"
   ) {
-    sendError(
-      sender,
-      "bridge.noBrowserClient",
-      "No browser client is connected to this session",
-    );
-    return;
+    return undefined;
   }
+  return recipient;
+}
 
-  if (
-    requiredRecipientCapability &&
-    replyRoutes.resolve(message.sessionId, message.inspectMessageId) !==
-      connectionId
-  ) {
-    sendError(
-      sender,
-      "bridge.noBrowserClient",
-      "No browser client is connected to this session",
-    );
-    return;
-  }
+function sendInvalid(sender: RegisteredClient): void {
+  sendError(sender, "protocol.invalidMessage", "Message does not match protocol");
+}
 
-  if (!sendMessage(recipient, message)) {
-    replyRoutes.remove(message.sessionId, message.inspectMessageId);
-    sendError(
-      sender,
-      "bridge.noBrowserClient",
-      "No browser client is connected to this session",
-    );
-  }
+function sendNoBrowser(sender: RegisteredClient): void {
+  sendError(
+    sender,
+    "bridge.noBrowserClient",
+    "No browser client is connected to this session",
+  );
+}
+
+function sendNoIde(sender: RegisteredClient): void {
+  sendError(
+    sender,
+    "bridge.noIdeClient",
+    "No IDE client is connected to this session",
+  );
 }
 
 export function sendError(

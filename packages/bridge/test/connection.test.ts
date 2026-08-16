@@ -5,7 +5,7 @@ import type { BridgeConnection } from "../src/clientRegistry.js";
 interface TestSocket {
   readyState: number;
   send(payload: string, callback: (error?: Error) => void): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
   terminate(): void;
 }
 
@@ -76,5 +76,25 @@ describe("guarded WebSocket connection", () => {
         "rejected",
       ),
     ).toBe(false);
+  });
+
+  it("forwards an optional WebSocket close code and reason", () => {
+    const createConnection = Reflect.get(
+      registryModule,
+      "createGuardedWebSocketConnection",
+    ) as GuardedConnectionFactory;
+    const closes: Array<[number | undefined, string | undefined]> = [];
+    const socket: TestSocket = {
+      readyState: 1,
+      send() {},
+      close(code, reason) {
+        closes.push([code, reason]);
+      },
+      terminate() {},
+    };
+
+    createConnection(socket).close?.(1002, "protocol mismatch");
+
+    expect(closes).toEqual([[1002, "protocol mismatch"]]);
   });
 });
