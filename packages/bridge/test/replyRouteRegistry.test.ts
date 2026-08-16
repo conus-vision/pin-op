@@ -324,4 +324,126 @@ describe("reply route registry", () => {
     expect(routes.get("session-1", "inspect-a")).toBeUndefined();
     expect(routes.get("session-1", "inspect-b")).toBeUndefined();
   });
+
+  it("propagates IDE owner removal through nested pending evictions", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-a", 7);
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-a",
+      7,
+      ["match-a"],
+    );
+
+    const admissionB = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    const admissionC = routes.register(
+      "session-1",
+      "inspect-c",
+      "browser-1",
+    );
+    routes.removeClient("ide-a");
+    admissionC.rollback();
+    admissionB.rollback();
+
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-c")).toBeUndefined();
+  });
+
+  it("propagates browser origin removal through nested pending evictions", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-a", 7);
+
+    const admissionB = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    const admissionC = routes.register(
+      "session-1",
+      "inspect-c",
+      "browser-1",
+    );
+    routes.removeClient("browser-1");
+    admissionC.rollback();
+    admissionB.rollback();
+
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-c")).toBeUndefined();
+  });
+
+  it("restores nested rollback metadata and indexes without a disconnect", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-a", 7);
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-a",
+      7,
+      ["match-a"],
+    );
+
+    const admissionB = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    const admissionC = routes.register(
+      "session-1",
+      "inspect-c",
+      "browser-1",
+    );
+    admissionC.rollback();
+    expect(routes.get("session-1", "inspect-b")).toMatchObject({
+      originConnectionId: "browser-1",
+    });
+
+    admissionB.rollback();
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      originConnectionId: "browser-1",
+      ideConnectionId: "ide-a",
+      resolutionGeneration: 7,
+      matchIds: new Set(["match-a"]),
+    });
+    routes.removeClient("ide-a");
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+  });
+
+  it("releases nested rollback tracking after descendant commit and clear", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    routes.register("session-1", "inspect-a", "browser-1").commit();
+    routes.claimResolution("session-1", "inspect-a", "ide-a", 1);
+    const admissionB = routes.register(
+      "session-1",
+      "inspect-b",
+      "browser-1",
+    );
+    const admissionC = routes.register(
+      "session-1",
+      "inspect-c",
+      "browser-1",
+    );
+
+    admissionC.commit();
+    routes.removeClient("ide-a");
+    admissionB.rollback();
+    expect(routes.get("session-1", "inspect-c")).toMatchObject({
+      originConnectionId: "browser-1",
+    });
+
+    routes.clear();
+    admissionC.rollback();
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-b")).toBeUndefined();
+    expect(routes.get("session-1", "inspect-c")).toBeUndefined();
+  });
 });

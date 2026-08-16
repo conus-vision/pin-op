@@ -20,6 +20,7 @@ export interface ReplyRoute {
 
 interface Route extends ReplyRoute {
   readonly admissionId: symbol;
+  readonly removalAuthorityChain: Set<symbol>;
 }
 
 interface StoredRoute {
@@ -28,11 +29,13 @@ interface StoredRoute {
   ideConnectionId?: string;
   resolutionGeneration?: number;
   matchIds: Set<string>;
+  readonly removalAuthorityChain: Set<symbol>;
 }
 
 interface RemovalAuthority {
   revoked: boolean;
   readonly connectionIds: readonly string[];
+  readonly chain: Set<symbol>;
 }
 
 export interface ReplyRouteRegistryOptions {
@@ -80,7 +83,7 @@ export class ReplyRouteRegistry {
       if (leastRecentlyUsed !== undefined) {
         evictedRoute = this.routeFromKey(leastRecentlyUsed);
         previousClientRouteKeys = [...clientRoutes.keys()];
-        this.removeByKey(leastRecentlyUsed);
+        this.removeByKey(leastRecentlyUsed, true);
       }
       clientRoutes = this.getClientRoutes(connectionId);
     }
@@ -88,29 +91,40 @@ export class ReplyRouteRegistry {
     const nextSessionRoutes =
       sessionRoutes ?? new Map<string, StoredRoute>();
     const admissionId = Symbol();
+    const removalAuthorityChain =
+      evictedRoute?.removalAuthorityChain ?? new Set<symbol>();
     nextSessionRoutes.set(inspectMessageId, {
       originConnectionId: connectionId,
       admissionId,
       matchIds: new Set(),
+      removalAuthorityChain,
     });
     this.routes.set(sessionId, nextSessionRoutes);
     const createdRouteKey = this.routeKey(sessionId, inspectMessageId);
     clientRoutes.set(createdRouteKey, undefined);
     if (evictedRoute) {
-      this.trackRemovalAuthority(admissionId, [
-        evictedRoute.originConnectionId,
-        ...(evictedRoute.ideConnectionId
-          ? [evictedRoute.ideConnectionId]
-          : []),
-      ]);
+      this.trackRemovalAuthority(
+        admissionId,
+        [
+          evictedRoute.originConnectionId,
+          ...(evictedRoute.ideConnectionId !== undefined
+            ? [evictedRoute.ideConnectionId]
+            : []),
+        ],
+        removalAuthorityChain,
+      );
     }
+    const settlementAuthorityIds = [...removalAuthorityChain];
     let settled = false;
     let rolledBack = false;
     return {
       status: "created",
       commit: () => {
+        if (settled || rolledBack) {
+          return;
+        }
         settled = true;
-        this.releaseRemovalAuthority(admissionId);
+        this.releaseRemovalAuthorities(settlementAuthorityIds);
       },
       rollback: () => {
         if (settled || rolledBack) {
@@ -118,15 +132,16 @@ export class ReplyRouteRegistry {
         }
         rolledBack = true;
         const restorationAllowed =
-          !this.removalAuthorities.get(admissionId)?.revoked;
+          this.removalAuthorities.get(admissionId)?.revoked !== true;
         this.rollbackCreatedRoute(
           createdRouteKey,
           connectionId,
           admissionId,
-          restorationAllowed ? evictedRoute : undefined,
+          evictedRoute,
           previousClientRouteKeys,
+          restorationAllowed,
+          settlementAuthorityIds,
         );
-        this.releaseRemovalAuthority(admissionId);
       },
     };
   }
@@ -244,6 +259,7 @@ export class ReplyRouteRegistry {
   }
 
   clear(): void {
+    this.releaseRemovalAuthorities([...this.removalAuthorities.keys()]);
     this.routes.clear();
     this.routesByClient.clear();
     this.routesByIde.clear();
@@ -276,12 +292,15 @@ export class ReplyRouteRegistry {
   private trackRemovalAuthority(
     admissionId: symbol,
     connectionIds: readonly string[],
+    chain: Set<symbol>,
   ): void {
     const uniqueConnectionIds = [...new Set(connectionIds)];
     this.removalAuthorities.set(admissionId, {
       revoked: false,
       connectionIds: uniqueConnectionIds,
+      chain,
     });
+    chain.add(admissionId);
     for (const connectionId of uniqueConnectionIds) {
       const admissions =
         this.removalAuthoritiesByClient.get(connectionId) ?? new Set<symbol>();
@@ -308,12 +327,19 @@ export class ReplyRouteRegistry {
     }
 
     this.removalAuthorities.delete(admissionId);
+    authority.chain.delete(admissionId);
     for (const connectionId of authority.connectionIds) {
       const admissions = this.removalAuthoritiesByClient.get(connectionId);
       admissions?.delete(admissionId);
       if (admissions?.size === 0) {
         this.removalAuthoritiesByClient.delete(connectionId);
       }
+    }
+  }
+
+  private releaseRemovalAuthorities(admissionIds: readonly symbol[]): void {
+    for (const admissionId of admissionIds) {
+      this.releaseRemovalAuthority(admissionId);
     }
   }
 
@@ -334,7 +360,10 @@ export class ReplyRouteRegistry {
     clientRoutes.set(key, undefined);
   }
 
-  private removeByKey(routeKey: string): void {
+  private removeByKey(
+    routeKey: string,
+    preserveRemovalAuthorities = false,
+  ): void {
     const route = this.routeFromKey(routeKey);
     const { sessionId, inspectMessageId } = route;
     const sessionRoutes = this.routes.get(sessionId);
@@ -343,7 +372,11 @@ export class ReplyRouteRegistry {
       return;
     }
 
-    this.releaseRemovalAuthority(storedRoute.admissionId);
+    if (!preserveRemovalAuthorities) {
+      this.releaseRemovalAuthorities([
+        ...storedRoute.removalAuthorityChain,
+      ]);
+    }
 
     sessionRoutes.delete(inspectMessageId);
     if (sessionRoutes.size === 0) {
@@ -371,6 +404,8 @@ export class ReplyRouteRegistry {
     admissionId: symbol,
     evictedRoute: Route | undefined,
     previousClientRouteKeys: string[] | undefined,
+    restorationAllowed: boolean,
+    settlementAuthorityIds: readonly symbol[],
   ): void {
     const [sessionId, inspectMessageId] = JSON.parse(createdRouteKey) as [
       string,
@@ -382,11 +417,13 @@ export class ReplyRouteRegistry {
       currentRoute.originConnectionId !== connectionId ||
       currentRoute.admissionId !== admissionId
     ) {
+      this.releaseRemovalAuthorities(settlementAuthorityIds);
       return;
     }
 
-    this.removeByKey(createdRouteKey);
-    if (evictedRoute && previousClientRouteKeys) {
+    this.removeByKey(createdRouteKey, true);
+    if (restorationAllowed && evictedRoute && previousClientRouteKeys) {
+      this.releaseRemovalAuthority(admissionId);
       const sessionRoutes =
         this.routes.get(evictedRoute.sessionId) ??
         new Map<string, StoredRoute>();
@@ -396,6 +433,7 @@ export class ReplyRouteRegistry {
         ideConnectionId: evictedRoute.ideConnectionId,
         resolutionGeneration: evictedRoute.resolutionGeneration,
         matchIds: new Set(evictedRoute.matchIds),
+        removalAuthorityChain: evictedRoute.removalAuthorityChain,
       });
       this.routes.set(evictedRoute.sessionId, sessionRoutes);
 
@@ -425,7 +463,10 @@ export class ReplyRouteRegistry {
       if (evictedRoute.ideConnectionId !== undefined) {
         this.getIdeRoutes(evictedRoute.ideConnectionId).add(evictedRouteKey);
       }
+      return;
     }
+
+    this.releaseRemovalAuthorities(settlementAuthorityIds);
   }
 
   private routeFromKey(routeKey: string): Route {
