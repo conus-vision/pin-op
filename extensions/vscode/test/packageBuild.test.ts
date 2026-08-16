@@ -64,7 +64,7 @@ describe("VS Code package build", () => {
 
     expect(JSON.parse(readFileSync(runtimeMetadataUrl, "utf8"))).toEqual({
       schemaVersion: 1,
-      protocolVersion: 5,
+      protocolVersion: 6,
     });
     const buildScript = readFileSync(buildScriptUrl, "utf8");
     expect(buildScript).toContain("PROTOCOL_VERSION");

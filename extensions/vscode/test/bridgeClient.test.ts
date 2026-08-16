@@ -122,7 +122,7 @@ describe("BridgeClient", () => {
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
 
-  it("sends a strict protocol-v5 source navigation state through the authenticated IDE route", () => {
+  it("sends a strict protocol-v6 source navigation state through the authenticated IDE route", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();
@@ -140,7 +140,7 @@ describe("BridgeClient", () => {
     const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
     expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
     expect(message).toEqual({
-      protocolVersion: 5,
+      protocolVersion: PROTOCOL_VERSION,
       type: "source.navigationState",
       messageId: expect.any(String),
       sessionId: SESSION_ID,
@@ -577,6 +577,7 @@ function inspectMessage() {
     messageId: "inspect-1",
     sessionId: SESSION_ID,
     source: { role: "browser", id: "browser-1", metadata: {} },
+    ideHighlightEnabled: true,
     targets: [
       {
         role: "selected",
