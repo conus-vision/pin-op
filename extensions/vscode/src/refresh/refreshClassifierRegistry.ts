@@ -6,6 +6,7 @@ import type {
 } from "@pin-op/plugin-api";
 
 const MAX_EXTERNAL_CLASSIFIERS = 64;
+const MAX_CLASSIFIER_ID_LENGTH = 128;
 const STYLE_SUFFIXES = [".css", ".scss", ".sass", ".less"] as const;
 const RELOAD_SUFFIXES = [
   ".js",
@@ -19,24 +20,30 @@ const RELOAD_SUFFIXES = [
 
 export interface RefreshClassifierErrorReport {
   readonly classifierId: string;
-  readonly error: unknown;
+  readonly failure: "classification-failed";
 }
 
 export interface RefreshClassifierRegistryOptions {
   readonly onError?: (report: RefreshClassifierErrorReport) => void;
 }
 
+interface RegisteredClassifier {
+  readonly id: string;
+  readonly classifier: RefreshClassifier;
+}
+
 export class RefreshClassifierRegistry {
-  private readonly classifiers = new Map<string, RefreshClassifier>();
+  private readonly classifiers = new Map<string, RegisteredClassifier>();
 
   public constructor(
     private readonly options: RefreshClassifierRegistryOptions = {},
   ) {}
 
   public register(classifier: RefreshClassifier): Disposable {
-    if (this.classifiers.has(classifier.id)) {
+    const id = captureClassifierId(classifier);
+    if (this.classifiers.has(id)) {
       throw new Error(
-        `Refresh classifier "${classifier.id}" is already registered`,
+        `Refresh classifier "${id}" is already registered`,
       );
     }
     if (this.classifiers.size >= MAX_EXTERNAL_CLASSIFIERS) {
@@ -45,13 +52,14 @@ export class RefreshClassifierRegistry {
       );
     }
 
-    this.classifiers.set(classifier.id, classifier);
+    const entry: RegisteredClassifier = { id, classifier };
+    this.classifiers.set(id, entry);
     let disposed = false;
     return {
       dispose: () => {
         if (disposed) return;
         disposed = true;
-        this.classifiers.delete(classifier.id);
+        if (this.classifiers.get(id) === entry) this.classifiers.delete(id);
       },
     };
   }
@@ -63,14 +71,20 @@ export class RefreshClassifierRegistry {
     });
     let result = classifyBuiltIn(classifierInput.uri);
 
-    const classifiers = [...this.classifiers.values()].sort((left, right) =>
+    const entries = [...this.classifiers.values()].sort((left, right) =>
       left.id < right.id ? -1 : left.id > right.id ? 1 : 0
     );
-    for (const classifier of classifiers) {
+    for (const entry of entries) {
       try {
-        result = strongerMode(result, classifier.classify(classifierInput));
-      } catch (error) {
-        this.reportError({ classifierId: classifier.id, error });
+        result = strongerMode(
+          result,
+          entry.classifier.classify(classifierInput),
+        );
+      } catch {
+        this.reportError(Object.freeze({
+          classifierId: entry.id,
+          failure: "classification-failed",
+        }));
       }
     }
     return result;
@@ -83,6 +97,26 @@ export class RefreshClassifierRegistry {
       // Error reporting cannot prevent independent classifiers from running.
     }
   }
+}
+
+function captureClassifierId(classifier: RefreshClassifier): string {
+  let id: unknown;
+  try {
+    id = classifier.id;
+  } catch {
+    throw new Error("Refresh classifier ID could not be read");
+  }
+
+  if (
+    typeof id !== "string" ||
+    id.trim().length === 0 ||
+    id.length > MAX_CLASSIFIER_ID_LENGTH
+  ) {
+    throw new Error(
+      `Refresh classifier ID must be a non-empty string of at most ${MAX_CLASSIFIER_ID_LENGTH} characters`,
+    );
+  }
+  return id;
 }
 
 function classifyBuiltIn(uri: string): RefreshMode | undefined {

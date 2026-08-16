@@ -86,7 +86,7 @@ describe("BridgeClient", () => {
     expect(second.sendSourceNavigationState).toHaveBeenCalledTimes(1);
   });
 
-  it("sends a strict protocol-v5 resolution through the authenticated IDE route", () => {
+  it("sends a strict protocol-v6 resolution through the authenticated IDE route", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();

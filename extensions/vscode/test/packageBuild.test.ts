@@ -83,15 +83,18 @@ describe("VS Code package build", () => {
     expect(bundle).toContain("source.navigationState");
   });
 
-  it("pins protocol 5 and current capabilities in the installed smoke", () => {
+  it("pins protocol 6 and current capabilities in the installed smoke", () => {
     const smoke = readFileSync(installedSmokeUrl, "utf8");
 
     expect(smoke).toContain('"runtime-metadata.json"');
-    expect(smoke).toContain("metadata.protocolVersion !== 5");
+    expect(smoke).toContain("metadata.protocolVersion !== 6");
+    expect(smoke).toContain("schema 1/protocol 6");
+    expect(smoke).toContain("INSTALLED_VSIX_PROTOCOL_V6_OK");
     expect(smoke).toContain('"source-navigation"');
     expect(smoke).toContain('"source.navigationState"');
     expect(smoke).not.toContain("requiredRuntimeMarkers");
     expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
+    expect(smoke).not.toMatch(/protocol[- _]?v?5/i);
   });
 
   it("covers every bundled third-party package with full notices", () => {

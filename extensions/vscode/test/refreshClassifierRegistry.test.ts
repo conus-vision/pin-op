@@ -145,30 +145,126 @@ describe("refresh classifier registry", () => {
       .toBe("reload");
   });
 
-  it("isolates throwing classifiers and reports only their ID and error", () => {
-    const error = new Error("classification failed");
-    const reports: unknown[] = [];
+  it("sanitizes URI-bearing classifier failures and continues", () => {
+    const privateUri = "file:///private/customer/project/app.css";
+    const reports: Array<Record<string, unknown>> = [];
     const registry = new RefreshClassifierRegistry({
-      onError: (report) => reports.push(report),
+      onError: (report) => reports.push({ ...report }),
     });
     registry.register({
-      id: "fixture.throwing",
+      id: "fixture.error",
       classify: () => {
-        throw error;
+        throw new Error(`${privateUri} secret-error-message`);
+      },
+    });
+    registry.register({
+      id: "fixture.object",
+      classify: () => {
+        throw {
+          message: privateUri,
+          stack: `secret-object-stack ${privateUri}`,
+          nested: { source: privateUri },
+        };
       },
     });
     registry.register({
       id: "fixture.reload",
       classify: () => "reload",
     });
-    const privateUri = "file:///private/customer/project/app.css";
 
     expect(registry.classify(input(privateUri))).toBe("reload");
-    expect(reports).toEqual([{
-      classifierId: "fixture.throwing",
-      error,
-    }]);
-    expect(JSON.stringify(reports)).not.toContain(privateUri);
+    expect(reports).toEqual([
+      {
+        classifierId: "fixture.error",
+        failure: "classification-failed",
+      },
+      {
+        classifierId: "fixture.object",
+        failure: "classification-failed",
+      },
+    ]);
+    for (const report of reports) {
+      expect(Object.keys(report).sort()).toEqual(["classifierId", "failure"]);
+      for (const [field, value] of Object.entries(report)) {
+        expect(typeof value, field).toBe("string");
+        expect(String(value), field).not.toContain(privateUri);
+        expect(String(value), field).not.toContain("secret-");
+      }
+    }
+  });
+
+  it("captures a mutable classifier ID for ordering and disposal", () => {
+    const registry = new RefreshClassifierRegistry();
+    const classifier = {
+      id: "fixture.original",
+      classify: () => "reload" as const,
+    };
+    const registration = registry.register(classifier);
+    classifier.id = "fixture.replacement";
+    registry.register({
+      id: "fixture.replacement",
+      classify: () => "styles",
+    });
+
+    registration.dispose();
+
+    expect(registry.classify(input("file:///workspace/app.fixture")))
+      .toBe("styles");
+  });
+
+  it("reads the classifier ID getter only once", () => {
+    const privateUri = "file:///private/getter/app.ts";
+    let reads = 0;
+    const registry = new RefreshClassifierRegistry();
+    const registration = registry.register({
+      get id() {
+        reads += 1;
+        if (reads > 1) throw new Error(privateUri);
+        return "fixture.getter";
+      },
+      classify: () => "styles",
+    });
+    registry.register({
+      id: "fixture.second",
+      classify: () => undefined,
+    });
+
+    expect(registry.classify(input("file:///workspace/app.fixture")))
+      .toBe("styles");
+    registration.dispose();
+    expect(reads).toBe(1);
+  });
+
+  it("sanitizes a throwing ID getter during registration", () => {
+    const privateUri = "file:///private/getter/secret.ts";
+    let failure: unknown;
+
+    try {
+      new RefreshClassifierRegistry().register({
+        get id(): string {
+          throw new Error(privateUri);
+        },
+        classify: () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain("classifier ID could not be read");
+    expect(String(failure)).not.toContain(privateUri);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["blank", "   "],
+    ["oversized", "x".repeat(129)],
+    ["non-string", 42],
+  ])("rejects a %s classifier ID", (_label, id) => {
+    expect(() => new RefreshClassifierRegistry().register({
+      id,
+      classify: () => undefined,
+    } as RefreshClassifier)).toThrow(/classifier ID must be/);
   });
 
   it("ignores an error sink failure and continues classification", () => {
