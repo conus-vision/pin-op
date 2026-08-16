@@ -17,5 +17,5 @@ startPanelRuntime({
     return () => window.removeEventListener("unload", listener);
   },
   onError: (error) =>
-    console.error("PinOp panel:", sanitizeErrorMessage(error)),
+    console.error("Pin-op panel:", sanitizeErrorMessage(error)),
 });

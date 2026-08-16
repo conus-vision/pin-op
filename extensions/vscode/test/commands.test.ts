@@ -70,7 +70,7 @@ describe("runtime commands", () => {
     });
     expect(harness.clients[0]?.connectCalls).toBe(1);
     expect(harness.clipboard).toEqual(["4873507"]);
-    expect(harness.information).toEqual(["PinOp link code copied."]);
+    expect(harness.information).toEqual(["Pin-op link code copied."]);
     expect(harness.information.join(" ")).not.toContain("4873507");
   });
 
@@ -80,7 +80,7 @@ describe("runtime commands", () => {
     await harness.controller.copyLinkCode();
 
     expect(harness.clipboard).toEqual([]);
-    expect(harness.warnings).toEqual(["PinOp is not running."]);
+    expect(harness.warnings).toEqual(["Pin-op is not running."]);
   });
 
   it("disposes the client before stopping and creates a fresh client later", async () => {

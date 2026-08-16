@@ -33,8 +33,8 @@ describe("registerDevtoolsPanel", () => {
 
     expect(created).toEqual([
       {
-        title: "PinOp",
-        icon: "/dist/pinop.svg",
+        title: "Pin-op",
+        icon: "/dist/pin-op.svg",
         page: "/dist/panel.html?channel=channel-1",
       },
     ]);

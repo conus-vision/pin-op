@@ -24,7 +24,7 @@ describe("formatVisibleLinkCode", () => {
     [48_735, "７０"],
   ])("rejects invalid port or PIN: %p, %p", (port, pin) => {
     expect(() => formatVisibleLinkCode(port, pin)).toThrow(
-      "Cannot display an invalid PinOp link code",
+      "Cannot display an invalid Pin-op link code",
     );
   });
 });
@@ -46,12 +46,12 @@ describe("StatusBarController", () => {
     });
 
     expect(host.primary).toMatchObject({
-      text: "$(radio-tower) PinOp: 48735 07",
+      text: "$(radio-tower) Pin-op: 48735 07",
       command: "pin-op.copyLinkCode",
     });
     expect(host.toggle).toMatchObject({
       text: "$(debug-stop)",
-      tooltip: "Stop PinOp",
+      tooltip: "Stop Pin-op",
       command: "pin-op.stop",
     });
     expect(host.primary.tooltip).toContain("state: running");
@@ -62,10 +62,10 @@ describe("StatusBarController", () => {
   });
 
   it.each([
-    ["stopped", "$(radio-tower) PinOp: Offline", "$(play)", "pin-op.start", undefined],
-    ["error", "$(radio-tower) PinOp: Offline", "$(play)", "pin-op.start", undefined],
-    ["starting", "$(radio-tower) PinOp: Starting", "$(sync~spin)", undefined, undefined],
-    ["stopping", "$(radio-tower) PinOp: Stopping", "$(sync~spin)", undefined, undefined],
+    ["stopped", "$(radio-tower) Pin-op: Offline", "$(play)", "pin-op.start", undefined],
+    ["error", "$(radio-tower) Pin-op: Offline", "$(play)", "pin-op.start", undefined],
+    ["starting", "$(radio-tower) Pin-op: Starting", "$(sync~spin)", undefined, undefined],
+    ["stopping", "$(radio-tower) Pin-op: Stopping", "$(sync~spin)", undefined, undefined],
   ] as const)("renders %s controls", (state, primaryText, toggleText, command) => {
     const host = statusHost();
     const controller = new StatusBarController(host);
@@ -93,7 +93,7 @@ describe("StatusBarController", () => {
 
     expect(host.primary.command).toBeUndefined();
     expect(host.toggle.command).toBe("pin-op.start");
-    expect(host.primary.tooltip).toContain("PinOp state: stopped");
+    expect(host.primary.tooltip).toContain("Pin-op state: stopped");
     expect(host.primary.tooltip).not.toContain("ws://127.0.0.1:48735");
   });
 

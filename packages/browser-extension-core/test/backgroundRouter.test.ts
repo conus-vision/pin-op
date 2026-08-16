@@ -2158,7 +2158,7 @@ describe("BackgroundRouter", () => {
     expect(failed.reportedErrors).toHaveLength(1);
     expect(failed.reportedErrors[0]).toBeInstanceOf(Error);
     expect((failed.reportedErrors[0] as Error).message).toBe(
-      "PinOp panel command failed",
+      "Pin-op panel command failed",
     );
     expect((failed.reportedErrors[0] as Error).message).not.toContain(
       "secret storage detail",

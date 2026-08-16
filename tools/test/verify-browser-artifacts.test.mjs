@@ -70,7 +70,7 @@ for (const browser of ["firefox", "chrome"]) {
     });
   }
 
-  test(`common ${browser} artifact verifier requires exact PinOp icons`, () => {
+  test(`common ${browser} artifact verifier requires exact Pin-op icons`, () => {
     const archive = browserArchive(browser);
     const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
     manifest.icons[128] = "dist/icons/unexpected.png";
@@ -86,9 +86,9 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
-  test(`common ${browser} artifact verifier validates PinOp PNG dimensions`, () => {
+  test(`common ${browser} artifact verifier validates Pin-op PNG dimensions`, () => {
     const archive = browserArchive(browser);
-    archive.files.set("dist/icons/pinop-48.png", Buffer.from("not a png"));
+    archive.files.set("dist/icons/pin-op-48.png", Buffer.from("not a png"));
 
     assert.throws(
       () => validateBrowserArchive(
@@ -96,10 +96,75 @@ for (const browser of ["firefox", "chrome"]) {
         `pinop-${browser}-0.3.0.zip`,
         browser,
       ),
-      /pinop-48\.png.*valid PNG/i,
+      /pin-op-48\.png.*valid PNG/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier requires the Pin-op display name`, () => {
+    const archive = browserArchive(browser);
+    const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
+    manifest.name = ["Pin", "Op"].join("");
+    archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pinop-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /unexpected manifest name/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier requires the renamed panel image`, () => {
+    const archive = browserArchive(browser);
+    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const legacyPanel = panel.replace(
+      'src="./pin-op.svg"',
+      `src="./${["pin", "op"].join("")}.svg"`,
+    );
+    assert.notEqual(legacyPanel, panel);
+    archive.files.set("dist/panel.html", Buffer.from(legacyPanel));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pinop-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /panel must reference \.\/pin-op\.svg/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier requires visible Pin-op panel identity`, () => {
+    const archive = browserArchive(browser);
+    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const legacyPanel = panel.replaceAll("Pin-op", ["Pin", "Op"].join(""));
+    assert.notEqual(legacyPanel, panel);
+    archive.files.set("dist/panel.html", Buffer.from(legacyPanel));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pinop-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /panel must present Pin-op in its title and heading/i,
     );
   });
 }
+
+test("common Firefox artifact verifier preserves the Gecko extension ID", () => {
+  const archive = browserArchive("firefox");
+  const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
+  manifest.browser_specific_settings.gecko.id = "pin-op@example.test";
+  archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
+
+  assert.throws(
+    () => validateBrowserArchive(archive, "pinop-firefox-0.3.0.zip", "firefox"),
+    /unexpected Firefox Gecko ID/i,
+  );
+});
 
 function browserArchive(browser) {
   const files = new Map(
@@ -119,11 +184,11 @@ function browserArchive(browser) {
   );
   for (const size of [16, 32, 48, 96, 128]) {
     files.set(
-      `dist/icons/pinop-${size}.png`,
+      `dist/icons/pin-op-${size}.png`,
       readFileSync(
         resolve(
           repositoryRoot,
-          `packages/browser-extension-core/assets/icons/pinop-${size}.png`,
+          `packages/browser-extension-core/assets/icons/pin-op-${size}.png`,
         ),
       ),
     );

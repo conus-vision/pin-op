@@ -1,14 +1,14 @@
 {
   "name": "pin-op",
   "publisher": "conus-vision",
-  "displayName": "PinOp",
+  "displayName": "Pin-op",
   "description": "Connect browser DevTools to your source code.",
   "version": "0.3.0",
   "license": "MIT",
-  "repository": "https://github.com/conus-vision/pin-op.git",
+  "repository": "https://github.com/conus-vision/pin-op",
   "homepage": "https://pin-op.conus.vision",
   "bugs": "https://github.com/conus-vision/pin-op/issues",
-  "icon": "resources/pinop.png",
+  "icon": "resources/pin-op.png",
   "categories": [
     "Other",
     "Programming Languages"
@@ -36,31 +36,31 @@
     "commands": [
       {
         "command": "pin-op.start",
-        "title": "PinOp: Start"
+        "title": "Pin-op: Start"
       },
       {
         "command": "pin-op.stop",
-        "title": "PinOp: Stop"
+        "title": "Pin-op: Stop"
       },
       {
         "command": "pin-op.copyLinkCode",
-        "title": "PinOp: Copy Link Code"
+        "title": "Pin-op: Copy Link Code"
       },
       {
         "command": "pin-op.openDiagnostics",
-        "title": "PinOp: Open Diagnostics"
+        "title": "Pin-op: Open Diagnostics"
       },
       {
         "command": "pin-op.revealSourceMatch",
-        "title": "PinOp: Reveal Source Match"
+        "title": "Pin-op: Reveal Source Match"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "pin-op",
-          "title": "PinOp",
-          "icon": "resources/pinop.svg"
+          "title": "Pin-op",
+          "icon": "resources/pin-op.svg"
         }
       ]
     },
@@ -111,7 +111,7 @@
       }
     ],
     "configuration": {
-      "title": "PinOp",
+      "title": "Pin-op",
       "properties": {
         "pin-op.sessionId": {
           "type": "string",

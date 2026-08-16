@@ -21,7 +21,7 @@ const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class CssSourcePlugin implements SourcePlugin {
   public readonly id = "pin-op.css";
-  public readonly displayName = "PinOp CSS";
+  public readonly displayName = "Pin-op CSS";
   public readonly apiVersion = SOURCE_PLUGIN_API_VERSION;
   public readonly documentSelectors = [
     { languageId: "css", scheme: "file" },

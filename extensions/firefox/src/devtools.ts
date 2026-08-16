@@ -26,5 +26,5 @@ startDevtoolsRuntime({
     return () => window.removeEventListener("unload", listener);
   },
   onError: (error) =>
-    console.error("PinOp DevTools:", sanitizeErrorMessage(error)),
+    console.error("Pin-op DevTools:", sanitizeErrorMessage(error)),
 });

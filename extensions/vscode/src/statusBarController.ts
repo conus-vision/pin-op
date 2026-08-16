@@ -14,7 +14,7 @@ export interface StatusBarHost {
 }
 
 const INVALID_LINK_CODE_MESSAGE =
-  "Cannot display an invalid PinOp link code";
+  "Cannot display an invalid Pin-op link code";
 
 export function formatVisibleLinkCode(port: number, pin: string): string {
   if (
@@ -48,28 +48,28 @@ export class StatusBarController {
 
     switch (snapshot.state) {
       case "running":
-        primary.text = `$(radio-tower) PinOp: ${formatVisibleLinkCode(
+        primary.text = `$(radio-tower) Pin-op: ${formatVisibleLinkCode(
           snapshot.port ?? Number.NaN,
           snapshot.pin ?? "",
         )}`;
         primary.command = "pin-op.copyLinkCode";
         toggle.text = "$(debug-stop)";
-        toggle.tooltip = "Stop PinOp";
+        toggle.tooltip = "Stop Pin-op";
         toggle.command = "pin-op.stop";
         return;
       case "starting":
-        primary.text = "$(radio-tower) PinOp: Starting";
+        primary.text = "$(radio-tower) Pin-op: Starting";
         toggle.text = "$(sync~spin)";
         return;
       case "stopping":
-        primary.text = "$(radio-tower) PinOp: Stopping";
+        primary.text = "$(radio-tower) Pin-op: Stopping";
         toggle.text = "$(sync~spin)";
         return;
       case "stopped":
       case "error":
-        primary.text = "$(radio-tower) PinOp: Offline";
+        primary.text = "$(radio-tower) Pin-op: Offline";
         toggle.text = "$(play)";
-        toggle.tooltip = "Start PinOp";
+        toggle.tooltip = "Start Pin-op";
         toggle.command = "pin-op.start";
         return;
     }
@@ -84,7 +84,7 @@ export class StatusBarController {
 }
 
 function tooltipFor(snapshot: BridgeSnapshot): string {
-  const details = [`PinOp state: ${snapshot.state}`];
+  const details = [`Pin-op state: ${snapshot.state}`];
   if (snapshot.url !== undefined) details.push(`URL: ${snapshot.url}`);
   if (snapshot.sessionId !== undefined) {
     details.push(`session: ${snapshot.sessionId}`);

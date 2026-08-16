@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -13,9 +14,22 @@ const installedSmokePath = resolve(
 );
 const installerUrl = new URL("../install-vsix-for-smoke.mjs", import.meta.url);
 const runtimeOptionsUrl = new URL("../vscode-smoke-runtime.mjs", import.meta.url);
+const directVerifierPath = resolve(
+  repositoryRoot,
+  "extensions/vscode/verify-vsix.mjs",
+);
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const vscodeNotices = await readFile(
+  resolve(repositoryRoot, "extensions/vscode/THIRD_PARTY_NOTICES"),
+);
+const mappingsWasm = await readFile(
+  resolve(
+    repositoryRoot,
+    "extensions/vscode/node_modules/source-map/lib/mappings.wasm",
+  ),
+);
 const vscodeIcon = await readFile(
-  resolve(repositoryRoot, "extensions/vscode/resources/pinop.png"),
+  resolve(repositoryRoot, "extensions/vscode/resources/pin-op.png"),
 );
 const extensionBundleFixture = [
   'const vscode = require("vscode");',
@@ -24,6 +38,40 @@ const extensionBundleFixture = [
   'const sourceNavigationStateType = "source.navigationState";',
   "",
 ].join("\n");
+const legacyDisplayName = ["Pin", "Op"].join("");
+const legacyAssetStem = ["pin", "op"].join("");
+const contributedIdentityMutations = [
+  {
+    name: "activity bar icon",
+    mutate(manifest) {
+      manifest.contributes.viewsContainers.activitybar[0].icon =
+        `resources/${legacyAssetStem}.svg`;
+    },
+    expectedError: /activitybar container pin-op has unexpected icon/i,
+  },
+  {
+    name: "activity bar title",
+    mutate(manifest) {
+      manifest.contributes.viewsContainers.activitybar[0].title =
+        legacyDisplayName;
+    },
+    expectedError: /activitybar container pin-op has unexpected title/i,
+  },
+  {
+    name: "command title",
+    mutate(manifest) {
+      manifest.contributes.commands[0].title = `${legacyDisplayName}: Start`;
+    },
+    expectedError: /command pin-op\.start has unexpected title/i,
+  },
+  {
+    name: "configuration title",
+    mutate(manifest) {
+      manifest.contributes.configuration.title = legacyDisplayName;
+    },
+    expectedError: /unexpected configuration title/i,
+  },
+];
 
 test("installed VSIX smoke never invokes the machine CLI installer", async () => {
   const source = await readFile(installedSmokePath, "utf8");
@@ -211,6 +259,10 @@ test("VSIX installation validates identity before deriving its directory", async
   for (const [field, value, expectedError] of [
     ["publisher", "../outside", /unexpected extension publisher/],
     ["name", "../../outside", /unexpected extension name/],
+    ["displayName", ["Pin", "Op"].join(""), /unexpected extension display name/],
+    ["repository", "https://example.test/repository", /unexpected extension repository/],
+    ["bugs", "https://example.test/issues", /unexpected extension bugs URL/],
+    ["homepage", "https://example.test", /unexpected extension homepage/],
     ["version", "../0.3.0", /extension version must be 0\.3\.0/],
     ["icon", "resources/unexpected.png", /unexpected extension icon/],
   ]) {
@@ -228,6 +280,47 @@ test("VSIX installation validates identity before deriving its directory", async
     });
   }
 });
+
+for (const mutation of contributedIdentityMutations) {
+  test(`common VSIX verifier rejects legacy ${mutation.name}`, async () => {
+    const installVerifiedVsix = await loadInstaller();
+    await withTemporaryDirectory("pinop-vsix-contribution-", async (directory) => {
+      const artifactPath = join(directory, "identity.vsix");
+      const extensionsDirectory = join(directory, "extensions");
+      await mkdir(extensionsDirectory);
+      const manifest = expectedManifest();
+      mutation.mutate(manifest);
+      writeVsix(artifactPath, manifest);
+
+      await assert.rejects(
+        installVerifiedVsix(artifactPath, extensionsDirectory),
+        mutation.expectedError,
+      );
+      assert.deepEqual(await readdir(extensionsDirectory), []);
+    });
+  });
+
+  test(`direct VSIX verifier rejects legacy ${mutation.name}`, async () => {
+    await withTemporaryDirectory("pinop-direct-vsix-contribution-", async (directory) => {
+      const artifactPath = join(directory, "identity.vsix");
+      const manifest = expectedManifest();
+      mutation.mutate(manifest);
+      writeVsix(artifactPath, manifest);
+
+      const result = spawnSync(
+        process.execPath,
+        [directVerifierPath, artifactPath],
+        { cwd: repositoryRoot, encoding: "utf8" },
+      );
+      assert.notEqual(
+        result.status,
+        0,
+        `mutated archive was accepted:\n${result.stdout}${result.stderr}`,
+      );
+      assert.match(`${result.stdout}\n${result.stderr}`, mutation.expectedError);
+    });
+  });
+}
 
 test("VSIX installation rejects VSIX manifest identity mismatches", async (t) => {
   const installVerifiedVsix = await loadInstaller();
@@ -276,7 +369,7 @@ test("VSIX installation rejects an invalid Marketplace icon", async () => {
 
     await assert.rejects(
       installVerifiedVsix(artifactPath, extensionsDirectory),
-      /pinop\.png.*valid PNG/i,
+      /pin-op\.png.*valid PNG/i,
     );
     assert.deepEqual(await readdir(extensionsDirectory), []);
   });
@@ -390,10 +483,38 @@ async function loadRuntimeOptionsResolver() {
 function expectedManifest(overrides = {}) {
   return {
     name: "pin-op",
+    displayName: "Pin-op",
     publisher: "conus-vision",
+    repository: "https://github.com/conus-vision/pin-op",
+    bugs: "https://github.com/conus-vision/pin-op/issues",
+    homepage: "https://pin-op.conus.vision",
     version: "0.3.0",
     main: "./dist/extension.cjs",
-    icon: "resources/pinop.png",
+    icon: "resources/pin-op.png",
+    contributes: {
+      commands: [
+        { command: "pin-op.start", title: "Pin-op: Start" },
+        { command: "pin-op.stop", title: "Pin-op: Stop" },
+        { command: "pin-op.copyLinkCode", title: "Pin-op: Copy Link Code" },
+        { command: "pin-op.openDiagnostics", title: "Pin-op: Open Diagnostics" },
+        { command: "pin-op.revealSourceMatch", title: "Pin-op: Reveal Source Match" },
+      ],
+      viewsContainers: {
+        activitybar: [
+          {
+            id: "pin-op",
+            title: "Pin-op",
+            icon: "resources/pin-op.svg",
+          },
+        ],
+      },
+      configuration: {
+        title: "Pin-op",
+        properties: {
+          "pin-op.sessionId": { type: "string", default: "default" },
+        },
+      },
+    },
     ...overrides,
   };
 }
@@ -410,20 +531,20 @@ function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
       archiveOverrides.manifestXml ?? expectedVsixManifestXml(),
     ],
     ["extension/LICENSE.txt", projectLicense],
-    ["extension/THIRD_PARTY_NOTICES", "notices"],
+    ["extension/THIRD_PARTY_NOTICES", vscodeNotices],
     [
       "extension/dist/extension.cjs",
       archiveOverrides.bundle ?? extensionBundleFixture,
     ],
-    ["extension/dist/mappings.wasm", Buffer.from([0x00, 0x61, 0x73, 0x6d])],
+    ["extension/dist/mappings.wasm", mappingsWasm],
     [
       "extension/dist/runtime-metadata.json",
       '{"schemaVersion":1,"protocolVersion":5}\n',
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
     ["extension/readme.md", "readme"],
-    ["extension/resources/pinop.svg", "<svg></svg>"],
-    ["extension/resources/pinop.png", archiveOverrides.icon ?? vscodeIcon],
+    ["extension/resources/pin-op.svg", "<svg></svg>"],
+    ["extension/resources/pin-op.png", archiveOverrides.icon ?? vscodeIcon],
   ]) {
     zip.addFile(name, Buffer.isBuffer(content) ? content : Buffer.from(content));
   }

@@ -7,7 +7,7 @@ import {
 
 const plugin: SourcePlugin = {
   id: "pin-op.fixture",
-  displayName: "PinOp Fixture",
+  displayName: "Pin-op Fixture",
   apiVersion: SOURCE_PLUGIN_API_VERSION,
   documentSelectors: [
     { languageId: "pin-op-fixture", scheme: "file" },
@@ -37,11 +37,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<{
   const core = vscode.extensions.getExtension<PinOpApi>(
     "conus-vision.pin-op",
   );
-  if (!core) throw new Error("PinOp core extension is unavailable");
+  if (!core) throw new Error("Pin-op core extension is unavailable");
 
   const api = await core.activate();
   if (api.apiVersion !== SOURCE_PLUGIN_API_VERSION) {
-    throw new Error(`Unsupported PinOp API version: ${api.apiVersion}`);
+    throw new Error(`Unsupported Pin-op API version: ${api.apiVersion}`);
   }
   context.subscriptions.push(api.registerSourcePlugin(plugin));
   return { registered: true, coreApiVersion: api.apiVersion };

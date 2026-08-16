@@ -114,14 +114,14 @@ export function findPinOpServiceWorker(targets, extensionId) {
       target.url === `chrome-extension://${extensionId}${SERVICE_WORKER_PATH}`,
   );
   if (matches.length > 1) {
-    throw new Error("Chrome exposed multiple PinOp service workers");
+    throw new Error("Chrome exposed multiple Pin-op service workers");
   }
   return matches[0];
 }
 
 export function isPinOpManifest(manifest) {
   return (
-    manifest?.name === "PinOp" &&
+    manifest?.name === "Pin-op" &&
     manifest?.version === "0.3.0" &&
     manifest?.manifest_version === 3 &&
     manifest?.background?.service_worker === "dist/background.js"
@@ -455,7 +455,7 @@ export async function smokePackagedChrome(artifactArgument) {
           resolve(installed.path) !== resolve(extensionDirectory)
         ) {
           throw new Error(
-            "Chrome did not report the expected unpacked PinOp extension",
+            "Chrome did not report the expected unpacked Pin-op extension",
           );
         }
         await waitForServiceWorker(cdp, chrome, extensionId);
@@ -661,7 +661,7 @@ async function waitForServiceWorker(cdp, process_, extensionId) {
     .filter(Boolean)
     .join(", ");
   throw new Error(
-    `Timed out waiting for the packaged PinOp service worker; CDP targets: ${summary || "none"}`,
+    `Timed out waiting for the packaged Pin-op service worker; CDP targets: ${summary || "none"}`,
   );
 }
 

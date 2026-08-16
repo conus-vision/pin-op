@@ -38,7 +38,7 @@ const result = await build({
 
 await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
 
-for (const asset of ["panel.html", "panel.css", "pinop.svg"]) {
+for (const asset of ["panel.html", "panel.css", "pin-op.svg"]) {
   await copyFile(
     resolve(extensionRoot, `../../packages/browser-extension-core/assets/${asset}`),
     resolve(outdir, asset),
@@ -51,9 +51,9 @@ for (const size of [16, 32, 48, 96, 128]) {
   await copyFile(
     resolve(
       extensionRoot,
-      `../../packages/browser-extension-core/assets/icons/pinop-${size}.png`,
+      `../../packages/browser-extension-core/assets/icons/pin-op-${size}.png`,
     ),
-    resolve(iconsOutdir, `pinop-${size}.png`),
+    resolve(iconsOutdir, `pin-op-${size}.png`),
   );
 }
 

@@ -207,10 +207,10 @@ describe("PanelController", () => {
 
   it.each([
     ["invalidCode", "Enter a valid seven-digit code"],
-    ["stalePanel", "Reopen PinOp DevTools and try again"],
-    ["busy", "Another PinOp action is still running"],
+    ["stalePanel", "Reopen Pin-op DevTools and try again"],
+    ["busy", "Another Pin-op action is still running"],
     ["rateLimited", "Too many attempts. Try again in one minute."],
-    ["error", "PinOp could not complete the action"],
+    ["error", "Pin-op could not complete the action"],
   ] as const)(
     "restores linked identity after unlink returns %s",
     async (error, errorText) => {
@@ -247,7 +247,7 @@ describe("PanelController", () => {
 
     expect(harness.view.current).toMatchObject({
       state: "error",
-      errorText: "PinOp background returned an invalid response",
+      errorText: "Pin-op background returned an invalid response",
       displayLinkCode: "48735 07",
       showDisconnect: true,
       inspectDisabled: true,
@@ -267,7 +267,7 @@ describe("PanelController", () => {
 
     expect(harness.view.current).toMatchObject({
       state: "error",
-      errorText: "PinOp background is unavailable",
+      errorText: "Pin-op background is unavailable",
       displayLinkCode: "48735 07",
       showDisconnect: true,
       inspectDisabled: true,

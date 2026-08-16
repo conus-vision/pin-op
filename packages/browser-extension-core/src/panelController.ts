@@ -341,7 +341,7 @@ export class PanelController {
       }
       this.busy = false;
       this.state = "error";
-      this.errorText = "PinOp background is unavailable";
+      this.errorText = "Pin-op background is unavailable";
       this.render();
       return;
     }
@@ -363,7 +363,7 @@ export class PanelController {
         return;
       }
       this.state = "error";
-      this.errorText = "PinOp background returned an invalid response";
+      this.errorText = "Pin-op background returned an invalid response";
     } else if (!result.ok) {
       if (
         command.type === "pin-op.linkWindow" &&
@@ -478,15 +478,15 @@ export class PanelController {
         return;
       case "stalePanel":
         this.state = "error";
-        this.errorText = "Reopen PinOp DevTools and try again";
+        this.errorText = "Reopen Pin-op DevTools and try again";
         return;
       case "busy":
         this.state = "error";
-        this.errorText = "Another PinOp action is still running";
+        this.errorText = "Another Pin-op action is still running";
         return;
       case "error":
         this.state = "error";
-        this.errorText = "PinOp could not complete the action";
+        this.errorText = "Pin-op could not complete the action";
     }
   }
 

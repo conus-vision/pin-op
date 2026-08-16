@@ -316,7 +316,7 @@ function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function addressInUseError(): NodeJS.ErrnoException {
-  const error = new Error("All PinOp managed ports are in use") as NodeJS.ErrnoException;
+  const error = new Error("All Pin-op managed ports are in use") as NodeJS.ErrnoException;
   error.code = "EADDRINUSE";
   return error;
 }

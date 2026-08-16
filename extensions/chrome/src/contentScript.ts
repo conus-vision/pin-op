@@ -22,5 +22,5 @@ startContentScriptRuntime({
     return () => browser.runtime.onMessage.removeListener(wrapped);
   },
   onError: (error) =>
-    console.error("PinOp content script:", sanitizeErrorMessage(error)),
+    console.error("Pin-op content script:", sanitizeErrorMessage(error)),
 });

@@ -86,7 +86,7 @@ async function withArchives(callback) {
   const directory = await mkdtemp(resolve(tmpdir(), "pinop-signed-xpi-"));
   const manifest = JSON.stringify({
     manifest_version: 3,
-    name: "PinOp",
+    name: "Pin-op",
     version,
     browser_specific_settings: { gecko: { id: geckoId } },
   });

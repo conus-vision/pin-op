@@ -104,7 +104,7 @@ async function writeThirdPartyNotices(metafile) {
   const notices = [
     "# Third-Party Notices",
     "",
-    "PinOp includes the following bundled third-party software.",
+    "Pin-op includes the following bundled third-party software.",
     `Runtime asset: dist/mappings.wasm (from source-map@${sourceMap.version})`,
     "",
     ...sections.flatMap((section) => [section, ""]),

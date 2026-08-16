@@ -7,7 +7,7 @@ describe("Chrome extension manifest", () => {
 
     expect(manifest).toMatchObject({
       manifest_version: 3,
-      name: "PinOp",
+      name: "Pin-op",
       description: "Connect browser DevTools to your source code.",
       version: "0.3.0",
       minimum_chrome_version: "116",
@@ -17,11 +17,11 @@ describe("Chrome extension manifest", () => {
     expect(manifest.background).not.toHaveProperty("scripts");
     expect(manifest).not.toHaveProperty("browser_specific_settings");
     expect(manifest.icons).toEqual({
-      16: "dist/icons/pinop-16.png",
-      32: "dist/icons/pinop-32.png",
-      48: "dist/icons/pinop-48.png",
-      96: "dist/icons/pinop-96.png",
-      128: "dist/icons/pinop-128.png",
+      16: "dist/icons/pin-op-16.png",
+      32: "dist/icons/pin-op-32.png",
+      48: "dist/icons/pin-op-48.png",
+      96: "dist/icons/pin-op-96.png",
+      128: "dist/icons/pin-op-128.png",
     });
   });
 

@@ -22,7 +22,7 @@ const MAX_WORKSPACE_LABEL_LENGTH = 128;
 
 export class ScssSourcePlugin implements SourcePlugin {
   public readonly id = "pin-op.scss";
-  public readonly displayName = "PinOp SCSS";
+  public readonly displayName = "Pin-op SCSS";
   public readonly apiVersion = SOURCE_PLUGIN_API_VERSION;
   public readonly documentSelectors = [
     { languageId: "scss", scheme: "file" },

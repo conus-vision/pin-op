@@ -35,7 +35,7 @@ let diagnostics: DiagnosticsTracker | undefined;
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<PinOpApi> {
-  output = vscode.window.createOutputChannel("PinOp");
+  output = vscode.window.createOutputChannel("Pin-op");
   diagnostics = new DiagnosticsTracker();
   const resolutionClients = new ResolutionClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
@@ -166,7 +166,7 @@ export async function deactivate(): Promise<void> {
 function reportRuntimeError(error: unknown): void {
   clientState = "error";
   const code = errorCode(error);
-  output?.appendLine(`PinOp operation failed${code ? ` (${code})` : ""}`);
+  output?.appendLine(`Pin-op operation failed${code ? ` (${code})` : ""}`);
 }
 
 function reportPresenterError(error: unknown): void {

@@ -38,7 +38,7 @@ export function registerPresenterCommands(
       const documentUri = matches.getDocumentUri();
       if (!editor || !documentUri || editor.document.uri.toString() !== documentUri) {
         reportError(
-          new Error("PinOp source match is not in the active editor"),
+          new Error("Pin-op source match is not in the active editor"),
         );
         return;
       }

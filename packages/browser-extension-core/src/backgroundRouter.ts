@@ -1102,7 +1102,7 @@ export class BackgroundRouter {
       }
       const commandError = sanitizedCommandError(error);
       if (commandError === "error") {
-        this.reportError(new Error("PinOp panel command failed"));
+        this.reportError(new Error("Pin-op panel command failed"));
       }
       return { ok: false, error: commandError };
     } finally {

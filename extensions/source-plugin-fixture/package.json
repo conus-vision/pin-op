@@ -1,6 +1,6 @@
 {
   "name": "pin-op-source-plugin-fixture",
-  "displayName": "PinOp Source Plugin Fixture",
+  "displayName": "Pin-op Source Plugin Fixture",
   "publisher": "conus-vision",
   "version": "0.1.0",
   "private": true,

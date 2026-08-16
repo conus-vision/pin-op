@@ -52,7 +52,7 @@ startBackgroundRuntime({
     return () => browser.tabs.onAttached.removeListener(wrapped);
   },
   onError: (error) =>
-    console.error("PinOp background:", sanitizeErrorMessage(error)),
+    console.error("Pin-op background:", sanitizeErrorMessage(error)),
 });
 
 interface ChromeMessageSender {

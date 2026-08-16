@@ -10,6 +10,7 @@ import {
   assertBrowserPackageRuntimeContract,
 } from "./browser-package-contract.mjs";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
+import { assertVsCodeExtensionIdentity } from "./vscode-extension-identity.mjs";
 import {
   assertTextEqual,
   assertVersion,
@@ -33,15 +34,15 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "dist/contentScript.js",
   "dist/devtools.html",
   "dist/devtools.js",
-  "dist/icons/pinop-16.png",
-  "dist/icons/pinop-32.png",
-  "dist/icons/pinop-48.png",
-  "dist/icons/pinop-96.png",
-  "dist/icons/pinop-128.png",
+  "dist/icons/pin-op-16.png",
+  "dist/icons/pin-op-32.png",
+  "dist/icons/pin-op-48.png",
+  "dist/icons/pin-op-96.png",
+  "dist/icons/pin-op-128.png",
   "dist/panel.css",
   "dist/panel.html",
   "dist/panel.js",
-  "dist/pinop.svg",
+  "dist/pin-op.svg",
   "dist/runtime-metadata.json",
 ]);
 export const VSIX_ARCHIVE_FILES = Object.freeze([
@@ -54,8 +55,8 @@ export const VSIX_ARCHIVE_FILES = Object.freeze([
   "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
-  "extension/resources/pinop.png",
-  "extension/resources/pinop.svg",
+  "extension/resources/pin-op.png",
+  "extension/resources/pin-op.svg",
 ]);
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -92,11 +93,11 @@ const REQUIRED_VSIX_CONTENT_TYPES = Object.freeze([
   Object.freeze([".wasm", "application/wasm"]),
 ]);
 const BROWSER_ICONS = Object.freeze({
-  16: "dist/icons/pinop-16.png",
-  32: "dist/icons/pinop-32.png",
-  48: "dist/icons/pinop-48.png",
-  96: "dist/icons/pinop-96.png",
-  128: "dist/icons/pinop-128.png",
+  16: "dist/icons/pin-op-16.png",
+  32: "dist/icons/pin-op-32.png",
+  48: "dist/icons/pin-op-48.png",
+  96: "dist/icons/pin-op-96.png",
+  128: "dist/icons/pin-op-128.png",
 });
 
 export async function verifyArtifacts(arguments_) {
@@ -465,17 +466,28 @@ export function validateBrowserArchive(archive, filename, browser) {
   for (const [size, path] of Object.entries(BROWSER_ICONS)) {
     assertPngDimensions(archive.files.get(path), `${filename} ${path}`, Number(size));
   }
+  verifyBrowserPanelIdentity(archive.files.get("dist/panel.html"), filename);
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
   });
 }
 
+function verifyBrowserPanelIdentity(panelBuffer, filename) {
+  const panel = panelBuffer.toString("utf8");
+  if (!panel.includes('src="./pin-op.svg"')) {
+    throw new Error(`${filename} panel must reference ./pin-op.svg`);
+  }
+  if (!panel.includes("<title>Pin-op</title>") || !panel.includes("<h1>Pin-op</h1>")) {
+    throw new Error(`${filename} panel must present Pin-op in its title and heading`);
+  }
+}
+
 function verifyBrowserManifest(manifest, filename, browser) {
   if (manifest.manifest_version !== 3) {
     throw new Error(`${filename} has unexpected manifest_version`);
   }
-  if (manifest.name !== "PinOp") {
+  if (manifest.name !== "Pin-op") {
     throw new Error(`${filename} has unexpected manifest name`);
   }
   if (!hasExactStringEntries(manifest.icons, BROWSER_ICONS)) {
@@ -499,6 +511,12 @@ function verifyBrowserManifest(manifest, filename, browser) {
     manifest.browser_specific_settings?.gecko?.strict_min_version !== "142.0"
   ) {
     throw new Error(`${filename} has unexpected Firefox strict_min_version`);
+  }
+  if (
+    browser === "firefox" &&
+    manifest.browser_specific_settings?.gecko?.id !== "info@conus.vision"
+  ) {
+    throw new Error(`${filename} has unexpected Firefox Gecko ID`);
   }
 }
 
@@ -528,22 +546,14 @@ export function validateVsixArchive(archive, filename) {
   assertProjectLicense(archive, filename, "extension/LICENSE.txt");
 
   const manifest = parseJsonFile(archive, filename, "extension/package.json");
-  if (manifest.publisher !== "conus-vision") {
-    throw new Error(`${filename} has unexpected extension publisher`);
-  }
-  if (manifest.name !== "pin-op") {
-    throw new Error(`${filename} has unexpected extension name`);
-  }
+  assertVsCodeExtensionIdentity(manifest, filename);
   assertVersion(manifest.version, `${filename} extension`, VERSION);
   if (manifest.main !== "./dist/extension.cjs") {
     throw new Error(`${filename} has unexpected extension main: ${manifest.main}`);
   }
-  if (manifest.icon !== "resources/pinop.png") {
-    throw new Error(`${filename} has unexpected extension icon: ${manifest.icon}`);
-  }
   assertPngDimensions(
-    archive.files.get("extension/resources/pinop.png"),
-    `${filename} extension/resources/pinop.png`,
+    archive.files.get("extension/resources/pin-op.png"),
+    `${filename} extension/resources/pin-op.png`,
     128,
   );
   validateVsixXmlMetadata(archive, filename, manifest);

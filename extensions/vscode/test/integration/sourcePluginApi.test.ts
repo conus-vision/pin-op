@@ -1,7 +1,7 @@
 import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
 
-suite("PinOp external source plugin API", () => {
+suite("Pin-op external source plugin API", () => {
   test("activates the fixture through the public core API", async () => {
     const fixture = vscode.extensions.getExtension<{
       readonly registered: boolean;

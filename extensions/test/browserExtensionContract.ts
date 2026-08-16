@@ -415,8 +415,8 @@ export function describeBrowserAdapterContract(
 
       const panel = (await callAsync(
         options.createPanel,
-        "PinOp",
-        "/dist/pinop.svg",
+        "Pin-op",
+        "/dist/pin-op.svg",
         "/dist/panel.html?channel=test",
       )) as Record<string, unknown>;
       const shownListener = vi.fn();
@@ -574,12 +574,12 @@ export function describeBrowserPackageContract(
 
       expect(panel).toBe(sharedAsset("panel.html"));
       expect(panelCss).toBe(sharedAsset("panel.css"));
-      expect(packagedBytes(packaged, "dist/pinop.svg")).toEqual(
-        Buffer.from(sharedAsset("pinop.svg")),
+      expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
+        Buffer.from(sharedAsset("pin-op.svg")),
       );
       for (const size of [16, 32, 48, 96, 128]) {
-        expect(packagedBytes(packaged, `dist/icons/pinop-${size}.png`)).toEqual(
-          sharedAssetBytes(`icons/pinop-${size}.png`),
+        expect(packagedBytes(packaged, `dist/icons/pin-op-${size}.png`)).toEqual(
+          sharedAssetBytes(`icons/pin-op-${size}.png`),
         );
       }
       expect(openingTag(panel, "dom-tree")).toMatch(/role="tree"/);
@@ -663,12 +663,12 @@ export function describeBrowserPackageContract(
         "dist/devtools.html",
         "dist/panel.html",
         "dist/panel.css",
-        "dist/pinop.svg",
-        "dist/icons/pinop-16.png",
-        "dist/icons/pinop-32.png",
-        "dist/icons/pinop-48.png",
-        "dist/icons/pinop-96.png",
-        "dist/icons/pinop-128.png",
+        "dist/pin-op.svg",
+        "dist/icons/pin-op-16.png",
+        "dist/icons/pin-op-32.png",
+        "dist/icons/pin-op-48.png",
+        "dist/icons/pin-op-96.png",
+        "dist/icons/pin-op-128.png",
         "dist/runtime-metadata.json",
         "LICENSE",
         "THIRD_PARTY_NOTICES",

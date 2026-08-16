@@ -26,7 +26,7 @@ export async function writeBrowserBundleNotices(metafile, extensionRoot) {
   const notices = [
     "# Third-Party Notices",
     "",
-    "PinOp includes the following bundled third-party software.",
+    "Pin-op includes the following bundled third-party software.",
     "This list is generated from the inputs in esbuild's bundle metadata.",
     "",
     ...sections.flatMap((section) => [section, ""]),

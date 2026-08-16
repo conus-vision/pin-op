@@ -129,7 +129,7 @@ function sanitizedErrorMessage(error: PanelErrorSummary): string {
     return error.message;
   }
   return (
-    PROTOCOL_ERROR_MESSAGES[error.code] ?? "PinOp protocol error"
+    PROTOCOL_ERROR_MESSAGES[error.code] ?? "Pin-op protocol error"
   );
 }
 

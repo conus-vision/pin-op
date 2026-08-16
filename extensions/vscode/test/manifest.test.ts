@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("VS Code extension manifest", () => {
-  it("declares the PinOp commands and settings", () => {
+  it("declares the Pin-op commands and settings", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as {
@@ -13,6 +13,7 @@ describe("VS Code extension manifest", () => {
       version: string;
       license: string;
       repository: string;
+      bugs: string;
       homepage: string;
       icon: string;
       private?: boolean;
@@ -22,7 +23,7 @@ describe("VS Code extension manifest", () => {
       extensionKind: string[];
       scripts: Record<string, string>;
       contributes: {
-        commands: Array<{ command: string }>;
+        commands: Array<{ command: string; title: string }>;
         configuration: { properties: Record<string, { default: unknown }> };
         viewsContainers: {
           activitybar: Array<{ id: string; title: string; icon: string }>;
@@ -40,14 +41,15 @@ describe("VS Code extension manifest", () => {
     expect(manifest.activationEvents).toContain("onStartupFinished");
     expect(manifest).toMatchObject({
       name: "pin-op",
-      displayName: "PinOp",
+      displayName: "Pin-op",
       description: "Connect browser DevTools to your source code.",
       publisher: "conus-vision",
       version: "0.3.0",
       license: "MIT",
-      repository: "https://github.com/conus-vision/pin-op.git",
+      repository: "https://github.com/conus-vision/pin-op",
+      bugs: "https://github.com/conus-vision/pin-op/issues",
       homepage: "https://pin-op.conus.vision",
-      icon: "resources/pinop.png",
+      icon: "resources/pin-op.png",
       extensionKind: ["ui"],
     });
     expect(manifest.private).not.toBe(true);
@@ -55,12 +57,13 @@ describe("VS Code extension manifest", () => {
     expect(manifest.scripts.package).toBe("node ./package-vsix.mjs");
     expect(manifest.extensionKind).toEqual(["ui"]);
 
-    expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
-      "pin-op.start",
-      "pin-op.stop",
-      "pin-op.copyLinkCode",
-      "pin-op.openDiagnostics",
-      "pin-op.revealSourceMatch",
+    expect(`${manifest.publisher}.${manifest.name}`).toBe("conus-vision.pin-op");
+    expect(manifest.contributes.commands).toEqual([
+      { command: "pin-op.start", title: "Pin-op: Start" },
+      { command: "pin-op.stop", title: "Pin-op: Stop" },
+      { command: "pin-op.copyLinkCode", title: "Pin-op: Copy Link Code" },
+      { command: "pin-op.openDiagnostics", title: "Pin-op: Open Diagnostics" },
+      { command: "pin-op.revealSourceMatch", title: "Pin-op: Reveal Source Match" },
     ]);
     expect(manifest.contributes.configuration.properties).toEqual({
       "pin-op.sessionId": { type: "string", default: "default" },
@@ -68,8 +71,8 @@ describe("VS Code extension manifest", () => {
 
     expect(manifest.contributes.viewsContainers.activitybar).toContainEqual({
       id: "pin-op",
-      title: "PinOp",
-      icon: "resources/pinop.svg",
+      title: "Pin-op",
+      icon: "resources/pin-op.svg",
     });
     expect(manifest.contributes.views["pin-op"]).toContainEqual({
       id: "pin-op.applicableRules",
@@ -81,7 +84,8 @@ describe("VS Code extension manifest", () => {
       "pin-op.parentRuleBackground",
       "pin-op.parentRuleBorder",
     ]);
-    const activityIcon = new URL("../resources/pinop.svg", import.meta.url);
+    expect(manifest.contributes.configuration).toMatchObject({ title: "Pin-op" });
+    const activityIcon = new URL("../resources/pin-op.svg", import.meta.url);
     expect(existsSync(activityIcon)).toBe(true);
     if (existsSync(activityIcon)) {
       const svg = readFileSync(activityIcon, "utf8");
@@ -89,7 +93,7 @@ describe("VS Code extension manifest", () => {
       expect(svg).toContain('fill="currentColor"');
     }
 
-    const marketplaceIcon = new URL("../resources/pinop.png", import.meta.url);
+    const marketplaceIcon = new URL("../resources/pin-op.png", import.meta.url);
     expect(existsSync(marketplaceIcon)).toBe(true);
     if (existsSync(marketplaceIcon)) {
       const png = readFileSync(marketplaceIcon);

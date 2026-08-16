@@ -58,8 +58,8 @@ export async function registerDevtoolsPanel(
   let panel: DevtoolsPanelHandle;
   try {
     panel = await options.createPanel(
-      "PinOp",
-      "/dist/pinop.svg",
+      "Pin-op",
+      "/dist/pin-op.svg",
       `/dist/panel.html?channel=${encodeURIComponent(options.channelId)}`,
     );
     panel.addShownListener(onShown);

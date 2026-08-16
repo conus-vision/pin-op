@@ -68,13 +68,13 @@ export class ExtensionRuntimeController {
   async copyLinkCode(): Promise<void> {
     const snapshot = this.options.manager.snapshot();
     if (snapshot.state !== "running" || !snapshot.linkCode) {
-      await this.options.showWarningMessage("PinOp is not running.");
+      await this.options.showWarningMessage("Pin-op is not running.");
       return;
     }
 
     await this.options.writeClipboard(snapshot.linkCode);
     await this.options.showInformationMessage(
-      "PinOp link code copied.",
+      "Pin-op link code copied.",
     );
   }
 
@@ -107,7 +107,7 @@ export class ExtensionRuntimeController {
     const credentials = this.options.manager.getIdeCredentials();
     if (!snapshot.url || !credentials) {
       await this.options.manager.stop();
-      throw new Error("PinOp bridge did not provide IDE credentials");
+      throw new Error("Pin-op bridge did not provide IDE credentials");
     }
 
     let nextClient: RuntimeClientLike | undefined;

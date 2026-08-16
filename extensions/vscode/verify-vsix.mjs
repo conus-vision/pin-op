@@ -3,6 +3,7 @@ import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRuntimeMetadata } from "../../tools/runtime-metadata.mjs";
+import { assertVsCodeExtensionIdentity } from "../../tools/vscode-extension-identity.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const artifactPath = process.argv[2]
@@ -27,8 +28,8 @@ const requiredPaths = [
   "extension/dist/runtime-metadata.json",
   "extension/package.json",
   "extension/readme.md",
-  "extension/resources/pinop.png",
-  "extension/resources/pinop.svg",
+  "extension/resources/pin-op.png",
+  "extension/resources/pin-op.svg",
 ];
 const forbiddenPath =
   /(?:^|\/)(?:node_modules|src|test)(?:\/|$)|\.vscode-test|\.map$/;
@@ -48,12 +49,10 @@ const manifest = JSON.parse(
 if (manifest.main !== "./dist/extension.cjs") {
   throw new Error(`VSIX manifest has unexpected main: ${manifest.main}`);
 }
-if (manifest.icon !== "resources/pinop.png") {
-  throw new Error(`VSIX manifest has unexpected icon: ${manifest.icon}`);
-}
+assertVsCodeExtensionIdentity(manifest, "VSIX manifest");
 assertPngDimensions(
-  entries.get("extension/resources/pinop.png"),
-  "extension/resources/pinop.png",
+  entries.get("extension/resources/pin-op.png"),
+  "extension/resources/pin-op.png",
   128,
 );
 parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {

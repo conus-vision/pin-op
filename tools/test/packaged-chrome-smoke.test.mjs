@@ -60,7 +60,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
     "manifest.json",
     Buffer.from(
       JSON.stringify({
-        name: "PinOp",
+        name: "Pin-op",
         version: "0.3.0",
         manifest_version: 3,
         background: { service_worker: "dist/background.js" },
@@ -83,7 +83,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
 test("accepts only the exact validated Chrome runtime archive", () => {
   assert.equal(
     validatePackagedChromeArchive(createArchive()).name,
-    "PinOp",
+    "Pin-op",
   );
   assert.throws(
     () =>
@@ -656,7 +656,7 @@ test("CDP runtime errors dispose listeners and reject pending requests", async (
   assert.equal(socket.closeCalls, 1);
 });
 
-test("finds the packaged PinOp MV3 service worker", () => {
+test("finds the packaged Pin-op MV3 service worker", () => {
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
   const target = findPinOpServiceWorker([
     { type: "page", url: "about:blank" },
@@ -689,7 +689,7 @@ test("ignores unrelated workers and non-extension targets", () => {
   );
 });
 
-test("rejects ambiguous PinOp service workers", () => {
+test("rejects ambiguous Pin-op service workers", () => {
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.throws(
     () =>
@@ -705,14 +705,14 @@ test("rejects ambiguous PinOp service workers", () => {
           url: `chrome-extension://${extensionId}/dist/background.js`,
         },
       ], extensionId),
-    /multiple PinOp service workers/,
+    /multiple Pin-op service workers/,
   );
 });
 
-test("recognizes PinOp by the manifest exposed inside its worker", () => {
+test("recognizes Pin-op by the manifest exposed inside its worker", () => {
   assert.equal(
     isPinOpManifest({
-      name: "PinOp",
+      name: "Pin-op",
       version: "0.3.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },

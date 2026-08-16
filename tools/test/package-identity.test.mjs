@@ -34,7 +34,7 @@ test("public package metadata uses canonical pin-op URLs and IDs", async () => {
 
   const vscode = await readManifest("extensions/vscode/package.json");
   assert.equal(vscode.publisher, "conus-vision");
-  assert.equal(vscode.repository, "https://github.com/conus-vision/pin-op.git");
+  assert.equal(vscode.repository, "https://github.com/conus-vision/pin-op");
   assert.equal(vscode.bugs, "https://github.com/conus-vision/pin-op/issues");
   assert.equal(vscode.homepage, "https://pin-op.conus.vision");
 
