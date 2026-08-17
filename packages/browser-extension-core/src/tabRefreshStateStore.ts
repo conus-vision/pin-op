@@ -10,6 +10,10 @@ export const MAX_PERSISTED_TAB_REFRESH_STATES = 4_096;
 const TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY =
   "pin-op.tabRefreshStateRecovery";
 
+// The coordinator finalizer keeps the guarded tab lifecycle stable while the
+// terminal journal is committed. One store instance owns writes per runtime.
+type RemovalFinalizer = <T>(operation: () => Promise<T>) => Promise<T>;
+
 export class TabRefreshStateStore {
   private tail = Promise.resolve();
   private recoveryKnownClear = false;
@@ -109,6 +113,7 @@ export class TabRefreshStateStore {
   public removeTab(
     tabId: number,
     canRemove: (current: TabRefreshState) => boolean = alwaysRemove,
+    finalize: RemovalFinalizer = finalizeImmediately,
   ): Promise<void> {
     createDefaultTabRefreshState(tabId, 0);
     if (typeof canRemove !== "function") {
@@ -125,6 +130,7 @@ export class TabRefreshStateStore {
         current,
         states.filter((state) => state.tabId !== tabId),
         canRemove,
+        finalize,
       );
     });
   }
@@ -133,6 +139,7 @@ export class TabRefreshStateStore {
     tabId: number,
     windowId: number,
     canRemove: (current: TabRefreshState) => boolean = alwaysRemove,
+    finalize: RemovalFinalizer = finalizeImmediately,
   ): Promise<TabRefreshState | undefined> {
     createDefaultTabRefreshState(tabId, windowId);
     if (typeof canRemove !== "function") {
@@ -149,6 +156,7 @@ export class TabRefreshStateStore {
         current,
         states.filter((state) => state.tabId !== tabId),
         canRemove,
+        finalize,
       );
       return removed ? current : undefined;
     });
@@ -196,6 +204,7 @@ export class TabRefreshStateStore {
     current: TabRefreshState,
     committed: readonly TabRefreshState[],
     canRemove: (current: TabRefreshState) => boolean,
+    finalize: RemovalFinalizer,
   ): Promise<boolean> {
     const fallback = states.map((state) =>
       state.tabId === current.tabId ? failClosedState(state) : state);
@@ -214,9 +223,24 @@ export class TabRefreshStateStore {
       return false;
     }
 
-    await this.writeRecovery(committed);
+    // Promote the fallback before clearing speculative recovery. This keeps
+    // every crash point fail-closed until finalization owns the tab lifecycle.
+    await this.writeStates(fallback);
+    await this.writeRecovery(fallback);
     await this.clearRecovery();
-    return true;
+    if (!canRemove(current)) {
+      return false;
+    }
+
+    return finalize(async () => {
+      if (!canRemove(current)) {
+        return false;
+      }
+      await this.writeRecovery(fallback);
+      await this.writeStates(committed);
+      await this.clearRecovery();
+      return true;
+    });
   }
 
   private async restoreRecovery(
@@ -260,9 +284,21 @@ export class TabRefreshStateStore {
     }
     const states = parseStoredStates(value);
     if (!states) {
-      await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+      const primary = await this.storage.get(TAB_REFRESH_STATE_STORAGE_KEY);
+      const primaryValue = ownDataValue(
+        primary,
+        TAB_REFRESH_STATE_STORAGE_KEY,
+      );
+      if (primaryValue !== absentValue) {
+        const primaryStates = parseStoredStates(primaryValue);
+        if (primaryStates) {
+          await this.writeStates(primaryStates.map(failClosedState));
+        } else {
+          await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+        }
+      }
       await this.clearRecovery();
-      return;
+      throw new Error("Invalid tab refresh recovery journal");
     }
     await this.writeStates(states);
     await this.clearRecovery();
@@ -306,6 +342,7 @@ export class TabRefreshStateStore {
 
 const absentValue = Symbol("pin-op.absentTabRefreshState");
 const alwaysRemove = () => true;
+const finalizeImmediately: RemovalFinalizer = (operation) => operation();
 
 function ownDataValue(
   value: unknown,

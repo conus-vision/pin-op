@@ -3522,6 +3522,130 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("does not return a valid binding while its panel teardown is pending", async () => {
+    let tabExists = true;
+    const closeGate = deferred<void>();
+    const harness = createHarness({
+      getTab: async (tabId) =>
+        tabExists ? { id: tabId, windowId: 10 } : undefined,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelClosedBehavior = async () => closeGate.promise;
+
+    tabExists = false;
+    port.emitMessage({
+      type: "pin-op.inspect.setEnabled",
+      requestId: "pending-teardown",
+      enabled: true,
+    });
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelCloseCalls).toEqual([[17, 10]]);
+    });
+
+    tabExists = true;
+    let validLookupSettled = false;
+    const concurrent = harness.router.routeMessage(
+      {
+        type: "pin-op.unlinkWindow",
+        channel: "channel-1",
+      },
+      panelSender("channel-1"),
+    ).then((result) => {
+      validLookupSettled = true;
+      return result;
+    });
+    await flushMicrotasks();
+    const settledBeforeTeardown = validLookupSettled;
+    closeGate.resolve();
+
+    await expect(concurrent).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+    expect(settledBeforeTeardown).toBe(false);
+    expect(harness.coordinator.unlinks).toEqual([]);
+    expect(port.sent).toContainEqual({
+      type: "pin-op.inspect.result",
+      requestId: "pending-teardown",
+      ok: false,
+      error: "stalePanel",
+    });
+  });
+
+  it("retries a failed pending teardown before a valid lookup can use the binding", async () => {
+    let tabExists = true;
+    const firstCloseGate = deferred<void>();
+    let closeAttempt = 0;
+    const harness = createHarness({
+      getTab: async (tabId) =>
+        tabExists ? { id: tabId, windowId: 10 } : undefined,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelClosedBehavior = async () => {
+      closeAttempt += 1;
+      if (closeAttempt === 1) {
+        await firstCloseGate.promise;
+        throw new Error("transient close failure");
+      }
+    };
+
+    tabExists = false;
+    port.emitMessage({
+      type: "pin-op.inspect.setEnabled",
+      requestId: "failed-pending-teardown",
+      enabled: true,
+    });
+    await vi.waitFor(() => expect(closeAttempt).toBe(1));
+
+    tabExists = true;
+    let validLookupSettled = false;
+    const concurrent = harness.router.routeMessage(
+      {
+        type: "pin-op.unlinkWindow",
+        channel: "channel-1",
+      },
+      panelSender("channel-1"),
+    ).then((result) => {
+      validLookupSettled = true;
+      return result;
+    });
+    await flushMicrotasks();
+    const settledBeforeTeardown = validLookupSettled;
+    firstCloseGate.resolve();
+
+    await expect(concurrent).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+    expect(settledBeforeTeardown).toBe(false);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([
+      [17, 10],
+      [17, 10],
+    ]);
+    expect(harness.coordinator.unlinks).toEqual([]);
+    expect(harness.reportedErrors).toContainEqual(
+      new Error("transient close failure"),
+    );
+    expect(port.sent).toContainEqual({
+      type: "pin-op.inspect.result",
+      requestId: "failed-pending-teardown",
+      ok: false,
+      error: "stalePanel",
+    });
+  });
+
   it("does not dispatch a command after its tab lookup loses the panel", async () => {
     const movedTab = deferred<{ id: number; windowId: number }>();
     let lookupCount = 0;
@@ -5339,6 +5463,7 @@ class FakeTabRefreshCoordinator {
   private readonly states = new Map<number, TabRefreshState>();
   private readonly panelWindows = new Map<number, number>();
   private readonly lifecycleRevisions = new Map<number, number>();
+  private readonly terminalTabs = new Set<number>();
   private nextLifecycleRevision = 1;
 
   public async panelOpened(
@@ -5346,6 +5471,7 @@ class FakeTabRefreshCoordinator {
     windowId: number,
   ): Promise<TabRefreshState> {
     this.panelOpenCalls.push([tabId, windowId]);
+    this.terminalTabs.delete(tabId);
     this.panelWindows.set(tabId, windowId);
     const revision = this.advanceLifecycle(tabId);
     try {
@@ -5378,6 +5504,9 @@ class FakeTabRefreshCoordinator {
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
     this.panelCloseCalls.push([tabId, windowId]);
+    if (this.terminalTabs.has(tabId)) {
+      return undefined;
+    }
     const ownerWindowId =
       this.panelWindows.get(tabId) ?? this.states.get(tabId)?.windowId;
     if (
@@ -5386,6 +5515,9 @@ class FakeTabRefreshCoordinator {
       ownerWindowId !== windowId
     ) {
       return this.states.get(tabId);
+    }
+    if (ownerWindowId === undefined) {
+      return undefined;
     }
     const revision = this.advanceLifecycle(tabId);
     if (
@@ -5508,6 +5640,13 @@ class FakeTabRefreshCoordinator {
 
   public async removeTab(tabId: number): Promise<void> {
     this.removedTabs.push(tabId);
+    this.terminalTabs.delete(tabId);
+    this.terminalTabs.add(tabId);
+    while (this.terminalTabs.size > 4_096) {
+      const oldest = this.terminalTabs.values().next().value;
+      if (oldest === undefined) break;
+      this.terminalTabs.delete(oldest);
+    }
     this.panelWindows.delete(tabId);
     this.states.delete(tabId);
     this.lifecycleRevisions.delete(tabId);

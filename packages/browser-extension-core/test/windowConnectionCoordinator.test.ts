@@ -543,7 +543,8 @@ describe("WindowConnectionCoordinator", () => {
       error: "stalePanel",
     });
     await flushMicrotasks();
-    expect(lookupCount).toBe(lookupCountBeforeClose + 2);
+    expect(lookupCount).toBe(lookupCountBeforeClose + 1);
+    expect(panelClosed).toHaveBeenCalledTimes(2);
     router.dispose();
   });
 

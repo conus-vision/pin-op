@@ -196,6 +196,73 @@ describe("TabRefreshStateStore", () => {
     await expect(store.loadAll()).rejects.toThrow("transient storage failure");
     await expect(store.loadAll()).resolves.toEqual([state(11, 7)]);
   });
+
+  it("fails closed a valid primary state before reporting a malformed recovery journal", async () => {
+    const primary = {
+      ...state(11, 7),
+      ideHighlightEnabled: false,
+      lastAcceptedGeneration: 9,
+      pending: { generation: 9, mode: "reload" as const },
+    };
+    const storage = memoryStorage({
+      "pin-op.tabRefreshStates": [primary],
+      "pin-op.tabRefreshStateRecovery": { malformed: true },
+    });
+    const store = new TabRefreshStateStore(storage);
+
+    await expect(store.loadAll()).rejects.toThrow(
+      "Invalid tab refresh recovery journal",
+    );
+    expect(storage.value("pin-op.tabRefreshStates")).toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 9,
+    }]);
+    expect(storage.value("pin-op.tabRefreshStateRecovery")).toBeUndefined();
+    await expect(store.loadAll()).resolves.toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 9,
+    }]);
+  });
+
+  it("retries malformed recovery cleanup without defaulting on after a failed fail-closed write", async () => {
+    const storage = memoryStorage({
+      "pin-op.tabRefreshStates": [{
+        ...state(11, 7),
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: false,
+        participant: false,
+        lastAcceptedGeneration: 6,
+      }],
+      "pin-op.tabRefreshStateRecovery": "corrupt",
+    });
+    storage.failNextSetFor("pin-op.tabRefreshStates");
+
+    await expect(new TabRefreshStateStore(storage).loadAll()).rejects.toThrow(
+      "transient storage set failure",
+    );
+    expect(storage.value("pin-op.tabRefreshStateRecovery")).toBe("corrupt");
+
+    const replacement = new TabRefreshStateStore(storage);
+    await expect(replacement.loadAll()).rejects.toThrow(
+      "Invalid tab refresh recovery journal",
+    );
+    await expect(replacement.loadAll()).resolves.toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 6,
+    }]);
+  });
 });
 
 function state(tabId: number, windowId: number) {
@@ -212,13 +279,20 @@ function state(tabId: number, windowId: number) {
 function memoryStorage(initial: Record<string, unknown> = {}): SessionStorage & {
   readonly remove: ReturnType<typeof vi.fn>;
   readonly set: ReturnType<typeof vi.fn>;
+  failNextSetFor(key: string): void;
+  value(key: string): unknown;
 } {
   const values = new Map(Object.entries(initial));
+  let failedSetKey: string | undefined;
   return {
     async get(key: string) {
       return values.has(key) ? { [key]: values.get(key) } : {};
     },
     set: vi.fn(async (records: Record<string, unknown>) => {
+      if (failedSetKey && Object.hasOwn(records, failedSetKey)) {
+        failedSetKey = undefined;
+        throw new Error("transient storage set failure");
+      }
       for (const [key, value] of Object.entries(records)) {
         values.set(key, structuredClone(value));
       }
@@ -226,6 +300,13 @@ function memoryStorage(initial: Record<string, unknown> = {}): SessionStorage & 
     remove: vi.fn(async (key: string) => {
       values.delete(key);
     }),
+    failNextSetFor(key: string) {
+      failedSetKey = key;
+    },
+    value(key: string) {
+      const value = values.get(key);
+      return value === undefined ? undefined : structuredClone(value);
+    },
   };
 }
 

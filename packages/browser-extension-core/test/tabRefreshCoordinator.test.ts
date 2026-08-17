@@ -561,6 +561,61 @@ describe("TabRefreshCoordinator", () => {
     expect(lifecycleRevisionCount(context.coordinator)).toBe(1);
   });
 
+  it("restores fail-closed preferences when a panel opens during the final recovery write", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+
+    const finalRecoveryWrite = storage.gateSetFor(
+      "pin-op.tabRefreshStateRecovery",
+      2,
+    );
+    const removing = context.coordinator.removeTab(11);
+    await finalRecoveryWrite.started;
+    const opening = context.coordinator.panelOpened(11, 8);
+    finalRecoveryWrite.release();
+    const [, moved] = await Promise.all([removing, opening]);
+
+    expect(moved).toMatchObject({
+      windowId: 8,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+    expect(await context.store.loadAll()).toEqual([moved]);
+  });
+
+  it("restores fail-closed preferences when a panel opens during recovery clear", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+
+    const recoveryClear = storage.gateRemoveFor(
+      "pin-op.tabRefreshStateRecovery",
+    );
+    const removing = context.coordinator.removeTab(11);
+    await recoveryClear.started;
+    const opening = context.coordinator.panelOpened(11, 8);
+    recoveryClear.release();
+    const [, moved] = await Promise.all([removing, opening]);
+
+    expect(moved).toMatchObject({
+      windowId: 8,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+    expect(await context.store.loadAll()).toEqual([moved]);
+  });
+
   it("recovers disabled preferences after rollback failure and background restart", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
@@ -630,6 +685,41 @@ describe("TabRefreshCoordinator", () => {
 
     expect(context.setRefreshParticipant).not.toHaveBeenCalled();
     await expect(closing).resolves.toBeUndefined();
+    expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
+  });
+
+  it("lets terminal removal win over a concurrent windowless panel close", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+
+    const removalWrite = storage.gateNextRemove();
+    const removing = context.coordinator.removeTab(11);
+    await removalWrite.started;
+    const closing = context.coordinator.panelClosed(11);
+    removalWrite.release();
+
+    await expect(Promise.all([removing, closing])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(await context.store.loadAll()).toEqual([]);
+    expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
+  });
+
+  it("bounds terminal tab authority while keeping late closes revision-free", async () => {
+    const context = setup();
+    for (let tabId = 1; tabId <= 4_100; tabId += 1) {
+      await context.coordinator.removeTab(tabId);
+      await context.coordinator.panelClosed(tabId);
+    }
+
+    expect(terminalAuthorityCount(context.coordinator)).toBeLessThanOrEqual(
+      4_096,
+    );
+    await context.coordinator.panelClosed(1);
+    expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
+    expect(lifecycleFinalizationCount(context.coordinator)).toBe(0);
   });
 
   it("clears the synchronous ownership index on an exact tab detach", async () => {
@@ -858,6 +948,34 @@ describe("TabRefreshCoordinator", () => {
     });
   });
 
+  it("recovers a fail-closed detached snapshot after its primary write fails", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+    await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
+    storage.failNextStateSets();
+
+    await expect(context.coordinator.detachTab(11, 7)).rejects.toThrow(
+      "transient state write failure",
+    );
+
+    const replacement = setup(storage);
+    await replacement.coordinator.initialize();
+    expect(await replacement.store.loadAll()).toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 4,
+    }]);
+    expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
+  });
+
   it("does not let a delayed old-window detach remove a moved participant", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
@@ -959,6 +1077,20 @@ function lifecycleRevisionCount(coordinator: TabRefreshCoordinator): number {
   }).lifecycleRevisions.size;
 }
 
+function terminalAuthorityCount(coordinator: TabRefreshCoordinator): number {
+  return (coordinator as unknown as {
+    readonly terminalTabs?: ReadonlySet<number>;
+  }).terminalTabs?.size ?? Number.POSITIVE_INFINITY;
+}
+
+function lifecycleFinalizationCount(
+  coordinator: TabRefreshCoordinator,
+): number {
+  return (coordinator as unknown as {
+    readonly lifecycleFinalizations: ReadonlyMap<number, Promise<void>>;
+  }).lifecycleFinalizations.size;
+}
+
 function refresh(
   refreshGeneration: number,
   mode: "styles" | "reload",
@@ -1052,6 +1184,14 @@ function gateableStorage(): SessionStorage & {
     readonly started: Promise<void>;
     readonly release: () => void;
   };
+  gateSetFor(key: string, occurrence?: number): {
+    readonly started: Promise<void>;
+    readonly release: () => void;
+  };
+  gateRemoveFor(key: string): {
+    readonly started: Promise<void>;
+    readonly release: () => void;
+  };
   failNextStateSets(count?: number): void;
   failNextGet(): void;
 } {
@@ -1066,6 +1206,21 @@ function gateableStorage(): SessionStorage & {
     | undefined;
   let nextRemoveGate:
     | {
+        readonly started: ReturnType<typeof deferred<void>>;
+        readonly released: ReturnType<typeof deferred<void>>;
+    }
+    | undefined;
+  let targetedSetGate:
+    | {
+        readonly key: string;
+        remaining: number;
+        readonly started: ReturnType<typeof deferred<void>>;
+        readonly released: ReturnType<typeof deferred<void>>;
+      }
+    | undefined;
+  let targetedRemoveGate:
+    | {
+        readonly key: string;
         readonly started: ReturnType<typeof deferred<void>>;
         readonly released: ReturnType<typeof deferred<void>>;
       }
@@ -1095,6 +1250,30 @@ function gateableStorage(): SessionStorage & {
         release: () => released.resolve(),
       };
     },
+    gateSetFor(key: string, occurrence = 1) {
+      if (targetedSetGate || occurrence < 1) {
+        throw new Error("A targeted storage write gate is already pending");
+      }
+      const started = deferred<void>();
+      const released = deferred<void>();
+      targetedSetGate = { key, remaining: occurrence, started, released };
+      return {
+        started: started.promise,
+        release: () => released.resolve(),
+      };
+    },
+    gateRemoveFor(key: string) {
+      if (targetedRemoveGate) {
+        throw new Error("A targeted storage removal gate is already pending");
+      }
+      const started = deferred<void>();
+      const released = deferred<void>();
+      targetedRemoveGate = { key, started, released };
+      return {
+        started: started.promise,
+        release: () => released.resolve(),
+      };
+    },
     failNextGet() {
       failNextGet = true;
     },
@@ -1115,6 +1294,15 @@ function gateableStorage(): SessionStorage & {
       return values.has(key) ? { [key]: values.get(key) } : {};
     },
     async set(records: Record<string, unknown>) {
+      const setGate = targetedSetGate;
+      if (setGate && Object.hasOwn(records, setGate.key)) {
+        setGate.remaining -= 1;
+        if (setGate.remaining === 0) {
+          targetedSetGate = undefined;
+          setGate.started.resolve();
+          await setGate.released.promise;
+        }
+      }
       if (
         Object.hasOwn(records, "pin-op.tabRefreshStates") &&
         failedStateSetsRemaining > 0
@@ -1127,6 +1315,12 @@ function gateableStorage(): SessionStorage & {
       }
     },
     async remove(key: string) {
+      const removeGate = targetedRemoveGate;
+      if (removeGate?.key === key) {
+        targetedRemoveGate = undefined;
+        removeGate.started.resolve();
+        await removeGate.released.promise;
+      }
       const gate = nextRemoveGate;
       nextRemoveGate = undefined;
       if (gate) {

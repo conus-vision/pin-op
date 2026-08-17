@@ -362,8 +362,9 @@ export class BackgroundRouter {
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly panelTeardowns = new Map<
     string,
-    { readonly binding: ChannelBinding; readonly promise: Promise<void> }
+    { readonly binding: ChannelBinding; readonly promise: Promise<boolean> }
   >();
+  private readonly requiredPanelTeardowns = new Map<string, ChannelBinding>();
   private readonly removedWindows = new Set<number>();
   private readonly peerBlockedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
@@ -599,6 +600,7 @@ export class BackgroundRouter {
     this.pendingRegistrations.clear();
     this.panelCommands.clear();
     this.panelTeardowns.clear();
+    this.requiredPanelTeardowns.clear();
     this.bindings.clear();
     this.channelByTab.clear();
     this.channelBySource.clear();
@@ -2011,6 +2013,12 @@ export class BackgroundRouter {
     if (!this.isCurrentActivation(record, activationToken, binding)) {
       return undefined;
     }
+    if (
+      this.hasRequiredPanelTeardown(binding) &&
+      await this.settleRequiredPanelTeardown(binding, record)
+    ) {
+      return undefined;
+    }
 
     let tab: BackgroundTab | undefined;
     try {
@@ -2019,6 +2027,12 @@ export class BackgroundRouter {
       tab = undefined;
     }
     if (!this.isCurrentActivation(record, activationToken, binding)) {
+      return undefined;
+    }
+    if (
+      this.hasRequiredPanelTeardown(binding) &&
+      await this.settleRequiredPanelTeardown(binding, record)
+    ) {
       return undefined;
     }
 
@@ -2052,7 +2066,8 @@ export class BackgroundRouter {
   private async invalidatePanelBinding(
     binding: ChannelBinding,
     record: PanelPortRecord,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    this.requiredPanelTeardowns.set(binding.channel, binding);
     const existing = this.panelTeardowns.get(binding.channel);
     if (existing?.binding === binding) {
       return existing.promise;
@@ -2069,15 +2084,44 @@ export class BackgroundRouter {
     return promise;
   }
 
+  private async settleRequiredPanelTeardown(
+    binding: ChannelBinding,
+    record: PanelPortRecord,
+  ): Promise<boolean> {
+    const pending = this.panelTeardowns.get(binding.channel);
+    const required = this.requiredPanelTeardowns.get(binding.channel);
+    if (pending?.binding !== binding && required !== binding) {
+      return false;
+    }
+    const completed = pending?.binding === binding
+      ? await pending.promise
+      : false;
+    if (
+      !completed &&
+      this.requiredPanelTeardowns.get(binding.channel) === binding
+    ) {
+      await this.invalidatePanelBinding(binding, record);
+    }
+    return true;
+  }
+
+  private hasRequiredPanelTeardown(binding: ChannelBinding): boolean {
+    return this.panelTeardowns.get(binding.channel)?.binding === binding ||
+      this.requiredPanelTeardowns.get(binding.channel) === binding;
+  }
+
   private async performPanelBindingInvalidation(
     binding: ChannelBinding,
     record: PanelPortRecord,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (
       this.bindings.get(binding.channel) !== binding ||
       this.panelPorts.get(record.channel) !== record
     ) {
-      return;
+      if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
+        this.requiredPanelTeardowns.delete(binding.channel);
+      }
+      return true;
     }
     this.contentRefreshCoordinator.revokeTab(binding.tabId);
     try {
@@ -2087,19 +2131,23 @@ export class BackgroundRouter {
       );
     } catch (error) {
       this.reportError(error);
-      return;
+      return false;
     }
     if (
       this.bindings.get(binding.channel) !== binding ||
       this.panelPorts.get(record.channel) !== record
     ) {
-      return;
+      if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
+        this.requiredPanelTeardowns.delete(binding.channel);
+      }
+      return true;
     }
     this.removeBinding(binding);
     record.port.onMessage.removeListener(record.onMessage);
     this.clearPanelActivation(record, true);
     record.onMessage = (message) => this.rejectPendingInspect(record, message);
     record.port.onMessage.addListener(record.onMessage);
+    return true;
   }
 
   private postInspectFailure(
@@ -2820,6 +2868,9 @@ export class BackgroundRouter {
       return;
     }
     this.bindings.delete(binding.channel);
+    if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
+      this.requiredPanelTeardowns.delete(binding.channel);
+    }
     if (this.channelByTab.get(binding.tabId) === binding.channel) {
       this.channelByTab.delete(binding.tabId);
     }

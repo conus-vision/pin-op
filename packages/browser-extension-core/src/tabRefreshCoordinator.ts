@@ -35,6 +35,8 @@ interface WindowWatermark {
   readonly mode: PageRefreshMode;
 }
 
+const MAX_TERMINAL_TAB_AUTHORITIES = 4_096;
+
 export class TabRefreshCoordinator {
   private readonly store: TabRefreshStateStore;
   private readonly getActiveTabId: TabRefreshCoordinatorOptions["getActiveTabId"];
@@ -45,6 +47,10 @@ export class TabRefreshCoordinator {
   private readonly lifecycleRevisions = new Map<number, number>();
   private readonly panelWindows = new Map<number, number>();
   private readonly participantWindows = new Map<number, number>();
+  // Runtime-scoped tombstones reject stale closes; an explicit panel open
+  // claims a reused tab id, and absent-state checks cover bounded eviction.
+  private readonly terminalTabs = new Set<number>();
+  private readonly lifecycleFinalizations = new Map<number, Promise<void>>();
   private nextLifecycleRevision = 1;
   private initialization: Promise<void> | undefined;
   private tail = Promise.resolve();
@@ -65,6 +71,10 @@ export class TabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ): Promise<TabRefreshState> {
+    if (this.lifecycleFinalizations.has(tabId)) {
+      await this.waitForLifecycleFinalization(tabId);
+    }
+    this.terminalTabs.delete(tabId);
     this.panelWindows.set(tabId, windowId);
     const revision = this.advanceLifecycle(tabId);
     try {
@@ -119,6 +129,15 @@ export class TabRefreshCoordinator {
     tabId: number,
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
+    if (this.terminalTabs.has(tabId)) {
+      return undefined;
+    }
+    if (this.lifecycleFinalizations.has(tabId)) {
+      await this.waitForLifecycleFinalization(tabId);
+      if (this.terminalTabs.has(tabId)) {
+        return undefined;
+      }
+    }
     if (windowId !== undefined) {
       let currentWindowId = this.currentPanelWindow(tabId);
       if (currentWindowId === undefined) {
@@ -135,6 +154,23 @@ export class TabRefreshCoordinator {
       if (currentWindowId !== undefined && currentWindowId !== windowId) {
         return this.storedTabState(tabId);
       }
+    } else if (this.currentPanelWindow(tabId) === undefined) {
+      await this.ensureInitialized();
+      if (this.terminalTabs.has(tabId)) {
+        return undefined;
+      }
+      if (this.currentPanelWindow(tabId) === undefined) {
+        const current = await this.storedTabState(tabId);
+        if (
+          this.terminalTabs.has(tabId) ||
+          (this.currentPanelWindow(tabId) === undefined && !current)
+        ) {
+          return undefined;
+        }
+      }
+    }
+    if (this.terminalTabs.has(tabId)) {
+      return undefined;
     }
     const revision = this.advanceLifecycle(tabId);
     this.clearPanelWindow(tabId, windowId);
@@ -399,6 +435,7 @@ export class TabRefreshCoordinator {
   }
 
   public async removeTab(tabId: number): Promise<void> {
+    this.markTerminalTab(tabId);
     const revision = this.advanceLifecycle(tabId);
     let completed = false;
     this.clearPanelWindow(tabId);
@@ -425,6 +462,7 @@ export class TabRefreshCoordinator {
           await this.store.removeTab(
             tabId,
             () => this.isCurrentLifecycle(tabId, revision),
+            (operation) => this.withLifecycleFinalization(tabId, operation),
           );
         }
       });
@@ -457,7 +495,7 @@ export class TabRefreshCoordinator {
       if (state.participant && state.windowId !== revokedWindowId) {
         this.setParticipant(windowId, tabId, false);
       }
-      await this.store.updateTab(tabId, (current) =>
+      await this.store.updateTabDurably(tabId, (current) =>
         current?.windowId === windowId
           ? stateSnapshot({
               tabId: current.tabId,
@@ -509,6 +547,8 @@ export class TabRefreshCoordinator {
               state.tabId,
               windowId,
               () => this.isCurrentLifecycle(state.tabId, revision),
+              (operation) =>
+                this.withLifecycleFinalization(state.tabId, operation),
             );
           }
         }
@@ -571,11 +611,51 @@ export class TabRefreshCoordinator {
     return result;
   }
 
+  private async waitForLifecycleFinalization(tabId: number): Promise<void> {
+    let pending = this.lifecycleFinalizations.get(tabId);
+    while (pending) {
+      await pending;
+      pending = this.lifecycleFinalizations.get(tabId);
+    }
+  }
+
+  private async withLifecycleFinalization<T>(
+    tabId: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    await this.waitForLifecycleFinalization(tabId);
+    let release!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.lifecycleFinalizations.set(tabId, completed);
+    try {
+      return await operation();
+    } finally {
+      if (this.lifecycleFinalizations.get(tabId) === completed) {
+        this.lifecycleFinalizations.delete(tabId);
+      }
+      release();
+    }
+  }
+
   private advanceLifecycle(tabId: number): number {
     const revision = this.nextLifecycleRevision;
     this.nextLifecycleRevision += 1;
     this.lifecycleRevisions.set(tabId, revision);
     return revision;
+  }
+
+  private markTerminalTab(tabId: number): void {
+    this.terminalTabs.delete(tabId);
+    this.terminalTabs.add(tabId);
+    while (this.terminalTabs.size > MAX_TERMINAL_TAB_AUTHORITIES) {
+      const oldest = this.terminalTabs.values().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.terminalTabs.delete(oldest);
+    }
   }
 
   private lifecycleRevision(tabId: number): number {
