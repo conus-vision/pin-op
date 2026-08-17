@@ -52,6 +52,13 @@ export interface PanelLayoutControllerOptions {
   readonly storageKey?: string;
 }
 
+interface ScheduledResizeCell {
+  readonly generation: number;
+  readonly target: object;
+  pending: { width: number; height: number } | undefined;
+  cancel: (() => void) | undefined;
+}
+
 const SPLIT_WIDTH = 680;
 const STACK_HEIGHT = 520;
 const MIN_PANE_PIXELS = 160;
@@ -84,8 +91,7 @@ export class PanelLayoutController {
   private target: object | undefined;
   private observer: PanelResizeObserverLike | undefined;
   private bindingGeneration = 0;
-  private pendingResize: { width: number; height: number } | undefined;
-  private cancelScheduledResize: (() => void) | undefined;
+  private scheduledResize: ScheduledResizeCell | undefined;
   private readonly notificationQueue: PanelLayoutSnapshot[] = [];
   private notifying = false;
   private disposed = false;
@@ -270,39 +276,54 @@ export class PanelLayoutController {
     if (!latest) {
       return;
     }
-    this.pendingResize = latest;
-    if (this.cancelScheduledResize) {
+    const currentSchedule = this.scheduledResize;
+    if (
+      currentSchedule
+      && currentSchedule.generation === generation
+      && currentSchedule.target === target
+    ) {
+      currentSchedule.pending = latest;
       return;
     }
+
+    const schedule: ScheduledResizeCell = {
+      generation,
+      target,
+      pending: latest,
+      cancel: undefined,
+    };
+    this.scheduledResize = schedule;
     try {
       let completedSynchronously = false;
       const cancel = this.scheduler.schedule(() => {
         completedSynchronously = true;
-        this.cancelScheduledResize = undefined;
-        if (
-          this.disposed
-          || generation !== this.bindingGeneration
-          || target !== this.target
-        ) {
-          this.pendingResize = undefined;
-          return;
-        }
-        const resize = this.pendingResize;
-        this.pendingResize = undefined;
-        if (resize) {
-          this.applyDimensions(resize.width, resize.height);
-        }
+        this.flushScheduledResize(schedule);
       });
-      if (!completedSynchronously) {
-        this.cancelScheduledResize = cancel;
+      if (!completedSynchronously && this.scheduledResize === schedule) {
+        schedule.cancel = cancel;
       }
     } catch {
-      const resize = this.pendingResize;
-      this.pendingResize = undefined;
-      if (resize) {
-        this.applyDimensions(resize.width, resize.height);
-      }
+      this.flushScheduledResize(schedule);
     }
+  }
+
+  private flushScheduledResize(schedule: ScheduledResizeCell): void {
+    if (
+      this.scheduledResize !== schedule
+      || this.disposed
+      || schedule.generation !== this.bindingGeneration
+      || schedule.target !== this.target
+    ) {
+      return;
+    }
+    this.scheduledResize = undefined;
+    const resize = schedule.pending;
+    schedule.pending = undefined;
+    schedule.cancel = undefined;
+    if (!resize) {
+      return;
+    }
+    this.applyDimensions(resize.width, resize.height);
   }
 
   private applyDimensions(width: number, height: number): void {
@@ -364,13 +385,18 @@ export class PanelLayoutController {
   }
 
   private detachObserver(): void {
-    try {
-      this.cancelScheduledResize?.();
-    } catch {
-      // The generation token still makes a leaked scheduled callback inert.
+    const schedule = this.scheduledResize;
+    if (schedule && this.scheduledResize === schedule) {
+      this.scheduledResize = undefined;
+      const cancel = schedule.cancel;
+      schedule.pending = undefined;
+      schedule.cancel = undefined;
+      try {
+        cancel?.();
+      } catch {
+        // Removing the current cell first makes a leaked callback inert.
+      }
     }
-    this.cancelScheduledResize = undefined;
-    this.pendingResize = undefined;
     const observer = this.observer;
     this.observer = undefined;
     this.target = undefined;

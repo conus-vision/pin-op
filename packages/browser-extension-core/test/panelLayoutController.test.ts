@@ -88,6 +88,58 @@ describe("PanelLayoutController", () => {
     });
   });
 
+  it("keeps a new target resize pending when an uncancelled old callback runs first", () => {
+    const scheduler = new ManualScheduler();
+    const observers: FakeResizeObserver[] = [];
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        const observer = new FakeResizeObserver(callback);
+        observers.push(observer);
+        return observer;
+      },
+      scheduler,
+    });
+    const oldTarget = {};
+    const newTarget = {};
+    controller.start(oldTarget);
+    observers[0]!.emit(oldTarget, 900, 700);
+
+    controller.start(newTarget);
+    observers[1]!.emit(newTarget, 500, 600);
+    expect(scheduler.callbacks).toHaveLength(2);
+
+    scheduler.run(0);
+    expect(controller.snapshot()).toMatchObject({ width: 0, height: 0 });
+    scheduler.run(1);
+    expect(controller.snapshot()).toMatchObject({
+      width: 500,
+      height: 600,
+      mode: "stack",
+    });
+  });
+
+  it("keeps an uncancelled scheduled callback inert after disposal", () => {
+    const scheduler = new ManualScheduler();
+    const observers: FakeResizeObserver[] = [];
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        const observer = new FakeResizeObserver(callback);
+        observers.push(observer);
+        return observer;
+      },
+      scheduler,
+    });
+    const target = {};
+    controller.start(target);
+    observers[0]!.emit(target, 900, 700);
+    const disposedSnapshot = controller.snapshot();
+
+    controller.dispose();
+    scheduler.run(0);
+
+    expect(controller.snapshot()).toBe(disposedSnapshot);
+  });
+
   it("restores, clamps, and persists divider proportions rather than pixels", () => {
     const storage = new MemoryStorage("0.1");
     const harness = createHarness({ storage });
@@ -252,6 +304,83 @@ describe("PanelLayoutController", () => {
     });
   });
 
+  it("coalesces a resize emitted reentrantly by the scheduler", () => {
+    let emit: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const target = {};
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        emit = callback;
+        return { observe() {}, disconnect() {} };
+      },
+      scheduler: {
+        schedule(callback) {
+          emit!([{ target, contentRect: { width: 900, height: 400 } }]);
+          callback();
+          return () => undefined;
+        },
+      },
+    });
+    controller.start(target);
+
+    emit!([{ target, contentRect: { width: 500, height: 600 } }]);
+
+    expect(controller.snapshot()).toMatchObject({
+      width: 900,
+      height: 400,
+      mode: "split",
+    });
+  });
+
+  it("applies the pending resize when scheduling throws before the callback", () => {
+    let emit: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const target = {};
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        emit = callback;
+        return { observe() {}, disconnect() {} };
+      },
+      scheduler: {
+        schedule() {
+          throw new Error("schedule failed");
+        },
+      },
+    });
+    controller.start(target);
+
+    expect(() => emit!([{
+      target,
+      contentRect: { width: 900, height: 400 },
+    }])).not.toThrow();
+    expect(controller.snapshot()).toMatchObject({ width: 900, height: 400 });
+  });
+
+  it("does not apply a resize twice when scheduling throws after the callback", () => {
+    let emit: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const target = {};
+    const listener = vi.fn();
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        emit = callback;
+        return { observe() {}, disconnect() {} };
+      },
+      scheduler: {
+        schedule(callback) {
+          callback();
+          throw new Error("late schedule failure");
+        },
+      },
+    });
+    controller.subscribe(listener);
+    controller.start(target);
+
+    expect(() => emit!([{
+      target,
+      contentRect: { width: 900, height: 400 },
+    }])).not.toThrow();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot()).toMatchObject({ width: 900, height: 400 });
+  });
+
   it("disables separator commands in tabs mode", () => {
     const harness = createHarness();
     harness.controller.start(harness.target);
@@ -379,6 +508,19 @@ class FakeScheduler implements PanelLayoutScheduler {
 
   public size(): number {
     return this.pending.size;
+  }
+}
+
+class ManualScheduler implements PanelLayoutScheduler {
+  public readonly callbacks: Array<() => void> = [];
+
+  public schedule(callback: () => void): () => void {
+    this.callbacks.push(callback);
+    return () => undefined;
+  }
+
+  public run(index: number): void {
+    this.callbacks[index]!();
   }
 }
 
