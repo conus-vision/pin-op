@@ -1634,6 +1634,71 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("does not let a failed postflight discard same-generation empty source matches", async () => {
+    const postflightLookup = deferred<
+      { id: number; windowId: number } | undefined
+    >();
+    let deferNextLookup = false;
+    const ready = await createReadySourceHarness({
+      getTab: async (tabId) => {
+        if (deferNextLookup) {
+          deferNextLookup = false;
+          return postflightLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+    });
+    ready.harness.coordinator.sourceOpenOutcome = "not-connected";
+    ready.harness.coordinator.onSourceOpen = () => {
+      deferNextLookup = true;
+    };
+
+    ready.panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+    expect(ready.harness.coordinator.sourceOpens).toHaveLength(1);
+
+    const clearMessage = sourceMatchesMessage("inspect-1", 1, {
+      matches: [],
+    });
+    ready.harness.sourceMatches.emit(ready.matchesContext, clearMessage);
+    expect(messagesOfType(ready.panel, "source.matches").at(-1)).toEqual(
+      clearMessage,
+    );
+    ready.harness.coordinator.sourceOpenOutcome = "sent";
+    ready.harness.coordinator.onSourceOpen = undefined;
+
+    postflightLookup.resolve({ id: 17, windowId: 10 });
+    await flushMicrotasks();
+    expect(messagesOfType(ready.panel, "pin-op.ideState")).toEqual([]);
+
+    const refreshedMatchesContext = trustedIdePeer();
+    ready.harness.sourceMatches.emit(
+      refreshedMatchesContext,
+      sourceMatchesMessage("inspect-1", 1),
+    );
+    ready.panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+
+    expect(ready.harness.coordinator.sourceOpens).toEqual([
+      {
+        context: ready.matchesContext,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 1,
+          matchId: "match-1",
+        },
+      },
+      {
+        context: refreshedMatchesContext,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 1,
+          matchId: "match-1",
+        },
+      },
+    ]);
+  });
+
   it.each(["source.open", "presentation.settings"] as const)(
     "postflight-revokes %s authority after a silent tab move",
     async (command) => {

@@ -21,10 +21,15 @@ import {
 
 export const DEFAULT_MAX_INSPECT_CORRELATIONS = 256;
 
+const sourcePresentationAuthorityRevision: unique symbol = Symbol(
+  "sourcePresentationAuthorityRevision",
+);
+
 interface InspectCorrelation {
   readonly channel: string;
   readonly tabId: number;
   readonly windowId: number;
+  authorityRevision: bigint;
   resolutionGeneration: number;
   sessionId?: string;
   sourceId?: string;
@@ -41,6 +46,7 @@ export interface SourceOpenAuthority {
   readonly tabId: number;
   readonly windowId: number;
   readonly context: TrustedIdePeerContext;
+  readonly [sourcePresentationAuthorityRevision]: bigint;
 }
 
 export interface InspectCorrelationRoute {
@@ -57,10 +63,12 @@ export interface PresentationSettingsAuthority {
   readonly tabId: number;
   readonly windowId: number;
   readonly context: TrustedIdePeerContext;
+  readonly [sourcePresentationAuthorityRevision]: bigint;
 }
 
 export class InspectCorrelationStore {
   private readonly correlations = new Map<string, InspectCorrelation>();
+  private authorityRevisionSequence = 0n;
 
   public constructor(
     private readonly maximumSize = DEFAULT_MAX_INSPECT_CORRELATIONS,
@@ -98,6 +106,7 @@ export class InspectCorrelationStore {
       channel,
       tabId,
       windowId,
+      authorityRevision: this.nextAuthorityRevision(),
       resolutionGeneration: -1,
       matchIds: new Set(),
     });
@@ -143,6 +152,7 @@ export class InspectCorrelationStore {
       : undefined;
     correlation.peerContext = peerContext;
     correlation.matchIds.clear();
+    correlation.authorityRevision = this.nextAuthorityRevision();
     this.correlations.delete(parsed.inspectMessageId);
     this.correlations.set(parsed.inspectMessageId, correlation);
     return correlation.channel;
@@ -215,6 +225,7 @@ export class InspectCorrelationStore {
 
     if (parsed.matches.length === 0 && correlation.resolutionGeneration < 0) {
       correlation.matchIds.clear();
+      correlation.authorityRevision = this.nextAuthorityRevision();
       return correlation.channel;
     }
     if (!matchesCurrentAuthority(parsed, correlation, peerContext)) {
@@ -232,6 +243,7 @@ export class InspectCorrelationStore {
     if (parsed.matches.length > 0) {
       correlation.peerContext = peerContext;
     }
+    correlation.authorityRevision = this.nextAuthorityRevision();
     return correlation.channel;
   }
 
@@ -279,6 +291,7 @@ export class InspectCorrelationStore {
       tabId: correlation.tabId,
       windowId: correlation.windowId,
       context,
+      [sourcePresentationAuthorityRevision]: correlation.authorityRevision,
     } as SourceOpenAuthority);
   }
 
@@ -320,6 +333,7 @@ export class InspectCorrelationStore {
       tabId: correlation.tabId,
       windowId: correlation.windowId,
       context,
+      [sourcePresentationAuthorityRevision]: correlation.authorityRevision,
     } as PresentationSettingsAuthority);
   }
 
@@ -333,7 +347,9 @@ export class InspectCorrelationStore {
       correlation.tabId !== authority.tabId ||
       correlation.windowId !== authority.windowId ||
       correlation.resolutionGeneration !== authority.resolutionGeneration ||
-      correlation.peerContext !== authority.context
+      correlation.peerContext !== authority.context ||
+      correlation.authorityRevision !==
+        authority[sourcePresentationAuthorityRevision]
     ) {
       return false;
     }
@@ -395,6 +411,11 @@ export class InspectCorrelationStore {
         this.correlations.delete(inspectMessageId);
       }
     }
+  }
+
+  private nextAuthorityRevision(): bigint {
+    this.authorityRevisionSequence += 1n;
+    return this.authorityRevisionSequence;
   }
 }
 

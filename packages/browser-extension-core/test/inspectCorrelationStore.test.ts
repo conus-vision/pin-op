@@ -360,6 +360,26 @@ describe("InspectCorrelationStore", () => {
       .toBeUndefined();
   });
 
+  it("preserves a correlation changed by same-generation match invalidation", () => {
+    const store = readySourceStore();
+    const authority = store.authorizeSourceOpen(sourceOpenRoute());
+    expect(authority).toBeDefined();
+    if (!authority) {
+      throw new Error("Expected current source open authority");
+    }
+
+    expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1, {
+      matches: [],
+    }), authority.context)).toBe("panel-a");
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
+    expect(store.discardSourcePresentationAuthority(authority)).toBe(false);
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toMatchObject({
+        resolutionGeneration: 1,
+        context: authority.context,
+      });
+  });
+
   it("rejects accessor-backed source authority without invoking it", () => {
     const store = readySourceStore();
     let getterCalls = 0;
