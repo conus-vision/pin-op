@@ -1491,6 +1491,78 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panelB, "pin-op.ideState")).toEqual([]);
   });
 
+  it("revokes only the originating correlation when source open throws", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    await harness.attachContentSession(17, "content-a");
+    await harness.router.routeMessage(
+      selectedMessage("content-a"),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      matchedResolution("inspect-1", 1),
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 1),
+    );
+
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(18, "content-b");
+    await harness.router.routeMessage(
+      selectedMessage("content-b"),
+      contentSender(18, 20),
+    );
+    const contextB = trustedIdePeer({ windowId: 20 });
+    harness.resolutions.emit(
+      contextB,
+      matchedResolution("inspect-2", 1),
+    );
+    harness.sourceMatches.emit(
+      contextB,
+      sourceMatchesMessage("inspect-2", 1),
+    );
+
+    harness.coordinator.throwOnSourceOpen = true;
+    panelA.emitMessage(panelSourceOpen("match-1", "inspect-1", 1));
+    await flushMicrotasks();
+    harness.coordinator.throwOnSourceOpen = false;
+    panelA.emitMessage(panelSourceOpen("match-1", "inspect-1", 1));
+    panelB.emitMessage(panelSourceOpen("match-1", "inspect-2", 1));
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceOpens).toHaveLength(2);
+    expect(harness.coordinator.sourceOpens[1]).toEqual({
+      context: contextB,
+      input: {
+        inspectMessageId: "inspect-2",
+        resolutionGeneration: 1,
+        matchId: "match-1",
+      },
+    });
+    expect(messagesOfType(panelA, "pin-op.ideState")).toEqual([{
+      type: "pin-op.ideState",
+      status: "ide-disconnected",
+      inspectMessageId: "inspect-1",
+    }]);
+    expect(messagesOfType(panelB, "pin-op.ideState")).toEqual([]);
+    expect(harness.reportedErrors).toHaveLength(1);
+  });
+
   it.each(["source.open", "presentation.settings"] as const)(
     "postflight-revokes %s authority after a silent tab move",
     async (command) => {

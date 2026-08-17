@@ -10,6 +10,7 @@ import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 import type {
   BrowserProtocolMismatch,
   InspectPayload,
+  SourceOpenInput,
 } from "../src/bridgeClient.js";
 import type {
   BackgroundMessageSender,
@@ -75,7 +76,10 @@ describe("startBackgroundRuntime", () => {
         return "sent" as const;
       }),
       publishSourceNavigation: vi.fn(() => "sent" as const),
-      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn((
+        _context: TrustedIdePeerContext,
+        _input: SourceOpenInput,
+      ) => "sent" as const),
       publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
@@ -183,13 +187,36 @@ describe("startBackgroundRuntime", () => {
     const matched = matchedResolution(inspectMessageId, 2);
     resolutionListener?.(trusted, matched);
     const matches = sourceMatches(inspectMessageId, 2);
+    const sourceMatchesContext = createTransportTrustedIdePeerContext(
+      7,
+      "session-a",
+      "vscode-a",
+    );
     sourceMatchesListener?.(
       createTransportTrustedIdePeerContext(8, "session-a", "vscode-a"),
       matches,
     );
     expect(messagesOfType(panel, "source.matches")).toEqual([]);
-    sourceMatchesListener?.(trusted, matches);
+    sourceMatchesListener?.(sourceMatchesContext, matches);
     expect(messagesOfType(panel, "source.matches")).toEqual([matches]);
+
+    panel.onMessage.emit({
+      type: "pin-op.source.open",
+      inspectMessageId,
+      resolutionGeneration: 2,
+      matchId: "match-1",
+    });
+    await flushAsync();
+
+    expect(coordinator.publishSourceOpen).toHaveBeenCalledOnce();
+    expect(coordinator.publishSourceOpen.mock.calls[0]?.[0]).toBe(
+      sourceMatchesContext,
+    );
+    expect(coordinator.publishSourceOpen.mock.calls[0]?.[1]).toEqual({
+      inspectMessageId,
+      resolutionGeneration: 2,
+      matchId: "match-1",
+    });
 
     runtime.dispose();
     runtime.dispose();

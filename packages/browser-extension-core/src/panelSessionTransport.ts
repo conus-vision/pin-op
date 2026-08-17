@@ -253,6 +253,11 @@ function parsePublishedMessage(
     | SourceMatchesMessage
     | SourceNavigationStateMessage,
 ): PublishedPanelMessage | undefined {
+  try {
+    return parseDomEvent(message);
+  } catch {
+    // Non-DOM bridge messages use the generic proxy-safe protocol snapshot.
+  }
   return parseProtocolData(message, {
     safeParse(value):
       | { readonly success: true; readonly data: PublishedPanelMessage }
@@ -260,9 +265,6 @@ function parsePublishedMessage(
       try {
         if (!isRecord(value) || typeof value.type !== "string") {
           return { success: false };
-        }
-        if (value.type.startsWith("dom.")) {
-          return { success: true, data: parseDomEvent(value) };
         }
         const parsed = value.type === "resolution"
           ? ResolutionMessageSchema.safeParse(value)

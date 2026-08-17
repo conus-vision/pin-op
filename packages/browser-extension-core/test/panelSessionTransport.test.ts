@@ -5,7 +5,11 @@ import {
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
-import type { DomRequest } from "../src/domProtocol.js";
+import {
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  type DomEvent,
+  type DomRequest,
+} from "../src/domProtocol.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
 
 describe("PanelSessionTransport", () => {
@@ -241,6 +245,33 @@ describe("PanelSessionTransport", () => {
     transport.publish("panel-missing", peerState);
 
     expect(published).toEqual([{ channel: "panel-a", message: peerState }]);
+  });
+
+  it("preserves the DOM invalidation branch limit when publishing", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+    const aboveProtocolSnapshotLimit = invalidationEvent(65);
+    const atDomLimit = invalidationEvent(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+
+    transport.publish("panel-a", aboveProtocolSnapshotLimit);
+    transport.publish("panel-a", atDomLimit);
+    transport.publish(
+      "panel-a",
+      invalidationEvent(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES + 1),
+    );
+
+    expect(published).toEqual([
+      { channel: "panel-a", message: aboveProtocolSnapshotLimit },
+      { channel: "panel-a", message: atDomLimit },
+    ]);
   });
 
   it("publishes only strict navigation state while preserving optional and zero fields", () => {
@@ -488,6 +519,17 @@ function sourceNavigationState(
     selectedMatchCount,
     ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
+  };
+}
+
+function invalidationEvent(branchCount: number): DomEvent {
+  return {
+    type: "dom.invalidated",
+    documentEpoch: 1,
+    branches: Array.from({ length: branchCount }, (_, index) => ({
+      nodeRef: `node-${index}`,
+      branchRevision: index,
+    })),
   };
 }
 
