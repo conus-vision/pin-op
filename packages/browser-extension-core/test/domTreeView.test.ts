@@ -862,7 +862,8 @@ describe("DomTreeView", () => {
 
     expect(css).toContain("grid-template-rows:");
     expect(css).toContain("minmax(0, 1fr)");
-    expect(css).toContain("@media (max-width: 360px)");
+    expect(css).toContain('[data-layout="tabs"]');
+    expect(css).toMatch(/\.panel-toolbar\s*\{[^}]*min-width:\s*300px;/s);
     expect(css).not.toMatch(/gradient|border-radius:\s*(?:[89]|[1-9]\d)px/i);
   });
 

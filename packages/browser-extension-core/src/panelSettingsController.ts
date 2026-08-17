@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
 import type { PanelPresentationSettingsCommand } from "./inspectPortProtocol.js";
 import {
@@ -20,6 +21,8 @@ export interface PanelSettingsViewModel {
   readonly compatibility: "pending" | "compatible" | "incompatible";
   readonly snapshotReady: boolean;
   readonly controlsEnabled: boolean;
+  readonly browserProtocolVersion?: number;
+  readonly peerProtocolVersion?: number | "unknown";
 }
 
 const panelSettingsBindingTokenBrand: unique symbol = Symbol(
@@ -66,6 +69,8 @@ export class PanelSettingsController {
       : {
         ...initialModel,
         compatibility: "incompatible",
+        browserProtocolVersion: parsed.browserProtocolVersion,
+        peerProtocolVersion: parsed.peerProtocolVersion,
       });
     return true;
   }
@@ -103,6 +108,8 @@ export class PanelSettingsController {
       this.update({
         ...initialModel,
         compatibility: "incompatible",
+        browserProtocolVersion: PROTOCOL_VERSION,
+        peerProtocolVersion: "unknown",
       });
     } else if (state !== "linked") {
       this.bindingToken = undefined;
@@ -112,14 +119,26 @@ export class PanelSettingsController {
     return true;
   }
 
-  public beginBinding(): PanelSettingsBindingToken {
+  public beginBinding(preserveIncompatible = false): PanelSettingsBindingToken {
     const token = Object.freeze({
       [panelSettingsBindingTokenBrand]: true as const,
     });
+    const preserved = preserveIncompatible &&
+        this.current.compatibility === "incompatible"
+      ? this.current
+      : initialModel;
     this.bindingToken = token;
     this.inspectMessageId = undefined;
-    this.update(initialModel);
+    this.update(preserved);
     return token;
+  }
+
+  public revokeBinding(preserveIncompatible = false): void {
+    this.bindingToken = undefined;
+    this.inspectMessageId = undefined;
+    if (!preserveIncompatible || this.current.compatibility !== "incompatible") {
+      this.update(initialModel);
+    }
   }
 
   public beginInspect(inspectMessageId: string): boolean {

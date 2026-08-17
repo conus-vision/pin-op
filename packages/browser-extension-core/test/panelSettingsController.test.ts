@@ -93,6 +93,8 @@ describe("PanelSettingsController", () => {
       compatibility: "incompatible",
       snapshotReady: false,
       controlsEnabled: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
     });
     expect(controller.setIdeHighlightEnabled(false)).toBe(false);
 
@@ -124,6 +126,34 @@ describe("PanelSettingsController", () => {
       inspectMessageId: "inspect-fresh",
       ideHighlightEnabled: true,
     });
+  });
+
+  it("retains only strictly parsed mismatch versions and supports an unknown peer", () => {
+    const controller = new PanelSettingsController(vi.fn());
+    const binding = controller.beginBinding();
+
+    expect(controller.acceptCompatibility(binding, {
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: "unknown",
+    })).toBe(true);
+    expect(controller.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: "unknown",
+    });
+
+    const nextBinding = controller.beginBinding();
+    expect(controller.snapshot()).not.toHaveProperty("browserProtocolVersion");
+    expect(controller.acceptCompatibility(nextBinding, {
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+      injected: "hostile",
+    })).toBe(false);
+    expect(controller.snapshot()).not.toHaveProperty("peerProtocolVersion");
   });
 
   it("revokes command authority on port rebind without replaying old commands", () => {
@@ -249,6 +279,38 @@ describe("PanelSettingsController", () => {
       currentBinding,
       tabState(true, true),
     )).toBe(true);
+  });
+
+  it("revokes an old binding while preserving strictly parsed mismatch UI", () => {
+    const controller = new PanelSettingsController(vi.fn());
+    const oldBinding = controller.beginBinding();
+    controller.acceptCompatibility(oldBinding, {
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+
+    controller.revokeBinding(true);
+    expect(controller.acceptCompatibility(oldBinding, compatible())).toBe(false);
+    expect(controller.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+      controlsEnabled: false,
+    });
+
+    const currentBinding = controller.beginBinding(true);
+    expect(controller.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    expect(controller.acceptCompatibility(currentBinding, compatible())).toBe(true);
+    expect(controller.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+    });
   });
 });
 

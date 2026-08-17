@@ -7,89 +7,71 @@
     <link rel="stylesheet" href="./panel.css" />
   </head>
   <body>
-    <header class="panel-header">
-      <div class="brand">
-        <img src="./pin-op.svg" alt="" width="20" height="20" />
-        <h1>Pin-op</h1>
-      </div>
-      <div class="connection-summary">
-        <output id="connection-status" class="status" data-state="notLinked">
-          Not linked
-        </output>
-        <output id="linked-code" class="linked-code" hidden></output>
-        <button
-          id="disconnect-button"
-          class="disconnect-button"
-          type="button"
-          hidden
-        >
-          Disconnect
-        </button>
-      </div>
-    </header>
-
     <main class="panel-layout">
-      <div class="connection-zone">
-        <section id="link-controls" class="connection" aria-label="IDE link">
-          <form id="link-form" class="link-form">
-            <label class="field" for="link-code">VS Code window code</label>
-            <div class="link-row">
-              <input
-                id="link-code"
-                type="text"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="9"
-                spellcheck="false"
-              />
-              <button
-                id="paste-button"
-                class="icon-button"
-                type="button"
-                aria-label="Paste link code"
-                title="Paste link code"
-              >
-                <i data-lucide="clipboard-paste" aria-hidden="true"></i>
-              </button>
-              <button id="link-button" class="primary-button" type="submit" disabled>
-                Link
-              </button>
-            </div>
-          </form>
-        </section>
+      <div class="panel-toolbar-scroll">
+        <header class="panel-toolbar" aria-label="Pin-op controls">
+          <div class="toolbar-features">
+            <button id="inspect-mode" class="icon-button picker-button" type="button" aria-label="Select an element" aria-pressed="false" title="Select an element" disabled>
+              <i data-lucide="mouse-pointer-2" aria-hidden="true"></i>
+            </button>
+            <label class="setting-control">
+              <input id="auto-refresh-enabled" type="checkbox" checked disabled />
+              Auto Refresh
+            </label>
+            <label class="setting-control">
+              <input id="ide-highlight-enabled" type="checkbox" checked disabled />
+              IDE Highlight
+            </label>
+          </div>
+
+          <div class="connection-summary">
+            <output id="connection-status" class="status" data-state="notLinked">Not linked</output>
+            <output id="linked-code" class="linked-code" hidden></output>
+            <section id="link-controls" class="connection" aria-label="IDE link">
+              <form id="link-form" class="link-form">
+                <label class="visually-hidden" for="link-code">VS Code window code</label>
+                <input id="link-code" type="text" inputmode="numeric" autocomplete="off" maxlength="9" spellcheck="false" aria-label="VS Code window code" />
+                <button id="paste-button" class="icon-button" type="button" aria-label="Paste link code" title="Paste link code">
+                  <i data-lucide="clipboard-paste" aria-hidden="true"></i>
+                </button>
+                <button id="link-button" class="primary-button" type="submit" disabled>Link</button>
+              </form>
+            </section>
+            <button id="disconnect-button" class="disconnect-button" type="button" hidden>Disconnect</button>
+          </div>
+        </header>
       </div>
 
-      <section class="inspect-toolbar" aria-label="Inspect mode">
-        <button
-          id="inspect-mode"
-          class="icon-button picker-button"
-          type="button"
-          aria-label="Select an element"
-          aria-pressed="false"
-          title="Select an element"
-          disabled
-        >
-          <i data-lucide="mouse-pointer-2" aria-hidden="true"></i>
-        </button>
+      <section id="protocol-mismatch" class="protocol-mismatch" role="alert" hidden>
+        <strong>Extensions are incompatible</strong>
+        <span>Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.</span>
+        <span id="protocol-mismatch-versions">Browser protocol: unknown - IDE protocol: unknown</span>
       </section>
 
-      <section class="dom-tree-section" aria-label="Document structure">
-        <div id="dom-tree" class="dom-tree" role="tree" aria-label="DOM tree">
-          <div
-            id="dom-tree-spacer"
-            class="dom-tree-spacer"
-            role="presentation"
-          ></div>
+      <section id="panel-workspace" class="panel-workspace" data-layout="tabs" aria-label="Document and source workspace">
+        <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Workspace view">
+          <button id="dom-tab" class="workspace-tab" type="button" role="tab" aria-controls="dom-pane" aria-selected="true" tabindex="0">DOM</button>
+          <button id="source-tab" class="workspace-tab" type="button" role="tab" aria-controls="source-pane" aria-selected="false" tabindex="-1">Source</button>
         </div>
-        <div id="dom-tree-empty" class="dom-tree-empty">No document</div>
+
+        <section id="dom-pane" class="workspace-pane dom-pane" role="tabpanel" aria-labelledby="dom-tab">
+          <div class="dom-tree-section" aria-label="Document structure">
+            <div id="dom-tree" class="dom-tree" role="tree" aria-label="DOM tree">
+              <div id="dom-tree-spacer" class="dom-tree-spacer" role="presentation"></div>
+            </div>
+            <div id="dom-tree-empty" class="dom-tree-empty">No document</div>
+          </div>
+        </section>
+
+        <div id="pane-separator" class="pane-separator" role="separator" aria-label="Resize DOM and Source panes" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="50%" tabindex="0"></div>
+
+        <section id="source-pane" class="workspace-pane source-pane-section" role="tabpanel" aria-labelledby="source-tab">
+          <div id="source-pane-root" aria-label="Source matches"></div>
+        </section>
       </section>
 
       <footer class="panel-footer">
-        <output
-          id="selected-element-summary"
-          class="selected-element-summary"
-          hidden
-        ></output>
+        <output id="selected-element-summary" class="selected-element-summary" hidden></output>
         <div class="resolution-row">
           <output id="resolution-status" class="resolution-status" role="status">Select an element to inspect</output>
           <div id="source-navigation-footer" class="source-navigation-footer" hidden>
@@ -99,9 +81,13 @@
           </div>
         </div>
         <output id="panel-error" class="panel-error" role="status" hidden></output>
+        <div id="panel-branding" class="panel-branding">
+          <span class="product-name"><img id="footer-logo" src="./pin-op.svg" alt="" width="10" height="10" /> Pin-op</span>
+          <span>by <a href="mailto:info@conus.vision">Volodymyr Moskvin</a></span>
+          <span>(c) 2026 <a href="https://conus.vision">Conus Vision</a></span>
+        </div>
       </footer>
     </main>
-
     <script src="./panel.js"></script>
   </body>
 </html>

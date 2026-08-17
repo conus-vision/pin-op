@@ -20,6 +20,8 @@ describe("startPanelRuntime", () => {
   let initializeIcons: () => void;
   let reportedErrors: unknown[];
   let diagnostics: PanelDiagnostics;
+  let resizeObservers: TestResizeObserver[];
+  let sessionStorageValues: Map<string, string>;
 
   beforeEach(() => {
     dom = createFakeDom();
@@ -34,6 +36,32 @@ describe("startPanelRuntime", () => {
     initializeIcons = vi.fn();
     reportedErrors = [];
     diagnostics = new PanelDiagnostics();
+    resizeObservers = [];
+    sessionStorageValues = new Map();
+    vi.stubGlobal("ResizeObserver", class {
+      private readonly observer: TestResizeObserver;
+
+      public constructor(callback: ResizeObserverCallback) {
+        this.observer = new TestResizeObserver(callback);
+        resizeObservers.push(this.observer);
+      }
+
+      public observe(target: Element): void {
+        this.observer.observe(target);
+      }
+
+      public disconnect(): void {
+        this.observer.disconnect();
+      }
+
+      public unobserve(): void {}
+    });
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => sessionStorageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        sessionStorageValues.set(key, value);
+      },
+    });
   });
 
   afterEach(() => {
@@ -57,6 +85,10 @@ describe("startPanelRuntime", () => {
 
   it("exposes default-on settings without enabling controls before a compatible fresh snapshot", async () => {
     const runtime = createRuntime();
+    expect(dom.element("auto-refresh-enabled").checked).toBe(true);
+    expect(dom.element("ide-highlight-enabled").checked).toBe(true);
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(true);
+    expect(dom.element("ide-highlight-enabled").disabled).toBe(true);
     expect(runtime.settingsController.snapshot()).toMatchObject({
       autoRefreshEnabled: true,
       ideHighlightEnabled: true,
@@ -82,6 +114,340 @@ describe("startPanelRuntime", () => {
       snapshotReady: true,
       controlsEnabled: true,
     });
+    expect(dom.element("auto-refresh-enabled").checked).toBe(false);
+    expect(dom.element("ide-highlight-enabled").checked).toBe(true);
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(false);
+    expect(dom.element("ide-highlight-enabled").disabled).toBe(false);
+
+    dom.element("auto-refresh-enabled").checked = true;
+    dom.element("auto-refresh-enabled").dispatch("change");
+    expect(port.sent.at(-1)).toEqual({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+    });
+
+    port.emitMessage(inspectStarted("inspect-ui-settings", 1));
+    dom.element("ide-highlight-enabled").checked = false;
+    dom.element("ide-highlight-enabled").dispatch("change");
+    expect(port.sent.slice(-2)).toEqual([{
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    }, {
+      type: "pin-op.presentation.settings",
+      inspectMessageId: "inspect-ui-settings",
+      ideHighlightEnabled: false,
+    }]);
+    runtime.dispose();
+  });
+
+  it("renders source excerpts and opens only the exact current match", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(inspectStarted("inspect-source-view", 1));
+    expect(dom.element("source-pane-root").text()).toContain("Resolving source matches");
+
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-source-view",
+      resolutionGeneration: 3,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-source-view", 3));
+
+    const row = dom.element("source-pane-root").findByData("matchId", "match-1");
+    expect(row).toBeDefined();
+    expect(row?.className).toContain("source-pane-entry");
+    expect(row?.findTag("pre")?.className).toContain("source-pane-excerpt");
+    expect(dom.element("source-pane-root").text()).toContain("card.scss");
+    port.emitMessage(sourceNavigationState({
+      inspectMessageId: "inspect-source-view",
+      resolutionGeneration: 3,
+      activeMatchId: "match-1",
+    }));
+    const activeRow = dom.element("source-pane-root").findByData("matchId", "match-1");
+    expect(activeRow?.className).toContain("is-active");
+    dom.element("source-pane-root").dispatch("click", { target: activeRow });
+    expect(port.sent.at(-1)).toEqual({
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-source-view",
+      resolutionGeneration: 3,
+      matchId: "match-1",
+    });
+
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    expect(dom.element("source-pane-root").text()).toContain("Select an element to inspect");
+    const sentCount = port.sent.length;
+    dom.element("source-pane-root").dispatch("click", { target: row });
+    expect(port.sent).toHaveLength(sentCount);
+    runtime.dispose();
+  });
+
+  it.each([
+    [679, 519, "tabs"],
+    [679, 520, "stack"],
+    [680, 519, "split"],
+  ] as const)("renders the %s x %s workspace as %s", async (width, height, mode) => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0];
+    expect(observer).toBeDefined();
+    observer!.emit(dom.element("panel-workspace"), width, height);
+    await flushAsync();
+
+    expect(dom.element("panel-workspace").dataset.layout).toBe(mode);
+    expect(dom.element("pane-separator").hidden).toBe(mode === "tabs");
+    expect(dom.element("workspace-tabs").hidden).toBe(mode !== "tabs");
+    runtime.dispose();
+  });
+
+  it("switches tab panes accessibly and drives the persisted separator", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    observer.emit(dom.element("panel-workspace"), 500, 400);
+    await flushAsync();
+
+    dom.element("source-tab").dispatch("click");
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(dom.element("source-pane").hidden).toBe(false);
+    expect(dom.element("dom-pane").hidden).toBe(true);
+    dom.element("source-tab").dispatch("keydown", { key: "Home" });
+    expect(dom.element("dom-tab").getAttribute("aria-selected")).toBe("true");
+
+    observer.emit(dom.element("panel-workspace"), 800, 600);
+    await flushAsync();
+    dom.element("pane-separator").dispatch("keydown", { key: "ArrowRight" });
+    expect(dom.element("pane-separator").getAttribute("aria-valuenow")).toBe("52");
+    expect(sessionStorageValues.get("pin-op.panel.layout.divider")).toBe("0.52");
+    dom.element("pane-separator").dispatch("pointerdown", {
+      pointerId: 7,
+      clientX: 400,
+      clientY: 300,
+    });
+    dom.element("pane-separator").dispatch("pointermove", {
+      pointerId: 7,
+      clientX: 600,
+      clientY: 300,
+    });
+    dom.element("pane-separator").dispatch("pointerup", { pointerId: 7 });
+    expect(dom.element("pane-separator").getAttribute("aria-valuenow")).toBe("75");
+    expect(sessionStorageValues.get("pin-op.panel.layout.divider")).toBe("0.75");
+    runtime.dispose();
+  });
+
+  it("wraps tablist keyboard focus and isolates a throwing focus call", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    resizeObservers[0]!.emit(dom.element("panel-workspace"), 500, 400);
+    await flushAsync();
+
+    dom.element("source-tab").dispatch("keydown", { key: "ArrowRight" });
+    expect(dom.element("dom-tab").getAttribute("aria-selected")).toBe("true");
+    expect(dom.element("dom-tab").focusCalls).toBe(1);
+
+    const focusError = new Error("focus failed");
+    dom.element("source-tab").focusError = focusError;
+    dom.element("dom-tab").dispatch("keydown", { key: "ArrowLeft" });
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(reportedErrors).toContain(focusError);
+    runtime.dispose();
+  });
+
+  it("isolates pointer DOM failures without granting stale pointer authority", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    await flushAsync();
+    const separator = dom.element("pane-separator");
+
+    const captureError = new Error("capture failed");
+    separator.setPointerCaptureError = captureError;
+    separator.dispatch("pointerdown", { pointerId: 10, clientX: 400, clientY: 0 });
+    separator.setPointerCaptureError = undefined;
+    separator.dispatch("pointermove", { pointerId: 10, clientX: 700, clientY: 0 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("50");
+    expect(reportedErrors).toContain(captureError);
+
+    const boundsError = new Error("bounds failed");
+    dom.element("panel-workspace").boundsError = boundsError;
+    separator.dispatch("pointerdown", { pointerId: 11, clientX: 400, clientY: 0 });
+    expect(reportedErrors).toContain(boundsError);
+    dom.element("panel-workspace").boundsError = undefined;
+    separator.dispatch("pointermove", { pointerId: 11, clientX: 600, clientY: 0 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("75");
+
+    const releaseError = new Error("release failed");
+    separator.releasePointerCaptureError = releaseError;
+    separator.dispatch("pointerup", { pointerId: 11 });
+    separator.dispatch("pointermove", { pointerId: 11, clientX: 200, clientY: 0 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("75");
+    expect(reportedErrors).toContain(releaseError);
+    runtime.dispose();
+  });
+
+  it("releases pointer authority during layout cleanup", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    await flushAsync();
+    const separator = dom.element("pane-separator");
+    separator.dispatch("pointerdown", { pointerId: 12, clientX: 400, clientY: 0 });
+    expect(separator.capturedPointers.has(12)).toBe(true);
+
+    runtime.dispose();
+    expect(separator.capturedPointers.has(12)).toBe(false);
+    separator.dispatch("pointermove", { pointerId: 12, clientX: 700, clientY: 0 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("50");
+  });
+
+  it("does not restore pointer authority after capture or bounds reentry", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    await flushAsync();
+    const separator = dom.element("pane-separator");
+    const workspace = dom.element("panel-workspace");
+
+    separator.setPointerCaptureAction = () => {
+      separator.dispatch("pointercancel", { pointerId: 20 });
+    };
+    separator.dispatch("pointerdown", { pointerId: 20, clientX: 600, clientY: 0 });
+    separator.setPointerCaptureAction = undefined;
+    expect(separator.capturedPointers.has(20)).toBe(false);
+    expect(separator.getAttribute("aria-valuenow")).toBe("50");
+
+    workspace.boundsAction = () => {
+      separator.dispatch("pointercancel", { pointerId: 21 });
+    };
+    separator.dispatch("pointerdown", { pointerId: 21, clientX: 600, clientY: 0 });
+    workspace.boundsAction = undefined;
+    expect(separator.capturedPointers.has(21)).toBe(false);
+    separator.dispatch("pointermove", { pointerId: 21, clientX: 700, clientY: 0 });
+    expect(separator.getAttribute("aria-valuenow")).toBe("50");
+    runtime.dispose();
+  });
+
+  it("renders exact mismatch versions while keeping Disconnect usable", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushAsync();
+
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: 5");
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(true);
+    expect(dom.element("ide-highlight-enabled").disabled).toBe(true);
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("disconnect-button").hidden).toBe(false);
+    expect(dom.element("disconnect-button").disabled).toBe(false);
+    runtime.dispose();
+  });
+
+  it("renders an unknown IDE protocol only from a validated incompatible state", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "incompatible",
+      displayLinkCode: "48735 07",
+    });
+
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: unknown");
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: 5");
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    runtime.dispose();
+  });
+
+  it("keeps mismatch UI and Source blocking across transport rebind until fresh compatibility", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const oldPort = requiredPort(ports, 0);
+    oldPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    oldPort.emitMessage(compatible());
+    oldPort.emitMessage(tabState(true, true));
+    oldPort.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    oldPort.disconnect();
+    await flushAsync();
+
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: 5");
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    expect(dom.element("disconnect-button").hidden).toBe(false);
+    expect(dom.element("link-controls").hidden).toBe(true);
+
+    const currentPort = requiredPort(ports, 1);
+    currentPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "offline",
+      displayLinkCode: "48735 07",
+    });
+    currentPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "reconnecting",
+      displayLinkCode: "48735 07",
+    });
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: 5");
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    currentPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    currentPort.emitMessage(tabState(false, false));
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(true);
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+
+    currentPort.emitMessage(compatible());
+    expect(dom.element("protocol-mismatch").hidden).toBe(true);
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(true);
+    currentPort.emitMessage(tabState(false, true));
+    expect(dom.element("auto-refresh-enabled").disabled).toBe(false);
+    expect(dom.element("source-pane-root").text()).toContain("Select an element to inspect");
     runtime.dispose();
   });
 
@@ -1977,7 +2343,9 @@ describe("startPanelRuntime", () => {
     expect(html).not.toContain('id="connected-controls"');
     expect(html).not.toContain('id="inspect-mode" type="checkbox"');
     expect(css).toContain("grid-template-rows: auto auto minmax(0, 1fr) auto");
-    expect(css).toContain("@media (max-width: 360px)");
+    expect(css).toContain('[data-layout="tabs"]');
+    expect(css).toContain('[data-layout="stack"]');
+    expect(css).toContain('[data-layout="split"]');
     expect(css).toContain(".source-navigation-controls");
     expect(css).toContain(".source-navigation-footer");
     expect(css).toMatch(/\.resolution-status\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 auto;/s);
@@ -2023,6 +2391,18 @@ const ELEMENT_IDS = [
   "linked-code",
   "disconnect-button",
   "inspect-mode",
+  "auto-refresh-enabled",
+  "ide-highlight-enabled",
+  "protocol-mismatch",
+  "protocol-mismatch-versions",
+  "panel-workspace",
+  "workspace-tabs",
+  "dom-tab",
+  "source-tab",
+  "dom-pane",
+  "pane-separator",
+  "source-pane",
+  "source-pane-root",
   "selected-element-summary",
   "resolution-status",
   "source-navigation-footer",
@@ -2049,7 +2429,15 @@ class FakeElement {
   public readonly style: Record<string, string> = {};
   public readonly dataset: Record<string, string> = {};
   public readonly children: FakeElement[] = [];
+  public readonly capturedPointers = new Set<number>();
   public parentElement: FakeElement | undefined;
+  public focusCalls = 0;
+  public focusError: unknown;
+  public setPointerCaptureError: unknown;
+  public releasePointerCaptureError: unknown;
+  public boundsError: unknown;
+  public setPointerCaptureAction: (() => void) | undefined;
+  public boundsAction: (() => void) | undefined;
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
@@ -2075,6 +2463,23 @@ class FakeElement {
       child.parentElement = this;
       this.children.push(child);
     }
+  }
+
+  public text(): string {
+    return this.textContent + this.children.map((child) => child.text()).join("");
+  }
+
+  public findTag(tagName: string): FakeElement | undefined {
+    if (this.tagName === tagName.toLowerCase()) {
+      return this;
+    }
+    for (const child of this.children) {
+      const match = child.findTag(tagName);
+      if (match) {
+        return match;
+      }
+    }
+    return undefined;
   }
 
   public appendChild(child: FakeElement): FakeElement {
@@ -2129,7 +2534,37 @@ class FakeElement {
     return undefined;
   }
 
-  public focus(): void {}
+  public focus(): void {
+    this.focusCalls += 1;
+    if (this.focusError) throw this.focusError;
+  }
+
+  public setPointerCapture(pointerId: number): void {
+    this.setPointerCaptureAction?.();
+    if (this.setPointerCaptureError) throw this.setPointerCaptureError;
+    this.capturedPointers.add(pointerId);
+  }
+
+  public releasePointerCapture(pointerId: number): void {
+    if (this.releasePointerCaptureError) throw this.releasePointerCaptureError;
+    this.capturedPointers.delete(pointerId);
+  }
+
+  public getBoundingClientRect(): DOMRect {
+    this.boundsAction?.();
+    if (this.boundsError) throw this.boundsError;
+    return {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    };
+  }
 
   public listenerCount(): number {
     return [...this.listeners.values()].reduce(
@@ -2161,6 +2596,11 @@ function createFakeDom(): FakeDom {
     document: {
       getElementById: (id) => elements.get(id as (typeof ELEMENT_IDS)[number]) ?? null,
       createElement: (tagName: string) => new FakeElement(tagName),
+      createTextNode: (text: string) => {
+        const node = new FakeElement("#text");
+        node.textContent = text;
+        return node;
+      },
       createElementNS: (namespace: string, tagName: string) => {
         namespacedTags.push({ namespace, tagName });
         return new FakeElement(tagName, namespace);
@@ -2334,6 +2774,29 @@ function sourceNavigationState(
     metadata: {},
     ...overrides,
   };
+}
+
+class TestResizeObserver {
+  private target: object | undefined;
+  public disconnected = false;
+
+  public constructor(private readonly callback: ResizeObserverCallback) {}
+
+  public observe(target: object): void {
+    this.target = target;
+  }
+
+  public disconnect(): void {
+    this.disconnected = true;
+    this.target = undefined;
+  }
+
+  public emit(target: object, width: number, height: number): void {
+    this.callback([{
+      target,
+      contentRect: { width, height },
+    } as ResizeObserverEntry], this as unknown as ResizeObserver);
+  }
 }
 
 function compatible() {

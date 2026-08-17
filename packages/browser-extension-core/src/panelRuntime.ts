@@ -20,6 +20,11 @@ import { PanelInspectController } from "./panelInspectController.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
 import {
+  PanelLayoutController,
+  type PanelResizeObserverFactory,
+  type PanelSessionStateStorage,
+} from "./panelLayoutController.js";
+import {
   PanelSettingsController,
   type PanelSettingsBindingToken,
 } from "./panelSettingsController.js";
@@ -29,6 +34,10 @@ import { parseProtocolData } from "./protocolDataSnapshot.js";
 import { ResolutionPresenter } from "./resolutionPresenter.js";
 import { SourceNavigationController } from "./sourceNavigationController.js";
 import { SourcePaneController } from "./sourcePaneController.js";
+import {
+  SourcePaneView,
+  type SourcePaneDocument,
+} from "./sourcePaneView.js";
 import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
@@ -48,6 +57,8 @@ export interface PanelRuntimeOptions {
   readonly subscribeUnload: (listener: () => void) => () => void;
   readonly diagnostics?: PanelDiagnostics;
   readonly initializeIcons?: () => void;
+  readonly createResizeObserver?: PanelResizeObserverFactory;
+  readonly layoutStorage?: PanelSessionStateStorage;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -106,6 +117,22 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       inspectTransport.dispatchPresentationSettings(message);
     }
   });
+  const sourcePaneView = new SourcePaneView({
+    document: options.document as unknown as SourcePaneDocument,
+    root: view.sourceRoot(),
+    controller: sourcePaneController,
+    onError: reportError,
+  });
+  sourcePaneView.setState({
+    kind: "empty",
+    statusText: "Select an element to inspect",
+  });
+  const layoutController = new PanelLayoutController({
+    createResizeObserver: options.createResizeObserver ?? browserResizeObserver,
+    storage: options.layoutStorage ?? browserSessionStorage(),
+  });
+  const removeSettingsBindings = view.bindSettings(settingsController);
+  const removeLayoutBindings = view.bindLayout(layoutController);
   inspectTransport = new PanelInspectTransport(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
@@ -223,6 +250,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         : "incompatible";
       sourcePaneController.setCompatible(compatibilityMessage.compatible);
       if (!compatibilityMessage.compatible) {
+        sourcePaneView.setState({
+          kind: "incompatible",
+          statusText: "Extensions are incompatible",
+        });
         mismatchBlocked = true;
         sourceNavigationController.invalidate();
         settingsController.invalidateInspect();
@@ -232,6 +263,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         });
       } else if (mismatchBlocked) {
         mismatchBlocked = false;
+        sourcePaneView.setState({
+          kind: "empty",
+          statusText: "Select an element to inspect",
+        });
         const linkedState = deferredLinkedState;
         deferredLinkedState = undefined;
         if (linkedState) {
@@ -258,6 +293,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
       sourcePaneController.beginInspect(inspectStarted.inspectMessageId);
       settingsController.beginInspect(inspectStarted.inspectMessageId);
+      sourcePaneView.setState({
+        kind: "loading",
+        statusText: "Resolving source matches",
+      });
       const model = resolutionPresenter.beginCorrelatedInspect(
         inspectStarted.inspectMessageId,
       );
@@ -304,15 +343,23 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       }
     } else if (validatedResolution(message)) {
       const resolution = ResolutionMessageSchema.parse(message);
-      sourcePaneController.acceptResolution(resolution);
+      const acceptedSourceResolution = sourcePaneController.acceptResolution(resolution);
       const model = resolutionPresenter.acceptResolution(resolution);
       if (model) {
         sourceNavigationController.acceptResolution(resolution);
         diagnostics.recordResolution(resolution);
         view.renderResolution(model);
+        if (acceptedSourceResolution && resolution.status !== "matched") {
+          sourcePaneView.setState({
+            kind: resolution.status === "error" ? "error" : "empty",
+            statusText: model.statusText,
+          });
+        }
       }
     } else if (sourceMatches) {
-      sourcePaneController.acceptMatches(sourceMatches);
+      if (sourcePaneController.acceptMatches(sourceMatches)) {
+        sourcePaneView.setState({ kind: "ready" });
+      }
     } else if (validatedSourceNavigationState(message)) {
       const navigationState = SourceNavigationStateMessageSchema.parse(message);
       sourcePaneController.acceptNavigationState(navigationState);
@@ -323,6 +370,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
+        sourcePaneView.setState({
+          kind: "error",
+          statusText: "IDE disconnected",
+        });
       }
       const model = peer.connected
         ? resolutionPresenter.restartResolution()
@@ -345,6 +396,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
+        sourcePaneView.setState({
+          kind: "error",
+          statusText: "IDE disconnected",
+        });
         diagnostics.recordIdeDisconnected();
         view.renderResolution(model);
       }
@@ -365,9 +420,22 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         }
       } else {
         sourceNavigationController.invalidate();
-        sourcePaneController.disconnect();
         settingsController.invalidateInspect();
-        compatibility = "pending";
+        if (mismatchBlocked) {
+          sourcePaneController.setCompatible(false);
+          compatibility = "incompatible";
+          sourcePaneView.setState({
+            kind: "incompatible",
+            statusText: "Extensions are incompatible",
+          });
+        } else {
+          sourcePaneController.disconnect();
+          compatibility = "pending";
+          sourcePaneView.setState({
+            kind: "error",
+            statusText: "IDE disconnected",
+          });
+        }
       }
       treeSessionActive = true;
       void treeController.loadRoot();
@@ -377,6 +445,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       sourceNavigationController.invalidate();
       sourcePaneController.invalidate();
       settingsController.invalidateInspect();
+      sourcePaneView.setState({
+        kind: "empty",
+        statusText: "Select an element to inspect",
+      });
       if (shouldRecover) {
         const statusGeneration = ++domRecoveryStatusGeneration;
         resetResolutionState("restoring");
@@ -404,9 +476,12 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       acceptSettingsWindowState(windowState.state);
       compatibility = "incompatible";
       mismatchBlocked = true;
-      sourcePaneController.setCompatible(false);
-      settingsController.invalidateInspect();
       clearLinkedInspectionState(true);
+      sourcePaneController.setCompatible(false);
+      sourcePaneView.setState({
+        kind: "incompatible",
+        statusText: "Extensions are incompatible",
+      });
     } else if (windowState?.state === "error") {
       acceptSettingsWindowState(windowState.state);
       if (hasDisplayLinkCode(message)) {
@@ -428,12 +503,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   }
 
   function activatePanelBinding(): void {
-    settingsBinding = settingsController.beginBinding();
+    settingsBinding = settingsController.beginBinding(mismatchBlocked);
     sourcePaneController.beginBinding();
     compatibility = mismatchBlocked ? "incompatible" : "pending";
-    if (mismatchBlocked) {
-      settingsController.acceptWindowState(settingsBinding, "incompatible");
-    }
     if (!mismatchBlocked) {
       deferredLinkedState = undefined;
     }
@@ -442,6 +514,13 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   function acceptSettingsWindowState(
     state: BrowserWindowConnectionState,
   ): void {
+    if (mismatchBlocked && (
+      state === "linked" ||
+      state === "offline" ||
+      state === "reconnecting"
+    )) {
+      return;
+    }
     if (settingsBinding) {
       settingsController.acceptWindowState(settingsBinding, state);
     }
@@ -453,12 +532,17 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
 
   function disconnectFeatureControllers(preserveMismatch = false): void {
     sourcePaneController.disconnect();
-    if (settingsBinding) {
+    if (settingsBinding && !preserveMismatch) {
       settingsController.acceptWindowState(settingsBinding, "offline");
+    } else {
+      settingsController.revokeBinding(preserveMismatch);
     }
     settingsBinding = undefined;
     compatibility = preserveMismatch ? "incompatible" : "pending";
     mismatchBlocked = preserveMismatch;
+    sourcePaneView.setState(preserveMismatch
+      ? { kind: "incompatible", statusText: "Extensions are incompatible" }
+      : { kind: "error", statusText: "IDE disconnected" });
     if (!preserveMismatch) {
       deferredLinkedState = undefined;
     }
@@ -476,6 +560,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     resetSelectionOwnership();
     sourceNavigationController.invalidate();
     sourcePaneController.invalidate();
+    sourcePaneView.setState({
+      kind: "empty",
+      statusText: "Select an element to inspect",
+    });
     settingsController.invalidateInspect();
     recoveryCoordinator.cancel("DOM tree session deactivated");
     treeController.reset();
@@ -524,10 +612,14 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     remove?.();
     stateListeners.clear();
     removeSourceNavigationBindings();
+    removeSettingsBindings();
+    removeLayoutBindings();
     disconnectFeatureControllers(false);
     diagnostics.clearResolution();
     recoveryCoordinator.dispose();
     treeView.dispose();
+    sourcePaneView.dispose();
+    layoutController.dispose();
     treeController.dispose();
     closePromise = controller
       .dispose()
@@ -678,4 +770,41 @@ function isOpaqueId(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function browserResizeObserver(
+  callback: Parameters<PanelResizeObserverFactory>[0],
+) {
+  const Observer = globalThis.ResizeObserver;
+  if (typeof Observer !== "function") {
+    return Object.freeze({
+      observe: () => undefined,
+      disconnect: () => undefined,
+    });
+  }
+  const observer = new Observer((entries) => {
+    callback(entries.map((entry) => Object.freeze({
+      target: entry.target,
+      contentRect: Object.freeze({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      }),
+    })));
+  });
+  return Object.freeze({
+    observe: (target: object) => observer.observe(target as Element),
+    disconnect: () => observer.disconnect(),
+  });
+}
+
+function browserSessionStorage(): PanelSessionStateStorage | undefined {
+  try {
+    const storage = globalThis.sessionStorage;
+    return storage && typeof storage.getItem === "function" &&
+        typeof storage.setItem === "function"
+      ? storage
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
