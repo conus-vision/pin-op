@@ -131,6 +131,37 @@ function sourceOpen(matchId: string, generation: number): SourceOpenMessage {
   };
 }
 
+function navigationState(
+  sourceId: string,
+  generation: number,
+  state: Partial<
+    Pick<
+      SourceNavigationStateMessage,
+      "selectedMatchCount" | "activeMatchIndex" | "activeMatchId"
+    >
+  > = {},
+): SourceNavigationStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.navigationState",
+    messageId: `state-${sourceId}-${generation}-${
+      state.selectedMatchCount ?? 0
+    }-${state.activeMatchId ?? "none"}`,
+    sessionId: "session-1",
+    inspectMessageId: "inspect-1",
+    source: { role: "ide", id: sourceId },
+    resolutionGeneration: generation,
+    selectedMatchCount: state.selectedMatchCount ?? 0,
+    ...(state.activeMatchIndex === undefined
+      ? {}
+      : { activeMatchIndex: state.activeMatchIndex }),
+    ...(state.activeMatchId === undefined
+      ? {}
+      : { activeMatchId: state.activeMatchId }),
+    metadata: {},
+  };
+}
+
 function setup() {
   const registry = new ClientRegistry();
   const routes = new ReplyRouteRegistry();
@@ -277,6 +308,148 @@ describe("protocol v6 bridge routing", () => {
       matchIds: new Set(["resolved-match"]),
     });
     expect(context.ideBConnection.sent).toEqual([]);
+    expect(context.otherBrowserConnection.sent).toEqual([]);
+  });
+
+  it("forwards ownerless Source clearing and zero navigation before resolution wins", () => {
+    const context = setup();
+    const invalidation = matches("ide-a", 0, []);
+    const zeroState = navigationState("ide-a", 0);
+    const winningResolution = resolution("ide-b", 1);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      invalidation,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      zeroState,
+    );
+
+    expect(context.browserConnection.sent).toEqual([
+      invalidation,
+      zeroState,
+    ]);
+    expect(context.ideAConnection.sent).toEqual([]);
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(context.routes.get("session-1", "inspect-1")?.ideConnectionId)
+      .toBeUndefined();
+    expect(context.routes.get("session-1", "inspect-1")?.resolutionGeneration)
+      .toBeUndefined();
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideB,
+      winningResolution,
+    );
+
+    expect(context.browserConnection.sent).toEqual([
+      invalidation,
+      zeroState,
+      winningResolution,
+    ]);
+    expect(context.ideBConnection.sent).toEqual([]);
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideB.id,
+      resolutionGeneration: 1,
+      resolutionClaimed: true,
+      matchIds: new Set(),
+    });
+    expect(context.otherBrowserConnection.sent).toEqual([]);
+  });
+
+  it("does not let ownerless zero navigation authorize later active state", () => {
+    const context = setup();
+    const zeroState = navigationState("ide-a", 0);
+    const nonzeroState = navigationState("ide-a", 0, {
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+    const forgedActiveState = navigationState("ide-a", 0, {
+      activeMatchId: "forged-match",
+    });
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      zeroState,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      nonzeroState,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      forgedActiveState,
+    );
+
+    expect(context.browserConnection.sent).toEqual([zeroState]);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(context.routes.get("session-1", "inspect-1")?.ideConnectionId)
+      .toBeUndefined();
+    expect(context.routes.get("session-1", "inspect-1")?.resolutionGeneration)
+      .toBeUndefined();
+    expect(context.otherBrowserConnection.sent).toEqual([]);
+  });
+
+  it("rejects ownerless zero navigation from an IDE without resolution", () => {
+    const context = setup();
+    const navigationOnlyConnection = client(
+      "ide",
+      "session-1",
+      ["source-navigation"],
+      "navigation-only",
+    );
+    const navigationOnly = context.registry.add(navigationOnlyConnection);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      navigationOnly,
+      navigationState("navigation-only", 0),
+    );
+
+    expect(context.browserConnection.sent).toEqual([]);
+    expect(navigationOnlyConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(context.routes.get("session-1", "inspect-1")?.ideConnectionId)
+      .toBeUndefined();
+    expect(context.routes.get("session-1", "inspect-1")?.resolutionGeneration)
+      .toBeUndefined();
     expect(context.otherBrowserConnection.sent).toEqual([]);
   });
 

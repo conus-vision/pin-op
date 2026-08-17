@@ -304,12 +304,20 @@ export function routeMessage(
       const stateRecipient = stateRoute
         ? getOriginRecipient(registry, stateRoute)
         : undefined;
+      const isOwnerlessZeroState =
+        stateRoute?.ideConnectionId === undefined &&
+        supportsCapability(sender, "resolution") &&
+        message.selectedMatchCount === 0 &&
+        message.activeMatchIndex === undefined &&
+        message.activeMatchId === undefined;
+      const isAuthoritativeState =
+        stateRoute?.ideConnectionId === sender.id &&
+        stateRoute.resolutionGeneration === message.resolutionGeneration &&
+        (message.activeMatchId === undefined ||
+          stateRoute.matchIds.has(message.activeMatchId));
       if (
         !stateRoute ||
-        stateRoute.ideConnectionId !== sender.id ||
-        stateRoute.resolutionGeneration !== message.resolutionGeneration ||
-        (message.activeMatchId !== undefined &&
-          !stateRoute.matchIds.has(message.activeMatchId)) ||
+        (!isOwnerlessZeroState && !isAuthoritativeState) ||
         !stateRecipient ||
         !supportsCapability(stateRecipient, "source-navigation")
       ) {
