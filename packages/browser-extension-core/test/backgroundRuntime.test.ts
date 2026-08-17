@@ -275,6 +275,8 @@ describe("startBackgroundRuntime", () => {
     const tabRefresh = {
       initialize: vi.fn(async () => undefined),
       panelOpened: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
+      panelClosed: vi.fn(async (tabId, windowId) =>
+        windowId === undefined ? undefined : tabState(tabId, windowId)),
       state: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
       updateSettings: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
       acceptPageRefresh: vi.fn(async () => undefined),

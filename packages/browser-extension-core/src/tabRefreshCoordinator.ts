@@ -42,6 +42,8 @@ export class TabRefreshCoordinator {
   private readonly setRefreshParticipant: TabRefreshCoordinatorOptions["setRefreshParticipant"];
   private readonly onError: TabRefreshCoordinatorOptions["onError"];
   private readonly watermarks = new Map<number, WindowWatermark>();
+  private readonly lifecycleRevisions = new Map<number, number>();
+  private nextLifecycleRevision = 1;
   private initialization: Promise<void> | undefined;
   private tail = Promise.resolve();
 
@@ -61,10 +63,14 @@ export class TabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ): Promise<TabRefreshState> {
+    const revision = this.advanceLifecycle(tabId);
     await this.ensureInitialized();
-    return this.enqueue(async () => {
-      const states = await this.store.loadAll();
-      const existing = states.find((state) => state.tabId === tabId);
+    let previous: TabRefreshState | undefined;
+    const updated = await this.store.updateTab(tabId, (existing) => {
+      previous = existing;
+      if (!this.isCurrentLifecycle(tabId, revision)) {
+        return existing;
+      }
       const moved = existing !== undefined && existing.windowId !== windowId;
       const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
       const windowGeneration = this.watermarks.get(windowId)?.generation ?? 0;
@@ -83,41 +89,54 @@ export class TabRefreshCoordinator {
         lastAcceptedGeneration: generation,
         ...(pending ? { pending } : {}),
       });
-      await this.store.save(next);
-      if (moved && existing.participant) {
-        this.setParticipant(existing.windowId, existing.tabId, false);
-      }
-      this.updateParticipant(next);
       return next;
     });
+    const next = updated ?? createDefaultTabRefreshState(tabId, windowId);
+    if (!this.isCurrentLifecycle(tabId, revision)) {
+      return next;
+    }
+    if (
+      previous?.participant &&
+      previous.windowId !== next.windowId
+    ) {
+      this.setParticipant(previous.windowId, previous.tabId, false);
+    }
+    this.updateParticipant(next);
+    return next;
   }
 
   public async panelClosed(
     tabId: number,
-    windowId: number,
-  ): Promise<TabRefreshState> {
-    this.setParticipant(windowId, tabId, false);
+    windowId?: number,
+  ): Promise<TabRefreshState | undefined> {
+    const revision = this.advanceLifecycle(tabId);
+    if (windowId !== undefined) {
+      this.setParticipant(windowId, tabId, false);
+    }
     await this.ensureInitialized();
-    return this.enqueue(async () => {
-      const states = await this.store.loadAll();
-      const existing = states.find(
-        (state) => state.tabId === tabId && state.windowId === windowId,
-      );
-      const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
-      const next = stateSnapshot({
+    const updated = await this.store.updateTab(tabId, (existing) => {
+      if (!this.isCurrentLifecycle(tabId, revision)) {
+        return existing;
+      }
+      const resolvedWindowId = existing?.windowId ?? windowId;
+      if (resolvedWindowId === undefined) {
+        return undefined;
+      }
+      const current = existing ??
+        createDefaultTabRefreshState(tabId, resolvedWindowId);
+      return stateSnapshot({
         tabId,
-        windowId,
+        windowId: current.windowId,
         autoRefreshEnabled: current.autoRefreshEnabled,
         ideHighlightEnabled: current.ideHighlightEnabled,
         participant: false,
         lastAcceptedGeneration: current.lastAcceptedGeneration,
       });
-      if (existing) {
-        await this.store.save(next);
-      }
-      this.updateParticipant(next);
-      return next;
     });
+    if (updated && this.isCurrentLifecycle(tabId, revision)) {
+      this.setParticipant(updated.windowId, updated.tabId, false);
+    }
+    return updated;
   }
 
   public async state(tabId: number, windowId: number): Promise<TabRefreshState> {
@@ -147,36 +166,45 @@ export class TabRefreshCoordinator {
     ) {
       throw new TypeError("Invalid browser tab refresh settings");
     }
+    const revision = this.lifecycleRevision(tabId);
     await this.ensureInitialized();
     return this.enqueue(async () => {
-      const states = await this.store.loadAll();
-      const existing = states.find(
-        (state) => state.tabId === tabId && state.windowId === windowId,
-      );
-      const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
-      const enabling = !current.autoRefreshEnabled &&
-        settings.autoRefreshEnabled;
-      const generation = Math.max(
-        current.lastAcceptedGeneration,
-        this.watermarks.get(windowId)?.generation ?? 0,
-      );
-      const pending = settings.autoRefreshEnabled && !enabling
-        ? current.pending
-        : undefined;
-      const next = stateSnapshot({
-        tabId,
-        windowId,
-        autoRefreshEnabled: settings.autoRefreshEnabled,
-        ideHighlightEnabled: settings.ideHighlightEnabled,
-        participant: settings.autoRefreshEnabled && existing !== undefined,
-        lastAcceptedGeneration: generation,
-        ...(pending ? { pending } : {}),
+      let previous: TabRefreshState | undefined;
+      let response: TabRefreshState | undefined;
+      const updated = await this.store.updateTab(tabId, (stored) => {
+        if (!this.isCurrentLifecycle(tabId, revision)) {
+          return stored;
+        }
+        const existing = stored?.windowId === windowId ? stored : undefined;
+        previous = existing;
+        const current = existing ??
+          createDefaultTabRefreshState(tabId, windowId);
+        const enabling = !current.autoRefreshEnabled &&
+          settings.autoRefreshEnabled;
+        const generation = Math.max(
+          current.lastAcceptedGeneration,
+          this.watermarks.get(windowId)?.generation ?? 0,
+        );
+        const pending = settings.autoRefreshEnabled && !enabling
+          ? current.pending
+          : undefined;
+        response = stateSnapshot({
+          tabId,
+          windowId,
+          autoRefreshEnabled: settings.autoRefreshEnabled,
+          ideHighlightEnabled: settings.ideHighlightEnabled,
+          participant: settings.autoRefreshEnabled && existing !== undefined,
+          lastAcceptedGeneration: generation,
+          ...(pending ? { pending } : {}),
+        });
+        return existing ? response : stored;
       });
-      if (!existing) {
-        return next;
+      if (!this.isCurrentLifecycle(tabId, revision)) {
+        return updated ?? createDefaultTabRefreshState(tabId, windowId);
       }
-      await this.store.save(next);
-      if (current.participant !== next.participant) {
+      const next = response ?? updated ??
+        createDefaultTabRefreshState(tabId, windowId);
+      if (previous && previous.participant !== next.participant) {
         this.updateParticipant(next);
       }
       return next;
@@ -195,6 +223,12 @@ export class TabRefreshCoordinator {
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
       const windowStates = states.filter((state) => state.windowId === windowId);
+      const revisions = new Map(
+        windowStates.map((state) => [
+          state.tabId,
+          this.lifecycleRevision(state.tabId),
+        ] as const),
+      );
       const current = currentWatermark(
         this.watermarks.get(windowId),
         windowStates,
@@ -215,27 +249,43 @@ export class TabRefreshCoordinator {
         this.report(error);
       }
 
-      for (const state of windowStates) {
-        const pending = state.autoRefreshEnabled && state.participant
-          ? {
-              generation: incoming.generation,
-              mode: incoming.mode,
-            } as const
-          : undefined;
-        let next = stateSnapshot({
-          ...state,
-          lastAcceptedGeneration: incoming.generation,
-          ...(pending ? { pending } : {}),
+      for (const snapshot of windowStates) {
+        const revision = revisions.get(snapshot.tabId) ?? 0;
+        let command:
+          | { readonly generation: number; readonly mode: PageRefreshMode }
+          | undefined;
+        await this.store.updateTab(snapshot.tabId, (state) => {
+          if (
+            !this.isCurrentLifecycle(snapshot.tabId, revision) ||
+            state?.windowId !== windowId
+          ) {
+            return state;
+          }
+          const pending = state.autoRefreshEnabled && state.participant
+            ? {
+                generation: incoming.generation,
+                mode: incoming.mode,
+              } as const
+            : undefined;
+          let next = stateSnapshot({
+            ...state,
+            lastAcceptedGeneration: incoming.generation,
+            ...(pending ? { pending } : {}),
+          });
+          if (!pending) {
+            return withoutPending(next);
+          }
+          if (activeTabId === state.tabId) {
+            command = pending;
+            next = withoutPending(next);
+          }
+          return next;
         });
-        if (!pending) {
-          next = withoutPending(next);
-        }
-        if (activeTabId === state.tabId && pending) {
-          next = withoutPending(next);
-          await this.store.save(next);
-          await this.dispatch(next.tabId, pending);
-        } else {
-          await this.store.save(next);
+        if (
+          command &&
+          this.isCurrentLifecycle(snapshot.tabId, revision)
+        ) {
+          await this.dispatch(snapshot.tabId, command);
         }
       }
     });
@@ -253,14 +303,17 @@ export class TabRefreshCoordinator {
         if (state.windowId !== windowId) {
           continue;
         }
-        await this.store.save(stateSnapshot({
-          tabId: state.tabId,
-          windowId: state.windowId,
-          autoRefreshEnabled: state.autoRefreshEnabled,
-          ideHighlightEnabled: state.ideHighlightEnabled,
-          participant: state.participant,
-          lastAcceptedGeneration: 0,
-        }));
+        await this.store.updateTab(state.tabId, (current) =>
+          current?.windowId === windowId
+            ? stateSnapshot({
+                tabId: current.tabId,
+                windowId: current.windowId,
+                autoRefreshEnabled: current.autoRefreshEnabled,
+                ideHighlightEnabled: current.ideHighlightEnabled,
+                participant: current.participant,
+                lastAcceptedGeneration: 0,
+              })
+            : current);
       }
     });
   }
@@ -274,26 +327,38 @@ export class TabRefreshCoordinator {
       const states = await this.store.loadAll();
       for (const state of states) {
         if (state.windowId === windowId && state.pending) {
-          await this.store.save(withoutPending(state));
+          await this.store.updateTab(state.tabId, (current) =>
+            current?.windowId === windowId && current.pending
+              ? withoutPending(current)
+              : current);
         }
       }
     });
   }
 
   public async activateTab(tabId: number, windowId: number): Promise<void> {
+    const revision = this.lifecycleRevision(tabId);
     await this.ensureInitialized();
     await this.enqueue(async () => {
-      const states = await this.store.loadAll();
-      const state = states.find(
-        (candidate) =>
-          candidate.tabId === tabId && candidate.windowId === windowId,
-      );
-      if (!state?.pending || !state.participant || !state.autoRefreshEnabled) {
-        return;
+      let pending:
+        | { readonly generation: number; readonly mode: PageRefreshMode }
+        | undefined;
+      await this.store.updateTab(tabId, (state) => {
+        if (
+          !this.isCurrentLifecycle(tabId, revision) ||
+          state?.windowId !== windowId ||
+          !state.pending ||
+          !state.participant ||
+          !state.autoRefreshEnabled
+        ) {
+          return state;
+        }
+        pending = state.pending;
+        return withoutPending(state);
+      });
+      if (pending && this.isCurrentLifecycle(tabId, revision)) {
+        await this.dispatch(tabId, pending);
       }
-      const pending = state.pending;
-      await this.store.save(withoutPending(state));
-      await this.dispatch(tabId, pending);
     });
   }
 
@@ -362,7 +427,7 @@ export class TabRefreshCoordinator {
             mode: "reload",
           });
         }
-        if (state.participant) {
+        if (state.participant && this.lifecycleRevision(state.tabId) === 0) {
           this.setParticipant(state.windowId, state.tabId, true);
         }
       }
@@ -377,6 +442,21 @@ export class TabRefreshCoordinator {
       () => undefined,
     );
     return result;
+  }
+
+  private advanceLifecycle(tabId: number): number {
+    const revision = this.nextLifecycleRevision;
+    this.nextLifecycleRevision += 1;
+    this.lifecycleRevisions.set(tabId, revision);
+    return revision;
+  }
+
+  private lifecycleRevision(tabId: number): number {
+    return this.lifecycleRevisions.get(tabId) ?? 0;
+  }
+
+  private isCurrentLifecycle(tabId: number, revision: number): boolean {
+    return this.lifecycleRevision(tabId) === revision;
   }
 
   private updateParticipant(state: TabRefreshState): void {

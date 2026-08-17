@@ -31,6 +31,8 @@ import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
 } from "../src/trustedIdePeerContext.js";
+import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
+import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -103,6 +105,56 @@ describe("WindowConnectionCoordinator", () => {
     harness.coordinator.setRefreshParticipant(10, 101, false);
     expect(client.disconnectCalls).toBe(1);
     expect(harness.coordinator.state(10)).toBe("offline");
+  });
+
+  it("cancels retained connection ownership through the real tab lifecycle", async () => {
+    const storage = new MemorySessionStorage();
+    const harness = coordinatorHarness(storage);
+    await harness.coordinator.linkWindow(
+      10,
+      "4873507",
+      browserSource("window-10"),
+    );
+    const panel = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    await harness.flush();
+    const client = harness.createdClients[0];
+    await harness.authenticate(client, windowLink());
+    const tabs = new TabRefreshCoordinator({
+      store: new TabRefreshStateStore(storage),
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: (windowId, tabId, participant) =>
+        harness.coordinator.setRefreshParticipant(
+          windowId,
+          tabId,
+          participant,
+        ),
+    });
+    await tabs.panelOpened(101, 10);
+    panel.dispose();
+    expect(client.disconnectCalls).toBe(0);
+
+    await tabs.panelClosed(101, 10);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(harness.coordinator.state(10)).toBe("offline");
+    const replacement = new TabRefreshCoordinator({
+      store: new TabRefreshStateStore(storage),
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: (windowId, tabId, participant) =>
+        harness.coordinator.setRefreshParticipant(
+          windowId,
+          tabId,
+          participant,
+        ),
+    });
+    await replacement.initialize();
+    expect(harness.createdClients).toHaveLength(1);
   });
 
   it("restores a retained participant connection and publishes state without a panel", async () => {

@@ -46,6 +46,40 @@ export class TabRefreshStateStore {
     });
   }
 
+  public updateTab(
+    tabId: number,
+    update: (
+      current: TabRefreshState | undefined,
+    ) => TabRefreshState | undefined,
+  ): Promise<TabRefreshState | undefined> {
+    createDefaultTabRefreshState(tabId, 0);
+    if (typeof update !== "function") {
+      return Promise.reject(new TypeError("Invalid tab refresh state updater"));
+    }
+    return this.enqueue(async () => {
+      const states = await this.loadAllUnlocked();
+      const current = states.find((state) => state.tabId === tabId);
+      const candidate = update(current);
+      if (candidate === undefined) {
+        return current;
+      }
+      const parsed = parseTabRefreshState(candidate);
+      if (!parsed || parsed.tabId !== tabId) {
+        throw new TypeError("Invalid browser tab refresh state update");
+      }
+      const next = states.filter((state) => state.tabId !== tabId);
+      next.push(parsed);
+      next.sort(compareStates);
+      if (next.length > MAX_PERSISTED_TAB_REFRESH_STATES) {
+        throw new RangeError("Too many browser tab refresh states");
+      }
+      await this.storage.set({
+        [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
+      });
+      return parsed;
+    });
+  }
+
   public removeTab(tabId: number): Promise<void> {
     createDefaultTabRefreshState(tabId, 0);
     return this.removeMatching((state) => state.tabId === tabId);

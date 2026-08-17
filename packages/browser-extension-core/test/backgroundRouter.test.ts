@@ -812,6 +812,92 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("fails closed when a panel disappears during pending registration", async () => {
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    const harness = createHarness({ getTab: async () => tabLookup.promise });
+    const port = harness.panelPort("channel-pending-close");
+    harness.router.connectPort(port);
+    const registration = harness.router.routeMessage(
+      registerMessage("channel-pending-close", 17, "source-pending-close"),
+      devtoolsSender(),
+    );
+    await flushMicrotasks();
+
+    port.disconnect();
+
+    expect(harness.contentRefresh.revokedTabs).toContain(17);
+    expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, undefined]);
+    tabLookup.resolve({ id: 17, windowId: 10 });
+    await expect(registration).resolves.toBeUndefined();
+    expect(harness.coordinator.registrations).toEqual([]);
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([]);
+  });
+
+  it("lets a new same-channel panel supersede a closed pending port", async () => {
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    const harness = createHarness({ getTab: async () => tabLookup.promise });
+    const oldPort = harness.panelPort("channel-pending-reopen");
+    harness.router.connectPort(oldPort);
+    const registration = harness.router.routeMessage(
+      registerMessage("channel-pending-reopen", 17, "source-pending-reopen"),
+      devtoolsSender(),
+    );
+    await flushMicrotasks();
+    oldPort.disconnect();
+    const newPort = harness.panelPort("channel-pending-reopen");
+    harness.router.connectPort(newPort);
+
+    tabLookup.resolve({ id: 17, windowId: 10 });
+
+    await expect(registration).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+    expect(newPort.disconnected).toBe(false);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-pending-reopen",
+    ]);
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+  });
+
+  it("does not let a superseded pending channel revoke the new panel owner", async () => {
+    const oldLookup = deferred<{ id: number; windowId: number }>();
+    let lookup = 0;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        lookup += 1;
+        return lookup === 1
+          ? oldLookup.promise
+          : { id: tabId, windowId: 10 };
+      },
+    });
+    const oldPort = harness.panelPort("channel-pending-old");
+    harness.router.connectPort(oldPort);
+    const oldRegistration = harness.router.routeMessage(
+      registerMessage("channel-pending-old", 17, "source-pending-old"),
+      devtoolsSender(),
+    );
+    await flushMicrotasks();
+    const newPort = await harness.registerAndConnect(
+      "channel-pending-new",
+      17,
+      "source-pending-new",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelCloseCalls.length = 0;
+    harness.contentRefresh.revokedTabs.length = 0;
+
+    oldPort.disconnect();
+    oldLookup.resolve({ id: 17, windowId: 10 });
+
+    await expect(oldRegistration).resolves.toBeUndefined();
+    expect(newPort.disconnected).toBe(false);
+    expect(harness.coordinator.activeSources()).toEqual(["source-pending-new"]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      participant: true,
+    });
+  });
+
   it("bounds pending ports and disconnects malformed, duplicate, and overflow ports", () => {
     const harness = createHarness({ maxPanelPorts: 2 });
     const malformed = harness.port("pin-op.devtools.bad/channel");
@@ -5168,7 +5254,7 @@ class FakeContentRefreshCoordinator {
 
 class FakeTabRefreshCoordinator {
   public readonly panelOpenCalls: Array<[number, number]> = [];
-  public readonly panelCloseCalls: Array<[number, number]> = [];
+  public readonly panelCloseCalls: Array<[number, number | undefined]> = [];
   public readonly stateCalls: Array<[number, number]> = [];
   public readonly settingCalls: Array<[
     number,
@@ -5212,13 +5298,18 @@ class FakeTabRefreshCoordinator {
 
   public async panelClosed(
     tabId: number,
-    windowId: number,
-  ): Promise<TabRefreshState> {
+    windowId?: number,
+  ): Promise<TabRefreshState | undefined> {
     this.panelCloseCalls.push([tabId, windowId]);
-    const current = this.states.get(tabId) ?? defaultTabState(tabId, windowId);
+    const existing = this.states.get(tabId);
+    const resolvedWindowId = existing?.windowId ?? windowId;
+    if (resolvedWindowId === undefined) {
+      return undefined;
+    }
+    const current = existing ?? defaultTabState(tabId, resolvedWindowId);
     const next = {
       tabId,
-      windowId,
+      windowId: current.windowId,
       autoRefreshEnabled: current.autoRefreshEnabled,
       ideHighlightEnabled: current.ideHighlightEnabled,
       participant: false,

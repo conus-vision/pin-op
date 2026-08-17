@@ -97,6 +97,171 @@ describe("TabRefreshCoordinator", () => {
     expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
   });
 
+  it("persists panel close while an older refresh dispatch is blocked", async () => {
+    const dispatchGate = deferred<void>();
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => dispatchGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+    const refreshing = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+    );
+    await vi.waitFor(() => expect(context.dispatchRefresh).toHaveBeenCalledOnce());
+
+    let closed = false;
+    const closing = context.coordinator.panelClosed(11, 7).then((state) => {
+      closed = true;
+      return state;
+    });
+    await flushMicrotasks();
+    const closedBeforeDispatch = closed;
+    const replacement = setup(context.storage);
+    if (closedBeforeDispatch) {
+      await replacement.coordinator.initialize();
+    }
+
+    dispatchGate.resolve();
+    await Promise.all([refreshing, closing]);
+
+    expect(closedBeforeDispatch).toBe(true);
+    expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
+    expect(await replacement.coordinator.state(11, 7)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+  });
+
+  it("does not let initialization or a stale open regrant ownership after close", async () => {
+    const initialLoad = deferred<Record<string, unknown>>();
+    const storage = gatedInitialStorage(initialLoad.promise);
+    const context = setup(storage);
+
+    const opening = context.coordinator.panelOpened(11, 7);
+    const closing = context.coordinator.panelClosed(11, 7);
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(7, 11, false);
+
+    initialLoad.resolve({
+      "pin-op.tabRefreshStates": [{
+        tabId: 11,
+        windowId: 7,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: true,
+        participant: true,
+        lastAcceptedGeneration: 0,
+      }],
+    });
+    await Promise.all([opening, closing]);
+
+    expect(
+      context.setRefreshParticipant.mock.calls.filter(([, , value]) => value),
+    ).toEqual([]);
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      participant: false,
+      autoRefreshEnabled: true,
+    });
+  });
+
+  it("lets a new panel supersede close while an old refresh remains blocked", async () => {
+    const dispatchGate = deferred<void>();
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => dispatchGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+    const refreshing = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+    );
+    await vi.waitFor(() => expect(context.dispatchRefresh).toHaveBeenCalledOnce());
+    context.setRefreshParticipant.mockClear();
+
+    let closed = false;
+    let reopened = false;
+    const closing = context.coordinator.panelClosed(11, 7).then((state) => {
+      closed = true;
+      return state;
+    });
+    const reopening = context.coordinator.panelOpened(11, 7).then((state) => {
+      reopened = true;
+      return state;
+    });
+    await flushMicrotasks(32);
+    const lifecycleSettledBeforeDispatch = closed && reopened;
+
+    dispatchGate.resolve();
+    await Promise.all([refreshing, closing, reopening]);
+
+    expect(lifecycleSettledBeforeDispatch).toBe(true);
+    expect(context.setRefreshParticipant.mock.calls).toEqual([
+      [7, 11, false],
+      [7, 11, true],
+    ]);
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      participant: true,
+      autoRefreshEnabled: true,
+    });
+  });
+
+  it("does not let a blocked window refresh overwrite a later tab close", async () => {
+    const dispatchGate = deferred<void>();
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => dispatchGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    const refreshing = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+    );
+    await vi.waitFor(() => expect(context.dispatchRefresh).toHaveBeenCalledOnce());
+
+    await context.coordinator.panelClosed(12, 7);
+    dispatchGate.resolve();
+    await refreshing;
+
+    expect(await context.coordinator.state(12, 7)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+    expect(await context.coordinator.state(12, 7)).not.toHaveProperty("pending");
+  });
+
+  it("does not let an accepted settings update regrant after panel close", async () => {
+    const dispatchGate = deferred<void>();
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => dispatchGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    const refreshing = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+    );
+    await vi.waitFor(() => expect(context.dispatchRefresh).toHaveBeenCalledOnce());
+    const settings = context.coordinator.updateSettings(12, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+
+    await context.coordinator.panelClosed(12, 7);
+    dispatchGate.resolve();
+    await Promise.all([refreshing, settings]);
+
+    expect(await context.coordinator.state(12, 7)).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: false,
+    });
+  });
+
   it("refreshes the active participant and leaves only newest work for inactive tabs", async () => {
     let activeTabId = 11;
     const context = setup(undefined, () => activeTabId);
@@ -435,4 +600,47 @@ function memoryStorage(): SessionStorage {
       values.delete(key);
     },
   };
+}
+
+function gatedInitialStorage(
+  initial: Promise<Record<string, unknown>>,
+): SessionStorage {
+  const values = new Map<string, unknown>();
+  let firstGet = true;
+  return {
+    async get(key: string) {
+      if (firstGet) {
+        firstGet = false;
+        const loaded = await initial;
+        for (const [storedKey, value] of Object.entries(loaded)) {
+          values.set(storedKey, structuredClone(value));
+        }
+      }
+      return values.has(key) ? { [key]: values.get(key) } : {};
+    },
+    async set(records: Record<string, unknown>) {
+      for (const [key, value] of Object.entries(records)) {
+        values.set(key, structuredClone(value));
+      }
+    },
+    async remove(key: string) {
+      values.delete(key);
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(turns = 8): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await Promise.resolve();
+  }
 }

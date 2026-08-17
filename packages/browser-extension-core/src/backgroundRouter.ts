@@ -140,6 +140,7 @@ export interface BackgroundWindowCoordinator {
 export type BackgroundTabRefreshCoordinator = Pick<
   TabRefreshCoordinator,
   | "panelOpened"
+  | "panelClosed"
   | "state"
   | "updateSettings"
   | "acceptPageRefresh"
@@ -149,7 +150,7 @@ export type BackgroundTabRefreshCoordinator = Pick<
   | "detachTab"
   | "removeTab"
   | "removeWindow"
-> & Partial<Pick<TabRefreshCoordinator, "panelClosed">>;
+>;
 
 export type BackgroundContentRefreshRuntime = Pick<
   BackgroundContentRefreshCoordinator,
@@ -263,6 +264,7 @@ interface PendingRegistration extends RegistrationIdentity {
   readonly disposeGeneration: number;
   readonly bindingGeneration: number | undefined;
   detachedWindowId?: number;
+  panelClosed: boolean;
   promise: Promise<BackgroundRouteResult | undefined>;
 }
 
@@ -538,6 +540,10 @@ export class BackgroundRouter {
     port.onMessage.addListener(record.onMessage);
     port.onDisconnect.addListener(record.onDisconnect);
 
+    const pending = this.pendingRegistrations.get(channel);
+    if (pending && this.isCurrentPending(pending)) {
+      pending.panelClosed = false;
+    }
     const binding = this.bindings.get(channel);
     if (binding && !this.pendingRegistrations.has(channel)) {
       this.activatePanelPort(record, binding);
@@ -805,6 +811,7 @@ export class BackgroundRouter {
       generation: this.allocateGeneration(),
       disposeGeneration: this.disposeGeneration,
       bindingGeneration: currentBinding?.generation,
+      panelClosed: false,
       promise: Promise.resolve(undefined),
     };
     this.pendingRegistrations.set(identity.channel, pending);
@@ -823,6 +830,9 @@ export class BackgroundRouter {
         return undefined;
       }
       if (!this.isCurrentPending(pending)) {
+        return undefined;
+      }
+      if (pending.panelClosed) {
         return undefined;
       }
       const currentBinding = this.bindings.get(pending.channel);
@@ -1264,17 +1274,33 @@ export class BackgroundRouter {
         this.isCurrentActivation(record, token, binding)
       ? binding
       : undefined;
+    const pending = this.pendingRegistrations.get(record.channel);
+    const closedPending = pending && this.isCurrentPending(pending)
+      ? pending
+      : undefined;
+    if (closedPending) {
+      closedPending.panelClosed = true;
+    }
+    const tabOwnerChannel = closedPending
+      ? this.channelByTab.get(closedPending.tabId)
+      : undefined;
+    const pendingOwnsTab = !tabOwnerChannel ||
+      tabOwnerChannel === record.channel;
+    const closedTabId = activeBinding?.tabId ??
+      (closedPending && pendingOwnsTab ? closedPending.tabId : undefined);
+    const closedWindowId = activeBinding?.windowId ??
+      (binding && closedPending && sameIdentity(binding, closedPending)
+        ? binding.windowId
+        : undefined);
     this.panelPorts.delete(record.channel);
     record.port.onMessage.removeListener(record.onMessage);
     record.port.onDisconnect.removeListener(record.onDisconnect);
     this.clearPanelActivation(record);
-    if (activeBinding) {
-      this.contentRefreshCoordinator.revokeTab(activeBinding.tabId);
-      const closing = this.tabRefreshCoordinator.panelClosed?.(
-        activeBinding.tabId,
-        activeBinding.windowId,
-      );
-      void closing?.catch((error) => this.reportError(error));
+    if (closedTabId !== undefined) {
+      this.contentRefreshCoordinator.revokeTab(closedTabId);
+      void this.tabRefreshCoordinator
+        .panelClosed(closedTabId, closedWindowId)
+        .catch((error) => this.reportError(error));
     }
     if (disconnect) {
       safeDisconnect(record.port);

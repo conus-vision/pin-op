@@ -98,6 +98,33 @@ describe("TabRefreshStateStore", () => {
     ]);
   });
 
+  it("updates one tab atomically from its latest persisted state", async () => {
+    const storage = memoryStorage();
+    const store = new TabRefreshStateStore(storage);
+    await store.save({
+      ...state(11, 7),
+      lastAcceptedGeneration: 4,
+      pending: { generation: 4, mode: "reload" },
+    });
+
+    const updated = await store.updateTab(11, (current) => current
+      ? {
+          ...current,
+          participant: false,
+          pending: undefined,
+        }
+      : undefined);
+
+    expect(updated).toMatchObject({
+      tabId: 11,
+      autoRefreshEnabled: true,
+      participant: false,
+      lastAcceptedGeneration: 4,
+    });
+    expect(updated).not.toHaveProperty("pending");
+    expect(await store.load(11, 7)).toEqual(updated);
+  });
+
   it("removes a tab, a window, and finally the storage key", async () => {
     const storage = memoryStorage();
     const store = new TabRefreshStateStore(storage);
