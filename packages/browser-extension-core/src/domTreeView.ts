@@ -81,8 +81,12 @@ export class DomTreeView {
     if (isSourceNavigationTarget(event.target, this.tree)) {
       return;
     }
+    this.focusControllerRow(event.target);
     event.preventDefault();
     this.run(() => this.controller.handleKey(keyboardEvent.key as DomTreeKey));
+  };
+  private readonly onFocusIn = (event: Event): void => {
+    this.focusControllerRow(event.target);
   };
   private readonly onClick = (event: Event): void => {
     if (this.controller.snapshot().recovering) {
@@ -178,6 +182,7 @@ export class DomTreeView {
     this.tree.setAttribute("aria-label", "DOM tree");
     this.tree.addEventListener("scroll", this.onScroll);
     this.tree.addEventListener("keydown", this.onKeyDown);
+    this.tree.addEventListener("focusin", this.onFocusIn);
     this.tree.addEventListener("click", this.onClick);
     this.tree.addEventListener("pointerover", this.onPointerOver);
     this.tree.addEventListener("pointerleave", this.onPointerLeave);
@@ -256,16 +261,9 @@ export class DomTreeView {
       size: viewportSize,
       overscan: this.overscan,
     });
-    const preserveOutsideFocus = !restoreFocus && (
-      resumingFromZeroSize ||
-      pendingReveal ||
-      Boolean(snapshot.revealRef && rows.some(({ value }) => (
-        value.nodeRef === snapshot.revealRef
-      )))
-    );
     if (
       !snapshot.recovering &&
-      !preserveOutsideFocus &&
+      restoreFocus &&
       rows.length > 0 &&
       !rows.some(({ value }) => (
         value.nodeRef === snapshot.focusedRef && isFocusableRow(value)
@@ -282,8 +280,27 @@ export class DomTreeView {
         return;
       }
     }
+    const focusedTabStop = rows.find(({ value }) => (
+      value.nodeRef === snapshot.focusedRef && isFocusableRow(value)
+    ));
+    const selectedRevealTabStop = focusedTabStop
+      ? undefined
+      : rows.find(({ value }) => (
+        value.nodeRef === snapshot.revealRef &&
+        value.selected &&
+        isFocusableRow(value)
+      ));
+    const visibleTabStop = focusedTabStop ??
+      selectedRevealTabStop ??
+      rows.find(({ index, value }) => (
+        index >= start &&
+        index < start + viewportSize &&
+        isFocusableRow(value)
+      )) ??
+      rows.find(({ value }) => isFocusableRow(value));
+    const tabStopRef = visibleTabStop?.value.nodeRef;
     this.spacer.style.height = `${allRows.length * this.rowHeight}px`;
-    this.tree.setAttribute("tabindex", allRows.length === 0 ? "0" : "-1");
+    this.tree.setAttribute("tabindex", tabStopRef ? "-1" : "0");
     this.tree.setAttribute(
       "aria-busy",
       snapshot.loadingRoot || snapshot.recovering ? "true" : "false",
@@ -293,7 +310,13 @@ export class DomTreeView {
       snapshot.loadingRoot ||
       snapshot.recovering;
     this.spacer.replaceChildren(...rows.map(({ index, value }) => (
-      this.createRow(value, index, sourceNavigation, snapshot.recovering)
+      this.createRow(
+        value,
+        index,
+        sourceNavigation,
+        snapshot.recovering,
+        tabStopRef,
+      )
     )));
 
     if (restoreFocus) {
@@ -328,6 +351,7 @@ export class DomTreeView {
     this.removeSourceNavigationListener = undefined;
     this.tree.removeEventListener("scroll", this.onScroll);
     this.tree.removeEventListener("keydown", this.onKeyDown);
+    this.tree.removeEventListener("focusin", this.onFocusIn);
     this.tree.removeEventListener("click", this.onClick);
     this.tree.removeEventListener("pointerover", this.onPointerOver);
     this.tree.removeEventListener("pointerleave", this.onPointerLeave);
@@ -344,6 +368,7 @@ export class DomTreeView {
     index: number,
     sourceNavigation: SourceNavigationViewModel,
     recovering: boolean,
+    tabStopRef: string | undefined,
   ): HTMLElement {
     const element = this.document.createElement("div");
     element.className = rowClassName(row);
@@ -360,7 +385,7 @@ export class DomTreeView {
     element.setAttribute("aria-selected", String(row.selected));
     element.setAttribute(
       "tabindex",
-      row.focused && isFocusableRow(row) ? "0" : "-1",
+      row.nodeRef === tabStopRef && isFocusableRow(row) ? "0" : "-1",
     );
     if (row.inaccessible || recovering) {
       element.setAttribute("aria-disabled", "true");
@@ -471,6 +496,16 @@ export class DomTreeView {
       row.focus();
     }
     return true;
+  }
+
+  private focusControllerRow(target: EventTarget | null): void {
+    if (this.controller.snapshot().recovering) {
+      return;
+    }
+    const nodeRef = closestRow(target, this.tree)?.dataset.nodeRef;
+    if (nodeRef && nodeRef !== this.controller.focusedRef) {
+      this.controller.focus(nodeRef);
+    }
   }
 
   private focusTree(): void {

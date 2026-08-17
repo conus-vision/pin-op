@@ -38,13 +38,22 @@ describe("DomTreeView", () => {
     const root = harness.dom.row("root");
     const selected = harness.dom.row("selected");
     expect(tree.getAttribute("role")).toBe("tree");
+    expect(tree.getAttribute("tabindex")).toBe("-1");
     expect(root.getAttribute("role")).toBe("treeitem");
     expect(root.getAttribute("aria-expanded")).toBe("true");
     expect(root.getAttribute("tabindex")).toBe("-1");
     expect(selected.getAttribute("aria-selected")).toBe("true");
     expect(selected.getAttribute("tabindex")).toBe("0");
+    expect(tabbableRows(harness.dom)).toEqual([selected]);
     expect(selected.findByData("part", "label")?.textContent).toBe(dangerous);
     expect(harness.dom.createdTags()).not.toContain("img");
+  });
+
+  it("keeps the empty tree root as its only tab stop", () => {
+    const harness = createHarness();
+
+    expect(harness.dom.element("dom-tree").getAttribute("tabindex")).toBe("0");
+    expect(tabbableRows(harness.dom)).toEqual([]);
   });
 
   it("materializes exactly viewport and overscan rows at a stable height", () => {
@@ -393,6 +402,7 @@ describe("DomTreeView", () => {
     harness.controller.handleEvent(selectionChanged(1, path));
     const tree = harness.dom.element("dom-tree");
     expect(tree.scrollTop).toBeGreaterThan(0);
+    harness.view.focus("node-29");
 
     tree.scrollTop = 0;
     tree.dispatch("scroll");
@@ -402,6 +412,49 @@ describe("DomTreeView", () => {
     expect(tabbableRows(harness.dom)).toHaveLength(1);
     expect(tabbableRows(harness.dom)[0]?.dataset.nodeRef).toBe("node-0");
     expect(harness.controller.focusedRef).toBe("node-0");
+  });
+
+  it("hands a deterministic outside-focus tab stop back to the controller", async () => {
+    const harness = createHarness({ clientHeight: 60, rowHeight: 20, overscan: 0 });
+    const path = Array.from({ length: 30 }, (_, index) =>
+      node(`node-${index}`, `div.level-${index}`, index < 29));
+    harness.controller.handleEvent(selectionChanged(1, path));
+    const tree = harness.dom.element("dom-tree");
+    tree.clientHeight = 0;
+    harness.resize.trigger();
+    const outside = harness.dom.document.createElement("button") as unknown as FakeElement;
+    outside.focus();
+    tree.scrollTop = 0;
+    tree.clientHeight = 60;
+
+    harness.resize.trigger();
+
+    expect(harness.controller.focusedRef).toBe("node-29");
+    expect(harness.dom.activeElement).toBe(outside);
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-0"]);
+    expect(tree.getAttribute("tabindex")).toBe("-1");
+    harness.view.render();
+    expect(harness.controller.focusedRef).toBe("node-29");
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-0"]);
+
+    const entry = tabbableRows(harness.dom)[0];
+    if (!entry) throw new Error("Missing visible DOM tree tab stop");
+    entry.focus();
+    tree.dispatch("focusin", { target: entry });
+
+    expect(harness.controller.focusedRef).toBe("node-0");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("node-0"));
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-0"]);
+
+    tree.dispatch("keydown", { key: "ArrowDown", target: harness.dom.row("node-0") });
+    await flushAsync();
+
+    expect(harness.controller.focusedRef).toBe("node-1");
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-1"]);
   });
 
   it("rerenders exact virtual windows in both resize directions", () => {
@@ -453,6 +506,8 @@ describe("DomTreeView", () => {
     expect(harness.controller.expandedRefs()).toEqual(expanded);
     expect(tree.scrollTop).toBe(scrollTop);
     expect(spacer.children.map((row) => row.dataset.nodeRef)).toEqual(renderedRefs);
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-11"]);
     expect(harness.dom.activeElement?.dataset.nodeRef).toBe("node-11");
     expect(harness.transport.requests).toEqual([]);
     expect(harness.transport.dispatched).toEqual([]);
@@ -464,13 +519,15 @@ describe("DomTreeView", () => {
     expect(harness.controller.snapshot()).toEqual(snapshot);
     expect(harness.controller.expandedRefs()).toEqual(expanded);
     expect(spacer.findByData("nodeRef", "node-11")).toBeDefined();
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["node-11"]);
     expect(harness.dom.activeElement?.dataset.nodeRef).toBe("node-11");
     expect(tree.scrollTop).toBeGreaterThan(0);
     expect(harness.transport.requests).toEqual([]);
     expect(harness.transport.dispatched).toEqual([]);
   });
 
-  it("reveals a hidden recovery selection without replacing outside focus", () => {
+  it("reveals a hidden recovery selection without replacing outside focus", async () => {
     const harness = createHarness({ clientHeight: 60, rowHeight: 20, overscan: 0 });
     const oldPath = Array.from({ length: 10 }, (_, index) =>
       node(`old-node-${index}`, `section.old-${index}`, index < 9));
@@ -518,10 +575,35 @@ describe("DomTreeView", () => {
     expect(spacer.findByData("nodeRef", "new-focus")).toBeUndefined();
     expect(harness.controller.focusedRef).toBe("new-focus");
     expect(harness.dom.activeElement).toBe(source);
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["new-selected"]);
+    expect(tree.getAttribute("tabindex")).toBe("-1");
     expect(tree.scrollTop).toBeGreaterThan(0);
     harness.view.render();
     expect(harness.controller.focusedRef).toBe("new-focus");
     expect(spacer.findByData("nodeRef", "new-selected")).toBeDefined();
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["new-selected"]);
+
+    const entry = tabbableRows(harness.dom)[0];
+    if (!entry) throw new Error("Missing selected DOM tree tab stop");
+    entry.focus();
+    tree.dispatch("focusin", { target: entry });
+
+    expect(harness.controller.focusedRef).toBe("new-selected");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("new-selected"));
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["new-selected"]);
+
+    tree.dispatch("keydown", {
+      key: "ArrowUp",
+      target: harness.dom.row("new-selected"),
+    });
+    await flushAsync();
+
+    expect(harness.controller.focusedRef).toBe("selected-ancestor-7");
+    expect(tabbableRows(harness.dom).map((row) => row.dataset.nodeRef))
+      .toEqual(["selected-ancestor-7"]);
     expect(harness.transport.requests).toEqual([]);
     expect(harness.transport.dispatched).toEqual([]);
   });
@@ -939,6 +1021,8 @@ describe("DomTreeView", () => {
     disposed.view.dispose();
 
     expect(disposed.dom.activeElement).toBe(disposed.dom.element("dom-tree"));
+    expect(disposed.dom.element("dom-tree").getAttribute("tabindex")).toBe("0");
+    expect(tabbableRows(disposed.dom)).toEqual([]);
   });
 
   it("removes listeners and rendered rows on disposal", () => {
