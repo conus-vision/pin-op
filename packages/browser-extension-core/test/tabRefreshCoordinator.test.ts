@@ -439,6 +439,47 @@ describe("TabRefreshCoordinator", () => {
     ]);
   });
 
+  it("clears the synchronous ownership index when a tab is removed", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.removeTab(11);
+    context.setRefreshParticipant.mockClear();
+
+    const closing = context.coordinator.panelClosed(11);
+
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    await expect(closing).resolves.toBeUndefined();
+  });
+
+  it("clears the synchronous ownership index on an exact tab detach", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.detachTab(11, 7);
+    context.setRefreshParticipant.mockClear();
+
+    const closing = context.coordinator.panelClosed(11);
+
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    await expect(closing).resolves.toBeUndefined();
+  });
+
+  it("clears only the removed window from the synchronous ownership index", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(21, 8);
+    await context.coordinator.removeWindow(7);
+    context.setRefreshParticipant.mockClear();
+
+    const removedClosing = context.coordinator.panelClosed(11);
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    await expect(removedClosing).resolves.toBeUndefined();
+
+    context.setRefreshParticipant.mockClear();
+    const retainedClosing = context.coordinator.panelClosed(21);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(8, 21, false);
+    await retainedClosing;
+  });
+
   it("moves a participating tab to an exact new window without carrying pending work", async () => {
     const context = setup(undefined, () => 99);
     await context.coordinator.panelOpened(11, 7);
@@ -458,6 +499,19 @@ describe("TabRefreshCoordinator", () => {
       [8, 11, true],
     ]);
     expect(await context.store.loadAll()).toEqual([moved]);
+  });
+
+  it("immediately revokes the moved owner when close has no window id", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(11, 8);
+    await context.coordinator.detachTab(11, 7);
+    context.setRefreshParticipant.mockClear();
+
+    const closing = context.coordinator.panelClosed(11);
+
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(8, 11, false);
+    await closing;
   });
 
   it("starts a new window epoch below persisted generations and clears stale pending", async () => {

@@ -23,6 +23,12 @@ import {
   type InspectPayload,
   type SessionStorage,
 } from "../src/index.js";
+import { BackgroundInspectCoordinator } from "../src/backgroundInspectSession.js";
+import {
+  createBackgroundRouter,
+  type BackgroundMessageSender,
+  type BackgroundRuntimePort,
+} from "../src/backgroundRouter.js";
 import type {
   InspectSendOutcome,
   SourceNavigationSendOutcome,
@@ -31,6 +37,7 @@ import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
 } from "../src/trustedIdePeerContext.js";
+import { createDevtoolsPanelPortName } from "../src/inspectPortProtocol.js";
 import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
@@ -38,6 +45,8 @@ const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
 const AUTH_TOKEN_A = "a".repeat(32);
 const AUTH_TOKEN_B = "b".repeat(32);
+const DEVTOOLS_URL = "moz-extension://pin-op/dist/devtools.html";
+const PANEL_URL = "moz-extension://pin-op/dist/panel.html";
 
 describe("WindowConnectionCoordinator", () => {
   it("opens one client for all panels in one browser window", async () => {
@@ -155,6 +164,77 @@ describe("WindowConnectionCoordinator", () => {
     });
     await replacement.initialize();
     expect(harness.createdClients).toHaveLength(1);
+  });
+
+  it("cancels a restored reconnect before unknown-window close awaits storage", async () => {
+    const storage = new MemorySessionStorage();
+    const harness = coordinatorHarness(storage);
+    const saved = windowLink();
+    await harness.store.save(10, saved);
+    const tabStore = new TabRefreshStateStore(storage);
+    await tabStore.save({
+      tabId: 101,
+      windowId: 10,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    });
+    const tabs = new TabRefreshCoordinator({
+      store: tabStore,
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: (windowId, tabId, participant) =>
+        harness.coordinator.setRefreshParticipant(
+          windowId,
+          tabId,
+          participant,
+        ),
+    });
+    await tabs.initialize();
+    await harness.flush();
+    const client = harness.createdClients[0];
+    expect(client.connectCalls).toEqual([credentialsFor(saved)]);
+    client.emitState("connected");
+    client.emitState("disconnected");
+    expect(harness.timers.pendingCount()).toBe(1);
+
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    const router = createBackgroundRouter({
+      expectedDevtoolsUrl: DEVTOOLS_URL,
+      expectedPanelUrl: PANEL_URL,
+      getTab: async () => tabLookup.promise,
+      coordinator: harness.coordinator,
+      tabRefreshCoordinator: tabs,
+      inspectCoordinator: new BackgroundInspectCoordinator({
+        executeScript: async () => undefined,
+        sendTabMessage: async () => undefined,
+      }),
+    });
+    const channel = "restored-pending-close";
+    const port = new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      { url: `${PANEL_URL}?channel=${channel}` },
+    );
+    router.connectPort(port);
+    const registration = router.routeMessage({
+      type: "pin-op.registerDevtools",
+      channel,
+      tabId: 101,
+      sourceId: "restored-pending-source",
+    }, { url: DEVTOOLS_URL });
+    await flushMicrotasks();
+
+    port.disconnect();
+    if (harness.timers.pendingCount() > 0) {
+      harness.timers.runNext();
+    }
+
+    expect(client.connectCalls).toEqual([credentialsFor(saved)]);
+    tabLookup.resolve({ id: 101, windowId: 10 });
+    await expect(registration).resolves.toBeUndefined();
+    expect(await tabs.state(101, 10)).toMatchObject({ participant: false });
+    router.dispose();
   });
 
   it("restores a retained participant connection and publishes state without a panel", async () => {
@@ -1703,6 +1783,49 @@ class FakeWindowClient {
 
   public emitError(error: Error): void {
     this.options.onError?.(error);
+  }
+}
+
+class TestRuntimePort implements BackgroundRuntimePort {
+  public readonly onMessage = new TestRuntimeEvent<(message: unknown) => void>();
+  public readonly onDisconnect = new TestRuntimeEvent<() => void>();
+  private disconnected = false;
+
+  public constructor(
+    public readonly name: string,
+    public readonly sender: BackgroundMessageSender,
+  ) {}
+
+  public postMessage(_message: unknown): void {
+    if (this.disconnected) {
+      throw new Error("Port is disconnected");
+    }
+  }
+
+  public disconnect(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
+    this.onDisconnect.emit();
+  }
+}
+
+class TestRuntimeEvent<T extends (...args: never[]) => void> {
+  private readonly listeners = new Set<T>();
+
+  public addListener(listener: T): void {
+    this.listeners.add(listener);
+  }
+
+  public removeListener(listener: T): void {
+    this.listeners.delete(listener);
+  }
+
+  public emit(...args: Parameters<T>): void {
+    for (const listener of [...this.listeners]) {
+      listener(...args);
+    }
   }
 }
 

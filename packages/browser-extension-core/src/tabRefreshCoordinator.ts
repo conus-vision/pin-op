@@ -43,6 +43,7 @@ export class TabRefreshCoordinator {
   private readonly onError: TabRefreshCoordinatorOptions["onError"];
   private readonly watermarks = new Map<number, WindowWatermark>();
   private readonly lifecycleRevisions = new Map<number, number>();
+  private readonly participantWindows = new Map<number, number>();
   private nextLifecycleRevision = 1;
   private initialization: Promise<void> | undefined;
   private tail = Promise.resolve();
@@ -110,7 +111,8 @@ export class TabRefreshCoordinator {
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
     const revision = this.advanceLifecycle(tabId);
-    if (windowId !== undefined) {
+    const participantWindowId = this.revokeIndexedParticipant(tabId);
+    if (participantWindowId === undefined && windowId !== undefined) {
       this.setParticipant(windowId, tabId, false);
     }
     await this.ensureInitialized();
@@ -134,7 +136,7 @@ export class TabRefreshCoordinator {
       });
     });
     if (updated && this.isCurrentLifecycle(tabId, revision)) {
-      this.setParticipant(updated.windowId, updated.tabId, false);
+      this.updateParticipant(updated);
     }
     return updated;
   }
@@ -363,11 +365,13 @@ export class TabRefreshCoordinator {
   }
 
   public async removeTab(tabId: number): Promise<void> {
+    let revokedWindowId = this.revokeIndexedParticipant(tabId);
     await this.ensureInitialized();
+    revokedWindowId ??= this.revokeIndexedParticipant(tabId);
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
       const state = states.find((candidate) => candidate.tabId === tabId);
-      if (state?.participant) {
+      if (state?.participant && state.windowId !== revokedWindowId) {
         this.setParticipant(state.windowId, state.tabId, false);
       }
       await this.store.removeTab(tabId);
@@ -378,7 +382,9 @@ export class TabRefreshCoordinator {
     if (!isBrowserId(tabId) || !isBrowserId(windowId)) {
       return;
     }
+    let revokedWindowId = this.revokeIndexedParticipant(tabId, windowId);
     await this.ensureInitialized();
+    revokedWindowId ??= this.revokeIndexedParticipant(tabId, windowId);
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
       const state = states.find(
@@ -388,7 +394,7 @@ export class TabRefreshCoordinator {
       if (!state) {
         return;
       }
-      if (state.participant) {
+      if (state.participant && state.windowId !== revokedWindowId) {
         this.setParticipant(windowId, tabId, false);
       }
       await this.store.removeTab(tabId);
@@ -396,11 +402,19 @@ export class TabRefreshCoordinator {
   }
 
   public async removeWindow(windowId: number): Promise<void> {
+    const revokedTabIds = new Set(this.revokeIndexedWindow(windowId));
     await this.ensureInitialized();
+    for (const tabId of this.revokeIndexedWindow(windowId)) {
+      revokedTabIds.add(tabId);
+    }
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
       for (const state of states) {
-        if (state.windowId === windowId && state.participant) {
+        if (
+          state.windowId === windowId &&
+          state.participant &&
+          !revokedTabIds.has(state.tabId)
+        ) {
           this.setParticipant(windowId, state.tabId, false);
         }
       }
@@ -428,7 +442,7 @@ export class TabRefreshCoordinator {
           });
         }
         if (state.participant && this.lifecycleRevision(state.tabId) === 0) {
-          this.setParticipant(state.windowId, state.tabId, true);
+          this.updateParticipant(state);
         }
       }
     });
@@ -459,7 +473,41 @@ export class TabRefreshCoordinator {
     return this.lifecycleRevision(tabId) === revision;
   }
 
+  private revokeIndexedParticipant(
+    tabId: number,
+    expectedWindowId?: number,
+  ): number | undefined {
+    const windowId = this.participantWindows.get(tabId);
+    if (
+      windowId === undefined ||
+      (expectedWindowId !== undefined && windowId !== expectedWindowId)
+    ) {
+      return undefined;
+    }
+    this.participantWindows.delete(tabId);
+    this.setParticipant(windowId, tabId, false);
+    return windowId;
+  }
+
+  private revokeIndexedWindow(windowId: number): readonly number[] {
+    const tabIds: number[] = [];
+    for (const [tabId, participantWindowId] of this.participantWindows) {
+      if (participantWindowId !== windowId) {
+        continue;
+      }
+      this.participantWindows.delete(tabId);
+      this.setParticipant(windowId, tabId, false);
+      tabIds.push(tabId);
+    }
+    return tabIds;
+  }
+
   private updateParticipant(state: TabRefreshState): void {
+    if (state.participant) {
+      this.participantWindows.set(state.tabId, state.windowId);
+    } else {
+      this.participantWindows.delete(state.tabId);
+    }
     this.setParticipant(
       state.windowId,
       state.tabId,
