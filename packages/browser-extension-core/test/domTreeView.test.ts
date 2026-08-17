@@ -309,6 +309,10 @@ describe("DomTreeView", () => {
       original.focus();
       tree.dispatch("focusin", { target: original });
 
+      const keyboardActivation = tree.dispatch("keydown", {
+        key: "Enter",
+        target: original,
+      });
       tree.dispatch("click", { target: original });
       await flushAsync();
       harness.sourceNavigation.acceptState(navigationState({
@@ -321,6 +325,7 @@ describe("DomTreeView", () => {
       expect(replacement).toBeDefined();
       expect(replacement).not.toBe(original);
       expect(replacement?.disabled).toBe(false);
+      expect(keyboardActivation.defaultPrevented).toBe(false);
       expect(harness.dom.activeElement).toBe(replacement);
       expect(harness.controller.focusedRef).toBe("root");
       expect(harness.sourceCommands.map((command) => command.direction)).toEqual([
@@ -332,8 +337,27 @@ describe("DomTreeView", () => {
 
       tree.dispatch("click", { target: replacement });
       await flushAsync();
+      harness.sourceNavigation.acceptState(navigationState({
+        messageId: `state-${direction}-again`,
+        selectedMatchCount: 3,
+        activeMatchIndex: 1,
+      }));
+      const keyboardReplacement = harness.dom.row("selected")
+        .findByData("action", action);
+      if (!keyboardReplacement) {
+        throw new Error(`Missing keyboard replacement ${direction} control`);
+      }
+      const repeatedKeyboardActivation = tree.dispatch("keydown", {
+        key: "Enter",
+        target: keyboardReplacement,
+      });
+      tree.dispatch("click", { target: keyboardReplacement });
+      await flushAsync();
 
+      expect(repeatedKeyboardActivation.defaultPrevented).toBe(false);
+      expect(harness.dom.activeElement).toBe(keyboardReplacement);
       expect(harness.sourceCommands.map((command) => command.direction)).toEqual([
+        direction,
         direction,
         direction,
       ]);
@@ -366,60 +390,121 @@ describe("DomTreeView", () => {
     expect(harness.sourceCommands).toEqual([]);
   });
 
-  it("does not transfer suspended focus into a new source authority", () => {
-    const harness = createHarness();
-    harness.controller.handleEvent(selectionChanged(1, [
-      node("root", "html", true),
-      node("selected", "button.save"),
-    ]));
-    harness.sourceNavigation.beginInspect("inspect-old");
-    harness.sourceNavigation.acceptResolution(resolution({
-      inspectMessageId: "inspect-old",
-      resolutionGeneration: 3,
-      selectedMatchCount: 2,
-    }));
-    harness.sourceNavigation.acceptState(navigationState({
-      inspectMessageId: "inspect-old",
-      resolutionGeneration: 3,
-      selectedMatchCount: 2,
-      activeMatchIndex: 0,
-    }));
-    harness.controller.focus("root");
+  it.each([
+    ["same inspect ID and new generation", "inspect-old", 7, false],
+    ["new inspect ID and same generation", "inspect-new", 3, true],
+  ] as const)(
+    "rejects stale source activation and focus for %s",
+    async (_scenario, nextInspectMessageId, nextGeneration, beginNextInspect) => {
+      const harness = createHarness();
+      harness.controller.handleEvent(selectionChanged(1, [
+        node("root", "html", true),
+        node("selected", "button.save"),
+      ]));
+      harness.sourceNavigation.beginInspect("inspect-old");
+      harness.sourceNavigation.acceptResolution(resolution({
+        inspectMessageId: "inspect-old",
+        resolutionGeneration: 3,
+        selectedMatchCount: 2,
+      }));
+      harness.sourceNavigation.acceptState(navigationState({
+        inspectMessageId: "inspect-old",
+        resolutionGeneration: 3,
+        selectedMatchCount: 2,
+        activeMatchIndex: 0,
+      }));
+      harness.controller.focus("root");
+      const tree = harness.dom.element("dom-tree");
+      const original = harness.dom.row("selected")
+        .findByData("action", "source-next");
+      if (!original) {
+        throw new Error("Missing original next source navigation control");
+      }
+      original.focus();
+      tree.dispatch("focusin", { target: original });
+      tree.clientHeight = 0;
+      harness.resize.trigger();
+
+      if (beginNextInspect) {
+        harness.sourceNavigation.beginInspect(nextInspectMessageId);
+      }
+      harness.sourceNavigation.acceptResolution(resolution({
+        inspectMessageId: nextInspectMessageId,
+        resolutionGeneration: nextGeneration,
+        selectedMatchCount: 2,
+      }));
+      harness.sourceNavigation.acceptState(navigationState({
+        inspectMessageId: nextInspectMessageId,
+        resolutionGeneration: nextGeneration,
+        selectedMatchCount: 2,
+        activeMatchIndex: 0,
+      }));
+
+      expect(original.disabled).toBe(false);
+      const staleClick = tree.dispatch("click", { target: original });
+      await flushAsync();
+      expect(staleClick.defaultPrevented).toBe(true);
+      expect(staleClick.propagationStopped).toBe(true);
+      expect(harness.sourceCommands).toEqual([]);
+      expect(harness.dom.activeElement).toBe(original);
+
+      tree.clientHeight = 120;
+      harness.resize.trigger();
+
+      const replacement = harness.dom.row("selected")
+        .findByData("action", "source-next");
+      expect(replacement).toBeDefined();
+      expect(replacement).not.toBe(original);
+      expect(harness.dom.activeElement).toBe(harness.dom.row("root"));
+      expect(harness.dom.activeElement).not.toBe(replacement);
+      expect(harness.controller.focusedRef).toBe("root");
+      const detachedClick = tree.dispatch("click", { target: original });
+      await flushAsync();
+      expect(detachedClick.defaultPrevented).toBe(true);
+      expect(detachedClick.propagationStopped).toBe(true);
+      expect(harness.sourceCommands).toEqual([]);
+    },
+  );
+
+  it("keeps valid suspended source focus materialized in a deep virtual tree", () => {
+    const harness = createHarness({
+      clientHeight: 60,
+      rowHeight: 20,
+      overscan: 0,
+    });
+    const path = Array.from({ length: 30 }, (_, index) =>
+      node(`node-${index}`, `div.level-${index}`, index < 29));
+    harness.controller.handleEvent(selectionChanged(1, path));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
     const tree = harness.dom.element("dom-tree");
-    const original = harness.dom.row("selected")
+    const original = harness.dom.row("node-29")
       .findByData("action", "source-next");
     if (!original) {
-      throw new Error("Missing original next source navigation control");
+      throw new Error("Missing deep next source navigation control");
     }
     original.focus();
     tree.dispatch("focusin", { target: original });
     tree.clientHeight = 0;
     harness.resize.trigger();
 
-    harness.sourceNavigation.beginInspect("inspect-new");
-    harness.sourceNavigation.acceptResolution(resolution({
-      inspectMessageId: "inspect-new",
-      resolutionGeneration: 7,
-      selectedMatchCount: 2,
-    }));
-    harness.sourceNavigation.acceptState(navigationState({
-      inspectMessageId: "inspect-new",
-      resolutionGeneration: 7,
-      selectedMatchCount: 2,
-      activeMatchIndex: 0,
-    }));
+    harness.controller.focus("node-0");
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 1 }));
 
     expect(harness.dom.activeElement).toBe(original);
-    tree.clientHeight = 120;
+    tree.clientHeight = 60;
     harness.resize.trigger();
 
-    const replacement = harness.dom.row("selected")
-      .findByData("action", "source-next");
+    const selected = harness.dom.element("dom-tree-spacer")
+      .findByData("nodeRef", "node-29");
+    const replacement = selected?.findByData("action", "source-next");
+    expect(selected).toBeDefined();
     expect(replacement).toBeDefined();
     expect(replacement).not.toBe(original);
-    expect(harness.dom.activeElement).toBe(harness.dom.row("root"));
-    expect(harness.dom.activeElement).not.toBe(replacement);
-    expect(harness.controller.focusedRef).toBe("root");
+    expect(harness.dom.activeElement).toBe(replacement);
+    expect(harness.controller.focusedRef).toBe("node-0");
+    expect(tree.scrollTop).toBeGreaterThan(0);
     expect(harness.sourceCommands).toEqual([]);
   });
 

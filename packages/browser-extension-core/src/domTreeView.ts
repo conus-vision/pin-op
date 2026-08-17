@@ -60,9 +60,14 @@ interface SourceNavigationRenderContext {
   readonly resolutionGeneration: number | undefined;
 }
 
-interface SourceNavigationFocusTarget extends SourceNavigationRenderContext {
+interface RenderedSourceNavigationTarget extends SourceNavigationRenderContext {
   readonly action: SourceNavigationAction;
   readonly rowRef: string;
+}
+
+interface SourceNavigationControlTarget {
+  readonly action: SourceNavigationAction;
+  readonly element: HTMLElement;
 }
 
 export class DomTreeView {
@@ -110,20 +115,55 @@ export class DomTreeView {
     this.focusControllerRow(event.target);
   };
   private readonly onClick = (event: Event): void => {
-    if (this.controller.snapshot().recovering) {
+    const snapshot = this.controller.snapshot();
+    if (snapshot.recovering) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    const sourceControl = closestSourceNavigationControl(event.target, this.tree);
+    if (sourceControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      const context = this.renderedSourceNavigationContext;
+      if (
+        !context ||
+        !this.spacer.contains(sourceControl.element) ||
+        isDisabledControl(sourceControl.element)
+      ) {
+        return;
+      }
+      const rowRef = closestRow(sourceControl.element, this.tree)?.dataset.nodeRef;
+      if (!rowRef) {
+        return;
+      }
+      const target: RenderedSourceNavigationTarget = {
+        ...context,
+        action: sourceControl.action,
+        rowRef,
+      };
+      if (!this.isCurrentSourceNavigationTarget(
+        target,
+        snapshot,
+        this.sourceNavigationController.snapshot(),
+      )) {
+        return;
+      }
+      this.run(() => {
+        if (!this.isCurrentSourceNavigationTarget(
+          target,
+          this.controller.snapshot(),
+          this.sourceNavigationController.snapshot(),
+        )) {
+          return;
+        }
+        this.sourceNavigationController.navigate(
+          sourceControl.action === "source-previous" ? "previous" : "next",
+        );
+      });
       return;
     }
     const action = closestDataValue(event.target, this.tree, "action");
-    if (action === "source-previous" || action === "source-next") {
-      event.preventDefault();
-      event.stopPropagation();
-      this.run(() => this.sourceNavigationController.navigate(
-        action === "source-previous" ? "previous" : "next",
-      ));
-      return;
-    }
     const row = closestRow(event.target, this.tree);
     if (!row) {
       return;
@@ -228,10 +268,23 @@ export class DomTreeView {
     const snapshot = this.controller.snapshot();
     const sourceNavigation = this.sourceNavigationController.snapshot();
     const restoreFocus = this.tree.contains(this.document.activeElement);
+    const allRows = this.controller.rows();
+    const sourceNavigationFocusRow = sourceNavigationFocus
+      ? allRows.find((row) => row.nodeRef === sourceNavigationFocus.rowRef)
+      : undefined;
+    const authoritativeSourceNavigationFocus = Boolean(
+      sourceNavigationFocus &&
+      sourceNavigationFocusRow?.selected &&
+      isFocusableRow(sourceNavigationFocusRow) &&
+      this.isCurrentSourceNavigationTarget(
+        sourceNavigationFocus,
+        snapshot,
+        sourceNavigation,
+      ),
+    );
     const focusChanged = snapshot.focusedRef !== this.seenFocusedRef;
     const recoveryFinished = this.seenRecovering && !snapshot.recovering;
     this.seenRecovering = snapshot.recovering;
-    const allRows = this.controller.rows();
     const pendingReveal = Boolean(
       !snapshot.recovering &&
       snapshot.revealRef &&
@@ -249,7 +302,9 @@ export class DomTreeView {
       recoveredFocusRow && isFocusableRow(recoveredFocusRow),
     );
     let revealVersionHandled = false;
-    if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
+    if (authoritativeSourceNavigationFocus && sourceNavigationFocus) {
+      this.ensureVisible(sourceNavigationFocus.rowRef);
+    } else if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
       this.ensureVisible(snapshot.recoveredFocusRef);
       revealVersionHandled = pendingReveal;
     } else if (pendingRevealRow && snapshot.revealRef) {
@@ -285,6 +340,7 @@ export class DomTreeView {
     });
     if (
       !snapshot.recovering &&
+      !authoritativeSourceNavigationFocus &&
       restoreFocus &&
       rows.length > 0 &&
       !rows.some(({ value }) => (
@@ -348,7 +404,9 @@ export class DomTreeView {
       resolutionGeneration: sourceNavigation.resolutionGeneration,
     };
 
-    const restoredSourceNavigationFocus = sourceNavigationFocus !== undefined &&
+    const restoredSourceNavigationFocus =
+      authoritativeSourceNavigationFocus &&
+      sourceNavigationFocus !== undefined &&
       this.restoreSourceNavigationFocus(
         sourceNavigationFocus,
         snapshot,
@@ -507,41 +565,55 @@ export class DomTreeView {
   }
 
   private captureSourceNavigationFocus():
-    SourceNavigationFocusTarget | undefined {
+    RenderedSourceNavigationTarget | undefined {
     const activeElement = this.document.activeElement;
     if (!this.tree.contains(activeElement)) {
       return undefined;
     }
-    const action = sourceNavigationAction(activeElement, this.tree);
-    const rowRef = closestRow(activeElement, this.tree)?.dataset.nodeRef;
+    const control = closestSourceNavigationControl(activeElement, this.tree);
+    const rowRef = control
+      ? closestRow(control.element, this.tree)?.dataset.nodeRef
+      : undefined;
     const context = this.renderedSourceNavigationContext;
     if (
-      !action ||
+      !control ||
       !rowRef ||
       !context ||
       context.selectedRef !== rowRef
     ) {
       return undefined;
     }
-    return { ...context, action, rowRef };
+    return { ...context, action: control.action, rowRef };
   }
 
-  private restoreSourceNavigationFocus(
-    target: SourceNavigationFocusTarget,
+  private isCurrentSourceNavigationTarget(
+    target: RenderedSourceNavigationTarget,
     snapshot: DomTreeSnapshot,
     sourceNavigation: SourceNavigationViewModel,
   ): boolean {
-    if (
-      snapshot.recovering ||
-      !sourceNavigation.visible ||
-      sourceNavigation.disabled ||
-      target.documentEpoch !== snapshot.documentEpoch ||
-      target.selectedRef !== snapshot.selectedRef ||
-      target.rowRef !== snapshot.selectedRef ||
-      target.selectedMatchCount !== sourceNavigation.selectedMatchCount ||
-      target.inspectMessageId !== sourceNavigation.inspectMessageId ||
-      target.resolutionGeneration !== sourceNavigation.resolutionGeneration
-    ) {
+    return (
+      !snapshot.recovering &&
+      sourceNavigation.visible &&
+      !sourceNavigation.disabled &&
+      target.documentEpoch === snapshot.documentEpoch &&
+      target.selectedRef === snapshot.selectedRef &&
+      target.rowRef === snapshot.selectedRef &&
+      target.selectedMatchCount === sourceNavigation.selectedMatchCount &&
+      target.inspectMessageId === sourceNavigation.inspectMessageId &&
+      target.resolutionGeneration === sourceNavigation.resolutionGeneration
+    );
+  }
+
+  private restoreSourceNavigationFocus(
+    target: RenderedSourceNavigationTarget,
+    snapshot: DomTreeSnapshot,
+    sourceNavigation: SourceNavigationViewModel,
+  ): boolean {
+    if (!this.isCurrentSourceNavigationTarget(
+      target,
+      snapshot,
+      sourceNavigation,
+    )) {
       return false;
     }
     const row = findRenderedRow(this.spacer, target.rowRef);
@@ -747,14 +819,19 @@ function isSourceNavigationTarget(
   );
 }
 
-function sourceNavigationAction(
+function closestSourceNavigationControl(
   target: EventTarget | null,
   boundary: HTMLElement,
-): SourceNavigationAction | undefined {
-  const action = closestDataValue(target, boundary, "action");
-  return action === "source-previous" || action === "source-next"
-    ? action
-    : undefined;
+): SourceNavigationControlTarget | undefined {
+  let candidate: unknown = target;
+  while (isElementLike(candidate) && candidate !== boundary) {
+    const action = candidate.dataset.action;
+    if (action === "source-previous" || action === "source-next") {
+      return { action, element: candidate };
+    }
+    candidate = candidate.parentElement;
+  }
+  return undefined;
 }
 
 function isDisabledControl(element: HTMLElement): boolean {
