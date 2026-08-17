@@ -7,7 +7,7 @@ import {
 
 export type SourcePaneDocument = Pick<
   Document,
-  "createElement" | "createTextNode"
+  "activeElement" | "createElement" | "createTextNode"
 >;
 
 export type SourcePaneViewState =
@@ -29,8 +29,26 @@ type GroupKey = "selected" | "parent";
 interface RenderedEntry {
   readonly matchId: string;
   readonly group: GroupKey;
-  readonly element: HTMLElement;
+  readonly element: HTMLButtonElement;
 }
+
+interface CreatedExcerpt {
+  readonly item: HTMLElement;
+  readonly openButton: HTMLButtonElement;
+}
+
+interface RenderedGroup {
+  readonly section: HTMLElement;
+  readonly toggle: HTMLButtonElement;
+}
+
+type FocusRestoreTarget =
+  | { readonly kind: "toggle"; readonly group: GroupKey }
+  | {
+      readonly kind: "match";
+      readonly group: GroupKey;
+      readonly matchId: string;
+    };
 
 const READY_STATE: SourcePaneViewState = Object.freeze({ kind: "ready" });
 
@@ -68,7 +86,10 @@ export class SourcePaneView {
       this.toggleGroup(group);
       return;
     }
-    if (action.name === "open-source") {
+    if (
+      action.name === "open-source" ||
+      action.name === "open-source-item"
+    ) {
       event.preventDefault();
       this.open(action.element.dataset.matchId);
     }
@@ -151,6 +172,7 @@ export class SourcePaneView {
   }
 
   private renderCurrent(): void {
+    const focusTarget = this.captureFocusTarget();
     const epoch = this.renderEpoch + 1;
     this.renderEpoch = epoch;
     this.renderedEntries = Object.freeze([]);
@@ -176,24 +198,23 @@ export class SourcePaneView {
     if (header) children.push(header);
 
     const entries: RenderedEntry[] = [];
-    children.push(
-      this.createGroup(
-        "selected",
-        model.groups.selected,
-        this.selectedCollapsed,
-        selectedRovingMatchId,
-        epoch,
-        entries,
-      ),
-      this.createGroup(
-        "parent",
-        model.groups.parent,
-        this.parentCollapsed,
-        parentRovingMatchId,
-        epoch,
-        entries,
-      ),
+    const selectedGroup = this.createGroup(
+      "selected",
+      model.groups.selected,
+      this.selectedCollapsed,
+      selectedRovingMatchId,
+      epoch,
+      entries,
     );
+    const parentGroup = this.createGroup(
+      "parent",
+      model.groups.parent,
+      this.parentCollapsed,
+      parentRovingMatchId,
+      epoch,
+      entries,
+    );
+    children.push(selectedGroup.section, parentGroup.section);
     if (model.omittedMatchCount > 0) {
       const omitted = this.document.createElement("p");
       omitted.className = "source-pane-omitted";
@@ -201,11 +222,19 @@ export class SourcePaneView {
       omitted.textContent = `${model.omittedMatchCount} additional matches omitted`;
       children.push(omitted);
     }
-    if (entries.length === 0 && model.omittedMatchCount === 0) {
+    const authoritativeMatchCount =
+      model.groups.selected.matches.length +
+      model.groups.parent.matches.length +
+      model.omittedMatchCount;
+    if (authoritativeMatchCount === 0) {
       children.push(this.createStatus("empty", "No source matches"));
     }
     this.root.replaceChildren(...children);
     this.renderedEntries = Object.freeze(entries);
+    this.restoreFocus(focusTarget, {
+      selected: selectedGroup.toggle,
+      parent: parentGroup.toggle,
+    });
   }
 
   private createDocumentHeader(model: SourcePaneViewModel): HTMLElement | undefined {
@@ -233,7 +262,7 @@ export class SourcePaneView {
     rovingMatchId: string | undefined,
     epoch: number,
     entries: RenderedEntry[],
-  ): HTMLElement {
+  ): RenderedGroup {
     const section = this.document.createElement("section");
     section.className = "source-pane-group";
     section.dataset.groupSection = key;
@@ -249,24 +278,27 @@ export class SourcePaneView {
     section.append(disclosure);
 
     if (!collapsed) {
-      const list = this.document.createElement("div");
+      const list = this.document.createElement("ul");
       list.className = "source-pane-list";
       list.dataset.groupList = key;
-      list.setAttribute("role", "listbox");
       list.setAttribute("aria-label", `${group.label} source matches`);
       for (const match of group.matches) {
-        const row = this.createExcerpt(
+        const excerpt = this.createExcerpt(
           match,
           key,
           epoch,
           rovingMatchId === match.matchId,
         );
-        entries.push({ matchId: match.matchId, group: key, element: row });
-        list.append(row);
+        entries.push({
+          matchId: match.matchId,
+          group: key,
+          element: excerpt.openButton,
+        });
+        list.append(excerpt.item);
       }
       section.append(list);
     }
-    return section;
+    return { section, toggle: disclosure };
   }
 
   private createExcerpt(
@@ -274,19 +306,16 @@ export class SourcePaneView {
     group: GroupKey,
     epoch: number,
     roving: boolean,
-  ): HTMLElement {
+  ): CreatedExcerpt {
     const active = this.controller.snapshot().activeMatchId === match.matchId;
-    const row = this.document.createElement("div");
-    row.className = active
+    const item = this.document.createElement("li");
+    item.className = active
       ? "source-pane-entry is-active"
       : "source-pane-entry";
-    row.dataset.action = "open-source";
-    row.dataset.matchId = match.matchId;
-    row.dataset.group = group;
-    row.dataset.renderEpoch = String(epoch);
-    row.setAttribute("role", "option");
-    row.setAttribute("tabindex", roving ? "0" : "-1");
-    row.setAttribute("aria-selected", String(active));
+    item.dataset.action = "open-source-item";
+    item.dataset.matchId = match.matchId;
+    item.dataset.group = group;
+    item.dataset.renderEpoch = String(epoch);
 
     const heading = this.document.createElement("div");
     heading.className = "source-pane-entry-heading";
@@ -296,23 +325,40 @@ export class SourcePaneView {
     const lines = this.document.createElement("span");
     lines.className = "source-pane-entry-lines";
     lines.textContent = lineLabel(match.startLine, match.endLine);
-    heading.append(label, lines);
-    row.append(heading);
+    const openButton = this.document.createElement("button") as HTMLButtonElement;
+    openButton.className = "source-pane-open";
+    openButton.dataset.action = "open-source";
+    openButton.dataset.matchId = match.matchId;
+    openButton.dataset.openMatchId = match.matchId;
+    openButton.dataset.group = group;
+    openButton.dataset.renderEpoch = String(epoch);
+    openButton.setAttribute("type", "button");
+    openButton.setAttribute("tabindex", roving ? "0" : "-1");
+    openButton.setAttribute(
+      "aria-label",
+      `Open ${match.label}, ${lineLabel(match.startLine, match.endLine)}`,
+    );
+    if (active) {
+      openButton.setAttribute("aria-current", "true");
+    }
+    openButton.textContent = "Open";
+    heading.append(label, lines, openButton);
+    item.append(heading);
 
     const pre = this.document.createElement("pre");
     pre.className = "source-pane-excerpt";
     const code = this.document.createElement("code");
     code.append(this.document.createTextNode(match.text));
     pre.append(code);
-    row.append(pre);
+    item.append(pre);
 
     if (match.truncated) {
       const truncated = this.document.createElement("span");
       truncated.className = "source-pane-truncated";
       truncated.textContent = "Excerpt truncated";
-      row.append(truncated);
+      item.append(truncated);
     }
-    return row;
+    return { item, openButton };
   }
 
   private createStatus(kind: Exclude<SourcePaneViewState["kind"], "ready">, text: string): HTMLElement {
@@ -440,6 +486,57 @@ export class SourcePaneView {
     return this.renderedEntries.find((entry) => entry.matchId === matchId);
   }
 
+  private captureFocusTarget(): FocusRestoreTarget | undefined {
+    const activeElement = this.document.activeElement;
+    if (
+      !isElementLike(activeElement) ||
+      !isWithinBoundary(activeElement, this.root)
+    ) {
+      return undefined;
+    }
+    const action = closestAction(activeElement, this.root);
+    if (
+      !action ||
+      action.element.dataset.renderEpoch !== String(this.renderEpoch)
+    ) {
+      return undefined;
+    }
+    const group = groupKey(action.element.dataset.group);
+    if (!group) {
+      return undefined;
+    }
+    if (action.name === "toggle-group") {
+      return { kind: "toggle", group };
+    }
+    const matchId = action.element.dataset.matchId;
+    return action.name === "open-source" && matchId
+      ? { kind: "match", group, matchId }
+      : undefined;
+  }
+
+  private restoreFocus(
+    target: FocusRestoreTarget | undefined,
+    toggles: Readonly<Record<GroupKey, HTMLButtonElement>>,
+  ): void {
+    if (!target || this.disposed) {
+      return;
+    }
+    const element = target.kind === "toggle"
+      ? toggles[target.group]
+      : this.renderedEntries.find(
+          (entry) =>
+            entry.group === target.group && entry.matchId === target.matchId,
+        )?.element;
+    if (!element || element.dataset.renderEpoch !== String(this.renderEpoch)) {
+      return;
+    }
+    this.run(() => {
+      if (!this.disposed) {
+        element.focus();
+      }
+    });
+  }
+
   private run(action: () => void): void {
     try {
       action();
@@ -502,6 +599,17 @@ function isElementLike(value: unknown): value is HTMLElement {
     "dataset" in value &&
     "parentElement" in value,
   );
+}
+
+function isWithinBoundary(element: HTMLElement, boundary: HTMLElement): boolean {
+  let candidate: HTMLElement | null = element;
+  while (candidate) {
+    if (candidate === boundary) {
+      return true;
+    }
+    candidate = candidate.parentElement;
+  }
+  return false;
 }
 
 function appendClass(existing: string, className: string): string {

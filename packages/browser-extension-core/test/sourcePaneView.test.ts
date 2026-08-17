@@ -49,8 +49,42 @@ describe("SourcePaneView", () => {
     expect(harness.root.text()).toContain("Excerpt truncated");
     expect(harness.root.text()).toContain("3 additional matches omitted");
     expect(harness.root.text()).not.toContain("file://");
-    const row = harness.row("selected-1");
-    expect(row.findTag("pre")?.findTag("code")?.text()).toContain("color: red");
+    const item = harness.item("selected-1");
+    expect(item.findTag("pre")?.findTag("code")?.text()).toContain("color: red");
+  });
+
+  it("uses semantic list items with concise Open buttons outside excerpts", () => {
+    const longExcerpt = "x".repeat(8 * 1024);
+    const harness = createHarness([
+      excerpt("selected-1", "selected", {
+        label: "card.scss rule",
+        startLine: 7,
+        endLine: 11,
+        text: longExcerpt,
+      }),
+    ]);
+
+    const list = harness.groupList("selected");
+    const item = harness.item("selected-1");
+    const button = harness.openButton("selected-1");
+    const code = item.findTag("code");
+
+    expect(list.tagName).toBe("ul");
+    expect(list.getAttribute("role")).toBeNull();
+    expect(item.tagName).toBe("li");
+    expect(item.getAttribute("role")).toBeNull();
+    expect(item.tabIndex).toBe(-1);
+    expect(button.tagName).toBe("button");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.text()).toBe("Open");
+    expect(button.getAttribute("aria-label")).toBe(
+      "Open card.scss rule, Lines 7-11",
+    );
+    expect(button.getAttribute("aria-label")).not.toContain(longExcerpt);
+    expect(button.findTag("code")).toBeUndefined();
+    expect(code?.text()).toBe(longExcerpt);
+    expect(code?.parentElement?.tagName).toBe("pre");
+    expect(code?.parentElement?.parentElement).toBe(item);
   });
 
   it("opens an exact match ID and never constructs a path or range command", () => {
@@ -63,7 +97,9 @@ describe("SourcePaneView", () => {
       }),
     ], { dispatch });
 
-    harness.root.dispatch("click", { target: harness.row("opaque-match") });
+    harness.root.dispatch("click", {
+      target: harness.item("opaque-match").findTag("code"),
+    });
 
     expect(dispatch).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalledWith({
@@ -77,6 +113,28 @@ describe("SourcePaneView", () => {
       "matchId",
       "resolutionGeneration",
       "type",
+    ]);
+  });
+
+  it("limits keyboard activation to the concise Open button", () => {
+    const dispatch = vi.fn();
+    const harness = createHarness([
+      excerpt("opaque-match", "selected"),
+    ], { dispatch });
+
+    harness.root.dispatch("keydown", {
+      target: harness.item("opaque-match"),
+      key: "Enter",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    const event = harness.root.dispatch("keydown", {
+      target: harness.openButton("opaque-match"),
+      key: "Enter",
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(dispatch.mock.calls.map(([message]) => message.matchId)).toEqual([
+      "opaque-match",
     ]);
   });
 
@@ -107,6 +165,78 @@ describe("SourcePaneView", () => {
     expect(harness.root.findByData("matchId", "selected-1")).toBeUndefined();
   });
 
+  it("restores focus to the equivalent disclosure after toggling", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("parent-1", "parent"),
+    ]);
+    const previousToggle = harness.groupToggle("parent");
+    previousToggle.focus();
+
+    harness.root.dispatch("click", { target: previousToggle });
+
+    const currentToggle = harness.groupToggle("parent");
+    expect(currentToggle).not.toBe(previousToggle);
+    expect(harness.dom.activeElement).toBe(currentToggle);
+  });
+
+  it("restores focus to the equivalent Open button after navigation rerenders", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ]);
+    const previousButton = harness.openButton("selected-1");
+    previousButton.focus();
+
+    harness.controller.acceptNavigationState(navigationState("selected-2"));
+
+    const currentButton = harness.openButton("selected-1");
+    expect(currentButton).not.toBe(previousButton);
+    expect(harness.dom.activeElement).toBe(currentButton);
+  });
+
+  it("does not steal outside focus during source rerenders", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ]);
+    const outsideButton = harness.dom.createElement("button");
+    outsideButton.focus();
+
+    harness.controller.acceptNavigationState(navigationState("selected-2"));
+
+    expect(harness.dom.activeElement).toBe(outsideButton);
+  });
+
+  it("safely leaves focus unset when the focused match vanishes", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+    ]);
+    harness.openButton("selected-1").focus();
+
+    expect(() => harness.controller.acceptMatches(sourceMatches([
+      excerpt("selected-2", "selected"),
+    ]))).not.toThrow();
+
+    expect(harness.dom.activeElement).toBeUndefined();
+  });
+
+  it("contains focus restoration failures", () => {
+    const errors: unknown[] = [];
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ], { onError: (error) => errors.push(error) });
+    harness.openButton("selected-1").focus();
+    harness.dom.throwOnFocus = true;
+
+    expect(() => {
+      harness.controller.acceptNavigationState(navigationState("selected-2"));
+    }).not.toThrow();
+    expect(errors).toHaveLength(1);
+    expect(harness.dom.activeElement).toBeUndefined();
+  });
+
   it("preserves disclosure state across navigation updates and resets it for new matches", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
@@ -125,6 +255,24 @@ describe("SourcePaneView", () => {
     expect(harness.root.findByData("matchId", "parent-2")).toBeUndefined();
   });
 
+  it("does not report empty when authoritative matches exist only in collapsed Parent", () => {
+    const harness = createHarness([
+      excerpt("parent-1", "parent"),
+    ]);
+
+    expect(harness.root.findByData("matchId", "parent-1")).toBeUndefined();
+    expect(harness.root.findByData("state", "empty")).toBeUndefined();
+    expect(harness.root.text()).not.toContain("No source matches");
+  });
+
+  it("reports empty when no authoritative matches exist", () => {
+    const harness = createHarness([]);
+
+    expect(harness.root.findByData("state", "empty")?.text()).toBe(
+      "No source matches",
+    );
+  });
+
   it("marks only the active match as selected", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
@@ -133,12 +281,12 @@ describe("SourcePaneView", () => {
 
     harness.controller.acceptNavigationState(navigationState("selected-2"));
 
-    expect(harness.row("selected-1").getAttribute("aria-selected")).toBe("false");
-    expect(harness.row("selected-2").getAttribute("aria-selected")).toBe("true");
-    expect(harness.row("selected-2").className).toContain("is-active");
+    expect(harness.openButton("selected-1").getAttribute("aria-current")).toBeNull();
+    expect(harness.openButton("selected-2").getAttribute("aria-current")).toBe("true");
+    expect(harness.item("selected-2").className).toContain("is-active");
   });
 
-  it("provides exactly one roving tab stop in each expanded listbox", () => {
+  it("provides exactly one roving Open button in each expanded group", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
@@ -179,7 +327,7 @@ describe("SourcePaneView", () => {
     ]);
   });
 
-  it("lets a late active match replace the automatic first-option fallback", () => {
+  it("lets a late active match replace the automatic first-button fallback", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
@@ -197,7 +345,7 @@ describe("SourcePaneView", () => {
     ]);
   });
 
-  it("remembers a clicked non-roving option across controller rerenders", () => {
+  it("remembers a clicked non-roving Open button across controller rerenders", () => {
     const dispatch = vi.fn();
     const harness = createHarness([
       excerpt("selected-1", "selected"),
@@ -273,7 +421,7 @@ describe("SourcePaneView", () => {
     ]);
   });
 
-  it("keeps Arrow, Home, and End navigation inside the current listbox", () => {
+  it("keeps Arrow, Home, and End navigation inside the current group", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
@@ -334,7 +482,7 @@ describe("SourcePaneView", () => {
 
     harness.controller.acceptNavigationState(navigationState("selected-3"));
     expect(harness.row("selected-2").tabIndex).toBe(0);
-    expect(harness.row("selected-3").getAttribute("aria-selected")).toBe("true");
+    expect(harness.openButton("selected-3").getAttribute("aria-current")).toBe("true");
 
     harness.controller.acceptMatches(sourceMatches([
       excerpt("selected-2", "selected", { text: ".replacement {}" }),
@@ -370,7 +518,7 @@ describe("SourcePaneView", () => {
       0,
       -1,
     ]);
-    expect(harness.row("selected-3").getAttribute("aria-selected")).toBe("true");
+    expect(harness.openButton("selected-3").getAttribute("aria-current")).toBe("true");
   });
 
   it("drops a removed explicit target and lets the next active match lead", () => {
@@ -570,10 +718,20 @@ function createHarness(
     view,
     controller,
     previousRow,
+    item(matchId: string): FakeElement {
+      const item = root.findByData("matchId", matchId);
+      if (!item) throw new Error(`Missing item ${matchId}`);
+      return item;
+    },
+    openButton(matchId: string): FakeElement {
+      const button = root.findByData("openMatchId", matchId);
+      if (!button) throw new Error(`Missing Open button ${matchId}`);
+      return button;
+    },
     row(matchId: string): FakeElement {
-      const row = root.findByData("matchId", matchId);
-      if (!row) throw new Error(`Missing row ${matchId}`);
-      return row;
+      const button = root.findByData("openMatchId", matchId);
+      if (!button) throw new Error(`Missing row Open button ${matchId}`);
+      return button;
     },
     groupToggle(group: "selected" | "parent"): FakeElement {
       const toggle = root.findByData("group", group);
@@ -583,9 +741,18 @@ function createHarness(
     groupRows(group: "selected" | "parent"): FakeElement[] {
       const list = root.findByData("groupList", group);
       if (!list) return [];
-      return list.children.filter(
-        (child): child is FakeElement => child instanceof FakeElement,
-      );
+      return list.children.flatMap((child) => {
+        if (!(child instanceof FakeElement)) return [];
+        const matchId = child.dataset.matchId;
+        return matchId
+          ? [child.findByData("openMatchId", matchId) ?? child]
+          : [];
+      });
+    },
+    groupList(group: "selected" | "parent"): FakeElement {
+      const list = root.findByData("groupList", group);
+      if (!list) throw new Error(`Missing group list ${group}`);
+      return list;
     },
   };
 }
@@ -673,6 +840,7 @@ function navigationState(activeMatchId: string): SourceNavigationStateMessage {
 class FakeDom {
   public activeElement: FakeElement | undefined;
   public innerHtmlWrites = 0;
+  public throwOnFocus = false;
   private readonly tags: string[] = [];
 
   public createElement(tagName: string): FakeElement {
@@ -740,6 +908,9 @@ class FakeElement {
 
   public replaceChildren(...children: FakeChild[]): void {
     if (this.throwOnReplace) throw new Error("hostile replaceChildren");
+    if (this.owner.activeElement && this.contains(this.owner.activeElement)) {
+      this.owner.activeElement = undefined;
+    }
     for (const child of this.children) child.parentElement = undefined;
     this.children.length = 0;
     this.textContent = "";
@@ -766,7 +937,17 @@ class FakeElement {
   }
 
   public focus(): void {
+    if (this.owner.throwOnFocus) throw new Error("hostile focus");
     this.owner.activeElement = this;
+  }
+
+  public contains(element: FakeElement): boolean {
+    let current: FakeElement | undefined = element;
+    while (current) {
+      if (current === this) return true;
+      current = current.parentElement;
+    }
+    return false;
   }
 
   public text(): string {
