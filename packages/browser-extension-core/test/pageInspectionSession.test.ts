@@ -81,6 +81,67 @@ describe("PageInspectionSession", () => {
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
   });
 
+  it("does not display a selected element after hover leaves", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    expect(harness.overlay.shown).toEqual([]);
+    harness.session.hoverByRef("node-1", 3);
+    const shownBeforeLeave = harness.overlay.shown.length;
+
+    harness.session.clearHover(3);
+
+    expect(harness.overlay.shown).toHaveLength(shownBeforeLeave);
+    expect(harness.overlay.clearCount).toBeGreaterThan(0);
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef))
+      .toEqual(["node-2", "node-2"]);
+  });
+
+  it("clears page hover when the pointer leaves its document", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    harness.session.enablePicker();
+    harness.document.dispatch(
+      "pointermove",
+      createEvent("pointermove", harness.root),
+    );
+    harness.clock.flushFrame();
+    const shownBeforeLeave = harness.overlay.shown.length;
+
+    harness.document.dispatch(
+      "pointerleave" as InspectEventType,
+      createEvent("pointerleave" as InspectEventType, harness.root),
+    );
+
+    expect(harness.overlay.shown).toHaveLength(shownBeforeLeave);
+    expect(harness.overlay.clearCount).toBeGreaterThan(0);
+    expect(harness.provider.retentions.at(-1)).toEqual({
+      action: "release",
+      nodeRef: "node-1",
+      reason: "hovered",
+    });
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+  });
+
+  it("clears hover authority before refresh without clearing selection", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    harness.session.hoverByRef("node-1", 3);
+
+    harness.session.clearOverlayForRefresh();
+
+    expect(harness.provider.retentions.at(-1)).toEqual({
+      action: "release",
+      nodeRef: "node-1",
+      reason: "hovered",
+    });
+    expect(harness.events.at(-1)).toEqual({
+      type: "dom.hoverChanged",
+      documentEpoch: 3,
+    });
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+  });
+
   it("cancels queued page hover before clearing the overlay for refresh", async () => {
     const harness = createSessionHarness();
     const preview = element("SECTION", "preview", harness.document);
@@ -174,11 +235,14 @@ describe("PageInspectionSession", () => {
     await harness.session.selectByRef("node-2", 3);
     harness.session.hoverByRef("node-1", 3);
     expect(harness.overlay.shown.at(-1)?.element).not.toBe(harness.card);
+    const shownBeforeEscape = harness.overlay.shown.length;
+    const clearCountBeforeEscape = harness.overlay.clearCount;
 
     harness.document.dispatch("keydown", createKeyEvent("Escape", true));
 
     expect(harness.session.pickerEnabled).toBe(true);
-    expect(harness.overlay.shown.at(-1)?.element).toBe(harness.card);
+    expect(harness.overlay.shown).toHaveLength(shownBeforeEscape);
+    expect(harness.overlay.clearCount).toBe(clearCountBeforeEscape + 1);
     expect(harness.selections).toHaveLength(1);
 
     harness.document.dispatch("keydown", createKeyEvent("Escape", false));
@@ -512,6 +576,7 @@ describe("PageInspectionSession", () => {
     await harness.session.selectByRef("node-2", 3);
     harness.session.hoverByRef("node-2", 3);
     const replacement = new FakeSessionDocument();
+    const clearCountBeforeReset = harness.overlay.clearCount;
 
     harness.session.resetDocument(
       replacement as unknown as Document & { readonly styleSheets: [] },
@@ -520,7 +585,14 @@ describe("PageInspectionSession", () => {
 
     expect(harness.session.pickerEnabled).toBe(false);
     expect(harness.document.listenerCount("click")).toBe(0);
+    expect(harness.document.listenerCount(
+      "pointerleave" as InspectEventType,
+    )).toBe(0);
+    expect(replacement.listenerCount(
+      "pointerleave" as InspectEventType,
+    )).toBe(1);
     expect(harness.provider.resetCount).toBe(1);
+    expect(harness.overlay.clearCount).toBe(clearCountBeforeReset + 1);
     expect(harness.overlay.disposeCount).toBe(1);
     await expect(harness.session.republishSelection()).resolves.toBe(false);
     await harness.session.selectByRef("node-2", 3);
@@ -750,25 +822,25 @@ describe("PageInspectionSession", () => {
     expect(harness.selections).toHaveLength(1);
   });
 
-  it("does not restore an overlay invalidated during selected resolve", async () => {
+  it("does not resolve or restore the selected element when hover clears", async () => {
     const harness = createSessionHarness();
     await harness.session.selectByRef("node-2", 3);
     harness.session.hoverByRef("node-1", 3);
     const shownBeforeClear = harness.overlay.shown.length;
-    harness.provider.onResolve = () => {
-      harness.provider.onResolve = undefined;
-      harness.provider.emitSelectedRemoval("node-2");
-    };
+    const onResolve = vi.fn();
+    harness.provider.onResolve = onResolve;
 
     harness.session.clearHover(3);
 
     expect(harness.overlay.shown).toHaveLength(shownBeforeClear);
+    expect(onResolve).not.toHaveBeenCalled();
     expect(harness.provider.retentions.filter(({ nodeRef, reason }) => (
       nodeRef === "node-2" && reason === "selected"
     ))).toEqual([
       { action: "retain", nodeRef: "node-2", reason: "selected" },
-      { action: "release", nodeRef: "node-2", reason: "selected" },
     ]);
+    harness.provider.onResolve = undefined;
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
   });
 
   it("authoritatively cancels a pending page-hover clear request", async () => {
@@ -855,6 +927,9 @@ describe("PageInspectionSession", () => {
       1,
     );
     harness.provider.emitFrameLifecycle("registered", context);
+    expect(frameDocument.listenerCount(
+      "pointerleave" as InspectEventType,
+    )).toBe(1);
     await harness.session.selectByRef("node-frame", 3);
     harness.session.hoverByRef("node-frame", 3);
 
@@ -862,6 +937,9 @@ describe("PageInspectionSession", () => {
     harness.provider.setFrameContexts([]);
     harness.provider.emitFrameLifecycle("removed", context);
 
+    expect(frameDocument.listenerCount(
+      "pointerleave" as InspectEventType,
+    )).toBe(0);
     expect(harness.provider.retentions).toEqual(expect.arrayContaining([
       { action: "release", nodeRef: "node-frame", reason: "selected" },
       { action: "release", nodeRef: "node-frame", reason: "hovered" },
@@ -902,13 +980,16 @@ describe("PageInspectionSession", () => {
 
   it("rolls back retained authority when overlay rendering throws", async () => {
     const harness = createSessionHarness();
+    harness.session.hoverByRef("node-1", 3);
     harness.overlay.throwOnShow = true;
 
     await expect(harness.session.selectByRef("node-2", 3)).resolves
       .toBeUndefined();
 
     expect(harness.selections).toEqual([]);
-    expect(harness.provider.retentions).toEqual([
+    expect(harness.provider.retentions.filter(({ reason }) => (
+      reason === "selected"
+    ))).toEqual([
       { action: "retain", nodeRef: "node-2", reason: "selected" },
       { action: "release", nodeRef: "node-2", reason: "selected" },
     ]);
@@ -957,6 +1038,7 @@ describe("PageInspectionSession", () => {
   it("releases both selection generations when replacement disposes reentrantly", async () => {
     const harness = createSessionHarness();
     await harness.session.selectByRef("node-2", 3);
+    harness.session.hoverByRef("node-2", 3);
     harness.clock.advance(100);
     harness.overlay.onShow = () => {
       harness.overlay.onShow = undefined;
@@ -1032,6 +1114,7 @@ describe("PageInspectionSession", () => {
     );
     const eventCount = harness.events.length;
     const selectionCount = harness.selections.length;
+    const clearCount = harness.overlay.clearCount;
 
     harness.session.dispose();
     harness.session.dispose();
@@ -1045,6 +1128,10 @@ describe("PageInspectionSession", () => {
     await harness.session.selectByRef("node-2", 3);
 
     expect(harness.document.listenerCount("click")).toBe(0);
+    expect(harness.document.listenerCount(
+      "pointerleave" as InspectEventType,
+    )).toBe(0);
+    expect(harness.overlay.clearCount).toBe(clearCount + 1);
     expect(harness.overlay.disposeCount).toBe(1);
     expect(harness.provider.disposeCount).toBe(1);
     expect(harness.events).toHaveLength(eventCount);

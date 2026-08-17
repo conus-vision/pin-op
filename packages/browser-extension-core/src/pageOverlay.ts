@@ -111,10 +111,10 @@ interface FrameContextSnapshot extends FrameIdentity {
 }
 
 const BOX_COLORS = Object.freeze({
-  margin: "rgba(246, 178, 107, 0.55)",
-  border: "rgba(255, 229, 153, 0.6)",
-  padding: "rgba(147, 196, 125, 0.55)",
-  content: "rgba(111, 168, 220, 0.55)",
+  margin: "rgba(246, 178, 107, 0.275)",
+  border: "rgba(255, 229, 153, 0.30)",
+  padding: "rgba(147, 196, 125, 0.275)",
+  content: "rgba(111, 168, 220, 0.275)",
 });
 
 const LABEL_HEIGHT = 22;

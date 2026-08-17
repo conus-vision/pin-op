@@ -11,6 +11,26 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageOverlay", () => {
+  it("renders the box model with the exact hover-only alpha colors", () => {
+    const environment = createEnvironment();
+    const element = environment.createElement({
+      rects: [{ x: 10, y: 20, width: 80, height: 40 }],
+    });
+    const overlay = environment.createOverlay();
+
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    expect(readBoxColor(environment.document, "margin"))
+      .toBe("rgba(246, 178, 107, 0.275)");
+    expect(readBoxColor(environment.document, "border"))
+      .toBe("rgba(255, 229, 153, 0.30)");
+    expect(readBoxColor(environment.document, "padding"))
+      .toBe("rgba(147, 196, 125, 0.275)");
+    expect(readBoxColor(environment.document, "content"))
+      .toBe("rgba(111, 168, 220, 0.275)");
+  });
+
   it("renders exact margin, border, padding, and content geometry", () => {
     const environment = createEnvironment();
     const element = environment.createElement({
@@ -1978,6 +1998,15 @@ function readBoxGeometry(
         height: layer.style.height,
       }
     : undefined;
+}
+
+function readBoxColor(
+  document: FakeDocument,
+  box: "margin" | "border" | "padding" | "content",
+): string | undefined {
+  return findElements(document).find(
+    (element) => element.getAttribute("data-pin-op-box") === box,
+  )?.style.backgroundColor;
 }
 
 function readAllBoxGeometry(

@@ -454,6 +454,10 @@ describe("DomTreeView", () => {
     tree.dispatch("pointerleave");
 
     expect(clearHoverRequests(harness.transport)).toHaveLength(2);
+    expect(harness.controller.rows().find(({ nodeRef }) => nodeRef === "locked"))
+      .toMatchObject({ selected: true });
+    expect(harness.controller.rows().find(({ nodeRef }) => nodeRef === "root"))
+      .toMatchObject({ expanded: true });
   });
 
   it("clears element preview when entering shadow and frame rows", () => {

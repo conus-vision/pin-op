@@ -217,6 +217,7 @@ export class PageInspectionSession {
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
   private readonly trackedDocuments = new Set<InspectDocument>();
+  private readonly pageLeaveListeners = new Map<InspectDocument, EventListener>();
   private selected: SelectedState | undefined;
   private hovered: HoveredState | undefined;
   private pendingPageHover: PendingPageHover | undefined;
@@ -293,6 +294,7 @@ export class PageInspectionSession {
       onError: (error) => this.reportError(error),
     });
     this.trackedDocuments.add(options.document);
+    this.attachPageLeaveListener(options.document);
     this.provider.startFrameTracking();
     this.syncFrameDocuments();
   }
@@ -354,6 +356,7 @@ export class PageInspectionSession {
       this.lastSelectionAt = undefined;
 
       for (const tracked of this.trackedDocuments) {
+        this.detachPageLeaveListener(tracked);
         this.mode.removeDocument(tracked);
       }
       this.trackedDocuments.clear();
@@ -417,8 +420,7 @@ export class PageInspectionSession {
     if (this.disposed) {
       return;
     }
-    this.cancelPendingHoverFrame();
-    this.clearOverlaySafely();
+    this.clearHoverState("emit");
   }
 
   public async selectByRef(
@@ -626,6 +628,9 @@ export class PageInspectionSession {
     } catch {
       // The session is already inert and cannot retry owned callbacks safely.
     }
+    for (const tracked of [...this.pageLeaveListeners.keys()]) {
+      this.detachPageLeaveListener(tracked);
+    }
     this.trackedDocuments.clear();
   }
 
@@ -803,8 +808,12 @@ export class PageInspectionSession {
         selected: next,
       });
       hoverUpgrade = this.upgradeMatchingHover(next);
-      const overlayState = this.hovered ?? next;
-      this.overlay.show(overlayState.element, overlayState);
+      const overlayState = this.hovered;
+      if (overlayState) {
+        this.overlay.show(overlayState.element, overlayState);
+      } else {
+        this.clearOverlaySafely();
+      }
       if (!this.isSelectionAuthorityLocallyCurrent(authority)) {
         return undefined;
       }
@@ -1277,6 +1286,7 @@ export class PageInspectionSession {
     this.cancelPendingHoverFrame();
     const previous = this.hovered;
     if (!previous) {
+      this.clearOverlaySafely();
       return undefined;
     }
     this.hoverRevision += 1;
@@ -1284,38 +1294,12 @@ export class PageInspectionSession {
     if (previous.nodeRef) {
       this.provider.releaseNode(previous.nodeRef, "hovered");
     }
-    this.restoreSelectedOverlay();
+    this.clearOverlaySafely();
     const event = this.createClearedHoverEvent();
     if (delivery === "emit") {
       this.emitEvent(event);
     }
     return event;
-  }
-
-  private restoreSelectedOverlay(): void {
-    const selected = this.selected;
-    if (!selected) {
-      this.clearOverlaySafely();
-      return;
-    }
-    const authority: SelectionAuthorityToken = Object.freeze({
-      documentEpoch: selected.documentEpoch,
-      selectionRevision: this.selectionRevision,
-      selected,
-    });
-    const resolved = this.resolveLiveSelection(authority);
-    if (!resolved) {
-      if (this.isSelectionAuthorityLocallyCurrent(authority)) {
-        this.clearUnavailableSelection(selected);
-      }
-      return;
-    }
-    try {
-      this.overlay.show(resolved.element, resolved);
-    } catch (error) {
-      this.reportError(error);
-      this.clearOverlaySafely();
-    }
   }
 
   private restoreAuthoritativeOverlay(): void {
@@ -1329,7 +1313,7 @@ export class PageInspectionSession {
       }
       return;
     }
-    this.restoreSelectedOverlay();
+    this.clearOverlaySafely();
   }
 
   private clearOverlaySafely(): void {
@@ -1638,13 +1622,63 @@ export class PageInspectionSession {
       if (!this.trackedDocuments.has(document)) {
         this.trackedDocuments.add(document);
         this.mode.addDocument(document);
+        this.attachPageLeaveListener(document);
       }
     }
     for (const document of [...this.trackedDocuments]) {
       if (!current.has(document)) {
         this.trackedDocuments.delete(document);
+        this.detachPageLeaveListener(document);
         this.mode.removeDocument(document);
       }
+    }
+  }
+
+  private attachPageLeaveListener(document: InspectDocument): void {
+    if (this.disposed || this.pageLeaveListeners.has(document)) {
+      return;
+    }
+    const target = document as unknown as Document;
+    const listener: EventListener = () => {
+      if (
+        !this.disposed &&
+        this.trackedDocuments.has(document) &&
+        this.pageLeaveListeners.get(document) === listener
+      ) {
+        this.clearHover();
+      }
+    };
+    try {
+      target.addEventListener("pointerleave", listener, true);
+    } catch (error) {
+      this.reportError(error);
+      return;
+    }
+    if (this.disposed || !this.trackedDocuments.has(document)) {
+      try {
+        target.removeEventListener("pointerleave", listener, true);
+      } catch {
+        // The stale listener cannot retain session authority.
+      }
+      return;
+    }
+    this.pageLeaveListeners.set(document, listener);
+  }
+
+  private detachPageLeaveListener(document: InspectDocument): void {
+    const listener = this.pageLeaveListeners.get(document);
+    if (!listener) {
+      return;
+    }
+    this.pageLeaveListeners.delete(document);
+    try {
+      (document as unknown as Document).removeEventListener(
+        "pointerleave",
+        listener,
+        true,
+      );
+    } catch {
+      // Session state no longer authorizes callbacks from this document.
     }
   }
 
