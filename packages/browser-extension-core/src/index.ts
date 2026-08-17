@@ -157,7 +157,10 @@ export {
   refreshExternalStylesheets,
   STYLESHEET_REFRESH_TIMEOUT_MS,
 } from "./stylesheetRefresher.js";
-export type { StylesheetRefreshResult } from "./stylesheetRefresher.js";
+export type {
+  StylesheetRefreshOptions,
+  StylesheetRefreshResult,
+} from "./stylesheetRefresher.js";
 export {
   captureTopScrollSnapshot,
   MAX_TOP_SCROLL_COORDINATE,

@@ -7,10 +7,11 @@ export interface StylesheetRefreshResult {
   readonly failed: number;
 }
 
-interface StylesheetRefreshOptions {
+export interface StylesheetRefreshOptions {
   readonly timeoutMs?: number;
   readonly setTimeout?: typeof globalThis.setTimeout;
   readonly clearTimeout?: typeof globalThis.clearTimeout;
+  readonly signal?: AbortSignal;
 }
 
 interface LinkLike extends Node {
@@ -50,6 +51,7 @@ export async function refreshExternalStylesheets(
       timeoutMs,
       schedule,
       cancel,
+      options.signal,
     )),
   );
   const updated = outcomes.filter(Boolean).length;
@@ -63,6 +65,7 @@ function refreshLink(
   timeoutMs: number,
   schedule: typeof globalThis.setTimeout,
   cancel: typeof globalThis.clearTimeout,
+  signal: AbortSignal | undefined,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let replacement: LinkLike;
@@ -77,10 +80,15 @@ function refreshLink(
       try {
         replacement.removeEventListener("load", onLoad);
         replacement.removeEventListener("error", onError);
+        signal?.removeEventListener("abort", onAbort);
       } catch {
         // Listener cleanup is best effort after authority is revoked.
       }
-      if (loaded && removeChild(parent, original)) {
+      if (
+        loaded &&
+        hasExpectedParent(replacement, parent) &&
+        removeChild(parent, original)
+      ) {
         resolve(true);
         return;
       }
@@ -89,8 +97,13 @@ function refreshLink(
     };
     const onLoad: EventListener = () => finish(true);
     const onError: EventListener = () => finish(false);
+    const onAbort: EventListener = () => finish(false);
 
     try {
+      if (signal?.aborted) {
+        resolve(false);
+        return;
+      }
       const parentNode = original.parentNode;
       if (!isParentLike(parentNode)) {
         resolve(false);
@@ -109,13 +122,19 @@ function refreshLink(
       );
       replacement.addEventListener("load", onLoad);
       replacement.addEventListener("error", onError);
-      timer = schedule(() => finish(false), timeoutMs);
       parent.insertBefore(replacement, original.nextSibling);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        finish(false);
+        return;
+      }
+      timer = schedule(() => finish(false), timeoutMs);
     } catch {
       if (typeof replacement! === "object" && replacement !== null) {
         try {
           replacement.removeEventListener("load", onLoad);
           replacement.removeEventListener("error", onError);
+          signal?.removeEventListener("abort", onAbort);
         } catch {
           // A hostile clone cannot retain useful refresh authority.
         }
@@ -234,6 +253,14 @@ function removeChild(parent: ParentLike, child: Node): boolean {
     if (child.parentNode !== parent) return false;
     parent.removeChild(child);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasExpectedParent(child: Node, parent: ParentLike): boolean {
+  try {
+    return child.parentNode === parent;
   } catch {
     return false;
   }

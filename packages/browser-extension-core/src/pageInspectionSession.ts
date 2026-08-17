@@ -417,6 +417,7 @@ export class PageInspectionSession {
     if (this.disposed) {
       return;
     }
+    this.cancelPendingHoverFrame();
     this.clearOverlaySafely();
   }
 

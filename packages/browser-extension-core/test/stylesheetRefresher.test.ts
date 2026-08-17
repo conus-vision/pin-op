@@ -147,6 +147,53 @@ describe("refreshExternalStylesheets", () => {
       failed: 1,
     });
   });
+
+  it("retains the original when the replacement loses DOM authority before load", async () => {
+    const page = pageHarness("https://example.test/");
+    const original = page.link({ rel: "stylesheet", href: "/app.css" });
+
+    const refreshing = refreshExternalStylesheets(page.document, 7);
+    const replacement = page.replacementFor(original);
+    replacement.remove();
+    replacement.emit("load");
+
+    await expect(refreshing).resolves.toEqual({
+      attempted: 1,
+      updated: 0,
+      failed: 1,
+    });
+    expect(page.nodes).toEqual([original]);
+  });
+
+  it("aborts pending replacements and makes late resource events inert", async () => {
+    vi.useFakeTimers();
+    const page = pageHarness("https://example.test/");
+    const original = page.link({ rel: "stylesheet", href: "/pending.css" });
+    const controller = new AbortController();
+
+    const refreshing = refreshExternalStylesheets(page.document, 8, {
+      signal: controller.signal,
+    });
+    const replacement = page.replacementFor(original);
+    expect(replacement.listenerCount("load")).toBe(1);
+    expect(replacement.listenerCount("error")).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    controller.abort();
+
+    expect(page.nodes).toEqual([original]);
+    expect(replacement.listenerCount("load")).toBe(0);
+    expect(replacement.listenerCount("error")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    replacement.emit("load");
+    replacement.emit("error");
+    expect(page.nodes).toEqual([original]);
+    await expect(refreshing).resolves.toEqual({
+      attempted: 1,
+      updated: 0,
+      failed: 1,
+    });
+  });
 });
 
 type Attributes = Record<string, string>;
@@ -216,6 +263,10 @@ class FakeLink {
 
   public emit(type: "load" | "error"): void {
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener();
+  }
+
+  public listenerCount(type: "load" | "error"): number {
+    return this.listeners.get(type)?.size ?? 0;
   }
 
   public attributesObject(): Attributes {

@@ -81,6 +81,22 @@ describe("PageInspectionSession", () => {
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
   });
 
+  it("cancels queued page hover before clearing the overlay for refresh", async () => {
+    const harness = createSessionHarness();
+    const preview = element("SECTION", "preview", harness.document);
+    await harness.session.selectByRef("node-2", 3);
+    harness.session.enablePicker();
+    harness.session.hover(preview);
+    const shownBeforeRefresh = harness.overlay.shown.length;
+
+    harness.session.clearOverlayForRefresh();
+    harness.clock.flushFrame();
+
+    expect(harness.overlay.shown).toHaveLength(shownBeforeRefresh);
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
+  });
+
   it("coalesces the raw page target before provider lookup, overlay, and event work", () => {
     const harness = createSessionHarness();
     const first = element("DIV", "first", harness.document);

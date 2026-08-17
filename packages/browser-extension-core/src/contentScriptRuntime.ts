@@ -28,6 +28,7 @@ import {
 } from "./refreshRuntimeProtocol.js";
 import {
   refreshExternalStylesheets,
+  type StylesheetRefreshOptions,
   type StylesheetRefreshResult,
 } from "./stylesheetRefresher.js";
 import {
@@ -85,6 +86,7 @@ export interface ContentRefreshRuntimeOptions {
   readonly refreshStylesheets?: (
     document: Document,
     generation: number,
+    options?: StylesheetRefreshOptions,
   ) => Promise<StylesheetRefreshResult>;
   readonly restoreScroll?: (
     snapshot: TopScrollSnapshot,
@@ -257,6 +259,9 @@ export function startContentRefreshRuntime(
   };
   let disposed = false;
   let restoration: TopScrollRestoration | undefined;
+  let activeRefreshOperation: {
+    readonly controller: AbortController;
+  } | undefined;
   let commandTail = Promise.resolve();
 
   const reportError = (error: unknown): void => {
@@ -270,30 +275,40 @@ export function startContentRefreshRuntime(
     if (disposed) return undefined;
     const command = parseContentRefreshCommand(message);
     if (!command || !sameRefreshBinding(command, binding)) return undefined;
-    const result = commandTail.then(
-      () => executeRefreshCommand(
-        options,
-        binding,
-        command.refreshGeneration,
-        command.mode,
-        refreshStylesheets,
-        clearOverlay,
-        now,
-        () => !disposed,
-        reportError,
-      ),
-      () => executeRefreshCommand(
-        options,
-        binding,
-        command.refreshGeneration,
-        command.mode,
-        refreshStylesheets,
-        clearOverlay,
-        now,
-        () => !disposed,
-        reportError,
-      ),
-    );
+    activeRefreshOperation?.controller.abort();
+    const operation = { controller: new AbortController() };
+    activeRefreshOperation = operation;
+    const execute = async (): Promise<ContentRefreshResult | undefined> => {
+      if (
+        disposed ||
+        operation.controller.signal.aborted ||
+        activeRefreshOperation !== operation
+      ) {
+        return undefined;
+      }
+      try {
+        return await executeRefreshCommand(
+          options,
+          binding,
+          command.refreshGeneration,
+          command.mode,
+          refreshStylesheets,
+          operation.controller.signal,
+          clearOverlay,
+          now,
+          () =>
+            !disposed &&
+            !operation.controller.signal.aborted &&
+            activeRefreshOperation === operation,
+          reportError,
+        );
+      } finally {
+        if (activeRefreshOperation === operation) {
+          activeRefreshOperation = undefined;
+        }
+      }
+    };
+    const result = commandTail.then(execute, execute);
     commandTail = result.then(
       () => undefined,
       () => undefined,
@@ -306,6 +321,8 @@ export function startContentRefreshRuntime(
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      activeRefreshOperation?.controller.abort();
+      activeRefreshOperation = undefined;
       try {
         removeRuntimeMessages();
       } catch {
@@ -356,6 +373,7 @@ async function executeRefreshCommand(
   refreshGeneration: number,
   mode: "styles" | "reload",
   refreshStylesheets: NonNullable<ContentRefreshRuntimeOptions["refreshStylesheets"]>,
+  signal: AbortSignal,
   clearOverlay: () => void,
   now: () => number,
   isActive: () => boolean,
@@ -373,6 +391,7 @@ async function executeRefreshCommand(
       const stylesheet = await refreshStylesheets(
         options.document,
         refreshGeneration,
+        { signal },
       );
       if (!isActive()) return undefined;
       return createRefreshResult(

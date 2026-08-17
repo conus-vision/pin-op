@@ -310,7 +310,11 @@ describe("startContentRefreshRuntime", () => {
       stylesheet: { attempted: 2, updated: 1, failed: 1 },
     });
     expect(clearOverlay).toHaveBeenCalledOnce();
-    expect(refreshStylesheets).toHaveBeenCalledWith(page.document, 5);
+    expect(refreshStylesheets).toHaveBeenCalledWith(
+      page.document,
+      5,
+      { signal: expect.any(AbortSignal) },
+    );
 
     await expect(runtimeMessages.emit({
       type: "pin-op.refresh.content.execute",
@@ -530,6 +534,143 @@ describe("startContentRefreshRuntime", () => {
 
     await expect(pending).resolves.toBeUndefined();
     expect(refreshStylesheets).not.toHaveBeenCalled();
+  });
+
+  it("aborts an in-flight stylesheet refresh when disposed", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    let signal: AbortSignal | undefined;
+    let resolveRefresh: ((result: {
+      attempted: number;
+      updated: number;
+      failed: number;
+    }) => void) | undefined;
+    const refreshStylesheets = vi.fn((
+      _document: Document,
+      _generation: number,
+      options?: { readonly signal?: AbortSignal },
+    ) => {
+      signal = options?.signal;
+      return new Promise<{ attempted: number; updated: number; failed: number }>(
+        (resolve) => {
+          resolveRefresh = resolve;
+          signal?.addEventListener("abort", () => resolve({
+            attempted: 1,
+            updated: 0,
+            failed: 1,
+          }), { once: true });
+        },
+      );
+    });
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 26,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-f",
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      refreshStylesheets,
+    });
+    await flushAsync();
+    const pending = runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 26,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-f",
+      refreshGeneration: 15,
+      mode: "styles",
+    });
+    await flushAsync();
+
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+    runtime.dispose();
+    expect(signal?.aborted).toBe(true);
+    await expect(pending).resolves.toBeUndefined();
+    resolveRefresh?.({ attempted: 1, updated: 0, failed: 1 });
+  });
+
+  it("aborts an in-flight stylesheet refresh superseded by a newer command", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: ((result: {
+      attempted: number;
+      updated: number;
+      failed: number;
+    }) => void) | undefined;
+    const refreshStylesheets = vi.fn((
+      _document: Document,
+      generation: number,
+      options?: { readonly signal?: AbortSignal },
+    ) => {
+      if (generation !== 16) {
+        return Promise.resolve({ attempted: 1, updated: 1, failed: 0 });
+      }
+      firstSignal = options?.signal;
+      return new Promise<{ attempted: number; updated: number; failed: number }>(
+        (resolve) => {
+          resolveFirst = resolve;
+          firstSignal?.addEventListener("abort", () => resolve({
+            attempted: 1,
+            updated: 0,
+            failed: 1,
+          }), { once: true });
+        },
+      );
+    });
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 27,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-g",
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      refreshStylesheets,
+    });
+    await flushAsync();
+    const first = runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 27,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-g",
+      refreshGeneration: 16,
+      mode: "styles",
+    });
+    await flushAsync();
+    const second = runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 27,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-g",
+      refreshGeneration: 17,
+      mode: "styles",
+    });
+    await flushAsync();
+    const firstWasAborted = firstSignal?.aborted ?? false;
+    if (!firstWasAborted) {
+      resolveFirst?.({ attempted: 1, updated: 0, failed: 1 });
+    }
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    runtime.dispose();
+
+    expect(firstWasAborted).toBe(true);
+    expect(firstResult).toBeUndefined();
+    expect(secondResult).toMatchObject({
+      accepted: true,
+      refreshGeneration: 17,
+      mode: "styles",
+      stylesheet: { attempted: 1, updated: 1, failed: 0 },
+    });
+    expect(refreshStylesheets.mock.calls.map((call) => call[1])).toEqual([16, 17]);
   });
 });
 
