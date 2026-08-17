@@ -28,6 +28,7 @@ type GroupKey = "selected" | "parent";
 
 interface RenderedEntry {
   readonly matchId: string;
+  readonly group: GroupKey;
   readonly element: HTMLElement;
 }
 
@@ -44,6 +45,10 @@ export class SourcePaneView {
   private parentMatches: readonly SourceExcerpt[] | undefined;
   private selectedCollapsed = false;
   private parentCollapsed = true;
+  private readonly rovingMatchIds: Record<GroupKey, string | undefined> = {
+    selected: undefined,
+    parent: undefined,
+  };
   private renderedEntries: readonly RenderedEntry[] = Object.freeze([]);
   private renderEpoch = 0;
   private disposed = false;
@@ -156,6 +161,8 @@ export class SourcePaneView {
 
     const model = this.controller.snapshot();
     this.resetDisclosureFromModel(model);
+    this.normalizeRovingTarget("selected", model.groups.selected, model.activeMatchId);
+    this.normalizeRovingTarget("parent", model.groups.parent, model.activeMatchId);
     const children: HTMLElement[] = [];
     const header = this.createDocumentHeader(model);
     if (header) children.push(header);
@@ -225,8 +232,13 @@ export class SourcePaneView {
       list.setAttribute("role", "listbox");
       list.setAttribute("aria-label", `${group.label} source matches`);
       for (const match of group.matches) {
-        const row = this.createExcerpt(match, epoch);
-        entries.push({ matchId: match.matchId, element: row });
+        const row = this.createExcerpt(
+          match,
+          key,
+          epoch,
+          this.rovingMatchIds[key] === match.matchId,
+        );
+        entries.push({ matchId: match.matchId, group: key, element: row });
         list.append(row);
       }
       section.append(list);
@@ -234,7 +246,12 @@ export class SourcePaneView {
     return section;
   }
 
-  private createExcerpt(match: SourceExcerpt, epoch: number): HTMLElement {
+  private createExcerpt(
+    match: SourceExcerpt,
+    group: GroupKey,
+    epoch: number,
+    roving: boolean,
+  ): HTMLElement {
     const active = this.controller.snapshot().activeMatchId === match.matchId;
     const row = this.document.createElement("div");
     row.className = active
@@ -242,9 +259,10 @@ export class SourcePaneView {
       : "source-pane-entry";
     row.dataset.action = "open-source";
     row.dataset.matchId = match.matchId;
+    row.dataset.group = group;
     row.dataset.renderEpoch = String(epoch);
     row.setAttribute("role", "option");
-    row.setAttribute("tabindex", "0");
+    row.setAttribute("tabindex", roving ? "0" : "-1");
     row.setAttribute("aria-selected", String(active));
 
     const heading = this.document.createElement("div");
@@ -303,6 +321,22 @@ export class SourcePaneView {
     this.render();
   }
 
+  private normalizeRovingTarget(
+    key: GroupKey,
+    group: SourcePaneGroup,
+    activeMatchId: string | undefined,
+  ): void {
+    const current = this.rovingMatchIds[key];
+    if (current && group.matches.some((match) => match.matchId === current)) {
+      return;
+    }
+    this.rovingMatchIds[key] = group.matches.some(
+        (match) => match.matchId === activeMatchId,
+      )
+      ? activeMatchId
+      : group.matches[0]?.matchId;
+  }
+
   private open(matchId: string | undefined): void {
     if (!matchId || !this.currentEntry(matchId)) {
       return;
@@ -319,18 +353,36 @@ export class SourcePaneView {
     if (!currentMatchId || this.renderedEntries.length === 0) {
       return;
     }
-    const current = this.renderedEntries.findIndex(({ matchId }) => matchId === currentMatchId);
+    const currentEntry = this.currentEntry(currentMatchId);
+    if (!currentEntry) {
+      return;
+    }
+    const groupEntries = this.renderedEntries.filter(
+      ({ group }) => group === currentEntry.group,
+    );
+    const current = groupEntries.findIndex(({ matchId }) => matchId === currentMatchId);
     if (current < 0) {
       return;
     }
     const index = direction === "first"
       ? 0
       : direction === "last"
-        ? this.renderedEntries.length - 1
+        ? groupEntries.length - 1
         : direction === "previous"
           ? Math.max(0, current - 1)
-          : Math.min(this.renderedEntries.length - 1, current + 1);
-    this.run(() => this.renderedEntries[index]?.element.focus());
+          : Math.min(groupEntries.length - 1, current + 1);
+    const target = groupEntries[index];
+    if (!target) {
+      return;
+    }
+    this.rovingMatchIds[currentEntry.group] = target.matchId;
+    for (const entry of groupEntries) {
+      entry.element.setAttribute(
+        "tabindex",
+        entry.matchId === target.matchId ? "0" : "-1",
+      );
+    }
+    this.run(() => target.element.focus());
   }
 
   private currentEntry(matchId: string): RenderedEntry | undefined {
