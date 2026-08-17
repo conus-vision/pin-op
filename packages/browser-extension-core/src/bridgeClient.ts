@@ -726,24 +726,22 @@ export function withoutInternalRoutingMetadata(
 }
 
 function snapshotCloseEvent(event: unknown): BrowserSocketCloseEvent {
-  try {
-    if (!event || typeof event !== "object" || Array.isArray(event)) {
-      return { code: 0, reason: "" };
-    }
-    const code = Object.getOwnPropertyDescriptor(event, "code");
-    const reason = Object.getOwnPropertyDescriptor(event, "reason");
-    return {
-      code: code && Object.hasOwn(code, "value") &&
-          Number.isInteger(code.value) && code.value >= 0
-        ? Number(code.value)
-        : 0,
-      reason: reason && Object.hasOwn(reason, "value") &&
-          typeof reason.value === "string"
-        ? reason.value
-        : "",
-    };
-  } catch {
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
     return { code: 0, reason: "" };
+  }
+  const code = guardedGet(event, "code");
+  const reason = guardedGet(event, "reason");
+  return {
+    code: Number.isInteger(code) && Number(code) >= 0 ? Number(code) : 0,
+    reason: typeof reason === "string" ? reason : "",
+  };
+}
+
+function guardedGet(value: object, key: string): unknown {
+  try {
+    return Reflect.get(value, key);
+  } catch {
+    return undefined;
   }
 }
 

@@ -107,7 +107,8 @@ export function parseTabRefreshState(
     typeof record.autoRefreshEnabled !== "boolean" ||
     typeof record.ideHighlightEnabled !== "boolean" ||
     typeof record.participant !== "boolean" ||
-    !isGeneration(record.lastAcceptedGeneration)
+    !isGeneration(record.lastAcceptedGeneration) ||
+    (record.participant && !record.autoRefreshEnabled)
   ) {
     return undefined;
   }
@@ -203,7 +204,8 @@ export function parsePanelTabStateMessage(
     typeof record.autoRefreshEnabled !== "boolean" ||
     typeof record.ideHighlightEnabled !== "boolean" ||
     typeof record.participant !== "boolean" ||
-    !isGeneration(record.lastAcceptedGeneration)
+    !isGeneration(record.lastAcceptedGeneration) ||
+    (record.participant && !record.autoRefreshEnabled)
   ) {
     return undefined;
   }

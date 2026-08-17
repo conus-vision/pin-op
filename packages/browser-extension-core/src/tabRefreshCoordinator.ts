@@ -79,7 +79,7 @@ export class TabRefreshCoordinator {
         windowId,
         autoRefreshEnabled: current.autoRefreshEnabled,
         ideHighlightEnabled: current.ideHighlightEnabled,
-        participant: true,
+        participant: current.autoRefreshEnabled,
         lastAcceptedGeneration: generation,
         ...(pending ? { pending } : {}),
       });
@@ -121,7 +121,11 @@ export class TabRefreshCoordinator {
     }
     await this.ensureInitialized();
     return this.enqueue(async () => {
-      const current = await this.store.load(tabId, windowId);
+      const states = await this.store.loadAll();
+      const existing = states.find(
+        (state) => state.tabId === tabId && state.windowId === windowId,
+      );
+      const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
       const enabling = !current.autoRefreshEnabled &&
         settings.autoRefreshEnabled;
       const generation = Math.max(
@@ -136,10 +140,13 @@ export class TabRefreshCoordinator {
         windowId,
         autoRefreshEnabled: settings.autoRefreshEnabled,
         ideHighlightEnabled: settings.ideHighlightEnabled,
-        participant: current.participant,
+        participant: settings.autoRefreshEnabled && existing !== undefined,
         lastAcceptedGeneration: generation,
         ...(pending ? { pending } : {}),
       });
+      if (!existing) {
+        return next;
+      }
       await this.store.save(next);
       if (current.participant !== next.participant) {
         this.updateParticipant(next);
@@ -206,6 +213,45 @@ export class TabRefreshCoordinator {
     });
   }
 
+  public async beginWindowEpoch(windowId: number): Promise<void> {
+    if (!isBrowserId(windowId)) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.enqueue(async () => {
+      this.watermarks.set(windowId, { generation: 0, mode: "styles" });
+      const states = await this.store.loadAll();
+      for (const state of states) {
+        if (state.windowId !== windowId) {
+          continue;
+        }
+        await this.store.save(stateSnapshot({
+          tabId: state.tabId,
+          windowId: state.windowId,
+          autoRefreshEnabled: state.autoRefreshEnabled,
+          ideHighlightEnabled: state.ideHighlightEnabled,
+          participant: state.participant,
+          lastAcceptedGeneration: 0,
+        }));
+      }
+    });
+  }
+
+  public async clearWindowPending(windowId: number): Promise<void> {
+    if (!isBrowserId(windowId)) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.enqueue(async () => {
+      const states = await this.store.loadAll();
+      for (const state of states) {
+        if (state.windowId === windowId && state.pending) {
+          await this.store.save(withoutPending(state));
+        }
+      }
+    });
+  }
+
   public async activateTab(tabId: number, windowId: number): Promise<void> {
     await this.ensureInitialized();
     await this.enqueue(async () => {
@@ -230,6 +276,27 @@ export class TabRefreshCoordinator {
       const state = states.find((candidate) => candidate.tabId === tabId);
       if (state?.participant) {
         this.setParticipant(state.windowId, state.tabId, false);
+      }
+      await this.store.removeTab(tabId);
+    });
+  }
+
+  public async detachTab(tabId: number, windowId: number): Promise<void> {
+    if (!isBrowserId(tabId) || !isBrowserId(windowId)) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.enqueue(async () => {
+      const states = await this.store.loadAll();
+      const state = states.find(
+        (candidate) =>
+          candidate.tabId === tabId && candidate.windowId === windowId,
+      );
+      if (!state) {
+        return;
+      }
+      if (state.participant) {
+        this.setParticipant(windowId, tabId, false);
       }
       await this.store.removeTab(tabId);
     });

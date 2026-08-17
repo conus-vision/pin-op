@@ -112,7 +112,10 @@ export type BackgroundTabRefreshCoordinator = Pick<
   | "state"
   | "updateSettings"
   | "acceptPageRefresh"
+  | "beginWindowEpoch"
+  | "clearWindowPending"
   | "activateTab"
+  | "detachTab"
   | "removeTab"
   | "removeWindow"
 >;
@@ -176,6 +179,9 @@ export interface BackgroundRouterOptions {
   ) => () => void;
   readonly subscribePageRefreshes?: (
     listener: (windowId: number, message: PageRefreshMessage) => void,
+  ) => () => void;
+  readonly subscribeProtocolMismatches?: (
+    listener: (windowId: number, details: BrowserProtocolMismatch) => void,
   ) => () => void;
   readonly subscriptions?: BackgroundRouterSubscriptions;
   readonly onError?: (error: unknown) => void;
@@ -277,6 +283,7 @@ export class BackgroundRouter {
   private readonly panelPorts = new Map<string, PanelPortRecord>();
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly removedWindows = new Set<number>();
+  private readonly peerBlockedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
   private readonly peerStates = new Map<
     number,
@@ -343,6 +350,13 @@ export class BackgroundRouter {
             .acceptPageRefresh(windowId, message)
             .catch((error) => this.reportError(error));
         }),
+      );
+    }
+    if (options.subscribeProtocolMismatches) {
+      this.removeSubscriptions.push(
+        options.subscribeProtocolMismatches((windowId) =>
+          this.receiveProtocolMismatch(windowId),
+        ),
       );
     }
     this.attachSubscriptions(options.subscriptions);
@@ -489,6 +503,7 @@ export class BackgroundRouter {
     this.channelByTab.clear();
     this.channelBySource.clear();
     this.removedWindows.clear();
+    this.peerBlockedWindows.clear();
     this.peerStates.clear();
     this.availabilityStates.clear();
   }
@@ -565,6 +580,9 @@ export class BackgroundRouter {
         pending.detachedWindowId = oldWindowId;
       }
     }
+    void this.tabRefreshCoordinator
+      .detachTab(tabId, oldWindowId)
+      .catch((error) => this.reportError(error));
 
     const channel = this.channelByTab.get(tabId);
     const binding = channel ? this.bindings.get(channel) : undefined;
@@ -1160,6 +1178,8 @@ export class BackgroundRouter {
       dispatchedCommand = dispatchedRecord;
 
       if (command.type === "pin-op.linkWindow") {
+        this.peerBlockedWindows.delete(refreshed.windowId);
+        await this.tabRefreshCoordinator.beginWindowEpoch(refreshed.windowId);
         await this.coordinator.linkWindow(
           refreshed.windowId,
           command.code,
@@ -1167,6 +1187,7 @@ export class BackgroundRouter {
           abortController.signal,
         );
       } else {
+        this.peerBlockedWindows.add(refreshed.windowId);
         await this.coordinator.unlinkWindow(
           refreshed.windowId,
           abortController.signal,
@@ -1786,6 +1807,7 @@ export class BackgroundRouter {
       const previousState = record.lastWindowState;
       record.lastWindowState = state;
       if (state === "notLinked") {
+        this.peerBlockedWindows.add(binding.windowId);
         this.peerStates.delete(binding.windowId);
         this.availabilityStates.delete(binding.windowId);
         record.republishInFlightEpoch = undefined;
@@ -1795,6 +1817,7 @@ export class BackgroundRouter {
           this.disposeInspectionSession(record, false);
         }
       } else if (state === "incompatible") {
+        this.peerBlockedWindows.add(binding.windowId);
         if (record.inspectSession || record.panelSessionBinding) {
           this.disposeInspectionSession(record, false);
         }
@@ -1809,6 +1832,9 @@ export class BackgroundRouter {
           record.inspectionFailedClosed = true;
           this.reportError(error);
         }
+      }
+      if (state === "linking" || state === "linked") {
+        this.peerBlockedWindows.delete(binding.windowId);
       }
       this.updateBridgeAvailability(
         binding.windowId,
@@ -2032,18 +2058,14 @@ export class BackgroundRouter {
     if (
       this.disposed ||
       !isBrowserId(windowId) ||
-      this.removedWindows.has(windowId)
+      this.removedWindows.has(windowId) ||
+      this.peerBlockedWindows.has(windowId)
     ) {
       this.peerStates.delete(windowId);
       this.availabilityStates.delete(windowId);
       return;
     }
     const activeRecords = this.activeInspectionRecords(windowId);
-    if (activeRecords.length === 0) {
-      this.peerStates.delete(windowId);
-      this.availabilityStates.delete(windowId);
-      return;
-    }
     const previous = this.peerStates.get(windowId);
     if (
       previous?.sessionId === message.sessionId &&
@@ -2077,6 +2099,11 @@ export class BackgroundRouter {
       connected: message.connected,
       generation: message.peerGeneration,
     });
+    if (message.connected) {
+      void this.tabRefreshCoordinator
+        .beginWindowEpoch(windowId)
+        .catch((error) => this.reportError(error));
+    }
     for (const record of activeRecords) {
       const token = record.activationToken;
       const binding = this.bindings.get(record.channel);
@@ -2094,6 +2121,18 @@ export class BackgroundRouter {
     if (message.connected) {
       this.scheduleAvailabilityRepublish(windowId, availability);
     }
+  }
+
+  private receiveProtocolMismatch(windowId: number): void {
+    if (this.disposed || !isBrowserId(windowId)) {
+      return;
+    }
+    this.peerBlockedWindows.add(windowId);
+    this.peerStates.delete(windowId);
+    this.availabilityStates.delete(windowId);
+    void this.tabRefreshCoordinator
+      .clearWindowPending(windowId)
+      .catch((error) => this.reportError(error));
   }
 
   private postToCurrentPort(

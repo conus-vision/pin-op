@@ -130,6 +130,7 @@ describe("TabRefreshStateStore", () => {
       ...state(11, 7),
       autoRefreshEnabled: false,
       ideHighlightEnabled: false,
+      participant: false,
     });
 
     expect(await store.load(11, 8)).toEqual({

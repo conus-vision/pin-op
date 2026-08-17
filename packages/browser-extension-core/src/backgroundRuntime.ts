@@ -44,6 +44,7 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
       | "onPeerState"
       | "onSourceNavigationState"
       | "onPageRefresh"
+      | "onProtocolMismatch"
       | "dispose"
     >;
   readonly createTabRefreshCoordinator?: (
@@ -112,6 +113,12 @@ export function startBackgroundRuntime(
     subscribePageRefreshes: (listener) => {
       const subscription = coordinator.onPageRefresh((windowId, message) =>
         listener(windowId, message),
+      );
+      return () => subscription.dispose();
+    },
+    subscribeProtocolMismatches: (listener) => {
+      const subscription = coordinator.onProtocolMismatch(
+        (windowId, details) => listener(windowId, details),
       );
       return () => subscription.dispose();
     },

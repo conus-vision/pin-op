@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PROTOCOL_VERSION, type PageRefreshMessage } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
+import type { BrowserProtocolMismatch } from "../src/bridgeClient.js";
 
 describe("startBackgroundRuntime", () => {
   it("wires bridge protocol events into the router and disposes subscriptions", () => {
@@ -13,6 +14,7 @@ describe("startBackgroundRuntime", () => {
     const peerStateDispose = vi.fn();
     const sourceNavigationStateDispose = vi.fn();
     const pageRefreshDispose = vi.fn();
+    const protocolMismatchDispose = vi.fn();
     const coordinatorDispose = vi.fn();
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
@@ -28,7 +30,7 @@ describe("startBackgroundRuntime", () => {
         dispose: sourceNavigationStateDispose,
       })),
       onPageRefresh: vi.fn(() => ({ dispose: pageRefreshDispose })),
-      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
+      onProtocolMismatch: vi.fn(() => ({ dispose: protocolMismatchDispose })),
       dispose: coordinatorDispose,
     };
 
@@ -51,6 +53,7 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onPeerState).toHaveBeenCalledOnce();
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
+    expect(coordinator.onProtocolMismatch).toHaveBeenCalledOnce();
 
     runtime.dispose();
     runtime.dispose();
@@ -59,6 +62,7 @@ describe("startBackgroundRuntime", () => {
     expect(peerStateDispose).toHaveBeenCalledOnce();
     expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
     expect(pageRefreshDispose).toHaveBeenCalledOnce();
+    expect(protocolMismatchDispose).toHaveBeenCalledOnce();
     expect(coordinatorDispose).toHaveBeenCalledOnce();
   });
 
@@ -72,6 +76,9 @@ describe("startBackgroundRuntime", () => {
     const removedTabs = eventHarness();
     let pageRefreshListener:
       | ((windowId: number, message: PageRefreshMessage) => void)
+      | undefined;
+    let protocolMismatchListener:
+      | ((windowId: number, details: BrowserProtocolMismatch) => void)
       | undefined;
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
@@ -88,7 +95,10 @@ describe("startBackgroundRuntime", () => {
         pageRefreshListener = listener;
         return { dispose: vi.fn() };
       }),
-      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
+      onProtocolMismatch: vi.fn((listener) => {
+        protocolMismatchListener = listener;
+        return { dispose: vi.fn() };
+      }),
       dispose: vi.fn(),
     };
     const tabRefresh = {
@@ -97,7 +107,10 @@ describe("startBackgroundRuntime", () => {
       state: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
       updateSettings: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
       acceptPageRefresh: vi.fn(async () => undefined),
+      beginWindowEpoch: vi.fn(async () => undefined),
+      clearWindowPending: vi.fn(async () => undefined),
       activateTab: vi.fn(async () => undefined),
+      detachTab: vi.fn(async () => undefined),
       removeTab: vi.fn(async () => undefined),
       removeWindow: vi.fn(async () => undefined),
     };
@@ -125,11 +138,16 @@ describe("startBackgroundRuntime", () => {
 
     const refresh = pageRefresh(4);
     pageRefreshListener?.(7, refresh);
+    protocolMismatchListener?.(7, {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
     activatedTabs.emit(11, 7);
     removedTabs.emit(12);
     await flushAsync();
 
     expect(tabRefresh.acceptPageRefresh).toHaveBeenCalledWith(7, refresh);
+    expect(tabRefresh.clearWindowPending).toHaveBeenCalledWith(7);
     expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
     expect(tabRefresh.removeTab).toHaveBeenCalledWith(12);
     runtime.dispose();

@@ -26,6 +26,7 @@ describe("refresh runtime protocol", () => {
       parseTabRefreshState({
         ...state,
         autoRefreshEnabled: false,
+        participant: false,
         pending: undefined,
       }),
     ).toEqual({
@@ -33,9 +34,16 @@ describe("refresh runtime protocol", () => {
       windowId: 7,
       autoRefreshEnabled: false,
       ideHighlightEnabled: true,
-      participant: true,
+      participant: false,
       lastAcceptedGeneration: 9,
     });
+    expect(
+      parseTabRefreshState({
+        ...state,
+        autoRefreshEnabled: false,
+        pending: undefined,
+      }),
+    ).toBeUndefined();
     expect(
       parseRefreshExecutionCommand({
         type: "pin-op.refresh.execute",

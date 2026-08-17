@@ -89,10 +89,10 @@ describe("TabRefreshCoordinator", () => {
     expect(disabled).toMatchObject({
       autoRefreshEnabled: false,
       ideHighlightEnabled: false,
-      participant: true,
+      participant: false,
     });
     expect(disabled).not.toHaveProperty("pending");
-    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(7, 11, false);
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(7, 11, false);
 
     await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
     const enabled = await context.coordinator.updateSettings(11, 7, {
@@ -103,6 +103,7 @@ describe("TabRefreshCoordinator", () => {
       participant: true,
       lastAcceptedGeneration: 4,
     });
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(7, 11, true);
     await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
     await context.coordinator.activateTab(11, 7);
     expect(context.dispatchRefresh).not.toHaveBeenCalled();
@@ -115,6 +116,69 @@ describe("TabRefreshCoordinator", () => {
       refreshGeneration: 5,
       mode: "styles",
     });
+  });
+
+  it("does not change participation for an IDE Highlight-only update", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    context.setRefreshParticipant.mockClear();
+
+    const enabled = await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+    expect(enabled).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    context.setRefreshParticipant.mockClear();
+    const disabled = await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+    });
+    expect(disabled).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      participant: false,
+    });
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+  });
+
+  it("does not create participation when settings arrive before panel-open", async () => {
+    const context = setup();
+
+    const state = await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+
+    expect(state).toMatchObject({ participant: false });
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reopened disabled panel out of refresh participation", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+    });
+    context.setRefreshParticipant.mockClear();
+
+    const reopened = await context.coordinator.panelOpened(11, 7);
+
+    expect(reopened).toMatchObject({
+      autoRefreshEnabled: false,
+      participant: false,
+    });
+    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(7, 11, true);
   });
 
   it("cleans tab and window ownership without touching other windows", async () => {
@@ -156,6 +220,73 @@ describe("TabRefreshCoordinator", () => {
       [8, 11, true],
     ]);
     expect(await context.store.loadAll()).toEqual([moved]);
+  });
+
+  it("starts a new window epoch below persisted generations and clears stale pending", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(100, "reload"));
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 100, mode: "reload" },
+    );
+
+    await context.coordinator.beginWindowEpoch(7);
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      lastAcceptedGeneration: 0,
+    });
+    expect(await context.coordinator.state(11, 7)).not.toHaveProperty("pending");
+
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "styles"));
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+  });
+
+  it("clears incompatible pending work until a fresh window epoch", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(5, "reload"));
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 5, mode: "reload" },
+    );
+
+    await context.coordinator.clearWindowPending(7);
+    await context.coordinator.activateTab(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(5, "reload"));
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+    expect(await context.coordinator.state(11, 7)).not.toHaveProperty("pending");
+
+    await context.coordinator.beginWindowEpoch(7);
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "styles"));
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+  });
+
+  it("removes exact old-window participation when a tab detaches", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "reload"));
+    context.setRefreshParticipant.mockClear();
+
+    await context.coordinator.detachTab(11, 7);
+
+    expect(context.setRefreshParticipant).toHaveBeenCalledOnce();
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, false);
+    expect(await context.store.loadAll()).toEqual([]);
+    await context.coordinator.acceptPageRefresh(7, refresh(2, "reload"));
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
   });
 
   it("ignores refresh for another window and reports dispatch failures without replay", async () => {

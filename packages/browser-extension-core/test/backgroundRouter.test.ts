@@ -122,6 +122,18 @@ describe("BackgroundRouter", () => {
     expect(port.disconnected).toBe(false);
   });
 
+  it("clears exact-window pending refresh when the peer becomes incompatible", async () => {
+    const harness = createHarness();
+
+    harness.protocolMismatches.emit(10, {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.clearedPendingWindows).toEqual([10]);
+  });
+
   it("blocks incompatible panel features while preserving explicit disconnect", async () => {
     const mismatch: BrowserProtocolMismatch = {
       browserProtocolVersion: PROTOCOL_VERSION,
@@ -1966,6 +1978,28 @@ describe("BackgroundRouter", () => {
       },
     ]);
     expect(harness.coordinator.unlinks).toEqual([10]);
+    expect(harness.tabRefresh.epochCalls).toEqual([10]);
+  });
+
+  it("starts a refresh epoch for a new IDE peer but not a transient browser reconnect", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-peer-epoch",
+      17,
+      "source-peer-epoch",
+    );
+    await flushMicrotasks();
+    panel.disconnect();
+
+    harness.peerStates.emit(10, peerState(true, 1));
+    await flushMicrotasks();
+    harness.peerStates.emit(10, peerState(true, 1));
+    await flushMicrotasks();
+    harness.peerStates.emit(10, peerState(false, 2));
+    harness.peerStates.emit(10, peerState(true, 3));
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.epochCalls).toEqual([10, 10]);
   });
 
   it("migrates a moved tab before Link, Unlink, and Inspect", async () => {
@@ -3119,6 +3153,28 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("removes closed-panel refresh participation on detach without rebinding on attach", async () => {
+    const tabs = new Map([[17, 10]]);
+    const events = createRouterSubscriptionHarness();
+    const harness = createHarness({ tabs, subscriptions: events.subscriptions });
+    const panel = await harness.registerAndConnect(
+      "channel-closed-move",
+      17,
+      "source-closed-move",
+    );
+    await flushMicrotasks();
+    panel.disconnect();
+
+    events.detach(17, 10);
+    tabs.set(17, 20);
+    events.attach(17, 20);
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.detachedTabs).toEqual([[17, 10]]);
+    expect(harness.tabRefresh.hasState(17)).toBe(false);
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+  });
+
   it.each(["executeScript", "sendTabMessage"] as const)(
     "does not acknowledge a quiet A-to-B move during deferred Inspect %s",
     async (stage) => {
@@ -3448,6 +3504,9 @@ function createHarness(options: HarnessOptions = {}) {
   const pageRefreshes = new FakeEvent<
     (windowId: number, message: PageRefreshMessage) => void
   >();
+  const protocolMismatches = new FakeEvent<
+    (windowId: number, details: BrowserProtocolMismatch) => void
+  >();
   const tabRefresh = new FakeTabRefreshCoordinator();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
@@ -3476,6 +3535,7 @@ function createHarness(options: HarnessOptions = {}) {
     peerStates,
     sourceNavigationStates,
     pageRefreshes,
+    protocolMismatches,
     tabRefresh,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
@@ -3558,6 +3618,10 @@ function createHarness(options: HarnessOptions = {}) {
     subscribePageRefreshes: (listener) => {
       pageRefreshes.addListener(listener);
       return () => pageRefreshes.removeListener(listener);
+    },
+    subscribeProtocolMismatches: (listener) => {
+      protocolMismatches.addListener(listener);
+      return () => protocolMismatches.removeListener(listener);
     },
     inspectMessageId: (() => {
       let sequence = 0;
@@ -3705,6 +3769,9 @@ class FakeTabRefreshCoordinator {
   public readonly activatedTabs: Array<[number, number]> = [];
   public readonly removedTabs: number[] = [];
   public readonly removedWindows: number[] = [];
+  public readonly epochCalls: number[] = [];
+  public readonly detachedTabs: Array<[number, number]> = [];
+  public readonly clearedPendingWindows: number[] = [];
   private readonly states = new Map<number, TabRefreshState>();
 
   public async panelOpened(
@@ -3738,6 +3805,10 @@ class FakeTabRefreshCoordinator {
     this.states.set(state.tabId, state);
   }
 
+  public hasState(tabId: number): boolean {
+    return this.states.has(tabId);
+  }
+
   public async updateSettings(
     tabId: number,
     windowId: number,
@@ -3762,6 +3833,21 @@ class FakeTabRefreshCoordinator {
     message: PageRefreshMessage,
   ): Promise<void> {
     this.refreshCalls.push([windowId, message]);
+  }
+
+  public async beginWindowEpoch(windowId: number): Promise<void> {
+    this.epochCalls.push(windowId);
+  }
+
+  public async clearWindowPending(windowId: number): Promise<void> {
+    this.clearedPendingWindows.push(windowId);
+  }
+
+  public async detachTab(tabId: number, windowId: number): Promise<void> {
+    this.detachedTabs.push([tabId, windowId]);
+    if (this.states.get(tabId)?.windowId === windowId) {
+      this.states.delete(tabId);
+    }
   }
 
   public async activateTab(tabId: number, windowId: number): Promise<void> {

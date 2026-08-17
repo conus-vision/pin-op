@@ -62,6 +62,11 @@ class FakeSocket {
     this.onclose?.({ code, reason });
   }
 
+  serverCloseEvent(event: { code: number; reason: string }): void {
+    this.closed = true;
+    this.onclose?.(event);
+  }
+
   message(payload: Record<string, unknown>): void {
     this.onmessage?.({ data: JSON.stringify(payload) });
   }
@@ -702,7 +707,12 @@ describe("BrowserBridgeClient", () => {
     known.client.onProtocolMismatch((details) => knownMismatches.push(details));
     known.client.connect(CREDENTIALS);
     known.sockets[0].open();
-    known.sockets[0].serverClose(1_002, protocolMismatchReason(5));
+    known.sockets[0].serverCloseEvent(
+      Object.create({
+        code: 1_002,
+        reason: protocolMismatchReason(5),
+      }) as { code: number; reason: string },
+    );
 
     expect(knownMismatches).toEqual([
       { browserProtocolVersion: PROTOCOL_VERSION, peerProtocolVersion: 5 },
@@ -724,6 +734,28 @@ describe("BrowserBridgeClient", () => {
     ]);
     expect(unknown.states.at(-1)).toBe("incompatible");
     expect(unknown.sockets).toHaveLength(1);
+  });
+
+  it("contains throwing close-event accessors without treating them as a mismatch", () => {
+    const harness = createHarness();
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    const event = Object.create(null) as { code: number; reason: string };
+    Object.defineProperties(event, {
+      code: {
+        get(): never {
+          throw new Error("hostile close code");
+        },
+      },
+      reason: {
+        get(): never {
+          throw new Error("hostile close reason");
+        },
+      },
+    });
+
+    expect(() => harness.sockets[0].serverCloseEvent(event)).not.toThrow();
+    expect(harness.states.at(-1)).not.toBe("incompatible");
   });
 });
 
