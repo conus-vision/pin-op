@@ -43,12 +43,18 @@ interface RenderedGroup {
 }
 
 type FocusRestoreTarget =
+  | { readonly kind: "source" }
   | { readonly kind: "toggle"; readonly group: GroupKey }
   | {
       readonly kind: "match";
       readonly group: GroupKey;
       readonly matchId: string;
     };
+
+interface FocusRestoreCandidates {
+  readonly toggles?: Readonly<Record<GroupKey, HTMLButtonElement>>;
+  readonly status?: HTMLElement;
+}
 
 const READY_STATE: SourcePaneViewState = Object.freeze({ kind: "ready" });
 
@@ -63,10 +69,6 @@ export class SourcePaneView {
   private parentMatches: readonly SourceExcerpt[] | undefined;
   private selectedCollapsed = false;
   private parentCollapsed = true;
-  private readonly explicitRovingMatchIds: Record<GroupKey, string | undefined> = {
-    selected: undefined,
-    parent: undefined,
-  };
   private renderedEntries: readonly RenderedEntry[] = Object.freeze([]);
   private renderEpoch = 0;
   private disposed = false;
@@ -95,41 +97,6 @@ export class SourcePaneView {
     }
   };
 
-  private readonly onKeyDown = (event: Event): void => {
-    if (this.disposed || this.state.kind !== "ready") {
-      return;
-    }
-    const keyboardEvent = event as KeyboardEvent;
-    const action = closestAction(event.target, this.root);
-    if (!action || action.element.dataset.renderEpoch !== String(this.renderEpoch)) {
-      return;
-    }
-    if (
-      action.name === "toggle-group" &&
-      (keyboardEvent.key === "Enter" || keyboardEvent.key === " ")
-    ) {
-      const group = groupKey(action.element.dataset.group);
-      if (!group) return;
-      event.preventDefault();
-      this.toggleGroup(group);
-      return;
-    }
-    if (action.name !== "open-source") {
-      return;
-    }
-    if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
-      event.preventDefault();
-      this.open(action.element.dataset.matchId);
-      return;
-    }
-    const direction = keyboardDirection(keyboardEvent.key);
-    if (!direction) {
-      return;
-    }
-    event.preventDefault();
-    this.focusEntry(action.element.dataset.matchId, direction);
-  };
-
   public constructor(options: SourcePaneViewOptions) {
     this.document = options.document;
     this.root = options.root;
@@ -137,7 +104,6 @@ export class SourcePaneView {
     this.onError = options.onError ?? (() => undefined);
     this.root.className = appendClass(this.root.className, "source-pane");
     this.root.addEventListener("click", this.onClick);
-    this.root.addEventListener("keydown", this.onKeyDown);
     this.removeControllerListener = this.controller.subscribe(() => this.render());
     this.render();
   }
@@ -167,7 +133,6 @@ export class SourcePaneView {
     this.removeControllerListener?.();
     this.removeControllerListener = undefined;
     this.root.removeEventListener("click", this.onClick);
-    this.root.removeEventListener("keydown", this.onKeyDown);
     this.run(() => this.root.replaceChildren());
   }
 
@@ -177,22 +142,14 @@ export class SourcePaneView {
     this.renderEpoch = epoch;
     this.renderedEntries = Object.freeze([]);
     if (this.state.kind !== "ready") {
-      this.root.replaceChildren(this.createStatus(this.state.kind, this.state.statusText));
+      const status = this.createStatus(this.state.kind, this.state.statusText);
+      this.root.replaceChildren(status);
+      this.restoreFocus(focusTarget, { status });
       return;
     }
 
     const model = this.controller.snapshot();
     this.resetDisclosureFromModel(model);
-    const selectedRovingMatchId = this.rovingTarget(
-      "selected",
-      model.groups.selected,
-      model.activeMatchId,
-    );
-    const parentRovingMatchId = this.rovingTarget(
-      "parent",
-      model.groups.parent,
-      model.activeMatchId,
-    );
     const children: HTMLElement[] = [];
     const header = this.createDocumentHeader(model);
     if (header) children.push(header);
@@ -202,7 +159,6 @@ export class SourcePaneView {
       "selected",
       model.groups.selected,
       this.selectedCollapsed,
-      selectedRovingMatchId,
       epoch,
       entries,
     );
@@ -210,7 +166,6 @@ export class SourcePaneView {
       "parent",
       model.groups.parent,
       this.parentCollapsed,
-      parentRovingMatchId,
       epoch,
       entries,
     );
@@ -232,8 +187,10 @@ export class SourcePaneView {
     this.root.replaceChildren(...children);
     this.renderedEntries = Object.freeze(entries);
     this.restoreFocus(focusTarget, {
-      selected: selectedGroup.toggle,
-      parent: parentGroup.toggle,
+      toggles: {
+        selected: selectedGroup.toggle,
+        parent: parentGroup.toggle,
+      },
     });
   }
 
@@ -259,7 +216,6 @@ export class SourcePaneView {
     key: GroupKey,
     group: SourcePaneGroup,
     collapsed: boolean,
-    rovingMatchId: string | undefined,
     epoch: number,
     entries: RenderedEntry[],
   ): RenderedGroup {
@@ -283,12 +239,7 @@ export class SourcePaneView {
       list.dataset.groupList = key;
       list.setAttribute("aria-label", `${group.label} source matches`);
       for (const match of group.matches) {
-        const excerpt = this.createExcerpt(
-          match,
-          key,
-          epoch,
-          rovingMatchId === match.matchId,
-        );
+        const excerpt = this.createExcerpt(match, key, epoch);
         entries.push({
           matchId: match.matchId,
           group: key,
@@ -305,7 +256,6 @@ export class SourcePaneView {
     match: SourceExcerpt,
     group: GroupKey,
     epoch: number,
-    roving: boolean,
   ): CreatedExcerpt {
     const active = this.controller.snapshot().activeMatchId === match.matchId;
     const item = this.document.createElement("li");
@@ -333,7 +283,6 @@ export class SourcePaneView {
     openButton.dataset.group = group;
     openButton.dataset.renderEpoch = String(epoch);
     openButton.setAttribute("type", "button");
-    openButton.setAttribute("tabindex", roving ? "0" : "-1");
     openButton.setAttribute(
       "aria-label",
       `Open ${match.label}, ${lineLabel(match.startLine, match.endLine)}`,
@@ -365,6 +314,7 @@ export class SourcePaneView {
     const status = this.document.createElement("p");
     status.className = `source-pane-status is-${kind}`;
     status.dataset.state = kind;
+    status.setAttribute("tabindex", "-1");
     status.setAttribute("role", kind === "error" || kind === "incompatible" ? "alert" : "status");
     status.textContent = text;
     return status;
@@ -374,112 +324,30 @@ export class SourcePaneView {
     if (model.groups.selected.matches !== this.selectedMatches) {
       this.selectedMatches = model.groups.selected.matches;
       this.selectedCollapsed = model.groups.selected.collapsed;
-      this.explicitRovingMatchIds.selected = undefined;
     }
     if (model.groups.parent.matches !== this.parentMatches) {
       this.parentMatches = model.groups.parent.matches;
       this.parentCollapsed = model.groups.parent.collapsed;
-      this.explicitRovingMatchIds.parent = undefined;
     }
   }
 
   private toggleGroup(group: GroupKey): void {
     if (group === "selected") {
       this.selectedCollapsed = !this.selectedCollapsed;
-      if (this.selectedCollapsed) {
-        this.explicitRovingMatchIds.selected = undefined;
-      }
     } else {
       this.parentCollapsed = !this.parentCollapsed;
-      if (this.parentCollapsed) {
-        this.explicitRovingMatchIds.parent = undefined;
-      }
     }
     this.render();
-  }
-
-  private rovingTarget(
-    key: GroupKey,
-    group: SourcePaneGroup,
-    activeMatchId: string | undefined,
-  ): string | undefined {
-    const explicit = this.explicitRovingMatchIds[key];
-    if (explicit && group.matches.some((match) => match.matchId === explicit)) {
-      return explicit;
-    }
-    this.explicitRovingMatchIds[key] = undefined;
-    return group.matches.some(
-        (match) => match.matchId === activeMatchId,
-      )
-      ? activeMatchId
-      : group.matches[0]?.matchId;
   }
 
   private open(matchId: string | undefined): void {
     if (!matchId) {
       return;
     }
-    const entry = this.currentEntry(matchId);
-    if (!entry) return;
-    const epoch = this.renderEpoch;
+    if (!this.currentEntry(matchId)) return;
     this.run(() => {
-      if (
-        this.controller.open(matchId) &&
-        this.renderEpoch === epoch &&
-        this.currentEntry(matchId)?.group === entry.group
-      ) {
-        this.rememberRovingTarget(entry.group, matchId);
-      }
+      this.controller.open(matchId);
     });
-  }
-
-  private focusEntry(
-    currentMatchId: string | undefined,
-    direction: "previous" | "next" | "first" | "last",
-  ): void {
-    if (!currentMatchId || this.renderedEntries.length === 0) {
-      return;
-    }
-    const currentEntry = this.currentEntry(currentMatchId);
-    if (!currentEntry) {
-      return;
-    }
-    const groupEntries = this.renderedEntries.filter(
-      ({ group }) => group === currentEntry.group,
-    );
-    const current = groupEntries.findIndex(({ matchId }) => matchId === currentMatchId);
-    if (current < 0) {
-      return;
-    }
-    const index = direction === "first"
-      ? 0
-      : direction === "last"
-        ? groupEntries.length - 1
-        : direction === "previous"
-          ? Math.max(0, current - 1)
-          : Math.min(groupEntries.length - 1, current + 1);
-    const target = groupEntries[index];
-    if (!target) {
-      return;
-    }
-    this.rememberRovingTarget(currentEntry.group, target.matchId);
-    this.run(() => target.element.focus());
-  }
-
-  private rememberRovingTarget(group: GroupKey, matchId: string): void {
-    const groupEntries = this.renderedEntries.filter(
-      (entry) => entry.group === group,
-    );
-    if (!groupEntries.some((entry) => entry.matchId === matchId)) {
-      return;
-    }
-    this.explicitRovingMatchIds[group] = matchId;
-    for (const entry of groupEntries) {
-      entry.element.setAttribute(
-        "tabindex",
-        entry.matchId === matchId ? "0" : "-1",
-      );
-    }
   }
 
   private currentEntry(matchId: string): RenderedEntry | undefined {
@@ -499,11 +367,11 @@ export class SourcePaneView {
       !action ||
       action.element.dataset.renderEpoch !== String(this.renderEpoch)
     ) {
-      return undefined;
+      return { kind: "source" };
     }
     const group = groupKey(action.element.dataset.group);
     if (!group) {
-      return undefined;
+      return { kind: "source" };
     }
     if (action.name === "toggle-group") {
       return { kind: "toggle", group };
@@ -511,24 +379,29 @@ export class SourcePaneView {
     const matchId = action.element.dataset.matchId;
     return action.name === "open-source" && matchId
       ? { kind: "match", group, matchId }
-      : undefined;
+      : { kind: "source" };
   }
 
   private restoreFocus(
     target: FocusRestoreTarget | undefined,
-    toggles: Readonly<Record<GroupKey, HTMLButtonElement>>,
+    candidates: FocusRestoreCandidates,
   ): void {
     if (!target || this.disposed) {
       return;
     }
-    const element = target.kind === "toggle"
-      ? toggles[target.group]
-      : this.renderedEntries.find(
-          (entry) =>
-            entry.group === target.group && entry.matchId === target.matchId,
-        )?.element;
-    if (!element || element.dataset.renderEpoch !== String(this.renderEpoch)) {
-      return;
+    let element: HTMLElement | undefined;
+    if (target.kind === "toggle") {
+      element = candidates.toggles?.[target.group];
+    } else if (target.kind === "match") {
+      element = this.renderedEntries.find(
+        (entry) =>
+          entry.group === target.group && entry.matchId === target.matchId,
+      )?.element ?? candidates.toggles?.[target.group];
+    }
+    element ??= candidates.status;
+    if (!element) {
+      this.root.setAttribute("tabindex", "-1");
+      element = this.root;
     }
     this.run(() => {
       if (!this.disposed) {
@@ -565,16 +438,6 @@ function lineLabel(startLine: number, endLine: number): string {
 
 function groupKey(value: string | undefined): GroupKey | undefined {
   return value === "selected" || value === "parent" ? value : undefined;
-}
-
-function keyboardDirection(
-  key: string,
-): "previous" | "next" | "first" | "last" | undefined {
-  if (key === "ArrowUp") return "previous";
-  if (key === "ArrowDown") return "next";
-  if (key === "Home") return "first";
-  if (key === "End") return "last";
-  return undefined;
 }
 
 function closestAction(

@@ -132,7 +132,7 @@ describe("SourcePaneView", () => {
       target: harness.openButton("opaque-match"),
       key: "Enter",
     });
-    expect(event.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
     expect(dispatch.mock.calls.map(([message]) => message.matchId)).toEqual([
       "opaque-match",
     ]);
@@ -154,11 +154,11 @@ describe("SourcePaneView", () => {
       key: "Enter",
     });
 
-    expect(event.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
     expect(harness.groupToggle("parent").getAttribute("aria-expanded")).toBe("true");
     expect(harness.row("parent-1")).toBeDefined();
 
-    harness.root.dispatch("keydown", {
+    harness.root.dispatch("keyup", {
       target: harness.groupToggle("selected"),
       key: " ",
     });
@@ -204,37 +204,138 @@ describe("SourcePaneView", () => {
     outsideButton.focus();
 
     harness.controller.acceptNavigationState(navigationState("selected-2"));
+    expect(harness.dom.activeElement).toBe(outsideButton);
 
+    harness.view.setState({ kind: "error", statusText: "Could not load source" });
     expect(harness.dom.activeElement).toBe(outsideButton);
   });
 
-  it("safely leaves focus unset when the focused match vanishes", () => {
+  it("falls back to the same group disclosure when refreshed match IDs change", () => {
+    const dispatch = vi.fn();
     const harness = createHarness([
       excerpt("selected-1", "selected"),
-    ]);
+    ], { dispatch });
     harness.openButton("selected-1").focus();
 
     expect(() => harness.controller.acceptMatches(sourceMatches([
       excerpt("selected-2", "selected"),
     ]))).not.toThrow();
 
-    expect(harness.dom.activeElement).toBeUndefined();
+    expect(harness.dom.activeElement).toBe(harness.groupToggle("selected"));
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Parent disclosure when refresh collapses its focused group", () => {
+    const dispatch = vi.fn();
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("parent-1", "parent"),
+    ], { dispatch });
+    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
+    harness.openButton("parent-1").focus();
+
+    harness.controller.acceptMatches(sourceMatches([
+      excerpt("selected-2", "selected"),
+      excerpt("parent-2", "parent"),
+    ]));
+
+    expect(harness.groupToggle("parent").getAttribute("aria-expanded")).toBe("false");
+    expect(harness.dom.activeElement).toBe(harness.groupToggle("parent"));
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("contains focus restoration failures", () => {
     const errors: unknown[] = [];
+    const dispatch = vi.fn();
     const harness = createHarness([
       excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-    ], { onError: (error) => errors.push(error) });
+    ], {
+      dispatch,
+      onError: (error) => errors.push(error),
+    });
     harness.openButton("selected-1").focus();
     harness.dom.throwOnFocus = true;
 
     expect(() => {
-      harness.controller.acceptNavigationState(navigationState("selected-2"));
+      harness.controller.acceptMatches(sourceMatches([
+        excerpt("selected-2", "selected"),
+      ]));
     }).not.toThrow();
     expect(errors).toHaveLength(1);
     expect(harness.dom.activeElement).toBeUndefined();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each<SourcePaneViewState>([
+    { kind: "loading", statusText: "Loading source excerpts" },
+    { kind: "empty", statusText: "No source matches" },
+    { kind: "error", statusText: "Could not load source" },
+    { kind: "incompatible", statusText: "Update extensions" },
+  ])("moves inside focus to the structural $kind status", (state) => {
+    const dispatch = vi.fn();
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+    ], { dispatch });
+    harness.openButton("selected-1").focus();
+
+    harness.view.setState(state);
+
+    const status = harness.root.findByData("state", state.kind);
+    expect(status?.getAttribute("tabindex")).toBe("-1");
+    expect(harness.dom.activeElement).toBe(status);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("moves disclosure focus to the structural status when its group disappears", () => {
+    const dispatch = vi.fn();
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("parent-1", "parent"),
+    ], { dispatch });
+    harness.groupToggle("parent").focus();
+
+    harness.view.setState({
+      kind: "loading",
+      statusText: "Refreshing source excerpts",
+    });
+
+    expect(harness.dom.activeElement).toBe(
+      harness.root.findByData("state", "loading"),
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the Source root when a focused status disappears", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+    ]);
+    harness.view.setState({
+      kind: "loading",
+      statusText: "Loading source excerpts",
+    });
+    harness.root.findByData("state", "loading")?.focus();
+
+    harness.view.setState({ kind: "ready" });
+
+    expect(harness.root.getAttribute("tabindex")).toBe("-1");
+    expect(harness.dom.activeElement).toBe(harness.root);
+  });
+
+  it("does not restore focus after disposal", () => {
+    const errors: unknown[] = [];
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+    ], { onError: (error) => errors.push(error) });
+    harness.openButton("selected-1").focus();
+
+    harness.view.dispose();
+    harness.dom.throwOnFocus = true;
+    harness.view.setState({ kind: "error", statusText: "Disposed" });
+    harness.controller.acceptNavigationState(navigationState("selected-1"));
+
+    expect(errors).toEqual([]);
+    expect(harness.dom.activeElement).toBeUndefined();
+    expect(harness.root.children).toEqual([]);
   });
 
   it("preserves disclosure state across navigation updates and resets it for new matches", () => {
@@ -286,7 +387,7 @@ describe("SourcePaneView", () => {
     expect(harness.item("selected-2").className).toContain("is-active");
   });
 
-  it("provides exactly one roving Open button in each expanded group", () => {
+  it("keeps every visible Open button in the native tab order", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
@@ -296,73 +397,23 @@ describe("SourcePaneView", () => {
     ], { activeMatchId: "selected-2" });
 
     expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
       0,
-      -1,
+      0,
+      0,
     ]);
+    expect(
+      harness.groupRows("selected").map((row) => row.getAttribute("tabindex")),
+    ).toEqual([null, null, null]);
     expect(harness.groupRows("parent")).toEqual([]);
 
     harness.root.dispatch("click", { target: harness.groupToggle("parent") });
     expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
       0,
-      -1,
-    ]);
-    expect(harness.groupRows("selected").filter((row) => row.tabIndex === 0)).toHaveLength(1);
-    expect(harness.groupRows("parent").filter((row) => row.tabIndex === 0)).toHaveLength(1);
-  });
-
-  it("uses the active Parent match as its initial roving target when expanded", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("parent-1", "parent"),
-      excerpt("parent-2", "parent"),
-    ], { activeMatchId: "parent-2" });
-
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([0]);
-    expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
-      -1,
       0,
     ]);
-  });
-
-  it("lets a late active match replace the automatic first-button fallback", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-    ]);
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      0,
-      -1,
-    ]);
-
-    harness.controller.acceptNavigationState(navigationState("selected-2"));
-
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-    ]);
-  });
-
-  it("remembers a clicked non-roving Open button across controller rerenders", () => {
-    const dispatch = vi.fn();
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-    ], { dispatch });
-
-    harness.root.dispatch("click", { target: harness.row("selected-2") });
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-    expect(dispatch.mock.calls.map(([message]) => message.matchId)).toEqual([
-      "selected-2",
-    ]);
-
-    harness.controller.acceptNavigationState(navigationState("selected-1"));
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-    ]);
+    expect(
+      harness.groupRows("parent").map((row) => row.getAttribute("tabindex")),
+    ).toEqual([null, null]);
   });
 
   it.each<SourcePaneViewState>([
@@ -383,193 +434,50 @@ describe("SourcePaneView", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("supports ArrowUp, ArrowDown, Home, End, Enter, and Space among visible entries", () => {
+  it.each(["ArrowUp", "ArrowDown", "Home", "End"])(
+    "does not intercept %s on an Open button",
+    (key) => {
+      const dispatch = vi.fn();
+      const harness = createHarness([
+        excerpt("selected-1", "selected"),
+        excerpt("selected-2", "selected"),
+      ], { dispatch });
+      const first = harness.openButton("selected-1");
+      first.focus();
+
+      const event = harness.root.dispatch("keydown", { target: first, key });
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(harness.dom.activeElement).toBe(first);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses native Enter and Space activation for exact Open buttons", () => {
     const dispatch = vi.fn();
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
-      excerpt("parent-1", "parent"),
     ], { dispatch });
-    const first = harness.row("selected-1");
 
-    harness.root.dispatch("keydown", { target: first, key: "ArrowDown" });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-2");
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-2"),
-      key: "ArrowUp",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-1");
-    harness.root.dispatch("keydown", { target: first, key: "End" });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-2");
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-2"),
-      key: "Home",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-1");
-
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
+    const enter = harness.root.dispatch("keydown", {
+      target: harness.openButton("selected-1"),
       key: "Enter",
     });
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-2"),
+    const space = harness.root.dispatch("keyup", {
+      target: harness.openButton("selected-2"),
       key: " ",
     });
+
+    expect(enter.defaultPrevented).toBe(false);
+    expect(space.defaultPrevented).toBe(false);
     expect(dispatch.mock.calls.map(([message]) => message.matchId)).toEqual([
       "selected-1",
       "selected-2",
     ]);
   });
 
-  it("keeps Arrow, Home, and End navigation inside the current group", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-      excerpt("selected-3", "selected"),
-      excerpt("parent-1", "parent"),
-      excerpt("parent-2", "parent"),
-    ]);
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-2");
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-      -1,
-    ]);
-
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-2"),
-      key: "End",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-3");
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-3"),
-      key: "ArrowDown",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-3");
-    expect(harness.row("parent-1").tabIndex).toBe(0);
-
-    harness.root.dispatch("keydown", {
-      target: harness.row("parent-1"),
-      key: "End",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("parent-2");
-    harness.root.dispatch("keydown", {
-      target: harness.row("parent-2"),
-      key: "Home",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("parent-1");
-    expect(harness.row("selected-3").tabIndex).toBe(0);
-    expect(harness.row("parent-1").tabIndex).toBe(0);
-  });
-
-  it("preserves a valid roving target across rerenders and drops stale targets", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-      excerpt("selected-3", "selected"),
-    ]);
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-
-    harness.controller.acceptNavigationState(navigationState("selected-3"));
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-    expect(harness.openButton("selected-3").getAttribute("aria-current")).toBe("true");
-
-    harness.controller.acceptMatches(sourceMatches([
-      excerpt("selected-2", "selected", { text: ".replacement {}" }),
-      excerpt("selected-4", "selected"),
-    ]));
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      0,
-      -1,
-    ]);
-
-    harness.controller.acceptMatches(sourceMatches([
-      excerpt("selected-new", "selected"),
-    ]));
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([0]);
-    expect(harness.row("selected-new").dataset.matchId).toBe("selected-new");
-  });
-
-  it("keeps an explicit keyboard target ahead of a late active match", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-      excerpt("selected-3", "selected"),
-    ]);
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-
-    harness.controller.acceptNavigationState(navigationState("selected-3"));
-
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-      -1,
-    ]);
-    expect(harness.openButton("selected-3").getAttribute("aria-current")).toBe("true");
-  });
-
-  it("drops a removed explicit target and lets the next active match lead", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-    ]);
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-
-    harness.controller.acceptMatches(sourceMatches([
-      excerpt("replacement-1", "selected"),
-      excerpt("replacement-2", "selected"),
-    ]));
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      0,
-      -1,
-    ]);
-    harness.controller.acceptNavigationState(navigationState("replacement-2"));
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-    ]);
-  });
-
-  it("clears explicit intent for a newly published match set even when an ID is reused", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("selected-2", "selected"),
-    ]);
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-
-    harness.controller.acceptMatches(sourceMatches([
-      excerpt("selected-2", "selected", { text: ".new-authority {}" }),
-      excerpt("selected-3", "selected"),
-    ]));
-    harness.controller.acceptNavigationState(navigationState("selected-3"));
-
-    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
-      -1,
-      0,
-    ]);
-  });
-
-  it("keeps group choices independent and clears only a collapsed group's intent", () => {
+  it("keeps Selected and Parent disclosure independent with native buttons", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
       excerpt("selected-2", "selected"),
@@ -577,58 +485,12 @@ describe("SourcePaneView", () => {
       excerpt("parent-2", "parent"),
     ]);
     harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "ArrowDown",
-    });
-    harness.root.dispatch("keydown", {
-      target: harness.row("parent-1"),
-      key: "ArrowDown",
-    });
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-    expect(harness.row("parent-2").tabIndex).toBe(0);
+    harness.root.dispatch("click", { target: harness.groupToggle("selected") });
 
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    harness.controller.acceptNavigationState(navigationState("parent-1"));
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-    expect(harness.groupRows("parent")).toEqual([]);
-
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
-      0,
-      -1,
-    ]);
-    expect(harness.row("selected-2").tabIndex).toBe(0);
-  });
-
-  it("excludes collapsed Parent entries from keyboard navigation", () => {
-    const harness = createHarness([
-      excerpt("selected-1", "selected"),
-      excerpt("parent-1", "parent"),
-      excerpt("parent-2", "parent"),
-    ]);
-
-    harness.root.dispatch("keydown", {
-      target: harness.row("selected-1"),
-      key: "End",
-    });
-    expect(harness.dom.activeElement?.dataset.matchId).toBe("selected-1");
-
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    harness.root.dispatch("keydown", {
-      target: harness.row("parent-1"),
-      key: "ArrowDown",
-    });
-    expect(harness.row("parent-2").tabIndex).toBe(0);
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    expect(harness.groupRows("parent")).toEqual([]);
-    expect(harness.row("selected-1").tabIndex).toBe(0);
-
-    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
-    expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
-      0,
-      -1,
-    ]);
+    expect(harness.groupRows("selected")).toEqual([]);
+    expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([0, 0]);
+    expect(harness.groupToggle("selected").getAttribute("aria-expanded")).toBe("false");
+    expect(harness.groupToggle("parent").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("rejects stale row handlers after model replacement even when an ID is reused", () => {
@@ -883,7 +745,9 @@ class FakeElement {
   public constructor(
     private readonly owner: FakeDom,
     public readonly tagName: string,
-  ) {}
+  ) {
+    if (tagName === "button") this.tabIndex = 0;
+  }
 
   public set innerHTML(_value: string) {
     this.owner.innerHtmlWrites += 1;
@@ -933,6 +797,15 @@ class FakeElement {
   ): FakeEvent {
     const event = new FakeEvent(type, init.target ?? this, init.key);
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+    if (
+      ((type === "keydown" && event.key === "Enter") ||
+        (type === "keyup" && event.key === " ")) &&
+      !event.defaultPrevented &&
+      event.target.tagName === "button" &&
+      !event.target.disabled
+    ) {
+      this.dispatch("click", { target: event.target });
+    }
     return event;
   }
 
