@@ -24,6 +24,7 @@ import type {
 import { createLucideElement } from "./lucideElement.js";
 
 export interface PanelDocument {
+  readonly activeElement?: unknown;
   readonly documentElement?: unknown;
   readonly body?: unknown;
   getElementById(id: string): unknown;
@@ -64,7 +65,7 @@ export class DomPanelView implements PanelView {
   private readonly panelError: PanelElement;
 
   public constructor(
-    document: PanelDocument,
+    private readonly document: PanelDocument,
     private readonly onError: (error: unknown) => void,
   ) {
     this.linkControls = required(document, "link-controls");
@@ -239,6 +240,7 @@ export class DomPanelView implements PanelView {
 
   public bindLayout(controller: PanelLayoutController): () => void {
     let disposed = false;
+    let renderedMode: PanelLayoutSnapshot["mode"] | undefined;
     let pointerAuthority: {
       readonly pointerId: number;
       captured: boolean;
@@ -345,7 +347,29 @@ export class DomPanelView implements PanelView {
       releasePointer(authority);
     });
     const render = (snapshot = controller.snapshot()): void => {
+      if (disposed || snapshot !== controller.snapshot()) return;
+      const enteringTabs = snapshot.mode === "tabs"
+        && renderedMode !== undefined
+        && renderedMode !== "tabs";
+      let focusSelectedTab = false;
+      if (enteringTabs) {
+        const focused = this.readLayoutFocus();
+        if (focused.pane && focused.pane !== snapshot.activeTab) {
+          if (controller.setActiveTab(focused.pane)) return;
+          if (disposed) return;
+        }
+        focusSelectedTab = focused.focusSelectedTab;
+      }
       this.renderLayout(snapshot);
+      renderedMode = snapshot.mode;
+      if (!focusSelectedTab) return;
+      const focusTarget = snapshot.activeTab === "dom"
+        ? this.domTab
+        : this.sourceTab;
+      this.run(() => {
+        if (disposed || snapshot !== controller.snapshot()) return;
+        focusTarget.focus?.();
+      });
     };
 
     this.domTab.addEventListener("click", selectDom);
@@ -415,8 +439,20 @@ export class DomPanelView implements PanelView {
     this.separator.hidden = !model.separator.enabled;
     this.domPane.hidden = tabs && model.activeTab !== "dom";
     this.sourcePane.hidden = tabs && model.activeTab !== "source";
-    setPaneSemantics(this.domPane, tabs, "dom-tab", "DOM");
-    setPaneSemantics(this.sourcePane, tabs, "source-tab", "Source");
+    setPaneSemantics(
+      this.domPane,
+      tabs,
+      model.activeTab === "dom",
+      "dom-tab",
+      "DOM",
+    );
+    setPaneSemantics(
+      this.sourcePane,
+      tabs,
+      model.activeTab === "source",
+      "source-tab",
+      "Source",
+    );
     this.domTab.setAttribute("aria-selected", String(model.activeTab === "dom"));
     this.sourceTab.setAttribute("aria-selected", String(model.activeTab === "source"));
     this.domTab.setAttribute(
@@ -441,6 +477,49 @@ export class DomPanelView implements PanelView {
     this.separator.setAttribute("tabindex", model.separator.enabled ? "0" : "-1");
   }
 
+  private readLayoutFocus(): {
+    readonly pane?: "dom" | "source";
+    readonly focusSelectedTab: boolean;
+  } {
+    let activeElement: unknown;
+    try {
+      activeElement = this.document.activeElement;
+    } catch (error) {
+      this.onError(error);
+      return { focusSelectedTab: true };
+    }
+    if (!isObject(activeElement)) {
+      return { focusSelectedTab: false };
+    }
+    const domContains = this.safelyContains(this.domPane, activeElement);
+    if (domContains === true) {
+      return { pane: "dom", focusSelectedTab: false };
+    }
+    const sourceContains = this.safelyContains(this.sourcePane, activeElement);
+    if (sourceContains === true) {
+      return { pane: "source", focusSelectedTab: false };
+    }
+    const separatorContains = this.safelyContains(this.separator, activeElement);
+    return {
+      focusSelectedTab: domContains === undefined
+        || sourceContains === undefined
+        || separatorContains !== false,
+    };
+  }
+
+  private safelyContains(
+    container: PanelElement,
+    candidate: object,
+  ): boolean | undefined {
+    if (container === candidate) return true;
+    try {
+      return container.contains?.(candidate) ?? false;
+    } catch (error) {
+      this.onError(error);
+      return undefined;
+    }
+  }
+
   private run(action: () => void | Promise<void>): void {
     try {
       void Promise.resolve(action()).catch(this.onError);
@@ -463,6 +542,7 @@ interface PanelElement {
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
+  contains?(candidate: unknown): boolean;
   focus?(): void;
   getBoundingClientRect?(): { readonly left: number; readonly top: number };
   setPointerCapture?(pointerId: number): void;
@@ -523,6 +603,7 @@ function setStyleProperty(style: PanelStyle, name: string, value: string): void 
 function setPaneSemantics(
   pane: PanelElement,
   tabs: boolean,
+  active: boolean,
   tabId: string,
   regionLabel: string,
 ): void {
@@ -530,9 +611,11 @@ function setPaneSemantics(
   if (tabs) {
     pane.setAttribute("aria-labelledby", tabId);
     pane.removeAttribute("aria-label");
+    pane.setAttribute("tabindex", active ? "0" : "-1");
   } else {
     pane.removeAttribute("aria-labelledby");
     pane.setAttribute("aria-label", regionLabel);
+    pane.removeAttribute("tabindex");
   }
 }
 

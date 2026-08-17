@@ -54,7 +54,7 @@
           <button id="source-tab" class="workspace-tab" type="button" role="tab" aria-controls="source-pane" aria-selected="false" tabindex="-1">Source</button>
         </div>
 
-        <section id="dom-pane" class="workspace-pane dom-pane" role="tabpanel" aria-labelledby="dom-tab">
+        <section id="dom-pane" class="workspace-pane dom-pane" role="tabpanel" aria-labelledby="dom-tab" tabindex="0">
           <div class="dom-tree-section" aria-label="Document structure">
             <div id="dom-tree" class="dom-tree" role="tree" aria-label="DOM tree">
               <div id="dom-tree-spacer" class="dom-tree-spacer" role="presentation"></div>
@@ -65,7 +65,7 @@
 
         <div id="pane-separator" class="pane-separator" role="separator" aria-label="Resize DOM and Source panes" aria-controls="dom-pane source-pane" aria-valuemin="50" aria-valuemax="50" aria-valuenow="50" aria-valuetext="50%" tabindex="-1" hidden></div>
 
-        <section id="source-pane" class="workspace-pane source-pane-section" role="tabpanel" aria-labelledby="source-tab" hidden>
+        <section id="source-pane" class="workspace-pane source-pane-section" role="tabpanel" aria-labelledby="source-tab" tabindex="-1" hidden>
           <div id="source-pane-root" aria-label="Source matches"></div>
         </section>
       </section>

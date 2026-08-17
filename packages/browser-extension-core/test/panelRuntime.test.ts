@@ -278,6 +278,177 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it.each([
+    ["split", "dom", 800, 600, 800, 600],
+    ["stack", "source", 679, 520, 679, 480],
+  ] as const)(
+    "preserves focus when %s transitions to tabs with focus in the %s pane",
+    async (
+      layout,
+      focusedPane,
+      viewportWidth,
+      viewportHeight,
+      workspaceWidth,
+      workspaceHeight,
+    ) => {
+      const runtime = createRuntime();
+      await runtime.ready;
+      const observer = resizeObservers[0]!;
+      const staleTab = focusedPane === "dom" ? "source" : "dom";
+      dom.element(`${staleTab}-tab`).dispatch("click");
+      emitPanelResize(
+        observer,
+        dom,
+        viewportWidth,
+        viewportHeight,
+        workspaceWidth,
+        workspaceHeight,
+      );
+      await flushAsync();
+      expect(dom.element("panel-workspace").dataset.layout).toBe(layout);
+
+      const focusedContent = new FakeElement("button");
+      dom.element(`${focusedPane}-pane`).append(focusedContent);
+      dom.setActiveElement(focusedContent);
+      emitPanelResize(observer, dom, 220, 520, 220, 300);
+      await flushAsync();
+
+      expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+      expect(dom.element(`${focusedPane}-tab`).getAttribute("aria-selected"))
+        .toBe("true");
+      expect(dom.element(`${focusedPane}-pane`).hidden).toBe(false);
+      expect(dom.element(`${staleTab}-pane`).hidden).toBe(true);
+      expect(dom.element(`${focusedPane}-pane`).getAttribute("tabindex")).toBe("0");
+      expect(dom.element(`${staleTab}-pane`).getAttribute("tabindex")).toBe("-1");
+      expect(dom.element(`${focusedPane}-tab`).focusCalls).toBe(0);
+      expect(dom.document.activeElement).toBe(focusedContent);
+      runtime.dispose();
+    },
+  );
+
+  it("moves separator focus to the selected tab when tabs hide it", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    dom.element("source-tab").dispatch("click");
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    dom.setActiveElement(dom.element("pane-separator"));
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(dom.element("source-tab").focusCalls).toBe(1);
+    expect(dom.document.activeElement).toBe(dom.element("source-tab"));
+    runtime.dispose();
+  });
+
+  it("preserves focus outside the workspace when entering tabs", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    const outside = dom.element("inspect-mode");
+    dom.setActiveElement(outside);
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+
+    expect(dom.document.activeElement).toBe(outside);
+    expect(dom.element("dom-tab").focusCalls).toBe(0);
+    expect(dom.element("source-tab").focusCalls).toBe(0);
+    runtime.dispose();
+  });
+
+  it("keeps only the active tabpanel in the empty-panel keyboard path", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 500, 400);
+    await flushAsync();
+    const domPane = dom.element("dom-pane");
+    const sourcePane = dom.element("source-pane");
+
+    expect(domPane.getAttribute("tabindex")).toBe("0");
+    expect(sourcePane.getAttribute("tabindex")).toBe("-1");
+    dom.element("dom-tab").dispatch("keydown", { key: "ArrowLeft" });
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(domPane.getAttribute("tabindex")).toBe("-1");
+    expect(sourcePane.getAttribute("tabindex")).toBe("0");
+    sourcePane.focus();
+    expect(dom.document.activeElement).toBe(sourcePane);
+
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    expect(domPane.getAttribute("tabindex")).toBeNull();
+    expect(sourcePane.getAttribute("tabindex")).toBeNull();
+    runtime.dispose();
+  });
+
+  it("applies tabs and reports a selected-tab focus failure", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    dom.setActiveElement(dom.element("pane-separator"));
+    const focusError = new Error("responsive focus failed");
+    dom.element("dom-tab").focusError = focusError;
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+
+    expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+    expect(dom.element("dom-pane").hidden).toBe(false);
+    expect(dom.element("dom-pane").getAttribute("tabindex")).toBe("0");
+    expect(dom.element("dom-tab").focusCalls).toBe(1);
+    expect(reportedErrors).toContain(focusError);
+    runtime.dispose();
+  });
+
+  it("keeps focus-driven tab activation authoritative during tabs entry", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    dom.setActiveElement(dom.element("pane-separator"));
+    dom.element("dom-tab").focusAction = () => {
+      dom.element("dom-tab").dispatch("keydown", { key: "ArrowRight" });
+    };
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(dom.element("source-pane").hidden).toBe(false);
+    expect(dom.element("dom-pane").hidden).toBe(true);
+    expect(dom.document.activeElement).toBe(dom.element("source-tab"));
+    runtime.dispose();
+  });
+
+  it("keeps disposal authoritative when selected-tab focus reenters", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    dom.setActiveElement(dom.element("pane-separator"));
+    dom.element("dom-tab").focusAction = runtime.dispose;
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+
+    expect(observer.disconnected).toBe(true);
+    expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+    expect(dom.document.activeElement).toBe(dom.element("dom-tab"));
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+  });
+
   it("falls back to the body viewport and disconnects its observer", async () => {
     Object.defineProperty(dom.document, "documentElement", {
       configurable: true,
@@ -2730,8 +2901,10 @@ describe("startPanelRuntime", () => {
     expect(workspaceTag).toContain('data-layout="tabs"');
     expect(domPaneTag).toContain('role="tabpanel"');
     expect(domPaneTag).toContain('aria-labelledby="dom-tab"');
+    expect(domPaneTag).toContain('tabindex="0"');
     expect(sourcePaneTag).toContain('role="tabpanel"');
     expect(sourcePaneTag).toContain('aria-labelledby="source-tab"');
+    expect(sourcePaneTag).toContain('tabindex="-1"');
     expect(sourcePaneTag).toContain("hidden");
     expect(separatorTag).toContain('role="separator"');
     expect(separatorTag).toContain('aria-controls="dom-pane source-pane"');
@@ -2832,6 +3005,7 @@ class FakeElement {
   public parentElement: FakeElement | undefined;
   public focusCalls = 0;
   public focusError: unknown;
+  public focusAction: (() => void) | undefined;
   public setPointerCaptureError: unknown;
   public releasePointerCaptureError: unknown;
   public boundsError: unknown;
@@ -2840,7 +3014,11 @@ class FakeElement {
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
-  public constructor(tagName = "div", namespaceURI?: string) {
+  public constructor(
+    tagName = "div",
+    namespaceURI?: string,
+    private readonly activate?: (element: FakeElement) => void,
+  ) {
     this.tagName = tagName.toLowerCase();
     this.namespaceURI = namespaceURI;
   }
@@ -2936,6 +3114,8 @@ class FakeElement {
   public focus(): void {
     this.focusCalls += 1;
     if (this.focusError) throw this.focusError;
+    this.activate?.(this);
+    this.focusAction?.();
   }
 
   public setPointerCapture(pointerId: number): void {
@@ -2974,8 +3154,12 @@ class FakeElement {
 }
 
 interface FakeDom {
-  readonly document: { getElementById(id: string): FakeElement | null };
+  readonly document: {
+    readonly activeElement: FakeElement | null;
+    getElementById(id: string): FakeElement | null;
+  };
   element(id: string): FakeElement;
+  setActiveElement(element: FakeElement | null): void;
   viewport(): FakeElement;
   body(): FakeElement;
   namespacedTags(): readonly {
@@ -2990,28 +3174,36 @@ function createFakeDom(): FakeDom {
     readonly namespace: string;
     readonly tagName: string;
   }> = [];
+  let activeElement: FakeElement | null = null;
+  const activate = (element: FakeElement): void => {
+    activeElement = element;
+  };
+  const createElement = (tagName = "div", namespaceURI?: string): FakeElement =>
+    new FakeElement(tagName, namespaceURI, activate);
   const elements = new Map(
-    ELEMENT_IDS.map((id) => [id, new FakeElement()] as const),
+    ELEMENT_IDS.map((id) => [id, createElement()] as const),
   );
-  const documentElement = new FakeElement("html");
-  const bodyElement = new FakeElement("body");
+  const documentElement = createElement("html");
+  const bodyElement = createElement("body");
   documentElement.append(bodyElement);
   return {
     document: {
+      get activeElement() {
+        return activeElement;
+      },
       documentElement,
       body: bodyElement,
       getElementById: (id) => elements.get(id as (typeof ELEMENT_IDS)[number]) ?? null,
-      createElement: (tagName: string) => new FakeElement(tagName),
+      createElement,
       createTextNode: (text: string) => {
-        const node = new FakeElement("#text");
+        const node = createElement("#text");
         node.textContent = text;
         return node;
       },
       createElementNS: (namespace: string, tagName: string) => {
         namespacedTags.push({ namespace, tagName });
-        return new FakeElement(tagName, namespace);
+        return createElement(tagName, namespace);
       },
-      activeElement: null,
     },
     element(id) {
       const element = elements.get(id as (typeof ELEMENT_IDS)[number]);
@@ -3019,6 +3211,9 @@ function createFakeDom(): FakeDom {
         throw new Error(`Unknown fake element: ${id}`);
       }
       return element;
+    },
+    setActiveElement(element) {
+      activeElement = element;
     },
     viewport() {
       return documentElement;
