@@ -800,7 +800,6 @@ export class BackgroundContentRefreshCoordinator {
     return sameOwnedBinding(transition, lease) &&
       transition?.refreshCommandId === lease.refreshCommandId &&
       transition.refreshGeneration === lease.refreshGeneration &&
-      transition.navigationObserved &&
       lifecycle?.pageUrl === lease.pageUrl &&
       lifecycle.preserveSnapshot &&
       lifecycle.blockedRuntimeId === lease.contentRuntimeId &&

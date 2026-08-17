@@ -363,6 +363,69 @@ describe("BackgroundContentRefreshCoordinator", () => {
     });
   });
 
+  it("accepts an exact reload channel closure before loading is observed", async () => {
+    const storage = new MemorySessionStorage();
+    const sender = topSender(38, "https://example.test/page");
+    const onError = vi.fn();
+    let coordinator: BackgroundContentRefreshCoordinator;
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+      const command = message as {
+        readonly contentRuntimeId: string;
+        readonly refreshCommandId: string;
+        readonly refreshGeneration: number;
+      };
+      const result = await coordinator.routeMessage(reloadRequest(
+        38,
+        command.contentRuntimeId,
+        command.refreshGeneration,
+        command.refreshCommandId,
+      ), sender);
+      expect(result).toMatchObject({ accepted: true });
+      throw new Error("The message port closed before a response was received");
+    });
+    coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(storage),
+      executeContentScript: vi.fn(async () => {
+        await bind(coordinator, sender, "runtime-channel-before-loading");
+      }),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => undefined),
+      now: () => 600,
+      createRefreshCommandId: () => "command-channel-before-loading",
+      onError,
+    });
+    authorize(coordinator, 38);
+
+    await expect(coordinator.dispatch(38, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 16,
+      mode: "reload",
+    })).resolves.toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+
+    coordinator.observeTabUpdate(38, {
+      status: "loading",
+      url: sender.url,
+      windowId: 7,
+    });
+    await coordinator.routeMessage({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-channel-after-loading",
+    }, sender);
+    await expect(coordinator.routeMessage({
+      type: "pin-op.refresh.content.ready",
+      tabId: 38,
+      frameId: 0,
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-channel-after-loading",
+    }, sender)).resolves.toMatchObject({
+      type: "pin-op.refresh.scroll.restore",
+      contentRuntimeId: "runtime-channel-after-loading",
+      refreshGeneration: 16,
+    });
+  });
+
   it("preserves restoration when reload resolves before loading", async () => {
     const storage = new MemorySessionStorage();
     const sender = topSender(34, "https://example.test/page");
