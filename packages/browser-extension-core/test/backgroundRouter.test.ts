@@ -898,6 +898,56 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("does not let a delayed old-window close overwrite the new panel owner", async () => {
+    const tabs = new Map([[17, 10]]);
+    const harness = createHarness({ tabs });
+    const oldPort = await harness.registerAndConnect(
+      "channel-old-window",
+      17,
+      "source-old-window",
+    );
+    await flushMicrotasks();
+    const closeGate = deferred<void>();
+    let delayedCloseCalls = 0;
+    harness.tabRefresh.panelClosedBehavior = async () => {
+      delayedCloseCalls += 1;
+      await closeGate.promise;
+    };
+
+    tabs.set(17, 20);
+    const newPort = harness.panelPort("channel-new-window");
+    harness.router.connectPort(newPort);
+    await harness.router.routeMessage(
+      registerMessage("channel-new-window", 17, "source-new-window"),
+      devtoolsSender(),
+    );
+    await flushMicrotasks();
+
+    expect(delayedCloseCalls).toBe(1);
+    expect(oldPort.disconnected).toBe(true);
+    expect(newPort.disconnected).toBe(false);
+    expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, 10]);
+    expect(harness.tabRefresh.panelOpenCalls.at(-1)).toEqual([17, 20]);
+    expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
+      windowId: 20,
+      participant: true,
+    });
+
+    closeGate.resolve();
+    await flushMicrotasks();
+    expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
+      windowId: 20,
+      participant: true,
+    });
+
+    harness.tabRefresh.panelClosedBehavior = undefined;
+    await harness.tabRefresh.panelClosed(17, 10);
+    expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
+      windowId: 20,
+      participant: true,
+    });
+  });
+
   it("bounds pending ports and disconnects malformed, duplicate, and overflow ports", () => {
     const harness = createHarness({ maxPanelPorts: 2 });
     const malformed = harness.port("pin-op.devtools.bad/channel");
@@ -4499,7 +4549,7 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
-  it("removes closed-panel refresh participation on detach without rebinding on attach", async () => {
+  it("retains closed-panel refresh settings on detach without rebinding on attach", async () => {
     const tabs = new Map([[17, 10]]);
     const events = createRouterSubscriptionHarness();
     const harness = createHarness({ tabs, subscriptions: events.subscriptions });
@@ -4517,7 +4567,12 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
 
     expect(harness.tabRefresh.detachedTabs).toEqual([[17, 10]]);
-    expect(harness.tabRefresh.hasState(17)).toBe(false);
+    expect(harness.tabRefresh.hasState(17)).toBe(true);
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      participant: false,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+    });
     expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
   });
 
@@ -5272,28 +5327,50 @@ class FakeTabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ) => Promise<TabRefreshState>;
+  public panelClosedBehavior?: (
+    tabId: number,
+    windowId: number | undefined,
+  ) => Promise<void>;
   public stateBehavior?: (
     tabId: number,
     windowId: number,
   ) => Promise<TabRefreshState>;
+  public readonly refreshParticipants: Array<[number, number, boolean]> = [];
   private readonly states = new Map<number, TabRefreshState>();
+  private readonly panelWindows = new Map<number, number>();
+  private readonly lifecycleRevisions = new Map<number, number>();
+  private nextLifecycleRevision = 1;
 
   public async panelOpened(
     tabId: number,
     windowId: number,
   ): Promise<TabRefreshState> {
     this.panelOpenCalls.push([tabId, windowId]);
-    if (this.panelOpenedBehavior) {
-      return await this.panelOpenedBehavior(tabId, windowId);
+    this.panelWindows.set(tabId, windowId);
+    const revision = this.advanceLifecycle(tabId);
+    try {
+      const existing = this.states.get(tabId);
+      const current = existing ?? defaultTabState(tabId, windowId);
+      const next = this.panelOpenedBehavior
+        ? await this.panelOpenedBehavior(tabId, windowId)
+        : {
+            ...current,
+            windowId,
+            participant: current.autoRefreshEnabled,
+          };
+      if (this.isCurrentLifecycle(tabId, revision)) {
+        this.states.set(tabId, next);
+      }
+      return next;
+    } catch (error) {
+      if (
+        this.isCurrentLifecycle(tabId, revision) &&
+        this.panelWindows.get(tabId) === windowId
+      ) {
+        this.panelWindows.delete(tabId);
+      }
+      throw error;
     }
-    const current = this.states.get(tabId) ?? defaultTabState(tabId, windowId);
-    const next = {
-      ...current,
-      windowId,
-      participant: current.autoRefreshEnabled,
-    };
-    this.states.set(tabId, next);
-    return next;
   }
 
   public async panelClosed(
@@ -5301,7 +5378,34 @@ class FakeTabRefreshCoordinator {
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
     this.panelCloseCalls.push([tabId, windowId]);
+    const ownerWindowId =
+      this.panelWindows.get(tabId) ?? this.states.get(tabId)?.windowId;
+    if (
+      windowId !== undefined &&
+      ownerWindowId !== undefined &&
+      ownerWindowId !== windowId
+    ) {
+      return this.states.get(tabId);
+    }
+    const revision = this.advanceLifecycle(tabId);
+    if (
+      windowId === undefined ||
+      this.panelWindows.get(tabId) === windowId
+    ) {
+      this.panelWindows.delete(tabId);
+    }
+    await this.panelClosedBehavior?.(tabId, windowId);
+    if (!this.isCurrentLifecycle(tabId, revision)) {
+      return this.states.get(tabId);
+    }
     const existing = this.states.get(tabId);
+    if (
+      windowId !== undefined &&
+      existing !== undefined &&
+      existing.windowId !== windowId
+    ) {
+      return existing;
+    }
     const resolvedWindowId = existing?.windowId ?? windowId;
     if (resolvedWindowId === undefined) {
       return undefined;
@@ -5332,7 +5436,10 @@ class FakeTabRefreshCoordinator {
     if (this.stateBehavior) {
       return await this.stateBehavior(tabId, windowId);
     }
-    return this.states.get(tabId) ?? defaultTabState(tabId, windowId);
+    const current = this.states.get(tabId);
+    return current?.windowId === windowId
+      ? current
+      : defaultTabState(tabId, windowId);
   }
 
   public setState(state: TabRefreshState): void {
@@ -5379,8 +5486,19 @@ class FakeTabRefreshCoordinator {
 
   public async detachTab(tabId: number, windowId: number): Promise<void> {
     this.detachedTabs.push([tabId, windowId]);
-    if (this.states.get(tabId)?.windowId === windowId) {
-      this.states.delete(tabId);
+    if (this.panelWindows.get(tabId) === windowId) {
+      this.panelWindows.delete(tabId);
+    }
+    const current = this.states.get(tabId);
+    if (current?.windowId === windowId) {
+      this.states.set(tabId, {
+        tabId: current.tabId,
+        windowId: current.windowId,
+        autoRefreshEnabled: current.autoRefreshEnabled,
+        ideHighlightEnabled: current.ideHighlightEnabled,
+        participant: false,
+        lastAcceptedGeneration: current.lastAcceptedGeneration,
+      });
     }
   }
 
@@ -5390,16 +5508,31 @@ class FakeTabRefreshCoordinator {
 
   public async removeTab(tabId: number): Promise<void> {
     this.removedTabs.push(tabId);
+    this.panelWindows.delete(tabId);
     this.states.delete(tabId);
+    this.lifecycleRevisions.delete(tabId);
   }
 
   public async removeWindow(windowId: number): Promise<void> {
     this.removedWindows.push(windowId);
     for (const [tabId, state] of this.states) {
       if (state.windowId === windowId) {
+        this.panelWindows.delete(tabId);
         this.states.delete(tabId);
+        this.lifecycleRevisions.delete(tabId);
       }
     }
+  }
+
+  private advanceLifecycle(tabId: number): number {
+    const revision = this.nextLifecycleRevision;
+    this.nextLifecycleRevision += 1;
+    this.lifecycleRevisions.set(tabId, revision);
+    return revision;
+  }
+
+  private isCurrentLifecycle(tabId: number, revision: number): boolean {
+    return this.lifecycleRevisions.get(tabId) === revision;
   }
 }
 

@@ -80,29 +80,50 @@ export class TabRefreshStateStore {
     });
   }
 
-  public removeTab(tabId: number): Promise<void> {
+  public removeTab(
+    tabId: number,
+    canRemove: (current: TabRefreshState) => boolean = alwaysRemove,
+  ): Promise<void> {
     createDefaultTabRefreshState(tabId, 0);
-    return this.removeMatching((state) => state.tabId === tabId);
+    if (typeof canRemove !== "function") {
+      return Promise.reject(new TypeError("Invalid tab removal guard"));
+    }
+    return this.enqueue(async () => {
+      const states = await this.loadAllUnlocked();
+      const current = states.find((state) => state.tabId === tabId);
+      if (!current || !canRemove(current)) {
+        return;
+      }
+      await this.writeStates(
+        states.filter((state) => state.tabId !== tabId),
+      );
+      if (!canRemove(current)) {
+        await this.writeStates(states);
+      }
+    });
   }
 
   public removeTabFromWindow(
     tabId: number,
     windowId: number,
+    canRemove: (current: TabRefreshState) => boolean = alwaysRemove,
   ): Promise<TabRefreshState | undefined> {
     createDefaultTabRefreshState(tabId, windowId);
+    if (typeof canRemove !== "function") {
+      return Promise.reject(new TypeError("Invalid tab removal guard"));
+    }
     return this.enqueue(async () => {
       const states = await this.loadAllUnlocked();
       const current = states.find((state) => state.tabId === tabId);
-      if (current?.windowId !== windowId) {
+      if (current?.windowId !== windowId || !canRemove(current)) {
         return undefined;
       }
-      const next = states.filter((state) => state.tabId !== tabId);
-      if (next.length === 0) {
-        await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
-      } else {
-        await this.storage.set({
-          [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
-        });
+      await this.writeStates(
+        states.filter((state) => state.tabId !== tabId),
+      );
+      if (!canRemove(current)) {
+        await this.writeStates(states);
+        return undefined;
       }
       return current;
     });
@@ -126,13 +147,19 @@ export class TabRefreshStateStore {
       if (next.length === states.length) {
         return;
       }
-      if (next.length === 0) {
-        await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
-        return;
-      }
-      await this.storage.set({
-        [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
-      });
+      await this.writeStates(next);
+    });
+  }
+
+  private async writeStates(
+    states: readonly TabRefreshState[],
+  ): Promise<void> {
+    if (states.length === 0) {
+      await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+      return;
+    }
+    await this.storage.set({
+      [TAB_REFRESH_STATE_STORAGE_KEY]: states.map(snapshotState),
     });
   }
 
@@ -180,6 +207,7 @@ export class TabRefreshStateStore {
 }
 
 const absentValue = Symbol("pin-op.absentTabRefreshState");
+const alwaysRemove = () => true;
 
 function ownDataValue(
   value: unknown,

@@ -2035,6 +2035,10 @@ export class BackgroundRouter {
     ) {
       return;
     }
+    this.contentRefreshCoordinator.revokeTab(binding.tabId);
+    void this.tabRefreshCoordinator
+      .panelClosed(binding.tabId, binding.windowId)
+      .catch((error) => this.reportError(error));
     this.removeBinding(binding);
     record.port.onMessage.removeListener(record.onMessage);
     this.clearPanelActivation(record, true);

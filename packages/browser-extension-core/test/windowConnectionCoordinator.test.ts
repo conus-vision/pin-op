@@ -26,6 +26,7 @@ import {
 import { BackgroundInspectCoordinator } from "../src/backgroundInspectSession.js";
 import {
   createBackgroundRouter,
+  type BackgroundContentRefreshRuntime,
   type BackgroundMessageSender,
   type BackgroundRuntimePort,
 } from "../src/backgroundRouter.js";
@@ -236,6 +237,102 @@ describe("WindowConnectionCoordinator", () => {
     expect(await tabs.state(101, 10)).toMatchObject({ participant: false });
     router.dispose();
   });
+
+  it.each(["absent", "rejected"] as const)(
+    "revokes a restored reconnect when panel tab lookup is %s",
+    async (lookupFailure) => {
+      const storage = new MemorySessionStorage();
+      const harness = coordinatorHarness(storage);
+      const saved = windowLink();
+      await harness.store.save(10, saved);
+      const tabStore = new TabRefreshStateStore(storage);
+      await tabStore.save({
+        tabId: 101,
+        windowId: 10,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: false,
+        participant: true,
+        lastAcceptedGeneration: 3,
+      });
+      const tabs = new TabRefreshCoordinator({
+        store: tabStore,
+        getActiveTabId: async () => undefined,
+        dispatchRefresh: async () => undefined,
+        setRefreshParticipant: (windowId, tabId, participant) =>
+          harness.coordinator.setRefreshParticipant(
+            windowId,
+            tabId,
+            participant,
+          ),
+      });
+      await tabs.initialize();
+      await harness.flush();
+      const client = harness.createdClients[0];
+      expect(client).toBeDefined();
+      client?.emitState("connected");
+      client?.emitState("disconnected");
+      expect(harness.timers.pendingCount()).toBe(1);
+
+      let lookupCount = 0;
+      const revokedTabs: number[] = [];
+      const router = createBackgroundRouter({
+        expectedDevtoolsUrl: DEVTOOLS_URL,
+        expectedPanelUrl: PANEL_URL,
+        getTab: async (tabId) => {
+          lookupCount += 1;
+          if (lookupCount === 1) {
+            return { id: tabId, windowId: 10 };
+          }
+          if (lookupFailure === "rejected") {
+            throw new Error("transient browser tab lookup failure");
+          }
+          return undefined;
+        },
+        coordinator: harness.coordinator,
+        tabRefreshCoordinator: tabs,
+        contentRefreshCoordinator: recordingContentRefresh(revokedTabs),
+        inspectCoordinator: new BackgroundInspectCoordinator({
+          executeScript: async () => undefined,
+          sendTabMessage: async () => undefined,
+        }),
+      });
+      const channel = `invalidated-${lookupFailure}`;
+      await router.routeMessage({
+        type: "pin-op.registerDevtools",
+        channel,
+        tabId: 101,
+        sourceId: `source-${lookupFailure}`,
+      }, { url: DEVTOOLS_URL });
+      const port = new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        { url: `${PANEL_URL}?channel=${channel}` },
+      );
+      router.connectPort(port);
+      await flushMicrotasks();
+      const connectCount = client?.connectCalls.length ?? 0;
+
+      await expect(router.routeMessage({
+        type: "pin-op.unlinkWindow",
+        channel,
+      }, { url: `${PANEL_URL}?channel=${channel}` })).resolves.toEqual({
+        ok: false,
+        error: "stalePanel",
+      });
+      await flushMicrotasks();
+
+      expect(revokedTabs).toEqual([101]);
+      expect(await tabs.state(101, 10)).toMatchObject({
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: false,
+        participant: false,
+        lastAcceptedGeneration: 3,
+      });
+      expect(harness.timers.pendingCount()).toBe(0);
+      expect(client?.connectCalls).toHaveLength(connectCount);
+      port.disconnect();
+      router.dispose();
+    },
+  );
 
   it("restores a retained participant connection and publishes state without a panel", async () => {
     const harness = coordinatorHarness();
@@ -1982,6 +2079,24 @@ function resolution(
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
     metadata: {},
+  };
+}
+
+function recordingContentRefresh(
+  revokedTabs: number[],
+): BackgroundContentRefreshRuntime {
+  return {
+    async dispatch() {},
+    async routeMessage() { return undefined; },
+    observeTabUpdate() {},
+    async tabUpdated() {},
+    setTabParticipation() {},
+    setWindowEligibility() {},
+    revokeTab(tabId) { revokedTabs.push(tabId); },
+    revokeWindow() {},
+    async removeTab() {},
+    async detachTab() {},
+    dispose() {},
   };
 }
 

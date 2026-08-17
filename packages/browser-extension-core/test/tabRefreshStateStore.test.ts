@@ -186,6 +186,16 @@ describe("TabRefreshStateStore", () => {
       lastAcceptedGeneration: 0,
     });
   });
+
+  it("continues serial storage work after a transient read failure", async () => {
+    const storage = transientReadFailureStorage({
+      "pin-op.tabRefreshStates": [state(11, 7)],
+    });
+    const store = new TabRefreshStateStore(storage);
+
+    await expect(store.loadAll()).rejects.toThrow("transient storage failure");
+    await expect(store.loadAll()).resolves.toEqual([state(11, 7)]);
+  });
 });
 
 function state(tabId: number, windowId: number) {
@@ -216,5 +226,23 @@ function memoryStorage(initial: Record<string, unknown> = {}): SessionStorage & 
     remove: vi.fn(async (key: string) => {
       values.delete(key);
     }),
+  };
+}
+
+function transientReadFailureStorage(
+  initial: Record<string, unknown>,
+): SessionStorage {
+  const storage = memoryStorage(initial);
+  let failed = false;
+  return {
+    async get(key: string) {
+      if (!failed) {
+        failed = true;
+        throw new Error("transient storage failure");
+      }
+      return storage.get(key);
+    },
+    set: (records) => storage.set(records),
+    remove: (key) => storage.remove(key),
   };
 }
