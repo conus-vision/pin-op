@@ -199,13 +199,18 @@ export class SourceNavigator implements DisposableLike {
       this.documentUri !== undefined &&
       editor.documentUri === this.documentUri;
     const selectedMatchCount = matchesActiveDocument ? this.ranges.length : 0;
-    const activeMatchIndex = matchesActiveDocument
-      ? this.activeRangeIndex(editor, this.host.getPrimaryCursor(editor))
+    const cursor = matchesActiveDocument
+      ? this.host.getPrimaryCursor(editor)
       : undefined;
-    const activeMatchId = matchesActiveDocument
-      ? containingIncludedMatchId(
+    const activeMatchIndex = matchesActiveDocument
+      ? this.activeRangeIndex(editor, cursor!)
+      : undefined;
+    const activeMatchId = cursor
+      ? activeIncludedMatchId(
           this.includedMatches,
-          this.host.getPrimaryCursor(editor),
+          this.ranges,
+          activeMatchIndex,
+          cursor,
         )
       : undefined;
     if (!matchesActiveDocument) this.preferredTarget = undefined;
@@ -263,11 +268,22 @@ function currentIncludedMatches(
   });
 }
 
-function containingIncludedMatchId(
+function activeIncludedMatchId(
   matches: readonly SourceNavigationIncludedMatch[],
+  selectedRanges: readonly SourceRange[],
+  activeMatchIndex: number | undefined,
   cursor: SourcePosition,
 ): string | undefined {
-  return matches.find((match) => contains(match.range, cursor))?.matchId;
+  if (activeMatchIndex !== undefined) {
+    const activeRange = selectedRanges[activeMatchIndex];
+    if (!activeRange) return undefined;
+    return matches.find((match) =>
+      match.targetRole === "selected" && sameRange(match.range, activeRange)
+    )?.matchId;
+  }
+  return matches.find((match) =>
+    match.targetRole === "parent" && contains(match.range, cursor)
+  )?.matchId;
 }
 
 function selectedRanges(

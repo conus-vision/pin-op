@@ -158,17 +158,18 @@ describe("presenter runtime", () => {
     harness.runtime.dispose();
   });
 
-  it("publishes resolution, selected-only navigation, then bounded source matches", async () => {
+  it("publishes resolution, initial navigation, Source, then active ID navigation", async () => {
     const harness = runtimeHarness({ activeLanguageId: "fixture" });
     harness.runtime.api.registerSourcePlugin(fixturePlugin());
 
     harness.runtime.select(inspectMessageWithCustomFact());
     await harness.flush();
 
-    expect(harness.transportEvents.slice(-3)).toEqual([
+    expect(harness.transportEvents.slice(-4)).toEqual([
       "resolution",
       "source.navigationState",
       "source.matches",
+      "source.navigationState",
     ]);
     expect(harness.sourceMatches.at(-1)).toMatchObject({
       inspectMessageId: "inspect-1",
@@ -187,6 +188,41 @@ describe("presenter runtime", () => {
     const payload = JSON.stringify(harness.sourceMatches.at(-1));
     expect(payload).not.toContain("file:///workspace");
     expect(payload).not.toContain("fixture block");
+    const recentStates = harness.navigationStates.slice(-2);
+    expect(recentStates[0]).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+    expect(recentStates[1]).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      activeMatchId: harness.sourceMatches.at(-1)!.matches[0]!.matchId,
+    });
+  });
+
+  it("discards source IDs when the transport does not enqueue them", async () => {
+    const harness = runtimeHarness({
+      activeLanguageId: "fixture",
+      sourceMatchesSendResult: false,
+    });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin());
+    harness.runtime.select(inspectMessageWithCustomFact());
+    await harness.flush();
+    const droppedId = harness.sourceMatches.at(-1)!.matches[0]!.matchId;
+
+    expect(harness.navigationStates.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+    harness.runtime.open(sourceOpen(droppedId));
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
   });
 
   it("publishes an empty source state and bounded diagnostics on excerpt read failure", async () => {
@@ -627,6 +663,7 @@ function runtimeHarness(options: {
   readonly reporterError?: Error;
   readonly excerptReadError?: Error;
   readonly sourceMatchesSendError?: Error;
+  readonly sourceMatchesSendResult?: boolean;
 }) {
   const registeredPluginIds: string[] = [];
   const disposed: string[] = [];
@@ -707,6 +744,7 @@ function runtimeHarness(options: {
       if (options.sourceMatchesSendError) {
         throw options.sourceMatchesSendError;
       }
+      return options.sourceMatchesSendResult ?? true;
     },
     measureSourceMatchesEnvelope(matches) {
       return Buffer.byteLength(JSON.stringify({
@@ -723,6 +761,7 @@ function runtimeHarness(options: {
       navigationStates.push(state);
       transportEvents.push("source.navigationState");
       if (options.navigationSendError) throw options.navigationSendError;
+      return true;
     },
     host: {
       getActiveEditor: () => editor,

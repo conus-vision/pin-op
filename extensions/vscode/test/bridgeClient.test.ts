@@ -106,18 +106,18 @@ describe("BridgeClient", () => {
 
   it("routes source navigation state only to the current bridge client", () => {
     const router = new SourceNavigationClientRouter();
-    const first = { sendSourceNavigationState: vi.fn() };
-    const second = { sendSourceNavigationState: vi.fn() };
+    const first = { sendSourceNavigationState: vi.fn(() => true) };
+    const second = { sendSourceNavigationState: vi.fn(() => false) };
     const input = sourceNavigationStateInput();
 
-    router.sendSourceNavigationState(input);
+    expect(router.sendSourceNavigationState(input)).toBe(false);
     router.bind(first);
-    router.sendSourceNavigationState(input);
+    expect(router.sendSourceNavigationState(input)).toBe(true);
     router.bind(second);
     router.unbind(first);
-    router.sendSourceNavigationState(input);
+    expect(router.sendSourceNavigationState(input)).toBe(false);
     router.unbind(second);
-    router.sendSourceNavigationState(input);
+    expect(router.sendSourceNavigationState(input)).toBe(false);
 
     expect(first.sendSourceNavigationState).toHaveBeenCalledTimes(1);
     expect(second.sendSourceNavigationState).toHaveBeenCalledTimes(1);
@@ -126,26 +126,26 @@ describe("BridgeClient", () => {
   it("routes source matches and envelope measurement only to the current client", () => {
     const router = new SourceMatchesClientRouter();
     const first = {
-      sendSourceMatches: vi.fn(),
+      sendSourceMatches: vi.fn(() => true),
       sourceMatchesEnvelopeBytes: vi.fn(() => 101),
     };
     const second = {
-      sendSourceMatches: vi.fn(),
+      sendSourceMatches: vi.fn(() => false),
       sourceMatchesEnvelopeBytes: vi.fn(() => 202),
     };
     const input = sourceMatchesInput();
 
     expect(router.sourceMatchesEnvelopeBytes(input)).toBe(Number.POSITIVE_INFINITY);
-    router.sendSourceMatches(input);
+    expect(router.sendSourceMatches(input)).toBe(false);
     router.bind(first);
     expect(router.sourceMatchesEnvelopeBytes(input)).toBe(101);
-    router.sendSourceMatches(input);
+    expect(router.sendSourceMatches(input)).toBe(true);
     router.bind(second);
     router.unbind(first);
     expect(router.sourceMatchesEnvelopeBytes(input)).toBe(202);
-    router.sendSourceMatches(input);
+    expect(router.sendSourceMatches(input)).toBe(false);
     router.unbind(second);
-    router.sendSourceMatches(input);
+    expect(router.sendSourceMatches(input)).toBe(false);
 
     expect(first.sendSourceMatches).toHaveBeenCalledTimes(1);
     expect(second.sendSourceMatches).toHaveBeenCalledTimes(1);
@@ -350,13 +350,13 @@ describe("BridgeClient", () => {
     const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
     authenticate(harness.sockets[0]);
 
-    harness.client.sendSourceNavigationState({
+    expect(harness.client.sendSourceNavigationState({
       ...sourceNavigationStateInput(),
       messageId: "caller-message",
       sessionId: "caller-session",
       source: { role: "browser", id: "caller-source" },
       metadata: { caller: true },
-    } as never);
+    } as never)).toBe(true);
 
     const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
     expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
@@ -380,7 +380,8 @@ describe("BridgeClient", () => {
     harness.client.connect();
     harness.sockets[0].open();
 
-    harness.client.sendSourceNavigationState(sourceNavigationStateInput());
+    expect(harness.client.sendSourceNavigationState(sourceNavigationStateInput()))
+      .toBe(false);
 
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
@@ -392,7 +393,7 @@ describe("BridgeClient", () => {
     const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
     authenticate(harness.sockets[0]);
 
-    harness.client.sendSourceMatches({
+    expect(harness.client.sendSourceMatches({
       ...sourceMatchesInput(),
       messageId: "caller-message",
       sessionId: "caller-session",
@@ -401,7 +402,7 @@ describe("BridgeClient", () => {
       path: "C:/private/customer/Card.tsx",
       fullDocument: "private full document",
       metadata: { caller: true },
-    } as never);
+    } as never)).toBe(true);
 
     const payload = harness.sockets[0].sent.at(-1) ?? "{}";
     const message = JSON.parse(payload);
@@ -427,11 +428,11 @@ describe("BridgeClient", () => {
     harness.sockets[0].open();
 
     const measured = harness.client.sourceMatchesEnvelopeBytes(input);
-    harness.client.sendSourceMatches(input);
+    expect(harness.client.sendSourceMatches(input)).toBe(false);
     expect(harness.sockets[0].sent).toHaveLength(1);
 
     authenticate(harness.sockets[0]);
-    harness.client.sendSourceMatches(input);
+    expect(harness.client.sendSourceMatches(input)).toBe(true);
     const payload = harness.sockets[0].sent.at(-1)!;
     expect(Buffer.byteLength(payload, "utf8")).toBe(measured);
   });
@@ -489,25 +490,58 @@ describe("BridgeClient", () => {
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
 
-  it("follows existing socket and send error handling for source navigation state", () => {
-    const harness = createHarness();
-    harness.client.connect();
-    harness.sockets[0].open();
-    authenticate(harness.sockets[0]);
-    harness.sockets[0].sendError = new Error("socket send failed");
+  it.each(["source.matches", "source.navigationState"] as const)(
+    "drops %s on a closing socket, reconnects, and reports enqueue status",
+    (messageType) => {
+      const harness = createHarness();
+      harness.client.connect();
+      harness.sockets[0].open();
+      authenticate(harness.sockets[0]);
+      harness.sockets[0].beginClose();
 
-    expect(() =>
-      harness.client.sendSourceNavigationState(sourceNavigationStateInput()),
-    ).toThrow("socket send failed");
-    expect(harness.states.at(-1)).toBe("connected");
+      expect(sendSourcePresentation(harness.client, messageType)).toBe(false);
+      expect(harness.states.at(-1)).toBe("reconnecting");
+      expect(harness.sockets[0].closed).toBe(true);
+      expect(sourcePresentationMessages(harness.sockets[0])).toEqual([]);
 
-    harness.sockets[0].sendError = undefined;
-    harness.sockets[0].onerror?.();
-    harness.client.sendSourceNavigationState(sourceNavigationStateInput());
+      harness.runNextTimer();
+      harness.sockets[1].open();
+      authenticate(harness.sockets[1]);
+      expect(sendSourcePresentation(harness.client, messageType)).toBe(true);
+      expect(sourcePresentationMessages(harness.sockets[1])).toEqual([
+        expect.objectContaining({ type: messageType }),
+      ]);
+    },
+  );
 
-    expect(harness.states.at(-1)).toBe("error");
-    expect(harness.sockets[0].sent).toHaveLength(1);
-  });
+  it.each(["source.matches", "source.navigationState"] as const)(
+    "contains a throwing %s send, reconnects, and reports failure",
+    (messageType) => {
+      const harness = createHarness();
+      harness.client.connect();
+      harness.sockets[0].open();
+      authenticate(harness.sockets[0]);
+      harness.sockets[0].sendError = new Error("socket send failed");
+      let result: unknown;
+
+      expect(() => {
+        result = sendSourcePresentation(harness.client, messageType);
+      }).not.toThrow();
+      expect(result).toBe(false);
+      expect(harness.states.at(-1)).toBe("reconnecting");
+      expect(harness.sockets[0].closed).toBe(true);
+      expect(sourcePresentationMessages(harness.sockets[0])).toEqual([]);
+      expect(harness.errors).toEqual([]);
+
+      harness.runNextTimer();
+      harness.sockets[1].open();
+      authenticate(harness.sockets[1]);
+      expect(sendSourcePresentation(harness.client, messageType)).toBe(true);
+      expect(sourcePresentationMessages(harness.sockets[1])).toEqual([
+        expect.objectContaining({ type: messageType }),
+      ]);
+    },
+  );
 
   it("rejects malformed resolution input with the strict protocol schema", () => {
     const harness = createHarness();
@@ -936,6 +970,26 @@ function pageRefreshMessages(socket: FakeSocket): Array<Record<string, unknown>>
   return socket.sent
     .map((payload) => JSON.parse(payload) as Record<string, unknown>)
     .filter((message) => message.type === "page.refresh");
+}
+
+function sourcePresentationMessages(
+  socket: FakeSocket,
+): Array<Record<string, unknown>> {
+  return socket.sent
+    .map((payload) => JSON.parse(payload) as Record<string, unknown>)
+    .filter((message) =>
+      message.type === "source.matches" ||
+      message.type === "source.navigationState"
+    );
+}
+
+function sendSourcePresentation(
+  client: BridgeClient,
+  messageType: "source.matches" | "source.navigationState",
+): unknown {
+  return messageType === "source.matches"
+    ? client.sendSourceMatches(sourceMatchesInput())
+    : client.sendSourceNavigationState(sourceNavigationStateInput());
 }
 
 function inspectMessage() {

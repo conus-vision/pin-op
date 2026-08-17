@@ -356,6 +356,195 @@ describe("SourceExcerptRegistry", () => {
     expect(registry.resolveOpen(openMessage(firstId), document)).toBeUndefined();
   });
 
+  it("deeply isolates and freezes every published and authority object", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    const completeRange = range(0, 0, 0, 8);
+    const registry = excerptRegistry();
+    const publication = registry.publish({
+      inspectMessageId: "inspect-copies",
+      resolutionGeneration: 4,
+      editor: { document },
+      resolution: resolution(document, [
+        match("selected", completeRange, "copies"),
+      ], "inspect-copies"),
+    });
+    const matchId = publication.message.matches[0]!.matchId;
+    const intent = openMessage(matchId, {
+      inspectMessageId: "inspect-copies",
+      resolutionGeneration: 4,
+    });
+    const firstAuthority = registry.resolveOpen(intent, document)!;
+    const secondAuthority = registry.resolveOpen(intent, document)!;
+    const navigation = publication.navigationMatches[0]!;
+
+    expect(firstAuthority).not.toBe(secondAuthority);
+    expect(firstAuthority.range).not.toBe(secondAuthority.range);
+    expect(firstAuthority.range).not.toBe(navigation.range);
+    expect(firstAuthority.range.start).not.toBe(navigation.range.start);
+    expectDeepFrozen(publication);
+    expectDeepFrozen(firstAuthority);
+    expectDeepFrozen(secondAuthority);
+
+    expect(Reflect.set(completeRange.start, "line", 99)).toBe(true);
+    expect(registry.resolveOpen(intent, document)?.range).toEqual(
+      range(0, 0, 0, 8),
+    );
+
+    const firstEmpty = registry.invalidate();
+    const secondEmpty = registry.invalidate();
+    expect(firstEmpty).toBeDefined();
+    expect(secondEmpty).toBeDefined();
+    expect(firstEmpty).not.toBe(secondEmpty);
+    expect(firstEmpty?.document).not.toBe(secondEmpty?.document);
+    expect(firstEmpty?.matches).not.toBe(secondEmpty?.matches);
+    expect(firstEmpty?.document).toEqual({
+      label: "Card.tsx",
+      languageId: "css",
+    });
+    expectDeepFrozen(firstEmpty);
+    expectDeepFrozen(secondEmpty);
+  });
+
+  it("retries generated ID collisions without overwriting authority", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".a {} .b {}");
+    const generated = ["shared-id", "shared-id", "unique-id"];
+    const registry = excerptRegistry({
+      createMatchId: () => generated.shift() ?? "unexpected-id",
+    });
+    const publication = registry.publish({
+      inspectMessageId: "inspect-collision",
+      resolutionGeneration: 0,
+      editor: { document },
+      resolution: resolution(document, [
+        match("selected", range(0, 0, 0, 5), "first"),
+        match("selected", range(0, 6, 0, 11), "second"),
+      ], "inspect-collision"),
+    });
+
+    expect(publication.message.matches.map((entry) => entry.matchId)).toEqual([
+      "shared-id",
+      "unique-id",
+    ]);
+    expect(registry.resolveOpen(openMessage("shared-id", {
+      inspectMessageId: "inspect-collision",
+    }), document)?.range).toEqual(range(0, 0, 0, 5));
+    expect(registry.resolveOpen(openMessage("unique-id", {
+      inspectMessageId: "inspect-collision",
+    }), document)?.range).toEqual(range(0, 6, 0, 11));
+  });
+
+  it("retries invalid opaque IDs before publishing a valid one", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    const generated: unknown[] = [
+      "",
+      "x".repeat(RESOLUTION_LIMITS.opaqueIdLength + 1),
+      42,
+      "valid-id",
+    ];
+    const registry = excerptRegistry({
+      createMatchId: (() => generated.shift()) as () => string,
+    });
+
+    const publication = registry.publish({
+      inspectMessageId: "inspect-invalid-id",
+      resolutionGeneration: 0,
+      editor: { document },
+      resolution: resolution(document, [
+        match("selected", range(0, 0, 0, 8)),
+      ], "inspect-invalid-id"),
+    });
+
+    expect(publication.message.matches[0]?.matchId).toBe("valid-id");
+    expect(SourceMatchesMessageSchema.parse(wireMessage(publication.message)))
+      .toBeTruthy();
+  });
+
+  it.each(["collision", "invalid", "throwing"] as const)(
+    "fails closed with bounded retries for a repeated %s generator",
+    (failure) => {
+      const document = textDocument(DOCUMENT_URI, "css", ".a {} .b {}");
+      let calls = 0;
+      const registry = excerptRegistry({
+        createMatchId: () => {
+          calls += 1;
+          if (failure === "throwing") throw new Error("generator failed");
+          return failure === "invalid" ? "" : "same-id";
+        },
+      });
+      const matches = failure === "collision"
+        ? [
+            match("selected", range(0, 0, 0, 5), "first"),
+            match("selected", range(0, 6, 0, 11), "second"),
+          ]
+        : [match("selected", range(0, 0, 0, 5), "first")];
+
+      const publication = registry.publish({
+        inspectMessageId: "inspect-generator-failure",
+        resolutionGeneration: 0,
+        editor: { document },
+        resolution: resolution(
+          document,
+          matches,
+          "inspect-generator-failure",
+        ),
+      });
+
+      expect(publication.message.matches).toEqual([]);
+      expect(publication.message.omittedMatchCount).toBe(matches.length);
+      expect(publication.navigationMatches).toEqual([]);
+      expect(calls).toBeGreaterThan(0);
+      expect(calls).toBeLessThanOrEqual(32);
+      expect(registry.resolveOpen(openMessage("same-id", {
+        inspectMessageId: "inspect-generator-failure",
+      }), document)).toBeUndefined();
+    },
+  );
+
+  it("reserves worst-case escaped opaque IDs in the fallback envelope", () => {
+    const excerptText = "x".repeat(7_911);
+    const text = Array.from(
+      { length: SOURCE_PRESENTATION_LIMITS.matches },
+      () => excerptText,
+    ).join(" ");
+    const document = textDocument(DOCUMENT_URI, "plaintext", text);
+    const semanticMatches = Array.from(
+      { length: SOURCE_PRESENTATION_LIMITS.matches },
+      (_, index) => {
+        const start = index * (excerptText.length + 1);
+        return match(
+          "selected",
+          rangeFromOffsets(document, start, start + excerptText.length),
+        );
+      },
+    );
+    let nextId = 0;
+    const registry = new SourceExcerptRegistry({
+      createMatchId: () => `opaque-${++nextId}`,
+    });
+    const escapedOpaqueId = "\u0000".repeat(RESOLUTION_LIMITS.opaqueIdLength);
+
+    const publication = registry.publish({
+      inspectMessageId: escapedOpaqueId,
+      resolutionGeneration: 0,
+      editor: { document },
+      resolution: resolution(document, semanticMatches, escapedOpaqueId),
+    });
+    const worstCaseWire = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.matches" as const,
+      messageId: escapedOpaqueId,
+      sessionId: escapedOpaqueId,
+      source: { role: "ide" as const, id: escapedOpaqueId },
+      ...publication.message,
+      metadata: {},
+    };
+
+    expect(Buffer.byteLength(JSON.stringify(worstCaseWire), "utf8"))
+      .toBeLessThanOrEqual(SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES);
+    expect(publication.message.omittedMatchCount).toBeGreaterThan(0);
+    expect(SourceMatchesMessageSchema.parse(worstCaseWire)).toBeTruthy();
+  });
+
   it("validates every private authority field and never trusts a browser range", () => {
     const document = textDocument(DOCUMENT_URI, "css", ".card {}", 7);
     const completeRange = range(0, 0, 0, 8);
@@ -598,4 +787,12 @@ function position(line: number, character: number): SourcePosition {
 
 function indexedLineEnding(index: number): string {
   return index % 3 === 0 ? "\r\n" : index % 3 === 1 ? "\r" : "\n";
+}
+
+function expectDeepFrozen(value: unknown, seen = new Set<object>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  expect(Object.isFrozen(value)).toBe(true);
+  expect(Reflect.set(value, "__mutation_probe__", true)).toBe(false);
+  for (const child of Object.values(value)) expectDeepFrozen(child, seen);
 }

@@ -201,7 +201,7 @@ describe("reply route registry", () => {
     ).toMatchObject({ resolutionGeneration: 3 });
   });
 
-  it("clears match IDs on generation advance and replaces them atomically", () => {
+  it("clears match IDs on every resolution and replaces them atomically", () => {
     const routes = new ReplyRouteRegistry();
     commitRoute(routes, "session-1", "inspect-a", "browser-1");
     routes.claimResolution("session-1", "inspect-a", "ide-1", 2);
@@ -224,11 +224,21 @@ describe("reply route registry", () => {
       new Set(["c"]),
     );
 
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 2);
+    expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(new Set());
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["d"],
+    );
+
     routes.claimResolution("session-1", "inspect-a", "ide-1", 3);
     expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(new Set());
   });
 
-  it("keeps source invalidation authority provisional until resolution", () => {
+  it("keeps pre-resolution invalidations ownerless until a resolution claims", () => {
     const routes = new ReplyRouteRegistry();
     commitRoute(routes, "session-1", "inspect-a", "browser-1");
 
@@ -240,11 +250,18 @@ describe("reply route registry", () => {
         2,
       ),
     ).toMatchObject({
-      ideConnectionId: "ide-1",
-      resolutionGeneration: 2,
       resolutionClaimed: false,
       matchIds: new Set(),
     });
+    expect(routes.get("session-1", "inspect-a")?.ideConnectionId).toBeUndefined();
+    expect(routes.get("session-1", "inspect-a")?.resolutionGeneration)
+      .toBeUndefined();
+    expect(routes.claimSourceInvalidation(
+      "session-1",
+      "inspect-a",
+      "ide-2",
+      7,
+    )).toBeDefined();
     expect(routes.replaceMatchIds(
       "session-1",
       "inspect-a",
@@ -253,13 +270,17 @@ describe("reply route registry", () => {
       ["premature-match"],
     )).toBeUndefined();
     expect(
-      routes.claimResolution("session-1", "inspect-a", "ide-1", 2),
-    ).toMatchObject({ resolutionClaimed: true });
+      routes.claimResolution("session-1", "inspect-a", "ide-2", 3),
+    ).toMatchObject({
+      ideConnectionId: "ide-2",
+      resolutionGeneration: 3,
+      resolutionClaimed: true,
+    });
     expect(routes.replaceMatchIds(
       "session-1",
       "inspect-a",
-      "ide-1",
-      2,
+      "ide-2",
+      3,
       ["resolved-match"],
     )).toMatchObject({ matchIds: new Set(["resolved-match"]) });
   });

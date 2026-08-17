@@ -84,7 +84,10 @@ const CONFIDENCE_PRIORITY: Record<ResolvedSourceMatch["confidence"], number> = {
   unknown: 4,
 };
 
-const MAX_OPAQUE_ID = "x".repeat(RESOLUTION_LIMITS.opaqueIdLength);
+const MATCH_ID_GENERATION_ATTEMPTS = 16;
+const MAX_ESCAPED_OPAQUE_ID = "\u0000".repeat(
+  RESOLUTION_LIMITS.opaqueIdLength,
+);
 
 export class SourceExcerptRegistry {
   private readonly createMatchId: () => string;
@@ -120,9 +123,13 @@ export class SourceExcerptRegistry {
     }
 
     const unique = deduplicateAndOrder(valid);
-    const candidates = unique
-      .slice(0, SOURCE_PRESENTATION_LIMITS.matches)
-      .map((entry) => this.createCandidate(input, entry, text));
+    const matchIds = new Set<string>();
+    const candidates: PublicationCandidate[] = [];
+    for (const entry of unique.slice(0, SOURCE_PRESENTATION_LIMITS.matches)) {
+      const matchId = this.allocateMatchId(matchIds);
+      if (!matchId) return this.emptyPublication(false, unique.length);
+      candidates.push(this.createCandidate(input, entry, text, matchId));
+    }
     let included = candidates;
     let omittedMatchCount = unique.length - included.length;
 
@@ -143,16 +150,16 @@ export class SourceExcerptRegistry {
       this.authorities.set(candidate.authority.matchId, candidate.authority);
     }
 
-    return {
-      message: this.message(
+    return frozenPublication(
+      this.message(
         included.map((candidate) => candidate.excerpt),
         omittedMatchCount,
       ),
-      navigationMatches: included.map(
+      included.map(
         (candidate) => candidate.navigationMatch,
       ),
-      excerptReadFailed: false,
-    };
+      false,
+    );
   }
 
   public invalidate(
@@ -160,13 +167,13 @@ export class SourceExcerptRegistry {
   ): SourceMatchesInput | undefined {
     this.authorities.clear();
     if (invalidation) {
-      this.current = {
+      this.current = Object.freeze({
         inspectMessageId: invalidation.inspectMessageId,
         resolutionGeneration: invalidation.resolutionGeneration,
         document: invalidation.editor
           ? publicDocument(invalidation.editor.document)
           : unknownDocument(),
-      };
+      });
     }
     return this.current ? this.message([], 0) : undefined;
   }
@@ -194,28 +201,28 @@ export class SourceExcerptRegistry {
     ) {
       return undefined;
     }
-    return authority;
+    return frozenAuthority(authority);
   }
 
   private createCandidate(
     input: SourceExcerptPublicationInput,
     entry: ValidMatch,
     documentText: string,
+    matchId: string,
   ): PublicationCandidate {
-    const matchId = this.createMatchId();
     const completeText = documentText.slice(entry.startOffset, entry.endOffset);
     const bounded = boundedExcerpt(completeText);
-    const range = copyRange(entry.match.range);
-    const authority: SourceAuthority = {
+    const authorityRange = frozenRange(entry.match.range);
+    const authority = frozenAuthority({
       matchId,
       inspectMessageId: input.inspectMessageId,
       resolutionGeneration: input.resolutionGeneration,
       documentUri: input.editor.document.uri.toString(),
       documentVersion: input.editor.document.version,
-      range,
-    };
+      range: authorityRange,
+    });
     return {
-      excerpt: {
+      excerpt: frozenExcerpt({
         matchId,
         targetRole: entry.match.targetRole,
         label: boundedField(entry.match.label, RESOLUTION_LIMITS.labelLength),
@@ -225,18 +232,37 @@ export class SourceExcerptRegistry {
           RESOLUTION_LIMITS.labelLength,
         ),
         confidence: entry.match.confidence,
-        startLine: range.start.line + 1,
-        endLine: range.end.line + 1,
+        startLine: authorityRange.start.line + 1,
+        endLine: authorityRange.end.line + 1,
         text: bounded.text,
         truncated: bounded.truncated,
-      },
+      }),
       authority,
-      navigationMatch: {
+      navigationMatch: frozenNavigationMatch({
         matchId,
         targetRole: entry.match.targetRole,
-        range,
-      },
+        range: entry.match.range,
+      }),
     };
+  }
+
+  private allocateMatchId(used: Set<string>): string | undefined {
+    for (
+      let attempt = 0;
+      attempt < MATCH_ID_GENERATION_ATTEMPTS;
+      attempt += 1
+    ) {
+      let candidate: unknown;
+      try {
+        candidate = this.createMatchId();
+      } catch {
+        continue;
+      }
+      if (!validOpaqueId(candidate) || used.has(candidate)) continue;
+      used.add(candidate);
+      return candidate;
+    }
+    return undefined;
   }
 
   private fitsEnvelope(
@@ -255,12 +281,15 @@ export class SourceExcerptRegistry {
     }
   }
 
-  private emptyPublication(excerptReadFailed = false): SourceExcerptPublication {
-    return {
-      message: this.message([], 0),
-      navigationMatches: [],
+  private emptyPublication(
+    excerptReadFailed = false,
+    omittedMatchCount = 0,
+  ): SourceExcerptPublication {
+    return frozenPublication(
+      this.message([], omittedMatchCount),
+      [],
       excerptReadFailed,
-    };
+    );
   }
 
   private message(
@@ -269,13 +298,13 @@ export class SourceExcerptRegistry {
   ): SourceMatchesInput {
     const current = this.current;
     if (!current) throw new Error("Source excerpt state is not initialized");
-    return {
+    return frozenSourceMatches({
       inspectMessageId: current.inspectMessageId,
       resolutionGeneration: current.resolutionGeneration,
       document: current.document,
       matches,
       omittedMatchCount,
-    };
+    });
   }
 }
 
@@ -291,17 +320,17 @@ function sourceState(
   resolutionGeneration: number,
   document: TextDocumentLike,
 ): CurrentSourceState {
-  return {
+  return Object.freeze({
     inspectMessageId,
     resolutionGeneration,
     document: publicDocument(document),
-  };
+  });
 }
 
 function publicDocument(
   document: TextDocumentLike,
 ): SourceMatchesInput["document"] {
-  return {
+  return frozenDocument({
     label: boundedField(
       documentLabel(document.uri.toString()),
       RESOLUTION_LIMITS.labelLength,
@@ -312,11 +341,11 @@ function publicDocument(
       RESOLUTION_LIMITS.languageIdLength,
       "unknown",
     ),
-  };
+  });
 }
 
 function unknownDocument(): SourceMatchesInput["document"] {
-  return { label: "untitled", languageId: "unknown" };
+  return frozenDocument({ label: "untitled", languageId: "unknown" });
 }
 
 function documentLabel(documentUri: string): string {
@@ -422,13 +451,6 @@ function samePosition(left: SourcePosition, right: SourcePosition): boolean {
   return left.line === right.line && left.character === right.character;
 }
 
-function copyRange(range: SourceRange): SourceRange {
-  return {
-    start: { ...range.start },
-    end: { ...range.end },
-  };
-}
-
 function rangeKey(range: SourceRange): string {
   return JSON.stringify([
     range.start.line,
@@ -500,13 +522,93 @@ function boundedField(value: string, limit: number, fallback = "unknown"): strin
   return bounded || fallback;
 }
 
+function validOpaqueId(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= RESOLUTION_LIMITS.opaqueIdLength;
+}
+
+function frozenPublication(
+  message: SourceMatchesInput,
+  navigationMatches: readonly SourceExcerptNavigationMatch[],
+  excerptReadFailed: boolean,
+): SourceExcerptPublication {
+  return Object.freeze({
+    message,
+    navigationMatches: Object.freeze(
+      navigationMatches.map(frozenNavigationMatch),
+    ),
+    excerptReadFailed,
+  });
+}
+
+function frozenSourceMatches(message: SourceMatchesInput): SourceMatchesInput {
+  return Object.freeze({
+    inspectMessageId: message.inspectMessageId,
+    resolutionGeneration: message.resolutionGeneration,
+    document: frozenDocument(message.document),
+    matches: Object.freeze(message.matches.map(frozenExcerpt)),
+    omittedMatchCount: message.omittedMatchCount,
+  });
+}
+
+function frozenDocument(
+  document: SourceMatchesInput["document"],
+): SourceMatchesInput["document"] {
+  return Object.freeze({
+    label: document.label,
+    languageId: document.languageId,
+  });
+}
+
+function frozenExcerpt(
+  excerpt: SourceMatchesInput["matches"][number],
+): SourceMatchesInput["matches"][number] {
+  return Object.freeze({ ...excerpt });
+}
+
+function frozenNavigationMatch(
+  match: SourceExcerptNavigationMatch,
+): SourceExcerptNavigationMatch {
+  return Object.freeze({
+    matchId: match.matchId,
+    targetRole: match.targetRole,
+    range: frozenRange(match.range),
+  });
+}
+
+function frozenAuthority(authority: SourceAuthority): SourceAuthority {
+  return Object.freeze({
+    matchId: authority.matchId,
+    inspectMessageId: authority.inspectMessageId,
+    resolutionGeneration: authority.resolutionGeneration,
+    documentUri: authority.documentUri,
+    documentVersion: authority.documentVersion,
+    range: frozenRange(authority.range),
+  });
+}
+
+function frozenRange(range: SourceRange): SourceRange {
+  return Object.freeze({
+    start: frozenPosition(range.start),
+    end: frozenPosition(range.end),
+  });
+}
+
+function frozenPosition(position: SourcePosition): SourcePosition {
+  return Object.freeze({
+    line: position.line,
+    character: position.character,
+  });
+}
+
 function conservativeEnvelopeBytes(message: SourceMatchesInput): number {
   return Buffer.byteLength(JSON.stringify({
     protocolVersion: PROTOCOL_VERSION,
     type: "source.matches",
-    messageId: MAX_OPAQUE_ID,
-    sessionId: MAX_OPAQUE_ID,
-    source: { role: "ide", id: MAX_OPAQUE_ID },
+    messageId: MAX_ESCAPED_OPAQUE_ID,
+    sessionId: MAX_ESCAPED_OPAQUE_ID,
+    source: { role: "ide", id: MAX_ESCAPED_OPAQUE_ID },
     ...message,
     metadata: {},
   }), "utf8");

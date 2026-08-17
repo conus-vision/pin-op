@@ -103,13 +103,13 @@ export interface PresenterRuntimeOptions {
     "recordResolution" | "clearResolution"
   >;
   readonly sendResolution?: (resolution: ResolutionInput) => void;
-  readonly sendSourceMatches?: (matches: SourceMatchesInput) => void;
+  readonly sendSourceMatches?: (matches: SourceMatchesInput) => boolean;
   readonly measureSourceMatchesEnvelope?: (
     matches: SourceMatchesInput,
   ) => number;
   readonly sendSourceNavigationState?: (
     state: SourceNavigationStateInput,
-  ) => void;
+  ) => boolean;
 }
 
 export interface PresenterRuntime extends DisposableLike {
@@ -150,7 +150,11 @@ export function createPresenterRuntime(
     createSourceNavigationHost(host),
     {
       sendSourceNavigationState(state) {
-        runSink(host, () => options.sendSourceNavigationState?.(state));
+        if (!options.sendSourceNavigationState) return false;
+        return runBooleanSink(
+          host,
+          () => options.sendSourceNavigationState!(state),
+        );
       },
     },
   );
@@ -247,11 +251,16 @@ export function createPresenterRuntime(
         });
       });
       const sourceSent = options.sendSourceMatches !== undefined &&
-        runSink(host, () => options.sendSourceMatches?.(
-          sourcePublication.message,
-        ));
+        runBooleanSink(
+          host,
+          () => options.sendSourceMatches!(sourcePublication.message),
+        );
+      if (!sourceSent) {
+        runSink(host, () => sourceExcerpts.invalidate());
+      }
       runSink(host, () => sourceNavigator.setIncludedMatches(
         sourceSent ? sourcePublication.navigationMatches : [],
+        sourceSent,
       ));
     },
     clear,
@@ -357,6 +366,18 @@ function runSink(host: PresenterRuntimeHost, sink: () => void): boolean {
   try {
     sink();
     return true;
+  } catch (error) {
+    reportSafely(host, error);
+    return false;
+  }
+}
+
+function runBooleanSink(
+  host: PresenterRuntimeHost,
+  sink: () => boolean,
+): boolean {
+  try {
+    return sink();
   } catch (error) {
     reportSafely(host, error);
     return false;

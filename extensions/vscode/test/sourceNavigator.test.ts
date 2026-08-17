@@ -236,6 +236,69 @@ describe("SourceNavigator", () => {
     });
   });
 
+  it("does not fall back to an overlapping Parent when active Selected is omitted", () => {
+    const harness = navigatorHarness();
+    const selected = range(1, 2, 1, 5);
+    const parent = range(0, 0, 2, 0);
+    harness.navigator.update({
+      ...resolution([
+        match("selected", selected),
+        match("parent", parent),
+      ]),
+      includedMatches: [
+        { matchId: "parent-id", targetRole: "parent", range: parent },
+      ],
+    });
+
+    harness.host.changePrimaryCursor(position(1, 3));
+
+    expect(harness.states.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+  });
+
+  it.each([
+    ["next", [0, 1], ["short-id", "long-id"]],
+    ["previous", [1, 0], ["long-id", "short-id"]],
+  ] as const)(
+    "publishes exact preferred IDs while navigating %s through overlaps",
+    (direction, expectedIndexes, expectedIds) => {
+      const harness = navigatorHarness({ emitCursorEventOnSet: true });
+      const short = range(1, 0, 1, 4);
+      const long = range(1, 0, 1, 10);
+      const parent = range(0, 0, 2, 0);
+      harness.navigator.update({
+        ...resolution([
+          match("selected", long, "long"),
+          match("parent", parent, "parent"),
+          match("selected", short, "short"),
+        ]),
+        includedMatches: [
+          { matchId: "short-id", targetRole: "selected", range: short },
+          { matchId: "long-id", targetRole: "selected", range: long },
+          { matchId: "parent-id", targetRole: "parent", range: parent },
+        ],
+      });
+
+      for (const [index, expectedIndex] of expectedIndexes.entries()) {
+        harness.navigator.navigate(intent(direction));
+        expect(harness.states.at(-1)).toMatchObject({
+          activeMatchIndex: expectedIndex,
+          activeMatchId: expectedIds[index],
+        });
+      }
+
+      harness.host.changePrimaryCursor(position(0, 1));
+      expect(harness.states.at(-1)).toMatchObject({
+        activeMatchId: "parent-id",
+      });
+      expect(harness.states.at(-1)).not.toHaveProperty("activeMatchIndex");
+    },
+  );
+
   it("omits activeMatchId for omitted matches without changing selected identity", () => {
     const harness = navigatorHarness();
     const first = range(1, 2, 1, 5);
@@ -416,7 +479,10 @@ function navigatorHarness(
   );
   const states: SourceNavigationStateInput[] = [];
   const navigator = new SourceNavigator(host, {
-    sendSourceNavigationState: (state) => states.push(state),
+    sendSourceNavigationState(state) {
+      states.push(state);
+      return true;
+    },
   });
   return { host, navigator, states };
 }

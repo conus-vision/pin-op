@@ -144,6 +144,19 @@ export class ReplyRouteRegistry {
     ideConnectionId: string,
     resolutionGeneration: number,
   ): ReplyRoute | undefined {
+    const route = this.routes.get(sessionId)?.get(inspectMessageId);
+    if (!route) {
+      return undefined;
+    }
+    if (route.ideConnectionId === undefined) {
+      route.matchIds = new Set();
+      this.touchClientRoute(
+        route.originConnectionId,
+        sessionId,
+        inspectMessageId,
+      );
+      return this.snapshot(sessionId, inspectMessageId, route);
+    }
     return this.claimAuthority(
       sessionId,
       inspectMessageId,
@@ -191,9 +204,7 @@ export class ReplyRouteRegistry {
     if (generationChanged) {
       route.resolutionGeneration = resolutionGeneration;
     }
-    if (generationChanged || !resolutionClaimed) {
-      route.matchIds = new Set();
-    }
+    route.matchIds = new Set();
     route.resolutionClaimed = resolutionClaimed;
 
     this.touchClientRoute(

@@ -62,7 +62,7 @@ export type SourceMatchesInput = Pick<
 >;
 
 export interface SourceMatchesSender {
-  sendSourceMatches(matches: SourceMatchesInput): void;
+  sendSourceMatches(matches: SourceMatchesInput): boolean;
   sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number;
 }
 
@@ -77,8 +77,8 @@ export class SourceMatchesClientRouter implements SourceMatchesSender {
     if (this.client === client) this.client = undefined;
   }
 
-  public sendSourceMatches(matches: SourceMatchesInput): void {
-    this.client?.sendSourceMatches(matches);
+  public sendSourceMatches(matches: SourceMatchesInput): boolean {
+    return this.client?.sendSourceMatches(matches) ?? false;
   }
 
   public sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number {
@@ -117,7 +117,7 @@ export type SourceNavigationStateInput = Pick<
 >;
 
 export interface SourceNavigationStateSender {
-  sendSourceNavigationState(state: SourceNavigationStateInput): void;
+  sendSourceNavigationState(state: SourceNavigationStateInput): boolean;
 }
 
 export class SourceNavigationClientRouter
@@ -133,8 +133,8 @@ export class SourceNavigationClientRouter
     if (this.client === client) this.client = undefined;
   }
 
-  public sendSourceNavigationState(state: SourceNavigationStateInput): void {
-    this.client?.sendSourceNavigationState(state);
+  public sendSourceNavigationState(state: SourceNavigationStateInput): boolean {
+    return this.client?.sendSourceNavigationState(state) ?? false;
   }
 }
 
@@ -266,7 +266,7 @@ export class BridgeClient {
     return () => this.protocolErrorListeners.delete(listener);
   }
 
-  sendResolution(resolution: ResolutionInput): void {
+  sendResolution(resolution: ResolutionInput): boolean {
     const message = ResolutionMessageSchema.parse({
       ...resolution,
       protocolVersion: PROTOCOL_VERSION,
@@ -276,18 +276,10 @@ export class BridgeClient {
       source: { role: "ide", id: this.sourceId },
       metadata: {},
     });
-    if (!this.socket || this.state !== "connected") return;
-    this.socket.send(JSON.stringify(message));
+    return this.sendAuthenticatedMessage(message);
   }
 
-  sendPageRefresh(refresh: PageRefreshInput): void {
-    const socket = this.socket;
-    if (!socket || this.state !== "connected") return;
-    if (socket.readyState !== WebSocket.OPEN) {
-      this.reconnectAfterSendFailure(socket);
-      return;
-    }
-
+  sendPageRefresh(refresh: PageRefreshInput): boolean {
     const refreshGeneration = this.refreshGeneration + 1;
     const message = PageRefreshMessageSchema.parse({
       protocolVersion: PROTOCOL_VERSION,
@@ -299,21 +291,16 @@ export class BridgeClient {
       mode: refresh.mode,
       metadata: {},
     });
-    try {
-      socket.send(JSON.stringify(message));
-    } catch {
-      this.reconnectAfterSendFailure(socket);
-      return;
-    }
+    if (!this.sendAuthenticatedMessage(message)) return false;
     this.refreshGeneration = refreshGeneration;
+    return true;
   }
 
-  sendSourceMatches(matches: SourceMatchesInput): void {
+  sendSourceMatches(matches: SourceMatchesInput): boolean {
     const message = SourceMatchesMessageSchema.parse(
       this.createSourceMatchesMessage(matches, randomUUID()),
     );
-    if (!this.socket || this.state !== "connected") return;
-    this.socket.send(JSON.stringify(message));
+    return this.sendAuthenticatedMessage(message);
   }
 
   sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number {
@@ -323,7 +310,7 @@ export class BridgeClient {
     )), "utf8");
   }
 
-  sendSourceNavigationState(state: SourceNavigationStateInput): void {
+  sendSourceNavigationState(state: SourceNavigationStateInput): boolean {
     const message = SourceNavigationStateMessageSchema.parse({
       ...state,
       protocolVersion: PROTOCOL_VERSION,
@@ -333,8 +320,7 @@ export class BridgeClient {
       source: { role: "ide", id: this.sourceId },
       metadata: {},
     });
-    if (!this.socket || this.state !== "connected") return;
-    this.socket.send(JSON.stringify(message));
+    return this.sendAuthenticatedMessage(message);
   }
 
   private createSourceMatchesMessage(
@@ -474,16 +460,30 @@ export class BridgeClient {
       this.emitProtocolError(parsed.data);
     }
     if (parsed.data.type === "ping" && this.state === "connected") {
-      socket.send(
-        JSON.stringify({
-          protocolVersion: PROTOCOL_VERSION,
-          type: "pong",
-          messageId: randomUUID(),
-          pingMessageId: parsed.data.messageId,
-          sentAt: new Date().toISOString(),
-          metadata: {},
-        }),
-      );
+      this.sendAuthenticatedMessage({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "pong",
+        messageId: randomUUID(),
+        pingMessageId: parsed.data.messageId,
+        sentAt: new Date().toISOString(),
+        metadata: {},
+      });
+    }
+  }
+
+  private sendAuthenticatedMessage(message: unknown): boolean {
+    const socket = this.socket;
+    if (!socket || this.state !== "connected") return false;
+    if (socket.readyState !== WebSocket.OPEN) {
+      this.reconnectAfterSendFailure(socket);
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      this.reconnectAfterSendFailure(socket);
+      return false;
     }
   }
 

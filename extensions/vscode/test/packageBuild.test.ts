@@ -3,6 +3,7 @@ import { builtinModules } from "node:module";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const extensionRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -104,10 +105,35 @@ describe("VS Code package build", () => {
     expect(source).toContain("sourceMatchesClients.unbind(nextClient)");
     expect(source).toContain('if (state !== "connected")');
 
-    const clear = source.indexOf("runtime.clear();");
-    const unbind = source.indexOf("sourceMatchesClients.unbind(nextClient)");
-    expect(clear).toBeGreaterThanOrEqual(0);
-    expect(unbind).toBeGreaterThan(clear);
+    expect(createClientDisposeCalls(source)).toEqual([
+      "unsubscribeSourceNavigate",
+      "unsubscribeSourceOpen",
+      "unsubscribePresentationSettings",
+      "runtime.clear",
+      "resolutionClients.unbind",
+      "sourceMatchesClients.unbind",
+      "sourceNavigationClients.unbind",
+      "pageRefreshClients.unbind",
+      "nextClient.dispose",
+    ]);
+  });
+
+  it("scopes disposal checks to createClient.dispose", () => {
+    const source = `
+      runtime.clear();
+      sourceMatchesClients.unbind(nextClient);
+      const options = {
+        createClient() {
+          return {
+            dispose() {
+              nextClient.dispose();
+            },
+          };
+        },
+      };
+    `;
+
+    expect(createClientDisposeCalls(source)).toEqual(["nextClient.dispose"]);
   });
 
   it("bundles the save observer implementation", () => {
@@ -257,4 +283,56 @@ function packageFromMetafilePath(
       packageSegments,
     ),
   };
+}
+
+function createClientDisposeCalls(source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    "extension.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let calls: string[] | undefined;
+
+  const visit = (node: ts.Node): void => {
+    if (calls) return;
+    if (
+      ts.isMethodDeclaration(node) &&
+      propertyName(node.name) === "createClient" &&
+      node.body
+    ) {
+      const returned = node.body.statements.find(ts.isReturnStatement);
+      const object = returned?.expression;
+      if (object && ts.isObjectLiteralExpression(object)) {
+        const dispose = object.properties.find((property) =>
+          ts.isMethodDeclaration(property) &&
+          propertyName(property.name) === "dispose"
+        );
+        if (dispose && ts.isMethodDeclaration(dispose) && dispose.body) {
+          calls = dispose.body.statements.flatMap((statement) => {
+            if (
+              !ts.isExpressionStatement(statement) ||
+              !ts.isCallExpression(statement.expression)
+            ) {
+              return [];
+            }
+            return [statement.expression.expression.getText(sourceFile)];
+          });
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return calls ?? [];
+}
+
+function propertyName(name: ts.PropertyName | undefined): string | undefined {
+  if (!name) return undefined;
+  return ts.isIdentifier(name) || ts.isStringLiteral(name)
+    ? name.text
+    : undefined;
 }
