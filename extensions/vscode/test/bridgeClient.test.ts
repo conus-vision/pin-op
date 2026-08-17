@@ -23,25 +23,34 @@ class FakeSocket {
   onerror: (() => void) | null | undefined;
   readonly sent: string[] = [];
   closed = false;
+  readyState = 0;
   sendError: Error | undefined;
 
   send(payload: string): void {
     if (this.sendError) throw this.sendError;
+    if (this.readyState !== 1) throw new Error("socket is not open");
     this.sent.push(payload);
   }
 
   close(): void {
     this.closed = true;
+    this.readyState = 3;
     this.onclose?.();
   }
 
   open(): void {
+    this.readyState = 1;
     this.onopen?.();
   }
 
   serverClose(): void {
     this.closed = true;
+    this.readyState = 3;
     this.onclose?.();
+  }
+
+  beginClose(): void {
+    this.readyState = 2;
   }
 
   message(payload: Record<string, unknown>): void {
@@ -221,21 +230,56 @@ describe("BridgeClient", () => {
     ]);
   });
 
-  it("does not consume generation when the authenticated send throws", () => {
+  it("drops a refresh and reconnects when the authenticated socket is no longer open", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();
     authenticate(harness.sockets[0]);
-    harness.sockets[0].sendError = new Error("socket send failed");
+    harness.client.sendPageRefresh({ mode: "styles" });
+    harness.sockets[0].beginClose();
+
+    expect(() =>
+      harness.client.sendPageRefresh({ mode: "reload" })
+    ).not.toThrow();
+    expect(harness.states.at(-1)).toBe("reconnecting");
+    expect(harness.sockets[0].closed).toBe(true);
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+      expect.objectContaining({ mode: "styles", refreshGeneration: 1 }),
+    ]);
+
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    authenticate(harness.sockets[1]);
+    harness.client.sendPageRefresh({ mode: "reload" });
+
+    expect(pageRefreshMessages(harness.sockets[1])).toEqual([
+      expect.objectContaining({ mode: "reload", refreshGeneration: 2 }),
+    ]);
+  });
+
+  it("drops a throwing authenticated send and reconnects without consuming generation", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].sendError = new Error(
+      "socket send failed for file:///private/customer/app.scss",
+    );
 
     expect(() =>
       harness.client.sendPageRefresh({ mode: "styles" })
-    ).toThrow("socket send failed");
+    ).not.toThrow();
+    expect(harness.states.at(-1)).toBe("reconnecting");
+    expect(harness.sockets[0].closed).toBe(true);
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([]);
+    expect(harness.errors).toEqual([]);
 
-    harness.sockets[0].sendError = undefined;
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    authenticate(harness.sockets[1]);
     harness.client.sendPageRefresh({ mode: "reload" });
 
-    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+    expect(pageRefreshMessages(harness.sockets[1])).toEqual([
       expect.objectContaining({ mode: "reload", refreshGeneration: 1 }),
     ]);
   });

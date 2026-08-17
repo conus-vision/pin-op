@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { RefreshClassifierRegistry } from "../src/refresh/refreshClassifierRegistry.js";
 import {
@@ -133,6 +134,31 @@ describe("SaveObserver", () => {
     });
   });
 
+  it("uses a monotonic clock by default", () => {
+    const monotonicNow = vi.spyOn(performance, "now").mockReturnValue(1_234);
+    const timer = 1 as ReturnType<typeof setTimeout>;
+    const scheduleTimer = vi.fn(() => timer);
+    const observer = new SaveObserver({
+      classifierRegistry: new RefreshClassifierRegistry(),
+      sink: { publish: vi.fn() },
+      setTimeout: scheduleTimer,
+      clearTimeout: vi.fn(),
+    });
+
+    try {
+      changeAndSave(
+        observer,
+        document("file:///workspace/app.scss", "scss"),
+      );
+
+      expect(monotonicNow).toHaveBeenCalled();
+      expect(scheduleTimer).toHaveBeenCalledWith(expect.any(Function), 750);
+    } finally {
+      observer.dispose();
+      monotonicNow.mockRestore();
+    }
+  });
+
   it("coalesces direct saves without downgrading reload to styles", () => {
     const harness = createHarness();
     const script = document("file:///workspace/app.ts", "typescript");
@@ -221,6 +247,40 @@ describe("SaveObserver", () => {
     expect(harness.publish).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["direct CSS", document("file:///workspace/generated.css", "css")],
+    ["custom styles", document("file:///workspace/App.vue", "vue")],
+  ])(
+    "clamps a pending %s save to the initial preprocessor deadline",
+    (kind, styleDocument) => {
+      const harness = createHarness();
+      if (kind === "custom styles") {
+        harness.classifierRegistry.register({
+          id: "fixture.vue-styles-deadline",
+          classify: ({ uri }) => uri.endsWith(".vue")
+            ? "styles"
+            : undefined,
+        });
+      }
+      const source = document("file:///workspace/app.scss", "scss");
+
+      changeAndSave(harness.observer, source);
+      harness.advance(700);
+      changeAndSave(harness.observer, source);
+      harness.advance(700);
+      changeAndSave(harness.observer, source);
+      harness.advance(550);
+      changeAndSave(harness.observer, styleDocument);
+      harness.advance(49);
+      expect(harness.publish).not.toHaveBeenCalled();
+      harness.advance(1);
+
+      expect(harness.now()).toBe(2_000);
+      expect(harness.publish).toHaveBeenCalledOnce();
+      expect(harness.publish).toHaveBeenCalledWith("styles");
+    },
+  );
+
   it("ignores generated CSS events outside a preprocessor build window", () => {
     const harness = createHarness();
 
@@ -250,6 +310,56 @@ describe("SaveObserver", () => {
     expect(harness.publish).toHaveBeenCalledWith("reload");
     harness.advance(2_000);
     expect(harness.publish).toHaveBeenCalledOnce();
+  });
+
+  it("covers CSS before reload dispatch and closes the retained window silently", () => {
+    const harness = createHarness();
+    const source = document("file:///workspace/app.scss", "scss");
+    const script = document("file:///workspace/app.ts", "typescript");
+
+    changeAndSave(harness.observer, source);
+    harness.advance(500);
+    changeAndSave(harness.observer, script);
+    harness.advance(100);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(50);
+
+    expect(harness.now()).toBe(650);
+    expect(harness.publish).toHaveBeenCalledOnce();
+    expect(harness.publish).toHaveBeenCalledWith("reload");
+    expect(harness.pendingTimerCount()).toBe(1);
+
+    harness.advance(1_349);
+    expect(harness.publish).toHaveBeenCalledOnce();
+    expect(harness.pendingTimerCount()).toBe(1);
+    harness.advance(1);
+
+    expect(harness.now()).toBe(2_000);
+    expect(harness.publish).toHaveBeenCalledOnce();
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("emits late CSS after reload at 150 ms clamped to the original deadline", () => {
+    const harness = createHarness();
+    const source = document("file:///workspace/app.scss", "scss");
+    const script = document("file:///workspace/app.ts", "typescript");
+
+    changeAndSave(harness.observer, source);
+    harness.advance(500);
+    changeAndSave(harness.observer, script);
+    harness.advance(150);
+    expect(harness.publish).toHaveBeenLastCalledWith("reload");
+    expect(harness.pendingTimerCount()).toBe(1);
+
+    harness.advance(1_300);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(49);
+    expect(harness.publish).toHaveBeenCalledTimes(1);
+    harness.advance(1);
+
+    expect(harness.now()).toBe(2_000);
+    expect(harness.publish.mock.calls).toEqual([["reload"], ["styles"]]);
+    expect(harness.pendingTimerCount()).toBe(0);
   });
 
   it("disposes every timer and state idempotently", () => {

@@ -110,6 +110,7 @@ export interface SocketLike {
   onmessage?: ((event: any) => void) | null;
   onclose?: ((event: any) => void) | null;
   onerror?: ((event: any) => void) | null;
+  readonly readyState: number;
   send(payload: string): void;
   close(): void;
 }
@@ -222,6 +223,10 @@ export class BridgeClient {
   sendPageRefresh(refresh: PageRefreshInput): void {
     const socket = this.socket;
     if (!socket || this.state !== "connected") return;
+    if (socket.readyState !== WebSocket.OPEN) {
+      this.reconnectAfterSendFailure(socket);
+      return;
+    }
 
     const refreshGeneration = this.refreshGeneration + 1;
     const message = PageRefreshMessageSchema.parse({
@@ -234,7 +239,12 @@ export class BridgeClient {
       mode: refresh.mode,
       metadata: {},
     });
-    socket.send(JSON.stringify(message));
+    try {
+      socket.send(JSON.stringify(message));
+    } catch {
+      this.reconnectAfterSendFailure(socket);
+      return;
+    }
     this.refreshGeneration = refreshGeneration;
   }
 
@@ -382,6 +392,16 @@ export class BridgeClient {
         this.openSocket();
       }
     }, delay);
+  }
+
+  private reconnectAfterSendFailure(socket: SocketLike): void {
+    if (this.socket !== socket) return;
+    this.handleClose(socket);
+    try {
+      socket.close();
+    } catch {
+      // The failed socket is already detached and reconnect is scheduled.
+    }
   }
 
   private emitProtocolError(message: ErrorMessage): void {

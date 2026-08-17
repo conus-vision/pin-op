@@ -21,6 +21,7 @@ const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
 const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
 const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
+const extensionSourceUrl = new URL("../src/extension.ts", import.meta.url);
 const installedSmokeUrl = new URL(
   "../smoke-installed-vsix.mjs",
   import.meta.url,
@@ -82,6 +83,38 @@ describe("VS Code package build", () => {
     expect(bundle).toContain("page.refresh");
     expect(bundle).toContain("source.navigate");
     expect(bundle).toContain("source.navigationState");
+  });
+
+  it("bundles the save observer implementation", () => {
+    const metafile = JSON.parse(readFileSync(metafileUrl, "utf8")) as {
+      outputs: Record<
+        string,
+        { inputs: Record<string, { bytesInOutput?: number }> }
+      >;
+    };
+
+    expect(
+      metafile.outputs["dist/extension.cjs"]?.inputs[
+        "src/refresh/saveObserver.ts"
+      ]?.bytesInOutput,
+    ).toBeGreaterThan(0);
+  });
+
+  it("binds save events after activation command setup and immediately owns them", () => {
+    const source = readFileSync(extensionSourceUrl, "utf8");
+    const runtimeCommands = source.indexOf("const runtimeCommands =");
+    const diagnosticsCommand = source.indexOf("const diagnosticsCommand =");
+    const observerBinding = source.indexOf(
+      "const saveObserverSubscriptions = bindSaveObserverEvents(",
+    );
+    const subscriptionOwnership = source.indexOf(
+      "context.subscriptions.push(",
+    );
+
+    expect(runtimeCommands).toBeGreaterThanOrEqual(0);
+    expect(diagnosticsCommand).toBeGreaterThan(runtimeCommands);
+    expect(observerBinding).toBeGreaterThan(diagnosticsCommand);
+    expect(subscriptionOwnership).toBeGreaterThan(observerBinding);
   });
 
   it("pins protocol 6 and current capabilities in the installed smoke", () => {

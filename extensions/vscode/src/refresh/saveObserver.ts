@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { RefreshMode } from "@pin-op/plugin-api";
 import type { RefreshClassifierRegistry } from "./refreshClassifierRegistry.js";
 
@@ -69,12 +70,13 @@ export class SaveObserver {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pendingMode: RefreshMode | undefined;
   private preprocessorDeadline: number | undefined;
+  private retainPreprocessorWindow = false;
   private disposed = false;
 
   public constructor(private readonly options: SaveObserverOptions) {
     this.scheduleTimer = options.setTimeout ?? setTimeout;
     this.cancelTimer = options.clearTimeout ?? clearTimeout;
-    this.clock = options.now ?? Date.now;
+    this.clock = options.now ?? (() => performance.now());
   }
 
   public onDidChangeTextDocument(
@@ -98,14 +100,21 @@ export class SaveObserver {
     if (!mode) return;
 
     this.pendingMode = strongerMode(this.pendingMode, mode);
+    const now = this.clock();
     let settleMs = DIRECT_SETTLE_MS;
-    if (this.pendingMode === "reload") {
-      this.preprocessorDeadline = undefined;
-    } else if (isPreprocessorUri(uri)) {
-      const now = this.clock();
+    if (isPreprocessorUri(uri)) {
       this.preprocessorDeadline ??= now + PREPROCESSOR_MAX_MS;
+    }
+
+    if (this.pendingMode === "reload") {
+      this.retainPreprocessorWindow =
+        this.preprocessorDeadline !== undefined;
+    } else if (isPreprocessorUri(uri)) {
+      settleMs = PREPROCESSOR_QUIET_MS;
+    }
+    if (this.pendingMode === "styles" && this.preprocessorDeadline !== undefined) {
       settleMs = Math.min(
-        PREPROCESSOR_QUIET_MS,
+        settleMs,
         Math.max(0, this.preprocessorDeadline - now),
       );
     }
@@ -119,10 +128,16 @@ export class SaveObserver {
 
   public onDidGeneratedCssFileEvent(): void {
     if (this.disposed) return;
-    if (this.preprocessorDeadline === undefined || !this.pendingMode) return;
+    if (this.preprocessorDeadline === undefined) return;
+    if (this.pendingMode === "reload") return;
+    if (!this.pendingMode && !this.retainPreprocessorWindow) return;
+
+    const remaining = this.preprocessorDeadline - this.clock();
+    if (remaining <= 0) return;
+    this.pendingMode = "styles";
     this.schedule(Math.min(
       DIRECT_SETTLE_MS,
-      Math.max(0, this.preprocessorDeadline - this.clock()),
+      remaining,
     ));
   }
 
@@ -133,6 +148,7 @@ export class SaveObserver {
     this.timer = undefined;
     this.pendingMode = undefined;
     this.preprocessorDeadline = undefined;
+    this.retainPreprocessorWindow = false;
     this.dirtyUris.clear();
   }
 
@@ -142,7 +158,18 @@ export class SaveObserver {
       this.timer = undefined;
       const pendingMode = this.pendingMode;
       this.pendingMode = undefined;
-      this.preprocessorDeadline = undefined;
+      const now = this.clock();
+      if (
+        pendingMode === "reload" &&
+        this.retainPreprocessorWindow &&
+        this.preprocessorDeadline !== undefined &&
+        now < this.preprocessorDeadline
+      ) {
+        this.schedule(this.preprocessorDeadline - now);
+      } else {
+        this.preprocessorDeadline = undefined;
+        this.retainPreprocessorWindow = false;
+      }
       if (pendingMode) this.options.sink.publish(pendingMode);
     }, delay);
   }

@@ -47,16 +47,6 @@ export async function activate(
   const sourceNavigationClients = new SourceNavigationClientRouter();
   const pageRefreshClients = new PageRefreshClientRouter();
   const refreshClassifierRegistry = new RefreshClassifierRegistry();
-  const saveObserver = new SaveObserver({
-    classifierRegistry: refreshClassifierRegistry,
-    sink: {
-      publish: (mode) => pageRefreshClients.sendPageRefresh({ mode }),
-    },
-  });
-  const saveObserverSubscriptions = bindSaveObserverEvents(
-    vscode.workspace,
-    saveObserver,
-  );
 
   const runtime = createPresenterRuntime({
     host: createPresenterHost(),
@@ -141,6 +131,29 @@ export async function activate(
     },
     controller,
   );
+  const diagnosticsCommand = vscode.commands.registerCommand(
+    "pin-op.openDiagnostics",
+    () => {
+      if (output && manager && diagnostics) {
+        writeBridgeDiagnostics(
+          output,
+          diagnostics.snapshot(manager.snapshot(), clientState),
+        );
+        output.show(true);
+      }
+    },
+  );
+
+  const saveObserver = new SaveObserver({
+    classifierRegistry: refreshClassifierRegistry,
+    sink: {
+      publish: (mode) => pageRefreshClients.sendPageRefresh({ mode }),
+    },
+  });
+  const saveObserverSubscriptions = bindSaveObserverEvents(
+    vscode.workspace,
+    saveObserver,
+  );
 
   context.subscriptions.push(
     ...saveObserverSubscriptions,
@@ -152,15 +165,7 @@ export async function activate(
         void controller.dispose().catch(reportRuntimeError);
       },
     },
-    vscode.commands.registerCommand("pin-op.openDiagnostics", () => {
-      if (output && manager && diagnostics) {
-        writeBridgeDiagnostics(
-          output,
-          diagnostics.snapshot(manager.snapshot(), clientState),
-        );
-        output.show(true);
-      }
-    }),
+    diagnosticsCommand,
   );
 
   void controller.start().catch(reportRuntimeError);
