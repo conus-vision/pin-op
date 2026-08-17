@@ -241,26 +241,26 @@ async function requestLink(
   sourceId: string,
   timeoutMs: number,
 ): Promise<BridgeCredentials> {
-  const accepted = waitForMessage(
-    socket,
-    (message): message is LinkAcceptedMessage => message.type === "linkAccepted",
-    timeoutMs,
-  );
-
-  await sendProtocolMessage(socket, {
-    protocolVersion: PROTOCOL_VERSION,
-    type: "linkRequest",
-    messageId: randomUUID(),
-    pin,
-    source: {
-      role: "simulator",
-      id: sourceId,
+  const [response] = await Promise.all([
+    waitForMessage(
+      socket,
+      (message): message is LinkAcceptedMessage =>
+        message.type === "linkAccepted",
+      timeoutMs,
+    ),
+    sendProtocolMessage(socket, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "linkRequest",
+      messageId: randomUUID(),
+      pin,
+      source: {
+        role: "simulator",
+        id: sourceId,
+        metadata: {},
+      },
       metadata: {},
-    },
-    metadata: {},
-  });
-
-  const response = await accepted;
+    }),
+  ]);
   return {
     sessionId: response.sessionId,
     bridgeInstanceId: response.bridgeInstanceId,
@@ -274,29 +274,29 @@ async function authenticate(
   sourceId: string,
   timeoutMs: number,
 ): Promise<void> {
-  const acknowledged = waitForMessage(
-    socket,
-    (message): message is AuthenticatedMessage => message.type === "authenticated",
-    timeoutMs,
-  );
-
-  await sendProtocolMessage(socket, {
-    protocolVersion: PROTOCOL_VERSION,
-    type: "hello",
-    messageId: randomUUID(),
-    sessionId: credentials.sessionId,
-    authToken: credentials.authToken,
-    bridgeInstanceId: credentials.bridgeInstanceId,
-    source: {
-      role: "simulator",
-      id: sourceId,
+  const [response] = await Promise.all([
+    waitForMessage(
+      socket,
+      (message): message is AuthenticatedMessage =>
+        message.type === "authenticated",
+      timeoutMs,
+    ),
+    sendProtocolMessage(socket, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "hello",
+      messageId: randomUUID(),
+      sessionId: credentials.sessionId,
+      authToken: credentials.authToken,
+      bridgeInstanceId: credentials.bridgeInstanceId,
+      source: {
+        role: "simulator",
+        id: sourceId,
+        metadata: {},
+      },
+      capabilities: ["inspect"],
       metadata: {},
-    },
-    capabilities: ["inspect"],
-    metadata: {},
-  });
-
-  const response = await acknowledged;
+    }),
+  ]);
   if (
     response.sessionId !== credentials.sessionId ||
     response.bridgeInstanceId !== credentials.bridgeInstanceId

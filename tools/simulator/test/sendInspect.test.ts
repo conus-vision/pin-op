@@ -198,6 +198,42 @@ describe("sendInspect CLI parsing", () => {
 });
 
 describe("sendInspect", () => {
+  it("owns a link mismatch while send completion is delayed", async () => {
+    const restoreSend = delayWebSocketSendCompletion(50);
+    let bridge: BridgeHarness | undefined;
+    try {
+      bridge = await createBridgeHarness();
+      const sending = sendInspect({
+        linkCode: bridge.linkCode("07"),
+        fixture: "inspect-card",
+      });
+      const outcome = sending.then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+
+      expect(await bridge.nextMessage()).toMatchObject({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "linkRequest",
+      });
+      await bridge.closeClient(
+        PROTOCOL_MISMATCH_CLOSE_CODE,
+        protocolMismatchReason(5),
+      );
+
+      const result = await outcome;
+      expect(result.ok).toBe(false);
+      expect(result.ok ? undefined : result.error).toBeInstanceOf(Error);
+      expect((result.ok ? undefined : result.error as Error).message).toBe(
+        "Protocol mismatch: expected version 6, received version 5",
+      );
+      expect(bridge.connectionCount()).toBe(1);
+    } finally {
+      restoreSend();
+      await bridge?.close();
+    }
+  });
+
   it("waits for link acceptance and matching authentication before inspect", async () => {
     const bridge = await createBridgeHarness();
     try {
@@ -331,9 +367,11 @@ describe("sendInspect", () => {
     }
   });
 
-  it("reports protocol mismatch versions and does not retry a legacy handshake", async () => {
-    const bridge = await createBridgeHarness();
+  it("owns a protocol mismatch while send completion is delayed", async () => {
+    const restoreSend = delayWebSocketSendCompletion(50);
+    let bridge: BridgeHarness | undefined;
     try {
+      bridge = await createBridgeHarness();
       const sending = sendInspect({
         url: bridge.url,
         sessionId: SESSION_ID,
@@ -341,6 +379,10 @@ describe("sendInspect", () => {
         authToken: AUTH_TOKEN,
         fixture: "inspect-card",
       });
+      const outcome = sending.then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
 
       expect(await bridge.nextMessage()).toMatchObject({
         protocolVersion: PROTOCOL_VERSION,
@@ -351,14 +393,18 @@ describe("sendInspect", () => {
         protocolMismatchReason(5),
       );
 
-      await expect(sending).rejects.toThrow(
+      const result = await outcome;
+      expect(result.ok).toBe(false);
+      expect(result.ok ? undefined : result.error).toBeInstanceOf(Error);
+      expect((result.ok ? undefined : result.error as Error).message).toBe(
         "Protocol mismatch: expected version 6, received version 5",
       );
       await delay(25);
       expect(bridge.connectionCount()).toBe(1);
       expect(bridge.pendingMessages()).toEqual([]);
     } finally {
-      await bridge.close();
+      restoreSend();
+      await bridge?.close();
     }
   });
 });
@@ -551,4 +597,21 @@ async function closeServer(server: WebSocketServer): Promise<void> {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function delayWebSocketSendCompletion(milliseconds: number): () => void {
+  const send = WebSocket.prototype.send;
+  WebSocket.prototype.send = function (...args: unknown[]): void {
+    const callbackIndex = args.length - 1;
+    const callback = args[callbackIndex];
+    if (typeof callback === "function") {
+      args[callbackIndex] = (error?: Error): void => {
+        setTimeout(() => callback(error), milliseconds);
+      };
+    }
+    Reflect.apply(send, this, args);
+  } as typeof WebSocket.prototype.send;
+  return () => {
+    WebSocket.prototype.send = send;
+  };
 }
