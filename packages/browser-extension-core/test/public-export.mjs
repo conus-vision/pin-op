@@ -32,7 +32,9 @@ import {
   PageInspectionSession,
   PageOverlay,
   PanelController,
+  PanelSettingsController,
   ResolutionPresenter,
+  SourcePaneController,
   formatResolutionFooter,
   presentResolution,
   parseLinkCode,
@@ -91,7 +93,9 @@ assert.equal(PAGE_INSPECTION_SELECTION_INTERVAL_MS, 100);
 assert.equal(typeof PageInspectionSession, "function");
 assert.equal(typeof PageOverlay, "function");
 assert.equal(typeof PanelController, "function");
+assert.equal(typeof PanelSettingsController, "function");
 assert.equal(typeof ResolutionPresenter, "function");
+assert.equal(typeof SourcePaneController, "function");
 assert.equal(typeof formatResolutionFooter, "function");
 assert.equal(typeof presentResolution, "function");
 assert.equal(typeof parseLinkCode, "function");

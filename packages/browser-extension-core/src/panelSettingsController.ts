@@ -1,0 +1,158 @@
+import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
+import {
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
+  type PanelTabSettingsCommand,
+} from "./refreshRuntimeProtocol.js";
+
+export interface PanelPresentationSettingsCommand {
+  readonly type: "pin-op.presentation.settings";
+  readonly inspectMessageId: string;
+  readonly ideHighlightEnabled: boolean;
+}
+
+export type PanelSettingsCommand =
+  | PanelTabSettingsCommand
+  | PanelPresentationSettingsCommand;
+
+export type PanelSettingsDispatch = (message: PanelSettingsCommand) => void;
+
+export interface PanelSettingsViewModel {
+  readonly autoRefreshEnabled: boolean;
+  readonly ideHighlightEnabled: boolean;
+  readonly compatibility: "pending" | "compatible" | "incompatible";
+  readonly snapshotReady: boolean;
+  readonly controlsEnabled: boolean;
+}
+
+const initialModel: PanelSettingsViewModel = Object.freeze({
+  autoRefreshEnabled: true,
+  ideHighlightEnabled: true,
+  compatibility: "pending",
+  snapshotReady: false,
+  controlsEnabled: false,
+});
+
+export class PanelSettingsController {
+  private readonly listeners = new Set<() => void>();
+  private current = initialModel;
+  private inspectMessageId: string | undefined;
+
+  public constructor(private readonly dispatch: PanelSettingsDispatch) {}
+
+  public acceptCompatibility(message: unknown): boolean {
+    const parsed = parseProtocolCompatibilityMessage(message);
+    if (!parsed) {
+      return false;
+    }
+    this.inspectMessageId = undefined;
+    this.update(parsed.compatible
+      ? {
+        ...initialModel,
+        compatibility: "compatible",
+      }
+      : {
+        ...initialModel,
+        compatibility: "incompatible",
+      });
+    return true;
+  }
+
+  public acceptTabState(message: unknown): boolean {
+    const parsed = parsePanelTabStateMessage(message);
+    if (!parsed || this.current.compatibility !== "compatible") {
+      return false;
+    }
+    this.update({
+      autoRefreshEnabled: parsed.autoRefreshEnabled,
+      ideHighlightEnabled: parsed.ideHighlightEnabled,
+      compatibility: "compatible",
+      snapshotReady: true,
+      controlsEnabled: true,
+    });
+    return true;
+  }
+
+  public acceptWindowState(state: BrowserWindowConnectionState): void {
+    if (state !== "linked") {
+      this.beginBinding();
+    }
+  }
+
+  public beginBinding(): void {
+    this.inspectMessageId = undefined;
+    this.update(initialModel);
+  }
+
+  public beginInspect(inspectMessageId: string): boolean {
+    if (!this.current.controlsEnabled || !isOpaqueId(inspectMessageId)) {
+      this.inspectMessageId = undefined;
+      return false;
+    }
+    this.inspectMessageId = inspectMessageId;
+    return true;
+  }
+
+  public setAutoRefreshEnabled(enabled: boolean): boolean {
+    if (!this.current.controlsEnabled || typeof enabled !== "boolean") {
+      return false;
+    }
+    if (enabled === this.current.autoRefreshEnabled) {
+      return true;
+    }
+    this.update({ ...this.current, autoRefreshEnabled: enabled });
+    this.dispatchTabSettings();
+    return true;
+  }
+
+  public setIdeHighlightEnabled(enabled: boolean): boolean {
+    if (!this.current.controlsEnabled || typeof enabled !== "boolean") {
+      return false;
+    }
+    if (enabled === this.current.ideHighlightEnabled) {
+      return true;
+    }
+    this.update({ ...this.current, ideHighlightEnabled: enabled });
+    this.dispatchTabSettings();
+    if (this.inspectMessageId) {
+      this.dispatch(Object.freeze({
+        type: "pin-op.presentation.settings",
+        inspectMessageId: this.inspectMessageId,
+        ideHighlightEnabled: enabled,
+      }));
+    }
+    return true;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  public snapshot(): PanelSettingsViewModel {
+    return this.current;
+  }
+
+  private dispatchTabSettings(): void {
+    this.dispatch(Object.freeze({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: this.current.autoRefreshEnabled,
+      ideHighlightEnabled: this.current.ideHighlightEnabled,
+    }));
+  }
+
+  private update(model: PanelSettingsViewModel): void {
+    this.current = Object.freeze({ ...model });
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // A failed view must not prevent other panel surfaces from updating.
+      }
+    }
+  }
+}
+
+function isOpaqueId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}

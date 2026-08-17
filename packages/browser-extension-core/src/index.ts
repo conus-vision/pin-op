@@ -404,6 +404,20 @@ export type {
   SourceNavigationDispatch,
   SourceNavigationViewModel,
 } from "./sourceNavigationController.js";
+export { SourcePaneController } from "./sourcePaneController.js";
+export type {
+  PanelSourceOpenCommand,
+  SourcePaneDispatch,
+  SourcePaneGroup,
+  SourcePaneViewModel,
+} from "./sourcePaneController.js";
+export { PanelSettingsController } from "./panelSettingsController.js";
+export type {
+  PanelPresentationSettingsCommand,
+  PanelSettingsCommand,
+  PanelSettingsDispatch,
+  PanelSettingsViewModel,
+} from "./panelSettingsController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { DomPanelView } from "./panelView.js";

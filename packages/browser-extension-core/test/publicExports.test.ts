@@ -33,8 +33,10 @@ import {
   PageInspectionSession,
   PageOverlay,
   PanelController,
+  PanelSettingsController,
   ResolutionPresenter,
   SourceNavigationController,
+  SourcePaneController,
   formatResolutionFooter,
   presentResolution,
   PanelInspectTransport,
@@ -116,8 +118,10 @@ describe("browser extension core exports", () => {
     expect(restoreTopScrollSnapshot).toBeTypeOf("function");
     expect(parseTabRefreshState).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
+    expect(PanelSettingsController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
     expect(SourceNavigationController).toBeTypeOf("function");
+    expect(SourcePaneController).toBeTypeOf("function");
     expect(formatResolutionFooter).toBeTypeOf("function");
     expect(presentResolution).toBeTypeOf("function");
     expect(PanelInspectTransport).toBeTypeOf("function");
