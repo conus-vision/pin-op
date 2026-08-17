@@ -200,6 +200,15 @@ interface HoverUpgrade {
   readonly upgraded: HoveredState;
 }
 
+interface PageLeaveListenerCell {
+  handle?: (event: Event) => void;
+}
+
+interface PageLeaveRegistration {
+  readonly cell: PageLeaveListenerCell;
+  readonly listener: EventListener;
+}
+
 export class PageInspectionSession {
   private document: PageInspectionDocument;
   private readonly provider: PageInspectionTreeProvider;
@@ -217,7 +226,10 @@ export class PageInspectionSession {
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
   private readonly trackedDocuments = new Set<InspectDocument>();
-  private readonly pageLeaveListeners = new Map<InspectDocument, EventListener>();
+  private readonly pageLeaveRegistrations = new Map<
+    InspectDocument,
+    PageLeaveRegistration
+  >();
   private selected: SelectedState | undefined;
   private hovered: HoveredState | undefined;
   private pendingPageHover: PendingPageHover | undefined;
@@ -628,7 +640,7 @@ export class PageInspectionSession {
     } catch {
       // The session is already inert and cannot retry owned callbacks safely.
     }
-    for (const tracked of [...this.pageLeaveListeners.keys()]) {
+    for (const tracked of [...this.pageLeaveRegistrations.keys()]) {
       this.detachPageLeaveListener(tracked);
     }
     this.trackedDocuments.clear();
@@ -1635,26 +1647,57 @@ export class PageInspectionSession {
   }
 
   private attachPageLeaveListener(document: InspectDocument): void {
-    if (this.disposed || this.pageLeaveListeners.has(document)) {
+    if (this.disposed || this.pageLeaveRegistrations.has(document)) {
       return;
     }
     const target = document as unknown as Document;
-    const listener: EventListener = () => {
+    const cell: PageLeaveListenerCell = {};
+    const listener: EventListener = (event) => {
+      cell.handle?.(event);
+    };
+    const registration: PageLeaveRegistration = { cell, listener };
+    cell.handle = (event): void => {
+      if (
+        this.disposed ||
+        !this.trackedDocuments.has(document) ||
+        this.pageLeaveRegistrations.get(document) !== registration ||
+        !isTrustedPageExit(event)
+      ) {
+        return;
+      }
       if (
         !this.disposed &&
         this.trackedDocuments.has(document) &&
-        this.pageLeaveListeners.get(document) === listener
+        this.pageLeaveRegistrations.get(document) === registration
       ) {
         this.clearHover();
       }
     };
+    this.pageLeaveRegistrations.set(document, registration);
     try {
       target.addEventListener("pointerleave", listener, true);
     } catch (error) {
+      cell.handle = undefined;
+      if (this.pageLeaveRegistrations.get(document) === registration) {
+        this.pageLeaveRegistrations.delete(document);
+      }
+      try {
+        target.removeEventListener("pointerleave", listener, true);
+      } catch {
+        // The detached cell makes a partially installed listener inert.
+      }
       this.reportError(error);
       return;
     }
-    if (this.disposed || !this.trackedDocuments.has(document)) {
+    if (
+      this.disposed ||
+      !this.trackedDocuments.has(document) ||
+      this.pageLeaveRegistrations.get(document) !== registration
+    ) {
+      cell.handle = undefined;
+      if (this.pageLeaveRegistrations.get(document) === registration) {
+        this.pageLeaveRegistrations.delete(document);
+      }
       try {
         target.removeEventListener("pointerleave", listener, true);
       } catch {
@@ -1662,19 +1705,19 @@ export class PageInspectionSession {
       }
       return;
     }
-    this.pageLeaveListeners.set(document, listener);
   }
 
   private detachPageLeaveListener(document: InspectDocument): void {
-    const listener = this.pageLeaveListeners.get(document);
-    if (!listener) {
+    const registration = this.pageLeaveRegistrations.get(document);
+    if (!registration) {
       return;
     }
-    this.pageLeaveListeners.delete(document);
+    registration.cell.handle = undefined;
+    this.pageLeaveRegistrations.delete(document);
     try {
       (document as unknown as Document).removeEventListener(
         "pointerleave",
-        listener,
+        registration.listener,
         true,
       );
     } catch {
@@ -1877,6 +1920,15 @@ function isElementLike(value: unknown): value is InspectableElement & Element {
   try {
     return typeof value === "object" && value !== null &&
       (value as { readonly nodeType?: unknown }).nodeType === 1;
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedPageExit(event: Event): boolean {
+  try {
+    return event.isTrusted === true &&
+      (event as PointerEvent).relatedTarget === null;
   } catch {
     return false;
   }

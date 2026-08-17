@@ -97,7 +97,45 @@ describe("PageInspectionSession", () => {
       .toEqual(["node-2", "node-2"]);
   });
 
-  it("clears page hover when the pointer leaves its document", async () => {
+  it("ignores trusted pointerleave transitions inside the document", async () => {
+    const harness = createSessionHarness();
+    harness.session.hoverByRef("node-2", 3);
+    const clearCount = harness.overlay.clearCount;
+    const releaseCount = harness.provider.retentions.filter(({ action }) => (
+      action === "release"
+    )).length;
+
+    harness.document.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(harness.card, harness.root),
+    );
+
+    expect(harness.overlay.clearCount).toBe(clearCount);
+    expect(harness.provider.retentions.filter(({ action }) => (
+      action === "release"
+    ))).toHaveLength(releaseCount);
+  });
+
+  it("ignores synthetic pointerleave events at the viewport boundary", () => {
+    const harness = createSessionHarness();
+    harness.session.hoverByRef("node-2", 3);
+    const clearCount = harness.overlay.clearCount;
+    const releaseCount = harness.provider.retentions.filter(({ action }) => (
+      action === "release"
+    )).length;
+
+    harness.document.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(harness.card, null, false),
+    );
+
+    expect(harness.overlay.clearCount).toBe(clearCount);
+    expect(harness.provider.retentions.filter(({ action }) => (
+      action === "release"
+    ))).toHaveLength(releaseCount);
+  });
+
+  it("clears page hover on a trusted top-document viewport exit", async () => {
     const harness = createSessionHarness();
     await harness.session.selectByRef("node-2", 3);
     harness.session.enablePicker();
@@ -109,8 +147,8 @@ describe("PageInspectionSession", () => {
     const shownBeforeLeave = harness.overlay.shown.length;
 
     harness.document.dispatch(
-      "pointerleave" as InspectEventType,
-      createEvent("pointerleave" as InspectEventType, harness.root),
+      "pointerleave",
+      createPointerLeaveEvent(harness.root, null),
     );
 
     expect(harness.overlay.shown).toHaveLength(shownBeforeLeave);
@@ -121,6 +159,35 @@ describe("PageInspectionSession", () => {
       reason: "hovered",
     });
     await expect(harness.session.republishSelection()).resolves.toBe(true);
+  });
+
+  it("clears frame hover when the pointer exits an iframe document", () => {
+    const harness = createSessionHarness();
+    const frameDocument = new FakeSessionDocument();
+    const context = frameContext(frameDocument, "frame-2", 1);
+    const frameButton = element("BUTTON", "frame-button", frameDocument);
+    harness.provider.setFrameContexts([context]);
+    harness.provider.add(
+      frameButton,
+      "node-frame",
+      [nodeView("node-frame", "button#frame-button")],
+      "frame-2",
+      1,
+    );
+    harness.provider.emitFrameLifecycle("registered", context);
+    harness.session.hoverByRef("node-frame", 3);
+
+    frameDocument.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(frameButton, null),
+    );
+
+    expect(harness.provider.retentions.at(-1)).toEqual({
+      action: "release",
+      nodeRef: "node-frame",
+      reason: "hovered",
+    });
+    expect(harness.overlay.clearCount).toBeGreaterThan(0);
   });
 
   it("clears hover authority before refresh without clearing selection", async () => {
@@ -948,6 +1015,56 @@ describe("PageInspectionSession", () => {
     await expect(harness.session.republishSelection()).resolves.toBe(false);
   });
 
+  it("leaves a listener inert when frame removal cannot unregister it", () => {
+    const harness = createSessionHarness();
+    const frameDocument = new FakeSessionDocument();
+    const context = frameContext(frameDocument, "frame-2", 1);
+    harness.provider.setFrameContexts([context]);
+    harness.provider.emitFrameLifecycle("registered", context);
+    harness.session.hoverByRef("node-1", 3);
+    const clearCountBeforeRemoval = harness.overlay.clearCount;
+    const removalClearCounts: number[] = [];
+    frameDocument.throwOnRemove = true;
+    frameDocument.onRemove = (type) => {
+      if (type !== "pointerleave") return;
+      frameDocument.dispatch(
+        "pointerleave",
+        createPointerLeaveEvent(frameDocument.documentElement, null),
+      );
+      removalClearCounts.push(harness.overlay.clearCount);
+    };
+
+    harness.provider.setFrameContexts([]);
+    harness.provider.emitFrameLifecycle("removed", context);
+
+    expect(removalClearCounts).toEqual([clearCountBeforeRemoval]);
+    expect(frameDocument.listenerCount("pointerleave")).toBe(1);
+    const clearCount = harness.overlay.clearCount;
+    frameDocument.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(frameDocument.documentElement, null),
+    );
+    expect(harness.overlay.clearCount).toBe(clearCount);
+
+    frameDocument.onRemove = undefined;
+    harness.provider.setFrameContexts([context]);
+    harness.provider.emitFrameLifecycle("registered", context);
+    expect(frameDocument.listenerCount("pointerleave")).toBe(2);
+    frameDocument.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(frameDocument.documentElement, null),
+    );
+    expect(harness.overlay.clearCount).toBe(clearCount + 1);
+
+    harness.session.dispose();
+    const disposedClearCount = harness.overlay.clearCount;
+    frameDocument.dispatch(
+      "pointerleave",
+      createPointerLeaveEvent(frameDocument.documentElement, null),
+    );
+    expect(harness.overlay.clearCount).toBe(disposedClearCount);
+  });
+
   it("fails closed across reentrant and throwing selection callbacks", async () => {
     let session!: PageInspectionSession;
     let reentered = false;
@@ -1489,12 +1606,16 @@ class FakeOverlay {
   }
 }
 
+type SessionEventType = InspectEventType | "pointerleave";
+
 class FakeSessionDocument implements InspectDocument {
   private readonly listeners = new Map<
-    InspectEventType,
+    SessionEventType,
     Set<(event: any) => void>
   >();
   private readonly attached = new Set<object>();
+  public throwOnRemove = false;
+  public onRemove: ((type: SessionEventType) => void) | undefined;
   public readonly documentElement = {
     contains: (candidate: object): boolean => this.attached.has(candidate),
   };
@@ -1519,16 +1640,20 @@ class FakeSessionDocument implements InspectDocument {
     listener: (event: any) => void,
     _options: InspectListenerOptions,
   ): void {
+    this.onRemove?.(type as SessionEventType);
+    if (this.throwOnRemove) {
+      throw new Error("listener removal blocked");
+    }
     this.listeners.get(type)?.delete(listener);
   }
 
-  public dispatch(type: InspectEventType, event: unknown): void {
+  public dispatch(type: SessionEventType, event: unknown): void {
     for (const listener of [...(this.listeners.get(type) ?? [])]) {
       listener(event);
     }
   }
 
-  public listenerCount(type: InspectEventType): number {
+  public listenerCount(type: SessionEventType): number {
     return this.listeners.get(type)?.size ?? 0;
   }
 
@@ -1641,6 +1766,19 @@ function createEvent(
     preventDefault() {},
     stopPropagation() {},
     stopImmediatePropagation() {},
+  };
+}
+
+function createPointerLeaveEvent(
+  target: unknown,
+  relatedTarget: unknown,
+  isTrusted = true,
+) {
+  return {
+    type: "pointerleave" as const,
+    target,
+    relatedTarget,
+    isTrusted,
   };
 }
 
