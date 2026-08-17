@@ -36,7 +36,11 @@ import {
   type DomErrorCode,
   type DomRequest,
 } from "./domProtocol.js";
-import { InspectCorrelationStore } from "./inspectCorrelationStore.js";
+import {
+  InspectCorrelationStore,
+  type PresentationSettingsAuthority,
+  type SourceOpenAuthority,
+} from "./inspectCorrelationStore.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
 import {
   isTrustedIdePeerContext,
@@ -1687,7 +1691,7 @@ export class BackgroundRouter {
         record,
         activationToken,
         binding,
-        command.inspectMessageId,
+        authority,
         outcome,
       );
     });
@@ -1758,7 +1762,7 @@ export class BackgroundRouter {
         record,
         activationToken,
         binding,
-        command.inspectMessageId,
+        authority,
         outcome,
       );
     });
@@ -1771,7 +1775,7 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     activationToken: object,
     binding: ChannelBinding,
-    inspectMessageId: string,
+    authority: SourceOpenAuthority | PresentationSettingsAuthority,
     outcome: SourcePresentationSendOutcome,
   ): Promise<void> {
     const postflight = await this.refreshPanelBinding(
@@ -1789,10 +1793,12 @@ export class BackgroundRouter {
     if (outcome === "sent") {
       return;
     }
-    this.correlations.discard(inspectMessageId);
+    if (!this.correlations.discardSourcePresentationAuthority(authority)) {
+      return;
+    }
     this.panelSessions.publishIdeDisconnected(
       record.channel,
-      inspectMessageId,
+      authority.inspectMessageId,
     );
   }
 
@@ -2452,7 +2458,10 @@ export class BackgroundRouter {
     ) {
       return;
     }
-    if (!message.connected) {
+    const connectedSessionChanged = message.connected &&
+      previous !== undefined &&
+      previous.sessionId !== message.sessionId;
+    if (!message.connected || connectedSessionChanged) {
       this.correlations.disposeWindow(windowId);
     }
     const availability = this.getAvailabilityState(windowId);
@@ -2461,10 +2470,6 @@ export class BackgroundRouter {
       message.connected &&
       availability.epoch > 0 &&
       availability.initialPeerCoveredEpoch === availability.epoch;
-    const connectedSessionChanged = message.connected &&
-      previous !== undefined &&
-      previous.sessionId !== message.sessionId;
-
     if (!message.connected) {
       if (wasAvailable) {
         this.beginAvailabilityEpoch(availability);

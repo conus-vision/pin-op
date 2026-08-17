@@ -330,6 +330,36 @@ describe("InspectCorrelationStore", () => {
       .toBeUndefined();
   });
 
+  it("discards only the exact still-current source presentation authority", () => {
+    const store = readySourceStore();
+    const oldAuthority = store.authorizePresentationSettings(
+      presentationSettingsRoute(),
+    );
+    expect(oldAuthority).toBeDefined();
+    if (!oldAuthority) {
+      throw new Error("Expected initial source presentation authority");
+    }
+    const nextContext = trustedPeer();
+    expect(store.accept(matchedResolution("inspect-a", 2), nextContext)).toBe(
+      "panel-a",
+    );
+    const currentAuthority = store.authorizePresentationSettings(
+      presentationSettingsRoute(),
+    );
+    expect(currentAuthority?.context).toBe(nextContext);
+    if (!currentAuthority) {
+      throw new Error("Expected replacement source presentation authority");
+    }
+    expect(store.discardSourcePresentationAuthority(oldAuthority)).toBe(false);
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toMatchObject({ resolutionGeneration: 2, context: nextContext });
+    expect(store.discardSourcePresentationAuthority(currentAuthority)).toBe(
+      true,
+    );
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toBeUndefined();
+  });
+
   it("rejects accessor-backed source authority without invoking it", () => {
     const store = readySourceStore();
     let getterCalls = 0;

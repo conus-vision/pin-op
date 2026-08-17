@@ -323,6 +323,23 @@ export class InspectCorrelationStore {
     } as PresentationSettingsAuthority);
   }
 
+  public discardSourcePresentationAuthority(
+    authority: SourceOpenAuthority | PresentationSettingsAuthority,
+  ): boolean {
+    const correlation = this.correlations.get(authority.inspectMessageId);
+    if (
+      !correlation ||
+      correlation.channel !== authority.channel ||
+      correlation.tabId !== authority.tabId ||
+      correlation.windowId !== authority.windowId ||
+      correlation.resolutionGeneration !== authority.resolutionGeneration ||
+      correlation.peerContext !== authority.context
+    ) {
+      return false;
+    }
+    return this.correlations.delete(authority.inspectMessageId);
+  }
+
   public authorizeNavigation(input: {
     readonly channel: string;
     readonly inspectMessageId: string;

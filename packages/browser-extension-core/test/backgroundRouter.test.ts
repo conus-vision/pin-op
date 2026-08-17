@@ -8,7 +8,7 @@ import {
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BrowserProtocolError,
   type BrowserProtocolMismatch,
@@ -32,6 +32,7 @@ import {
   createDevtoolsPanelPortName,
   createInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
+import { InspectCorrelationStore } from "../src/inspectCorrelationStore.js";
 import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
@@ -1563,6 +1564,76 @@ describe("BackgroundRouter", () => {
     expect(harness.reportedErrors).toHaveLength(1);
   });
 
+  it("does not let an old failed postflight discard newer source authority", async () => {
+    const postflightLookup = deferred<
+      { id: number; windowId: number } | undefined
+    >();
+    let deferNextLookup = false;
+    const ready = await createReadySourceHarness({
+      getTab: async (tabId) => {
+        if (deferNextLookup) {
+          deferNextLookup = false;
+          return postflightLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+    });
+    ready.harness.coordinator.sourceOpenOutcome = "not-connected";
+    ready.harness.coordinator.onSourceOpen = () => {
+      deferNextLookup = true;
+    };
+
+    ready.panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+    expect(ready.harness.coordinator.sourceOpens).toEqual([{
+      context: ready.matchesContext,
+      input: {
+        inspectMessageId: "inspect-1",
+        resolutionGeneration: 1,
+        matchId: "match-1",
+      },
+    }]);
+
+    const nextResolutionContext = trustedIdePeer();
+    ready.harness.resolutions.emit(
+      nextResolutionContext,
+      matchedResolution("inspect-1", 2),
+    );
+    const nextMatchesContext = trustedIdePeer();
+    ready.harness.sourceMatches.emit(
+      nextMatchesContext,
+      sourceMatchesMessage("inspect-1", 2),
+    );
+    ready.harness.coordinator.sourceOpenOutcome = "sent";
+    ready.harness.coordinator.onSourceOpen = undefined;
+
+    postflightLookup.resolve({ id: 17, windowId: 10 });
+    await flushMicrotasks();
+    expect(messagesOfType(ready.panel, "pin-op.ideState")).toEqual([]);
+
+    ready.panel.emitMessage(panelSourceOpen("match-1", "inspect-1", 2));
+    await flushMicrotasks();
+
+    expect(ready.harness.coordinator.sourceOpens).toEqual([
+      {
+        context: ready.matchesContext,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 1,
+          matchId: "match-1",
+        },
+      },
+      {
+        context: nextMatchesContext,
+        input: {
+          inspectMessageId: "inspect-1",
+          resolutionGeneration: 2,
+          matchId: "match-1",
+        },
+      },
+    ]);
+  });
+
   it.each(["source.open", "presentation.settings"] as const)(
     "postflight-revokes %s authority after a silent tab move",
     async (command) => {
@@ -1894,6 +1965,55 @@ describe("BackgroundRouter", () => {
 
     expect(firstSessionCalls).toBe(1);
     expect(republishCallCount(harness.inspectCalls)).toBe(2);
+  });
+
+  it("revokes source authority before publishing a connected peer replacement", async () => {
+    const correlations = new InspectCorrelationStore();
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    harness.peerStates.emit(10, peerState(true, 1, "session-a"));
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      matchedResolution("inspect-1", 1),
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 1),
+    );
+    const route = {
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 1,
+      matchId: "match-1",
+    } as const;
+    expect(correlations.authorizeSourceOpen(route)).toBeDefined();
+    const replacement = peerState(true, 1, "session-b");
+    const disposeWindow = vi.spyOn(correlations, "disposeWindow");
+    const publishToPanel = vi.spyOn(panel, "postMessage");
+
+    harness.peerStates.emit(10, replacement);
+
+    expect(disposeWindow).toHaveBeenCalledWith(10);
+    expect(publishToPanel).toHaveBeenCalledWith(replacement);
+    expect(disposeWindow.mock.invocationCallOrder[0]).toBeLessThan(
+      publishToPanel.mock.invocationCallOrder[0] as number,
+    );
+    expect(correlations.authorizeSourceOpen(route)).toBeUndefined();
+    expect(messagesOfType(panel, "peerState")).toEqual([replacement]);
+    panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+    expect(harness.coordinator.sourceOpens).toEqual([]);
   });
 
   it("defers browser reconnect republish while the IDE peer is disconnected", async () => {
@@ -4124,6 +4244,7 @@ interface HarnessOptions {
     publication: PublishedSourceNavigation,
   ) => SourceNavigationSendOutcome;
   readonly panelSessionTransport?: PanelSessionTransport;
+  readonly inspectCorrelationStore?: InspectCorrelationStore;
   readonly initialPanelState?: BrowserWindowConnectionState;
   readonly initialProtocolMismatch?: BrowserProtocolMismatch;
 }
@@ -4250,6 +4371,7 @@ function createHarness(options: HarnessOptions = {}) {
     contentRefreshCoordinator: contentRefresh,
     inspectCoordinator,
     panelSessionTransport: options.panelSessionTransport,
+    inspectCorrelationStore: options.inspectCorrelationStore,
     subscriptions: options.subscriptions,
     subscribeResolutions: (
       listener: (
