@@ -24,21 +24,52 @@ export {
 } from "./backgroundRouter.js";
 export type {
   BackgroundMessageSender,
+  BackgroundCommandError,
   BackgroundRouterOptions,
   BackgroundRouterSubscriptions,
   BackgroundRouteResult,
   BackgroundRuntimePort,
   BackgroundTab,
+  BackgroundTabRefreshCoordinator,
   BackgroundWindowCoordinator,
 } from "./backgroundRouter.js";
 export type {
   BrowserBridgeClientOptions,
   BrowserConnectionState,
   BrowserCredentials,
+  BrowserProtocolMismatch,
   BrowserSocket,
+  BrowserSocketCloseEvent,
   InspectPayload,
   InspectPublisherOptions,
 } from "./bridgeClient.js";
+export {
+  createDefaultTabRefreshState,
+  createPanelTabStateMessage,
+  parsePanelTabSettingsCommand,
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
+  parseRefreshExecutionCommand,
+  parseTabRefreshState,
+} from "./refreshRuntimeProtocol.js";
+export type {
+  PanelTabSettingsCommand,
+  PanelTabStateMessage,
+  PendingTabRefresh,
+  ProtocolCompatibilityMessage,
+  RefreshExecutionCommand,
+  TabRefreshState,
+} from "./refreshRuntimeProtocol.js";
+export {
+  MAX_PERSISTED_TAB_REFRESH_STATES,
+  TAB_REFRESH_STATE_STORAGE_KEY,
+  TabRefreshStateStore,
+} from "./tabRefreshStateStore.js";
+export { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
+export type {
+  TabRefreshCoordinatorOptions,
+  TabRefreshSettings,
+} from "./tabRefreshCoordinator.js";
 export { BrowserWindowLinkStore } from "./browserWindowLinkStore.js";
 export type {
   BrowserWindowLink,

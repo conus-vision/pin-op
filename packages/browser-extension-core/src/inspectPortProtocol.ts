@@ -7,6 +7,19 @@ import type {
   DomRequest,
   DomResponse,
 } from "./domProtocol.js";
+import type {
+  PanelTabSettingsCommand,
+  PanelTabStateMessage,
+  ProtocolCompatibilityMessage,
+  RefreshExecutionCommand,
+} from "./refreshRuntimeProtocol.js";
+
+export {
+  parsePanelTabSettingsCommand,
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
+  parseRefreshExecutionCommand,
+} from "./refreshRuntimeProtocol.js";
 
 const CONTENT_SESSION_ID_BRAND: unique symbol = Symbol(
   "pin-op.contentSessionId",
@@ -57,12 +70,15 @@ export interface PanelSourceNavigateCommand {
 export type PanelToBackgroundInspectPortMessage =
   | InspectPortRequest
   | PanelSourceNavigateCommand
+  | PanelTabSettingsCommand
   | DomRequest;
 
 /** Messages sent from the trusted background port to the DevTools panel. */
 export type BackgroundToPanelInspectPortMessage =
   | InspectPortResult
   | InspectPortInvalidated
+  | PanelTabStateMessage
+  | ProtocolCompatibilityMessage
   | SourceNavigationStateMessage
   | DomResponse
   | DomEvent;
@@ -70,6 +86,7 @@ export type BackgroundToPanelInspectPortMessage =
 /** Messages sent from the trusted background port to the content-script lease. */
 export type BackgroundToContentInspectPortMessage =
   | InspectPortRequest
+  | RefreshExecutionCommand
   | DomRequest;
 
 /** Messages sent from the content-script lease to its trusted background port. */

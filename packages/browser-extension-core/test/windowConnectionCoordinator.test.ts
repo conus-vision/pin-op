@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type ClientSource,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigateMessage,
@@ -14,6 +15,7 @@ import {
   type BrowserBridgeClientOptions,
   type BrowserConnectionState,
   type BrowserCredentials,
+  type BrowserProtocolMismatch,
   type BrowserWindowLink,
   type InspectPayload,
   type SessionStorage,
@@ -69,6 +71,72 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.createdClients[0].disconnectCalls).toBe(0);
     second.dispose();
     expect(harness.createdClients[0].disconnectCalls).toBe(1);
+  });
+
+  it("retains the linked client after the last panel closes while a tab participates", async () => {
+    const harness = coordinatorHarness();
+    await harness.coordinator.linkWindow(
+      10,
+      "4873507",
+      browserSource("window-10"),
+    );
+    const panel = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    await harness.flush();
+    const client = harness.createdClients[0];
+    await harness.authenticate(client, windowLink());
+
+    harness.coordinator.setRefreshParticipant(10, 101, true);
+    panel.dispose();
+    expect(client.disconnectCalls).toBe(0);
+
+    harness.coordinator.setRefreshParticipant(10, 101, false);
+    expect(client.disconnectCalls).toBe(1);
+    expect(harness.coordinator.state(10)).toBe("offline");
+  });
+
+  it("forwards refresh and mismatch only from the current retained window client", async () => {
+    const harness = coordinatorHarness();
+    await harness.coordinator.linkWindow(
+      10,
+      "4873507",
+      browserSource("window-10"),
+    );
+    const panel = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    await harness.flush();
+    harness.coordinator.setRefreshParticipant(10, 101, true);
+    panel.dispose();
+    const refreshes: Array<[number, PageRefreshMessage]> = [];
+    const mismatches: Array<[number, BrowserProtocolMismatch]> = [];
+    harness.coordinator.onPageRefresh((windowId, message) =>
+      refreshes.push([windowId, message]),
+    );
+    harness.coordinator.onProtocolMismatch((windowId, details) =>
+      mismatches.push([windowId, details]),
+    );
+
+    const client = harness.createdClients[0];
+    client.emitPageRefresh(pageRefresh(1));
+    client.emitProtocolMismatch({
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+
+    expect(refreshes).toEqual([[10, pageRefresh(1)]]);
+    expect(mismatches).toEqual([
+      [
+        10,
+        { browserProtocolVersion: PROTOCOL_VERSION, peerProtocolVersion: 5 },
+      ],
+    ]);
+    expect(harness.coordinator.state(10)).toBe("incompatible");
   });
 
   it("starts a pending link when registration races store cleanup", async () => {
@@ -926,6 +994,12 @@ class FakeWindowClient {
   private readonly sourceNavigationStateListeners = new Set<
     (message: SourceNavigationStateMessage) => void
   >();
+  private readonly pageRefreshListeners = new Set<
+    (message: PageRefreshMessage) => void
+  >();
+  private readonly protocolMismatchListeners = new Set<
+    (details: BrowserProtocolMismatch) => void
+  >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
     this.url = options.url;
@@ -997,6 +1071,22 @@ class FakeWindowClient {
     };
   }
 
+  public onPageRefresh(listener: (message: PageRefreshMessage) => void) {
+    this.pageRefreshListeners.add(listener);
+    return {
+      dispose: () => this.pageRefreshListeners.delete(listener),
+    };
+  }
+
+  public onProtocolMismatch(
+    listener: (details: BrowserProtocolMismatch) => void,
+  ) {
+    this.protocolMismatchListeners.add(listener);
+    return {
+      dispose: () => this.protocolMismatchListeners.delete(listener),
+    };
+  }
+
   public emitResolution(message: ResolutionMessage): void {
     for (const listener of this.resolutionListeners) {
       listener(message);
@@ -1016,6 +1106,18 @@ class FakeWindowClient {
   public emitSourceNavigationState(message: SourceNavigationStateMessage): void {
     for (const listener of this.sourceNavigationStateListeners) {
       listener(message);
+    }
+  }
+
+  public emitPageRefresh(message: PageRefreshMessage): void {
+    for (const listener of this.pageRefreshListeners) {
+      listener(message);
+    }
+  }
+
+  public emitProtocolMismatch(details: BrowserProtocolMismatch): void {
+    for (const listener of this.protocolMismatchListeners) {
+      listener(details);
     }
   }
 
@@ -1320,6 +1422,20 @@ function selection(selector: string): InspectPayload {
       },
     ],
     context: { url: "http://localhost:3000", metadata: {} },
+    ideHighlightEnabled: true,
+    metadata: {},
+  };
+}
+
+function pageRefresh(refreshGeneration: number): PageRefreshMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "page.refresh",
+    messageId: `refresh-${refreshGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    refreshGeneration,
+    mode: "styles",
     metadata: {},
   };
 }

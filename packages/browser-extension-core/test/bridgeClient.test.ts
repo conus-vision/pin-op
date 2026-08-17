@@ -3,6 +3,8 @@ import {
   INSPECT_ENVELOPE_MAX_BYTES,
   PROTOCOL_VERSION,
   SourceNavigateMessageSchema,
+  protocolMismatchReason,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
@@ -30,7 +32,7 @@ const CREDENTIALS: BrowserCredentials = {
 class FakeSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   readonly sent: string[] = [];
   readonly events: string[] = [];
@@ -48,16 +50,16 @@ class FakeSocket {
   close(): void {
     this.closed = true;
     this.events.push("close");
-    this.onclose?.();
+    this.onclose?.({ code: 1_000, reason: "" });
   }
 
   open(): void {
     this.onopen?.();
   }
 
-  serverClose(): void {
+  serverClose(code = 1_006, reason = ""): void {
     this.closed = true;
-    this.onclose?.();
+    this.onclose?.({ code, reason });
   }
 
   message(payload: Record<string, unknown>): void {
@@ -91,7 +93,7 @@ describe("BrowserBridgeClient", () => {
       bridgeInstanceId: INSTANCE_ID,
       authToken: AUTH_TOKEN,
       source: { role: "browser", id: "firefox-test" },
-      capabilities: ["inspect", "link", "source-navigation"],
+      capabilities: ["inspect", "link", "source-navigation", "auto-refresh"],
     });
     expect(harness.states).not.toContain("connected");
 
@@ -673,6 +675,56 @@ describe("BrowserBridgeClient", () => {
     harness.sockets[0].message(sourceNavigationState(SESSION_ID, 3));
     expect(received).toEqual([current]);
   });
+
+  it("delivers authenticated same-session page refresh messages to disposable listeners", () => {
+    const harness = createHarness();
+    const received: PageRefreshMessage[] = [];
+    const subscription = harness.client.onPageRefresh((message) =>
+      received.push(message),
+    );
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.sockets[0].message(pageRefreshMessage(1, SESSION_ID));
+    harness.sockets[0].message(pageRefreshMessage(2, "another-session"));
+    subscription.dispose();
+    harness.sockets[0].message(pageRefreshMessage(3, SESSION_ID));
+
+    expect(received.map(({ refreshGeneration }) => refreshGeneration)).toEqual([
+      1,
+    ]);
+  });
+
+  it("exposes known and unknown protocol mismatch details from close 1002 without reconnecting", () => {
+    const known = createHarness();
+    const knownMismatches: unknown[] = [];
+    known.client.onProtocolMismatch((details) => knownMismatches.push(details));
+    known.client.connect(CREDENTIALS);
+    known.sockets[0].open();
+    known.sockets[0].serverClose(1_002, protocolMismatchReason(5));
+
+    expect(knownMismatches).toEqual([
+      { browserProtocolVersion: PROTOCOL_VERSION, peerProtocolVersion: 5 },
+    ]);
+    expect(known.states.at(-1)).toBe("incompatible");
+    expect(known.sockets).toHaveLength(1);
+
+    const unknown = createHarness();
+    const unknownMismatches: unknown[] = [];
+    unknown.client.onProtocolMismatch((details) =>
+      unknownMismatches.push(details),
+    );
+    unknown.client.connect(CREDENTIALS);
+    unknown.sockets[0].open();
+    unknown.sockets[0].serverClose(1_002, "unparseable");
+
+    expect(unknownMismatches).toEqual([
+      { browserProtocolVersion: PROTOCOL_VERSION },
+    ]);
+    expect(unknown.states.at(-1)).toBe("incompatible");
+    expect(unknown.sockets).toHaveLength(1);
+  });
 });
 
 describe("InspectPublisher", () => {
@@ -816,6 +868,23 @@ function selection(selector: string) {
       },
     ],
     context: { url: "http://localhost:3000", metadata: {} },
+    ideHighlightEnabled: true,
+    metadata: {},
+  };
+}
+
+function pageRefreshMessage(
+  refreshGeneration: number,
+  sessionId: string,
+): PageRefreshMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "page.refresh",
+    messageId: `refresh-${refreshGeneration}`,
+    sessionId,
+    source: { role: "ide", id: "vscode-test" },
+    refreshGeneration,
+    mode: "styles",
     metadata: {},
   };
 }

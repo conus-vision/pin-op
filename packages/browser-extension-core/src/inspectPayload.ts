@@ -66,6 +66,7 @@ export function createInspectPayload(
   );
 
   return {
+    ideHighlightEnabled: true,
     targets,
     context: {
       url: pageUrl,

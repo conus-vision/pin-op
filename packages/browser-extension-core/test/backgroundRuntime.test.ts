@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PROTOCOL_VERSION, type PageRefreshMessage } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 
 describe("startBackgroundRuntime", () => {
@@ -11,6 +12,7 @@ describe("startBackgroundRuntime", () => {
     const resolutionDispose = vi.fn();
     const peerStateDispose = vi.fn();
     const sourceNavigationStateDispose = vi.fn();
+    const pageRefreshDispose = vi.fn();
     const coordinatorDispose = vi.fn();
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
@@ -18,12 +20,15 @@ describe("startBackgroundRuntime", () => {
       registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
       publishInspect: vi.fn(() => "sent" as const),
       publishSourceNavigation: vi.fn(() => "sent" as const),
+      setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
       onResolution: vi.fn(() => ({ dispose: resolutionDispose })),
       onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
       onSourceNavigationState: vi.fn(() => ({
         dispose: sourceNavigationStateDispose,
       })),
+      onPageRefresh: vi.fn(() => ({ dispose: pageRefreshDispose })),
+      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
       dispose: coordinatorDispose,
     };
 
@@ -45,6 +50,7 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onResolution).toHaveBeenCalledOnce();
     expect(coordinator.onPeerState).toHaveBeenCalledOnce();
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
+    expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
 
     runtime.dispose();
     runtime.dispose();
@@ -52,7 +58,81 @@ describe("startBackgroundRuntime", () => {
     expect(resolutionDispose).toHaveBeenCalledOnce();
     expect(peerStateDispose).toHaveBeenCalledOnce();
     expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
+    expect(pageRefreshDispose).toHaveBeenCalledOnce();
     expect(coordinatorDispose).toHaveBeenCalledOnce();
+  });
+
+  it("coordinates bridge refresh, tab activation, tab removal, and participant restoration", async () => {
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const activatedTabs = eventHarness();
+    const removedTabs = eventHarness();
+    let pageRefreshListener:
+      | ((windowId: number, message: PageRefreshMessage) => void)
+      | undefined;
+    const coordinator = {
+      linkWindow: vi.fn(async () => undefined),
+      unlinkWindow: vi.fn(async () => undefined),
+      registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
+      publishInspect: vi.fn(() => "sent" as const),
+      publishSourceNavigation: vi.fn(() => "sent" as const),
+      setRefreshParticipant: vi.fn(),
+      removeWindow: vi.fn(async () => undefined),
+      onResolution: vi.fn(() => ({ dispose: vi.fn() })),
+      onPeerState: vi.fn(() => ({ dispose: vi.fn() })),
+      onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
+      onPageRefresh: vi.fn((listener) => {
+        pageRefreshListener = listener;
+        return { dispose: vi.fn() };
+      }),
+      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
+      dispose: vi.fn(),
+    };
+    const tabRefresh = {
+      initialize: vi.fn(async () => undefined),
+      panelOpened: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
+      state: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
+      updateSettings: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
+      acceptPageRefresh: vi.fn(async () => undefined),
+      activateTab: vi.fn(async () => undefined),
+      removeTab: vi.fn(async () => undefined),
+      removeWindow: vi.fn(async () => undefined),
+    };
+
+    const runtime = startBackgroundRuntime({
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
+      storage: memoryStorage(),
+      executeScript: vi.fn(async () => []),
+      sendTabMessage: vi.fn(async () => undefined),
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      getActiveTabId: vi.fn(async () => 11),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      subscribeTabActivated: activatedTabs.subscribe,
+      subscribeTabRemoved: removedTabs.subscribe,
+      createWindowConnectionCoordinator: () => coordinator,
+      createTabRefreshCoordinator: () => tabRefresh,
+    });
+    await flushAsync();
+    expect(tabRefresh.initialize).toHaveBeenCalledOnce();
+
+    const refresh = pageRefresh(4);
+    pageRefreshListener?.(7, refresh);
+    activatedTabs.emit(11, 7);
+    removedTabs.emit(12);
+    await flushAsync();
+
+    expect(tabRefresh.acceptPageRefresh).toHaveBeenCalledWith(7, refresh);
+    expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
+    expect(tabRefresh.removeTab).toHaveBeenCalledWith(12);
+    runtime.dispose();
   });
 
   it("composes the background services and removes every platform listener", async () => {
@@ -180,6 +260,30 @@ function validStoredLink(): Record<string, unknown> {
     sessionId: "pin-op",
     bridgeInstanceId: "11111111-1111-4111-8111-111111111111",
     authToken: "token-value",
+  };
+}
+
+function tabState(tabId: number, windowId: number) {
+  return {
+    tabId,
+    windowId,
+    autoRefreshEnabled: true,
+    ideHighlightEnabled: true,
+    participant: true,
+    lastAcceptedGeneration: 0,
+  } as const;
+}
+
+function pageRefresh(refreshGeneration: number): PageRefreshMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "page.refresh",
+    messageId: `refresh-${refreshGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    refreshGeneration,
+    mode: "styles",
+    metadata: {},
   };
 }
 

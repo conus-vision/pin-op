@@ -1,6 +1,7 @@
 import {
   ClientSourceSchema,
   type ClientSource,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigateMessage,
@@ -14,6 +15,7 @@ import {
   type BrowserBridgeSubscription,
   type BrowserConnectionState,
   type BrowserCredentials,
+  type BrowserProtocolMismatch,
   type InspectPayload,
   type InspectSendOutcome,
   type SourceNavigationSendOutcome,
@@ -31,6 +33,7 @@ export type BrowserWindowConnectionState =
   | "reconnecting"
   | "offline"
   | "rateLimited"
+  | "incompatible"
   | "error";
 
 export interface PanelRegistration {
@@ -40,6 +43,7 @@ export interface PanelRegistration {
   readonly onStateChanged?: (
     state: BrowserWindowConnectionState,
     displayLinkCode?: string,
+    protocolMismatch?: BrowserProtocolMismatch,
   ) => void;
 }
 
@@ -67,6 +71,12 @@ export interface WindowConnectionClient {
   ): BrowserBridgeSubscription;
   onSourceNavigationState(
     listener: (message: SourceNavigationStateMessage) => void,
+  ): BrowserBridgeSubscription;
+  onPageRefresh(
+    listener: (message: PageRefreshMessage) => void,
+  ): BrowserBridgeSubscription;
+  onProtocolMismatch(
+    listener: (details: BrowserProtocolMismatch) => void,
   ): BrowserBridgeSubscription;
 }
 
@@ -108,6 +118,7 @@ type PendingLink = PendingCodeLink | PendingCredentialLink;
 interface WindowRecord {
   readonly windowId: number;
   readonly registrations: Map<string, RegistrationEntry>;
+  readonly refreshParticipants: Set<number>;
   generation: number;
   state: BrowserWindowConnectionState;
   client?: WindowConnectionClient;
@@ -120,6 +131,7 @@ interface WindowRecord {
   credentialsWritePending: boolean;
   reconnectTimer?: ReturnType<typeof setTimeout>;
   reconnectAttempts: number;
+  protocolMismatch?: BrowserProtocolMismatch;
 }
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -149,6 +161,12 @@ export class WindowConnectionCoordinator {
   private readonly sourceNavigationStateListeners = new Set<
     (windowId: number, message: SourceNavigationStateMessage) => void
   >();
+  private readonly pageRefreshListeners = new Set<
+    (windowId: number, message: PageRefreshMessage) => void
+  >();
+  private readonly protocolMismatchListeners = new Set<
+    (windowId: number, details: BrowserProtocolMismatch) => void
+  >();
   private disposed = false;
 
   public constructor(options: WindowConnectionCoordinatorOptions) {
@@ -177,6 +195,7 @@ export class WindowConnectionCoordinator {
     record.link = undefined;
     record.pendingLink = undefined;
     record.connectionSource = connectionSource;
+    record.protocolMismatch = undefined;
     record.credentialsWritePending = false;
     record.reconnectAttempts = 0;
     this.setState(record, "linking");
@@ -209,7 +228,7 @@ export class WindowConnectionCoordinator {
       source: connectionSource,
     };
     record.pendingLink = pendingLink;
-    if (record.registrations.size > 0) {
+    if (this.hasConnectionOwner(record)) {
       this.openClient(
         record,
         generation,
@@ -235,6 +254,8 @@ export class WindowConnectionCoordinator {
       record.link = undefined;
       record.pendingLink = undefined;
       record.connectionSource = undefined;
+      record.refreshParticipants.clear();
+      record.protocolMismatch = undefined;
       record.credentialsWritePending = false;
       record.reconnectAttempts = 0;
       this.setState(record, "notLinked");
@@ -293,6 +314,37 @@ export class WindowConnectionCoordinator {
     return {
       dispose: () => this.disposeRegistration(record, entry),
     };
+  }
+
+  public setRefreshParticipant(
+    windowId: number,
+    tabId: number,
+    participant: boolean,
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    assertWindowId(windowId);
+    assertWindowId(tabId);
+    const current = this.records.get(windowId);
+    if (!participant) {
+      if (!current || !current.refreshParticipants.delete(tabId)) {
+        return;
+      }
+      if (!this.hasConnectionOwner(current)) {
+        this.releaseUnownedConnection(current);
+      }
+      return;
+    }
+
+    const record = current ?? this.recordFor(windowId);
+    if (record.refreshParticipants.has(tabId)) {
+      return;
+    }
+    record.refreshParticipants.add(tabId);
+    if (record.registrations.size === 0) {
+      this.activateRetainedParticipant(record);
+    }
   }
 
   public publishInspect(
@@ -385,6 +437,18 @@ export class WindowConnectionCoordinator {
     return subscribeWindowEvent(this.sourceNavigationStateListeners, listener);
   }
 
+  public onPageRefresh(
+    listener: (windowId: number, message: PageRefreshMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.pageRefreshListeners, listener);
+  }
+
+  public onProtocolMismatch(
+    listener: (windowId: number, details: BrowserProtocolMismatch) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.protocolMismatchListeners, listener);
+  }
+
   public state(windowId: number): BrowserWindowConnectionState {
     return this.records.get(windowId)?.state ?? "notLinked";
   }
@@ -399,6 +463,8 @@ export class WindowConnectionCoordinator {
       record.link = undefined;
       record.pendingLink = undefined;
       record.connectionSource = undefined;
+      record.refreshParticipants.clear();
+      record.protocolMismatch = undefined;
       record.credentialsWritePending = false;
       this.setState(record, "notLinked");
       this.records.delete(windowId);
@@ -431,6 +497,8 @@ export class WindowConnectionCoordinator {
     this.resolutionListeners.clear();
     this.peerStateListeners.clear();
     this.sourceNavigationStateListeners.clear();
+    this.pageRefreshListeners.clear();
+    this.protocolMismatchListeners.clear();
   }
 
   private activateFirstPanel(
@@ -442,6 +510,7 @@ export class WindowConnectionCoordinator {
         record.state !== "linked" &&
         record.state !== "linking" &&
         record.state !== "reconnecting" &&
+        record.state !== "incompatible" &&
         this.hasReconnectIntent(record)
       ) {
         this.scheduleReconnect(record, record.generation, record.clientToken);
@@ -497,6 +566,24 @@ export class WindowConnectionCoordinator {
     void this.loadStoredLink(record, generation, source);
   }
 
+  private activateRetainedParticipant(record: WindowRecord): void {
+    const tabId = record.refreshParticipants.values().next().value as
+      | number
+      | undefined;
+    if (tabId === undefined) {
+      return;
+    }
+    const source = record.connectionSource ?? retainedConnectionSource();
+    record.connectionSource = source;
+    this.activateFirstPanel(record, {
+      registration: {
+        windowId: record.windowId,
+        tabId,
+        sourceId: source.id,
+      },
+    });
+  }
+
   private async loadStoredLink(
     record: WindowRecord,
     generation: number,
@@ -516,7 +603,7 @@ export class WindowConnectionCoordinator {
 
     if (
       !this.isCurrent(record, generation) ||
-      record.registrations.size === 0
+      !this.hasConnectionOwner(record)
     ) {
       return;
     }
@@ -592,6 +679,12 @@ export class WindowConnectionCoordinator {
           message,
         ),
       ));
+      subscriptions.push(client.onPageRefresh((message) =>
+        this.forwardPageRefresh(record, generation, token, message),
+      ));
+      subscriptions.push(client.onProtocolMismatch((details) =>
+        this.forwardProtocolMismatch(record, generation, token, details),
+      ));
     } catch {
       if (this.isCurrentToken(record, generation, token)) {
         this.disconnectClient(record);
@@ -666,7 +759,7 @@ export class WindowConnectionCoordinator {
     record.pendingLink = undefined;
     if (record.clientConnected) {
       this.setState(record, "linked");
-    } else if (record.registrations.size > 0) {
+    } else if (this.hasConnectionOwner(record)) {
       this.scheduleReconnect(record, generation, token);
     }
   }
@@ -693,6 +786,7 @@ export class WindowConnectionCoordinator {
         return;
       case "connected":
         record.clientConnected = true;
+        record.protocolMismatch = undefined;
         record.reconnectAttempts = 0;
         this.cancelReconnect(record);
         if (record.link && !record.credentialsWritePending) {
@@ -712,7 +806,7 @@ export class WindowConnectionCoordinator {
           this.setState(record, "offline");
           return;
         }
-        if (record.registrations.size > 0 && this.hasReconnectIntent(record)) {
+        if (this.hasConnectionOwner(record) && this.hasReconnectIntent(record)) {
           this.scheduleReconnect(record, generation, token);
         } else {
           this.setState(record, record.link ? "offline" : "notLinked");
@@ -721,6 +815,10 @@ export class WindowConnectionCoordinator {
       case "error":
         record.clientConnected = false;
         this.setState(record, "error");
+        return;
+      case "incompatible":
+        record.clientConnected = false;
+        this.setState(record, "incompatible");
     }
   }
 
@@ -839,7 +937,7 @@ export class WindowConnectionCoordinator {
   ): boolean {
     return (
       record.reconnectTimer === undefined &&
-      record.registrations.size > 0 &&
+      this.hasConnectionOwner(record) &&
       this.hasReconnectIntent(record) &&
       record.client !== undefined &&
       this.isCurrentToken(record, generation, token)
@@ -865,19 +963,10 @@ export class WindowConnectionCoordinator {
     if (this.tabOwners.get(registration.tabId) === entry) {
       this.tabOwners.delete(registration.tabId);
     }
-    if (record.registrations.size > 0) {
+    if (this.hasConnectionOwner(record)) {
       return;
     }
-
-    this.invalidate(record);
-    this.disconnectClient(record);
-    if (!record.link) {
-      record.pendingLink = undefined;
-      record.connectionSource = undefined;
-      record.credentialsWritePending = false;
-    }
-    record.reconnectAttempts = 0;
-    this.setState(record, record.link ? "offline" : "notLinked");
+    this.releaseUnownedConnection(record);
   }
 
   private releaseRegistrations(record: WindowRecord): void {
@@ -901,6 +990,7 @@ export class WindowConnectionCoordinator {
     const record: WindowRecord = {
       windowId,
       registrations: new Map(),
+      refreshParticipants: new Set(),
       generation: 0,
       state: "notLinked",
       clientConnected: false,
@@ -954,6 +1044,22 @@ export class WindowConnectionCoordinator {
 
   private hasReconnectIntent(record: WindowRecord): boolean {
     return record.link !== undefined;
+  }
+
+  private hasConnectionOwner(record: WindowRecord): boolean {
+    return record.registrations.size > 0 || record.refreshParticipants.size > 0;
+  }
+
+  private releaseUnownedConnection(record: WindowRecord): void {
+    this.invalidate(record);
+    this.disconnectClient(record);
+    if (!record.link) {
+      record.pendingLink = undefined;
+      record.connectionSource = undefined;
+      record.credentialsWritePending = false;
+    }
+    record.reconnectAttempts = 0;
+    this.setState(record, record.link ? "offline" : "notLinked");
   }
 
   private cancelWindowOperation(
@@ -1040,6 +1146,54 @@ export class WindowConnectionCoordinator {
     );
   }
 
+  private forwardPageRefresh(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    message: PageRefreshMessage,
+  ): void {
+    if (!this.isCurrentToken(record, generation, token)) {
+      return;
+    }
+    notifyWindowEvent(this.pageRefreshListeners, record.windowId, message);
+  }
+
+  private forwardProtocolMismatch(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    details: BrowserProtocolMismatch,
+  ): void {
+    if (!this.isCurrentToken(record, generation, token)) {
+      return;
+    }
+    const snapshot = Object.freeze({
+      browserProtocolVersion: details.browserProtocolVersion,
+      ...(details.peerProtocolVersion === undefined
+        ? {}
+        : { peerProtocolVersion: details.peerProtocolVersion }),
+    });
+    record.protocolMismatch = snapshot;
+    const alreadyIncompatible = record.state === "incompatible";
+    this.setState(record, "incompatible");
+    if (alreadyIncompatible) {
+      const displayLinkCode = displayLinkCodeFor(record);
+      for (const entry of [...record.registrations.values()]) {
+        notifyRegistration(
+          entry,
+          "incompatible",
+          displayLinkCode,
+          snapshot,
+        );
+      }
+    }
+    notifyWindowEvent(
+      this.protocolMismatchListeners,
+      record.windowId,
+      snapshot,
+    );
+  }
+
   private disposeClientSubscriptions(record: WindowRecord): void {
     const subscriptions = record.clientSubscriptions;
     record.clientSubscriptions = undefined;
@@ -1065,7 +1219,12 @@ export class WindowConnectionCoordinator {
     record.state = state;
     const displayLinkCode = displayLinkCodeFor(record);
     for (const entry of [...record.registrations.values()]) {
-      notifyRegistration(entry, state, displayLinkCode);
+      notifyRegistration(
+        entry,
+        state,
+        displayLinkCode,
+        state === "incompatible" ? record.protocolMismatch : undefined,
+      );
     }
   }
 
@@ -1172,12 +1331,38 @@ function notifyRegistration(
   entry: RegistrationEntry,
   state: BrowserWindowConnectionState,
   displayLinkCode?: string,
+  protocolMismatch?: BrowserProtocolMismatch,
 ): void {
   try {
-    entry.registration.onStateChanged?.(state, displayLinkCode);
+    entry.registration.onStateChanged?.(
+      state,
+      displayLinkCode,
+      protocolMismatch,
+    );
   } catch {
     // A panel callback cannot break connection ownership for other panels.
   }
+}
+
+let retainedSourceSequence = 0;
+
+function retainedConnectionSource(): ClientSource {
+  let suffix: string;
+  try {
+    suffix = globalThis.crypto?.randomUUID?.() ?? "";
+  } catch {
+    suffix = "";
+  }
+  if (!suffix) {
+    retainedSourceSequence =
+      (retainedSourceSequence + 1) % Number.MAX_SAFE_INTEGER;
+    suffix = `local-${retainedSourceSequence.toString(36)}`;
+  }
+  return ClientSourceSchema.parse({
+    role: "browser",
+    id: `pin-op-retained-${suffix}`,
+    metadata: {},
+  });
 }
 
 function displayLinkCodeFor(record: WindowRecord): string | undefined {

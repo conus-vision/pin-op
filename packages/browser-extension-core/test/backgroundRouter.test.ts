@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigateMessage,
@@ -8,6 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   BrowserProtocolError,
+  type BrowserProtocolMismatch,
   type InspectPayload,
   type InspectSendOutcome,
   type SourceNavigationSendOutcome,
@@ -30,12 +32,138 @@ import type {
   BrowserWindowConnectionState,
   PanelRegistration,
 } from "../src/windowConnectionCoordinator.js";
+import type {
+  TabRefreshSettings,
+} from "../src/tabRefreshCoordinator.js";
+import type { TabRefreshState } from "../src/refreshRuntimeProtocol.js";
 
 const DEVTOOLS_URL = "moz-extension://pin-op/dist/devtools.html";
 const PANEL_URL = "moz-extension://pin-op/dist/panel.html";
 const DEFAULT_CONTENT_SESSION_ID = "content-session-default";
 
 describe("BackgroundRouter", () => {
+  it("registers panel participation and publishes strict tab-local settings snapshots", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-refresh",
+      17,
+      "source-refresh",
+    );
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+    expect(port.sent).toContainEqual({
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    });
+
+    port.emitMessage({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    port.emitMessage({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      tabId: 999,
+    });
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.settingCalls).toEqual([
+      [
+        17,
+        10,
+        { autoRefreshEnabled: false, ideHighlightEnabled: false },
+      ],
+    ]);
+    expect(port.sent.at(-1)).toEqual({
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 0,
+    });
+  });
+
+  it("routes page refresh by the exact window and uses current tab highlight state for inspect", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-refresh",
+      17,
+      "source-refresh",
+    );
+    await harness.attachContentSession(17);
+    harness.tabRefresh.setState({
+      tabId: 17,
+      windowId: 10,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    });
+    const message = pageRefresh(3);
+
+    harness.pageRefreshes.emit(10, message);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.refreshCalls).toEqual([[10, message]]);
+
+    await expect(
+      harness.router.routeMessage(
+        selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+        contentSender(17, 10),
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.published.at(-1)?.payload)
+      .toMatchObject({ ideHighlightEnabled: false });
+    expect(port.disconnected).toBe(false);
+  });
+
+  it("blocks incompatible panel features while preserving explicit disconnect", async () => {
+    const mismatch: BrowserProtocolMismatch = {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    };
+    const harness = createHarness({
+      initialPanelState: "incompatible",
+      initialProtocolMismatch: mismatch,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-mismatch",
+      17,
+      "source-mismatch",
+    );
+    await flushMicrotasks();
+
+    expect(port.sent).toContainEqual({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    port.emitMessage({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    await flushMicrotasks();
+    expect(harness.tabRefresh.settingCalls).toEqual([]);
+
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "pin-op.unlinkWindow",
+          channel: "channel-mismatch",
+        },
+        panelSender("channel-mismatch"),
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.unlinks).toEqual([10]);
+    expect(harness.tabRefresh.removedWindows).toEqual([10]);
+  });
   it("accepts registration only from the exact injected DevTools URL", async () => {
     const harness = createHarness();
     const registration = registerMessage("channel-1", 17, "source-17");
@@ -84,7 +212,7 @@ describe("BackgroundRouter", () => {
       tabId: 17,
       sourceId: "source-17",
     });
-    expect(port.sent).toEqual([
+    expect(messagesOfType(port, "pin-op.windowState")).toEqual([
       {
         type: "pin-op.windowState",
         state: "notLinked",
@@ -105,7 +233,7 @@ describe("BackgroundRouter", () => {
     );
     await flushMicrotasks();
 
-    expect(port.sent.at(-1)).toEqual({
+    expect(messagesOfType(port, "pin-op.windowState").at(-1)).toEqual({
       type: "pin-op.windowState",
       state: "linked",
       displayLinkCode: "48735 07",
@@ -397,15 +525,16 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
       .toEqual([10, 20]);
     expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
-    expect(recoveredPort.sent).toEqual([
+    expect(messagesOfType(recoveredPort, "pin-op.windowState")).toEqual([
       {
         type: "pin-op.windowState",
         state: "notLinked",
       },
     ]);
 
+    const sentCount = recoveredPort.sent.length;
     oldRegistration?.onStateChanged?.("linked");
-    expect(recoveredPort.sent).toHaveLength(1);
+    expect(recoveredPort.sent).toHaveLength(sentCount);
   });
 
   it("uses attach as the authority when initial registration lookup returns stale A", async () => {
@@ -3301,6 +3430,7 @@ interface HarnessOptions {
   ) => SourceNavigationSendOutcome;
   readonly panelSessionTransport?: PanelSessionTransport;
   readonly initialPanelState?: BrowserWindowConnectionState;
+  readonly initialProtocolMismatch?: BrowserProtocolMismatch;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -3315,12 +3445,17 @@ function createHarness(options: HarnessOptions = {}) {
   const sourceNavigationStates = new FakeEvent<
     (windowId: number, message: SourceNavigationStateMessage) => void
   >();
+  const pageRefreshes = new FakeEvent<
+    (windowId: number, message: PageRefreshMessage) => void
+  >();
+  const tabRefresh = new FakeTabRefreshCoordinator();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
     options.unlinkWindow,
     options.publishInspect,
     options.publishSourceNavigation,
     options.initialPanelState ?? "linked",
+    options.initialProtocolMismatch,
   );
   const inspectCoordinator = new BackgroundInspectCoordinator({
     async executeScript(details) {
@@ -3340,6 +3475,8 @@ function createHarness(options: HarnessOptions = {}) {
     resolutions,
     peerStates,
     sourceNavigationStates,
+    pageRefreshes,
+    tabRefresh,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
     port(
@@ -3395,6 +3532,7 @@ function createHarness(options: HarnessOptions = {}) {
         return windowId === undefined ? undefined : { id: tabId, windowId };
       }),
     coordinator,
+    tabRefreshCoordinator: tabRefresh,
     inspectCoordinator,
     panelSessionTransport: options.panelSessionTransport,
     subscriptions: options.subscriptions,
@@ -3416,6 +3554,10 @@ function createHarness(options: HarnessOptions = {}) {
     ) => {
       sourceNavigationStates.addListener(listener);
       return () => sourceNavigationStates.removeListener(listener);
+    },
+    subscribePageRefreshes: (listener) => {
+      pageRefreshes.addListener(listener);
+      return () => pageRefreshes.removeListener(listener);
     },
     inspectMessageId: (() => {
       let sequence = 0;
@@ -3455,6 +3597,7 @@ class FakeWindowCoordinator {
   public disposeCalls = 0;
   public publishOutcome: InspectSendOutcome = "sent";
   public sourceNavigationOutcome: SourceNavigationSendOutcome = "sent";
+  public readonly refreshParticipants: Array<[number, number, boolean]> = [];
   public onPublish?: (publication: PublishedInspect) => void;
   private readonly active = new Set<PanelRegistration>();
 
@@ -3476,6 +3619,7 @@ class FakeWindowCoordinator {
       publication: PublishedSourceNavigation,
     ) => SourceNavigationSendOutcome,
     private readonly initialPanelState: BrowserWindowConnectionState = "linked",
+    private readonly initialProtocolMismatch?: BrowserProtocolMismatch,
   ) {}
 
   public async linkWindow(
@@ -3499,7 +3643,11 @@ class FakeWindowCoordinator {
   public registerPanel(registration: PanelRegistration): { dispose(): void } {
     this.registrations.push(registration);
     this.active.add(registration);
-    registration.onStateChanged?.(this.initialPanelState);
+    registration.onStateChanged?.(
+      this.initialPanelState,
+      undefined,
+      this.initialProtocolMismatch,
+    );
     let disposed = false;
     return {
       dispose: () => {
@@ -3543,6 +3691,95 @@ class FakeWindowCoordinator {
     return [...this.active]
       .map((registration) => registration.sourceId)
       .sort();
+  }
+}
+
+class FakeTabRefreshCoordinator {
+  public readonly panelOpenCalls: Array<[number, number]> = [];
+  public readonly settingCalls: Array<[
+    number,
+    number,
+    TabRefreshSettings,
+  ]> = [];
+  public readonly refreshCalls: Array<[number, PageRefreshMessage]> = [];
+  public readonly activatedTabs: Array<[number, number]> = [];
+  public readonly removedTabs: number[] = [];
+  public readonly removedWindows: number[] = [];
+  private readonly states = new Map<number, TabRefreshState>();
+
+  public async panelOpened(
+    tabId: number,
+    windowId: number,
+  ): Promise<TabRefreshState> {
+    this.panelOpenCalls.push([tabId, windowId]);
+    const current = this.states.get(tabId) ?? defaultTabState(tabId, windowId);
+    const next = {
+      ...current,
+      windowId,
+      participant: current.autoRefreshEnabled,
+    };
+    this.states.set(tabId, next);
+    return next;
+  }
+
+  public setRefreshParticipant(
+    windowId: number,
+    tabId: number,
+    participant: boolean,
+  ): void {
+    this.refreshParticipants.push([windowId, tabId, participant]);
+  }
+
+  public async state(tabId: number, windowId: number): Promise<TabRefreshState> {
+    return this.states.get(tabId) ?? defaultTabState(tabId, windowId);
+  }
+
+  public setState(state: TabRefreshState): void {
+    this.states.set(state.tabId, state);
+  }
+
+  public async updateSettings(
+    tabId: number,
+    windowId: number,
+    settings: TabRefreshSettings,
+  ): Promise<TabRefreshState> {
+    this.settingCalls.push([tabId, windowId, { ...settings }]);
+    const current = await this.state(tabId, windowId);
+    const next = {
+      tabId,
+      windowId,
+      autoRefreshEnabled: settings.autoRefreshEnabled,
+      ideHighlightEnabled: settings.ideHighlightEnabled,
+      participant: settings.autoRefreshEnabled,
+      lastAcceptedGeneration: current.lastAcceptedGeneration,
+    };
+    this.states.set(tabId, next);
+    return next;
+  }
+
+  public async acceptPageRefresh(
+    windowId: number,
+    message: PageRefreshMessage,
+  ): Promise<void> {
+    this.refreshCalls.push([windowId, message]);
+  }
+
+  public async activateTab(tabId: number, windowId: number): Promise<void> {
+    this.activatedTabs.push([tabId, windowId]);
+  }
+
+  public async removeTab(tabId: number): Promise<void> {
+    this.removedTabs.push(tabId);
+    this.states.delete(tabId);
+  }
+
+  public async removeWindow(windowId: number): Promise<void> {
+    this.removedWindows.push(windowId);
+    for (const [tabId, state] of this.states) {
+      if (state.windowId === windowId) {
+        this.states.delete(tabId);
+      }
+    }
   }
 }
 
@@ -3641,6 +3878,31 @@ function inspectPayload(): InspectPayload {
       },
     ],
     context: { url: "https://example.test/page", metadata: {} },
+    ideHighlightEnabled: true,
+    metadata: {},
+  };
+}
+
+function defaultTabState(tabId: number, windowId: number): TabRefreshState {
+  return {
+    tabId,
+    windowId,
+    autoRefreshEnabled: true,
+    ideHighlightEnabled: true,
+    participant: false,
+    lastAcceptedGeneration: 0,
+  };
+}
+
+function pageRefresh(refreshGeneration: number): PageRefreshMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "page.refresh",
+    messageId: `refresh-${refreshGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    refreshGeneration,
+    mode: "styles",
     metadata: {},
   };
 }

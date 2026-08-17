@@ -241,6 +241,7 @@ function fullInspectMessage(
     messageId: "inspect-max",
     sessionId: "session-1",
     source: { role: "browser" as const, id: "firefox-test", metadata: {} },
+    ideHighlightEnabled: payload.ideHighlightEnabled,
     targets: payload.targets,
     context: payload.context,
     metadata: payload.metadata,

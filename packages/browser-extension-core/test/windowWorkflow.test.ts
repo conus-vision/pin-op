@@ -1,6 +1,7 @@
 import type {
   ClientSource,
   PeerStateMessage,
+  PageRefreshMessage,
   ResolutionMessage,
   SourceNavigateMessage,
   SourceNavigationStateMessage,
@@ -12,6 +13,7 @@ import {
   type BrowserBridgeClientOptions,
   type BrowserConnectionState,
   type BrowserCredentials,
+  type BrowserProtocolMismatch,
   type BrowserWindowLink,
   type InspectPayload,
   type SessionStorage,
@@ -381,6 +383,16 @@ class FakeWindowClient implements WindowConnectionClient {
     return { dispose(): void {} };
   }
 
+  public onPageRefresh(_listener: (message: PageRefreshMessage) => void) {
+    return { dispose(): void {} };
+  }
+
+  public onProtocolMismatch(
+    _listener: (mismatch: BrowserProtocolMismatch) => void,
+  ) {
+    return { dispose(): void {} };
+  }
+
   public activate(): void {
     this.active = true;
   }
@@ -437,6 +449,7 @@ function savedLink(instance: FakeBridgeInstance): BrowserWindowLink {
 
 function selection(tabId: number): InspectPayload {
   return {
+    ideHighlightEnabled: true,
     targets: [
       {
         role: "selected",

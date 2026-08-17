@@ -10,6 +10,7 @@ import {
   createBackgroundRouter,
   createDevtoolsPanelPortName,
   createInspectPayload,
+  createDefaultTabRefreshState,
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
@@ -40,12 +41,16 @@ import {
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
+  parsePanelTabSettingsCommand,
+  parseTabRefreshState,
   registerDevtoolsPanel,
   sanitizeErrorMessage,
   startBackgroundRuntime,
   startContentScriptRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
+  TabRefreshCoordinator,
+  TabRefreshStateStore,
   virtualTreeRows,
   WindowConnectionCoordinator,
 } from "../src/index.js";
@@ -64,6 +69,7 @@ describe("browser extension core exports", () => {
     expect(createBackgroundRouter).toBeTypeOf("function");
     expect(createDevtoolsPanelPortName).toBeTypeOf("function");
     expect(createInspectPayload).toBeTypeOf("function");
+    expect(createDefaultTabRefreshState).toBeTypeOf("function");
     expect(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH).toBe(64);
     expect(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH).toBe(100);
     expect(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH).toBe(128);
@@ -97,6 +103,8 @@ describe("browser extension core exports", () => {
     expect(parseDomEvent).toBeTypeOf("function");
     expect(parseDomRequest).toBeTypeOf("function");
     expect(parseDomResponse).toBeTypeOf("function");
+    expect(parsePanelTabSettingsCommand).toBeTypeOf("function");
+    expect(parseTabRefreshState).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
     expect(SourceNavigationController).toBeTypeOf("function");
@@ -109,6 +117,8 @@ describe("browser extension core exports", () => {
     expect(startContentScriptRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
     expect(startPanelRuntime).toBeTypeOf("function");
+    expect(TabRefreshCoordinator).toBeTypeOf("function");
+    expect(TabRefreshStateStore).toBeTypeOf("function");
     expect(virtualTreeRows).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });

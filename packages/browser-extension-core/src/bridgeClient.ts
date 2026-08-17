@@ -2,9 +2,12 @@ import {
   PinOpMessageSchema,
   ClientSourceSchema,
   PROTOCOL_VERSION,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
   SourceNavigateMessageSchema,
+  parseProtocolMismatchReason,
   type ClientSource,
   type InspectMessage,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ProtocolErrorCode,
   type ResolutionMessage,
@@ -35,12 +38,23 @@ export type BrowserConnectionState =
   | "linking"
   | "reconnecting"
   | "connected"
+  | "incompatible"
   | "error";
+
+export interface BrowserProtocolMismatch {
+  readonly browserProtocolVersion: typeof PROTOCOL_VERSION;
+  readonly peerProtocolVersion?: number;
+}
+
+export interface BrowserSocketCloseEvent {
+  readonly code: number;
+  readonly reason: string;
+}
 
 export interface BrowserSocket {
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event: BrowserSocketCloseEvent) => void) | null;
   onerror: (() => void) | null;
   send(payload: string): void;
   close(): void;
@@ -66,7 +80,7 @@ export interface BrowserBridgeClientOptions {
 
 export type InspectPayload = Pick<
   InspectMessage,
-  "targets" | "context" | "metadata"
+  "targets" | "context" | "ideHighlightEnabled" | "metadata"
 >;
 
 export type InspectSendOutcome =
@@ -122,6 +136,12 @@ export class BrowserBridgeClient {
   >();
   private readonly sourceNavigationStateListeners = new Set<
     (message: SourceNavigationStateMessage) => void
+  >();
+  private readonly pageRefreshListeners = new Set<
+    (message: PageRefreshMessage) => void
+  >();
+  private readonly protocolMismatchListeners = new Set<
+    (details: BrowserProtocolMismatch) => void
   >();
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
@@ -260,6 +280,18 @@ export class BrowserBridgeClient {
     return subscribe(this.sourceNavigationStateListeners, listener);
   }
 
+  public onPageRefresh(
+    listener: (message: PageRefreshMessage) => void,
+  ): BrowserBridgeSubscription {
+    return subscribe(this.pageRefreshListeners, listener);
+  }
+
+  public onProtocolMismatch(
+    listener: (details: BrowserProtocolMismatch) => void,
+  ): BrowserBridgeSubscription {
+    return subscribe(this.protocolMismatchListeners, listener);
+  }
+
   private sendInspectMessage(
     inspectMessageId: string,
     payload: InspectPayload,
@@ -285,6 +317,7 @@ export class BrowserBridgeClient {
       },
       targets: safePayload.targets,
       context: safePayload.context,
+      ideHighlightEnabled: safePayload.ideHighlightEnabled,
       metadata: safePayload.metadata,
     });
     if (!message.success) {
@@ -361,7 +394,7 @@ export class BrowserBridgeClient {
         this.fail(new Error("WebSocket connection failed"));
       }
     };
-    socket.onclose = () => this.handleClose(socket);
+    socket.onclose = (event) => this.handleClose(socket, event);
   }
 
   private handleMessage(socket: BrowserSocket, data: unknown): void {
@@ -448,6 +481,17 @@ export class BrowserBridgeClient {
       this.notifyListeners(this.sourceNavigationStateListeners, message);
       return;
     }
+    if (message.type === "page.refresh") {
+      if (
+        !this.authenticated ||
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId
+      ) {
+        return;
+      }
+      this.notifyListeners(this.pageRefreshListeners, message);
+      return;
+    }
     if (message.type === "resolution" || message.type === "peerState") {
       if (
         !this.authenticated ||
@@ -512,7 +556,12 @@ export class BrowserBridgeClient {
       authToken: this.credentials.authToken,
       bridgeInstanceId: this.credentials.bridgeInstanceId,
       source: this.connectionSource,
-      capabilities: ["inspect", "link", "source-navigation"],
+      capabilities: [
+        "inspect",
+        "link",
+        "source-navigation",
+        "auto-refresh",
+      ],
       metadata: {},
     });
   }
@@ -561,13 +610,34 @@ export class BrowserBridgeClient {
     this.fail(error);
   }
 
-  private handleClose(socket: BrowserSocket): void {
+  private handleClose(
+    socket: BrowserSocket,
+    event: BrowserSocketCloseEvent,
+  ): void {
     if (this.socket !== socket) {
       return;
     }
     this.socket = undefined;
     this.authenticated = false;
     this.detach(socket);
+    const close = snapshotCloseEvent(event);
+    if (close.code === PROTOCOL_MISMATCH_CLOSE_CODE) {
+      this.reconnectEnabled = false;
+      this.connectionIntent = undefined;
+      this.credentials = undefined;
+      this.pendingCredentialNotification = false;
+      this.credentialsReconnectAllowed = false;
+      const details = mismatchDetails(close.reason);
+      this.setState("incompatible");
+      this.notifyListeners(this.protocolMismatchListeners, details);
+      this.report(
+        new BrowserProtocolError(
+          "protocol.invalidMessage",
+          "Pin-op protocol versions are incompatible",
+        ),
+      );
+      return;
+    }
     const intent = this.connectionIntent;
     if (!this.reconnectEnabled || !intent) {
       this.setState("disconnected");
@@ -650,8 +720,46 @@ export function withoutInternalRoutingMetadata(
   return {
     targets: payload.targets,
     context: payload.context,
+    ideHighlightEnabled: payload.ideHighlightEnabled,
     metadata,
   };
+}
+
+function snapshotCloseEvent(event: unknown): BrowserSocketCloseEvent {
+  try {
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      return { code: 0, reason: "" };
+    }
+    const code = Object.getOwnPropertyDescriptor(event, "code");
+    const reason = Object.getOwnPropertyDescriptor(event, "reason");
+    return {
+      code: code && Object.hasOwn(code, "value") &&
+          Number.isInteger(code.value) && code.value >= 0
+        ? Number(code.value)
+        : 0,
+      reason: reason && Object.hasOwn(reason, "value") &&
+          typeof reason.value === "string"
+        ? reason.value
+        : "",
+    };
+  } catch {
+    return { code: 0, reason: "" };
+  }
+}
+
+function mismatchDetails(reason: string): BrowserProtocolMismatch {
+  const parsed = parseProtocolMismatchReason(reason);
+  const peerProtocolVersion = !parsed
+    ? undefined
+    : parsed.expectedVersion !== PROTOCOL_VERSION
+      ? parsed.expectedVersion
+      : parsed.receivedVersion !== PROTOCOL_VERSION
+        ? parsed.receivedVersion
+        : undefined;
+  return Object.freeze({
+    browserProtocolVersion: PROTOCOL_VERSION,
+    ...(peerProtocolVersion === undefined ? {} : { peerProtocolVersion }),
+  });
 }
 
 function withoutBrowserRoutingMetadata(

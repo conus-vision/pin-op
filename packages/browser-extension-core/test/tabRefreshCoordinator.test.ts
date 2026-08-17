@@ -1,0 +1,234 @@
+import {
+  PROTOCOL_VERSION,
+  type PageRefreshMessage,
+} from "@pin-op/protocol";
+import { describe, expect, it, vi } from "vitest";
+import type { SessionStorage } from "../src/browserWindowLinkStore.js";
+import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
+import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
+
+describe("TabRefreshCoordinator", () => {
+  it("makes a default-on tab a persistent participant when its panel opens", async () => {
+    const context = setup();
+    const opened = await context.coordinator.panelOpened(11, 7);
+
+    expect(opened).toMatchObject({
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+    });
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+
+    const replacement = setup(context.storage);
+    await replacement.coordinator.initialize();
+    expect(replacement.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+    expect(await replacement.coordinator.state(11, 7)).toMatchObject({
+      participant: true,
+      autoRefreshEnabled: true,
+    });
+  });
+
+  it("refreshes the active participant and leaves only newest work for inactive tabs", async () => {
+    let activeTabId = 11;
+    const context = setup(undefined, () => activeTabId);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "styles"));
+    expect(context.dispatchRefresh).toHaveBeenCalledTimes(1);
+    expect(context.dispatchRefresh).toHaveBeenLastCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+    expect(await context.coordinator.state(11, 7)).not.toHaveProperty("pending");
+    expect(await context.coordinator.state(12, 7)).toHaveProperty(
+      "pending",
+      { generation: 1, mode: "styles" },
+    );
+
+    await context.coordinator.acceptPageRefresh(7, refresh(2, "styles"));
+    await context.coordinator.acceptPageRefresh(7, refresh(2, "reload"));
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "reload"));
+    expect(await context.coordinator.state(12, 7)).toHaveProperty(
+      "pending",
+      { generation: 2, mode: "reload" },
+    );
+
+    activeTabId = 12;
+    await context.coordinator.activateTab(12, 7);
+    await context.coordinator.activateTab(12, 7);
+    expect(context.dispatchRefresh.mock.calls.filter(([tabId]) => tabId === 12))
+      .toEqual([
+        [
+          12,
+          {
+            type: "pin-op.refresh.execute",
+            refreshGeneration: 2,
+            mode: "reload",
+          },
+        ],
+      ]);
+  });
+
+  it("discards pending work while disabled and never replays disabled generations", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(3, "styles"));
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 3, mode: "styles" },
+    );
+
+    const disabled = await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    expect(disabled).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+    expect(disabled).not.toHaveProperty("pending");
+    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(7, 11, false);
+
+    await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
+    const enabled = await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+    expect(enabled).toMatchObject({
+      participant: true,
+      lastAcceptedGeneration: 4,
+    });
+    await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+    await context.coordinator.acceptPageRefresh(7, refresh(5, "styles"));
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 5,
+      mode: "styles",
+    });
+  });
+
+  it("cleans tab and window ownership without touching other windows", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    await context.coordinator.panelOpened(21, 8);
+
+    await context.coordinator.removeTab(11);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, false);
+    expect((await context.store.loadAll()).map(({ tabId }) => tabId)).toEqual([
+      12,
+      21,
+    ]);
+
+    await context.coordinator.removeWindow(7);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 12, false);
+    expect((await context.store.loadAll()).map(({ tabId }) => tabId)).toEqual([
+      21,
+    ]);
+  });
+
+  it("moves a participating tab to an exact new window without carrying pending work", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(3, "reload"));
+
+    const moved = await context.coordinator.panelOpened(11, 8);
+
+    expect(moved).toMatchObject({
+      tabId: 11,
+      windowId: 8,
+      participant: true,
+      autoRefreshEnabled: true,
+    });
+    expect(moved).not.toHaveProperty("pending");
+    expect(context.setRefreshParticipant.mock.calls.slice(-2)).toEqual([
+      [7, 11, false],
+      [8, 11, true],
+    ]);
+    expect(await context.store.loadAll()).toEqual([moved]);
+  });
+
+  it("ignores refresh for another window and reports dispatch failures without replay", async () => {
+    const onError = vi.fn();
+    const context = setup(undefined, () => 11, async () => {
+      throw new Error("content unavailable");
+    }, onError);
+    await context.coordinator.panelOpened(11, 7);
+
+    await context.coordinator.acceptPageRefresh(8, refresh(1, "reload"));
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "reload"));
+    expect(onError).toHaveBeenCalledOnce();
+    expect(await context.coordinator.state(11, 7)).not.toHaveProperty("pending");
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+  });
+});
+
+function setup(
+  storage = memoryStorage(),
+  activeTab: () => number | undefined = () => undefined,
+  dispatch: (tabId: number, command: unknown) => Promise<void> = async () => undefined,
+  onError = vi.fn(),
+) {
+  const store = new TabRefreshStateStore(storage);
+  const dispatchRefresh = vi.fn(dispatch);
+  const setRefreshParticipant = vi.fn();
+  const coordinator = new TabRefreshCoordinator({
+    store,
+    getActiveTabId: async () => activeTab(),
+    dispatchRefresh,
+    setRefreshParticipant,
+    onError,
+  });
+  return {
+    storage,
+    store,
+    coordinator,
+    dispatchRefresh,
+    setRefreshParticipant,
+  };
+}
+
+function refresh(
+  refreshGeneration: number,
+  mode: "styles" | "reload",
+): PageRefreshMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "page.refresh",
+    messageId: `refresh-${refreshGeneration}-${mode}`,
+    sessionId: "session-1",
+    source: { role: "ide", id: "ide-1" },
+    refreshGeneration,
+    mode,
+    metadata: {},
+  };
+}
+
+function memoryStorage(): SessionStorage {
+  const values = new Map<string, unknown>();
+  return {
+    async get(key: string) {
+      return values.has(key) ? { [key]: values.get(key) } : {};
+    },
+    async set(records: Record<string, unknown>) {
+      for (const [key, value] of Object.entries(records)) {
+        values.set(key, structuredClone(value));
+      }
+    },
+    async remove(key: string) {
+      values.delete(key);
+    },
+  };
+}

@@ -3,6 +3,7 @@ import {
   InspectMessageSchema,
   PROTOCOL_VERSION,
   type ClientSource,
+  type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
   type SourceNavigateMessage,
@@ -10,6 +11,7 @@ import {
 } from "@pin-op/protocol";
 import {
   BrowserProtocolError,
+  type BrowserProtocolMismatch,
   type InspectPayload,
   type InspectSendOutcome,
   type SourceNavigationSendOutcome,
@@ -37,11 +39,21 @@ import {
   parseDevtoolsPanelPortName,
   parseInspectPortRequest,
   parsePanelSourceNavigateCommand,
+  parsePanelTabSettingsCommand,
   type ContentSessionId,
   type PanelInspectPort,
   type PanelSourceNavigateCommand,
 } from "./inspectPortProtocol.js";
 import { PanelSessionTransport } from "./panelSessionTransport.js";
+import {
+  createPanelTabStateMessage,
+  type ProtocolCompatibilityMessage,
+  type TabRefreshState,
+} from "./refreshRuntimeProtocol.js";
+import type {
+  TabRefreshCoordinator,
+  TabRefreshSettings,
+} from "./tabRefreshCoordinator.js";
 import type {
   BrowserWindowConnectionState,
   PanelRegistration,
@@ -86,8 +98,24 @@ export interface BackgroundWindowCoordinator {
       "inspectMessageId" | "resolutionGeneration" | "direction"
     >,
   ): SourceNavigationSendOutcome;
+  setRefreshParticipant(
+    windowId: number,
+    tabId: number,
+    participant: boolean,
+  ): void;
   removeWindow(windowId: number): Promise<void>;
 }
+
+export type BackgroundTabRefreshCoordinator = Pick<
+  TabRefreshCoordinator,
+  | "panelOpened"
+  | "state"
+  | "updateSettings"
+  | "acceptPageRefresh"
+  | "activateTab"
+  | "removeTab"
+  | "removeWindow"
+>;
 
 export type BackgroundCommandError =
   | "invalidCode"
@@ -117,6 +145,10 @@ export interface BackgroundRouterSubscriptions {
   subscribeTabAttached(
     listener: (tabId: number, newWindowId: number) => void,
   ): () => void;
+  subscribeTabActivated?(
+    listener: (tabId: number, windowId: number) => void,
+  ): () => void;
+  subscribeTabRemoved?(listener: (tabId: number) => void): () => void;
 }
 
 export interface BackgroundRouterOptions {
@@ -125,6 +157,7 @@ export interface BackgroundRouterOptions {
   readonly maxPanelPorts?: number;
   readonly getTab: (tabId: number) => Promise<BackgroundTab | undefined>;
   readonly coordinator: BackgroundWindowCoordinator;
+  readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
   readonly inspectCoordinator: BackgroundInspectCoordinator;
   readonly panelSessionTransport?: PanelSessionTransport;
   readonly inspectCorrelationStore?: InspectCorrelationStore;
@@ -140,6 +173,9 @@ export interface BackgroundRouterOptions {
       windowId: number,
       message: SourceNavigationStateMessage,
     ) => void,
+  ) => () => void;
+  readonly subscribePageRefreshes?: (
+    listener: (windowId: number, message: PageRefreshMessage) => void,
   ) => () => void;
   readonly subscriptions?: BackgroundRouterSubscriptions;
   readonly onError?: (error: unknown) => void;
@@ -225,6 +261,7 @@ export class BackgroundRouter {
   private readonly maxPanelPorts: number;
   private readonly getTab: BackgroundRouterOptions["getTab"];
   private readonly coordinator: BackgroundWindowCoordinator;
+  private readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
   private readonly inspectCoordinator: BackgroundInspectCoordinator;
   private readonly panelSessions: PanelSessionTransport;
   private readonly correlations: InspectCorrelationStore;
@@ -263,6 +300,7 @@ export class BackgroundRouter {
     this.maxPanelPorts = validPanelPortLimit(options.maxPanelPorts);
     this.getTab = options.getTab;
     this.coordinator = options.coordinator;
+    this.tabRefreshCoordinator = options.tabRefreshCoordinator;
     this.inspectCoordinator = options.inspectCoordinator;
     this.correlations = options.inspectCorrelationStore ??
       new InspectCorrelationStore();
@@ -296,6 +334,15 @@ export class BackgroundRouter {
         options.subscribeSourceNavigationStates((windowId, message) =>
           this.receiveSourceNavigationState(windowId, message),
         ),
+      );
+    }
+    if (options.subscribePageRefreshes) {
+      this.removeSubscriptions.push(
+        options.subscribePageRefreshes((windowId, message) => {
+          void this.tabRefreshCoordinator
+            .acceptPageRefresh(windowId, message)
+            .catch((error) => this.reportError(error));
+        }),
       );
     }
     this.attachSubscriptions(options.subscriptions);
@@ -413,7 +460,10 @@ export class BackgroundRouter {
       }
       this.removeBinding(binding);
     }
-    await this.coordinator.removeWindow(windowId);
+    await Promise.all([
+      this.tabRefreshCoordinator.removeWindow(windowId),
+      this.coordinator.removeWindow(windowId),
+    ]);
   }
 
   public dispose(): void {
@@ -466,6 +516,40 @@ export class BackgroundRouter {
         this.attachMovedTab(tabId, newWindowId);
       }),
     );
+    if (subscriptions.subscribeTabActivated) {
+      this.removeSubscriptions.push(
+        subscriptions.subscribeTabActivated((tabId, windowId) => {
+          void this.tabRefreshCoordinator
+            .activateTab(tabId, windowId)
+            .catch((error) => this.reportError(error));
+        }),
+      );
+    }
+    if (subscriptions.subscribeTabRemoved) {
+      this.removeSubscriptions.push(
+        subscriptions.subscribeTabRemoved((tabId) => {
+          this.removeTab(tabId);
+        }),
+      );
+    }
+  }
+
+  private removeTab(tabId: number): void {
+    if (this.disposed || !isBrowserId(tabId)) {
+      return;
+    }
+    const channel = this.channelByTab.get(tabId);
+    const binding = channel ? this.bindings.get(channel) : undefined;
+    const port = channel ? this.panelPorts.get(channel) : undefined;
+    if (port) {
+      this.closePanelPort(port, true);
+    }
+    if (binding) {
+      this.removeBinding(binding);
+    }
+    void this.tabRefreshCoordinator
+      .removeTab(tabId)
+      .catch((error) => this.reportError(error));
   }
 
   private suspendDetachedTab(tabId: number, oldWindowId: number): void {
@@ -786,7 +870,7 @@ export class BackgroundRouter {
         windowId: binding.windowId,
         tabId: binding.tabId,
         sourceId: binding.sourceId,
-        onStateChanged: (state, displayLinkCode) =>
+        onStateChanged: (state, displayLinkCode, protocolMismatch) =>
           this.queueWindowState(
             record,
             token,
@@ -794,6 +878,7 @@ export class BackgroundRouter {
             windowStateQueue,
             state,
             displayLinkCode,
+            protocolMismatch,
           ),
       });
     } catch (error) {
@@ -808,6 +893,29 @@ export class BackgroundRouter {
       return;
     }
     record.registration = registration;
+    void this.initializePanelTabState(record, token, binding);
+  }
+
+  private async initializePanelTabState(
+    record: PanelPortRecord,
+    token: object,
+    binding: ChannelBinding,
+  ): Promise<void> {
+    try {
+      const state = await this.tabRefreshCoordinator.panelOpened(
+        binding.tabId,
+        binding.windowId,
+      );
+      if (this.isCurrentActivation(record, token, binding)) {
+        this.postToCurrentPort(
+          record,
+          token,
+          createPanelTabStateMessage(state),
+        );
+      }
+    } catch (error) {
+      this.reportError(error);
+    }
   }
 
   private clearPanelActivation(
@@ -1063,6 +1171,7 @@ export class BackgroundRouter {
           refreshed.windowId,
           abortController.signal,
         );
+        await this.tabRefreshCoordinator.removeWindow(refreshed.windowId);
       }
       if (!this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
         return { ok: false, error: "stalePanel" };
@@ -1119,6 +1228,20 @@ export class BackgroundRouter {
     activationToken: object,
     message: unknown,
   ): void {
+    const settings = parsePanelTabSettingsCommand(message);
+    if (settings) {
+      if (record.lastWindowState !== "incompatible") {
+        this.queueTabSettings(record, activationToken, settings);
+      }
+      return;
+    }
+    if (record.lastWindowState === "incompatible") {
+      const request = parseInspectPortRequest(message);
+      if (request) {
+        this.postInspectFailure(record, request.requestId);
+      }
+      return;
+    }
     const request = parseInspectPortRequest(message);
     if (!request) {
       const navigation = parsePanelSourceNavigateCommand(message);
@@ -1198,6 +1321,55 @@ export class BackgroundRouter {
       this.reportError(error);
       this.postInspectFailure(record, request.requestId);
     });
+  }
+
+  private queueTabSettings(
+    record: PanelPortRecord,
+    activationToken: object,
+    settings: TabRefreshSettings,
+  ): void {
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (
+        !binding ||
+        isProtocolIncompatible(record) ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return;
+      }
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      const token = record.activationToken;
+      if (
+        !refreshed ||
+        !token ||
+        isProtocolIncompatible(record) ||
+        !this.isCurrentActivation(record, token, refreshed)
+      ) {
+        return;
+      }
+      const state = await this.tabRefreshCoordinator.updateSettings(
+        refreshed.tabId,
+        refreshed.windowId,
+        {
+          autoRefreshEnabled: settings.autoRefreshEnabled,
+          ideHighlightEnabled: settings.ideHighlightEnabled,
+        },
+      );
+      if (this.isCurrentActivation(record, token, refreshed)) {
+        this.postToCurrentPort(
+          record,
+          token,
+          createPanelTabStateMessage(state),
+        );
+      }
+    });
+    record.inspectCommandTail = operation.catch((error) =>
+      this.reportError(error),
+    );
   }
 
   private publishSourceNavigation(
@@ -1486,6 +1658,30 @@ export class BackgroundRouter {
     }
 
     let inspectMessageId: string;
+    let tabState: TabRefreshState;
+    try {
+      tabState = await this.tabRefreshCoordinator.state(
+        refreshed.tabId,
+        refreshed.windowId,
+      );
+    } catch (error) {
+      this.reportError(error);
+      return undefined;
+    }
+    if (
+      !record.inspectSession ||
+      record.contentSessionId !== contentSessionId ||
+      !record.activationToken ||
+      !this.isCurrentActivation(record, record.activationToken, refreshed)
+    ) {
+      return undefined;
+    }
+    const inspectPayload: InspectPayload = {
+      targets: payload.targets,
+      context: payload.context,
+      ideHighlightEnabled: tabState.ideHighlightEnabled,
+      metadata: payload.metadata,
+    };
     try {
       inspectMessageId = this.inspectMessageId();
       this.correlations.record(
@@ -1508,7 +1704,7 @@ export class BackgroundRouter {
         refreshed.windowId,
         inspectMessageId,
         refreshed.sourceId,
-        payload,
+        inspectPayload,
       );
     } catch (error) {
       this.reportError(error);
@@ -1558,6 +1754,7 @@ export class BackgroundRouter {
     queue: WindowStateQueue,
     state: BrowserWindowConnectionState,
     displayLinkCode?: string,
+    protocolMismatch?: BrowserProtocolMismatch,
   ): void {
     if (
       record.windowStateQueue !== queue ||
@@ -1597,6 +1794,10 @@ export class BackgroundRouter {
         if (record.inspectSession || record.panelSessionBinding) {
           this.disposeInspectionSession(record, false);
         }
+      } else if (state === "incompatible") {
+        if (record.inspectSession || record.panelSessionBinding) {
+          this.disposeInspectionSession(record, false);
+        }
       } else if (
         (state === "linking" || state === "linked") &&
         !record.inspectSession &&
@@ -1622,6 +1823,19 @@ export class BackgroundRouter {
         windowStateMessage.displayLinkCode = displayLinkCode;
       }
       this.postToCurrentPort(record, token, windowStateMessage);
+      if (state === "incompatible") {
+        this.postToCurrentPort(
+          record,
+          token,
+          incompatibleProtocolMessage(protocolMismatch),
+        );
+      } else if (state === "linked") {
+        this.postToCurrentPort(record, token, {
+          type: "pin-op.protocol.compatibility",
+          compatible: true,
+          browserProtocolVersion: PROTOCOL_VERSION,
+        } satisfies ProtocolCompatibilityMessage);
+      }
     });
     queue.tail = operation.catch((error) =>
       this.reportError(error),
@@ -2122,6 +2336,7 @@ function parseElementSelectedMessage(
       },
       targets: value.payload.targets,
       context: value.payload.context,
+      ideHighlightEnabled: value.payload.ideHighlightEnabled,
       metadata: value.payload.metadata,
     });
     return parsed.success
@@ -2131,6 +2346,7 @@ function parseElementSelectedMessage(
           payload: {
             targets: parsed.data.targets,
             context: parsed.data.context,
+            ideHighlightEnabled: parsed.data.ideHighlightEnabled,
             metadata: parsed.data.metadata,
           },
         }
@@ -2217,6 +2433,10 @@ function isBrowserId(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function isProtocolIncompatible(record: PanelPortRecord): boolean {
+  return record.lastWindowState === "incompatible";
+}
+
 function maintainsInspectionSession(
   state: BrowserWindowConnectionState | undefined,
 ): boolean {
@@ -2278,6 +2498,17 @@ function windowIsAvailable(
   peer: { readonly connected: boolean } | undefined,
 ): boolean {
   return state.bridgeConnected !== false && peer?.connected !== false;
+}
+
+function incompatibleProtocolMessage(
+  details: BrowserProtocolMismatch | undefined,
+): ProtocolCompatibilityMessage {
+  return Object.freeze({
+    type: "pin-op.protocol.compatibility",
+    compatible: false,
+    browserProtocolVersion: PROTOCOL_VERSION,
+    peerProtocolVersion: details?.peerProtocolVersion ?? "unknown",
+  });
 }
 
 function hasOnlyKeys(

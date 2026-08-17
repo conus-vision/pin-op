@@ -5,6 +5,10 @@ import {
   parseDevtoolsPanelPortName,
   parseInspectContentLeasePortName,
   parsePanelSourceNavigateCommand,
+  parsePanelTabSettingsCommand,
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
+  parseRefreshExecutionCommand,
 } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
@@ -118,6 +122,46 @@ describe("panel inspect transport", () => {
     expect(parsePanelSourceNavigateCommand(withSymbol)).toBeUndefined();
     expect(() => parsePanelSourceNavigateCommand(proxy)).not.toThrow();
     expect(parsePanelSourceNavigateCommand(proxy)).toBeUndefined();
+  });
+
+  it("parses only exact settings, state, compatibility, and execution envelopes", () => {
+    const settings = {
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    } as const;
+    const state = {
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+      lastAcceptedGeneration: 4,
+      pending: { generation: 4, mode: "styles" },
+    } as const;
+    const compatibility = {
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: 6,
+      peerProtocolVersion: "unknown",
+    } as const;
+    const execution = {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 4,
+      mode: "reload",
+    } as const;
+
+    expect(parsePanelTabSettingsCommand(settings)).toEqual(settings);
+    expect(parsePanelTabStateMessage(state)).toEqual(state);
+    expect(parseProtocolCompatibilityMessage(compatibility)).toEqual(
+      compatibility,
+    );
+    expect(parseRefreshExecutionCommand(execution)).toEqual(execution);
+    expect(
+      parsePanelTabSettingsCommand({ ...settings, tabId: 17 }),
+    ).toBeUndefined();
+    expect(
+      parseRefreshExecutionCommand({ ...execution, path: "file:///secret" }),
+    ).toBeUndefined();
   });
 
   it("opens its lifetime port explicitly and only once", () => {
