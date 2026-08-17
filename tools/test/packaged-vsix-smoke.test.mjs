@@ -133,14 +133,15 @@ test("installed VSIX smoke has no implicit machine runtime fallback", async () =
   assert.doesNotMatch(source, /LOCALAPPDATA|defaultVSCodeExecutablePath/);
 });
 
-test("installed VSIX smoke pins protocol 5 and current navigation capabilities", async () => {
+test("installed VSIX smoke pins protocol 6 and current navigation capabilities", async () => {
   const source = await readFile(installedSmokePath, "utf8");
 
-  assert.match(source, /metadata\.protocolVersion !== 5/);
-  assert.match(source, /protocol 5/);
+  assert.match(source, /metadata\.protocolVersion !== 6/);
+  assert.match(source, /protocol 6/);
   assert.match(source, /"source-navigation"/);
   assert.match(source, /"source\.navigationState"/);
-  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V5_OK/);
+  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V6_OK/);
+  assert.doesNotMatch(source, /protocol[- _]?v?5/i);
 });
 
 test("VSIX smoke defaults to stable in the repository runtime cache", async () => {
