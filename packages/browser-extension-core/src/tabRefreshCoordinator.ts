@@ -43,6 +43,7 @@ export class TabRefreshCoordinator {
   private readonly onError: TabRefreshCoordinatorOptions["onError"];
   private readonly watermarks = new Map<number, WindowWatermark>();
   private readonly lifecycleRevisions = new Map<number, number>();
+  private readonly panelWindows = new Map<number, number>();
   private readonly participantWindows = new Map<number, number>();
   private nextLifecycleRevision = 1;
   private initialization: Promise<void> | undefined;
@@ -64,53 +65,79 @@ export class TabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ): Promise<TabRefreshState> {
+    this.panelWindows.set(tabId, windowId);
     const revision = this.advanceLifecycle(tabId);
-    await this.ensureInitialized();
-    let previous: TabRefreshState | undefined;
-    const updated = await this.store.updateTab(tabId, (existing) => {
-      previous = existing;
-      if (!this.isCurrentLifecycle(tabId, revision)) {
-        return existing;
-      }
-      const moved = existing !== undefined && existing.windowId !== windowId;
-      const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
-      const windowGeneration = this.watermarks.get(windowId)?.generation ?? 0;
-      const generation = moved
-        ? windowGeneration
-        : Math.max(current.lastAcceptedGeneration, windowGeneration);
-      const pending = !moved && current.pending?.generation === generation
-        ? current.pending
-        : undefined;
-      const next = stateSnapshot({
-        tabId,
-        windowId,
-        autoRefreshEnabled: current.autoRefreshEnabled,
-        ideHighlightEnabled: current.ideHighlightEnabled,
-        participant: current.autoRefreshEnabled,
-        lastAcceptedGeneration: generation,
-        ...(pending ? { pending } : {}),
+    try {
+      await this.ensureInitialized();
+      let previous: TabRefreshState | undefined;
+      const updated = await this.store.updateTab(tabId, (existing) => {
+        previous = existing;
+        if (!this.isCurrentLifecycle(tabId, revision)) {
+          return existing;
+        }
+        const moved = existing !== undefined && existing.windowId !== windowId;
+        const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
+        const windowGeneration = this.watermarks.get(windowId)?.generation ?? 0;
+        const generation = moved
+          ? windowGeneration
+          : Math.max(current.lastAcceptedGeneration, windowGeneration);
+        const pending = !moved && current.pending?.generation === generation
+          ? current.pending
+          : undefined;
+        const next = stateSnapshot({
+          tabId,
+          windowId,
+          autoRefreshEnabled: current.autoRefreshEnabled,
+          ideHighlightEnabled: current.ideHighlightEnabled,
+          participant: current.autoRefreshEnabled,
+          lastAcceptedGeneration: generation,
+          ...(pending ? { pending } : {}),
+        });
+        return next;
       });
+      const next = updated ?? createDefaultTabRefreshState(tabId, windowId);
+      if (!this.isCurrentLifecycle(tabId, revision)) {
+        return next;
+      }
+      if (
+        previous?.participant &&
+        previous.windowId !== next.windowId
+      ) {
+        this.setParticipant(previous.windowId, previous.tabId, false);
+      }
+      this.updateParticipant(next);
       return next;
-    });
-    const next = updated ?? createDefaultTabRefreshState(tabId, windowId);
-    if (!this.isCurrentLifecycle(tabId, revision)) {
-      return next;
+    } catch (error) {
+      if (this.isCurrentLifecycle(tabId, revision)) {
+        this.clearPanelWindow(tabId, windowId);
+      }
+      throw error;
     }
-    if (
-      previous?.participant &&
-      previous.windowId !== next.windowId
-    ) {
-      this.setParticipant(previous.windowId, previous.tabId, false);
-    }
-    this.updateParticipant(next);
-    return next;
   }
 
   public async panelClosed(
     tabId: number,
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
+    if (windowId !== undefined) {
+      let currentWindowId = this.currentPanelWindow(tabId);
+      if (currentWindowId === undefined) {
+        await this.ensureInitialized();
+        currentWindowId = this.currentPanelWindow(tabId);
+        if (currentWindowId === undefined) {
+          const current = await this.storedTabState(tabId);
+          currentWindowId = this.currentPanelWindow(tabId);
+          if (currentWindowId === undefined && current?.windowId !== windowId) {
+            return current;
+          }
+        }
+      }
+      if (currentWindowId !== undefined && currentWindowId !== windowId) {
+        return this.storedTabState(tabId);
+      }
+    }
     const revision = this.advanceLifecycle(tabId);
+    this.clearPanelWindow(tabId, windowId);
     const participantWindowId = this.revokeIndexedParticipant(tabId);
     if (participantWindowId === undefined && windowId !== undefined) {
       this.setParticipant(windowId, tabId, false);
@@ -118,6 +145,13 @@ export class TabRefreshCoordinator {
     await this.ensureInitialized();
     const updated = await this.store.updateTab(tabId, (existing) => {
       if (!this.isCurrentLifecycle(tabId, revision)) {
+        return existing;
+      }
+      if (
+        windowId !== undefined &&
+        existing !== undefined &&
+        existing.windowId !== windowId
+      ) {
         return existing;
       }
       const resolvedWindowId = existing?.windowId ?? windowId;
@@ -365,8 +399,10 @@ export class TabRefreshCoordinator {
   }
 
   public async removeTab(tabId: number): Promise<void> {
+    this.clearPanelWindow(tabId);
     let revokedWindowId = this.revokeIndexedParticipant(tabId);
     await this.ensureInitialized();
+    this.clearPanelWindow(tabId);
     revokedWindowId ??= this.revokeIndexedParticipant(tabId);
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
@@ -382,8 +418,10 @@ export class TabRefreshCoordinator {
     if (!isBrowserId(tabId) || !isBrowserId(windowId)) {
       return;
     }
+    this.clearPanelWindow(tabId, windowId);
     let revokedWindowId = this.revokeIndexedParticipant(tabId, windowId);
     await this.ensureInitialized();
+    this.clearPanelWindow(tabId, windowId);
     revokedWindowId ??= this.revokeIndexedParticipant(tabId, windowId);
     await this.enqueue(async () => {
       const states = await this.store.loadAll();
@@ -397,13 +435,15 @@ export class TabRefreshCoordinator {
       if (state.participant && state.windowId !== revokedWindowId) {
         this.setParticipant(windowId, tabId, false);
       }
-      await this.store.removeTab(tabId);
+      await this.store.removeTabFromWindow(tabId, windowId);
     });
   }
 
   public async removeWindow(windowId: number): Promise<void> {
+    this.clearPanelWindowForWindow(windowId);
     const revokedTabIds = new Set(this.revokeIndexedWindow(windowId));
     await this.ensureInitialized();
+    this.clearPanelWindowForWindow(windowId);
     for (const tabId of this.revokeIndexedWindow(windowId)) {
       revokedTabIds.add(tabId);
     }
@@ -442,6 +482,7 @@ export class TabRefreshCoordinator {
           });
         }
         if (state.participant && this.lifecycleRevision(state.tabId) === 0) {
+          this.panelWindows.set(state.tabId, state.windowId);
           this.updateParticipant(state);
         }
       }
@@ -471,6 +512,36 @@ export class TabRefreshCoordinator {
 
   private isCurrentLifecycle(tabId: number, revision: number): boolean {
     return this.lifecycleRevision(tabId) === revision;
+  }
+
+  private currentPanelWindow(tabId: number): number | undefined {
+    return this.panelWindows.get(tabId) ?? this.participantWindows.get(tabId);
+  }
+
+  private clearPanelWindow(tabId: number, expectedWindowId?: number): void {
+    const windowId = this.panelWindows.get(tabId);
+    if (
+      windowId === undefined ||
+      (expectedWindowId !== undefined && windowId !== expectedWindowId)
+    ) {
+      return;
+    }
+    this.panelWindows.delete(tabId);
+  }
+
+  private clearPanelWindowForWindow(windowId: number): void {
+    for (const [tabId, panelWindowId] of this.panelWindows) {
+      if (panelWindowId === windowId) {
+        this.panelWindows.delete(tabId);
+      }
+    }
+  }
+
+  private async storedTabState(
+    tabId: number,
+  ): Promise<TabRefreshState | undefined> {
+    const states = await this.store.loadAll();
+    return states.find((state) => state.tabId === tabId);
   }
 
   private revokeIndexedParticipant(

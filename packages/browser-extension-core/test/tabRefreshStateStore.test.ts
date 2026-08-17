@@ -141,6 +141,23 @@ describe("TabRefreshStateStore", () => {
     expect(storage.remove).toHaveBeenLastCalledWith("pin-op.tabRefreshStates");
   });
 
+  it("removes a tab only while it still belongs to the expected window", async () => {
+    const storage = memoryStorage();
+    const store = new TabRefreshStateStore(storage);
+    const current = {
+      ...state(11, 8),
+      autoRefreshEnabled: false,
+      participant: false,
+    } as const;
+    await store.save(current);
+
+    await expect(store.removeTabFromWindow(11, 7)).resolves.toBeUndefined();
+    expect(await store.loadAll()).toEqual([current]);
+
+    await expect(store.removeTabFromWindow(11, 8)).resolves.toEqual(current);
+    expect(await store.loadAll()).toEqual([]);
+  });
+
   it("rejects invalid state before writing", async () => {
     const storage = memoryStorage();
     const store = new TabRefreshStateStore(storage);

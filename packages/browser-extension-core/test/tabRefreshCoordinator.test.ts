@@ -501,6 +501,61 @@ describe("TabRefreshCoordinator", () => {
     expect(await context.store.loadAll()).toEqual([moved]);
   });
 
+  it("ignores a known old-window close after the tab has moved", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+    const moved = await context.coordinator.panelOpened(11, 8);
+    context.setRefreshParticipant.mockClear();
+
+    const updating = context.coordinator.updateSettings(11, 8, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+    });
+    const staleClosing = context.coordinator.panelClosed(11, 7);
+
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    await Promise.all([updating, staleClosing]);
+    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(
+      8,
+      11,
+      false,
+    );
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      ideHighlightEnabled: true,
+    }]);
+  });
+
+  it("does not let an old-window close supersede an in-flight moved open", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+
+    const gate = storage.gateNextGet();
+    const opening = context.coordinator.panelOpened(11, 8);
+    await gate.started;
+    context.setRefreshParticipant.mockClear();
+    const staleClosing = context.coordinator.panelClosed(11, 7);
+
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    gate.release();
+    const [moved] = await Promise.all([opening, staleClosing]);
+    expect(moved).toMatchObject({
+      tabId: 11,
+      windowId: 8,
+      participant: true,
+    });
+    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(context.setRefreshParticipant.mock.calls).toEqual([
+      [7, 11, false],
+      [8, 11, true],
+    ]);
+  });
+
   it("immediately revokes the moved owner when close has no window id", async () => {
     const context = setup();
     await context.coordinator.panelOpened(11, 7);
@@ -579,6 +634,59 @@ describe("TabRefreshCoordinator", () => {
     await context.coordinator.acceptPageRefresh(7, refresh(2, "reload"));
     await context.coordinator.activateTab(11, 7);
     expect(context.dispatchRefresh).not.toHaveBeenCalled();
+  });
+
+  it("does not let a delayed old-window detach remove a moved participant", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+    context.setRefreshParticipant.mockClear();
+
+    const gate = storage.gateNextGet();
+    const detaching = context.coordinator.detachTab(11, 7);
+    await gate.started;
+    const opening = context.coordinator.panelOpened(11, 8);
+    gate.release();
+    const [, moved] = await Promise.all([detaching, opening]);
+
+    expect(moved).toMatchObject({
+      tabId: 11,
+      windowId: 8,
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(
+      8,
+      11,
+      false,
+    );
+  });
+
+  it("preserves disabled preferences when detach races a moved panel open", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+
+    const gate = storage.gateNextGet();
+    const detaching = context.coordinator.detachTab(11, 7);
+    await gate.started;
+    const opening = context.coordinator.panelOpened(11, 8);
+    gate.release();
+    const [, moved] = await Promise.all([detaching, opening]);
+
+    expect(moved).toMatchObject({
+      tabId: 11,
+      windowId: 8,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+    expect(await context.store.loadAll()).toEqual([moved]);
   });
 
   it("ignores refresh for another window and reports dispatch failures without replay", async () => {
@@ -669,6 +777,52 @@ function gatedInitialStorage(
         for (const [storedKey, value] of Object.entries(loaded)) {
           values.set(storedKey, structuredClone(value));
         }
+      }
+      return values.has(key) ? { [key]: values.get(key) } : {};
+    },
+    async set(records: Record<string, unknown>) {
+      for (const [key, value] of Object.entries(records)) {
+        values.set(key, structuredClone(value));
+      }
+    },
+    async remove(key: string) {
+      values.delete(key);
+    },
+  };
+}
+
+function gateableStorage(): SessionStorage & {
+  gateNextGet(): {
+    readonly started: Promise<void>;
+    readonly release: () => void;
+  };
+} {
+  const values = new Map<string, unknown>();
+  let nextGate:
+    | {
+        readonly started: ReturnType<typeof deferred<void>>;
+        readonly released: ReturnType<typeof deferred<void>>;
+      }
+    | undefined;
+  return {
+    gateNextGet() {
+      if (nextGate) {
+        throw new Error("A storage read gate is already pending");
+      }
+      const started = deferred<void>();
+      const released = deferred<void>();
+      nextGate = { started, released };
+      return {
+        started: started.promise,
+        release: () => released.resolve(),
+      };
+    },
+    async get(key: string) {
+      const gate = nextGate;
+      nextGate = undefined;
+      if (gate) {
+        gate.started.resolve();
+        await gate.released.promise;
       }
       return values.has(key) ? { [key]: values.get(key) } : {};
     },

@@ -85,6 +85,29 @@ export class TabRefreshStateStore {
     return this.removeMatching((state) => state.tabId === tabId);
   }
 
+  public removeTabFromWindow(
+    tabId: number,
+    windowId: number,
+  ): Promise<TabRefreshState | undefined> {
+    createDefaultTabRefreshState(tabId, windowId);
+    return this.enqueue(async () => {
+      const states = await this.loadAllUnlocked();
+      const current = states.find((state) => state.tabId === tabId);
+      if (current?.windowId !== windowId) {
+        return undefined;
+      }
+      const next = states.filter((state) => state.tabId !== tabId);
+      if (next.length === 0) {
+        await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+      } else {
+        await this.storage.set({
+          [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
+        });
+      }
+      return current;
+    });
+  }
+
   public removeWindow(windowId: number): Promise<void> {
     createDefaultTabRefreshState(0, windowId);
     return this.removeMatching((state) => state.windowId === windowId);
