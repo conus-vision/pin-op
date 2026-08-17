@@ -58,6 +58,12 @@ export interface CoordinatorPublication {
   readonly resolution?: SourceResolution;
 }
 
+export interface CoordinatorInvalidation {
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+  readonly editor?: ActiveEditorLike;
+}
+
 export interface ActiveEditorCoordinatorOptions {
   readonly host: CoordinatorHost;
   readonly registry: SourcePluginRegistryLike;
@@ -68,7 +74,7 @@ export interface ActiveEditorCoordinatorOptions {
     resolution: SourceResolution,
   ) => void;
   readonly onOutcome?: (publication: CoordinatorPublication) => void;
-  readonly clear: () => void;
+  readonly clear: (invalidation?: CoordinatorInvalidation) => void;
   readonly onError?: (error: unknown) => void;
   readonly editDebounceMs?: number;
 }
@@ -104,15 +110,17 @@ export class ActiveEditorCoordinator implements Disposable {
 
   public clearSelection(): void {
     if (this.disposed) return;
+    const selection = this.options.store.current();
     this.options.store.clear();
     this.clearEditTimer();
-    this.invalidateCurrent();
+    this.invalidateCurrent(selection);
   }
 
   public async refresh(): Promise<void> {
     if (this.disposed || !this.options.store.current()) return;
     this.clearEditTimer();
-    const workGeneration = this.invalidateCurrent();
+    const selection = this.options.store.current();
+    const workGeneration = this.invalidateCurrent(selection);
     await this.resolveCurrent(this.resolutionGeneration, workGeneration);
   }
 
@@ -135,7 +143,7 @@ export class ActiveEditorCoordinator implements Disposable {
 
     this.advanceResolutionGeneration();
     this.clearEditTimer();
-    const workGeneration = this.invalidateCurrent();
+    const workGeneration = this.invalidateCurrent(this.options.store.current());
     const resolutionGeneration = this.resolutionGeneration;
     this.editTimer = setTimeout(() => {
       this.editTimer = undefined;
@@ -156,12 +164,19 @@ export class ActiveEditorCoordinator implements Disposable {
     );
   }
 
-  private invalidateCurrent(): number {
+  private invalidateCurrent(selection = this.options.store.current()): number {
     this.abort?.abort();
     this.abort = undefined;
     this.workGeneration += 1;
+    const editor = this.options.host.getActiveEditor();
     try {
-      this.options.clear();
+      this.options.clear(selection
+        ? {
+            inspectMessageId: selection.messageId,
+            resolutionGeneration: this.resolutionGeneration,
+            ...(editor === undefined ? {} : { editor }),
+          }
+        : undefined);
     } catch (error) {
       this.reportError(error);
     }

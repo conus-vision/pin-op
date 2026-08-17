@@ -25,6 +25,13 @@ export interface SourceNavigationResolution {
   readonly resolutionGeneration: number;
   readonly documentUri?: string;
   readonly matches: readonly ResolvedSourceMatch[];
+  readonly includedMatches?: readonly SourceNavigationIncludedMatch[];
+}
+
+export interface SourceNavigationIncludedMatch {
+  readonly matchId: string;
+  readonly targetRole: ResolvedSourceMatch["targetRole"];
+  readonly range: SourceRange;
 }
 
 export function replacePrimarySelection<T>(
@@ -48,6 +55,8 @@ export class SourceNavigator implements DisposableLike {
   private resolutionGeneration = 0;
   private documentUri: string | undefined;
   private ranges: readonly SourceRange[] = [];
+  private matches: readonly ResolvedSourceMatch[] = [];
+  private includedMatches: readonly SourceNavigationIncludedMatch[] = [];
   private preferredTarget: PreferredNavigationTarget | undefined;
   private disposed = false;
 
@@ -67,10 +76,29 @@ export class SourceNavigator implements DisposableLike {
     this.inspectMessageId = resolution.inspectMessageId;
     this.resolutionGeneration = resolution.resolutionGeneration;
     this.documentUri = resolution.documentUri;
+    this.matches = resolution.documentUri ? resolution.matches : [];
     this.ranges = resolution.documentUri
       ? selectedRanges(resolution.documentUri, resolution.matches)
       : [];
+    this.includedMatches = resolution.documentUri
+      ? currentIncludedMatches(
+          resolution.matches,
+          resolution.includedMatches ?? [],
+        )
+      : [];
     this.publishState();
+  }
+
+  public setIncludedMatches(
+    includedMatches: readonly SourceNavigationIncludedMatch[],
+    publish = false,
+  ): void {
+    if (this.disposed) return;
+    this.includedMatches = currentIncludedMatches(
+      this.matches,
+      includedMatches,
+    );
+    if (publish) this.publishState();
   }
 
   public navigate(message: SourceNavigateMessage): void {
@@ -122,6 +150,8 @@ export class SourceNavigator implements DisposableLike {
     this.resolutionGeneration = 0;
     this.documentUri = undefined;
     this.ranges = [];
+    this.matches = [];
+    this.includedMatches = [];
     this.publishState();
   }
 
@@ -130,6 +160,8 @@ export class SourceNavigator implements DisposableLike {
     this.preferredTarget = undefined;
     this.documentUri = undefined;
     this.ranges = [];
+    this.matches = [];
+    this.includedMatches = [];
     this.publishState();
   }
 
@@ -137,6 +169,8 @@ export class SourceNavigator implements DisposableLike {
     if (this.disposed) return;
     this.disposed = true;
     this.preferredTarget = undefined;
+    this.matches = [];
+    this.includedMatches = [];
     for (const subscription of this.subscriptions) subscription.dispose();
   }
 
@@ -152,6 +186,12 @@ export class SourceNavigator implements DisposableLike {
     const activeMatchIndex = matchesActiveDocument
       ? this.activeRangeIndex(editor, this.host.getPrimaryCursor(editor))
       : undefined;
+    const activeMatchId = matchesActiveDocument
+      ? containingIncludedMatchId(
+          this.includedMatches,
+          this.host.getPrimaryCursor(editor),
+        )
+      : undefined;
     if (!matchesActiveDocument) this.preferredTarget = undefined;
 
     this.stateSender.sendSourceNavigationState({
@@ -159,6 +199,7 @@ export class SourceNavigator implements DisposableLike {
       resolutionGeneration: this.resolutionGeneration,
       selectedMatchCount,
       ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
+      ...(activeMatchId === undefined ? {} : { activeMatchId }),
     });
   }
 
@@ -186,6 +227,33 @@ export class SourceNavigator implements DisposableLike {
   }
 }
 
+function currentIncludedMatches(
+  matches: readonly ResolvedSourceMatch[],
+  included: readonly SourceNavigationIncludedMatch[],
+): readonly SourceNavigationIncludedMatch[] {
+  const currentRanges = new Set(matches.map((match) => JSON.stringify([
+    match.targetRole,
+    rangeKey("", match.range),
+  ])));
+  const seenIds = new Set<string>();
+  return included.filter((entry) => {
+    if (seenIds.has(entry.matchId)) return false;
+    const current = currentRanges.has(JSON.stringify([
+      entry.targetRole,
+      rangeKey("", entry.range),
+    ]));
+    if (current) seenIds.add(entry.matchId);
+    return current;
+  });
+}
+
+function containingIncludedMatchId(
+  matches: readonly SourceNavigationIncludedMatch[],
+  cursor: SourcePosition,
+): string | undefined {
+  return matches.find((match) => contains(match.range, cursor))?.matchId;
+}
+
 function selectedRanges(
   documentUri: string,
   matches: readonly ResolvedSourceMatch[],
@@ -204,11 +272,14 @@ function containingRangeIndex(
   cursor: SourcePosition,
 ): number | undefined {
   const index = ranges.findIndex(
-    (range) =>
-      comparePositions(range.start, cursor) <= 0 &&
-      comparePositions(cursor, range.end) < 0,
+    (range) => contains(range, cursor),
   );
   return index < 0 ? undefined : index;
+}
+
+function contains(range: SourceRange, cursor: SourcePosition): boolean {
+  return comparePositions(range.start, cursor) <= 0 &&
+    comparePositions(cursor, range.end) < 0;
 }
 
 function outsideTargetIndex(

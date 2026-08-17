@@ -81,8 +81,33 @@ describe("VS Code package build", () => {
       /capabilities:\s*\[\s*"resolution",\s*"source-navigation",\s*"auto-refresh",\s*"source-presentation",\s*"presentation-settings"\s*\]/,
     );
     expect(bundle).toContain("page.refresh");
+    expect(bundle).toContain("source.matches");
+    expect(bundle).toContain("source.open");
+    expect(bundle).toContain("presentation.settings");
     expect(bundle).toContain("source.navigate");
     expect(bundle).toContain("source.navigationState");
+  });
+
+  it("wires source presentation senders, listeners, and disconnect cleanup", () => {
+    const source = readFileSync(extensionSourceUrl, "utf8");
+
+    expect(source).toContain("new SourceMatchesClientRouter()");
+    expect(source).toContain("sendSourceMatches: (matches)");
+    expect(source).toContain("sourceMatchesClients.sendSourceMatches(matches)");
+    expect(source).toContain("measureSourceMatchesEnvelope: (matches)");
+    expect(source).toContain("sourceMatchesClients.sourceMatchesEnvelopeBytes(matches)");
+    expect(source).toContain("nextClient.onSourceOpen((message)");
+    expect(source).toContain("runtime.open(message)");
+    expect(source).toContain("nextClient.onPresentationSettings((message)");
+    expect(source).toContain("runtime.applyPresentationSettings(message)");
+    expect(source).toContain("sourceMatchesClients.bind(nextClient)");
+    expect(source).toContain("sourceMatchesClients.unbind(nextClient)");
+    expect(source).toContain('if (state !== "connected")');
+
+    const clear = source.indexOf("runtime.clear();");
+    const unbind = source.indexOf("sourceMatchesClients.unbind(nextClient)");
+    expect(clear).toBeGreaterThanOrEqual(0);
+    expect(unbind).toBeGreaterThan(clear);
   });
 
   it("bundles the save observer implementation", () => {

@@ -6,12 +6,17 @@ import type {
   SourceRange,
   SourceWorkspace,
 } from "@pin-op/plugin-api";
-import type {
-  InspectMessage,
-  SourceNavigateMessage,
+import {
+  RESOLUTION_LIMITS,
+  type ResolutionDiagnosticCode,
+  type InspectMessage,
+  type PresentationSettingsMessage,
+  type SourceNavigateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
 import type {
   ResolutionInput,
+  SourceMatchesInput,
   SourceNavigationStateInput,
 } from "../bridgeClient.js";
 import type { DiagnosticsTracker } from "../diagnostics.js";
@@ -20,7 +25,10 @@ import { createPinOpApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
 import { ScssSourcePlugin } from "../sourcePlugins/scssSourcePlugin.js";
-import { toProtocolResolution } from "../sourcePlugins/resolutionOutcome.js";
+import {
+  toProtocolResolution,
+  type PresenterOutcome,
+} from "../sourcePlugins/resolutionOutcome.js";
 import {
   VsCodeSourceWorkspace,
   type WorkspaceHost,
@@ -29,6 +37,8 @@ import type { SourceResolution } from "../sourcePlugins/types.js";
 import {
   ActiveEditorCoordinator,
   type ActiveEditorLike,
+  type CoordinatorInvalidation,
+  type CoordinatorPublication,
   type CoordinatorHost,
 } from "./activeEditorCoordinator.js";
 import {
@@ -43,7 +53,12 @@ import {
   type SourceDecorationEditorLike,
   type SourceDecorationHost,
 } from "./decorations.js";
+import { HighlightController } from "./highlightController.js";
 import { SelectionStore } from "./selectionStore.js";
+import {
+  SourceExcerptRegistry,
+  type SourceExcerptPublication,
+} from "./sourceExcerptRegistry.js";
 import {
   SourceNavigator,
   type SourceNavigationEditor,
@@ -88,6 +103,10 @@ export interface PresenterRuntimeOptions {
     "recordResolution" | "clearResolution"
   >;
   readonly sendResolution?: (resolution: ResolutionInput) => void;
+  readonly sendSourceMatches?: (matches: SourceMatchesInput) => void;
+  readonly measureSourceMatchesEnvelope?: (
+    matches: SourceMatchesInput,
+  ) => number;
   readonly sendSourceNavigationState?: (
     state: SourceNavigationStateInput,
   ) => void;
@@ -98,6 +117,8 @@ export interface PresenterRuntime extends DisposableLike {
   readonly tree: ApplicableSourcesTreeDataProvider;
   select(message: InspectMessage): void;
   navigate(message: SourceNavigateMessage): void;
+  open(message: SourceOpenMessage): void;
+  applyPresentationSettings(message: PresentationSettingsMessage): void;
   clear(): void;
 }
 
@@ -119,6 +140,12 @@ export function createPresenterRuntime(
   };
   const tree = new ApplicableSourcesTreeDataProvider(treeOptions);
   const decorations = new SourceDecorationManager(host);
+  const highlights = new HighlightController(decorations);
+  const sourceExcerpts = new SourceExcerptRegistry({
+    ...(options.measureSourceMatchesEnvelope
+      ? { measureEnvelopeBytes: options.measureSourceMatchesEnvelope }
+      : {}),
+  });
   const sourceNavigator = new SourceNavigator(
     createSourceNavigationHost(host),
     {
@@ -149,14 +176,26 @@ export function createPresenterRuntime(
   ): void => {
     runSink(host, () => tree.update(resolution));
     runSink(host, () =>
-      decorations.update(editor as PresenterEditorLike, resolution)
+      highlights.update(editor as PresenterEditorLike, resolution)
     );
   };
-  const clear = (): void => {
+  const clear = (invalidation?: CoordinatorInvalidation): void => {
     runSink(host, () => tree.clear());
-    runSink(host, () => decorations.clear());
+    runSink(host, () => highlights.clear());
     runSink(host, () => options.diagnostics?.clearResolution());
     runSink(host, () => sourceNavigator.invalidate());
+    const empty = sourceExcerpts.invalidate(invalidation
+      ? {
+          inspectMessageId: invalidation.inspectMessageId,
+          resolutionGeneration: invalidation.resolutionGeneration,
+          ...(invalidation.editor
+            ? { editor: invalidation.editor as PresenterEditorLike }
+            : {}),
+        }
+      : undefined);
+    if (empty) {
+      runSink(host, () => options.sendSourceMatches?.(empty));
+    }
   };
   const coordinator = new ActiveEditorCoordinator({
     host,
@@ -165,9 +204,17 @@ export function createPresenterRuntime(
     store,
     publish,
     onOutcome(publication) {
+      const sourcePublication = createSourcePublication(
+        sourceExcerpts,
+        publication,
+      );
+      const outcome = withExcerptReadDiagnostic(
+        publication.outcome,
+        sourcePublication.excerptReadFailed,
+      );
       runSink(host, () => {
         options.diagnostics?.recordResolution(
-          publication.outcome,
+          outcome,
           publication.resolutionGeneration,
           publication.resolution,
         );
@@ -176,7 +223,7 @@ export function createPresenterRuntime(
         options.sendResolution?.({
           inspectMessageId: publication.inspectMessageId,
           resolutionGeneration: publication.resolutionGeneration,
-          ...toProtocolResolution(publication.outcome),
+          ...toProtocolResolution(outcome),
         });
       });
       runSink(host, () => {
@@ -189,6 +236,13 @@ export function createPresenterRuntime(
           matches: publication.resolution?.matches ?? [],
         });
       });
+      const sourceSent = options.sendSourceMatches !== undefined &&
+        runSink(host, () => options.sendSourceMatches?.(
+          sourcePublication.message,
+        ));
+      runSink(host, () => sourceNavigator.setIncludedMatches(
+        sourceSent ? sourcePublication.navigationMatches : [],
+      ));
     },
     clear,
     onError: (error) => reportSafely(host, error),
@@ -199,23 +253,47 @@ export function createPresenterRuntime(
     api,
     tree,
     select(message) {
+      runSink(host, () => highlights.beginInspect(
+        message.messageId,
+        message.ideHighlightEnabled,
+      ));
       runSink(host, () => sourceNavigator.beginInspect(message.messageId));
       coordinator.select(message);
     },
     navigate(message) {
       runSink(host, () => sourceNavigator.navigate(message));
     },
+    open(message) {
+      const editor = host.getActiveEditor();
+      const authority = editor
+        ? sourceExcerpts.resolveOpen(message, editor.document)
+        : undefined;
+      if (!editor || !authority) {
+        const empty = sourceExcerpts.invalidate();
+        if (empty) runSink(host, () => options.sendSourceMatches?.(empty));
+        runSink(host, () => sourceNavigator.setIncludedMatches([], true));
+        return;
+      }
+      runSink(host, () => {
+        host.setPrimaryCursor(editor, authority.range.start);
+        host.revealRange(editor, createHostRange(host, authority.range));
+      });
+    },
+    applyPresentationSettings(message) {
+      runSink(host, () => highlights.applySettings(message));
+    },
     clear() {
       coordinator.clearSelection();
     },
     dispose() {
       if (disposed) return;
+      clear();
       disposed = true;
       coordinator.dispose();
       sourceNavigator.dispose();
       commandRegistration.dispose();
       treeRegistration.dispose();
-      decorations.dispose();
+      highlights.dispose();
       tree.dispose();
       for (const registration of [...builtIns].reverse()) {
         registration.dispose();
@@ -224,11 +302,51 @@ export function createPresenterRuntime(
   };
 }
 
-function runSink(host: PresenterRuntimeHost, sink: () => void): void {
+function createSourcePublication(
+  registry: SourceExcerptRegistry,
+  publication: CoordinatorPublication,
+): SourceExcerptPublication {
+  if (publication.editor && publication.resolution) {
+    return registry.publish({
+      inspectMessageId: publication.inspectMessageId,
+      resolutionGeneration: publication.resolutionGeneration,
+      editor: publication.editor as PresenterEditorLike,
+      resolution: publication.resolution,
+    });
+  }
+  const message = registry.invalidate({
+    inspectMessageId: publication.inspectMessageId,
+    resolutionGeneration: publication.resolutionGeneration,
+    ...(publication.editor
+      ? { editor: publication.editor as PresenterEditorLike }
+      : {}),
+  });
+  if (!message) throw new Error("Source excerpt state was not initialized");
+  return { message, navigationMatches: [], excerptReadFailed: false };
+}
+
+function withExcerptReadDiagnostic(
+  outcome: PresenterOutcome,
+  excerptReadFailed: boolean,
+): PresenterOutcome {
+  if (!excerptReadFailed) return outcome;
+  const code: ResolutionDiagnosticCode = "resolver.source-read-failed";
+  return {
+    ...outcome,
+    diagnosticCodes: [
+      code,
+      ...outcome.diagnosticCodes.filter((entry) => entry !== code),
+    ].slice(0, RESOLUTION_LIMITS.diagnosticCodes),
+  };
+}
+
+function runSink(host: PresenterRuntimeHost, sink: () => void): boolean {
   try {
     sink();
+    return true;
   } catch (error) {
     reportSafely(host, error);
+    return false;
   }
 }
 

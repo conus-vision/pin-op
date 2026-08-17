@@ -272,6 +272,46 @@ describe("ActiveEditorCoordinator", () => {
     }
   });
 
+  it("identifies invalidation with the current inspect, generation, and editor version", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = coordinatorHarness();
+      harness.coordinator.select(inspectMessage("inspect-authority"));
+      await harness.flush();
+
+      expect(harness.invalidations.at(-1)).toMatchObject({
+        inspectMessageId: "inspect-authority",
+        resolutionGeneration: 0,
+        editor: { document: { version: 1 } },
+      });
+
+      harness.changeDocumentVersion(2);
+      expect(harness.invalidations.at(-1)).toMatchObject({
+        inspectMessageId: "inspect-authority",
+        resolutionGeneration: 1,
+        editor: { document: { version: 2 } },
+      });
+
+      await vi.advanceTimersByTimeAsync(150);
+      await harness.flush();
+      harness.changeActiveEditor(editor("file:///src/other.css", "css", 4));
+      expect(harness.invalidations.at(-1)).toMatchObject({
+        inspectMessageId: "inspect-authority",
+        resolutionGeneration: 2,
+        editor: { document: { version: 4 } },
+      });
+
+      harness.coordinator.clearSelection();
+      expect(harness.invalidations.at(-1)).toMatchObject({
+        inspectMessageId: "inspect-authority",
+        resolutionGeneration: 2,
+        editor: { document: { version: 4 } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears on selection, editor, plugin, and explicit-clear triggers", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.select(inspectMessage("inspect-1"));
@@ -326,6 +366,7 @@ function coordinatorHarness() {
     signal: AbortSignal;
   }> = [];
   const published: SourceResolution[] = [];
+  const invalidations: unknown[] = [];
   let clearCalls = 0;
   let openDocumentCalls = 0;
   let disposed = 0;
@@ -368,8 +409,9 @@ function coordinatorHarness() {
     workspace: workspace(),
     store: new SelectionStore(),
     publish: (_editor, result) => published.push(result),
-    clear: () => {
+    clear: (...arguments_: unknown[]) => {
       clearCalls += 1;
+      invalidations.push(arguments_[0]);
     },
   });
 
@@ -377,6 +419,7 @@ function coordinatorHarness() {
     coordinator,
     resolveCalls,
     published,
+    invalidations,
     get clearCalls() {
       return clearCalls;
     },

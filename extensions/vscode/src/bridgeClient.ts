@@ -5,13 +5,17 @@ import {
   PageRefreshMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
+  SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
   type ErrorMessage,
   type InspectMessage,
   type PageRefreshMessage,
+  type PresentationSettingsMessage,
   type ResolutionMessage,
+  type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
 
 export type PageRefreshInput = Pick<PageRefreshMessage, "mode">;
@@ -48,6 +52,41 @@ export type ResolutionInput = Pick<
   | "diagnosticCodes"
 >;
 
+export type SourceMatchesInput = Pick<
+  SourceMatchesMessage,
+  | "inspectMessageId"
+  | "resolutionGeneration"
+  | "document"
+  | "matches"
+  | "omittedMatchCount"
+>;
+
+export interface SourceMatchesSender {
+  sendSourceMatches(matches: SourceMatchesInput): void;
+  sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number;
+}
+
+export class SourceMatchesClientRouter implements SourceMatchesSender {
+  private client: SourceMatchesSender | undefined;
+
+  public bind(client: SourceMatchesSender): void {
+    this.client = client;
+  }
+
+  public unbind(client: SourceMatchesSender): void {
+    if (this.client === client) this.client = undefined;
+  }
+
+  public sendSourceMatches(matches: SourceMatchesInput): void {
+    this.client?.sendSourceMatches(matches);
+  }
+
+  public sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number {
+    return this.client?.sourceMatchesEnvelopeBytes(matches) ??
+      Number.POSITIVE_INFINITY;
+  }
+}
+
 export interface ResolutionSender {
   sendResolution(resolution: ResolutionInput): void;
 }
@@ -74,6 +113,7 @@ export type SourceNavigationStateInput = Pick<
   | "resolutionGeneration"
   | "selectedMatchCount"
   | "activeMatchIndex"
+  | "activeMatchId"
 >;
 
 export interface SourceNavigationStateSender {
@@ -133,6 +173,12 @@ export class BridgeClient {
   private readonly sourceNavigateListeners = new Set<
     (message: SourceNavigateMessage) => void
   >();
+  private readonly sourceOpenListeners = new Set<
+    (message: SourceOpenMessage) => void
+  >();
+  private readonly presentationSettingsListeners = new Set<
+    (message: PresentationSettingsMessage) => void
+  >();
   private readonly protocolErrorListeners = new Set<
     (message: ErrorMessage) => void
   >();
@@ -182,6 +228,8 @@ export class BridgeClient {
     this.disconnect();
     this.inspectListeners.clear();
     this.sourceNavigateListeners.clear();
+    this.sourceOpenListeners.clear();
+    this.presentationSettingsListeners.clear();
     this.protocolErrorListeners.clear();
     this.stateListeners.clear();
   }
@@ -194,6 +242,18 @@ export class BridgeClient {
   onSourceNavigate(listener: (message: SourceNavigateMessage) => void): () => void {
     this.sourceNavigateListeners.add(listener);
     return () => this.sourceNavigateListeners.delete(listener);
+  }
+
+  onSourceOpen(listener: (message: SourceOpenMessage) => void): () => void {
+    this.sourceOpenListeners.add(listener);
+    return () => this.sourceOpenListeners.delete(listener);
+  }
+
+  onPresentationSettings(
+    listener: (message: PresentationSettingsMessage) => void,
+  ): () => void {
+    this.presentationSettingsListeners.add(listener);
+    return () => this.presentationSettingsListeners.delete(listener);
   }
 
   onConnectionStateChanged(listener: (state: ConnectionState) => void): () => void {
@@ -248,6 +308,21 @@ export class BridgeClient {
     this.refreshGeneration = refreshGeneration;
   }
 
+  sendSourceMatches(matches: SourceMatchesInput): void {
+    const message = SourceMatchesMessageSchema.parse(
+      this.createSourceMatchesMessage(matches, randomUUID()),
+    );
+    if (!this.socket || this.state !== "connected") return;
+    this.socket.send(JSON.stringify(message));
+  }
+
+  sourceMatchesEnvelopeBytes(matches: SourceMatchesInput): number {
+    return Buffer.byteLength(JSON.stringify(this.createSourceMatchesMessage(
+      matches,
+      "00000000-0000-4000-8000-000000000000",
+    )), "utf8");
+  }
+
   sendSourceNavigationState(state: SourceNavigationStateInput): void {
     const message = SourceNavigationStateMessageSchema.parse({
       ...state,
@@ -260,6 +335,25 @@ export class BridgeClient {
     });
     if (!this.socket || this.state !== "connected") return;
     this.socket.send(JSON.stringify(message));
+  }
+
+  private createSourceMatchesMessage(
+    matches: SourceMatchesInput,
+    messageId: string,
+  ): SourceMatchesMessage {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.matches",
+      messageId,
+      sessionId: this.options.sessionId,
+      source: { role: "ide", id: this.sourceId },
+      inspectMessageId: matches.inspectMessageId,
+      resolutionGeneration: matches.resolutionGeneration,
+      document: matches.document,
+      matches: matches.matches,
+      omittedMatchCount: matches.omittedMatchCount,
+      metadata: {},
+    };
   }
 
   private openSocket(): void {
@@ -333,7 +427,11 @@ export class BridgeClient {
       this.setState("connected");
       return;
     }
-    if (parsed.data.type === "inspect" && this.state === "connected") {
+    if (
+      parsed.data.type === "inspect" &&
+      this.state === "connected" &&
+      parsed.data.sessionId === this.options.sessionId
+    ) {
       for (const listener of this.inspectListeners) {
         listener(parsed.data);
       }
@@ -344,6 +442,24 @@ export class BridgeClient {
       parsed.data.sessionId === this.options.sessionId
     ) {
       for (const listener of this.sourceNavigateListeners) {
+        listener(parsed.data);
+      }
+    }
+    if (
+      parsed.data.type === "source.open" &&
+      this.state === "connected" &&
+      parsed.data.sessionId === this.options.sessionId
+    ) {
+      for (const listener of this.sourceOpenListeners) {
+        listener(parsed.data);
+      }
+    }
+    if (
+      parsed.data.type === "presentation.settings" &&
+      this.state === "connected" &&
+      parsed.data.sessionId === this.options.sessionId
+    ) {
+      for (const listener of this.presentationSettingsListeners) {
         listener(parsed.data);
       }
     }

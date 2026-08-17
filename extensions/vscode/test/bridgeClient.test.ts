@@ -1,15 +1,20 @@
 import {
   PageRefreshMessageSchema,
   PROTOCOL_VERSION,
+  SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
+  type PresentationSettingsMessage,
   type SourceNavigateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeClient,
   PageRefreshClientRouter,
   ResolutionClientRouter,
+  SourceMatchesClientRouter,
   SourceNavigationClientRouter,
+  type SourceMatchesInput,
 } from "../src/bridgeClient.js";
 
 const SESSION_ID = "session-1";
@@ -116,6 +121,34 @@ describe("BridgeClient", () => {
 
     expect(first.sendSourceNavigationState).toHaveBeenCalledTimes(1);
     expect(second.sendSourceNavigationState).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes source matches and envelope measurement only to the current client", () => {
+    const router = new SourceMatchesClientRouter();
+    const first = {
+      sendSourceMatches: vi.fn(),
+      sourceMatchesEnvelopeBytes: vi.fn(() => 101),
+    };
+    const second = {
+      sendSourceMatches: vi.fn(),
+      sourceMatchesEnvelopeBytes: vi.fn(() => 202),
+    };
+    const input = sourceMatchesInput();
+
+    expect(router.sourceMatchesEnvelopeBytes(input)).toBe(Number.POSITIVE_INFINITY);
+    router.sendSourceMatches(input);
+    router.bind(first);
+    expect(router.sourceMatchesEnvelopeBytes(input)).toBe(101);
+    router.sendSourceMatches(input);
+    router.bind(second);
+    router.unbind(first);
+    expect(router.sourceMatchesEnvelopeBytes(input)).toBe(202);
+    router.sendSourceMatches(input);
+    router.unbind(second);
+    router.sendSourceMatches(input);
+
+    expect(first.sendSourceMatches).toHaveBeenCalledTimes(1);
+    expect(second.sendSourceMatches).toHaveBeenCalledTimes(1);
   });
 
   it("sends a strict protocol-v6 resolution through the authenticated IDE route", () => {
@@ -352,6 +385,57 @@ describe("BridgeClient", () => {
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
 
+  it("sends strict private-data-free source matches after authentication", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendSourceMatches({
+      ...sourceMatchesInput(),
+      messageId: "caller-message",
+      sessionId: "caller-session",
+      source: { role: "browser", id: "caller-source" },
+      uri: "file:///private/customer/Card.tsx",
+      path: "C:/private/customer/Card.tsx",
+      fullDocument: "private full document",
+      metadata: { caller: true },
+    } as never);
+
+    const payload = harness.sockets[0].sent.at(-1) ?? "{}";
+    const message = JSON.parse(payload);
+    expect(SourceMatchesMessageSchema.parse(message)).toEqual(message);
+    expect(message).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.matches",
+      messageId: expect.any(String),
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: hello.source.id },
+      ...sourceMatchesInput(),
+      metadata: {},
+    });
+    expect(payload).not.toContain("private/customer");
+    expect(payload).not.toContain("private full");
+    expect(payload).not.toContain("caller-");
+  });
+
+  it("measures the exact source matches envelope and drops it before authentication", () => {
+    const harness = createHarness();
+    const input = sourceMatchesInput();
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    const measured = harness.client.sourceMatchesEnvelopeBytes(input);
+    harness.client.sendSourceMatches(input);
+    expect(harness.sockets[0].sent).toHaveLength(1);
+
+    authenticate(harness.sockets[0]);
+    harness.client.sendSourceMatches(input);
+    const payload = harness.sockets[0].sent.at(-1)!;
+    expect(Buffer.byteLength(payload, "utf8")).toBe(measured);
+  });
+
   it.each([
     ["omits an absent index", sourceNavigationStateInput(false), false, undefined],
     ["preserves index zero", sourceNavigationStateInput(true, 0), true, 0],
@@ -366,6 +450,22 @@ describe("BridgeClient", () => {
     const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
     expect(Object.hasOwn(message, "activeMatchIndex")).toBe(present);
     expect(message.activeMatchIndex).toBe(expected);
+  });
+
+  it("preserves an included activeMatchId in source navigation state", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendSourceNavigationState({
+      ...sourceNavigationStateInput(),
+      activeMatchId: "opaque-match-1",
+    });
+
+    const message = JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}");
+    expect(SourceNavigationStateMessageSchema.parse(message)).toEqual(message);
+    expect(message.activeMatchId).toBe("opaque-match-1");
   });
 
   it("rejects malformed source navigation state without sending wire data", () => {
@@ -533,6 +633,74 @@ describe("BridgeClient", () => {
     harness.sockets[1].message(sourceNavigateMessage());
 
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("publishes source open and settings only after matching authentication and session", () => {
+    const harness = createHarness();
+    const opened: SourceOpenMessage[] = [];
+    const settings: PresentationSettingsMessage[] = [];
+    harness.client.onSourceOpen((message) => opened.push(message));
+    harness.client.onPresentationSettings((message) => settings.push(message));
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    harness.sockets[0].message(sourceOpenMessage());
+    harness.sockets[0].message(presentationSettingsMessage());
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(sourceOpenMessage("stale-session"));
+    harness.sockets[0].message(presentationSettingsMessage("stale-session"));
+    harness.sockets[0].message(sourceOpenMessage());
+    harness.sockets[0].message(presentationSettingsMessage());
+
+    expect(opened).toEqual([sourceOpenMessage()]);
+    expect(settings).toEqual([presentationSettingsMessage()]);
+  });
+
+  it("rejects non-strict source open and settings payloads", () => {
+    const harness = createHarness();
+    const opened = vi.fn();
+    const settings = vi.fn();
+    harness.client.onSourceOpen(opened);
+    harness.client.onPresentationSettings(settings);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    harness.sockets[0].message({
+      ...sourceOpenMessage(),
+      range: { startLine: 1, endLine: 2 },
+    });
+    harness.sockets[0].message({
+      ...presentationSettingsMessage(),
+      command: "reveal-file",
+    });
+
+    expect(opened).not.toHaveBeenCalled();
+    expect(settings).not.toHaveBeenCalled();
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
+    });
+  });
+
+  it("removes source presentation listeners on unsubscribe and dispose", () => {
+    const harness = createHarness();
+    const opened = vi.fn();
+    const settings = vi.fn();
+    const unsubscribeOpen = harness.client.onSourceOpen(opened);
+    harness.client.onPresentationSettings(settings);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(sourceOpenMessage());
+    harness.sockets[0].message(presentationSettingsMessage());
+
+    unsubscribeOpen();
+    harness.sockets[0].message(sourceOpenMessage());
+    harness.client.dispose();
+    harness.sockets[0].message(presentationSettingsMessage());
+
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(settings).toHaveBeenCalledTimes(1);
   });
 
   it("ignores inspect and heartbeat traffic before authentication", () => {
@@ -817,6 +985,54 @@ function sourceNavigateMessage(
     resolutionGeneration: 4,
     direction: "next",
     metadata: {},
+  };
+}
+
+function sourceOpenMessage(sessionId = SESSION_ID): SourceOpenMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.open",
+    messageId: "source-open-1",
+    sessionId,
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 4,
+    matchId: "opaque-match-1",
+    metadata: {},
+  };
+}
+
+function presentationSettingsMessage(
+  sessionId = SESSION_ID,
+): PresentationSettingsMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "presentation.settings",
+    messageId: "settings-1",
+    sessionId,
+    inspectMessageId: "inspect-1",
+    ideHighlightEnabled: false,
+    metadata: {},
+  };
+}
+
+function sourceMatchesInput(): SourceMatchesInput {
+  return {
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 4,
+    document: { label: "Card.tsx", languageId: "typescriptreact" },
+    matches: [{
+      matchId: "opaque-match-1",
+      targetRole: "selected",
+      label: "Card",
+      kind: "component",
+      relation: "renders",
+      confidence: "exact",
+      startLine: 2,
+      endLine: 4,
+      text: "export function Card() {}",
+      truncated: false,
+    }],
+    omittedMatchCount: 0,
   };
 }
 

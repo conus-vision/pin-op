@@ -4,6 +4,7 @@ import {
   BridgeClient,
   PageRefreshClientRouter,
   ResolutionClientRouter,
+  SourceMatchesClientRouter,
   SourceNavigationClientRouter,
   type ConnectionState,
 } from "./bridgeClient.js";
@@ -44,6 +45,7 @@ export async function activate(
   output = vscode.window.createOutputChannel("Pin-op");
   diagnostics = new DiagnosticsTracker();
   const resolutionClients = new ResolutionClientRouter();
+  const sourceMatchesClients = new SourceMatchesClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
   const pageRefreshClients = new PageRefreshClientRouter();
   const refreshClassifierRegistry = new RefreshClassifierRegistry();
@@ -54,6 +56,10 @@ export async function activate(
     diagnostics,
     sendResolution: (resolution) =>
       resolutionClients.sendResolution(resolution),
+    sendSourceMatches: (matches) =>
+      sourceMatchesClients.sendSourceMatches(matches),
+    measureSourceMatchesEnvelope: (matches) =>
+      sourceMatchesClients.sourceMatchesEnvelopeBytes(matches),
     sendSourceNavigationState: (state) =>
       sourceNavigationClients.sendSourceNavigationState(state),
   });
@@ -83,6 +89,7 @@ export async function activate(
       const nextClient = new BridgeClient(options);
       nextClient.onConnectionStateChanged((state) => {
         clientState = state;
+        if (state !== "connected") runtime.clear();
       });
       nextClient.onProtocolError((message) => {
         const safeMessage = {
@@ -101,17 +108,28 @@ export async function activate(
       const unsubscribeSourceNavigate = nextClient.onSourceNavigate((message) =>
         runtime.navigate(message)
       );
+      const unsubscribeSourceOpen = nextClient.onSourceOpen((message) =>
+        runtime.open(message)
+      );
+      const unsubscribePresentationSettings =
+        nextClient.onPresentationSettings((message) =>
+          runtime.applyPresentationSettings(message)
+        );
       resolutionClients.bind(nextClient);
+      sourceMatchesClients.bind(nextClient);
       sourceNavigationClients.bind(nextClient);
       pageRefreshClients.bind(nextClient);
       return {
         connect: () => nextClient.connect(),
         dispose() {
           unsubscribeSourceNavigate();
+          unsubscribeSourceOpen();
+          unsubscribePresentationSettings();
+          runtime.clear();
           resolutionClients.unbind(nextClient);
+          sourceMatchesClients.unbind(nextClient);
           sourceNavigationClients.unbind(nextClient);
           pageRefreshClients.unbind(nextClient);
-          runtime.clear();
           nextClient.dispose();
         },
       };

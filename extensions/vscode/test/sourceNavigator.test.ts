@@ -201,6 +201,71 @@ describe("SourceNavigator", () => {
     expect(harness.states.at(-1)).toMatchObject({ activeMatchIndex: 0 });
   });
 
+  it("publishes included selected or parent IDs while keeping the counter selected-only", () => {
+    const harness = navigatorHarness();
+    const selected = range(1, 2, 1, 5);
+    const secondSelected = range(3, 0, 3, 2);
+    const parent = range(5, 0, 5, 8);
+    harness.navigator.update({
+      ...resolution([
+        match("selected", selected),
+        match("selected", secondSelected),
+        match("parent", parent),
+      ]),
+      includedMatches: [
+        { matchId: "selected-id", targetRole: "selected", range: selected },
+        { matchId: "parent-id", targetRole: "parent", range: parent },
+      ],
+    });
+
+    harness.host.changePrimaryCursor(position(1, 3));
+    expect(harness.states.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+      activeMatchId: "selected-id",
+    });
+
+    harness.host.changePrimaryCursor(position(5, 4));
+    expect(harness.states.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+      activeMatchId: "parent-id",
+    });
+  });
+
+  it("omits activeMatchId for omitted matches without changing selected identity", () => {
+    const harness = navigatorHarness();
+    const first = range(1, 2, 1, 5);
+    const omitted = range(1, 8, 1, 10);
+    const parent = range(3, 0, 3, 2);
+    harness.navigator.update({
+      ...resolution([
+        match("selected", first),
+        match("selected", omitted),
+        match("parent", parent),
+      ]),
+      includedMatches: [
+        { matchId: "first-id", targetRole: "selected", range: first },
+        { matchId: "parent-id", targetRole: "parent", range: parent },
+      ],
+    });
+
+    harness.host.changePrimaryCursor(position(1, 9));
+
+    expect(harness.states.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+      activeMatchIndex: 1,
+    });
+
+    harness.navigator.navigate(intent("next"));
+    expect(harness.host.revealed.at(-1)).toEqual(first);
+  });
+
   it.each([
     ["next before", "next", position(0, 0), range(1, 2, 1, 5)],
     ["previous before", "previous", position(0, 0), range(3, 0, 3, 2)],

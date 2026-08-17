@@ -10,13 +10,19 @@ import {
 import {
   PROTOCOL_VERSION,
   type InspectMessage,
+  type PresentationSettingsMessage,
   type SourceNavigateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
 import type {
   ResolutionInput,
+  SourceMatchesInput,
   SourceNavigationStateInput,
 } from "../src/bridgeClient.js";
-import { SourceDecorationManager } from "../src/presenter/decorations.js";
+import {
+  SourceDecorationManager,
+  type DecorationRole,
+} from "../src/presenter/decorations.js";
 import { createPresenterRuntime } from "../src/presenter/runtime.js";
 import { RefreshClassifierRegistry } from "../src/refresh/refreshClassifierRegistry.js";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
@@ -125,6 +131,165 @@ describe("presenter runtime", () => {
     harness.runtime.navigate(sourceNavigate("next"));
     expect(harness.cursorSets).toEqual([]);
     expect(harness.revealedRanges).toEqual([]);
+    harness.runtime.dispose();
+  });
+
+  it("publishes resolution, selected-only navigation, then bounded source matches", async () => {
+    const harness = runtimeHarness({ activeLanguageId: "fixture" });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin());
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+    await harness.flush();
+
+    expect(harness.transportEvents.slice(-3)).toEqual([
+      "resolution",
+      "source.navigationState",
+      "source.matches",
+    ]);
+    expect(harness.sourceMatches.at(-1)).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      document: { label: "app.fixture", languageId: "fixture" },
+      matches: [{
+        targetRole: "selected",
+        label: "fixture",
+        startLine: 1,
+        endLine: 1,
+        text: "fixture",
+        truncated: false,
+      }],
+      omittedMatchCount: 0,
+    });
+    const payload = JSON.stringify(harness.sourceMatches.at(-1));
+    expect(payload).not.toContain("file:///workspace");
+    expect(payload).not.toContain("fixture block");
+  });
+
+  it("publishes an empty source state and bounded diagnostics on excerpt read failure", async () => {
+    const harness = runtimeHarness({
+      activeLanguageId: "fixture",
+      excerptReadError: new Error("private read detail"),
+    });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin());
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+    await harness.flush();
+
+    expect(harness.sourceMatches.at(-1)).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      matches: [],
+      omittedMatchCount: 0,
+    });
+    expect(harness.resolutions.at(-1)?.diagnosticCodes).toContain(
+      "resolver.source-read-failed",
+    );
+    expect(harness.diagnosticRecords[0]?.[0]).toMatchObject({
+      diagnosticCodes: ["resolver.source-read-failed"],
+    });
+    expect(JSON.stringify(harness.resolutions.at(-1))).not.toContain(
+      "private read detail",
+    );
+  });
+
+  it("opens only the current opaque authority at the complete range", async () => {
+    const harness = await resolvedRuntimeHarness();
+    const source = harness.sourceMatches.at(-1)!;
+    const matchId = source.matches[0]!.matchId;
+
+    harness.runtime.open({
+      ...sourceOpen(matchId),
+      range: {
+        start: { line: 99, character: 0 },
+        end: { line: 100, character: 0 },
+      },
+      uri: "file:///browser/forged.fixture",
+    } as SourceOpenMessage);
+
+    expect(harness.cursorSets).toEqual([{ line: 0, character: 0 }]);
+    expect(harness.revealedRanges).toEqual([{
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 7 },
+    }]);
+
+    harness.runtime.open(sourceOpen("forged-match"));
+    expect(harness.cursorSets).toHaveLength(1);
+    expect(harness.revealedRanges).toHaveLength(1);
+    expect(harness.sourceMatches.at(-1)).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      matches: [],
+      omittedMatchCount: 0,
+    });
+    harness.runtime.dispose();
+  });
+
+  it("invalidates source authority immediately on active-document version changes", async () => {
+    const harness = await resolvedRuntimeHarness();
+    const staleId = harness.sourceMatches.at(-1)!.matches[0]!.matchId;
+
+    harness.changeTextDocument("fixture changed");
+
+    expect(harness.sourceMatches.at(-1)).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 1,
+      matches: [],
+    });
+    harness.runtime.open(sourceOpen(staleId));
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
+    harness.runtime.dispose();
+  });
+
+  it("publishes included Selected and Parent IDs while the counter stays selected-only", async () => {
+    const harness = runtimeHarness({ activeLanguageId: "fixture" });
+    harness.runtime.api.registerSourcePlugin(fixturePlugin(true));
+    harness.runtime.select(inspectMessageWithCustomFact(true));
+    await harness.flush();
+    const matches = harness.sourceMatches.at(-1)!.matches;
+    const selectedId = matches.find((entry) => entry.targetRole === "selected")!
+      .matchId;
+    const parentId = matches.find((entry) => entry.targetRole === "parent")!
+      .matchId;
+
+    harness.changePrimaryCursor({ line: 0, character: 2 });
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+      activeMatchId: selectedId,
+    });
+
+    harness.changePrimaryCursor({ line: 0, character: 10 });
+    expect(harness.navigationStates.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 1,
+      activeMatchId: parentId,
+    });
+  });
+
+  it("toggles decorations without clearing source, tree, navigation, or open authority", async () => {
+    const harness = await resolvedRuntimeHarness();
+    const sourcePublications = harness.sourceMatches.length;
+    const matchId = harness.sourceMatches.at(-1)!.matches[0]!.matchId;
+    const selectedBefore = harness.lastDecorationRanges("primary");
+
+    harness.runtime.applyPresentationSettings(presentationSettings(false));
+
+    expect(harness.lastDecorationRanges("primary")).toEqual([]);
+    expect(harness.lastDecorationRanges("context")).toEqual([]);
+    expect(harness.runtime.tree.getMatches()).toHaveLength(1);
+    expect(harness.sourceMatches).toHaveLength(sourcePublications);
+    expect(harness.navigationStates.at(-1)).toMatchObject({
+      selectedMatchCount: 1,
+    });
+
+    harness.runtime.open(sourceOpen(matchId));
+    expect(harness.cursorSets.at(-1)).toEqual({ line: 0, character: 0 });
+
+    harness.runtime.applyPresentationSettings(presentationSettings(true));
+    expect(harness.lastDecorationRanges("primary")).toEqual(selectedBefore);
+    expect(harness.sourceMatches).toHaveLength(sourcePublications);
     harness.runtime.dispose();
   });
 
@@ -405,6 +570,7 @@ function runtimeHarness(options: {
   readonly navigationSendError?: Error;
   readonly diagnosticRecordError?: Error;
   readonly reporterError?: Error;
+  readonly excerptReadError?: Error;
 }) {
   const registeredPluginIds: string[] = [];
   const disposed: string[] = [];
@@ -426,14 +592,35 @@ function runtimeHarness(options: {
   const documentListeners = new Set<(document: ReturnType<typeof textDocument>) => void>();
   const primaryCursorListeners = new Set<() => void>();
   const resolutions: ResolutionInput[] = [];
+  const sourceMatches: SourceMatchesInput[] = [];
   const navigationStates: SourceNavigationStateInput[] = [];
+  const transportEvents: string[] = [];
+  const decorationCalls: Array<{
+    readonly role: DecorationRole;
+    readonly ranges: readonly unknown[];
+  }> = [];
   const cursorSets: SourcePosition[] = [];
   const revealedRanges: SourceRange[] = [];
   const errors: unknown[] = [];
   const diagnosticRecords: unknown[][] = [];
   let diagnosticClearCalls = 0;
   let nextDiagnosticClearError: Error | undefined;
-  let editor = createEditor(uri, options.activeLanguageId, text);
+  let editor = createEditor(
+    uri,
+    options.activeLanguageId,
+    text,
+    1,
+    (role, ranges) => decorationCalls.push({ role, ranges }),
+  );
+  if (options.excerptReadError) {
+    const getText = editor.document.getText.bind(editor.document);
+    let reads = 0;
+    vi.spyOn(editor.document, "getText").mockImplementation(() => {
+      reads += 1;
+      if (reads === 2) throw options.excerptReadError;
+      return getText();
+    });
+  }
   let primaryCursor: SourcePosition = { line: 0, character: 0 };
   const runtime = createPresenterRuntime({
     registry,
@@ -455,10 +642,27 @@ function runtimeHarness(options: {
     },
     sendResolution(resolution) {
       resolutions.push(resolution);
+      transportEvents.push("resolution");
       if (options.sendError) throw options.sendError;
+    },
+    sendSourceMatches(matches) {
+      sourceMatches.push(matches);
+      transportEvents.push("source.matches");
+    },
+    measureSourceMatchesEnvelope(matches) {
+      return Buffer.byteLength(JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "source.matches",
+        messageId: "00000000-0000-4000-8000-000000000000",
+        sessionId: "session-1",
+        source: { role: "ide", id: "vscode-test" },
+        ...matches,
+        metadata: {},
+      }), "utf8");
     },
     sendSourceNavigationState(state) {
       navigationStates.push(state);
+      transportEvents.push("source.navigationState");
       if (options.navigationSendError) throw options.navigationSendError;
     },
     host: {
@@ -521,7 +725,10 @@ function runtimeHarness(options: {
     registeredPluginIds,
     disposed,
     resolutions,
+    sourceMatches,
     navigationStates,
+    transportEvents,
+    decorationCalls,
     cursorSets,
     revealedRanges,
     errors,
@@ -534,10 +741,23 @@ function runtimeHarness(options: {
       nextDiagnosticClearError = error;
     },
     changeActiveEditor(nextUri: string, languageId: string) {
-      editor = createEditor(nextUri, languageId, ".card {}");
+      editor = createEditor(
+        nextUri,
+        languageId,
+        ".card {}",
+        1,
+        (role, ranges) => decorationCalls.push({ role, ranges }),
+      );
       for (const listener of activeEditorListeners) listener(editor);
     },
-    changeTextDocument() {
+    changeTextDocument(nextText = editor.document.getText()) {
+      editor = createEditor(
+        editor.documentUri,
+        editor.document.languageId,
+        nextText,
+        editor.document.version + 1,
+        (role, ranges) => decorationCalls.push({ role, ranges }),
+      );
       for (const listener of documentListeners) listener(editor.document);
     },
     movePrimaryCursor(position: SourcePosition) {
@@ -546,6 +766,10 @@ function runtimeHarness(options: {
     changePrimaryCursor(position: SourcePosition) {
       primaryCursor = position;
       for (const listener of primaryCursorListeners) listener();
+    },
+    lastDecorationRanges(role: DecorationRole): readonly unknown[] {
+      return decorationCalls.filter((call) => call.role === role).at(-1)
+        ?.ranges ?? [];
     },
     flush,
   };
@@ -564,7 +788,11 @@ async function resolvedRuntimeHarness(
   return harness;
 }
 
-function fixturePlugin(localPath?: string): SourcePlugin {
+function fixturePlugin(localPathOrParent?: string | boolean): SourcePlugin {
+  const localPath = typeof localPathOrParent === "string"
+    ? localPathOrParent
+    : undefined;
+  const includeParent = localPathOrParent === true;
   return {
     id: "fixture.source",
     displayName: "Fixture Source",
@@ -585,6 +813,19 @@ function fixturePlugin(localPath?: string): SourcePlugin {
             relation: "renders",
             confidence: "instrumented",
           },
+          ...(includeParent
+            ? [{
+                targetRole: "parent" as const,
+                range: {
+                  start: { line: 0, character: 8 },
+                  end: { line: 0, character: 13 },
+                },
+                label: "fixture-parent",
+                kind: "fixture",
+                relation: "contains",
+                confidence: "instrumented" as const,
+              }]
+            : []),
         ],
         diagnostics: localPath
           ? [{
@@ -598,11 +839,25 @@ function fixturePlugin(localPath?: string): SourcePlugin {
   };
 }
 
-function createEditor(uri: string, languageId: string, text: string) {
+function createEditor(
+  uri: string,
+  languageId: string,
+  text: string,
+  version = 1,
+  onDecorate: (
+    role: DecorationRole,
+    ranges: readonly unknown[],
+  ) => void = () => undefined,
+) {
   return {
     documentUri: uri,
-    document: textDocument(uri, languageId, text),
-    setDecorations() {},
+    document: textDocument(uri, languageId, text, version),
+    setDecorations(
+      type: { readonly role?: DecorationRole },
+      ranges: readonly unknown[],
+    ) {
+      if (type.role) onDecorate(type.role, ranges);
+    },
   };
 }
 
@@ -624,6 +879,39 @@ function sourceNavigate(
   };
 }
 
+function sourceOpen(
+  matchId: string,
+  overrides: Partial<
+    Pick<SourceOpenMessage, "inspectMessageId" | "resolutionGeneration">
+  > = {},
+): SourceOpenMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.open",
+    messageId: `open-${matchId}`,
+    sessionId: "session-1",
+    inspectMessageId: overrides.inspectMessageId ?? "inspect-1",
+    resolutionGeneration: overrides.resolutionGeneration ?? 0,
+    matchId,
+    metadata: {},
+  };
+}
+
+function presentationSettings(
+  ideHighlightEnabled: boolean,
+  inspectMessageId = "inspect-1",
+): PresentationSettingsMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "presentation.settings",
+    messageId: `settings-${ideHighlightEnabled}`,
+    sessionId: "session-1",
+    inspectMessageId,
+    ideHighlightEnabled,
+    metadata: {},
+  };
+}
+
 function inspectMessageWithSelectedAndParent(): InspectMessage {
   return inspect([
     cssTarget("selected", 0, ".layout > .card"),
@@ -631,21 +919,30 @@ function inspectMessageWithSelectedAndParent(): InspectMessage {
   ]);
 }
 
-function inspectMessageWithCustomFact(): InspectMessage {
+function inspectMessageWithCustomFact(includeParent = false): InspectMessage {
+  const selected = {
+    role: "selected" as const,
+    depth: 0 as const,
+    subject: { selector: ".fixture", metadata: {} },
+    facts: [
+      {
+        type: "fixture.source",
+        payload: { component: "Fixture" },
+        metadata: {},
+      },
+    ],
+    metadata: {},
+  };
   return inspect([
-    {
-      role: "selected",
-      depth: 0,
-      subject: { selector: ".fixture", metadata: {} },
-      facts: [
-        {
-          type: "fixture.source",
-          payload: { component: "Fixture" },
-          metadata: {},
-        },
-      ],
-      metadata: {},
-    },
+    selected,
+    ...(includeParent
+      ? [{
+          ...selected,
+          role: "parent" as const,
+          depth: 1 as const,
+          subject: { selector: ".fixture-parent", metadata: {} },
+        }]
+      : []),
   ]);
 }
 
@@ -656,6 +953,7 @@ function inspect(targets: InspectMessage["targets"]): InspectMessage {
     messageId: "inspect-1",
     sessionId: "session-1",
     source: { role: "browser", id: "firefox", metadata: {} },
+    ideHighlightEnabled: true,
     targets,
     context: { url: "http://localhost:4173/", metadata: {} },
     metadata: {},
@@ -684,11 +982,16 @@ function cssTarget(
   };
 }
 
-function textDocument(uri: string, languageId: string, text: string) {
+function textDocument(
+  uri: string,
+  languageId: string,
+  text: string,
+  version = 1,
+) {
   return {
     uri: { toString: () => uri },
     languageId,
-    version: 1,
+    version,
     getText: () => text,
     positionAt: (offset: number) => ({ line: 0, character: offset }),
     offsetAt: (position: { line: number; character: number }) =>
