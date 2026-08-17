@@ -416,6 +416,45 @@ for (const browser of ["firefox", "chrome"]) {
         "element content-visibility rule",
         "section { content-visibility : HIDDEN; }",
       ],
+      [
+        "self custom property",
+        "#link-code { --hide:none; display:var(--hide)!important }",
+      ],
+      [
+        "commented mixed-case custom property",
+        "#link-code { --hide:/**/NONE; " +
+          "display:VaR(/**/--hide) !IMPORTANT; }",
+      ],
+      [
+        "root custom property",
+        ":root { --hide: hidden; } #link-code { visibility: var(--hide); }",
+      ],
+      [
+        "ancestor custom property",
+        ".connection-summary { --hide: hidden; } " +
+          "#link-code { content-visibility: var(--hide); }",
+      ],
+      [
+        "custom property fallback",
+        "#link-code { display: var(--missing, NONE) !important; }",
+      ],
+      [
+        "nested custom property fallback",
+        "#link-code { display: var(--missing, var(--also-missing, none)); }",
+      ],
+      [
+        "unresolved custom property",
+        "#link-code { display: var(--missing) !important; }",
+      ],
+      [
+        "collapsed visibility",
+        "#link-code { visibility:collapse!important }",
+      ],
+      [
+        "important cascade",
+        "#link-code { display: none !important; } " +
+          "#link-code { display: block; }",
+      ],
     ]) {
       const archive = browserArchive(browser);
       const css = archive.files.get("dist/panel.css").toString("utf8");
@@ -428,6 +467,90 @@ for (const browser of ["firefox", "chrome"]) {
           browser,
         ),
         /connection controls.*visible/i,
+        name,
+      );
+    }
+  });
+
+  test(`common ${browser} artifact verifier rejects controls hidden by inline style blocks`, () => {
+    for (const [name, rule] of [
+      [
+        "literal inline style",
+        "#link-code{display:none!important}",
+      ],
+      [
+        "variable inline style",
+        ":root{--hide:collapse}#link-code{visibility:var(--hide)!important}",
+      ],
+    ]) {
+      const archive = browserArchive(browser);
+      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      archive.files.set(
+        "dist/panel.html",
+        Buffer.from(
+          panel.replace("</head>", `<style>${rule}</style>\n</head>`),
+        ),
+      );
+
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /connection controls.*visible/i,
+        name,
+      );
+    }
+  });
+
+  test(`common ${browser} artifact verifier accepts visible cascades and unrelated styles`, () => {
+    for (const [name, rules] of [
+      [
+        "ancestor custom property override",
+        ":root { --display: none; } " +
+          ".connection-summary { --display: inline-block; } " +
+          "#link-code { display: var(--display); }",
+      ],
+      [
+        "self custom property override",
+        ".connection-summary { --visibility: collapse; } " +
+          "#link-code { --visibility: visible; visibility: var(--visibility); }",
+      ],
+      [
+        "winning visible declaration",
+        "#link-code { display: none; display: var(--missing); } " +
+          "#link-code { display: block; }",
+      ],
+      [
+        "unrelated styles",
+        ".unrelated { display: var(--missing) !important; " +
+          "visibility: collapse !important; }",
+      ],
+    ]) {
+      const archive = browserArchive(browser);
+      const css = archive.files.get("dist/panel.css").toString("utf8");
+      archive.files.set(
+        "dist/panel.css",
+        Buffer.from(`${css}\n${rules}\n`),
+      );
+      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      archive.files.set(
+        "dist/panel.html",
+        Buffer.from(
+          panel.replace(
+            "</head>",
+            "<style>.also-unrelated { display: var(--missing); }</style>\n</head>",
+          ),
+        ),
+      );
+
+      assert.doesNotThrow(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
         name,
       );
     }

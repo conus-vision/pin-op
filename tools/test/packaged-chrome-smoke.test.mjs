@@ -237,12 +237,38 @@ test("rejects an entity-encoded duplicate packaged toolbar", () => {
   );
 });
 
-test("rejects a packaged stylesheet that hides the link code", () => {
+test("rejects packaged stylesheets that hide the link code", () => {
+  for (const rule of [
+    "#link-code { display : none !important; }",
+    "#link-code { --hide:none; display:var(--hide)!important }",
+    "#link-code { visibility:collapse!important }",
+  ]) {
+    const archive = createArchive();
+    const css = archive.files.get("dist/panel.css").toString("utf8");
+    archive.files.set(
+      "dist/panel.css",
+      Buffer.from(`${css}\n${rule}\n`),
+    );
+
+    assert.throws(
+      () => validatePackagedChromeArchive(archive),
+      /connection controls.*visible/i,
+      rule,
+    );
+  }
+});
+
+test("rejects inline style blocks that hide the link code", () => {
   const archive = createArchive();
-  const css = archive.files.get("dist/panel.css").toString("utf8");
+  const panel = archive.files.get("dist/panel.html").toString("utf8");
   archive.files.set(
-    "dist/panel.css",
-    Buffer.from(`${css}\n#link-code { display : none !important; }\n`),
+    "dist/panel.html",
+    Buffer.from(
+      panel.replace(
+        "</head>",
+        "<style>#link-code{display:none!important}</style>\n</head>",
+      ),
+    ),
   );
 
   assert.throws(
