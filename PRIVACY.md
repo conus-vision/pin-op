@@ -36,6 +36,22 @@ does not send full source documents, workspace paths, source URIs, source-map
 contents, or browser tab IDs over this channel. It does not upload workspace
 source to a remote service.
 
+Before sending `source.matches`, the trusted VS Code host maps unknown plugin
+`kind` and `relation` values to `source` and `matches`, bounds and normalizes
+display/document labels and language IDs, and rejects literal or encoded path,
+URI, source-map, and browser-locator labels. Unsafe match labels fall back to a
+safe host-derived active-document basename or `untitled`; normalization failure
+sends no matches or navigation authority. Local source-plugin match or
+diagnostic metadata can remain in VS Code for diagnostics, but plugin
+`SourceMatch.metadata` is never serialized into `source.matches`. See the
+[protocol contract](docs/protocol.md#source-presentation-and-settings) for the
+complete normalization rules.
+
+This metadata boundary does not content-redact excerpt text. A bounded excerpt
+is code from the active document and may itself contain personal data or
+secrets. Do not use Source presentation on sensitive source unless sending that
+code to the linked browser window is acceptable.
+
 ## Browser-Local Inspector Data
 
 The DOM tree stays browser-local. Element labels, browser-local node refs,

@@ -176,6 +176,20 @@ excerpts from its active document for Source presentation: at most 32 excerpts,
 workspace paths and URIs, source maps, and browser tab IDs are not sent. Pin-op
 does not upload source or maps to a remote service.
 
+Before that IDE-to-browser send, the trusted VS Code host maps plugin `kind`
+and `relation` strings to the closed protocol vocabularies, bounds and
+normalizes display/document labels and language IDs, and rejects literal or
+encoded path, URI, source-map, and browser-locator labels. Unsafe match labels
+fall back to a safe host-derived active-document basename or `untitled`;
+normalization failure sends no matches or navigation authority. Local
+source-plugin match or diagnostic metadata can support diagnostics, but plugin
+`SourceMatch.metadata` is never serialized into `source.matches`.
+
+This boundary does not content-redact the excerpt text. It remains bounded code
+from the active document and can contain secrets. See the
+[wire contract](protocol.md#source-presentation-and-settings) and
+[source-plugin guidance](source-plugin-authoring.md#browser-presentation-metadata).
+
 ## Resource Bounds
 
 The bridge rejects WebSocket messages over 1 MiB. Protocol version `6` limits an
@@ -214,7 +228,7 @@ privacy behavior separately.
 Pin-op does not deliberately place auth tokens or raw credentials in
 diagnostics, protocol errors, source-plugin metadata, or inspection facts.
 User-facing errors use bounded, sanitized vocabularies. Page-controlled values
-are not scanned for secret-looking content.
+and active-document source excerpts are not scanned for secret-looking content.
 
 ## Refresh Boundary
 

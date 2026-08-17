@@ -249,11 +249,30 @@ generation. A match is a bounded excerpt from the active IDE document:
 }
 ```
 
+Before serializing `source.matches`, the trusted VS Code host rebuilds its
+presentation metadata. `kind` and `relation` are members of the closed
+`SOURCE_EXCERPT_KINDS` and `SOURCE_EXCERPT_RELATIONS` vocabularies; unknown
+plugin values become `source` and `matches`. Match display labels,
+host-derived document labels, and language IDs are normalized and bounded.
+Local source-plugin match or diagnostic metadata can remain available for
+diagnostics, but plugin `SourceMatch.metadata` is never serialized into
+`source.matches`.
+
+Serialized labels reject literal paths, URIs, and locators; relative `.map`
+labels; `sourceMappingURL` directives; structured browser locators; and
+bounded plausible base64 or base64url labels whose UTF-8 decoding has one of
+those sensitive forms. An unsafe match label falls back to the separately
+normalized, host-derived active-document basename, or `untitled` when no safe
+basename exists. A normalization or publication failure fails closed with no
+matches or navigation authority.
+
 A message contains at most 32 excerpts and is at most 256 KiB. Each excerpt is
 at most 80 logical lines and 8 KiB. It carries a display label and line numbers,
 but no workspace path, source URI, browser tab ID, editor range, or full source
 document. Selected and immediate Parent excerpts are separate; Previous/Next
-navigation continues to include Selected matches only.
+navigation continues to include Selected matches only. The excerpt `text`
+itself remains bounded code from the active document; it is not content-redacted
+or scanned for secrets.
 
 Clicking an excerpt sends `source.open` with only `inspectMessageId`,
 `resolutionGeneration`, and the opaque `matchId`. The bridge and IDE re-prove
