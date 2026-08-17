@@ -152,11 +152,16 @@ cursor to that exact current range after the IDE revalidates it. It cannot name
 or open an arbitrary path. Previous/Next remains Selected-only and does not
 include Parent matches.
 
-The panel adapts to its available space: wide panels show DOM and Source side by
-side, narrow tall panels stack them, and narrow short panels use tabs. The
-toolbar and connection code remain available in every layout. The centered
-footer shows the compact Pin-op mark and name, a mail link on Volodymyr Moskvin,
-and `(c) 2026 Conus Vision` linked to `https://conus.vision`.
+The panel combines viewport breakpoints with its measured usable workspace. At
+680 px wide or wider, DOM and Source use split only when the workspace width
+fits two 160 px panes plus the measured separator; otherwise they use tabs.
+Below 680 px, stack requires a viewport height of at least 520 px and the same
+fit along the workspace height (currently at least 325 px total); otherwise the
+panel uses tabs. It re-evaluates as banners or window constraints change, so
+restoring enough workspace re-enters stack. The toolbar and connection code
+remain available in every layout. The centered footer shows the compact Pin-op
+mark and name, a mail link on Volodymyr Moskvin, and `(c) 2026 Conus Vision`
+linked to `https://conus.vision`.
 
 Turning **IDE Highlight** off clears only VS Code decorations. Resolution,
 Source excerpts, exact Source opening, and Selected-only navigation remain

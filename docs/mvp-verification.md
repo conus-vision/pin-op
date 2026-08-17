@@ -338,10 +338,18 @@ fixture after the checks.
    pane, exact excerpt opening, resolution footer, and navigation still work.
 7. Turn it on and make a new selection; confirm Selected and Parent decorations
    return.
-8. Resize DevTools: at 680 px or wider confirm side-by-side DOM/Source; below
-   680 px with at least 520 px height confirm stacked panes; below both
-   thresholds confirm DOM/Source tabs. Confirm the toolbar code and controls do
-   not overlap.
+8. Resize DevTools to 680 px or wider. When the measured usable workspace width
+   fits two 160 px panes plus the measured separator, confirm side-by-side
+   DOM/Source remains split.
+9. Resize below 680 px while keeping the viewport at least 520 px tall. When
+   the measured usable workspace height fits two 160 px panes plus the measured
+   separator (currently at least 325 px total), confirm DOM/Source stacks.
+10. Keep that narrow, tall viewport and reduce the usable workspace below the
+    fit threshold, for example with the mismatch banner or window constraints.
+    Confirm tabs appear with no clipping, then restore enough workspace and
+    confirm stack re-entry.
+11. Below 680 px and below 520 px, confirm tabs remain active. In every mode,
+    confirm the toolbar code and controls do not overlap.
 
 ### Auto Refresh
 

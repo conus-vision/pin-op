@@ -20,9 +20,13 @@ browser core. The panel owns:
 - the selected-element summary, exact IDE resolution footer, and selected-match
   source navigation controls.
 
-Wide panels place DOM and Source side by side. Narrow tall panels stack them,
-and narrow short panels use tabs. The footer carries the compact Pin-op product
-identity without replacing operational status.
+Layout selection combines viewport breakpoints with the measured usable
+workspace. At a viewport width of at least 680 px, DOM and Source use split only
+when the workspace width fits two 160 px panes plus the measured separator;
+otherwise they use tabs. Below 680 px, stack requires a viewport height of at
+least 520 px and the same fit along the workspace height (currently at least
+325 px total); otherwise the panel uses tabs. The footer carries the compact
+Pin-op product identity without replacing operational status.
 
 Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product

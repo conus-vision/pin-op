@@ -174,10 +174,18 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
    primary VS Code cursor.
 4. Turn **IDE Highlight** off. Decorations must clear, but resolution, Source
    excerpts, exact opening, and navigation must remain usable.
-5. Resize DevTools. Confirm DOM/Source are side by side at 680 px or wider,
-   stacked below 680 px when height is at least 520 px, and shown as tabs when
-   both dimensions are below those thresholds.
-6. Confirm the compact centered footer shows the Pin-op logo/name, Volodymyr
+5. Resize DevTools to 680 px or wider. When the measured usable workspace width
+   fits two 160 px panes plus the measured separator, confirm the side-by-side
+   split remains active.
+6. Resize below 680 px while keeping the viewport at least 520 px tall. When
+   the measured usable workspace height fits two 160 px panes plus the measured
+   separator (currently at least 325 px total), confirm the panes stack.
+7. Keep that narrow, tall viewport and reduce the usable workspace below the
+   fit threshold, for example with the mismatch banner or window constraints.
+   Confirm tabs appear with no clipping, then restore enough workspace and
+   confirm stack re-entry.
+8. Below 680 px and below 520 px, confirm tabs remain active.
+9. Confirm the compact centered footer shows the Pin-op logo/name, Volodymyr
    Moskvin email link, and `(c) 2026 Conus Vision` website link.
 
 ## Auto Refresh
