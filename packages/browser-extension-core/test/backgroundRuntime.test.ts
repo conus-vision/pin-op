@@ -4,6 +4,7 @@ import {
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceMatchesMessage,
 } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 import type {
@@ -38,6 +39,7 @@ describe("startBackgroundRuntime", () => {
     const resolutionDispose = vi.fn();
     const stateDispose = vi.fn();
     const peerStateDispose = vi.fn();
+    const sourceMatchesDispose = vi.fn();
     const sourceNavigationStateDispose = vi.fn();
     const pageRefreshDispose = vi.fn();
     const protocolMismatchDispose = vi.fn();
@@ -46,6 +48,12 @@ describe("startBackgroundRuntime", () => {
       | ((
         context: TrustedIdePeerContext,
         message: ResolutionMessage,
+      ) => void)
+      | undefined;
+    let sourceMatchesListener:
+      | ((
+        context: TrustedIdePeerContext,
+        message: SourceMatchesMessage,
       ) => void)
       | undefined;
     let panelRegistration: PanelRegistration | undefined;
@@ -67,6 +75,8 @@ describe("startBackgroundRuntime", () => {
         return "sent" as const;
       }),
       publishSourceNavigation: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
       state: vi.fn(() => "linked" as const),
@@ -76,6 +86,10 @@ describe("startBackgroundRuntime", () => {
         return { dispose: resolutionDispose };
       }),
       onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
+      onSourceMatches: vi.fn((listener) => {
+        sourceMatchesListener = listener;
+        return { dispose: sourceMatchesDispose };
+      }),
       onSourceNavigationState: vi.fn(() => ({
         dispose: sourceNavigationStateDispose,
       })),
@@ -102,6 +116,7 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onResolution).toHaveBeenCalledOnce();
     expect(coordinator.onStateChanged).toHaveBeenCalledOnce();
     expect(coordinator.onPeerState).toHaveBeenCalledTimes(2);
+    expect(coordinator.onSourceMatches).toHaveBeenCalledOnce();
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
     expect(coordinator.onProtocolMismatch).toHaveBeenCalledTimes(2);
@@ -165,12 +180,24 @@ describe("startBackgroundRuntime", () => {
 
     expect(messagesOfType(panel, "resolution")).toEqual([matching]);
 
+    const matched = matchedResolution(inspectMessageId, 2);
+    resolutionListener?.(trusted, matched);
+    const matches = sourceMatches(inspectMessageId, 2);
+    sourceMatchesListener?.(
+      createTransportTrustedIdePeerContext(8, "session-a", "vscode-a"),
+      matches,
+    );
+    expect(messagesOfType(panel, "source.matches")).toEqual([]);
+    sourceMatchesListener?.(trusted, matches);
+    expect(messagesOfType(panel, "source.matches")).toEqual([matches]);
+
     runtime.dispose();
     runtime.dispose();
 
     expect(resolutionDispose).toHaveBeenCalledOnce();
     expect(stateDispose).toHaveBeenCalledOnce();
     expect(peerStateDispose).toHaveBeenCalledTimes(2);
+    expect(sourceMatchesDispose).toHaveBeenCalledOnce();
     expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
     expect(pageRefreshDispose).toHaveBeenCalledOnce();
     expect(protocolMismatchDispose).toHaveBeenCalledTimes(2);
@@ -198,12 +225,15 @@ describe("startBackgroundRuntime", () => {
       registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
       publishInspect: vi.fn(() => "sent" as const),
       publishSourceNavigation: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
       state: vi.fn(() => "notLinked" as const),
       onStateChanged: vi.fn(() => ({ dispose: vi.fn() })),
       onResolution: vi.fn(() => ({ dispose: vi.fn() })),
       onPeerState: vi.fn(() => ({ dispose: vi.fn() })),
+      onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
       onPageRefresh: vi.fn((listener) => {
         pageRefreshListener = listener;
@@ -371,12 +401,15 @@ describe("startBackgroundRuntime", () => {
       registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
       publishInspect: vi.fn(() => "sent" as const),
       publishSourceNavigation: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant,
       removeWindow: vi.fn(async () => undefined),
       state: vi.fn(() => "notLinked" as BrowserWindowConnectionState),
       onStateChanged: connectionStates.subscribe,
       onResolution: vi.fn(() => ({ dispose: vi.fn() })),
       onPeerState: peerStates.subscribe,
+      onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
       onPageRefresh: pageRefreshes.subscribe,
       onProtocolMismatch: protocolMismatches.subscribe,
@@ -732,6 +765,48 @@ function resolution(
     parentMatchCount: 0,
     inaccessibleStylesheetCount: 0,
     diagnosticCodes: [],
+    metadata: {},
+  };
+}
+
+function matchedResolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    ...resolution(inspectMessageId, resolutionGeneration),
+    status: "matched",
+    document: { label: "card.scss", languageId: "scss" },
+    selectedMatchCount: 1,
+  };
+}
+
+function sourceMatches(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: `source-matches-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [{
+      matchId: "match-1",
+      targetRole: "selected",
+      label: "card.scss:1",
+      kind: "rule",
+      relation: "selected",
+      confidence: "exact",
+      startLine: 1,
+      endLine: 3,
+      text: ".card { color: red; }",
+      truncated: false,
+    }],
+    omittedMatchCount: 0,
     metadata: {},
   };
 }

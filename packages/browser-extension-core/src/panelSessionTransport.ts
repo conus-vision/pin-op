@@ -1,9 +1,11 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import {
@@ -17,6 +19,7 @@ import {
   type DomResponse,
 } from "./domProtocol.js";
 import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
+import { parseProtocolData } from "./protocolDataSnapshot.js";
 
 export const DEFAULT_MAX_PANEL_SESSION_CHANNELS = 64;
 
@@ -177,6 +180,7 @@ export class PanelSessionTransport {
       | DomEvent
       | ResolutionMessage
       | PeerStateMessage
+      | SourceMatchesMessage
       | SourceNavigationStateMessage,
   ): void {
     if (!this.channels.has(channel)) {
@@ -246,33 +250,45 @@ function parsePublishedMessage(
     | DomEvent
     | ResolutionMessage
     | PeerStateMessage
+    | SourceMatchesMessage
     | SourceNavigationStateMessage,
-):
+): PublishedPanelMessage | undefined {
+  return parseProtocolData(message, {
+    safeParse(value):
+      | { readonly success: true; readonly data: PublishedPanelMessage }
+      | { readonly success: false } {
+      try {
+        if (!isRecord(value) || typeof value.type !== "string") {
+          return { success: false };
+        }
+        if (value.type.startsWith("dom.")) {
+          return { success: true, data: parseDomEvent(value) };
+        }
+        const parsed = value.type === "resolution"
+          ? ResolutionMessageSchema.safeParse(value)
+          : value.type === "peerState"
+          ? PeerStateMessageSchema.safeParse(value)
+          : value.type === "source.matches"
+          ? SourceMatchesMessageSchema.safeParse(value)
+          : value.type === "source.navigationState"
+          ? SourceNavigationStateMessageSchema.safeParse(value)
+          : { success: false as const };
+        return parsed.success
+          ? { success: true, data: parsed.data }
+          : { success: false };
+      } catch {
+        return { success: false };
+      }
+    },
+  });
+}
+
+type PublishedPanelMessage =
   | DomEvent
   | ResolutionMessage
   | PeerStateMessage
-  | SourceNavigationStateMessage
-  | undefined {
-  try {
-    if (isRecord(message) && typeof message.type === "string") {
-      if (message.type.startsWith("dom.")) {
-        return parseDomEvent(message);
-      }
-      if (message.type === "resolution") {
-        return ResolutionMessageSchema.parse(message);
-      }
-      if (message.type === "peerState") {
-        return PeerStateMessageSchema.parse(message);
-      }
-      if (message.type === "source.navigationState") {
-        return SourceNavigationStateMessageSchema.parse(message);
-      }
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
+  | SourceMatchesMessage
+  | SourceNavigationStateMessage;
 
 function domError(
   code: "invalid-request" | "session-disposed" | "internal-error",

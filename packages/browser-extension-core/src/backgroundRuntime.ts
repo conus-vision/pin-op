@@ -59,6 +59,7 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
       | "onResolution"
       | "onStateChanged"
       | "onPeerState"
+      | "onSourceMatches"
       | "onSourceNavigationState"
       | "onPageRefresh"
       | "onProtocolMismatch"
@@ -198,6 +199,12 @@ export function startBackgroundRuntime(
     subscribePageRefreshes: (listener) => {
       const subscription = coordinator.onPageRefresh((windowId, message) =>
         listener(windowId, message),
+      );
+      return () => subscription.dispose();
+    },
+    subscribeSourceMatches: (listener) => {
+      const subscription = coordinator.onSourceMatches(
+        (context, message) => listener(context, message),
       );
       return () => subscription.dispose();
     },

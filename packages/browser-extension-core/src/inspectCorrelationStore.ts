@@ -29,6 +29,7 @@ interface InspectCorrelation {
   sessionId?: string;
   sourceId?: string;
   document?: SourceDocument;
+  peerContext?: TrustedIdePeerContext;
   matchIds: Set<string>;
 }
 
@@ -39,6 +40,23 @@ export interface SourceOpenAuthority {
   readonly matchId: string;
   readonly tabId: number;
   readonly windowId: number;
+  readonly context: TrustedIdePeerContext;
+}
+
+export interface InspectCorrelationRoute {
+  readonly channel: string;
+  readonly inspectMessageId: string;
+  readonly tabId: number;
+  readonly windowId: number;
+}
+
+export interface PresentationSettingsAuthority {
+  readonly channel: string;
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+  readonly tabId: number;
+  readonly windowId: number;
+  readonly context: TrustedIdePeerContext;
 }
 
 export class InspectCorrelationStore {
@@ -123,10 +141,28 @@ export class InspectCorrelationStore {
     correlation.document = parsed.document
       ? Object.freeze({ ...parsed.document })
       : undefined;
+    correlation.peerContext = peerContext;
     correlation.matchIds.clear();
     this.correlations.delete(parsed.inspectMessageId);
     this.correlations.set(parsed.inspectMessageId, correlation);
     return correlation.channel;
+  }
+
+  public routeForInspect(
+    inspectMessageId: unknown,
+  ): InspectCorrelationRoute | undefined {
+    if (!isOpaqueId(inspectMessageId)) {
+      return undefined;
+    }
+    const correlation = this.correlations.get(inspectMessageId);
+    return correlation
+      ? Object.freeze({
+          channel: correlation.channel,
+          inspectMessageId,
+          tabId: correlation.tabId,
+          windowId: correlation.windowId,
+        })
+      : undefined;
   }
 
   public acceptNavigationState(
@@ -193,16 +229,15 @@ export class InspectCorrelationStore {
       matchIds.add(match.matchId);
     }
     correlation.matchIds = matchIds;
+    if (parsed.matches.length > 0) {
+      correlation.peerContext = peerContext;
+    }
     return correlation.channel;
   }
 
   public authorizeSourceOpen(
     input: unknown,
-    peerContext: TrustedIdePeerContext,
-  ): boolean {
-    if (!isTrustedIdePeerContext(peerContext)) {
-      return false;
-    }
+  ): SourceOpenAuthority | undefined {
     const record = snapshotExactDataRecord(input, [
       "channel",
       "tabId",
@@ -220,18 +255,72 @@ export class InspectCorrelationStore {
       !isResolutionGeneration(record.resolutionGeneration) ||
       !isOpaqueId(record.matchId)
     ) {
-      return false;
+      return undefined;
     }
     const correlation = this.correlations.get(record.inspectMessageId);
-    return Boolean(
-      correlation &&
-        correlation.channel === record.channel &&
-        correlation.tabId === record.tabId &&
-        correlation.windowId === record.windowId &&
-        correlationMatchesPeer(correlation, peerContext) &&
-        correlation.resolutionGeneration === record.resolutionGeneration &&
-        correlation.matchIds.has(record.matchId as string),
-    );
+    const context = correlation?.peerContext;
+    if (
+      !correlation ||
+      !context ||
+      !isTrustedIdePeerContext(context) ||
+      correlation.channel !== record.channel ||
+      correlation.tabId !== record.tabId ||
+      correlation.windowId !== record.windowId ||
+      correlation.resolutionGeneration !== record.resolutionGeneration ||
+      !correlation.matchIds.has(record.matchId as string)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      channel: correlation.channel,
+      inspectMessageId: record.inspectMessageId,
+      resolutionGeneration: correlation.resolutionGeneration,
+      matchId: record.matchId,
+      tabId: correlation.tabId,
+      windowId: correlation.windowId,
+      context,
+    } as SourceOpenAuthority);
+  }
+
+  public authorizePresentationSettings(
+    input: unknown,
+  ): PresentationSettingsAuthority | undefined {
+    const record = snapshotExactDataRecord(input, [
+      "channel",
+      "tabId",
+      "windowId",
+      "inspectMessageId",
+    ]);
+    if (
+      !record ||
+      !isValidDevtoolsChannel(record.channel) ||
+      !isBrowserId(record.tabId) ||
+      !isBrowserId(record.windowId) ||
+      !isOpaqueId(record.inspectMessageId)
+    ) {
+      return undefined;
+    }
+    const correlation = this.correlations.get(record.inspectMessageId);
+    const context = correlation?.peerContext;
+    if (
+      !correlation ||
+      !context ||
+      !isTrustedIdePeerContext(context) ||
+      correlation.channel !== record.channel ||
+      correlation.tabId !== record.tabId ||
+      correlation.windowId !== record.windowId ||
+      correlation.resolutionGeneration < 0
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      channel: correlation.channel,
+      inspectMessageId: record.inspectMessageId,
+      resolutionGeneration: correlation.resolutionGeneration,
+      tabId: correlation.tabId,
+      windowId: correlation.windowId,
+      context,
+    } as PresentationSettingsAuthority);
   }
 
   public authorizeNavigation(input: {
@@ -279,6 +368,17 @@ export class InspectCorrelationStore {
       }
     }
   }
+
+  public disposeWindow(windowId: number): void {
+    if (!isBrowserId(windowId)) {
+      return;
+    }
+    for (const [inspectMessageId, correlation] of this.correlations) {
+      if (correlation.windowId === windowId) {
+        this.correlations.delete(inspectMessageId);
+      }
+    }
+  }
 }
 
 function matchesCurrentAuthority(
@@ -287,6 +387,7 @@ function matchesCurrentAuthority(
   peerContext: TrustedIdePeerContext,
 ): boolean {
   return correlation.resolutionGeneration === message.resolutionGeneration &&
+    correlation.peerContext !== undefined &&
     correlationMatchesPeer(correlation, peerContext) &&
     payloadMatchesPeer(message, peerContext) &&
     correlation.document !== undefined &&

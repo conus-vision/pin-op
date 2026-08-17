@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
+  type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -273,6 +274,55 @@ describe("PanelSessionTransport", () => {
     ]);
   });
 
+  it("publishes only strict source matches to the bound panel channel", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+    const matches = sourceMatches();
+    const hostile = { ...matches } as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(hostile, "matches", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+    const inherited = Object.create(matches) as SourceMatchesMessage;
+    let proxyGetterCalls = 0;
+    const proxyHostile = new Proxy(matches, {
+      get() {
+        proxyGetterCalls += 1;
+        throw new Error("proxy getter must not run");
+      },
+      ownKeys() {
+        throw new Error("proxy reflection is hostile");
+      },
+    });
+
+    transport.publish("panel-a", matches);
+    transport.publish("panel-missing", matches);
+    transport.publish("panel-a", {
+      ...matches,
+      path: "/secret.scss",
+    } as SourceMatchesMessage);
+    expect(() => transport.publish(
+      "panel-a",
+      hostile as unknown as SourceMatchesMessage,
+    )).not.toThrow();
+    expect(() => transport.publish("panel-a", inherited)).not.toThrow();
+    expect(() => transport.publish("panel-a", proxyHostile)).not.toThrow();
+
+    expect(getterCalls).toBe(0);
+    expect(proxyGetterCalls).toBe(0);
+    expect(published).toEqual([{ channel: "panel-a", message: matches }]);
+  });
+
   it("publishes a bounded correlated inspect start only to its bound panel", () => {
     const published: Array<{ channel: string; message: unknown }> = [];
     const transport = new PanelSessionTransport({
@@ -437,6 +487,33 @@ function sourceNavigationState(
     resolutionGeneration: 2,
     selectedMatchCount,
     ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
+    metadata: {},
+  };
+}
+
+function sourceMatches(): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: "source-matches-1",
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [{
+      matchId: "match-1",
+      targetRole: "selected",
+      label: "card.scss:1",
+      kind: "rule",
+      relation: "selected",
+      confidence: "exact",
+      startLine: 1,
+      endLine: 3,
+      text: ".card {\n  color: red;\n}",
+      truncated: false,
+    }],
+    omittedMatchCount: 0,
     metadata: {},
   };
 }

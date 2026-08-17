@@ -50,6 +50,26 @@ describe("InspectCorrelationStore", () => {
     expect(store.accept(resolution("inspect-a-current", 1), trustedPeer())).toBe("panel-a");
   });
 
+  it("returns an immutable local route without granting IDE authority", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7, 10);
+
+    const route = store.routeForInspect("inspect-a");
+
+    expect(route).toEqual({
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      tabId: 7,
+      windowId: 10,
+    });
+    expect(Object.isFrozen(route)).toBe(true);
+    expect(store.routeForInspect("inspect-missing")).toBeUndefined();
+    expect(store.routeForInspect({ toString: () => "inspect-a" }))
+      .toBeUndefined();
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toBeUndefined();
+  });
+
   it("is bounded by least-recently-used correlations", () => {
     const store = new InspectCorrelationStore(2);
     store.record("panel-a", "inspect-a", 7, 10);
@@ -139,35 +159,76 @@ describe("InspectCorrelationStore", () => {
   it("authorizes source open only for the exact published IDE match authority", () => {
     const store = new InspectCorrelationStore(4);
     store.record("panel-a", "inspect-a", 7, 10);
-    const trusted = trustedPeer();
-    expect(store.accept(matchedResolution("inspect-a", 1), trusted)).toBe("panel-a");
-    expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1), trusted)).toBe(
+    const resolutionContext = trustedPeer();
+    const matchesContext = trustedPeer();
+    expect(store.accept(matchedResolution("inspect-a", 1), resolutionContext)).toBe("panel-a");
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
+    expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1), matchesContext)).toBe(
       "panel-a",
     );
     const current = sourceOpenRoute();
 
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(true);
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(true);
-    expect(store.authorizeSourceOpen({ ...current, matchId: "unknown" }, trusted)).toBe(false);
+    const authority = store.authorizeSourceOpen(current);
+    expect(authority).toMatchObject(current);
+    expect(authority?.context).toBe(matchesContext);
+    expect(Object.isFrozen(authority)).toBe(true);
+    expect(store.authorizeSourceOpen(current)?.context).toBe(matchesContext);
+    expect(store.authorizeSourceOpen({ ...current, matchId: "unknown" })).toBeUndefined();
     expect(store.authorizeSourceOpen({
       ...current,
       resolutionGeneration: 0,
-    }, trusted)).toBe(false);
-    expect(store.authorizeSourceOpen({ ...current, channel: "panel-b" }, trusted)).toBe(false);
-    expect(store.authorizeSourceOpen({ ...current, tabId: 8 }, trusted)).toBe(false);
-    expect(store.authorizeSourceOpen({ ...current, windowId: 11 }, trusted)).toBe(false);
-    expect(store.authorizeSourceOpen(
-      current,
-      trustedPeer({ sessionId: "session-b" }),
-    )).toBe(false);
-    expect(store.authorizeSourceOpen(
-      current,
-      trustedPeer({ sourceId: "vscode-b" }),
-    )).toBe(false);
+    })).toBeUndefined();
+    expect(store.authorizeSourceOpen({ ...current, channel: "panel-b" })).toBeUndefined();
+    expect(store.authorizeSourceOpen({ ...current, tabId: 8 })).toBeUndefined();
+    expect(store.authorizeSourceOpen({ ...current, windowId: 11 })).toBeUndefined();
     expect(store.authorizeSourceOpen(
       { ...current, uri: "file:///card.scss" },
-      trusted,
-    )).toBe(false);
+    )).toBeUndefined();
+  });
+
+  it("authorizes presentation settings only from exact local routing facts", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7, 10);
+    const resolutionContext = trustedPeer();
+    const route = presentationSettingsRoute();
+
+    expect(store.authorizePresentationSettings(route)).toBeUndefined();
+    expect(store.accept(matchedResolution("inspect-a", 1), resolutionContext)).toBe(
+      "panel-a",
+    );
+
+    const resolutionAuthority = store.authorizePresentationSettings(route);
+    expect(resolutionAuthority).toMatchObject({
+      ...route,
+      resolutionGeneration: 1,
+    });
+    expect(resolutionAuthority?.context).toBe(resolutionContext);
+    expect(Object.isFrozen(resolutionAuthority)).toBe(true);
+
+    const matchesContext = trustedPeer();
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      matchesContext,
+    )).toBe("panel-a");
+    expect(store.authorizePresentationSettings(route)?.context).toBe(
+      matchesContext,
+    );
+    expect(store.authorizePresentationSettings({
+      ...route,
+      inspectMessageId: "inspect-missing",
+    })).toBeUndefined();
+    expect(store.authorizePresentationSettings({
+      ...route,
+      channel: "panel-b",
+    })).toBeUndefined();
+    expect(store.authorizePresentationSettings({ ...route, tabId: 8 }))
+      .toBeUndefined();
+    expect(store.authorizePresentationSettings({ ...route, windowId: 11 }))
+      .toBeUndefined();
+    expect(store.authorizePresentationSettings({
+      ...route,
+      sourceId: "panel-spoof",
+    })).toBeUndefined();
   });
 
   it("requires a current resolution for nonempty matches and accepts empty pre-resolution invalidation without authority", () => {
@@ -179,22 +240,35 @@ describe("InspectCorrelationStore", () => {
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 9, {
       matches: [],
     }), trusted)).toBe("panel-a");
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), trusted)).toBe(false);
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toBeUndefined();
 
     expect(store.accept(matchedResolution("inspect-a", 1), trusted)).toBe("panel-a");
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1), trusted)).toBe(
       "panel-a",
     );
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), trusted)).toBe(true);
+    expect(store.authorizeSourceOpen(sourceOpenRoute())?.context).toBe(trusted);
 
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1, {
       matches: [],
     }), trusted)).toBe("panel-a");
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), trusted)).toBe(false);
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
+    expect(store.authorizePresentationSettings(presentationSettingsRoute())?.context)
+      .toBe(trusted);
   });
 
   it("rejects stale, foreign, and duplicate match publications atomically", () => {
-    const store = readySourceStore();
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7, 10);
+    expect(store.accept(matchedResolution("inspect-a", 1), trustedPeer())).toBe(
+      "panel-a",
+    );
+    const acceptedContext = trustedPeer();
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      acceptedContext,
+    )).toBe("panel-a");
     const current = sourceOpenRoute();
     const trusted = trustedPeer();
 
@@ -213,41 +287,47 @@ describe("InspectCorrelationStore", () => {
       matches: [excerpt("selected-1"), excerpt("selected-1")],
     }), trusted)).toBeUndefined();
 
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(true);
+    expect(store.authorizeSourceOpen(current)?.context).toBe(acceptedContext);
   });
 
-  it("revokes source IDs on a new resolution, inspect, channel rebind, tab move, or unlink", () => {
+  it("revokes pinned authority on a new resolution, inspect, discard, channel, tab, or window disposal", () => {
     const store = readySourceStore();
     const current = sourceOpenRoute();
     const trusted = trustedPeer();
 
     expect(store.accept(matchedResolution("inspect-a", 2), trusted)).toBe("panel-a");
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(false);
+    expect(store.authorizeSourceOpen(current)).toBeUndefined();
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 2), trusted)).toBe(
       "panel-a",
     );
     expect(store.authorizeSourceOpen({
       ...current,
       resolutionGeneration: 2,
-    }, trusted)).toBe(true);
+    })?.context).toBe(trusted);
 
     store.record("panel-a", "inspect-b", 7, 10);
     expect(store.authorizeSourceOpen({
       ...current,
       resolutionGeneration: 2,
-    }, trusted)).toBe(false);
+    })).toBeUndefined();
 
-    store.record("panel-a", "inspect-a", 7, 10);
-    store.accept(matchedResolution("inspect-a", 1), trusted);
-    store.acceptSourceMatches(sourceMatches("inspect-a", 1), trusted);
+    populateSourceStore(store, trusted);
+    store.discard("inspect-a");
+    expect(store.authorizeSourceOpen(current)).toBeUndefined();
+
+    populateSourceStore(store, trusted);
     store.disposeTab(7);
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(false);
+    expect(store.authorizeSourceOpen(current)).toBeUndefined();
 
-    store.record("panel-a", "inspect-a", 7, 10);
-    store.accept(matchedResolution("inspect-a", 1), trusted);
-    store.acceptSourceMatches(sourceMatches("inspect-a", 1), trusted);
+    populateSourceStore(store, trusted);
     store.disposeChannel("panel-a");
-    expect(store.authorizeSourceOpen(current, trusted)).toBe(false);
+    expect(store.authorizeSourceOpen(current)).toBeUndefined();
+
+    populateSourceStore(store, trusted);
+    store.disposeWindow(10);
+    expect(store.authorizeSourceOpen(current)).toBeUndefined();
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toBeUndefined();
   });
 
   it("rejects accessor-backed source authority without invoking it", () => {
@@ -262,8 +342,8 @@ describe("InspectCorrelationStore", () => {
       },
     });
 
-    expect(() => store.authorizeSourceOpen(hostile, trustedPeer())).not.toThrow();
-    expect(store.authorizeSourceOpen(hostile, trustedPeer())).toBe(false);
+    expect(() => store.authorizeSourceOpen(hostile)).not.toThrow();
+    expect(store.authorizeSourceOpen(hostile)).toBeUndefined();
     expect(getterCalls).toBe(0);
   });
 
@@ -301,7 +381,7 @@ describe("InspectCorrelationStore", () => {
     );
   });
 
-  it("requires the same trusted route for matches, navigation, and source open", () => {
+  it("requires the same trusted route for matches and navigation", () => {
     const store = new InspectCorrelationStore(4);
     store.record("panel-a", "inspect-a", 7, 10);
     const trusted = trustedPeer();
@@ -328,8 +408,43 @@ describe("InspectCorrelationStore", () => {
         trusted,
       ),
     ).toBe("panel-a");
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), otherWindow)).toBe(false);
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), trusted)).toBe(true);
+    expect(store.authorizeSourceOpen(sourceOpenRoute())?.context).toBe(trusted);
+  });
+
+  it("does not replace pinned authority for stale or spoofed match contexts", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record("panel-a", "inspect-a", 7, 10);
+    const firstResolutionContext = trustedPeer();
+    expect(store.accept(
+      matchedResolution("inspect-a", 1),
+      firstResolutionContext,
+    )).toBe("panel-a");
+    const firstMatchesContext = trustedPeer();
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      firstMatchesContext,
+    )).toBe("panel-a");
+
+    const currentResolutionContext = trustedPeer();
+    expect(store.accept(
+      matchedResolution("inspect-a", 2),
+      currentResolutionContext,
+    )).toBe("panel-a");
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      firstMatchesContext,
+    )).toBeUndefined();
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 2),
+      trustedPeer({ sessionId: "session-b" }),
+    )).toBeUndefined();
+
+    expect(store.authorizePresentationSettings(presentationSettingsRoute())?.context)
+      .toBe(currentResolutionContext);
+    expect(store.authorizeSourceOpen({
+      ...sourceOpenRoute(),
+      resolutionGeneration: 2,
+    })).toBeUndefined();
   });
 
   it("does not route pre-resolution invalidation from a spoofed context", () => {
@@ -344,7 +459,7 @@ describe("InspectCorrelationStore", () => {
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1, {
       matches: [],
     }), spoof)).toBeUndefined();
-    expect(store.authorizeSourceOpen(sourceOpenRoute(), spoof)).toBe(false);
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
   });
 });
 
@@ -435,6 +550,15 @@ function sourceOpenRoute() {
   } as const;
 }
 
+function presentationSettingsRoute() {
+  return {
+    channel: "panel-a",
+    tabId: 7,
+    windowId: 10,
+    inspectMessageId: "inspect-a",
+  } as const;
+}
+
 function trustedPeer(
   overrides: {
     readonly windowId?: number;
@@ -451,10 +575,17 @@ function trustedPeer(
 
 function readySourceStore(): InspectCorrelationStore {
   const store = new InspectCorrelationStore(4);
-  store.record("panel-a", "inspect-a", 7, 10);
-  store.accept(matchedResolution("inspect-a", 1), trustedPeer());
-  store.acceptSourceMatches(sourceMatches("inspect-a", 1), trustedPeer());
+  populateSourceStore(store, trustedPeer());
   return store;
+}
+
+function populateSourceStore(
+  store: InspectCorrelationStore,
+  context: TrustedIdePeerContext,
+): void {
+  store.record("panel-a", "inspect-a", 7, 10);
+  store.accept(matchedResolution("inspect-a", 1), context);
+  store.acceptSourceMatches(sourceMatches("inspect-a", 1), context);
 }
 
 function sourceNavigationState(

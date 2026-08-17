@@ -3,6 +3,8 @@ import {
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceExcerpt,
+  type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -12,7 +14,10 @@ import {
   type BrowserProtocolMismatch,
   type InspectPayload,
   type InspectSendOutcome,
+  type PresentationSettingsInput,
+  type SourceOpenInput,
   type SourceNavigationSendOutcome,
+  type SourcePresentationSendOutcome,
 } from "../src/bridgeClient.js";
 import {
   BackgroundInspectCoordinator,
@@ -1016,6 +1021,501 @@ describe("BackgroundRouter", () => {
       resolution("inspect-1", 1),
     ]);
   });
+
+  it("publishes current source matches only to the exact active panel", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    const resolutionContext = trustedIdePeer();
+    harness.resolutions.emit(
+      resolutionContext,
+      matchedResolution("inspect-1", 1),
+    );
+    const current = sourceMatchesMessage("inspect-1", 1);
+
+    harness.sourceMatches.emit(
+      trustedIdePeer({ windowId: 20 }),
+      current,
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 0),
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 1, { sourceId: "vscode-b" }),
+    );
+    let spoofGetterCalls = 0;
+    const spoofedContext = new Proxy({} as TrustedIdePeerContext, {
+      get() {
+        spoofGetterCalls += 1;
+        throw new Error("spoofed context getter must not run");
+      },
+    });
+    expect(() => harness.sourceMatches.emit(spoofedContext, current))
+      .not.toThrow();
+    expect(spoofGetterCalls).toBe(0);
+    expect(messagesOfType(panelA, "source.matches")).toEqual([]);
+
+    harness.sourceMatches.emit(trustedIdePeer(), current);
+
+    expect(messagesOfType(panelA, "source.matches")).toEqual([current]);
+    expect(messagesOfType(panelB, "source.matches")).toEqual([]);
+  });
+
+  it("publishes an empty pre-resolution clear without granting commands", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    const clear = sourceMatchesMessage("inspect-1", 9, { matches: [] });
+
+    harness.sourceMatches.emit(trustedIdePeer(), clear);
+    panel.emitMessage(panelSourceOpen("match-1", "inspect-1", 9));
+    panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "source.matches")).toEqual([clear]);
+    expect(harness.coordinator.sourceOpens).toEqual([]);
+    expect(harness.coordinator.presentationSettings).toEqual([]);
+  });
+
+  it("opens only an exact mapped match with the pinned transport context", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      matchedResolution("inspect-1", 2),
+    );
+    const matchesContext = trustedIdePeer();
+    harness.sourceMatches.emit(
+      matchesContext,
+      sourceMatchesMessage("inspect-1", 2),
+    );
+
+    panel.emitMessage(panelSourceOpen("match-1", "inspect-1", 2));
+    panel.emitMessage(panelSourceOpen("unknown", "inspect-1", 2));
+    panel.emitMessage(panelSourceOpen("match-1", "inspect-1", 1));
+    panel.emitMessage(panelSourceOpen("match-1", "inspect-missing", 2));
+    panel.emitMessage({
+      ...panelSourceOpen("match-1", "inspect-1", 2),
+      uri: "file:///secret.scss",
+      path: "/secret.scss",
+      range: { startLine: 1, endLine: 3 },
+      sessionId: "panel-session",
+      source: { role: "ide", id: "panel-spoof" },
+    });
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceOpens).toEqual([{
+      context: matchesContext,
+      input: {
+        inspectMessageId: "inspect-1",
+        resolutionGeneration: 2,
+        matchId: "match-1",
+      },
+    }]);
+  });
+
+  it("rejects duplicate match IDs atomically and preserves prior authority", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      matchedResolution("inspect-1", 1),
+    );
+    const acceptedContext = trustedIdePeer();
+    harness.sourceMatches.emit(
+      acceptedContext,
+      sourceMatchesMessage("inspect-1", 1),
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 1, {
+        matches: [sourceExcerpt("match-1"), sourceExcerpt("match-1")],
+      }),
+    );
+
+    panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "source.matches")).toEqual([
+      sourceMatchesMessage("inspect-1", 1),
+    ]);
+    expect(harness.coordinator.sourceOpens).toEqual([{
+      context: acceptedContext,
+      input: {
+        inspectMessageId: "inspect-1",
+        resolutionGeneration: 1,
+        matchId: "match-1",
+      },
+    }]);
+  });
+
+  it("publishes settings only for the exact current resolved inspect", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+
+    panel.emitMessage(panelPresentationSettings(false));
+    panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+    expect(harness.coordinator.presentationSettings).toEqual([]);
+    expect(harness.coordinator.sourceOpens).toEqual([]);
+
+    const resolutionContext = trustedIdePeer();
+    harness.resolutions.emit(
+      resolutionContext,
+      matchedResolution("inspect-1", 1),
+    );
+    panel.emitMessage(panelPresentationSettings(false));
+    panel.emitMessage(panelPresentationSettings(true, "inspect-missing"));
+    panel.emitMessage({
+      ...panelPresentationSettings(true),
+      resolutionGeneration: 1,
+      sourceId: "panel-spoof",
+    });
+    await flushMicrotasks();
+
+    expect(harness.coordinator.presentationSettings).toEqual([{
+      context: resolutionContext,
+      input: {
+        inspectMessageId: "inspect-1",
+        ideHighlightEnabled: false,
+      },
+    }]);
+    expect(harness.coordinator.sourceOpens).toEqual([]);
+  });
+
+  it.each<BrowserWindowConnectionState>([
+    "reconnecting",
+    "offline",
+    "rateLimited",
+    "error",
+    "incompatible",
+    "notLinked",
+  ])("revokes source presentation authority across %s state", async (state) => {
+    const { harness, panel } = await createReadySourceHarness();
+
+    harness.coordinator.emitState(10, state);
+    await flushMicrotasks();
+    panel.emitMessage(panelSourceOpen());
+    panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(harness.coordinator.sourceOpens).toEqual([]);
+    expect(harness.coordinator.presentationSettings).toEqual([]);
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+    panel.emitMessage(panelSourceOpen());
+    panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceOpens).toEqual([]);
+    expect(harness.coordinator.presentationSettings).toEqual([]);
+  });
+
+  it("revokes authority before an unavailable state waits on tab verification", async () => {
+    const blockedLookup = deferred<
+      { id: number; windowId: number } | undefined
+    >();
+    let blockNextLookup = false;
+    let blockedCalls = 0;
+    const ready = await createReadySourceHarness({
+      getTab: async (tabId) => {
+        if (blockNextLookup && ++blockedCalls === 1) {
+          return blockedLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+    });
+    blockNextLookup = true;
+
+    ready.harness.coordinator.emitState(10, "offline");
+    await Promise.resolve();
+    ready.panel.emitMessage(panelSourceOpen());
+    ready.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+
+    expect(ready.harness.coordinator.sourceOpens).toEqual([]);
+    expect(ready.harness.coordinator.presentationSettings).toEqual([]);
+
+    blockedLookup.resolve({ id: 17, windowId: 10 });
+    await flushMicrotasks();
+  });
+
+  it("revokes source presentation authority on peer disconnect and explicit unlink", async () => {
+    const first = await createReadySourceHarness();
+
+    first.harness.peerStates.emit(10, peerState(false, 2));
+    first.harness.coordinator.emitState(10, "linked");
+    first.panel.emitMessage(panelSourceOpen());
+    first.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+
+    expect(first.harness.coordinator.sourceOpens).toEqual([]);
+    expect(first.harness.coordinator.presentationSettings).toEqual([]);
+
+    const second = await createReadySourceHarness();
+    await second.harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-1",
+    }, panelSender("channel-1"));
+    second.harness.coordinator.emitState(10, "linked");
+    second.panel.emitMessage(panelSourceOpen());
+    second.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+
+    expect(second.harness.coordinator.sourceOpens).toEqual([]);
+    expect(second.harness.coordinator.presentationSettings).toEqual([]);
+  });
+
+  it("rejects source presentation after panel rebind, tab move, or document invalidation", async () => {
+    const rebound = await createReadySourceHarness();
+    rebound.panel.emitMessage(panelSourceOpen());
+    rebound.panel.disconnect();
+    const replacement = rebound.harness.panelPort("channel-1");
+    rebound.harness.router.connectPort(replacement);
+    replacement.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(rebound.harness.coordinator.sourceOpens).toEqual([]);
+    expect(rebound.harness.coordinator.presentationSettings).toEqual([]);
+
+    const tabs = new Map([[17, 10]]);
+    const moved = await createReadySourceHarness({ tabs });
+    tabs.set(17, 20);
+    moved.panel.emitMessage(panelSourceOpen());
+    moved.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(moved.harness.coordinator.sourceOpens).toEqual([]);
+    expect(moved.harness.coordinator.presentationSettings).toEqual([]);
+
+    const invalidated = await createReadySourceHarness();
+    invalidated.contentLease.disconnect();
+    await flushMicrotasks();
+    await invalidated.harness.inspectCoordinator.whenIdle(17);
+    invalidated.panel.emitMessage(panelSourceOpen());
+    invalidated.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(invalidated.harness.coordinator.sourceOpens).toEqual([]);
+    expect(invalidated.harness.coordinator.presentationSettings).toEqual([]);
+  });
+
+  it("rejects cross-channel commands and callbacks retained past router disposal", async () => {
+    const ready = await createReadySourceHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelB = await ready.harness.registerAndConnect(
+      "channel-2",
+      18,
+      "source-18",
+    );
+
+    panelB.emitMessage(panelSourceOpen());
+    panelB.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(ready.harness.coordinator.sourceOpens).toEqual([]);
+    expect(ready.harness.coordinator.presentationSettings).toEqual([]);
+
+    const staleListener = ready.panel.onMessage.snapshot()[0];
+    ready.harness.router.dispose();
+    staleListener?.(panelSourceOpen());
+    staleListener?.(panelPresentationSettings(false));
+    await flushMicrotasks();
+    expect(ready.harness.coordinator.sourceOpens).toEqual([]);
+    expect(ready.harness.coordinator.presentationSettings).toEqual([]);
+  });
+
+  it.each<SourcePresentationSendOutcome>([
+    "not-connected",
+    "invalid-message",
+    "transport-error",
+  ])("fails closed when source open returns %s", async (outcome) => {
+    const { harness, panel } = await createReadySourceHarness();
+    harness.coordinator.sourceOpenOutcome = outcome;
+
+    panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+    panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceOpens).toHaveLength(1);
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([{
+      type: "pin-op.ideState",
+      status: "ide-disconnected",
+      inspectMessageId: "inspect-1",
+    }]);
+  });
+
+  it("fails closed when presentation settings returns non-sent or throws", async () => {
+    const nonSent = await createReadySourceHarness();
+    nonSent.harness.coordinator.presentationSettingsOutcome = "not-connected";
+    nonSent.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    nonSent.panel.emitMessage(panelPresentationSettings(true));
+    await flushMicrotasks();
+
+    expect(nonSent.harness.coordinator.presentationSettings).toHaveLength(1);
+    expect(messagesOfType(nonSent.panel, "pin-op.ideState")).toHaveLength(1);
+
+    const thrown = await createReadySourceHarness();
+    thrown.harness.coordinator.throwOnPresentationSettings = true;
+    thrown.panel.emitMessage(panelPresentationSettings(false));
+    await flushMicrotasks();
+    thrown.panel.emitMessage(panelSourceOpen());
+    await flushMicrotasks();
+
+    expect(thrown.harness.coordinator.presentationSettings).toHaveLength(1);
+    expect(thrown.harness.coordinator.sourceOpens).toEqual([]);
+    expect(messagesOfType(thrown.panel, "pin-op.ideState")).toHaveLength(1);
+    expect(thrown.harness.reportedErrors).toHaveLength(1);
+  });
+
+  it("keeps a failed source command scoped to its originating window", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    await harness.attachContentSession(17, "content-a");
+    await harness.router.routeMessage(
+      selectedMessage("content-a"),
+      contentSender(17, 10),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      matchedResolution("inspect-1", 1),
+    );
+    harness.sourceMatches.emit(
+      trustedIdePeer(),
+      sourceMatchesMessage("inspect-1", 1),
+    );
+
+    const panelB = await harness.registerAndConnect(
+      "channel-b",
+      18,
+      "source-b",
+    );
+    await harness.attachContentSession(18, "content-b");
+    await harness.router.routeMessage(
+      selectedMessage("content-b"),
+      contentSender(18, 20),
+    );
+    const contextB = trustedIdePeer({ windowId: 20 });
+    harness.resolutions.emit(
+      contextB,
+      matchedResolution("inspect-2", 1),
+    );
+    harness.sourceMatches.emit(
+      contextB,
+      sourceMatchesMessage("inspect-2", 1),
+    );
+
+    harness.coordinator.sourceOpenOutcome = "not-connected";
+    panelA.emitMessage(panelSourceOpen("match-1", "inspect-1", 1));
+    await flushMicrotasks();
+    harness.coordinator.sourceOpenOutcome = "sent";
+    panelB.emitMessage(panelSourceOpen("match-1", "inspect-2", 1));
+    await flushMicrotasks();
+
+    expect(harness.coordinator.sourceOpens).toHaveLength(2);
+    expect(harness.coordinator.sourceOpens[1]).toEqual({
+      context: contextB,
+      input: {
+        inspectMessageId: "inspect-2",
+        resolutionGeneration: 1,
+        matchId: "match-1",
+      },
+    });
+    expect(messagesOfType(panelA, "pin-op.ideState")).toHaveLength(1);
+    expect(messagesOfType(panelB, "pin-op.ideState")).toEqual([]);
+  });
+
+  it.each(["source.open", "presentation.settings"] as const)(
+    "postflight-revokes %s authority after a silent tab move",
+    async (command) => {
+      const tabs = new Map([[17, 10]]);
+      const { harness, panel } = await createReadySourceHarness({ tabs });
+      if (command === "source.open") {
+        harness.coordinator.onSourceOpen = () => tabs.set(17, 20);
+        panel.emitMessage(panelSourceOpen());
+      } else {
+        harness.coordinator.onPresentationSettings = () => tabs.set(17, 20);
+        panel.emitMessage(panelPresentationSettings(false));
+      }
+      await flushMicrotasks();
+      const publishedBefore = messagesOfType(panel, "source.matches").length;
+
+      harness.sourceMatches.emit(
+        trustedIdePeer(),
+        sourceMatchesMessage("inspect-1", 1),
+      );
+
+      expect(messagesOfType(panel, "source.matches")).toHaveLength(
+        publishedBefore,
+      );
+    },
+  );
 
   it("forwards repeated strict source navigation for the current correlation without DOM work", async () => {
     const harness = createHarness();
@@ -3574,6 +4074,12 @@ function createHarness(options: HarnessOptions = {}) {
       message: SourceNavigationStateMessage,
     ) => void
   >();
+  const sourceMatches = new FakeEvent<
+    (
+      context: TrustedIdePeerContext,
+      message: SourceMatchesMessage,
+    ) => void
+  >();
   const pageRefreshes = new FakeEvent<
     (windowId: number, message: PageRefreshMessage) => void
   >();
@@ -3608,6 +4114,7 @@ function createHarness(options: HarnessOptions = {}) {
     resolutions,
     peerStates,
     sourceNavigationStates,
+    sourceMatches,
     pageRefreshes,
     protocolMismatches,
     tabRefresh,
@@ -3696,6 +4203,10 @@ function createHarness(options: HarnessOptions = {}) {
       sourceNavigationStates.addListener(listener);
       return () => sourceNavigationStates.removeListener(listener);
     },
+    subscribeSourceMatches: (listener) => {
+      sourceMatches.addListener(listener);
+      return () => sourceMatches.removeListener(listener);
+    },
     subscribePageRefreshes: (listener) => {
       pageRefreshes.addListener(listener);
       return () => pageRefreshes.removeListener(listener);
@@ -3713,6 +4224,37 @@ function createHarness(options: HarnessOptions = {}) {
   return harness;
 }
 
+async function createReadySourceHarness(options: HarnessOptions = {}) {
+  const harness = createHarness(options);
+  const panel = await harness.registerAndConnect(
+    "channel-1",
+    17,
+    "source-17",
+  );
+  const contentLease = await harness.attachContentSession(17);
+  await harness.router.routeMessage(
+    selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+    contentSender(17, 10),
+  );
+  const resolutionContext = trustedIdePeer();
+  harness.resolutions.emit(
+    resolutionContext,
+    matchedResolution("inspect-1", 1),
+  );
+  const matchesContext = trustedIdePeer();
+  harness.sourceMatches.emit(
+    matchesContext,
+    sourceMatchesMessage("inspect-1", 1),
+  );
+  return {
+    harness,
+    panel,
+    contentLease,
+    resolutionContext,
+    matchesContext,
+  };
+}
+
 interface PublishedInspect {
   readonly windowId: number;
   readonly inspectMessageId: string;
@@ -3728,10 +4270,22 @@ interface PublishedSourceNavigation {
   >;
 }
 
+interface PublishedSourceOpen {
+  readonly context: TrustedIdePeerContext;
+  readonly input: SourceOpenInput;
+}
+
+interface PublishedPresentationSettings {
+  readonly context: TrustedIdePeerContext;
+  readonly input: PresentationSettingsInput;
+}
+
 class FakeWindowCoordinator {
   public readonly registrations: PanelRegistration[] = [];
   public readonly published: PublishedInspect[] = [];
   public readonly sourceNavigations: PublishedSourceNavigation[] = [];
+  public readonly sourceOpens: PublishedSourceOpen[] = [];
+  public readonly presentationSettings: PublishedPresentationSettings[] = [];
   public readonly removedWindows: number[] = [];
   public readonly links: Array<{
     windowId: number;
@@ -3742,8 +4296,16 @@ class FakeWindowCoordinator {
   public disposeCalls = 0;
   public publishOutcome: InspectSendOutcome = "sent";
   public sourceNavigationOutcome: SourceNavigationSendOutcome = "sent";
+  public sourceOpenOutcome: SourcePresentationSendOutcome = "sent";
+  public presentationSettingsOutcome: SourcePresentationSendOutcome = "sent";
+  public throwOnSourceOpen = false;
+  public throwOnPresentationSettings = false;
   public readonly refreshParticipants: Array<[number, number, boolean]> = [];
   public onPublish?: (publication: PublishedInspect) => void;
+  public onSourceOpen?: (publication: PublishedSourceOpen) => void;
+  public onPresentationSettings?: (
+    publication: PublishedPresentationSettings,
+  ) => void;
   private readonly active = new Set<PanelRegistration>();
 
   public constructor(
@@ -3826,6 +4388,32 @@ class FakeWindowCoordinator {
     this.sourceNavigations.push(publication);
     return this.publishSourceNavigationBehavior?.(publication) ??
       this.sourceNavigationOutcome;
+  }
+
+  public publishSourceOpen(
+    context: TrustedIdePeerContext,
+    input: SourceOpenInput,
+  ): SourcePresentationSendOutcome {
+    const publication = { context, input: { ...input } };
+    this.sourceOpens.push(publication);
+    this.onSourceOpen?.(publication);
+    if (this.throwOnSourceOpen) {
+      throw new Error("source open failed");
+    }
+    return this.sourceOpenOutcome;
+  }
+
+  public publishPresentationSettings(
+    context: TrustedIdePeerContext,
+    input: PresentationSettingsInput,
+  ): SourcePresentationSendOutcome {
+    const publication = { context, input: { ...input } };
+    this.presentationSettings.push(publication);
+    this.onPresentationSettings?.(publication);
+    if (this.throwOnPresentationSettings) {
+      throw new Error("presentation settings failed");
+    }
+    return this.presentationSettingsOutcome;
   }
 
   public async removeWindow(windowId: number): Promise<void> {
@@ -4286,6 +4874,57 @@ function resolution(
   };
 }
 
+function matchedResolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): ResolutionMessage {
+  return {
+    ...resolution(inspectMessageId, resolutionGeneration),
+    status: "matched",
+    document: { label: "card.scss", languageId: "scss" },
+    selectedMatchCount: 1,
+  };
+}
+
+function sourceMatchesMessage(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+  overrides: {
+    readonly sessionId?: string;
+    readonly sourceId?: string;
+    readonly matches?: readonly SourceExcerpt[];
+  } = {},
+): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: `source-matches-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: overrides.sessionId ?? "session-a",
+    source: { role: "ide", id: overrides.sourceId ?? "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: overrides.matches ?? [sourceExcerpt("match-1")],
+    omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function sourceExcerpt(matchId: string): SourceExcerpt {
+  return {
+    matchId,
+    targetRole: "selected",
+    label: `card.scss:${matchId}`,
+    kind: "rule",
+    relation: "selected",
+    confidence: "exact",
+    startLine: 1,
+    endLine: 3,
+    text: ".card { color: red; }",
+    truncated: false,
+  };
+}
+
 function trustedIdePeer(
   overrides: {
     readonly windowId?: number;
@@ -4310,6 +4949,30 @@ function panelSourceNavigation(
     inspectMessageId,
     resolutionGeneration,
     direction,
+  };
+}
+
+function panelSourceOpen(
+  matchId = "match-1",
+  inspectMessageId = "inspect-1",
+  resolutionGeneration = 1,
+) {
+  return {
+    type: "pin-op.source.open" as const,
+    inspectMessageId,
+    resolutionGeneration,
+    matchId,
+  };
+}
+
+function panelPresentationSettings(
+  ideHighlightEnabled: boolean,
+  inspectMessageId = "inspect-1",
+) {
+  return {
+    type: "pin-op.presentation.settings" as const,
+    inspectMessageId,
+    ideHighlightEnabled,
   };
 }
 
