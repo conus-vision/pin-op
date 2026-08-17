@@ -1652,9 +1652,7 @@ export class PageInspectionSession {
     }
     const target = document as unknown as Document;
     const cell: PageLeaveListenerCell = {};
-    const listener: EventListener = (event) => {
-      cell.handle?.(event);
-    };
+    const listener = createPageLeaveListener(cell);
     const registration: PageLeaveRegistration = { cell, listener };
     cell.handle = (event): void => {
       if (
@@ -1932,6 +1930,12 @@ function isTrustedPageExit(event: Event): boolean {
   } catch {
     return false;
   }
+}
+
+function createPageLeaveListener(
+  cell: PageLeaveListenerCell,
+): EventListener {
+  return (event) => cell.handle?.(event);
 }
 
 function readOwnerDocument(element: InspectableElement): Document | undefined {
