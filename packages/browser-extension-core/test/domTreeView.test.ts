@@ -470,6 +470,62 @@ describe("DomTreeView", () => {
     expect(harness.transport.dispatched).toEqual([]);
   });
 
+  it("reveals a hidden recovery selection without replacing outside focus", () => {
+    const harness = createHarness({ clientHeight: 60, rowHeight: 20, overscan: 0 });
+    const oldPath = Array.from({ length: 10 }, (_, index) =>
+      node(`old-node-${index}`, `section.old-${index}`, index < 9));
+    harness.controller.handleEvent(selectionChanged(1, oldPath));
+    harness.view.focus("old-node-9");
+    const tree = harness.dom.element("dom-tree");
+    const spacer = harness.dom.element("dom-tree-spacer");
+    expect(tree.scrollTop).toBeGreaterThan(0);
+
+    tree.clientHeight = 0;
+    harness.resize.trigger();
+    const source = harness.dom.document.createElement("button") as unknown as FakeElement;
+    source.focus();
+    const newRoot = node("new-root", "html", true);
+    const selectedAncestors = Array.from({ length: 8 }, (_, index) =>
+      node(`selected-ancestor-${index}`, `section.selected-${index}`, true));
+    const newSelected = node("new-selected", "button.selected");
+    const newFocus = node("new-focus", "section.focus");
+    harness.controller.beginRecovery();
+    harness.controller.installRecoveryRoot(recoveryRoot(newRoot, 2));
+    harness.controller.installRecoveredPath(
+      recoveryLocator(
+        newSelected,
+        [newRoot, ...selectedAncestors, newSelected],
+        2,
+      ),
+      { selected: true, expanded: false },
+    );
+    harness.controller.installRecoveredPath(
+      recoveryLocator(newFocus, [newRoot, newFocus], 2),
+      { selected: false, expanded: false, focusIntent: "node" },
+    );
+    harness.controller.finishRecovery();
+    expect(harness.controller.snapshot()).toMatchObject({
+      focusedRef: "new-focus",
+      selectedRef: "new-selected",
+    });
+    expect(harness.dom.activeElement).toBe(source);
+
+    tree.scrollTop = 0;
+    tree.clientHeight = 60;
+    harness.resize.trigger();
+
+    expect(spacer.findByData("nodeRef", "new-selected")).toBeDefined();
+    expect(spacer.findByData("nodeRef", "new-focus")).toBeUndefined();
+    expect(harness.controller.focusedRef).toBe("new-focus");
+    expect(harness.dom.activeElement).toBe(source);
+    expect(tree.scrollTop).toBeGreaterThan(0);
+    harness.view.render();
+    expect(harness.controller.focusedRef).toBe("new-focus");
+    expect(spacer.findByData("nodeRef", "new-selected")).toBeDefined();
+    expect(harness.transport.requests).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+  });
+
   it("deduplicates hover clearing across blank and non-previewable rows", () => {
     const harness = createHarness();
     harness.controller.handleEvent(selectionChanged(1, [

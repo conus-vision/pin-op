@@ -210,6 +210,9 @@ export class DomTreeView {
       snapshot.revealRef &&
       snapshot.revealVersion > this.seenRevealVersion,
     );
+    const pendingRevealRow = pendingReveal
+      ? allRows.find((row) => row.nodeRef === snapshot.revealRef)
+      : undefined;
     const recoveredFocusRow = recoveryFinished &&
         restoreFocus &&
         snapshot.recoveredFocusRef === snapshot.focusedRef
@@ -218,20 +221,28 @@ export class DomTreeView {
     const restoreRecoveredFocus = Boolean(
       recoveredFocusRow && isFocusableRow(recoveredFocusRow),
     );
-    if (pendingReveal) {
-      this.seenRevealVersion = snapshot.revealVersion;
-    }
-    if (resumingFromZeroSize && snapshot.focusedRef) {
-      this.ensureVisible(snapshot.focusedRef);
-    } else if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
+    let revealVersionHandled = false;
+    if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
       this.ensureVisible(snapshot.recoveredFocusRef);
-    } else if (pendingReveal && snapshot.revealRef) {
+      revealVersionHandled = pendingReveal;
+    } else if (pendingRevealRow && snapshot.revealRef) {
       this.ensureVisible(snapshot.revealRef);
+      revealVersionHandled = true;
+    } else if (
+      resumingFromZeroSize &&
+      restoreFocus &&
+      snapshot.focusedRef
+    ) {
+      this.ensureVisible(snapshot.focusedRef);
     } else if (
       snapshot.focusedRef &&
+      (!resumingFromZeroSize || restoreFocus) &&
       (focusChanged || (recoveryFinished && restoreFocus))
     ) {
       this.ensureVisible(snapshot.focusedRef);
+    }
+    if (revealVersionHandled) {
+      this.seenRevealVersion = snapshot.revealVersion;
     }
     this.seenFocusedRef = snapshot.focusedRef;
 
@@ -245,8 +256,16 @@ export class DomTreeView {
       size: viewportSize,
       overscan: this.overscan,
     });
+    const preserveOutsideFocus = !restoreFocus && (
+      resumingFromZeroSize ||
+      pendingReveal ||
+      Boolean(snapshot.revealRef && rows.some(({ value }) => (
+        value.nodeRef === snapshot.revealRef
+      )))
+    );
     if (
       !snapshot.recovering &&
+      !preserveOutsideFocus &&
       rows.length > 0 &&
       !rows.some(({ value }) => (
         value.nodeRef === snapshot.focusedRef && isFocusableRow(value)
