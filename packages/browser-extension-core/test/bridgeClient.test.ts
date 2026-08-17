@@ -739,11 +739,6 @@ describe("BrowserBridgeClient", () => {
       type: "inspect",
       targets: [{ subject: { selector: ".card" } }],
     });
-
-    harness.sockets[0].onmessage?.({ data: "{" });
-    expect(harness.errors.at(-1)).toMatchObject({
-      code: "protocol.invalidMessage",
-    });
   });
 
   it("delivers authenticated resolution and peer-state messages to disposable listeners", () => {
@@ -839,11 +834,7 @@ describe("BrowserBridgeClient", () => {
     const current = sourceMatchesMessage(SESSION_ID, 3);
 
     harness.sockets[0].message(sourceMatchesMessage("other-session", 3));
-    harness.sockets[0].message({ ...current, uri: "file:///secret.scss" });
     expect(received).toEqual([]);
-    expect(harness.errors.at(-1)).toMatchObject({
-      code: "protocol.invalidMessage",
-    });
 
     harness.sockets[0].message(current);
     expect(received).toHaveLength(1);
@@ -859,6 +850,58 @@ describe("BrowserBridgeClient", () => {
     subscription.dispose();
     harness.sockets[0].message(sourceMatchesMessage(SESSION_ID, 4));
     expect(received).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "malformed JSON",
+      sendInvalid: (socket: FakeSocket, _message: SourceMatchesMessage) => {
+        socket.onmessage?.({ data: "{" });
+      },
+    },
+    {
+      name: "a schema-invalid protocol message",
+      sendInvalid: (socket: FakeSocket, message: SourceMatchesMessage) => {
+        socket.message({ ...message, uri: "file:///secret.scss" });
+      },
+    },
+  ])("retires authenticated transport after $name", ({ sendInvalid }) => {
+    const harness = createHarness();
+    const received: SourceMatchesMessage[] = [];
+    harness.client.onSourceMatches((_context, message) => received.push(message));
+    harness.client.connect(CREDENTIALS);
+    const socket = harness.sockets[0];
+    socket.open();
+    authenticate(socket);
+    const staleMessageHandler = socket.onmessage;
+    const validMessage = sourceMatchesMessage(SESSION_ID, 3);
+
+    sendInvalid(socket, validMessage);
+
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
+    });
+    expect(harness.states.at(-1)).toBe("error");
+    expect(socket.closed).toBe(true);
+    expect(harness.delays).toEqual([]);
+    expect(
+      (harness.client as unknown as { authenticated: boolean }).authenticated,
+    ).toBe(false);
+    expect(
+      (harness.client as unknown as { credentials?: BrowserCredentials })
+        .credentials,
+    ).toBeUndefined();
+    expect(
+      harness.client.sendInspect(
+        "inspect-after-protocol-error",
+        selection(".card"),
+        "firefox-test",
+      ),
+    ).toBe("not-connected");
+
+    staleMessageHandler?.({ data: JSON.stringify(validMessage) });
+    socket.message(validMessage);
+    expect(received).toEqual([]);
   });
 
   it("delivers authenticated same-session page refresh messages to disposable listeners", () => {

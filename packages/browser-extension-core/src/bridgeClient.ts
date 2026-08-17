@@ -548,7 +548,7 @@ export class BrowserBridgeClient {
     try {
       raw = JSON.parse(typeof data === "string" ? data : String(data));
     } catch {
-      this.fail(
+      this.stopForProtocolError(
         new BrowserProtocolError(
           "protocol.invalidMessage",
           "Bridge sent invalid JSON",
@@ -558,7 +558,7 @@ export class BrowserBridgeClient {
     }
     const parsed = PinOpMessageSchema.safeParse(raw);
     if (!parsed.success) {
-      this.fail(
+      this.stopForProtocolError(
         new BrowserProtocolError(
           "protocol.invalidMessage",
           "Bridge sent an invalid protocol message",

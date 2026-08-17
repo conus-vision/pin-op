@@ -1375,9 +1375,17 @@ export class WindowConnectionCoordinator {
     if (!this.isCurrentAuthority(authorized, context)) {
       return;
     }
-    authorized.record.clientConnected = false;
-    this.revokeClientAuthority(authorized.record);
-    this.setState(authorized.record, "error");
+    const { record, generation, clientToken, client } = authorized;
+    record.clientConnected = false;
+    this.revokeClientAuthority(record);
+    safeDisconnect(client);
+    if (
+      this.isCurrentToken(record, generation, clientToken) &&
+      record.client === client &&
+      record.state === "linked"
+    ) {
+      this.handleClientState(record, generation, clientToken, "disconnected");
+    }
   }
 
   private forwardResolution(
@@ -1424,7 +1432,10 @@ export class WindowConnectionCoordinator {
     token: object,
     message: PeerStateMessage,
   ): void {
-    if (!this.isCurrentToken(record, generation, token)) {
+    if (
+      !record.clientConnected ||
+      !this.isCurrentToken(record, generation, token)
+    ) {
       return;
     }
     notifyWindowEvent(this.peerStateListeners, record.windowId, message);
@@ -1459,7 +1470,10 @@ export class WindowConnectionCoordinator {
     token: object,
     message: PageRefreshMessage,
   ): void {
-    if (!this.isCurrentToken(record, generation, token)) {
+    if (
+      !record.clientConnected ||
+      !this.isCurrentToken(record, generation, token)
+    ) {
       return;
     }
     notifyWindowEvent(this.pageRefreshListeners, record.windowId, message);

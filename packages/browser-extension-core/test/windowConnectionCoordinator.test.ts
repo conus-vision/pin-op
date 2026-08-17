@@ -157,6 +157,7 @@ describe("WindowConnectionCoordinator", () => {
     );
 
     const client = harness.createdClients[0];
+    await harness.authenticate(client, windowLink());
     client.emitPageRefresh(pageRefresh(1));
     client.emitProtocolMismatch({
       browserProtocolVersion: PROTOCOL_VERSION,
@@ -961,6 +962,148 @@ describe("WindowConnectionCoordinator", () => {
     expect(client.presentationSettingsCalls).toEqual([settings]);
   });
 
+  it.each([
+    {
+      name: "source open returns transport-error",
+      configure(client: FakeWindowClient): void {
+        client.sourceOpenResult = "transport-error";
+      },
+      publish(
+        coordinator: WindowConnectionCoordinator,
+        context: TrustedIdePeerContext,
+      ): InspectSendOutcome {
+        return coordinator.publishSourceOpen(context, {
+          inspectMessageId: "inspect-current",
+          resolutionGeneration: 1,
+          matchId: "match-current",
+        });
+      },
+    },
+    {
+      name: "source open throws",
+      configure(client: FakeWindowClient): void {
+        client.throwOnSourceOpen = true;
+      },
+      publish(
+        coordinator: WindowConnectionCoordinator,
+        context: TrustedIdePeerContext,
+      ): InspectSendOutcome {
+        return coordinator.publishSourceOpen(context, {
+          inspectMessageId: "inspect-current",
+          resolutionGeneration: 1,
+          matchId: "match-current",
+        });
+      },
+    },
+    {
+      name: "presentation settings returns transport-error",
+      configure(client: FakeWindowClient): void {
+        client.presentationSettingsResult = "transport-error";
+      },
+      publish(
+        coordinator: WindowConnectionCoordinator,
+        context: TrustedIdePeerContext,
+      ): InspectSendOutcome {
+        return coordinator.publishPresentationSettings(context, {
+          inspectMessageId: "inspect-current",
+          ideHighlightEnabled: false,
+        });
+      },
+    },
+    {
+      name: "presentation settings throws",
+      configure(client: FakeWindowClient): void {
+        client.throwOnPresentationSettings = true;
+      },
+      publish(
+        coordinator: WindowConnectionCoordinator,
+        context: TrustedIdePeerContext,
+      ): InspectSendOutcome {
+        return coordinator.publishPresentationSettings(context, {
+          inspectMessageId: "inspect-current",
+          ideHighlightEnabled: false,
+        });
+      },
+    },
+  ])("retires and reconnects when $name", async ({ configure, publish }) => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const peerStates: PeerStateMessage[] = [];
+    const refreshes: PageRefreshMessage[] = [];
+    const sourceContexts: TrustedIdePeerContext[] = [];
+    harness.coordinator.onPeerState((_windowId, message) =>
+      peerStates.push(message),
+    );
+    harness.coordinator.onPageRefresh((_windowId, message) =>
+      refreshes.push(message),
+    );
+    harness.coordinator.onSourceMatches((context) =>
+      sourceContexts.push(context),
+    );
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const oldContext = trustedIdePeer();
+    const staleSourceMatchesCallback = client.captureSourceMatchesListener();
+    client.emitSourceMatches(oldContext, sourceMatches("inspect-current", 1));
+    client.emitPeerState(peerState(true, 1));
+    client.emitPageRefresh(pageRefresh(1));
+    configure(client);
+
+    expect(publish(harness.coordinator, oldContext)).toBe("transport-error");
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(harness.coordinator.state(10)).toBe("reconnecting");
+    expect(harness.timers.pendingCount()).toBe(1);
+    client.emitPeerState(peerState(false, 2));
+    client.emitPageRefresh(pageRefresh(2));
+    expect(peerStates).toEqual([peerState(true, 1)]);
+    expect(refreshes).toEqual([pageRefresh(1)]);
+    expect(harness.coordinator.publishPresentationSettings(oldContext, {
+      inspectMessageId: "inspect-current",
+      ideHighlightEnabled: true,
+    })).toBe("not-connected");
+    expect(client.disconnectCalls).toBe(1);
+    expect(harness.timers.pendingCount()).toBe(1);
+
+    harness.timers.runNext();
+    expect(client.connectCalls.at(-1)).toEqual(credentialsFor(windowLink()));
+    client.emitState("connected");
+    expect(harness.coordinator.state(10)).toBe("linked");
+    expect(harness.timers.pendingCount()).toBe(0);
+
+    staleSourceMatchesCallback(
+      oldContext,
+      sourceMatches("inspect-stale", 2),
+    );
+    expect(sourceContexts).toEqual([oldContext]);
+    expect(harness.coordinator.publishSourceOpen(oldContext, {
+      inspectMessageId: "inspect-current",
+      resolutionGeneration: 1,
+      matchId: "match-current",
+    })).toBe("not-connected");
+
+    client.sourceOpenResult = "sent";
+    client.presentationSettingsResult = "sent";
+    client.throwOnSourceOpen = false;
+    client.throwOnPresentationSettings = false;
+    const newContext = trustedIdePeer();
+    client.emitSourceMatches(newContext, sourceMatches("inspect-current", 3));
+    expect(sourceContexts).toEqual([oldContext, newContext]);
+    expect(harness.coordinator.publishSourceOpen(newContext, {
+      inspectMessageId: "inspect-current",
+      resolutionGeneration: 3,
+      matchId: "match-current",
+    })).toBe("sent");
+    expect(harness.coordinator.publishPresentationSettings(newContext, {
+      inspectMessageId: "inspect-current",
+      ideHighlightEnabled: true,
+    })).toBe("sent");
+  });
+
   it("revokes source authority across same-client reconnects with identical identity", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
@@ -1269,7 +1412,11 @@ class FakeWindowClient {
   public unlinkCalls = 0;
   public inspectResult: InspectSendOutcome = "sent";
   public sourceNavigationResult: SourceNavigationSendOutcome = "sent";
+  public sourceOpenResult: InspectSendOutcome = "sent";
+  public presentationSettingsResult: InspectSendOutcome = "sent";
   public throwOnSourceNavigation = false;
+  public throwOnSourceOpen = false;
+  public throwOnPresentationSettings = false;
   public throwOnPeerStateSubscription = false;
   private readonly resolutionListeners = new Set<
     (context: TrustedIdePeerContext, message: ResolutionMessage) => void
@@ -1312,6 +1459,7 @@ class FakeWindowClient {
 
   public disconnect(): void {
     this.disconnectCalls += 1;
+    this.emitState("disconnected");
   }
 
   public unlink(): void {
@@ -1347,7 +1495,10 @@ class FakeWindowClient {
     >,
   ): InspectSendOutcome {
     this.sourceOpenCalls.push({ ...input });
-    return "sent";
+    if (this.throwOnSourceOpen) {
+      throw new Error("source open send failed");
+    }
+    return this.sourceOpenResult;
   }
 
   public sendPresentationSettings(
@@ -1357,7 +1508,10 @@ class FakeWindowClient {
     >,
   ): InspectSendOutcome {
     this.presentationSettingsCalls.push({ ...input });
-    return "sent";
+    if (this.throwOnPresentationSettings) {
+      throw new Error("presentation settings send failed");
+    }
+    return this.presentationSettingsResult;
   }
 
   public onResolution(
