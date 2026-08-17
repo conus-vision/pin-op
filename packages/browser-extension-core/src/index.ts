@@ -413,6 +413,7 @@ export type {
 } from "./sourcePaneController.js";
 export { PanelSettingsController } from "./panelSettingsController.js";
 export type {
+  PanelSettingsBindingToken,
   PanelPresentationSettingsCommand,
   PanelSettingsCommand,
   PanelSettingsDispatch,

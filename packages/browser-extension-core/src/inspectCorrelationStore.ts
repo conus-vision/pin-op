@@ -16,10 +16,47 @@ import {
 
 export const DEFAULT_MAX_INSPECT_CORRELATIONS = 256;
 
+const trustedIdePeerContextBrand: unique symbol = Symbol(
+  "trustedIdePeerContext",
+);
+const trustedIdePeerContexts = new WeakSet<object>();
+
+export interface TrustedIdePeerContext {
+  readonly windowId: number;
+  readonly sessionId: string;
+  readonly source: {
+    readonly role: "ide";
+    readonly id: string;
+  };
+  readonly [trustedIdePeerContextBrand]: true;
+}
+
+export function createTrustedIdePeerContext(
+  windowId: number,
+  sessionId: string,
+  sourceId: string,
+): TrustedIdePeerContext {
+  if (
+    !isBrowserId(windowId) ||
+    !isOpaqueId(sessionId) ||
+    !isOpaqueId(sourceId)
+  ) {
+    throw new TypeError("Invalid trusted IDE peer context");
+  }
+  const context = Object.freeze({
+    windowId,
+    sessionId,
+    source: Object.freeze({ role: "ide" as const, id: sourceId }),
+    [trustedIdePeerContextBrand]: true as const,
+  });
+  trustedIdePeerContexts.add(context);
+  return context;
+}
+
 interface InspectCorrelation {
   readonly channel: string;
   readonly tabId: number;
-  readonly windowId?: number;
+  readonly windowId: number;
   resolutionGeneration: number;
   sessionId?: string;
   sourceId?: string;
@@ -34,11 +71,6 @@ export interface SourceOpenAuthority {
   readonly matchId: string;
   readonly tabId: number;
   readonly windowId: number;
-  readonly sessionId: string;
-  readonly source: {
-    readonly role: "ide";
-    readonly id: string;
-  };
 }
 
 export class InspectCorrelationStore {
@@ -60,13 +92,13 @@ export class InspectCorrelationStore {
     channel: string,
     inspectMessageId: string,
     tabId: number,
-    windowId?: number,
+    windowId: number,
   ): void {
     if (
       !isValidDevtoolsChannel(channel) ||
       !isOpaqueId(inspectMessageId) ||
       !isBrowserId(tabId) ||
-      (windowId !== undefined && !isBrowserId(windowId))
+      !isBrowserId(windowId)
     ) {
       throw new Error("Invalid inspect correlation");
     }
@@ -79,7 +111,7 @@ export class InspectCorrelationStore {
     this.correlations.set(inspectMessageId, {
       channel,
       tabId,
-      ...(windowId === undefined ? {} : { windowId }),
+      windowId,
       resolutionGeneration: -1,
       matchIds: new Set(),
     });
@@ -94,7 +126,13 @@ export class InspectCorrelationStore {
     }
   }
 
-  public accept(message: ResolutionMessage): string | undefined {
+  public accept(
+    message: ResolutionMessage,
+    peerContext: TrustedIdePeerContext,
+  ): string | undefined {
+    if (!isTrustedIdePeerContext(peerContext)) {
+      return undefined;
+    }
     const parsed = parseProtocolData(message, ResolutionMessageSchema);
     if (!parsed) {
       return undefined;
@@ -102,16 +140,18 @@ export class InspectCorrelationStore {
     const correlation = this.correlations.get(parsed.inspectMessageId);
     if (
       !correlation ||
+      correlation.windowId !== peerContext.windowId ||
+      !payloadMatchesPeer(parsed, peerContext) ||
       parsed.resolutionGeneration <= correlation.resolutionGeneration ||
       (correlation.sourceId !== undefined &&
-        (correlation.sourceId !== parsed.source.id ||
-          correlation.sessionId !== parsed.sessionId))
+        (correlation.sourceId !== peerContext.source.id ||
+          correlation.sessionId !== peerContext.sessionId))
     ) {
       return undefined;
     }
     correlation.resolutionGeneration = parsed.resolutionGeneration;
-    correlation.sessionId = parsed.sessionId;
-    correlation.sourceId = parsed.source.id;
+    correlation.sessionId = peerContext.sessionId;
+    correlation.sourceId = peerContext.source.id;
     correlation.document = parsed.document
       ? Object.freeze({ ...parsed.document })
       : undefined;
@@ -123,7 +163,11 @@ export class InspectCorrelationStore {
 
   public acceptNavigationState(
     message: SourceNavigationStateMessage,
+    peerContext: TrustedIdePeerContext,
   ): string | undefined {
+    if (!isTrustedIdePeerContext(peerContext)) {
+      return undefined;
+    }
     const parsed = parseProtocolData(
       message,
       SourceNavigationStateMessageSchema,
@@ -134,22 +178,34 @@ export class InspectCorrelationStore {
     const correlation = this.correlations.get(parsed.inspectMessageId);
     if (
       !correlation ||
+      !correlationMatchesPeer(correlation, peerContext) ||
+      !payloadMatchesPeer(parsed, peerContext) ||
       correlation.resolutionGeneration !== parsed.resolutionGeneration ||
-      correlation.sessionId !== parsed.sessionId ||
-      correlation.sourceId !== parsed.source.id
+      correlation.sessionId === undefined ||
+      correlation.sourceId === undefined
     ) {
       return undefined;
     }
     return correlation.channel;
   }
 
-  public acceptSourceMatches(message: unknown): string | undefined {
+  public acceptSourceMatches(
+    message: unknown,
+    peerContext: TrustedIdePeerContext,
+  ): string | undefined {
+    if (!isTrustedIdePeerContext(peerContext)) {
+      return undefined;
+    }
     const parsed = parseProtocolData(message, SourceMatchesMessageSchema);
     if (!parsed) {
       return undefined;
     }
     const correlation = this.correlations.get(parsed.inspectMessageId);
-    if (!correlation) {
+    if (
+      !correlation ||
+      correlation.windowId !== peerContext.windowId ||
+      !payloadMatchesPeer(parsed, peerContext)
+    ) {
       return undefined;
     }
 
@@ -157,7 +213,7 @@ export class InspectCorrelationStore {
       correlation.matchIds.clear();
       return correlation.channel;
     }
-    if (!matchesCurrentAuthority(parsed, correlation)) {
+    if (!matchesCurrentAuthority(parsed, correlation, peerContext)) {
       return undefined;
     }
 
@@ -172,7 +228,13 @@ export class InspectCorrelationStore {
     return correlation.channel;
   }
 
-  public authorizeSourceOpen(input: unknown): boolean {
+  public authorizeSourceOpen(
+    input: unknown,
+    peerContext: TrustedIdePeerContext,
+  ): boolean {
+    if (!isTrustedIdePeerContext(peerContext)) {
+      return false;
+    }
     const record = snapshotExactDataRecord(input, [
       "channel",
       "tabId",
@@ -180,20 +242,15 @@ export class InspectCorrelationStore {
       "inspectMessageId",
       "resolutionGeneration",
       "matchId",
-      "sessionId",
-      "source",
     ]);
-    const source = snapshotSource(record?.source);
     if (
       !record ||
-      !source ||
       !isValidDevtoolsChannel(record.channel) ||
       !isBrowserId(record.tabId) ||
       !isBrowserId(record.windowId) ||
       !isOpaqueId(record.inspectMessageId) ||
       !isResolutionGeneration(record.resolutionGeneration) ||
-      !isOpaqueId(record.matchId) ||
-      !isOpaqueId(record.sessionId)
+      !isOpaqueId(record.matchId)
     ) {
       return false;
     }
@@ -203,9 +260,8 @@ export class InspectCorrelationStore {
         correlation.channel === record.channel &&
         correlation.tabId === record.tabId &&
         correlation.windowId === record.windowId &&
+        correlationMatchesPeer(correlation, peerContext) &&
         correlation.resolutionGeneration === record.resolutionGeneration &&
-        correlation.sessionId === record.sessionId &&
-        correlation.sourceId === source.id &&
         correlation.matchIds.has(record.matchId as string),
     );
   }
@@ -260,20 +316,44 @@ export class InspectCorrelationStore {
 function matchesCurrentAuthority(
   message: SourceMatchesMessage,
   correlation: InspectCorrelation,
+  peerContext: TrustedIdePeerContext,
 ): boolean {
   return correlation.resolutionGeneration === message.resolutionGeneration &&
-    correlation.sessionId === message.sessionId &&
-    correlation.sourceId === message.source.id &&
+    correlationMatchesPeer(correlation, peerContext) &&
+    payloadMatchesPeer(message, peerContext) &&
     correlation.document !== undefined &&
     correlation.document.label === message.document.label &&
     correlation.document.languageId === message.document.languageId;
 }
 
-function snapshotSource(value: unknown): { readonly id: string } | undefined {
-  const source = snapshotExactDataRecord(value, ["role", "id"]);
-  return source?.role === "ide" && isOpaqueId(source.id)
-    ? Object.freeze({ id: source.id })
-    : undefined;
+function correlationMatchesPeer(
+  correlation: InspectCorrelation,
+  peerContext: TrustedIdePeerContext,
+): boolean {
+  return correlation.windowId === peerContext.windowId &&
+    correlation.sessionId === peerContext.sessionId &&
+    correlation.sourceId === peerContext.source.id;
+}
+
+function payloadMatchesPeer(
+  message: {
+    readonly sessionId: string;
+    readonly source: { readonly role: "ide"; readonly id: string };
+  },
+  peerContext: TrustedIdePeerContext,
+): boolean {
+  return message.sessionId === peerContext.sessionId &&
+    message.source.id === peerContext.source.id;
+}
+
+function isTrustedIdePeerContext(
+  value: unknown,
+): value is TrustedIdePeerContext {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      trustedIdePeerContexts.has(value),
+  );
 }
 
 function isOpaqueId(value: unknown): value is string {

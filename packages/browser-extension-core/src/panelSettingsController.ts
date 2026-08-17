@@ -25,6 +25,14 @@ export interface PanelSettingsViewModel {
   readonly controlsEnabled: boolean;
 }
 
+const panelSettingsBindingTokenBrand: unique symbol = Symbol(
+  "panelSettingsBindingToken",
+);
+
+export interface PanelSettingsBindingToken {
+  readonly [panelSettingsBindingTokenBrand]: true;
+}
+
 const initialModel: PanelSettingsViewModel = Object.freeze({
   autoRefreshEnabled: true,
   ideHighlightEnabled: true,
@@ -37,10 +45,17 @@ export class PanelSettingsController {
   private readonly listeners = new Set<() => void>();
   private current = initialModel;
   private inspectMessageId: string | undefined;
+  private bindingToken: PanelSettingsBindingToken | undefined;
 
   public constructor(private readonly dispatch: PanelSettingsDispatch) {}
 
-  public acceptCompatibility(message: unknown): boolean {
+  public acceptCompatibility(
+    token: PanelSettingsBindingToken,
+    message: unknown,
+  ): boolean {
+    if (token !== this.bindingToken) {
+      return false;
+    }
     const parsed = parseProtocolCompatibilityMessage(message);
     if (!parsed) {
       return false;
@@ -58,7 +73,13 @@ export class PanelSettingsController {
     return true;
   }
 
-  public acceptTabState(message: unknown): boolean {
+  public acceptTabState(
+    token: PanelSettingsBindingToken,
+    message: unknown,
+  ): boolean {
+    if (token !== this.bindingToken) {
+      return false;
+    }
     const parsed = parsePanelTabStateMessage(message);
     if (!parsed || this.current.compatibility !== "compatible") {
       return false;
@@ -73,15 +94,29 @@ export class PanelSettingsController {
     return true;
   }
 
-  public acceptWindowState(state: BrowserWindowConnectionState): void {
-    if (state !== "linked") {
-      this.beginBinding();
+  public acceptWindowState(
+    token: PanelSettingsBindingToken,
+    state: BrowserWindowConnectionState,
+  ): boolean {
+    if (token !== this.bindingToken) {
+      return false;
     }
+    if (state !== "linked") {
+      this.bindingToken = undefined;
+      this.inspectMessageId = undefined;
+      this.update(initialModel);
+    }
+    return true;
   }
 
-  public beginBinding(): void {
+  public beginBinding(): PanelSettingsBindingToken {
+    const token = Object.freeze({
+      [panelSettingsBindingTokenBrand]: true as const,
+    });
+    this.bindingToken = token;
     this.inspectMessageId = undefined;
     this.update(initialModel);
+    return token;
   }
 
   public beginInspect(inspectMessageId: string): boolean {

@@ -31,7 +31,10 @@ import {
   type DomErrorCode,
   type DomRequest,
 } from "./domProtocol.js";
-import { InspectCorrelationStore } from "./inspectCorrelationStore.js";
+import {
+  InspectCorrelationStore,
+  type TrustedIdePeerContext,
+} from "./inspectCorrelationStore.js";
 import type {
   BackgroundContentRefreshCoordinator,
   BackgroundTabUpdate,
@@ -190,14 +193,17 @@ export interface BackgroundRouterOptions {
   readonly inspectCorrelationStore?: InspectCorrelationStore;
   readonly inspectMessageId?: () => string;
   readonly subscribeResolutions?: (
-    listener: (message: ResolutionMessage) => void,
+    listener: (
+      peerContext: TrustedIdePeerContext,
+      message: ResolutionMessage,
+    ) => void,
   ) => () => void;
   readonly subscribePeerStates?: (
     listener: (windowId: number, message: PeerStateMessage) => void,
   ) => () => void;
   readonly subscribeSourceNavigationStates?: (
     listener: (
-      windowId: number,
+      peerContext: TrustedIdePeerContext,
       message: SourceNavigationStateMessage,
     ) => void,
   ) => () => void;
@@ -364,8 +370,8 @@ export class BackgroundRouter {
     this.onError = options.onError;
     if (options.subscribeResolutions) {
       this.removeSubscriptions.push(
-        options.subscribeResolutions((message) =>
-          this.receiveResolution(message),
+        options.subscribeResolutions((peerContext, message) =>
+          this.receiveResolution(peerContext, message),
         ),
       );
     }
@@ -378,8 +384,8 @@ export class BackgroundRouter {
     }
     if (options.subscribeSourceNavigationStates) {
       this.removeSubscriptions.push(
-        options.subscribeSourceNavigationStates((windowId, message) =>
-          this.receiveSourceNavigationState(windowId, message),
+        options.subscribeSourceNavigationStates((peerContext, message) =>
+          this.receiveSourceNavigationState(peerContext, message),
         ),
       );
     }
@@ -1804,6 +1810,7 @@ export class BackgroundRouter {
         refreshed.channel,
         inspectMessageId,
         refreshed.tabId,
+        refreshed.windowId,
       );
       this.panelSessions.publishInspectStarted(
         refreshed.channel,
@@ -2102,11 +2109,14 @@ export class BackgroundRouter {
     });
   }
 
-  private receiveResolution(message: ResolutionMessage): void {
+  private receiveResolution(
+    peerContext: TrustedIdePeerContext,
+    message: ResolutionMessage,
+  ): void {
     if (this.disposed) {
       return;
     }
-    const channel = this.correlations.accept(message);
+    const channel = this.correlations.accept(message, peerContext);
     if (!channel) {
       return;
     }
@@ -2114,13 +2124,16 @@ export class BackgroundRouter {
   }
 
   private receiveSourceNavigationState(
-    windowId: number,
+    peerContext: TrustedIdePeerContext,
     message: SourceNavigationStateMessage,
   ): void {
-    if (this.disposed || !isBrowserId(windowId)) {
+    if (this.disposed) {
       return;
     }
-    const channel = this.correlations.acceptNavigationState(message);
+    const channel = this.correlations.acceptNavigationState(
+      message,
+      peerContext,
+    );
     if (!channel) {
       return;
     }
@@ -2132,7 +2145,7 @@ export class BackgroundRouter {
       !record ||
       !token ||
       !record.registration ||
-      binding.windowId !== windowId ||
+      binding.windowId !== peerContext.windowId ||
       !this.isCurrentActivation(record, token, binding) ||
       !this.correlations.authorizeNavigation({
         channel,

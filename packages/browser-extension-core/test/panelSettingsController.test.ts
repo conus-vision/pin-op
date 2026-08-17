@@ -6,6 +6,7 @@ describe("PanelSettingsController", () => {
   it("shows both settings on by default but sends nothing before a compatible tab snapshot", () => {
     const dispatch = vi.fn();
     const controller = new PanelSettingsController(dispatch);
+    const binding = controller.beginBinding();
 
     expect(controller.snapshot()).toMatchObject({
       autoRefreshEnabled: true,
@@ -18,7 +19,7 @@ describe("PanelSettingsController", () => {
     expect(controller.setIdeHighlightEnabled(false)).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
 
-    controller.acceptTabState(tabState(false, false));
+    controller.acceptTabState(binding, tabState(false, false));
     expect(controller.snapshot().snapshotReady).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
   });
@@ -79,10 +80,10 @@ describe("PanelSettingsController", () => {
 
   it("blocks on mismatch and requires compatible, a fresh snapshot, and a fresh inspect", () => {
     const dispatch = vi.fn();
-    const controller = readyController(dispatch);
+    const { controller, binding } = readyControllerBinding(dispatch);
     controller.beginInspect("inspect-a");
 
-    controller.acceptCompatibility({
+    controller.acceptCompatibility(binding, {
       type: "pin-op.protocol.compatibility",
       compatible: false,
       browserProtocolVersion: PROTOCOL_VERSION,
@@ -95,16 +96,16 @@ describe("PanelSettingsController", () => {
     });
     expect(controller.setIdeHighlightEnabled(false)).toBe(false);
 
-    controller.acceptWindowState("linked");
+    controller.acceptWindowState(binding, "linked");
     expect(controller.snapshot().controlsEnabled).toBe(false);
-    controller.acceptCompatibility(compatible());
+    controller.acceptCompatibility(binding, compatible());
     expect(controller.snapshot()).toMatchObject({
       compatibility: "compatible",
       snapshotReady: false,
       controlsEnabled: false,
     });
     expect(controller.beginInspect("inspect-stale")).toBe(false);
-    controller.acceptTabState(tabState(true, true));
+    controller.acceptTabState(binding, tabState(true, true));
     expect(controller.snapshot().controlsEnabled).toBe(true);
     expect(controller.setIdeHighlightEnabled(false)).toBe(true);
     expect(dispatch).toHaveBeenLastCalledWith({
@@ -132,8 +133,8 @@ describe("PanelSettingsController", () => {
     controller.setIdeHighlightEnabled(false);
     dispatch.mockClear();
 
-    controller.beginBinding();
-    controller.acceptCompatibility(compatible());
+    const binding = controller.beginBinding();
+    controller.acceptCompatibility(binding, compatible());
     expect(controller.snapshot()).toMatchObject({
       autoRefreshEnabled: true,
       ideHighlightEnabled: true,
@@ -142,7 +143,7 @@ describe("PanelSettingsController", () => {
     expect(controller.setAutoRefreshEnabled(false)).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
 
-    controller.acceptTabState(tabState(false, false));
+    controller.acceptTabState(binding, tabState(false, false));
     expect(dispatch).not.toHaveBeenCalled();
     expect(controller.snapshot()).toMatchObject({
       autoRefreshEnabled: false,
@@ -153,15 +154,23 @@ describe("PanelSettingsController", () => {
   it("strictly rejects malformed tab and compatibility snapshots", () => {
     const dispatch = vi.fn();
     const controller = new PanelSettingsController(dispatch);
+    const binding = controller.beginBinding();
 
-    expect(controller.acceptCompatibility({ ...compatible(), extra: true })).toBe(false);
-    expect(controller.acceptTabState({ ...tabState(true, true), extra: true })).toBe(false);
+    expect(controller.acceptCompatibility(
+      binding,
+      { ...compatible(), extra: true },
+    )).toBe(false);
+    expect(controller.acceptTabState(
+      binding,
+      { ...tabState(true, true), extra: true },
+    )).toBe(false);
     expect(controller.snapshot().controlsEnabled).toBe(false);
   });
 
   it("rejects accessor-backed snapshots without invoking them", () => {
     const controller = new PanelSettingsController(vi.fn());
-    expect(controller.acceptCompatibility(compatible())).toBe(true);
+    const binding = controller.beginBinding();
+    expect(controller.acceptCompatibility(binding, compatible())).toBe(true);
     const getter = vi.fn(() => true);
     const hostile = tabState(true, true) as unknown as Record<string, unknown>;
     Object.defineProperty(hostile, "autoRefreshEnabled", {
@@ -169,18 +178,18 @@ describe("PanelSettingsController", () => {
       get: getter,
     });
 
-    expect(() => controller.acceptTabState(hostile)).not.toThrow();
-    expect(controller.acceptTabState(hostile)).toBe(false);
+    expect(() => controller.acceptTabState(binding, hostile)).not.toThrow();
+    expect(controller.acceptTabState(binding, hostile)).toBe(false);
     expect(getter).not.toHaveBeenCalled();
     expect(controller.snapshot().controlsEnabled).toBe(false);
   });
 
   it("revokes readiness and current inspect when the window disconnects", () => {
     const dispatch = vi.fn();
-    const controller = readyController(dispatch);
+    const { controller, binding } = readyControllerBinding(dispatch);
     expect(controller.beginInspect("inspect-a")).toBe(true);
 
-    controller.acceptWindowState("offline");
+    controller.acceptWindowState(binding, "offline");
 
     expect(controller.snapshot()).toMatchObject({
       compatibility: "pending",
@@ -192,13 +201,67 @@ describe("PanelSettingsController", () => {
     expect(controller.setIdeHighlightEnabled(false)).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it("rejects a delayed tab snapshot from an old panel binding", () => {
+    const controller = new PanelSettingsController(vi.fn());
+    const oldBinding = controller.beginBinding();
+    expect(controller.acceptCompatibility(oldBinding, compatible())).toBe(true);
+
+    const currentBinding = controller.beginBinding();
+    expect(controller.acceptCompatibility(currentBinding, compatible())).toBe(true);
+
+    expect(
+      controller.acceptTabState(oldBinding, tabState(false, false)),
+    ).toBe(false);
+    expect(controller.snapshot()).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    expect(
+      controller.acceptTabState(currentBinding, tabState(false, true)),
+    ).toBe(true);
+    expect(controller.snapshot()).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      snapshotReady: true,
+      controlsEnabled: true,
+    });
+  });
+
+  it("rejects stale compatibility and window events after a rebind", () => {
+    const controller = new PanelSettingsController(vi.fn());
+    const oldBinding = controller.beginBinding();
+    const currentBinding = controller.beginBinding();
+
+    expect(controller.acceptCompatibility(oldBinding, {
+      ...compatible(),
+      compatible: false,
+      peerProtocolVersion: 5,
+    })).toBe(false);
+    expect(controller.snapshot().compatibility).toBe("pending");
+    expect(controller.acceptCompatibility(currentBinding, compatible())).toBe(true);
+    expect(controller.acceptWindowState(oldBinding, "offline")).toBe(false);
+    expect(controller.snapshot().compatibility).toBe("compatible");
+    expect(controller.acceptTabState(
+      currentBinding,
+      tabState(true, true),
+    )).toBe(true);
+  });
 });
 
 function readyController(dispatch = vi.fn()): PanelSettingsController {
+  return readyControllerBinding(dispatch).controller;
+}
+
+function readyControllerBinding(dispatch = vi.fn()) {
   const controller = new PanelSettingsController(dispatch);
-  controller.acceptCompatibility(compatible());
-  controller.acceptTabState(tabState(true, true));
-  return controller;
+  const binding = controller.beginBinding();
+  controller.acceptCompatibility(binding, compatible());
+  controller.acceptTabState(binding, tabState(true, true));
+  return { controller, binding };
 }
 
 function compatible() {

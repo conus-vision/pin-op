@@ -27,6 +27,10 @@ import {
   createDevtoolsPanelPortName,
   createInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
+import {
+  createTrustedIdePeerContext,
+  type TrustedIdePeerContext,
+} from "../src/inspectCorrelationStore.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
 import type {
   BrowserWindowConnectionState,
@@ -3623,9 +3627,22 @@ function createHarness(options: HarnessOptions = {}) {
     inspectCoordinator,
     panelSessionTransport: options.panelSessionTransport,
     subscriptions: options.subscriptions,
-    subscribeResolutions: (listener: (message: ResolutionMessage) => void) => {
-      resolutions.addListener(listener);
-      return () => resolutions.removeListener(listener);
+    subscribeResolutions: (
+      listener: (
+        peerContext: TrustedIdePeerContext,
+        message: ResolutionMessage,
+      ) => void,
+    ) => {
+      const adapter = (message: ResolutionMessage) => listener(
+        createTrustedIdePeerContext(
+          10,
+          message.sessionId,
+          message.source.id,
+        ),
+        message,
+      );
+      resolutions.addListener(adapter);
+      return () => resolutions.removeListener(adapter);
     },
     subscribePeerStates: (
       listener: (windowId: number, message: PeerStateMessage) => void,
@@ -3635,12 +3652,23 @@ function createHarness(options: HarnessOptions = {}) {
     },
     subscribeSourceNavigationStates: (
       listener: (
-        windowId: number,
+        peerContext: TrustedIdePeerContext,
         message: SourceNavigationStateMessage,
       ) => void,
     ) => {
-      sourceNavigationStates.addListener(listener);
-      return () => sourceNavigationStates.removeListener(listener);
+      const adapter = (
+        windowId: number,
+        message: SourceNavigationStateMessage,
+      ) => listener(
+        createTrustedIdePeerContext(
+          windowId,
+          message.sessionId,
+          message.source.id,
+        ),
+        message,
+      );
+      sourceNavigationStates.addListener(adapter);
+      return () => sourceNavigationStates.removeListener(adapter);
     },
     subscribePageRefreshes: (listener) => {
       pageRefreshes.addListener(listener);

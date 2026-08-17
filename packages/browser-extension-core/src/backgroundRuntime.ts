@@ -25,6 +25,7 @@ import {
 } from "./windowConnectionCoordinator.js";
 import { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "./tabRefreshStateStore.js";
+import { createTrustedIdePeerContext } from "./inspectCorrelationStore.js";
 
 export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly expectedDevtoolsUrl: string;
@@ -178,8 +179,15 @@ export function startBackgroundRuntime(
     contentRefreshCoordinator,
     inspectCoordinator,
     subscribeResolutions: (listener) => {
-      const subscription = coordinator.onResolution((_windowId, message) =>
-        listener(message),
+      const subscription = coordinator.onResolution((windowId, message) =>
+        listener(
+          createTrustedIdePeerContext(
+            windowId,
+            message.sessionId,
+            message.source.id,
+          ),
+          message,
+        ),
       );
       return () => subscription.dispose();
     },
@@ -191,7 +199,14 @@ export function startBackgroundRuntime(
     },
     subscribeSourceNavigationStates: (listener) => {
       const subscription = coordinator.onSourceNavigationState(
-        (windowId, message) => listener(windowId, message),
+        (windowId, message) => listener(
+          createTrustedIdePeerContext(
+            windowId,
+            message.sessionId,
+            message.source.id,
+          ),
+          message,
+        ),
       );
       return () => subscription.dispose();
     },
