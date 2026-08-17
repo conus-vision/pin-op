@@ -7,6 +7,7 @@ import {
   type DomTreeController,
   type DomTreeKey,
   type DomTreeRow,
+  type DomTreeSnapshot,
 } from "./domTreeController.js";
 import type {
   SourceNavigationController,
@@ -49,6 +50,19 @@ const TREE_KEYS = new Set<DomTreeKey>([
   "Enter",
 ]);
 
+type SourceNavigationAction = "source-previous" | "source-next";
+
+interface SourceNavigationRenderContext {
+  readonly documentEpoch: number | undefined;
+  readonly selectedRef: string | undefined;
+  readonly selectedMatchCount: number;
+}
+
+interface SourceNavigationFocusTarget extends SourceNavigationRenderContext {
+  readonly action: SourceNavigationAction;
+  readonly rowRef: string;
+}
+
 export class DomTreeView {
   private readonly document: DomTreeDocument;
   private readonly controller: DomTreeController;
@@ -66,6 +80,8 @@ export class DomTreeView {
   private seenFocusedRef: string | undefined;
   private seenRecovering = false;
   private suspendedForZeroSize = false;
+  private renderedSourceNavigationContext:
+    SourceNavigationRenderContext | undefined;
   private disposed = false;
 
   private readonly onScroll = (): void => this.render();
@@ -206,6 +222,7 @@ export class DomTreeView {
     }
     const resumingFromZeroSize = this.suspendedForZeroSize;
     this.suspendedForZeroSize = false;
+    const sourceNavigationFocus = this.captureSourceNavigationFocus();
     const snapshot = this.controller.snapshot();
     const sourceNavigation = this.sourceNavigationController.snapshot();
     const restoreFocus = this.tree.contains(this.document.activeElement);
@@ -321,8 +338,19 @@ export class DomTreeView {
         tabStopRef,
       )
     )));
+    this.renderedSourceNavigationContext = {
+      documentEpoch: snapshot.documentEpoch,
+      selectedRef: snapshot.selectedRef,
+      selectedMatchCount: sourceNavigation.selectedMatchCount,
+    };
 
-    if (restoreFocus) {
+    const restoredSourceNavigationFocus = sourceNavigationFocus !== undefined &&
+      this.restoreSourceNavigationFocus(
+        sourceNavigationFocus,
+        snapshot,
+        sourceNavigation,
+      );
+    if (restoreFocus && !restoredSourceNavigationFocus) {
       if (!snapshot.focusedRef || !this.focusRenderedRow(snapshot.focusedRef)) {
         this.focusTree();
       }
@@ -352,6 +380,7 @@ export class DomTreeView {
     this.removeControllerListener = undefined;
     this.removeSourceNavigationListener?.();
     this.removeSourceNavigationListener = undefined;
+    this.renderedSourceNavigationContext = undefined;
     this.tree.removeEventListener("scroll", this.onScroll);
     this.tree.removeEventListener("keydown", this.onKeyDown);
     this.tree.removeEventListener("focusin", this.onFocusIn);
@@ -457,7 +486,7 @@ export class DomTreeView {
   }
 
   private createSourceNavigationButton(
-    action: "source-previous" | "source-next",
+    action: SourceNavigationAction,
     label: string,
     icon: IconNode,
     disabled: boolean,
@@ -471,6 +500,52 @@ export class DomTreeView {
     button.disabled = disabled;
     button.append(createNavigationIcon(this.document, icon));
     return button;
+  }
+
+  private captureSourceNavigationFocus():
+    SourceNavigationFocusTarget | undefined {
+    const activeElement = this.document.activeElement;
+    if (!this.tree.contains(activeElement)) {
+      return undefined;
+    }
+    const action = sourceNavigationAction(activeElement, this.tree);
+    const rowRef = closestRow(activeElement, this.tree)?.dataset.nodeRef;
+    const context = this.renderedSourceNavigationContext;
+    if (
+      !action ||
+      !rowRef ||
+      !context ||
+      context.selectedRef !== rowRef
+    ) {
+      return undefined;
+    }
+    return { ...context, action, rowRef };
+  }
+
+  private restoreSourceNavigationFocus(
+    target: SourceNavigationFocusTarget,
+    snapshot: DomTreeSnapshot,
+    sourceNavigation: SourceNavigationViewModel,
+  ): boolean {
+    if (
+      snapshot.recovering ||
+      !sourceNavigation.visible ||
+      sourceNavigation.disabled ||
+      target.documentEpoch !== snapshot.documentEpoch ||
+      target.selectedRef !== snapshot.selectedRef ||
+      target.rowRef !== snapshot.selectedRef ||
+      target.selectedMatchCount !== sourceNavigation.selectedMatchCount
+    ) {
+      return false;
+    }
+    const row = findRenderedRow(this.spacer, target.rowRef);
+    const control = row
+      ? findDataElement(row, "action", target.action)
+      : undefined;
+    if (!control || isDisabledControl(control)) {
+      return false;
+    }
+    return focusElement(control, this.document);
   }
 
   private ensureVisible(nodeRef: string): void {
@@ -583,6 +658,26 @@ function closestDataValue(
   return undefined;
 }
 
+function findDataElement(
+  root: HTMLElement,
+  key: string,
+  value: string,
+): HTMLElement | undefined {
+  for (const child of root.children) {
+    if (!isElementLike(child)) {
+      continue;
+    }
+    if (child.dataset[key] === value) {
+      return child;
+    }
+    const nested = findDataElement(child, key, value);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
 function isElementLike(value: unknown): value is HTMLElement {
   return Boolean(
     value &&
@@ -644,6 +739,38 @@ function isSourceNavigationTarget(
     closestDataValue(target, boundary, "part") ===
       "source-navigation-controls"
   );
+}
+
+function sourceNavigationAction(
+  target: EventTarget | null,
+  boundary: HTMLElement,
+): SourceNavigationAction | undefined {
+  const action = closestDataValue(target, boundary, "action");
+  return action === "source-previous" || action === "source-next"
+    ? action
+    : undefined;
+}
+
+function isDisabledControl(element: HTMLElement): boolean {
+  return "disabled" in element && Boolean(
+    (element as HTMLButtonElement).disabled,
+  );
+}
+
+function focusElement(
+  element: HTMLElement,
+  document: DomTreeDocument,
+): boolean {
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    try {
+      element.focus();
+    } catch {
+      return false;
+    }
+  }
+  return document.activeElement === element;
 }
 
 function createNavigationIcon(

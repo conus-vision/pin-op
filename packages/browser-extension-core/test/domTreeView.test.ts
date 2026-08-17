@@ -23,6 +23,7 @@ import type {
 
 describe("DomTreeView", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -278,6 +279,123 @@ describe("DomTreeView", () => {
 
     expect(harness.controller.focusedRef).toBe("selected");
     expect(harness.dom.activeElement).toBe(harness.dom.row("selected"));
+  });
+
+  it.each([
+    ["previous", "source-previous", 0],
+    ["next", "source-next", 2],
+  ] as const)(
+    "restores %s source control focus after authoritative navigation state",
+    async (direction, action, activeMatchIndex) => {
+      const harness = createHarness();
+      harness.controller.handleEvent(selectionChanged(1, [
+        node("root", "html", true),
+        node("selected", "button.save"),
+      ]));
+      harness.sourceNavigation.beginInspect("inspect-1");
+      harness.sourceNavigation.acceptResolution(resolution({
+        selectedMatchCount: 3,
+      }));
+      harness.sourceNavigation.acceptState(navigationState({
+        selectedMatchCount: 3,
+        activeMatchIndex: 1,
+      }));
+      harness.controller.focus("root");
+      const tree = harness.dom.element("dom-tree");
+      const original = harness.dom.row("selected").findByData("action", action);
+      if (!original) {
+        throw new Error(`Missing ${direction} source navigation control`);
+      }
+      original.focus();
+      tree.dispatch("focusin", { target: original });
+
+      tree.dispatch("click", { target: original });
+      await flushAsync();
+      harness.sourceNavigation.acceptState(navigationState({
+        messageId: `state-${direction}`,
+        selectedMatchCount: 3,
+        activeMatchIndex,
+      }));
+
+      const replacement = harness.dom.row("selected").findByData("action", action);
+      expect(replacement).toBeDefined();
+      expect(replacement).not.toBe(original);
+      expect(replacement?.disabled).toBe(false);
+      expect(harness.dom.activeElement).toBe(replacement);
+      expect(harness.controller.focusedRef).toBe("root");
+      expect(harness.sourceCommands.map((command) => command.direction)).toEqual([
+        direction,
+      ]);
+      if (!replacement) {
+        throw new Error(`Missing replacement ${direction} control`);
+      }
+
+      tree.dispatch("click", { target: replacement });
+      await flushAsync();
+
+      expect(harness.sourceCommands.map((command) => command.direction)).toEqual([
+        direction,
+        direction,
+      ]);
+    },
+  );
+
+  it("does not transfer source control focus into a new document authority", () => {
+    const harness = createHarness();
+    const path = [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ];
+    harness.controller.handleEvent(selectionChanged(1, path));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+    const original = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    if (!original) {
+      throw new Error("Missing next source navigation control");
+    }
+    original.focus();
+
+    harness.controller.handleEvent(selectionChanged(2, path));
+
+    const replacement = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    expect(replacement).toBeDefined();
+    expect(harness.dom.activeElement).not.toBe(replacement);
+    expect(harness.sourceCommands).toEqual([]);
+  });
+
+  it("falls back safely when a replacement source control cannot receive focus", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+    const original = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    if (!original) {
+      throw new Error("Missing next source navigation control");
+    }
+    original.focus();
+    vi.spyOn(FakeElement.prototype, "focus").mockImplementation(function () {
+      if (this.dataset.action === "source-next") {
+        throw new Error("focus unavailable");
+      }
+      this.owner.activeElement = this;
+    });
+
+    expect(() => harness.sourceNavigation.acceptState(navigationState({
+      messageId: "state-focus-failure",
+      activeMatchIndex: 1,
+    }))).not.toThrow();
+
+    expect(harness.dom.activeElement).toBe(harness.dom.row("selected"));
+    expect(harness.sourceCommands).toEqual([]);
+    expect(harness.errors).toEqual([]);
   });
 
   it("creates row source icons with the supplied tree document", () => {
