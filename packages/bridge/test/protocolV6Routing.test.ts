@@ -640,6 +640,61 @@ describe("protocol v6 bridge routing", () => {
     ]);
   });
 
+  it("requires resolution authority for nonzero navigation after invalidation", () => {
+    const context = setup();
+    const currentResolution = resolution("ide-a", 4);
+    const invalidation = matches("ide-a", 4, []);
+    const nonzeroState = navigationState("ide-a", 4, {
+      selectedMatchCount: 1,
+      activeMatchIndex: 0,
+    });
+    const zeroState = navigationState("ide-a", 4);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      currentResolution,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      invalidation,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      nonzeroState,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      zeroState,
+    );
+
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideA.id,
+      resolutionGeneration: 4,
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(context.browserConnection.sent).toEqual([
+      currentResolution,
+      invalidation,
+      zeroState,
+    ]);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(context.otherBrowserConnection.sent).toEqual([]);
+  });
+
   it("rejects second-IDE and stale empty invalidations without changing authority", () => {
     const context = setup();
     const claimed = matches("ide-a", 2, []);
