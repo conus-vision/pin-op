@@ -48,6 +48,18 @@ const FOLDED_ENCODED_SENSITIVE_PLUGIN_VALUES = [
   foldBase64(ENCODED_SENSITIVE_PLUGIN_VALUES[1], "\t"),
   foldBase64(ENCODED_SENSITIVE_PLUGIN_VALUES[2], "\r\n"),
 ] as const;
+const TOLERANT_ENCODED_SENSITIVE_PLUGIN_VALUES = [
+  foldBase64("L3NlY3JldB==", "\r\n"),
+  "L2hvbWUvYWxpY2Uvd29ya3NwYWNlL3NyYy9DYXJkLnNjc3N",
+] as const;
+const TOLERANT_DECODED_SENSITIVE_VALUES = [
+  "/secret",
+  "/home/alice/workspace/src/Card.scss",
+] as const;
+const SAFE_BASE64_LIKE_LABELS = [
+  "Q2Fy ZB==",
+  "gICAgICA",
+] as const;
 const OVERSIZED_FOLDED_ENCODED_PATH = foldBase64(
   Buffer.from(
     `C:\\workspace\\${"private\\".repeat(80)}secret.scss`,
@@ -56,6 +68,7 @@ const OVERSIZED_FOLDED_ENCODED_PATH = foldBase64(
 );
 const SENSITIVE_PLUGIN_VALUES = [
   String.raw`C:\Users\alice\workspace\src\Card.scss`,
+  "/secret",
   "/home/alice/workspace/src/Card.scss",
   "file:///home/alice/workspace/src/Card.scss",
   "vscode-workspace://workspace-7/src/Card.scss",
@@ -67,6 +80,7 @@ const SENSITIVE_PLUGIN_VALUES = [
   '["html","body","div",0]',
   ...ENCODED_SENSITIVE_PLUGIN_VALUES,
   ...FOLDED_ENCODED_SENSITIVE_PLUGIN_VALUES,
+  ...TOLERANT_ENCODED_SENSITIVE_PLUGIN_VALUES,
   OVERSIZED_FOLDED_ENCODED_PATH,
   "app.css.map",
   "APP.JS.MAP",
@@ -255,6 +269,7 @@ describe("SourceExcerptRegistry", () => {
       "Button Card",
       "Q2Fy ZA==",
       "Q2Fy= ZA==",
+      ...SAFE_BASE64_LIKE_LABELS,
     ] as const;
     const document = textDocument(
       "file:///private/customer/workspace/styles.scss",
@@ -292,6 +307,76 @@ describe("SourceExcerptRegistry", () => {
         JSON.parse(JSON.stringify(wireMessage(publication.message))),
       ),
     ).toBeTruthy();
+  });
+
+  it("rejects tolerant encoded paths from a registered third-party plugin", async () => {
+    const documentUri = "file:///workspace/app.css";
+    const labels = [
+      ...TOLERANT_ENCODED_SENSITIVE_PLUGIN_VALUES,
+      ...SAFE_BASE64_LIKE_LABELS,
+    ] as const;
+    const text = "x ".repeat(labels.length).trimEnd();
+    const pluginDocument = sourcePluginDocument(documentUri, "css", text);
+    const plugin: SourcePlugin = {
+      id: "third-party.encoded-labels",
+      displayName: "Encoded labels",
+      apiVersion: 2,
+      documentSelectors: [{ languageId: "css", scheme: "file" }],
+      supportedFactKinds: ["css-rule"],
+      async resolve() {
+        return {
+          matches: labels.map((label, index) => ({
+            targetRole: "selected" as const,
+            range: {
+              start: { line: 0, character: index * 2 },
+              end: { line: 0, character: index * 2 + 1 },
+            },
+            label,
+            kind: "component",
+            relation: "renders",
+            confidence: "exact" as const,
+          })),
+        };
+      },
+    };
+    const selection = cssSelection(
+      "inspect-tolerant-encoded-labels",
+      ".fixture",
+      "/app.css",
+    );
+    const sourceResolution = await resolveRegisteredPlugin(
+      plugin,
+      pluginDocument,
+      memorySourceWorkspace({ [documentUri]: text }),
+      selection,
+    );
+    const editorDocument = textDocument(documentUri, "css", text);
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: selection.messageId,
+      resolutionGeneration: 1,
+      editor: { document: editorDocument },
+      resolution: sourceResolution,
+    });
+    const serialized = JSON.stringify(wireMessage(publication.message));
+
+    expect(publication.message.matches.map((entry) => entry.label)).toEqual([
+      "app.css",
+      "app.css",
+      ...SAFE_BASE64_LIKE_LABELS,
+    ]);
+    for (const value of TOLERANT_ENCODED_SENSITIVE_PLUGIN_VALUES) {
+      expect(serialized).not.toContain(value);
+      expect(serialized).not.toContain(serializedStringFragment(value));
+    }
+    for (const value of TOLERANT_DECODED_SENSITIVE_VALUES) {
+      expect(serialized).not.toContain(value);
+      expect(serialized).not.toContain(serializedStringFragment(value));
+    }
+    for (const value of SAFE_BASE64_LIKE_LABELS) {
+      expect(serialized).toContain(serializedStringFragment(value));
+    }
+    expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
   });
 
   it("serializes button.map from the real trusted CSS plugin", async () => {
@@ -387,20 +472,63 @@ describe("SourceExcerptRegistry", () => {
     expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
   });
 
-  it("does not trust a third-party plugin that spoofs selector provenance", async () => {
+  it("rejects spoofed selector provenance and broad component map labels", async () => {
     const documentUri = "file:///workspace/app.css";
-    const text = "x x x";
+    const fixtures = [
+      {
+        label: "button.map",
+        kind: "style-rule",
+        relation: "styles",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "bundle.css.map",
+        kind: "source",
+        relation: "matches",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "layout.js.map",
+        kind: "template",
+        relation: "templates",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "app.css.map",
+        kind: "component",
+        relation: "renders",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "App.css.map",
+        kind: "component",
+        relation: "renders",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "app.map",
+        kind: "component",
+        relation: "renders",
+        expectedLabel: "app.css",
+      },
+      {
+        label: "App.map",
+        kind: "component",
+        relation: "renders",
+        expectedLabel: "App.map",
+      },
+    ] as const;
+    const text = "x ".repeat(fixtures.length).trimEnd();
     const pluginDocument = sourcePluginDocument(documentUri, "css", text);
-    const labels = ["button.map", "app.css.map", "layout.js.map"] as const;
-    const forgedMatches = labels.map((label, index) => ({
+    const forgedMatches = fixtures.map((fixture, index) => ({
       targetRole: "selected" as const,
       range: {
         start: { line: 0, character: index * 2 },
         end: { line: 0, character: index * 2 + 1 },
       },
-      label,
-      kind: index === 0 ? "style-rule" : index === 1 ? "source" : "template",
-      relation: index === 0 ? "styles" : index === 1 ? "matches" : "templates",
+      label: fixture.label,
+      kind: fixture.kind,
+      relation: fixture.relation,
       confidence: "exact" as const,
       labelProvenance: "builtin-style-selector",
     } as SourceMatch));
@@ -437,11 +565,15 @@ describe("SourceExcerptRegistry", () => {
 
     expect(sourceResolution.matches.map((entry) =>
       Reflect.get(entry, "labelProvenance")
-    )).toEqual(labels.map(() => "plugin"));
+    )).toEqual(fixtures.map(() => "plugin"));
     expect(publication.message.matches.map((entry) => entry.label)).toEqual(
-      labels.map(() => "app.css"),
+      fixtures.map((entry) => entry.expectedLabel),
     );
-    for (const label of labels) expect(serialized).not.toContain(label);
+    for (const fixture of fixtures) {
+      if (fixture.label !== fixture.expectedLabel) {
+        expect(serialized).not.toContain(fixture.label);
+      }
+    }
     expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
   });
 

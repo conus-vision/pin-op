@@ -24,6 +24,7 @@ const FRAGMENT_SOURCE_LOCATOR_SUFFIX = /\.[a-z0-9]+#L\d+(?:C\d+)?$/iu;
 const SOURCE_MAPPING_URL_DIRECTIVE = /^(?:#\s*)?sourceMappingURL\s*=/iu;
 const RELATIVE_SOURCE_MAP_LABEL =
   /^[\p{L}\p{N}][\p{L}\p{M}\p{N} ._@()+,'&-]*\.map(?:\s*(?:[?#].*)?)?$/iu;
+const COMPONENT_MAP_LABEL = /^\p{Lu}[\p{L}\p{M}\p{N}_$]*\.map$/u;
 const UNICODE_DISPLAY_CHARACTER = /^[\p{L}\p{M}\p{N}]$/u;
 
 export interface SourceDisplayLabelContext {
@@ -105,7 +106,7 @@ function isNeutralDisplayLabel(
 ): boolean {
   if (
     value.length === 0 ||
-    isSensitiveDisplayMetadata(value, allowsRelativeMapLabel(context)) ||
+    isSensitiveDisplayMetadata(value, allowsRelativeMapLabel(value, context)) ||
     hasEncodedSensitiveMetadata(encodedCandidate)
   ) {
     return false;
@@ -150,18 +151,9 @@ function decodeBase64Candidate(value: string): string | undefined {
   ) {
     return undefined;
   }
-  const hasPadding = candidate.endsWith("=");
-  if (hasPadding && candidate.length % 4 !== 0) return undefined;
-  const unpadded = candidate.replace(/=+$/u, "");
-  if (unpadded.length % 4 === 1) return undefined;
-  const canonicalInput = unpadded.replaceAll("-", "+").replaceAll("_", "/");
-  const bytes = Buffer.from(canonicalInput, "base64");
+  const normalized = candidate.replaceAll("-", "+").replaceAll("_", "/");
+  const bytes = Buffer.from(normalized, "base64");
   if (bytes.length === 0 || bytes.length > MAX_DISPLAY_INPUT_LENGTH) {
-    return undefined;
-  }
-  if (
-    bytes.toString("base64").replace(/=+$/u, "") !== canonicalInput
-  ) {
     return undefined;
   }
 
@@ -169,8 +161,11 @@ function decodeBase64Candidate(value: string): string | undefined {
   return Buffer.from(decoded, "utf8").equals(bytes) ? decoded : undefined;
 }
 
-function allowsRelativeMapLabel(context: SourceDisplayLabelContext): boolean {
-  return context.kind === "component" ||
+function allowsRelativeMapLabel(
+  value: string,
+  context: SourceDisplayLabelContext,
+): boolean {
+  return (context.kind === "component" && COMPONENT_MAP_LABEL.test(value)) ||
     (context.trustedStyleSelector &&
       context.kind === "style-rule" &&
       context.relation === "styles");
