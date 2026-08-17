@@ -100,6 +100,201 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("publishes a fresh tab snapshot only after linked compatibility", async () => {
+    const harness = createHarness({ initialPanelState: "notLinked" });
+    const preHandshake = deferred<TabRefreshState>();
+    const postCompatibility = deferred<TabRefreshState>();
+    harness.tabRefresh.panelOpenedBehavior = () => preHandshake.promise;
+    harness.tabRefresh.stateBehavior = () => postCompatibility.promise;
+    const port = await harness.registerAndConnect(
+      "channel-ordering",
+      17,
+      "source-ordering",
+    );
+
+    preHandshake.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+
+    const earlyStateIndex = port.sent.findIndex(isPanelTabStateMessage);
+    expect(earlyStateIndex).toBeGreaterThanOrEqual(0);
+    expect(port.sent.findIndex(isCompatibleMessage)).toBe(-1);
+    expect(harness.tabRefresh.stateCalls).toEqual([]);
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(1);
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+
+    const compatibilityIndex = port.sent.findIndex(isCompatibleMessage);
+    expect(compatibilityIndex).toBeGreaterThan(earlyStateIndex);
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(1);
+
+    postCompatibility.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      participant: false,
+    });
+    await flushMicrotasks();
+
+    const snapshots = port.sent.filter(isPanelTabStateMessage);
+    expect(snapshots).toHaveLength(2);
+    expect(port.sent.lastIndexOf(snapshots[1])).toBeGreaterThan(
+      compatibilityIndex,
+    );
+    expect(snapshots[1]).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      participant: false,
+    });
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+  });
+
+  it("does not reuse a delayed panel-open snapshot after compatibility", async () => {
+    const harness = createHarness();
+    const panelOpened = deferred<TabRefreshState>();
+    const freshState = deferred<TabRefreshState>();
+    let initialized = false;
+    harness.tabRefresh.panelOpenedBehavior = async () => {
+      const state = await panelOpened.promise;
+      initialized = true;
+      return state;
+    };
+    harness.tabRefresh.stateBehavior = () => {
+      expect(initialized).toBe(true);
+      return freshState.promise;
+    };
+    const port = await harness.registerAndConnect(
+      "channel-delayed-open",
+      17,
+      "source-delayed-open",
+    );
+    await flushMicrotasks();
+
+    expect(port.sent.findIndex(isCompatibleMessage)).toBeGreaterThanOrEqual(0);
+    expect(harness.tabRefresh.stateCalls).toEqual([]);
+    expect(port.sent.filter(isPanelTabStateMessage)).toEqual([]);
+
+    panelOpened.resolve({
+      ...defaultTabState(17, 10),
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+    expect(port.sent.filter(isPanelTabStateMessage)).toEqual([]);
+
+    freshState.resolve({
+      ...defaultTabState(17, 10),
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+    await flushMicrotasks();
+    expect(port.sent.filter(isPanelTabStateMessage)).toEqual([{
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    }]);
+  });
+
+  it("publishes a fresh snapshot after offline recovery without reopening participation", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-recovery-settings",
+      17,
+      "source-recovery-settings",
+    );
+    await flushMicrotasks();
+    const initialStateReads = harness.tabRefresh.stateCalls.length;
+    const marker = port.sent.length;
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+
+    harness.coordinator.emitState(10, "offline");
+    await flushMicrotasks();
+    harness.coordinator.emitState(10, "reconnecting");
+    await flushMicrotasks();
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+    expect(harness.tabRefresh.stateCalls).toHaveLength(initialStateReads + 1);
+    const recoveryMessages = port.sent.slice(marker);
+    const compatibilityIndex = recoveryMessages.findIndex(isCompatibleMessage);
+    const snapshotIndex = recoveryMessages.findIndex(isPanelTabStateMessage);
+    expect(compatibilityIndex).toBeGreaterThanOrEqual(0);
+    expect(snapshotIndex).toBeGreaterThan(compatibilityIndex);
+    expect(recoveryMessages[snapshotIndex]).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+  });
+
+  it("drops a delayed linked snapshot from an old panel activation", async () => {
+    const harness = createHarness();
+    const stale = deferred<TabRefreshState>();
+    const current = deferred<TabRefreshState>();
+    const staleInitialization = deferred<TabRefreshState>();
+    const currentInitialization = deferred<TabRefreshState>();
+    let initialization = 0;
+    let stateRead = 0;
+    harness.tabRefresh.panelOpenedBehavior = () => {
+      initialization += 1;
+      return initialization === 1
+        ? staleInitialization.promise
+        : currentInitialization.promise;
+    };
+    harness.tabRefresh.stateBehavior = () => {
+      stateRead += 1;
+      return stateRead === 1 ? stale.promise : current.promise;
+    };
+    const oldPort = await harness.registerAndConnect(
+      "channel-stale-settings",
+      17,
+      "source-stale-settings",
+    );
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([]);
+    staleInitialization.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+
+    oldPort.disconnect();
+    const currentPort = harness.panelPort("channel-stale-settings");
+    harness.router.connectPort(currentPort);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+    currentInitialization.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10], [17, 10]]);
+
+    stale.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+    await flushMicrotasks();
+    expect(currentPort.sent.filter(isPanelTabStateMessage)).toEqual([]);
+
+    current.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+    expect(currentPort.sent.filter(isPanelTabStateMessage)).toEqual([{
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: false,
+      lastAcceptedGeneration: 0,
+    }]);
+  });
+
   it("keeps eligibility independent of panel state and revokes explicit window authority", async () => {
     const harness = createHarness();
     await harness.registerAndConnect("channel-revoke", 17, "source-revoke");
@@ -4732,6 +4927,7 @@ class FakeContentRefreshCoordinator {
 
 class FakeTabRefreshCoordinator {
   public readonly panelOpenCalls: Array<[number, number]> = [];
+  public readonly stateCalls: Array<[number, number]> = [];
   public readonly settingCalls: Array<[
     number,
     number,
@@ -4744,6 +4940,14 @@ class FakeTabRefreshCoordinator {
   public readonly epochCalls: number[] = [];
   public readonly detachedTabs: Array<[number, number]> = [];
   public readonly clearedPendingWindows: number[] = [];
+  public panelOpenedBehavior?: (
+    tabId: number,
+    windowId: number,
+  ) => Promise<TabRefreshState>;
+  public stateBehavior?: (
+    tabId: number,
+    windowId: number,
+  ) => Promise<TabRefreshState>;
   private readonly states = new Map<number, TabRefreshState>();
 
   public async panelOpened(
@@ -4751,6 +4955,9 @@ class FakeTabRefreshCoordinator {
     windowId: number,
   ): Promise<TabRefreshState> {
     this.panelOpenCalls.push([tabId, windowId]);
+    if (this.panelOpenedBehavior) {
+      return await this.panelOpenedBehavior(tabId, windowId);
+    }
     const current = this.states.get(tabId) ?? defaultTabState(tabId, windowId);
     const next = {
       ...current,
@@ -4770,6 +4977,10 @@ class FakeTabRefreshCoordinator {
   }
 
   public async state(tabId: number, windowId: number): Promise<TabRefreshState> {
+    this.stateCalls.push([tabId, windowId]);
+    if (this.stateBehavior) {
+      return await this.stateBehavior(tabId, windowId);
+    }
     return this.states.get(tabId) ?? defaultTabState(tabId, windowId);
   }
 
@@ -5089,6 +5300,18 @@ function createRouterSubscriptionHarness(): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function isCompatibleMessage(message: unknown): boolean {
+  return (
+    isRecord(message) &&
+    message.type === "pin-op.protocol.compatibility" &&
+    message.compatible === true
+  );
+}
+
+function isPanelTabStateMessage(message: unknown): boolean {
+  return isRecord(message) && message.type === "pin-op.tab.state";
 }
 
 function injectionCount(calls: readonly unknown[]): number {

@@ -282,6 +282,7 @@ interface PanelPortRecord {
   panelSessionBinding?: { dispose(): void };
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
+  tabStateInitialization?: Promise<boolean>;
   lastWindowState?: BrowserWindowConnectionState;
   republishWindowId?: number;
   republishedAvailabilityEpoch: number;
@@ -1015,7 +1016,11 @@ export class BackgroundRouter {
       return;
     }
     record.registration = registration;
-    void this.initializePanelTabState(record, token, binding);
+    record.tabStateInitialization = this.initializePanelTabState(
+      record,
+      token,
+      binding,
+    );
   }
 
   private async updateTab(
@@ -1046,21 +1051,26 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     token: object,
     binding: ChannelBinding,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const state = await this.tabRefreshCoordinator.panelOpened(
         binding.tabId,
         binding.windowId,
       );
-      if (this.isCurrentActivation(record, token, binding)) {
+      if (!this.isCurrentActivation(record, token, binding)) {
+        return false;
+      }
+      if (record.lastWindowState !== "linked") {
         this.postToCurrentPort(
           record,
           token,
           createPanelTabStateMessage(state),
         );
       }
+      return true;
     } catch (error) {
       this.reportError(error);
+      return false;
     }
   }
 
@@ -1081,6 +1091,7 @@ export class BackgroundRouter {
     record.activationToken = undefined;
     record.bindingGeneration = undefined;
     record.windowStateQueue = undefined;
+    record.tabStateInitialization = undefined;
     record.lastWindowState = undefined;
     record.republishWindowId = undefined;
     record.republishInFlightEpoch = undefined;
@@ -2197,10 +2208,48 @@ export class BackgroundRouter {
           compatible: true,
           browserProtocolVersion: PROTOCOL_VERSION,
         } satisfies ProtocolCompatibilityMessage);
+        await this.publishFreshLinkedTabState(record, token, binding);
       }
     });
     queue.tail = operation.catch((error) =>
       this.reportError(error),
+    );
+  }
+
+  private async publishFreshLinkedTabState(
+    record: PanelPortRecord,
+    token: object,
+    binding: ChannelBinding,
+  ): Promise<void> {
+    const initialization = record.tabStateInitialization;
+    if (
+      !initialization ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
+      return;
+    }
+    const initialized = await initialization;
+    if (
+      !initialized ||
+      record.tabStateInitialization !== initialization ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
+      return;
+    }
+    const state = await this.tabRefreshCoordinator.state(
+      binding.tabId,
+      binding.windowId,
+    );
+    if (
+      record.tabStateInitialization !== initialization ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
+      return;
+    }
+    this.postToCurrentPort(
+      record,
+      token,
+      createPanelTabStateMessage(state),
     );
   }
 

@@ -85,6 +85,56 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("requires a fresh tab snapshot after offline reconnect recovery", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(true);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "offline",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "reconnecting",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "pending",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+
+    port.emitMessage(compatible());
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    port.emitMessage(tabState(false, true));
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      snapshotReady: true,
+      controlsEnabled: true,
+    });
+    runtime.dispose();
+  });
+
   it("dispatches tab settings immediately and presentation settings only for a current inspect", async () => {
     const runtime = createRuntime();
     await runtime.ready;
