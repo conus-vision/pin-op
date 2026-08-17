@@ -11,6 +11,7 @@ import {
   createDevtoolsPanelPortName,
   createInspectPayload,
   createDefaultTabRefreshState,
+  captureTopScrollSnapshot,
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
@@ -39,16 +40,21 @@ import {
   parseDomRequest,
   parseDomResponse,
   parsePanelTabSettingsCommand,
+  parseContentRefreshCommand,
+  refreshExternalStylesheets,
+  restoreTopScrollSnapshot,
   parseTabRefreshState,
   PanelInspectTransport,
   registerDevtoolsPanel,
   sanitizeErrorMessage,
   startBackgroundRuntime,
   startContentScriptRuntime,
+  startContentRefreshRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
+  TopScrollSnapshotLeaseStore,
   virtualTreeRows,
   WindowConnectionCoordinator,
 } from "@pin-op/browser-extension-core";
@@ -64,6 +70,7 @@ assert.equal(typeof createBackgroundRouter, "function");
 assert.equal(typeof createDevtoolsPanelPortName, "function");
 assert.equal(typeof createInspectPayload, "function");
 assert.equal(typeof createDefaultTabRefreshState, "function");
+assert.equal(typeof captureTopScrollSnapshot, "function");
 assert.equal(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH, 64);
 assert.equal(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH, 100);
 assert.equal(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH, 128);
@@ -92,15 +99,20 @@ assert.equal(typeof parseDomEvent, "function");
 assert.equal(typeof parseDomRequest, "function");
 assert.equal(typeof parseDomResponse, "function");
 assert.equal(typeof parsePanelTabSettingsCommand, "function");
+assert.equal(typeof parseContentRefreshCommand, "function");
+assert.equal(typeof refreshExternalStylesheets, "function");
+assert.equal(typeof restoreTopScrollSnapshot, "function");
 assert.equal(typeof parseTabRefreshState, "function");
 assert.equal(typeof PanelInspectTransport, "function");
 assert.equal(typeof registerDevtoolsPanel, "function");
 assert.equal(typeof sanitizeErrorMessage, "function");
 assert.equal(typeof startBackgroundRuntime, "function");
 assert.equal(typeof startContentScriptRuntime, "function");
+assert.equal(typeof startContentRefreshRuntime, "function");
 assert.equal(typeof startDevtoolsRuntime, "function");
 assert.equal(typeof startPanelRuntime, "function");
 assert.equal(typeof TabRefreshCoordinator, "function");
 assert.equal(typeof TabRefreshStateStore, "function");
+assert.equal(typeof TopScrollSnapshotLeaseStore, "function");
 assert.equal(typeof virtualTreeRows, "function");
 assert.equal(typeof WindowConnectionCoordinator, "function");

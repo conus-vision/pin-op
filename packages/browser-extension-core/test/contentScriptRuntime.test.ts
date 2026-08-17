@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { startContentScriptRuntime } from "../src/contentScriptRuntime.js";
+import {
+  startContentRefreshRuntime,
+  startContentScriptRuntime,
+} from "../src/contentScriptRuntime.js";
 import { createInspectContentLeasePortName } from "../src/inspectPortProtocol.js";
 
 describe("startContentScriptRuntime", () => {
@@ -252,6 +255,284 @@ describe("startContentScriptRuntime", () => {
   });
 });
 
+describe("startContentRefreshRuntime", () => {
+  it("runs style refresh for one exact top-frame binding without an inspect port", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    const sent: unknown[] = [];
+    const clearOverlay = vi.fn();
+    const refreshStylesheets = vi.fn(async () => Object.freeze({
+      attempted: 2,
+      updated: 1,
+      failed: 1,
+    }));
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 21,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-a",
+      sendRuntimeMessage: async (message) => {
+        sent.push(message);
+        return undefined;
+      },
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      clearOverlay,
+      refreshStylesheets,
+    });
+    await flushAsync();
+    expect(sent).toEqual([{
+      type: "pin-op.refresh.content.ready",
+      tabId: 21,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-a",
+    }]);
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 21,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-a",
+      refreshGeneration: 5,
+      mode: "styles",
+    })).resolves.toEqual({
+      type: "pin-op.refresh.content.result",
+      tabId: 21,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-a",
+      refreshGeneration: 5,
+      mode: "styles",
+      accepted: true,
+      stylesheet: { attempted: 2, updated: 1, failed: 1 },
+    });
+    expect(clearOverlay).toHaveBeenCalledOnce();
+    expect(refreshStylesheets).toHaveBeenCalledWith(page.document, 5);
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 21,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "another-runtime",
+      refreshGeneration: 6,
+      mode: "styles",
+    })).resolves.toBeUndefined();
+    expect(clearOverlay).toHaveBeenCalledOnce();
+    runtime.dispose();
+    expect(runtimeMessages.remove).toHaveBeenCalledOnce();
+  });
+
+  it("captures and requests an exact background reload without treating acceptance as navigation", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    page.view.scrollX = 34;
+    page.view.scrollY = 78;
+    const clearOverlay = vi.fn();
+    const reload = vi.fn();
+    page.view.location = { reload };
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 22,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-b",
+      now: () => 2_000,
+      sendRuntimeMessage: async (message) => {
+        if ((message as { type?: string }).type === "pin-op.refresh.content.ready") {
+          return undefined;
+        }
+        expect(message).toEqual({
+          type: "pin-op.refresh.reload.request",
+          tabId: 22,
+          frameId: 0,
+          pageUrl: "https://example.test/page",
+          contentRuntimeId: "refresh-runtime-b",
+          refreshGeneration: 8,
+          snapshot: {
+            tabId: 22,
+            url: "https://example.test/page",
+            refreshGeneration: 8,
+            scrollX: 34,
+            scrollY: 78,
+            createdAt: 2_000,
+          },
+        });
+        return {
+          type: "pin-op.refresh.reload.result",
+          tabId: 22,
+          frameId: 0,
+          pageUrl: "https://example.test/page",
+          contentRuntimeId: "refresh-runtime-b",
+          refreshGeneration: 8,
+          accepted: true,
+        };
+      },
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      clearOverlay,
+    });
+    await flushAsync();
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 22,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-b",
+      refreshGeneration: 8,
+      mode: "reload",
+    })).resolves.toEqual({
+      type: "pin-op.refresh.content.result",
+      tabId: 22,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-b",
+      refreshGeneration: 8,
+      mode: "reload",
+      accepted: true,
+    });
+    expect(clearOverlay).toHaveBeenCalledOnce();
+    expect(reload).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it("claims a background-leased snapshot on ready and restores it once", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    const snapshot = {
+      tabId: 23,
+      url: "https://example.test/page",
+      refreshGeneration: 11,
+      scrollX: 1,
+      scrollY: 2,
+      createdAt: 3_000,
+    } as const;
+    const restoration = { dispose: vi.fn() };
+    const restoreScroll = vi.fn(() => restoration);
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 23,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-c",
+      sendRuntimeMessage: async () => ({
+        type: "pin-op.refresh.scroll.restore",
+        tabId: 23,
+        frameId: 0,
+        pageUrl: "https://example.test/page",
+        contentRuntimeId: "refresh-runtime-c",
+        refreshGeneration: 11,
+        snapshot,
+      }),
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      restoreScroll,
+    });
+    await flushAsync();
+    expect(restoreScroll).toHaveBeenCalledOnce();
+    expect(restoreScroll).toHaveBeenCalledWith(snapshot, {
+      document: page.document,
+      view: page.view,
+    });
+    runtime.dispose();
+    expect(restoration.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("clears a colocated inspection overlay without coupling refresh lifetime to its port", async () => {
+    const globalScope = {};
+    const inspectMessages = messageHarness();
+    const refreshMessages = messageHarness();
+    const pageSession = pageSessionHarness();
+    const inspectRuntime = startContentScriptRuntime({
+      globalScope,
+      document: documentHarness().document,
+      location: locationSource(),
+      connectRuntimePort: () => portHarness().port,
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: inspectMessages.subscribe,
+      createPageInspectionSession: () => pageSession.session,
+    });
+    const page = refreshPageHarness();
+    const refreshRuntime = startContentRefreshRuntime({
+      globalScope,
+      document: page.document,
+      view: page.view,
+      tabId: 24,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-d",
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: refreshMessages.subscribe,
+      refreshStylesheets: async () => ({ attempted: 0, updated: 0, failed: 0 }),
+    });
+    await flushAsync();
+
+    await refreshMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 24,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-d",
+      refreshGeneration: 12,
+      mode: "styles",
+    });
+    expect(pageSession.clearOverlayForRefresh).toHaveBeenCalledOnce();
+
+    inspectRuntime.dispose();
+    expect(pageSession.dispose).toHaveBeenCalledOnce();
+    await refreshMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 24,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-d",
+      refreshGeneration: 13,
+      mode: "styles",
+    });
+    expect(pageSession.clearOverlayForRefresh).toHaveBeenCalledOnce();
+    refreshRuntime.dispose();
+  });
+
+  it("revokes a queued refresh command when its runtime is disposed", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    const refreshStylesheets = vi.fn(async () => ({
+      attempted: 0,
+      updated: 0,
+      failed: 0,
+    }));
+    const runtime = startContentRefreshRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      tabId: 25,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-e",
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      refreshStylesheets,
+    });
+    await flushAsync();
+
+    const pending = runtimeMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 25,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-e",
+      refreshGeneration: 14,
+      mode: "styles",
+    });
+    runtime.dispose();
+
+    await expect(pending).resolves.toBeUndefined();
+    expect(refreshStylesheets).not.toHaveBeenCalled();
+  });
+});
+
 function messageHarness() {
   let listener: ((message: unknown) => unknown) | undefined;
   const remove = vi.fn();
@@ -387,6 +668,7 @@ function pageSessionHarness() {
   const enablePicker = vi.fn();
   const disablePicker = vi.fn();
   const republishSelection = vi.fn(async () => true);
+  const clearOverlayForRefresh = vi.fn();
   const handle = vi.fn(async (request: { requestId?: string }) =>
     rootResponse(request.requestId ?? "missing")
   );
@@ -395,14 +677,53 @@ function pageSessionHarness() {
     enablePicker,
     disablePicker,
     republishSelection,
+    clearOverlayForRefresh,
     handle,
     dispose,
     session: {
       enablePicker,
       disablePicker,
       republishSelection,
+      clearOverlayForRefresh,
       handle,
       dispose,
+    },
+  };
+}
+
+function refreshPageHarness() {
+  const view: Record<string, unknown> = {
+    scrollX: 0,
+    scrollY: 0,
+  };
+  view.top = view;
+  const document = {
+    baseURI: "https://example.test/page",
+    defaultView: view,
+    querySelectorAll: () => [],
+    documentElement: {
+      scrollWidth: 0,
+      scrollHeight: 0,
+      clientWidth: 0,
+      clientHeight: 0,
+    },
+    body: null,
+    readyState: "complete",
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  Object.assign(view, {
+    document,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    scrollTo: vi.fn(),
+  });
+  return {
+    document: document as unknown as Document,
+    view: view as unknown as Window & {
+      scrollX: number;
+      scrollY: number;
+      location?: { reload: () => void };
     },
   };
 }

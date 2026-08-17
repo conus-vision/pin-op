@@ -16,9 +16,35 @@ import {
   type PageInspectionSelection,
   type PageInspectionSessionOptions,
 } from "./pageInspectionSession.js";
+import {
+  parseContentRefreshCommand,
+  parseContentRefreshReadyRequest,
+  parseContentRefreshResult,
+  parseReloadTabRequest,
+  parseReloadTabResult,
+  parseScrollRestoreCommand,
+  type ContentRefreshBinding,
+  type ContentRefreshResult,
+} from "./refreshRuntimeProtocol.js";
+import {
+  refreshExternalStylesheets,
+  type StylesheetRefreshResult,
+} from "./stylesheetRefresher.js";
+import {
+  captureTopScrollSnapshot,
+  restoreTopScrollSnapshot,
+  type TopScrollRestoration,
+  type TopScrollRestoreHost,
+  type TopScrollSnapshot,
+} from "./topScrollRestoration.js";
 
 const CONTENT_RUNTIME_KEY = Symbol.for("pin-op.contentScriptRuntime");
 const CONTENT_RUNTIME_BRAND = Symbol.for("pin-op.contentScriptRuntime.brand");
+const CONTENT_REFRESH_RUNTIME_KEY = Symbol.for("pin-op.contentRefreshRuntime");
+const CONTENT_REFRESH_RUNTIME_BRAND = Symbol.for(
+  "pin-op.contentRefreshRuntime.brand",
+);
+const CONTENT_OVERLAY_CLEAR_KEY = Symbol.for("pin-op.contentOverlayClear");
 
 export type ContentScriptDocument = InspectDocument & {
   readonly styleSheets: CssDocumentSource["styleSheets"];
@@ -44,11 +70,40 @@ export interface ContentScriptRuntime {
   dispose(): void;
 }
 
+export interface ContentRefreshRuntimeOptions {
+  readonly globalScope: object;
+  readonly document: Document;
+  readonly view: Window;
+  readonly tabId: number;
+  readonly pageUrl: string;
+  readonly contentRuntimeId: string;
+  readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
+  readonly subscribeRuntimeMessages: (
+    listener: (message: unknown) => unknown,
+  ) => () => void;
+  readonly clearOverlay?: () => void;
+  readonly refreshStylesheets?: (
+    document: Document,
+    generation: number,
+  ) => Promise<StylesheetRefreshResult>;
+  readonly restoreScroll?: (
+    snapshot: TopScrollSnapshot,
+    host: TopScrollRestoreHost,
+  ) => TopScrollRestoration;
+  readonly now?: () => number;
+  readonly onError?: (error: unknown) => void;
+}
+
+export interface ContentRefreshRuntime {
+  dispose(): void;
+}
+
 export interface ContentPageInspectionSession {
   enablePicker(): void;
   disablePicker(): void;
   handle(request: DomRequest): Promise<unknown>;
   republishSelection(): Promise<boolean>;
+  clearOverlayForRefresh?(): void;
   dispose(): void;
 }
 
@@ -58,6 +113,12 @@ type BrandedContentScriptRuntime = ContentScriptRuntime & {
 
 type ContentRuntimeScope = object & {
   [CONTENT_RUNTIME_KEY]?: unknown;
+  [CONTENT_REFRESH_RUNTIME_KEY]?: unknown;
+  [CONTENT_OVERLAY_CLEAR_KEY]?: unknown;
+};
+
+type BrandedContentRefreshRuntime = ContentRefreshRuntime & {
+  readonly [CONTENT_REFRESH_RUNTIME_BRAND]: true;
 };
 
 export function startContentScriptRuntime(
@@ -94,6 +155,8 @@ export function startContentScriptRuntime(
       publishDomEvent(options, contentSessionId, event, reportError),
     onError: reportError,
   });
+  const clearOverlayForRefresh = (): void => session.clearOverlayForRefresh?.();
+  scope[CONTENT_OVERLAY_CLEAR_KEY] = clearOverlayForRefresh;
   let disposed = false;
   const removeRuntimeMessages = options.subscribeRuntimeMessages((message) => {
     if (disposed) {
@@ -151,6 +214,9 @@ export function startContentScriptRuntime(
         }
       }
       session.dispose();
+      if (scope[CONTENT_OVERLAY_CLEAR_KEY] === clearOverlayForRefresh) {
+        delete scope[CONTENT_OVERLAY_CLEAR_KEY];
+      }
       if (scope[CONTENT_RUNTIME_KEY] === runtime) {
         delete scope[CONTENT_RUNTIME_KEY];
       }
@@ -165,6 +231,269 @@ export function startContentScriptRuntime(
     runtime.dispose();
   }
   return runtime;
+}
+
+export function startContentRefreshRuntime(
+  options: ContentRefreshRuntimeOptions,
+): ContentRefreshRuntime {
+  const scope = options.globalScope as ContentRuntimeScope;
+  const existing = scope[CONTENT_REFRESH_RUNTIME_KEY];
+  if (isContentRefreshRuntime(existing)) {
+    return existing;
+  }
+  if (!isTopView(options.view)) {
+    throw new Error("Content refresh runtime requires the top frame");
+  }
+  const binding = createRefreshBinding(options);
+  const refreshStylesheets = options.refreshStylesheets ??
+    refreshExternalStylesheets;
+  const restoreScroll = options.restoreScroll ?? restoreTopScrollSnapshot;
+  const now = options.now ?? Date.now;
+  const clearOverlay = (): void => {
+    const candidate = options.clearOverlay ?? scope[CONTENT_OVERLAY_CLEAR_KEY];
+    if (typeof candidate === "function") {
+      candidate();
+    }
+  };
+  let disposed = false;
+  let restoration: TopScrollRestoration | undefined;
+  let commandTail = Promise.resolve();
+
+  const reportError = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // Diagnostics cannot change refresh ownership.
+    }
+  };
+  const removeRuntimeMessages = options.subscribeRuntimeMessages((message) => {
+    if (disposed) return undefined;
+    const command = parseContentRefreshCommand(message);
+    if (!command || !sameRefreshBinding(command, binding)) return undefined;
+    const result = commandTail.then(
+      () => executeRefreshCommand(
+        options,
+        binding,
+        command.refreshGeneration,
+        command.mode,
+        refreshStylesheets,
+        clearOverlay,
+        now,
+        () => !disposed,
+        reportError,
+      ),
+      () => executeRefreshCommand(
+        options,
+        binding,
+        command.refreshGeneration,
+        command.mode,
+        refreshStylesheets,
+        clearOverlay,
+        now,
+        () => !disposed,
+        reportError,
+      ),
+    );
+    commandTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  });
+
+  const runtime: BrandedContentRefreshRuntime = {
+    [CONTENT_REFRESH_RUNTIME_BRAND]: true,
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      try {
+        removeRuntimeMessages();
+      } catch {
+        // The host may already have removed the listener.
+      }
+      try {
+        restoration?.dispose();
+      } catch {
+        // Scroll restoration is best-effort during teardown.
+      }
+      restoration = undefined;
+      if (scope[CONTENT_REFRESH_RUNTIME_KEY] === runtime) {
+        delete scope[CONTENT_REFRESH_RUNTIME_KEY];
+      }
+    },
+  };
+  scope[CONTENT_REFRESH_RUNTIME_KEY] = runtime;
+
+  const ready = parseContentRefreshReadyRequest({
+    type: "pin-op.refresh.content.ready",
+    ...binding,
+  });
+  if (!ready) {
+    runtime.dispose();
+    throw new Error("Invalid content refresh binding");
+  }
+  void options.sendRuntimeMessage(ready).then((response) => {
+    if (disposed) return;
+    const command = parseScrollRestoreCommand(response);
+    if (!command || !sameRefreshBinding(command, binding)) return;
+    try {
+      restoration?.dispose();
+      restoration = restoreScroll(command.snapshot, {
+        document: options.document,
+        view: options.view,
+      });
+    } catch (error) {
+      reportError(error);
+    }
+  }).catch(reportError);
+
+  return runtime;
+}
+
+async function executeRefreshCommand(
+  options: ContentRefreshRuntimeOptions,
+  binding: ContentRefreshBinding,
+  refreshGeneration: number,
+  mode: "styles" | "reload",
+  refreshStylesheets: NonNullable<ContentRefreshRuntimeOptions["refreshStylesheets"]>,
+  clearOverlay: () => void,
+  now: () => number,
+  isActive: () => boolean,
+  reportError: (error: unknown) => void,
+): Promise<ContentRefreshResult | undefined> {
+  if (!isActive()) return undefined;
+  try {
+    clearOverlay();
+  } catch (error) {
+    reportError(error);
+  }
+
+  if (mode === "styles") {
+    try {
+      const stylesheet = await refreshStylesheets(
+        options.document,
+        refreshGeneration,
+      );
+      if (!isActive()) return undefined;
+      return createRefreshResult(
+        binding,
+        refreshGeneration,
+        mode,
+        true,
+        stylesheet,
+      );
+    } catch (error) {
+      reportError(error);
+      return createRefreshResult(binding, refreshGeneration, mode, false);
+    }
+  }
+
+  try {
+    const createdAt = now();
+    const snapshot = captureTopScrollSnapshot({
+      tabId: binding.tabId,
+      url: binding.pageUrl,
+      refreshGeneration,
+      scrollX: readScrollCoordinate(options.view, "scrollX"),
+      scrollY: readScrollCoordinate(options.view, "scrollY"),
+      createdAt,
+    });
+    const request = parseReloadTabRequest({
+      type: "pin-op.refresh.reload.request",
+      ...binding,
+      refreshGeneration,
+      snapshot,
+    });
+    if (!request) throw new Error("Invalid reload request");
+    if (!isActive()) return undefined;
+    const response = parseReloadTabResult(
+      await options.sendRuntimeMessage(request),
+    );
+    if (!isActive()) return undefined;
+    const accepted = Boolean(
+      response &&
+      sameRefreshBinding(response, binding) &&
+      response.refreshGeneration === refreshGeneration &&
+      response.accepted,
+    );
+    return createRefreshResult(
+      binding,
+      refreshGeneration,
+      mode,
+      accepted,
+    );
+  } catch (error) {
+    reportError(error);
+    return createRefreshResult(binding, refreshGeneration, mode, false);
+  }
+}
+
+function createRefreshResult(
+  binding: ContentRefreshBinding,
+  refreshGeneration: number,
+  mode: "styles" | "reload",
+  accepted: boolean,
+  stylesheet?: StylesheetRefreshResult,
+): ContentRefreshResult {
+  const result = parseContentRefreshResult({
+    type: "pin-op.refresh.content.result",
+    ...binding,
+    refreshGeneration,
+    mode,
+    accepted,
+    ...(stylesheet ? { stylesheet } : {}),
+  });
+  if (!result) throw new Error("Invalid content refresh result");
+  return result;
+}
+
+function createRefreshBinding(
+  options: ContentRefreshRuntimeOptions,
+): ContentRefreshBinding {
+  const ready = parseContentRefreshReadyRequest({
+    type: "pin-op.refresh.content.ready",
+    tabId: options.tabId,
+    frameId: 0,
+    pageUrl: options.pageUrl,
+    contentRuntimeId: options.contentRuntimeId,
+  });
+  if (!ready) throw new TypeError("Invalid content refresh binding");
+  return Object.freeze({
+    tabId: ready.tabId,
+    frameId: ready.frameId,
+    pageUrl: ready.pageUrl,
+    contentRuntimeId: ready.contentRuntimeId,
+  });
+}
+
+function sameRefreshBinding(
+  value: ContentRefreshBinding,
+  expected: ContentRefreshBinding,
+): boolean {
+  return value.tabId === expected.tabId &&
+    value.frameId === 0 &&
+    value.pageUrl === expected.pageUrl &&
+    value.contentRuntimeId === expected.contentRuntimeId;
+}
+
+function readScrollCoordinate(
+  view: Window,
+  key: "scrollX" | "scrollY",
+): number {
+  try {
+    const value = view[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function isTopView(view: Window): boolean {
+  try {
+    return view.top === view;
+  } catch {
+    return false;
+  }
 }
 
 function publishSelection(
@@ -214,6 +543,16 @@ function isContentScriptRuntime(
     Boolean(value && typeof value === "object") &&
     (value as Partial<BrandedContentScriptRuntime>)[CONTENT_RUNTIME_BRAND] === true &&
     typeof (value as Partial<BrandedContentScriptRuntime>).dispose === "function"
+  );
+}
+
+function isContentRefreshRuntime(
+  value: unknown,
+): value is BrandedContentRefreshRuntime {
+  return (
+    Boolean(value && typeof value === "object") &&
+    (value as Partial<BrandedContentRefreshRuntime>)[CONTENT_REFRESH_RUNTIME_BRAND] === true &&
+    typeof (value as Partial<BrandedContentRefreshRuntime>).dispose === "function"
   );
 }
 

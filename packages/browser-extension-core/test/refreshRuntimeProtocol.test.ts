@@ -2,6 +2,12 @@ import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPanelTabStateMessage,
+  parseContentRefreshCommand,
+  parseContentRefreshReadyRequest,
+  parseContentRefreshResult,
+  parseReloadTabRequest,
+  parseReloadTabResult,
+  parseScrollRestoreCommand,
   parsePanelTabSettingsCommand,
   parsePanelTabStateMessage,
   parseProtocolCompatibilityMessage,
@@ -175,5 +181,140 @@ describe("refresh runtime protocol", () => {
         reason: "details",
       }),
     ).toBeUndefined();
+  });
+
+  it("parses exact top-frame refresh, reload, and restore boundaries", () => {
+    const binding = {
+      tabId: 11,
+      frameId: 0 as const,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    };
+    const snapshot = {
+      tabId: 11,
+      url: binding.pageUrl,
+      refreshGeneration: 9,
+      scrollX: 10,
+      scrollY: 20,
+      createdAt: 1_000,
+    };
+    expect(parseContentRefreshReadyRequest({
+      type: "pin-op.refresh.content.ready",
+      ...binding,
+    })).toEqual({
+      type: "pin-op.refresh.content.ready",
+      ...binding,
+    });
+    expect(parseContentRefreshCommand({
+      type: "pin-op.refresh.content.execute",
+      ...binding,
+      refreshGeneration: 9,
+      mode: "styles",
+    })).toEqual({
+      type: "pin-op.refresh.content.execute",
+      ...binding,
+      refreshGeneration: 9,
+      mode: "styles",
+    });
+    expect(parseReloadTabRequest({
+      type: "pin-op.refresh.reload.request",
+      ...binding,
+      refreshGeneration: 9,
+      snapshot,
+    })).toEqual({
+      type: "pin-op.refresh.reload.request",
+      ...binding,
+      refreshGeneration: 9,
+      snapshot,
+    });
+    expect(parseReloadTabResult({
+      type: "pin-op.refresh.reload.result",
+      ...binding,
+      refreshGeneration: 9,
+      accepted: true,
+    })).toEqual({
+      type: "pin-op.refresh.reload.result",
+      ...binding,
+      refreshGeneration: 9,
+      accepted: true,
+    });
+    expect(parseScrollRestoreCommand({
+      type: "pin-op.refresh.scroll.restore",
+      ...binding,
+      refreshGeneration: 9,
+      snapshot,
+    })).toEqual({
+      type: "pin-op.refresh.scroll.restore",
+      ...binding,
+      refreshGeneration: 9,
+      snapshot,
+    });
+    expect(parseContentRefreshResult({
+      type: "pin-op.refresh.content.result",
+      ...binding,
+      refreshGeneration: 9,
+      mode: "styles",
+      accepted: true,
+      stylesheet: { attempted: 2, updated: 1, failed: 1 },
+    })).toEqual({
+      type: "pin-op.refresh.content.result",
+      ...binding,
+      refreshGeneration: 9,
+      mode: "styles",
+      accepted: true,
+      stylesheet: { attempted: 2, updated: 1, failed: 1 },
+    });
+  });
+
+  it("rejects child-frame, mismatched snapshot, extra-key, and completion-shaped refresh messages", () => {
+    const binding = {
+      tabId: 11,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+      refreshGeneration: 9,
+    };
+    expect(parseContentRefreshCommand({
+      type: "pin-op.refresh.content.execute",
+      ...binding,
+      frameId: 1,
+      mode: "reload",
+    })).toBeUndefined();
+    expect(parseContentRefreshCommand({
+      type: "pin-op.refresh.content.execute",
+      ...binding,
+      mode: "reload",
+      path: "/secret",
+    })).toBeUndefined();
+    expect(parseReloadTabRequest({
+      type: "pin-op.refresh.reload.request",
+      ...binding,
+      snapshot: {
+        tabId: 12,
+        url: binding.pageUrl,
+        refreshGeneration: 9,
+        scrollX: 0,
+        scrollY: 0,
+        createdAt: 1_000,
+      },
+    })).toBeUndefined();
+    expect(parseReloadTabResult({
+      type: "pin-op.refresh.reload.result",
+      ...binding,
+      accepted: true,
+      navigationCompleted: true,
+    })).toBeUndefined();
+    expect(parseScrollRestoreCommand({
+      type: "pin-op.refresh.scroll.restore",
+      ...binding,
+      snapshot: {
+        tabId: 11,
+        url: binding.pageUrl,
+        refreshGeneration: 8,
+        scrollX: 0,
+        scrollY: 0,
+        createdAt: 1_000,
+      },
+    })).toBeUndefined();
   });
 });

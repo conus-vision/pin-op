@@ -66,6 +66,21 @@ describe("PageInspectionSession", () => {
     expect(harness.session.pickerEnabled).toBe(true);
   });
 
+  it("clears only the visual overlay before refresh and keeps selection authority", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    const clearCount = harness.overlay.clearCount;
+    const releases = harness.provider.retentions.filter(({ action }) => action === "release");
+
+    harness.session.clearOverlayForRefresh();
+
+    expect(harness.overlay.clearCount).toBe(clearCount + 1);
+    expect(harness.provider.retentions.filter(({ action }) => action === "release"))
+      .toEqual(releases);
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
+  });
+
   it("coalesces the raw page target before provider lookup, overlay, and event work", () => {
     const harness = createSessionHarness();
     const first = element("DIV", "first", harness.document);

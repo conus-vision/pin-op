@@ -46,18 +46,31 @@ export type {
 export {
   createDefaultTabRefreshState,
   createPanelTabStateMessage,
+  parseContentRefreshCommand,
+  parseContentRefreshReadyRequest,
+  parseContentRefreshResult,
   parsePanelTabSettingsCommand,
   parsePanelTabStateMessage,
   parseProtocolCompatibilityMessage,
   parseRefreshExecutionCommand,
+  parseReloadTabRequest,
+  parseReloadTabResult,
+  parseScrollRestoreCommand,
   parseTabRefreshState,
 } from "./refreshRuntimeProtocol.js";
 export type {
+  ContentRefreshBinding,
+  ContentRefreshCommand,
+  ContentRefreshReadyRequest,
+  ContentRefreshResult,
   PanelTabSettingsCommand,
   PanelTabStateMessage,
   PendingTabRefresh,
   ProtocolCompatibilityMessage,
   RefreshExecutionCommand,
+  ReloadTabRequest,
+  ReloadTabResult,
+  ScrollRestoreCommand,
   TabRefreshState,
 } from "./refreshRuntimeProtocol.js";
 export {
@@ -128,12 +141,40 @@ export type {
   PageOverlayOptions,
   PageOverlayViewportSize,
 } from "./pageOverlay.js";
-export { startContentScriptRuntime } from "./contentScriptRuntime.js";
+export {
+  startContentRefreshRuntime,
+  startContentScriptRuntime,
+} from "./contentScriptRuntime.js";
 export type {
+  ContentRefreshRuntime,
+  ContentRefreshRuntimeOptions,
   ContentScriptDocument,
   ContentScriptRuntime,
   ContentScriptRuntimeOptions,
 } from "./contentScriptRuntime.js";
+export {
+  MAX_STYLESHEET_REFRESH_LINKS,
+  refreshExternalStylesheets,
+  STYLESHEET_REFRESH_TIMEOUT_MS,
+} from "./stylesheetRefresher.js";
+export type { StylesheetRefreshResult } from "./stylesheetRefresher.js";
+export {
+  captureTopScrollSnapshot,
+  MAX_TOP_SCROLL_COORDINATE,
+  parseTopScrollSnapshot,
+  restoreTopScrollSnapshot,
+  TOP_SCROLL_RESTORE_DELAY_MS,
+  TOP_SCROLL_SNAPSHOT_TTL_MS,
+  TopScrollSnapshotLeaseStore,
+} from "./topScrollRestoration.js";
+export type {
+  TopScrollCaptureInput,
+  TopScrollRestoration,
+  TopScrollRestoreHost,
+  TopScrollSnapshot,
+  TopScrollSnapshotClaim,
+  TopScrollSnapshotStorage,
+} from "./topScrollRestoration.js";
 export {
   registerDevtoolsPanel,
   startDevtoolsRuntime,

@@ -413,6 +413,13 @@ export class PageInspectionSession {
     this.clearHoverState("emit");
   }
 
+  public clearOverlayForRefresh(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.clearOverlaySafely();
+  }
+
   public async selectByRef(
     nodeRef: string,
     documentEpoch: number,

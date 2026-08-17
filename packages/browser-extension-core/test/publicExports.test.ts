@@ -11,6 +11,7 @@ import {
   createDevtoolsPanelPortName,
   createInspectPayload,
   createDefaultTabRefreshState,
+  captureTopScrollSnapshot,
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
@@ -42,15 +43,20 @@ import {
   parseDomRequest,
   parseDomResponse,
   parsePanelTabSettingsCommand,
+  parseContentRefreshCommand,
+  refreshExternalStylesheets,
+  restoreTopScrollSnapshot,
   parseTabRefreshState,
   registerDevtoolsPanel,
   sanitizeErrorMessage,
   startBackgroundRuntime,
   startContentScriptRuntime,
+  startContentRefreshRuntime,
   startDevtoolsRuntime,
   startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
+  TopScrollSnapshotLeaseStore,
   virtualTreeRows,
   WindowConnectionCoordinator,
 } from "../src/index.js";
@@ -70,6 +76,7 @@ describe("browser extension core exports", () => {
     expect(createDevtoolsPanelPortName).toBeTypeOf("function");
     expect(createInspectPayload).toBeTypeOf("function");
     expect(createDefaultTabRefreshState).toBeTypeOf("function");
+    expect(captureTopScrollSnapshot).toBeTypeOf("function");
     expect(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH).toBe(64);
     expect(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH).toBe(100);
     expect(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH).toBe(128);
@@ -104,6 +111,9 @@ describe("browser extension core exports", () => {
     expect(parseDomRequest).toBeTypeOf("function");
     expect(parseDomResponse).toBeTypeOf("function");
     expect(parsePanelTabSettingsCommand).toBeTypeOf("function");
+    expect(parseContentRefreshCommand).toBeTypeOf("function");
+    expect(refreshExternalStylesheets).toBeTypeOf("function");
+    expect(restoreTopScrollSnapshot).toBeTypeOf("function");
     expect(parseTabRefreshState).toBeTypeOf("function");
     expect(PanelController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
@@ -115,10 +125,12 @@ describe("browser extension core exports", () => {
     expect(sanitizeErrorMessage).toBeTypeOf("function");
     expect(startBackgroundRuntime).toBeTypeOf("function");
     expect(startContentScriptRuntime).toBeTypeOf("function");
+    expect(startContentRefreshRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
     expect(startPanelRuntime).toBeTypeOf("function");
     expect(TabRefreshCoordinator).toBeTypeOf("function");
     expect(TabRefreshStateStore).toBeTypeOf("function");
+    expect(TopScrollSnapshotLeaseStore).toBeTypeOf("function");
     expect(virtualTreeRows).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
