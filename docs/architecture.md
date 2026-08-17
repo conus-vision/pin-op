@@ -216,9 +216,13 @@ origins, handshake order, roles, session identity, message size, and schemas.
 
 VS Code and installed source plugins can read workspace documents. Separately
 installed plugins are independently trusted extension code. Pin-op itself has
-no remote service and exposes no source write, page-owned DOM edit, or arbitrary
-command path. Auto Refresh is a narrowly typed stylesheet replacement or
-current-tab reload operation, never a caller-supplied command.
+no remote service and exposes no arbitrary page-owned DOM write, source write,
+or arbitrary command path. Its extension-owned noninteractive overlay lives in
+an isolated shadow DOM. The narrow page-DOM exception is `styles` Auto Refresh:
+it inserts a cloned external top-document HTTP(S) stylesheet link, removes the
+old link only after the clone loads successfully, and retains the old link on
+failure. Reload mode uses the browser tab reload API. Neither refresh mode is a
+caller-supplied command.
 
 See [protocol.md](protocol.md), [security.md](security.md), and
 [../PRIVACY.md](../PRIVACY.md) for the complete contracts.

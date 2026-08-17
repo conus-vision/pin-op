@@ -31,13 +31,16 @@ same desktop user.
 Browser credentials and the displayed code use session storage. Pin-op
 sends bounded facts and bounded active-document source excerpts but does not
 send full source documents, workspace paths, or source URIs. It does not upload
-source, write files, edit page-owned DOM, or execute arbitrary commands. Auto
-Refresh is limited to replacing eligible stylesheet links or reloading the
-current participating tab. The DOM tree stays browser-local; cross-origin
-frames and closed shadow roots fail closed. Reports involving link/session
-handling, protocol-version mismatch, extension origins, inspected-page
-injection, node-ref boundaries, message validation, source plugins, refresh,
-or sensitive inspection values are in scope.
+source, write files, or execute arbitrary commands, and it exposes no arbitrary
+page-owned DOM write. There are two narrow extension-owned DOM changes: the
+noninteractive inspection overlay lives in its own shadow DOM, and `styles`
+Auto Refresh inserts a clone of an external top-document HTTP(S) stylesheet
+link. The old link is removed only after the clone loads successfully and is
+retained on failure. Reload mode uses the browser tab reload API. The DOM tree
+stays browser-local; cross-origin frames and closed shadow roots fail closed.
+Reports involving link/session handling, protocol-version mismatch, extension
+origins, inspected-page injection, node-ref boundaries, message validation,
+source plugins, refresh, or sensitive inspection values are in scope.
 
 See the detailed [security model](docs/security.md) and
 [privacy policy](PRIVACY.md).

@@ -342,9 +342,11 @@ update the footer without a new inspect or resolution. Every update has a new
 
 Navigation is selected-only. `selectedMatchCount` counts unique selected
 ranges in the active resolved document. Parent ranges remain distinct editor
-decorations and never enter the navigation count or navigation order. Selecting
-a DOM element does not move the VS Code cursor. Previous/Next moves only the
-primary cursor after a button intent and reveals the chosen selected range.
+decorations and never enter the navigation count or navigation order. Passive
+DOM selection and refresh do not move the VS Code cursor. An explicit
+Previous/Next intent moves the primary cursor and reveals the chosen Selected
+range; an explicit Source excerpt click can send `source.open` and reveal that
+exact current Selected or Parent range after authority is revalidated.
 
 `activeMatchIndex` is zero-based and is present only when the primary cursor is
 inside one of those selected ranges. In the normal state before navigation,
@@ -462,23 +464,28 @@ and stable locator capture. When visual inspection is disabled or cleared, the
 rendered overlay is removed. Disconnecting disposes the inspection session;
 disposal removes its host and any remaining overlay DOM.
 
-Outside that isolated overlay, Pin-op does not modify page-owned content or
-application state, and it does not modify source code. It cannot fill or submit
-forms or invoke page handlers, and it does not execute page commands or
-arbitrary page scripts received from VS Code or the WebSocket.
+Pin-op exposes no arbitrary page-owned DOM write and does not modify source
+code. Beyond the isolated overlay, the only page-DOM mutation is `styles` Auto
+Refresh: it inserts a cloned external top-document HTTP(S) stylesheet link,
+removes the old link only after the clone loads successfully, and retains the
+old link on failure. It cannot fill or submit forms or invoke page handlers, and
+it does not execute page commands or arbitrary page scripts received from VS
+Code or the WebSocket.
 
 The IDE extension can read the active workspace document and relevant local
-source maps through its source plugins. It can add editor decorations and, only
-after an explicit Previous/Next intent, move the primary cursor and reveal a
-matched range. It cannot edit or write source files, run a shell, execute an
-arbitrary workspace command, or send a command to change the inspected page.
-The browser cannot ask the IDE to execute commands or edit files, and the IDE
-cannot execute page scripts or request changes to page-owned content or
-application state.
+source maps through its source plugins. It can add editor decorations and move
+the primary cursor only after an explicit Previous/Next intent or a validated
+`source.open` produced by an explicit Source excerpt click. Passive selection
+and refresh do not move the cursor. It cannot edit or write source files, run a
+shell, execute an arbitrary workspace command, or send a caller-supplied command
+to change the inspected page. The browser cannot ask the IDE to execute
+arbitrary commands or edit files, and the IDE cannot execute page scripts.
 
 Only bounded inspect facts, bounded active-document excerpts, and protocol
 state cross the loopback WebSocket. Browser-local locators and node refs never
 cross it. Full source documents, editor ranges, local file paths and URIs,
 source maps, and browser tab IDs never cross in the reverse direction. Protocol
-6 exposes no page-owned DOM writes, source writes, shell execution, workspace
-command execution, or reverse synchronization.
+6 exposes no arbitrary page-owned DOM writes, source writes, shell execution,
+workspace command execution, or reverse synchronization. Its only DOM changes
+are the extension-owned overlay and the typed stylesheet-link replacement
+described above.
