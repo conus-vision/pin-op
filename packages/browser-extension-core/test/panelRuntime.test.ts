@@ -198,7 +198,7 @@ describe("startPanelRuntime", () => {
     await runtime.ready;
     const observer = resizeObservers[0];
     expect(observer).toBeDefined();
-    observer!.emit(dom.element("panel-workspace"), width, height);
+    emitPanelResize(observer!, dom, width, height);
     await flushAsync();
 
     expect(dom.element("panel-workspace").dataset.layout).toBe(mode);
@@ -207,11 +207,42 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("uses the panel viewport height for the stack breakpoint", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0];
+    expect(observer).toBeDefined();
+
+    emitPanelResize(observer!, dom, 679, 520, 679, 480);
+    await flushAsync();
+
+    expect(dom.element("panel-workspace").dataset.layout).toBe("stack");
+    runtime.dispose();
+  });
+
+  it("falls back to the body viewport and disconnects its observer", async () => {
+    Object.defineProperty(dom.document, "documentElement", {
+      configurable: true,
+      get: () => { throw new Error("root unavailable"); },
+    });
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    observer.emit(dom.body(), 679, 520);
+    observer.emit(dom.element("panel-workspace"), 679, 480);
+    observer.emit(dom.element("pane-separator"), 5, 5);
+    await flushAsync();
+
+    expect(dom.element("panel-workspace").dataset.layout).toBe("stack");
+    runtime.dispose();
+    expect(observer.disconnected).toBe(true);
+  });
+
   it("switches tab panes accessibly and drives the persisted separator", async () => {
     const runtime = createRuntime();
     await runtime.ready;
     const observer = resizeObservers[0]!;
-    observer.emit(dom.element("panel-workspace"), 500, 400);
+    emitPanelResize(observer, dom, 500, 400);
     await flushAsync();
 
     dom.element("source-tab").dispatch("click");
@@ -221,7 +252,7 @@ describe("startPanelRuntime", () => {
     dom.element("source-tab").dispatch("keydown", { key: "Home" });
     expect(dom.element("dom-tab").getAttribute("aria-selected")).toBe("true");
 
-    observer.emit(dom.element("panel-workspace"), 800, 600);
+    emitPanelResize(observer, dom, 800, 600);
     await flushAsync();
     dom.element("pane-separator").dispatch("keydown", { key: "ArrowRight" });
     expect(dom.element("pane-separator").getAttribute("aria-valuenow")).toBe("52");
@@ -238,14 +269,54 @@ describe("startPanelRuntime", () => {
     });
     dom.element("pane-separator").dispatch("pointerup", { pointerId: 7 });
     expect(dom.element("pane-separator").getAttribute("aria-valuenow")).toBe("75");
-    expect(sessionStorageValues.get("pin-op.panel.layout.divider")).toBe("0.75");
+    expect(Number(sessionStorageValues.get("pin-op.panel.layout.divider")))
+      .toBeCloseTo((600 - 2.5) / 795);
     runtime.dispose();
   });
+
+  it.each([
+    ["split", 712, 519, "vertical", "160px", "547px", "23", "77"],
+    ["stack", 679, 526, "horizontal", "160px", "361px", "31", "69"],
+  ] as const)(
+    "renders separator-aware Home and End tracks in %s mode",
+    async (
+      _mode,
+      width,
+      height,
+      orientation,
+      homeTrack,
+      endTrack,
+      valueMin,
+      valueMax,
+    ) => {
+      const runtime = createRuntime();
+      await runtime.ready;
+      const observer = resizeObservers[0]!;
+      observer.emit(dom.viewport(), width, height);
+      observer.emit(dom.element("panel-workspace"), width, height);
+      observer.emit(dom.element("pane-separator"), 5, 5);
+      await flushAsync();
+      const workspace = dom.element("panel-workspace");
+      const separator = dom.element("pane-separator");
+
+      separator.dispatch("keydown", { key: "Home" });
+      expect(workspace.style["--divider-position"]).toBe(homeTrack);
+      expect(separator.getAttribute("aria-orientation")).toBe(orientation);
+      expect(separator.getAttribute("aria-valuemin")).toBe(valueMin);
+      expect(separator.getAttribute("aria-valuemax")).toBe(valueMax);
+      expect(separator.getAttribute("aria-valuenow")).toBe(valueMin);
+
+      separator.dispatch("keydown", { key: "End" });
+      expect(workspace.style["--divider-position"]).toBe(endTrack);
+      expect(separator.getAttribute("aria-valuenow")).toBe(valueMax);
+      runtime.dispose();
+    },
+  );
 
   it("wraps tablist keyboard focus and isolates a throwing focus call", async () => {
     const runtime = createRuntime();
     await runtime.ready;
-    resizeObservers[0]!.emit(dom.element("panel-workspace"), 500, 400);
+    emitPanelResize(resizeObservers[0]!, dom, 500, 400);
     await flushAsync();
 
     dom.element("source-tab").dispatch("keydown", { key: "ArrowRight" });
@@ -263,7 +334,7 @@ describe("startPanelRuntime", () => {
   it("isolates pointer DOM failures without granting stale pointer authority", async () => {
     const runtime = createRuntime();
     await runtime.ready;
-    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    emitPanelResize(resizeObservers[0]!, dom, 800, 600);
     await flushAsync();
     const separator = dom.element("pane-separator");
 
@@ -295,7 +366,7 @@ describe("startPanelRuntime", () => {
   it("releases pointer authority during layout cleanup", async () => {
     const runtime = createRuntime();
     await runtime.ready;
-    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    emitPanelResize(resizeObservers[0]!, dom, 800, 600);
     await flushAsync();
     const separator = dom.element("pane-separator");
     separator.dispatch("pointerdown", { pointerId: 12, clientX: 400, clientY: 0 });
@@ -310,7 +381,7 @@ describe("startPanelRuntime", () => {
   it("does not restore pointer authority after capture or bounds reentry", async () => {
     const runtime = createRuntime();
     await runtime.ready;
-    resizeObservers[0]!.emit(dom.element("panel-workspace"), 800, 600);
+    emitPanelResize(resizeObservers[0]!, dom, 800, 600);
     await flushAsync();
     const separator = dom.element("pane-separator");
     const workspace = dom.element("panel-workspace");
@@ -363,6 +434,135 @@ describe("startPanelRuntime", () => {
     expect(dom.element("disconnect-button").disabled).toBe(false);
     runtime.dispose();
   });
+
+  it("keeps mismatch blocking through Disconnect and notLinked until fresh compatibility", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    showReadySourceNavigation(port, "selected-before-disconnect", "inspect-before-disconnect");
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushAsync();
+
+    dom.element("disconnect-button").dispatch("click");
+    await flushAsync();
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+    await flushAsync();
+
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      controlsEnabled: false,
+    });
+    expect(dom.element("protocol-mismatch-versions").textContent)
+      .toBe("Browser protocol: 6 - IDE protocol: 5");
+    expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+    expect(dom.element("source-navigation-footer").hidden).toBe(true);
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(dom.element("link-controls").hidden).toBe(false);
+    expect(dom.element("link-code").disabled).toBe(false);
+    expect(dom.element("paste-button").disabled).toBe(false);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    expect(dom.element("protocol-mismatch").hidden).toBe(false);
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    port.emitMessage(compatible());
+    await flushAsync();
+
+    expect(dom.element("protocol-mismatch").hidden).toBe(true);
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    expect(dom.element("source-pane-root").text()).toContain("Select an element to inspect");
+    expect(dom.element("inspect-mode").disabled).toBe(false);
+    runtime.dispose();
+  });
+
+  it.each([
+    ["error", { displayLinkCode: "48735 07" }, "disconnect-button"],
+    ["linking", { displayLinkCode: "48735 07" }, "disconnect-button"],
+    ["rateLimited", {}, "link-controls"],
+  ] as const)(
+    "keeps mismatch blocking through %s until fresh compatibility",
+    async (state, details, usableControl) => {
+      const runtime = createRuntime();
+      await runtime.ready;
+      const port = requiredPort(ports, 0);
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      });
+      port.emitMessage(compatible());
+      port.emitMessage(tabState(true, true));
+      port.emitMessage({
+        type: "pin-op.protocol.compatibility",
+        compatible: false,
+        browserProtocolVersion: PROTOCOL_VERSION,
+        peerProtocolVersion: 5,
+      });
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state,
+        ...details,
+      });
+      await flushAsync();
+
+      expect(dom.element("protocol-mismatch").hidden).toBe(false);
+      expect(runtime.settingsController.snapshot()).toMatchObject({
+        compatibility: "incompatible",
+        controlsEnabled: false,
+      });
+      expect(dom.element("protocol-mismatch-versions").textContent)
+        .toBe("Browser protocol: 6 - IDE protocol: 5");
+      expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
+      expect(dom.element("source-navigation-footer").hidden).toBe(true);
+      expect(dom.element("inspect-mode").disabled).toBe(true);
+      expect(dom.element(usableControl).hidden).toBe(false);
+      if (usableControl === "disconnect-button") {
+        expect(dom.element(usableControl).disabled).toBe(false);
+      } else {
+        expect(dom.element("link-code").disabled).toBe(false);
+        expect(dom.element("paste-button").disabled).toBe(false);
+      }
+
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      });
+      expect(dom.element("protocol-mismatch").hidden).toBe(false);
+      expect(dom.element("inspect-mode").disabled).toBe(true);
+      port.emitMessage(compatible());
+      await flushAsync();
+
+      expect(dom.element("protocol-mismatch").hidden).toBe(true);
+      expect(runtime.settingsController.snapshot()).toMatchObject({
+        compatibility: "compatible",
+        snapshotReady: false,
+        controlsEnabled: false,
+      });
+      expect(dom.element("inspect-mode").disabled).toBe(false);
+      runtime.dispose();
+    },
+  );
 
   it("renders an unknown IDE protocol only from a validated incompatible state", async () => {
     const runtime = createRuntime();
@@ -2577,6 +2777,8 @@ class FakeElement {
 interface FakeDom {
   readonly document: { getElementById(id: string): FakeElement | null };
   element(id: string): FakeElement;
+  viewport(): FakeElement;
+  body(): FakeElement;
   namespacedTags(): readonly {
     readonly namespace: string;
     readonly tagName: string;
@@ -2592,8 +2794,13 @@ function createFakeDom(): FakeDom {
   const elements = new Map(
     ELEMENT_IDS.map((id) => [id, new FakeElement()] as const),
   );
+  const documentElement = new FakeElement("html");
+  const bodyElement = new FakeElement("body");
+  documentElement.append(bodyElement);
   return {
     document: {
+      documentElement,
+      body: bodyElement,
       getElementById: (id) => elements.get(id as (typeof ELEMENT_IDS)[number]) ?? null,
       createElement: (tagName: string) => new FakeElement(tagName),
       createTextNode: (text: string) => {
@@ -2613,6 +2820,12 @@ function createFakeDom(): FakeDom {
         throw new Error(`Unknown fake element: ${id}`);
       }
       return element;
+    },
+    viewport() {
+      return documentElement;
+    },
+    body() {
+      return bodyElement;
     },
     namespacedTags() {
       return namespacedTags;
@@ -2797,6 +3010,23 @@ class TestResizeObserver {
       contentRect: { width, height },
     } as ResizeObserverEntry], this as unknown as ResizeObserver);
   }
+}
+
+function emitPanelResize(
+  observer: TestResizeObserver,
+  dom: FakeDom,
+  viewportWidth: number,
+  viewportHeight: number,
+  workspaceWidth = viewportWidth,
+  workspaceHeight = viewportHeight,
+): void {
+  observer.emit(dom.viewport(), viewportWidth, viewportHeight);
+  observer.emit(
+    dom.element("panel-workspace"),
+    workspaceWidth,
+    workspaceHeight,
+  );
+  observer.emit(dom.element("pane-separator"), 5, 5);
 }
 
 function compatible() {

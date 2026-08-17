@@ -469,7 +469,6 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       windowState.state === "rateLimited"
     )) {
       acceptSettingsWindowState(windowState.state);
-      mismatchBlocked = false;
       deferredLinkedState = undefined;
       clearLinkedInspectionState();
     } else if (windowState?.state === "incompatible") {
@@ -490,6 +489,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         settingsController.invalidateInspect();
       } else {
         clearLinkedInspectionState();
+      }
+      if (mismatchBlocked) {
+        enforceMismatchBlock();
       }
     }
     if (forwardToStateListeners) {
@@ -519,6 +521,12 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       state === "offline" ||
       state === "reconnecting"
     )) {
+      return;
+    }
+    if (mismatchBlocked && state !== "incompatible") {
+      settingsController.revokeBinding(true);
+      settingsBinding = undefined;
+      compatibility = "incompatible";
       return;
     }
     if (settingsBinding) {
@@ -569,13 +577,28 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     treeController.reset();
   }
 
-  function clearLinkedInspectionState(preserveMismatch = false): void {
+  function clearLinkedInspectionState(
+    preserveMismatch = mismatchBlocked,
+  ): void {
     deactivateTreeSession();
-    if (!preserveMismatch) {
+    if (preserveMismatch) {
+      enforceMismatchBlock();
+    } else {
       sourcePaneController.disconnect();
       compatibility = "pending";
     }
     resetResolutionState();
+  }
+
+  function enforceMismatchBlock(): void {
+    compatibility = "incompatible";
+    sourceNavigationController.invalidate();
+    sourcePaneController.setCompatible(false);
+    settingsController.invalidateInspect();
+    sourcePaneView.setState({
+      kind: "incompatible",
+      statusText: "Extensions are incompatible",
+    });
   }
 
   function resetResolutionState(status?: "restoring"): void {

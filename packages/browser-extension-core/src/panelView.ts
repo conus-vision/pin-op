@@ -24,6 +24,8 @@ import type {
 import { createLucideElement } from "./lucideElement.js";
 
 export interface PanelDocument {
+  readonly documentElement?: unknown;
+  readonly body?: unknown;
   getElementById(id: string): unknown;
   createElement(tagName: string): unknown;
   createTextNode(text: string): unknown;
@@ -44,6 +46,7 @@ export class DomPanelView implements PanelView {
   private readonly connectionStatus: PanelElement;
   private readonly protocolMismatch: PanelElement;
   private readonly protocolMismatchVersions: PanelElement;
+  private readonly layoutViewport: object;
   private readonly workspace: PanelElement;
   private readonly workspaceTabs: PanelElement;
   private readonly domTab: PanelElement;
@@ -81,6 +84,7 @@ export class DomPanelView implements PanelView {
       "protocol-mismatch-versions",
     );
     this.workspace = required(document, "panel-workspace");
+    this.layoutViewport = panelViewport(document, this.workspace);
     this.workspaceTabs = required(document, "workspace-tabs");
     this.domTab = required(document, "dom-tab");
     this.sourceTab = required(document, "source-tab");
@@ -350,7 +354,7 @@ export class DomPanelView implements PanelView {
     this.separator.addEventListener("pointerup", pointerUp);
     this.separator.addEventListener("pointercancel", pointerUp);
     const unsubscribe = controller.subscribe(render);
-    controller.start(this.workspace);
+    controller.start(this.layoutViewport, this.workspace, this.separator);
     render();
 
     return () => {
@@ -399,8 +403,8 @@ export class DomPanelView implements PanelView {
     this.workspace.dataset.layout = model.mode;
     setStyleProperty(
       this.workspace.style,
-      "--divider-proportion",
-      `${model.dividerProportion * 100}%`,
+      "--divider-position",
+      formatPixels(model.dividerPosition),
     );
     const tabs = model.mode === "tabs";
     this.workspaceTabs.hidden = !tabs;
@@ -466,6 +470,25 @@ function required(document: PanelDocument, id: string): PanelElement {
   return element as PanelElement;
 }
 
+function panelViewport(document: PanelDocument, fallback: object): object {
+  for (const key of ["documentElement", "body"] as const) {
+    try {
+      const candidate = document[key];
+      if (isObject(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // Incomplete host documents can still size against the workspace.
+    }
+  }
+  return fallback;
+}
+
+function isObject(value: unknown): value is object {
+  return (typeof value === "object" && value !== null) ||
+    typeof value === "function";
+}
+
 function createNavigationIcon(
   ownerDocument: PanelDocument,
   icon: IconNode,
@@ -481,4 +504,8 @@ function setStyleProperty(style: PanelStyle, name: string, value: string): void 
   } else {
     style[name] = value;
   }
+}
+
+function formatPixels(value: number): string {
+  return `${Math.round(value * 1_000) / 1_000}px`;
 }

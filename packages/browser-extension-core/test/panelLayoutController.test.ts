@@ -351,6 +351,46 @@ describe("PanelLayoutController", () => {
     expect(observers[1]!.disconnect).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a workspace-observe rebind authoritative", () => {
+    const oldTarget = {};
+    const oldWorkspace = {};
+    const oldSeparator = {};
+    const newTarget = {};
+    const observers: PanelResizeObserverLike[] = [];
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: () => {
+        factoryCalls += 1;
+        const observer: PanelResizeObserverLike = factoryCalls === 1
+          ? {
+            observe: vi.fn((target: object) => {
+              if (target === oldWorkspace) {
+                controller.start(newTarget);
+                throw new Error("old workspace observe failed");
+              }
+            }),
+            disconnect: vi.fn(),
+          }
+          : { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+    });
+
+    controller.start(oldTarget, oldWorkspace, oldSeparator);
+    expect(observers).toHaveLength(2);
+    const oldObserve = vi.mocked(observers[0]!.observe);
+    expect(oldObserve).toHaveBeenCalledTimes(2);
+    expect(oldObserve.mock.calls[0]?.[0]).toBe(oldTarget);
+    expect(oldObserve.mock.calls[1]?.[0]).toBe(oldWorkspace);
+    expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1);
+    expect(observers[1]!.observe).toHaveBeenCalledWith(newTarget);
+
+    controller.dispose();
+    expect(observers[1]!.disconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a reentrant disconnect binding authoritative and leaks no callback authority", () => {
     const scheduler = new FakeScheduler();
     const callbacks: Array<(entries: readonly PanelResizeObserverEntryLike[]) => void> = [];
@@ -429,6 +469,53 @@ describe("PanelLayoutController", () => {
       dividerProportion: 1 - 160 / 680,
     });
   });
+
+  it.each([
+    ["split", 712, 519, 707, 23, 77],
+    ["stack", 679, 526, 521, 31, 69],
+  ] as const)(
+    "includes the measured separator in %s Home and End bounds",
+    (mode, width, height, paneExtent, valueMin, valueMax) => {
+      const harness = createHarness();
+      harness.controller.start(
+        harness.target,
+        harness.workspace,
+        harness.separator,
+      );
+      const observer = harness.observers[0]!;
+      observer.emit(harness.target, width, height);
+      observer.emit(harness.workspace, width, height);
+      observer.emit(harness.separator, 5, 5);
+      harness.flush();
+
+      expect(harness.controller.snapshot().mode).toBe(mode);
+      expect(harness.controller.handleSeparatorKey("Home")).toBe(true);
+      expect(harness.controller.snapshot()).toMatchObject({
+        dividerProportion: 160 / paneExtent,
+        dividerPosition: 160,
+        separator: {
+          valueMin,
+          valueMax,
+          valueNow: valueMin,
+        },
+      });
+
+      expect(harness.controller.handleSeparatorKey("End")).toBe(true);
+      expect(harness.controller.snapshot()).toMatchObject({
+        dividerProportion: 1 - 160 / paneExtent,
+        dividerPosition: paneExtent - 160,
+        separator: {
+          valueMin,
+          valueMax,
+          valueNow: valueMax,
+        },
+      });
+      expect(
+        paneExtent -
+          harness.controller.snapshot().dividerProportion * paneExtent,
+      ).toBeCloseTo(160);
+    },
+  );
 
   it.each([
     ["garbage", 0.5],
@@ -838,6 +925,8 @@ class MemoryStorage implements PanelSessionStateStorage {
 
 function createHarness(options: { storage?: PanelSessionStateStorage } = {}) {
   const target = {};
+  const workspace = {};
+  const separator = {};
   const scheduler = new FakeScheduler();
   const observers: FakeResizeObserver[] = [];
   const createResizeObserver: PanelResizeObserverFactory = (callback) => {
@@ -853,6 +942,8 @@ function createHarness(options: { storage?: PanelSessionStateStorage } = {}) {
   return {
     controller,
     target,
+    workspace,
+    separator,
     scheduler,
     observers,
     resize(width: number, height: number): void {

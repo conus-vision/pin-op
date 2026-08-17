@@ -1,5 +1,5 @@
 :root {
-  --divider-proportion: 50%;
+  --divider-position: 50%;
   --hairline: color-mix(in srgb, CanvasText 18%, transparent);
   --muted: color-mix(in srgb, CanvasText 68%, transparent);
   --dom-tree-shadow-text: color-mix(in srgb, CanvasText 82%, #7c3aed);
@@ -251,14 +251,14 @@ input[type="text"] {
 .pane-separator { z-index: 1; background: var(--hairline); touch-action: none; }
 
 [data-layout="split"] {
-  grid-template-columns: minmax(160px, var(--divider-proportion)) 5px minmax(160px, 1fr);
+  grid-template-columns: minmax(160px, var(--divider-position)) 5px minmax(160px, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
 [data-layout="split"] .pane-separator { width: 5px; cursor: col-resize; }
 
 [data-layout="stack"] {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(160px, var(--divider-proportion)) 5px minmax(160px, 1fr);
+  grid-template-rows: minmax(160px, var(--divider-position)) 5px minmax(160px, 1fr);
 }
 [data-layout="stack"] .pane-separator { height: 5px; cursor: row-resize; }
 

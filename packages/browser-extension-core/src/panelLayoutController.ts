@@ -14,8 +14,11 @@ export interface PanelLayoutSnapshot {
   readonly mode: PanelLayoutMode;
   readonly width: number;
   readonly height: number;
+  readonly workspaceWidth: number;
+  readonly workspaceHeight: number;
   readonly activeTab: PanelLayoutTab;
   readonly dividerProportion: number;
+  readonly dividerPosition: number;
   readonly separator: PanelLayoutSeparatorModel;
 }
 
@@ -54,15 +57,28 @@ export interface PanelLayoutControllerOptions {
 
 interface ScheduledResizeCell {
   readonly binding: ObserverBindingCell;
-  pending: { width: number; height: number } | undefined;
+  pending: LayoutMeasurementUpdate | undefined;
   cancel: (() => void) | undefined;
 }
 
 interface ObserverBindingCell {
   readonly generation: number;
   readonly target: object;
+  readonly workspaceTarget: object;
+  readonly separatorTarget: object | undefined;
   observer: PanelResizeObserverLike | undefined;
   handle: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+}
+
+interface LayoutDimensions {
+  readonly width: number;
+  readonly height: number;
+}
+
+interface LayoutMeasurementUpdate {
+  readonly viewport?: LayoutDimensions;
+  readonly workspace?: LayoutDimensions;
+  readonly separator?: LayoutDimensions;
 }
 
 const SPLIT_WIDTH = 680;
@@ -94,6 +110,12 @@ export class PanelLayoutController {
   private current: PanelLayoutSnapshot;
   private activeTab: PanelLayoutTab = "dom";
   private dividerProportion: number;
+  private viewportWidth = 0;
+  private viewportHeight = 0;
+  private workspaceWidth = 0;
+  private workspaceHeight = 0;
+  private separatorWidth = 0;
+  private separatorHeight = 0;
   private observerBinding: ObserverBindingCell | undefined;
   private bindingGeneration = 0;
   private scheduledResize: ScheduledResizeCell | undefined;
@@ -108,23 +130,42 @@ export class PanelLayoutController {
     this.current = createSnapshot(
       0,
       0,
+      0,
+      0,
+      0,
+      0,
       this.activeTab,
       this.dividerProportion,
     );
   }
 
-  public start(target: object): boolean {
-    if (this.disposed || !isObject(target)) {
+  public start(
+    target: object,
+    workspaceTarget: object = target,
+    separatorTarget?: object,
+  ): boolean {
+    if (
+      this.disposed ||
+      !isObject(target) ||
+      !isObject(workspaceTarget) ||
+      (separatorTarget !== undefined && !isObject(separatorTarget))
+    ) {
       return false;
     }
     const previous = this.observerBinding;
-    if (previous?.target === target) {
+    if (
+      previous?.target === target &&
+      previous.workspaceTarget === workspaceTarget &&
+      previous.separatorTarget === separatorTarget
+    ) {
       return true;
     }
 
     const binding: ObserverBindingCell = {
       generation: ++this.bindingGeneration,
       target,
+      workspaceTarget,
+      separatorTarget,
       observer: undefined,
       handle: undefined,
     };
@@ -136,7 +177,7 @@ export class PanelLayoutController {
       return true;
     }
 
-    this.applyDimensions(0, 0);
+    this.resetMeasurements();
     if (!this.isCurrentBinding(binding)) {
       return true;
     }
@@ -162,14 +203,16 @@ export class PanelLayoutController {
     }
 
     binding.observer = observer;
-    try {
-      observer.observe(target);
-    } catch {
-      this.retireObserverBinding(binding);
-      return true;
-    }
-    if (!this.isCurrentBinding(binding)) {
-      return true;
+    for (const observedTarget of uniqueTargets(binding)) {
+      try {
+        observer.observe(observedTarget);
+      } catch {
+        this.retireObserverBinding(binding);
+        return true;
+      }
+      if (!this.isCurrentBinding(binding)) {
+        return true;
+      }
     }
     return true;
   }
@@ -210,12 +253,7 @@ export class PanelLayoutController {
       return true;
     }
     this.activeTab = value;
-    this.publish(createSnapshot(
-      this.current.width,
-      this.current.height,
-      this.activeTab,
-      this.dividerProportion,
-    ));
+    this.publish(this.createCurrentSnapshot());
     return true;
   }
 
@@ -226,8 +264,9 @@ export class PanelLayoutController {
     const next = clampDivider(
       clamp(value, 0, 1),
       this.current.mode,
-      this.current.width,
-      this.current.height,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      this.currentSeparatorExtent(),
     );
     this.setDivider(next, true);
     return true;
@@ -241,15 +280,17 @@ export class PanelLayoutController {
     ) {
       return false;
     }
-    const extent = currentExtent(
+    const extent = paneExtent(
       this.current.mode,
-      this.current.width,
-      this.current.height,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      this.currentSeparatorExtent(),
     );
     if (extent <= 0) {
       return false;
     }
-    return this.setDividerProportion(position / extent);
+    const centeredPosition = position - this.currentSeparatorExtent() / 2;
+    return this.setDividerProportion(centeredPosition / extent);
   }
 
   public handleSeparatorKey(key: unknown, faster = false): boolean {
@@ -261,10 +302,11 @@ export class PanelLayoutController {
     ) {
       return false;
     }
-    const bounds = dividerBounds(currentExtent(
+    const bounds = dividerBounds(paneExtent(
       this.current.mode,
-      this.current.width,
-      this.current.height,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      this.currentSeparatorExtent(),
     ));
     if (key === "Home") {
       return this.setDividerProportion(bounds.minimum);
@@ -297,13 +339,29 @@ export class PanelLayoutController {
     if (!this.isCurrentBinding(binding)) {
       return;
     }
-    let latest: { width: number; height: number } | undefined;
+    let latest: LayoutMeasurementUpdate | undefined;
     try {
       for (const entry of entries) {
+        const dimensions = {
+          width: sanitizeDimension(entry.contentRect.width),
+          height: sanitizeDimension(entry.contentRect.height),
+        };
         if (entry.target === binding.target) {
           latest = {
-            width: sanitizeDimension(entry.contentRect.width),
-            height: sanitizeDimension(entry.contentRect.height),
+            ...latest,
+            viewport: dimensions,
+          };
+        }
+        if (entry.target === binding.workspaceTarget) {
+          latest = {
+            ...latest,
+            workspace: dimensions,
+          };
+        }
+        if (entry.target === binding.separatorTarget) {
+          latest = {
+            ...latest,
+            separator: dimensions,
           };
         }
       }
@@ -318,7 +376,10 @@ export class PanelLayoutController {
       currentSchedule
       && currentSchedule.binding === binding
     ) {
-      currentSchedule.pending = latest;
+      currentSchedule.pending = mergeMeasurements(
+        currentSchedule.pending,
+        latest,
+      );
       return;
     }
 
@@ -360,25 +421,31 @@ export class PanelLayoutController {
     if (!resize) {
       return;
     }
-    this.applyDimensions(resize.width, resize.height);
+    this.applyMeasurements(resize);
   }
 
-  private applyDimensions(width: number, height: number): void {
-    const safeWidth = sanitizeDimension(width);
-    const safeHeight = sanitizeDimension(height);
-    const mode = selectMode(safeWidth, safeHeight);
+  private applyMeasurements(update: LayoutMeasurementUpdate): void {
+    if (update.viewport) {
+      this.viewportWidth = update.viewport.width;
+      this.viewportHeight = update.viewport.height;
+    }
+    if (update.workspace) {
+      this.workspaceWidth = update.workspace.width;
+      this.workspaceHeight = update.workspace.height;
+    }
+    if (update.separator) {
+      this.separatorWidth = update.separator.width;
+      this.separatorHeight = update.separator.height;
+    }
+    const mode = selectMode(this.viewportWidth, this.viewportHeight);
     this.dividerProportion = clampDivider(
       this.dividerProportion,
       mode,
-      safeWidth,
-      safeHeight,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      separatorExtent(mode, this.separatorWidth, this.separatorHeight),
     );
-    this.publish(createSnapshot(
-      safeWidth,
-      safeHeight,
-      this.activeTab,
-      this.dividerProportion,
-    ));
+    this.publish(this.createCurrentSnapshot());
   }
 
   private setDivider(value: number, persist: boolean): void {
@@ -393,12 +460,38 @@ export class PanelLayoutController {
         // Session persistence is optional; layout state remains usable in memory.
       }
     }
-    this.publish(createSnapshot(
-      this.current.width,
-      this.current.height,
+    this.publish(this.createCurrentSnapshot());
+  }
+
+  private resetMeasurements(): void {
+    this.viewportWidth = 0;
+    this.viewportHeight = 0;
+    this.workspaceWidth = 0;
+    this.workspaceHeight = 0;
+    this.separatorWidth = 0;
+    this.separatorHeight = 0;
+    this.publish(this.createCurrentSnapshot());
+  }
+
+  private createCurrentSnapshot(): PanelLayoutSnapshot {
+    return createSnapshot(
+      this.viewportWidth,
+      this.viewportHeight,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      this.separatorWidth,
+      this.separatorHeight,
       this.activeTab,
       this.dividerProportion,
-    ));
+    );
+  }
+
+  private currentSeparatorExtent(): number {
+    return separatorExtent(
+      this.current.mode,
+      this.separatorWidth,
+      this.separatorHeight,
+    );
   }
 
   private restoreDivider(): number {
@@ -498,29 +591,49 @@ export class PanelLayoutController {
 function createSnapshot(
   width: number,
   height: number,
+  workspaceWidth: number,
+  workspaceHeight: number,
+  separatorWidth: number,
+  separatorHeight: number,
   activeTab: PanelLayoutTab,
   dividerProportion: number,
 ): PanelLayoutSnapshot {
   const mode = selectMode(width, height);
-  const separator = createSeparator(mode, width, height, dividerProportion);
+  const measuredSeparator = separatorExtent(
+    mode,
+    separatorWidth,
+    separatorHeight,
+  );
+  const availablePaneExtent = paneExtent(
+    mode,
+    workspaceWidth,
+    workspaceHeight,
+    measuredSeparator,
+  );
+  const separator = createSeparator(
+    mode,
+    availablePaneExtent,
+    dividerProportion,
+  );
   return Object.freeze({
     mode,
     width,
     height,
+    workspaceWidth,
+    workspaceHeight,
     activeTab,
     dividerProportion,
+    dividerPosition: availablePaneExtent * dividerProportion,
     separator,
   });
 }
 
 function createSeparator(
   mode: PanelLayoutMode,
-  width: number,
-  height: number,
+  availablePaneExtent: number,
   dividerProportion: number,
 ): PanelLayoutSeparatorModel {
-  const extent = currentExtent(mode, width, height);
-  const bounds = dividerBounds(extent);
+  const bounds = dividerBounds(availablePaneExtent);
   const valueNow = Math.round(dividerProportion * 100);
   return Object.freeze({
     enabled: mode !== "tabs",
@@ -544,11 +657,17 @@ function clampDivider(
   mode: PanelLayoutMode,
   width: number,
   height: number,
+  measuredSeparator: number,
 ): number {
   if (mode === "tabs") {
     return clamp(value, 0, 1);
   }
-  const bounds = dividerBounds(currentExtent(mode, width, height));
+  const bounds = dividerBounds(paneExtent(
+    mode,
+    width,
+    height,
+    measuredSeparator,
+  ));
   return clamp(value, bounds.minimum, bounds.maximum);
 }
 
@@ -560,12 +679,53 @@ function dividerBounds(extent: number): { minimum: number; maximum: number } {
   return { minimum, maximum: 1 - minimum };
 }
 
-function currentExtent(
+function axisExtent(
   mode: PanelLayoutMode,
   width: number,
   height: number,
 ): number {
   return mode === "split" ? width : mode === "stack" ? height : 0;
+}
+
+function paneExtent(
+  mode: PanelLayoutMode,
+  width: number,
+  height: number,
+  measuredSeparator: number,
+): number {
+  return Math.max(0, axisExtent(mode, width, height) - measuredSeparator);
+}
+
+function separatorExtent(
+  mode: PanelLayoutMode,
+  width: number,
+  height: number,
+): number {
+  return mode === "split" ? width : mode === "stack" ? height : 0;
+}
+
+function mergeMeasurements(
+  current: LayoutMeasurementUpdate | undefined,
+  next: LayoutMeasurementUpdate,
+): LayoutMeasurementUpdate {
+  return {
+    ...current,
+    ...next,
+  };
+}
+
+function uniqueTargets(binding: ObserverBindingCell): readonly object[] {
+  const targets = [binding.target];
+  if (binding.workspaceTarget !== binding.target) {
+    targets.push(binding.workspaceTarget);
+  }
+  if (
+    binding.separatorTarget !== undefined &&
+    !targets.includes(binding.separatorTarget)
+  ) {
+    targets.push(binding.separatorTarget);
+  }
+  return targets;
 }
 
 function sanitizeDimension(value: number): number {
@@ -587,6 +747,12 @@ function snapshotsEqual(
   return left.mode === right.mode
     && left.width === right.width
     && left.height === right.height
+    && left.workspaceWidth === right.workspaceWidth
+    && left.workspaceHeight === right.workspaceHeight
     && left.activeTab === right.activeTab
-    && left.dividerProportion === right.dividerProportion;
+    && left.dividerProportion === right.dividerProportion
+    && left.dividerPosition === right.dividerPosition
+    && left.separator.valueMin === right.separator.valueMin
+    && left.separator.valueMax === right.separator.valueMax
+    && left.separator.valueNow === right.separator.valueNow;
 }
