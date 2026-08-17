@@ -244,12 +244,15 @@ export class DomPanelView implements PanelView {
       captured: boolean;
     } | undefined;
     const selectDom = (): void => this.run(() => {
+      if (disposed || controller.snapshot().mode !== "tabs") return;
       controller.setActiveTab("dom");
     });
     const selectSource = (): void => this.run(() => {
+      if (disposed || controller.snapshot().mode !== "tabs") return;
       controller.setActiveTab("source");
     });
     const tabKey = (event: Event): void => {
+      if (disposed || controller.snapshot().mode !== "tabs") return;
       const key = (event as KeyboardEvent).key;
       const target = event.target === (this.sourceTab as unknown as EventTarget)
         ? "source"
@@ -267,6 +270,7 @@ export class DomPanelView implements PanelView {
       event.preventDefault();
       this.run(() => {
         controller.setActiveTab(next);
+        if (disposed || controller.snapshot().mode !== "tabs") return;
         const focusTarget = next === "dom" ? this.domTab : this.sourceTab;
         focusTarget.focus?.();
       });
@@ -411,10 +415,20 @@ export class DomPanelView implements PanelView {
     this.separator.hidden = !model.separator.enabled;
     this.domPane.hidden = tabs && model.activeTab !== "dom";
     this.sourcePane.hidden = tabs && model.activeTab !== "source";
+    setPaneSemantics(this.domPane, tabs, "dom-tab", "DOM");
+    setPaneSemantics(this.sourcePane, tabs, "source-tab", "Source");
     this.domTab.setAttribute("aria-selected", String(model.activeTab === "dom"));
     this.sourceTab.setAttribute("aria-selected", String(model.activeTab === "source"));
-    this.domTab.setAttribute("tabindex", model.activeTab === "dom" ? "0" : "-1");
-    this.sourceTab.setAttribute("tabindex", model.activeTab === "source" ? "0" : "-1");
+    this.domTab.setAttribute(
+      "tabindex",
+      tabs && model.activeTab === "dom" ? "0" : "-1",
+    );
+    this.sourceTab.setAttribute(
+      "tabindex",
+      tabs && model.activeTab === "source" ? "0" : "-1",
+    );
+    this.separator.setAttribute("role", "separator");
+    this.separator.setAttribute("aria-controls", "dom-pane source-pane");
     if (model.separator.orientation) {
       this.separator.setAttribute("aria-orientation", model.separator.orientation);
     } else {
@@ -503,6 +517,22 @@ function setStyleProperty(style: PanelStyle, name: string, value: string): void 
     style.setProperty(name, value);
   } else {
     style[name] = value;
+  }
+}
+
+function setPaneSemantics(
+  pane: PanelElement,
+  tabs: boolean,
+  tabId: string,
+  regionLabel: string,
+): void {
+  pane.setAttribute("role", tabs ? "tabpanel" : "region");
+  if (tabs) {
+    pane.setAttribute("aria-labelledby", tabId);
+    pane.removeAttribute("aria-label");
+  } else {
+    pane.removeAttribute("aria-labelledby");
+    pane.setAttribute("aria-label", regionLabel);
   }
 }
 

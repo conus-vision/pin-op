@@ -25,6 +25,130 @@ describe("PanelLayoutController", () => {
   });
 
   it.each([
+    ["tabs", 220, 520, 220, 300, 5],
+    ["stack", 679, 520, 679, 480, 5],
+    ["tabs", 679, 520, 679, 324, 5],
+    ["stack", 679, 520, 679, 325, 5],
+    ["tabs", 680, 519, 324, 519, 5],
+    ["split", 680, 519, 325, 519, 5],
+  ] as const)(
+    "selects %s for a %dx%d viewport with a %dx%d workspace and %dpx separator",
+    (
+      mode,
+      viewportWidth,
+      viewportHeight,
+      workspaceWidth,
+      workspaceHeight,
+      separatorExtent,
+    ) => {
+      const harness = createHarness();
+      harness.controller.start(
+        harness.target,
+        harness.workspace,
+        harness.separator,
+      );
+      const observer = harness.observers[0]!;
+
+      observer.emit(harness.target, viewportWidth, viewportHeight);
+      observer.emit(harness.workspace, workspaceWidth, workspaceHeight);
+      observer.emit(harness.separator, separatorExtent, separatorExtent);
+      harness.flush();
+
+      expect(harness.controller.snapshot()).toMatchObject({
+        width: viewportWidth,
+        height: viewportHeight,
+        workspaceWidth,
+        workspaceHeight,
+        mode,
+      });
+    },
+  );
+
+  it("falls back to tabs when the workspace shrinks and safely re-enters stack", () => {
+    const harness = createHarness();
+    harness.controller.start(
+      harness.target,
+      harness.workspace,
+      harness.separator,
+    );
+    const observer = harness.observers[0]!;
+    observer.emit(harness.target, 679, 520);
+    observer.emit(harness.workspace, 679, 480);
+    observer.emit(harness.separator, 5, 5);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("stack");
+
+    observer.emit(harness.workspace, 220, 300);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("tabs");
+
+    observer.emit(harness.workspace, 679, 480);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("stack");
+  });
+
+  it("uses separator thickness rather than its cross-axis size", () => {
+    const harness = createHarness();
+    harness.controller.start(
+      harness.target,
+      harness.workspace,
+      harness.separator,
+    );
+    const observer = harness.observers[0]!;
+    observer.emit(harness.target, 800, 600);
+    observer.emit(harness.workspace, 800, 600);
+    observer.emit(harness.separator, 5, 600);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("split");
+
+    observer.emit(harness.target, 679, 520);
+    observer.emit(harness.workspace, 679, 480);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("stack");
+  });
+
+  it("retains measured separator thickness while tabs hide the separator", () => {
+    const harness = createHarness();
+    harness.controller.start(
+      harness.target,
+      harness.workspace,
+      harness.separator,
+    );
+    const observer = harness.observers[0]!;
+    observer.emit(harness.target, 679, 520);
+    observer.emit(harness.workspace, 679, 322);
+    observer.emit(harness.separator, 679, 5);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("tabs");
+
+    observer.emit(harness.separator, 0, 0);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("tabs");
+
+    observer.emit(harness.workspace, 679, 325);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("stack");
+  });
+
+  it("uses a safe separator fallback before its first visible measurement", () => {
+    const harness = createHarness();
+    harness.controller.start(
+      harness.target,
+      harness.workspace,
+      harness.separator,
+    );
+    const observer = harness.observers[0]!;
+    observer.emit(harness.target, 679, 520);
+    observer.emit(harness.workspace, 679, 324);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("tabs");
+
+    observer.emit(harness.workspace, 679, 325);
+    harness.flush();
+    expect(harness.controller.snapshot().mode).toBe("stack");
+  });
+
+  it.each([
     [Number.NaN, 600, 0, 600, "stack"],
     [Number.POSITIVE_INFINITY, 600, 0, 600, "stack"],
     [-1, 600, 0, 600, "stack"],

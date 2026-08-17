@@ -63,9 +63,9 @@
           </div>
         </section>
 
-        <div id="pane-separator" class="pane-separator" role="separator" aria-label="Resize DOM and Source panes" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="50%" tabindex="0"></div>
+        <div id="pane-separator" class="pane-separator" role="separator" aria-label="Resize DOM and Source panes" aria-controls="dom-pane source-pane" aria-valuemin="50" aria-valuemax="50" aria-valuenow="50" aria-valuetext="50%" tabindex="-1" hidden></div>
 
-        <section id="source-pane" class="workspace-pane source-pane-section" role="tabpanel" aria-labelledby="source-tab">
+        <section id="source-pane" class="workspace-pane source-pane-section" role="tabpanel" aria-labelledby="source-tab" hidden>
           <div id="source-pane-root" aria-label="Source matches"></div>
         </section>
       </section>

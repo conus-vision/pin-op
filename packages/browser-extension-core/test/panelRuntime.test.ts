@@ -220,6 +220,64 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("uses tabpanels only in tabs mode and labelled regions otherwise", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    const domPane = dom.element("dom-pane");
+    const sourcePane = dom.element("source-pane");
+    const separator = dom.element("pane-separator");
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+    expect(domPane.getAttribute("role")).toBe("tabpanel");
+    expect(domPane.getAttribute("aria-labelledby")).toBe("dom-tab");
+    expect(domPane.getAttribute("aria-label")).toBeNull();
+    expect(sourcePane.getAttribute("role")).toBe("tabpanel");
+    expect(sourcePane.getAttribute("aria-labelledby")).toBe("source-tab");
+    expect(sourcePane.getAttribute("aria-label")).toBeNull();
+    expect(separator.getAttribute("aria-controls")).toBe("dom-pane source-pane");
+    expect(separator.getAttribute("aria-orientation")).toBeNull();
+
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("split");
+    expect(domPane.getAttribute("role")).toBe("region");
+    expect(domPane.getAttribute("aria-labelledby")).toBeNull();
+    expect(domPane.getAttribute("aria-label")).toBe("DOM");
+    expect(sourcePane.getAttribute("role")).toBe("region");
+    expect(sourcePane.getAttribute("aria-labelledby")).toBeNull();
+    expect(sourcePane.getAttribute("aria-label")).toBe("Source");
+    expect(separator.getAttribute("aria-controls")).toBe("dom-pane source-pane");
+    expect(separator.getAttribute("aria-orientation")).toBe("vertical");
+    expect(separator.getAttribute("aria-valuemin")).toBe("20");
+    expect(separator.getAttribute("aria-valuemax")).toBe("80");
+    expect(separator.getAttribute("aria-valuenow")).toBe("50");
+    expect(dom.element("dom-tab").getAttribute("tabindex")).toBe("-1");
+    expect(dom.element("source-tab").getAttribute("tabindex")).toBe("-1");
+
+    emitPanelResize(observer, dom, 679, 520, 679, 480);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("stack");
+    expect(domPane.getAttribute("role")).toBe("region");
+    expect(sourcePane.getAttribute("role")).toBe("region");
+    expect(separator.getAttribute("aria-orientation")).toBe("horizontal");
+    expect(separator.getAttribute("aria-valuemin")).toBe("34");
+    expect(separator.getAttribute("aria-valuemax")).toBe("66");
+
+    emitPanelResize(observer, dom, 500, 400);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("tabs");
+    expect(domPane.getAttribute("role")).toBe("tabpanel");
+    expect(domPane.getAttribute("aria-labelledby")).toBe("dom-tab");
+    expect(domPane.getAttribute("aria-label")).toBeNull();
+    expect(sourcePane.getAttribute("role")).toBe("tabpanel");
+    expect(sourcePane.getAttribute("aria-labelledby")).toBe("source-tab");
+    expect(sourcePane.getAttribute("aria-label")).toBeNull();
+    runtime.dispose();
+  });
+
   it("falls back to the body viewport and disconnects its observer", async () => {
     Object.defineProperty(dom.document, "documentElement", {
       configurable: true,
@@ -328,7 +386,38 @@ describe("startPanelRuntime", () => {
     dom.element("dom-tab").dispatch("keydown", { key: "ArrowLeft" });
     expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
     expect(reportedErrors).toContain(focusError);
+
+    const domFocusCalls = dom.element("dom-tab").focusCalls;
+    const sourceFocusCalls = dom.element("source-tab").focusCalls;
+    emitPanelResize(resizeObservers[0]!, dom, 800, 600);
+    await flushAsync();
+    dom.element("source-tab").dispatch("keydown", { key: "ArrowRight" });
+    expect(dom.element("source-tab").getAttribute("aria-selected")).toBe("true");
+    expect(dom.element("dom-tab").focusCalls).toBe(domFocusCalls);
+    expect(dom.element("source-tab").focusCalls).toBe(sourceFocusCalls);
     runtime.dispose();
+  });
+
+  it("keeps disposed layout state authoritative over stale resize callbacks", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+    emitPanelResize(observer, dom, 800, 600);
+    await flushAsync();
+    expect(dom.element("panel-workspace").dataset.layout).toBe("split");
+    expect(dom.element("dom-pane").getAttribute("role")).toBe("region");
+
+    emitPanelResize(observer, dom, 220, 520, 220, 300);
+    runtime.dispose();
+    emitPanelResize(observer, dom, 679, 520, 679, 480);
+    await flushAsync();
+
+    expect(observer.disconnected).toBe(true);
+    expect(dom.element("panel-workspace").dataset.layout).toBe("split");
+    expect(dom.element("dom-pane").getAttribute("role")).toBe("region");
+    expect(dom.element("source-pane").getAttribute("role")).toBe("region");
+    expect(dom.element("pane-separator").getAttribute("aria-orientation"))
+      .toBe("vertical");
   });
 
   it("isolates pointer DOM failures without granting stale pointer authority", async () => {
@@ -2634,6 +2723,24 @@ describe("startPanelRuntime", () => {
     expect(html).not.toContain('id="unlink-button"');
     expect(html).not.toContain('id="connected-controls"');
     expect(html).not.toContain('id="inspect-mode" type="checkbox"');
+    const workspaceTag = html.match(/<section id="panel-workspace"[^>]*>/)?.[0];
+    const domPaneTag = html.match(/<section id="dom-pane"[^>]*>/)?.[0];
+    const sourcePaneTag = html.match(/<section id="source-pane"[^>]*>/)?.[0];
+    const separatorTag = html.match(/<div id="pane-separator"[^>]*>/)?.[0];
+    expect(workspaceTag).toContain('data-layout="tabs"');
+    expect(domPaneTag).toContain('role="tabpanel"');
+    expect(domPaneTag).toContain('aria-labelledby="dom-tab"');
+    expect(sourcePaneTag).toContain('role="tabpanel"');
+    expect(sourcePaneTag).toContain('aria-labelledby="source-tab"');
+    expect(sourcePaneTag).toContain("hidden");
+    expect(separatorTag).toContain('role="separator"');
+    expect(separatorTag).toContain('aria-controls="dom-pane source-pane"');
+    expect(separatorTag).toContain('aria-valuemin="50"');
+    expect(separatorTag).toContain('aria-valuemax="50"');
+    expect(separatorTag).toContain('aria-valuenow="50"');
+    expect(separatorTag).toContain('tabindex="-1"');
+    expect(separatorTag).toContain("hidden");
+    expect(separatorTag).not.toContain("aria-orientation");
     expect(css).toContain("grid-template-rows: auto auto minmax(0, 1fr) auto");
     expect(css).toContain('[data-layout="tabs"]');
     expect(css).toContain('[data-layout="stack"]');

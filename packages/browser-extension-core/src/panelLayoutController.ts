@@ -87,6 +87,7 @@ const MIN_PANE_PIXELS = 160;
 const NORMAL_KEY_STEP = 0.02;
 const FAST_KEY_STEP = 0.1;
 const DEFAULT_DIVIDER = 0.5;
+const FALLBACK_SEPARATOR_PIXELS = 5;
 const DEFAULT_STORAGE_KEY = "pin-op.panel.layout.divider";
 
 const defaultScheduler: PanelLayoutScheduler = Object.freeze({
@@ -114,8 +115,7 @@ export class PanelLayoutController {
   private viewportHeight = 0;
   private workspaceWidth = 0;
   private workspaceHeight = 0;
-  private separatorWidth = 0;
-  private separatorHeight = 0;
+  private separatorThickness = 0;
   private observerBinding: ObserverBindingCell | undefined;
   private bindingGeneration = 0;
   private scheduledResize: ScheduledResizeCell | undefined;
@@ -128,7 +128,6 @@ export class PanelLayoutController {
     this.storageKey = options.storageKey ?? DEFAULT_STORAGE_KEY;
     this.dividerProportion = this.restoreDivider();
     this.current = createSnapshot(
-      0,
       0,
       0,
       0,
@@ -177,7 +176,7 @@ export class PanelLayoutController {
       return true;
     }
 
-    this.resetMeasurements();
+    this.resetMeasurements(binding.separatorTarget !== undefined);
     if (!this.isCurrentBinding(binding)) {
       return true;
     }
@@ -434,16 +433,28 @@ export class PanelLayoutController {
       this.workspaceHeight = update.workspace.height;
     }
     if (update.separator) {
-      this.separatorWidth = update.separator.width;
-      this.separatorHeight = update.separator.height;
+      const thickness = measuredSeparatorThickness(
+        this.current.mode,
+        update.separator.width,
+        update.separator.height,
+      );
+      if (thickness > 0) {
+        this.separatorThickness = thickness;
+      }
     }
-    const mode = selectMode(this.viewportWidth, this.viewportHeight);
+    const mode = selectMode(
+      this.viewportWidth,
+      this.viewportHeight,
+      this.workspaceWidth,
+      this.workspaceHeight,
+      this.separatorThickness,
+    );
     this.dividerProportion = clampDivider(
       this.dividerProportion,
       mode,
       this.workspaceWidth,
       this.workspaceHeight,
-      separatorExtent(mode, this.separatorWidth, this.separatorHeight),
+      separatorExtent(mode, this.separatorThickness),
     );
     this.publish(this.createCurrentSnapshot());
   }
@@ -463,13 +474,12 @@ export class PanelLayoutController {
     this.publish(this.createCurrentSnapshot());
   }
 
-  private resetMeasurements(): void {
+  private resetMeasurements(hasSeparator: boolean): void {
     this.viewportWidth = 0;
     this.viewportHeight = 0;
     this.workspaceWidth = 0;
     this.workspaceHeight = 0;
-    this.separatorWidth = 0;
-    this.separatorHeight = 0;
+    this.separatorThickness = hasSeparator ? FALLBACK_SEPARATOR_PIXELS : 0;
     this.publish(this.createCurrentSnapshot());
   }
 
@@ -479,19 +489,14 @@ export class PanelLayoutController {
       this.viewportHeight,
       this.workspaceWidth,
       this.workspaceHeight,
-      this.separatorWidth,
-      this.separatorHeight,
+      this.separatorThickness,
       this.activeTab,
       this.dividerProportion,
     );
   }
 
   private currentSeparatorExtent(): number {
-    return separatorExtent(
-      this.current.mode,
-      this.separatorWidth,
-      this.separatorHeight,
-    );
+    return separatorExtent(this.current.mode, this.separatorThickness);
   }
 
   private restoreDivider(): number {
@@ -593,17 +598,18 @@ function createSnapshot(
   height: number,
   workspaceWidth: number,
   workspaceHeight: number,
-  separatorWidth: number,
-  separatorHeight: number,
+  separatorThickness: number,
   activeTab: PanelLayoutTab,
   dividerProportion: number,
 ): PanelLayoutSnapshot {
-  const mode = selectMode(width, height);
-  const measuredSeparator = separatorExtent(
-    mode,
-    separatorWidth,
-    separatorHeight,
+  const mode = selectMode(
+    width,
+    height,
+    workspaceWidth,
+    workspaceHeight,
+    separatorThickness,
   );
+  const measuredSeparator = separatorExtent(mode, separatorThickness);
   const availablePaneExtent = paneExtent(
     mode,
     workspaceWidth,
@@ -645,11 +651,23 @@ function createSeparator(
   });
 }
 
-function selectMode(width: number, height: number): PanelLayoutMode {
+function selectMode(
+  width: number,
+  height: number,
+  workspaceWidth: number,
+  workspaceHeight: number,
+  separatorThickness: number,
+): PanelLayoutMode {
   if (width >= SPLIT_WIDTH) {
-    return "split";
+    return panesFit(workspaceWidth, separatorThickness) ? "split" : "tabs";
   }
-  return height >= STACK_HEIGHT ? "stack" : "tabs";
+  return height >= STACK_HEIGHT && panesFit(workspaceHeight, separatorThickness)
+    ? "stack"
+    : "tabs";
+}
+
+function panesFit(workspaceExtent: number, measuredSeparator: number): boolean {
+  return workspaceExtent >= MIN_PANE_PIXELS * 2 + measuredSeparator;
 }
 
 function clampDivider(
@@ -696,12 +714,28 @@ function paneExtent(
   return Math.max(0, axisExtent(mode, width, height) - measuredSeparator);
 }
 
-function separatorExtent(
+function separatorExtent(mode: PanelLayoutMode, thickness: number): number {
+  return mode === "tabs" ? 0 : thickness;
+}
+
+function measuredSeparatorThickness(
   mode: PanelLayoutMode,
   width: number,
   height: number,
 ): number {
-  return mode === "split" ? width : mode === "stack" ? height : 0;
+  if (mode === "split") {
+    return width;
+  }
+  if (mode === "stack") {
+    return height;
+  }
+  if (width <= 0) {
+    return height;
+  }
+  if (height <= 0) {
+    return width;
+  }
+  return Math.min(width, height);
 }
 
 function mergeMeasurements(
