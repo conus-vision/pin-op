@@ -15,6 +15,7 @@ export interface ReplyRoute {
   readonly originConnectionId: string;
   readonly ideConnectionId?: string;
   readonly resolutionGeneration?: number;
+  readonly resolutionClaimed: boolean;
   readonly matchIds: ReadonlySet<string>;
 }
 
@@ -24,6 +25,7 @@ interface StoredRoute {
   readonly originConnectionId: string;
   ideConnectionId?: string;
   resolutionGeneration?: number;
+  resolutionClaimed: boolean;
   matchIds: Set<string>;
 }
 
@@ -87,6 +89,7 @@ export class ReplyRouteRegistry {
         this.routes.get(sessionId) ?? new Map<string, StoredRoute>();
       sessionRoutes.set(inspectMessageId, {
         originConnectionId: connectionId,
+        resolutionClaimed: false,
         matchIds: new Set(),
       });
       this.routes.set(sessionId, sessionRoutes);
@@ -131,7 +134,7 @@ export class ReplyRouteRegistry {
       inspectMessageId,
       ideConnectionId,
       resolutionGeneration,
-      false,
+      true,
     );
   }
 
@@ -146,7 +149,7 @@ export class ReplyRouteRegistry {
       inspectMessageId,
       ideConnectionId,
       resolutionGeneration,
-      true,
+      false,
     );
   }
 
@@ -155,7 +158,7 @@ export class ReplyRouteRegistry {
     inspectMessageId: string,
     ideConnectionId: string,
     resolutionGeneration: number,
-    clearMatchIds: boolean,
+    resolutionClaimed: boolean,
   ): ReplyRoute | undefined {
     const route = this.routes.get(sessionId)?.get(inspectMessageId);
     if (!route) {
@@ -188,9 +191,10 @@ export class ReplyRouteRegistry {
     if (generationChanged) {
       route.resolutionGeneration = resolutionGeneration;
     }
-    if (generationChanged || clearMatchIds) {
+    if (generationChanged || !resolutionClaimed) {
       route.matchIds = new Set();
     }
+    route.resolutionClaimed = resolutionClaimed;
 
     this.touchClientRoute(
       route.originConnectionId,
@@ -211,7 +215,8 @@ export class ReplyRouteRegistry {
     if (
       !route ||
       route.ideConnectionId !== ideConnectionId ||
-      route.resolutionGeneration !== resolutionGeneration
+      route.resolutionGeneration !== resolutionGeneration ||
+      !route.resolutionClaimed
     ) {
       return undefined;
     }
@@ -367,6 +372,7 @@ export class ReplyRouteRegistry {
       originConnectionId: route.originConnectionId,
       ideConnectionId: route.ideConnectionId,
       resolutionGeneration: route.resolutionGeneration,
+      resolutionClaimed: route.resolutionClaimed,
       matchIds: new Set(route.matchIds),
     };
   }

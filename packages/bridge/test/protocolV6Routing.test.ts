@@ -184,7 +184,9 @@ describe("protocol v6 bridge routing", () => {
   it("lets a strict empty invalidation claim a new route before its resolution", () => {
     const context = setup();
     const invalidation = matches("ide-a", 0, []);
+    const prematureMatches = matches("ide-a", 0, ["premature-match"]);
     const sameGenerationResolution = resolution("ide-a", 0);
+    const resolvedMatches = matches("ide-a", 0, ["resolved-match"]);
 
     routeMessage(
       context.registry,
@@ -195,6 +197,7 @@ describe("protocol v6 bridge routing", () => {
     expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
       ideConnectionId: context.ideA.id,
       resolutionGeneration: 0,
+      resolutionClaimed: false,
       matchIds: new Set(),
     });
 
@@ -202,13 +205,38 @@ describe("protocol v6 bridge routing", () => {
       context.registry,
       context.routes,
       context.ideA,
+      prematureMatches,
+    );
+    expect(context.browserConnection.sent).toEqual([invalidation]);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
       sameGenerationResolution,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      resolvedMatches,
     );
 
     expect(context.browserConnection.sent).toEqual([
       invalidation,
       sameGenerationResolution,
+      resolvedMatches,
     ]);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      resolutionClaimed: true,
+      matchIds: new Set(["resolved-match"]),
+    });
     expect(context.otherBrowserConnection.sent).toEqual([]);
   });
 
@@ -238,6 +266,7 @@ describe("protocol v6 bridge routing", () => {
     expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
       ideConnectionId: context.ideA.id,
       resolutionGeneration: 3,
+      resolutionClaimed: false,
       matchIds: new Set(),
     });
     expect(context.browserConnection.sent.at(-1)).toEqual(invalidation);
@@ -286,14 +315,89 @@ describe("protocol v6 bridge routing", () => {
     ]);
   });
 
+  it("revokes same-generation resolution and matches on another invalidation", () => {
+    const context = setup();
+    const firstResolution = resolution("ide-a", 4);
+    const firstMatches = matches("ide-a", 4, ["first-match"]);
+    const invalidation = matches("ide-a", 4, []);
+    const bypass = matches("ide-a", 4, ["bypass-match"]);
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      firstResolution,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      firstMatches,
+    );
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      invalidation,
+    );
+    routeMessage(context.registry, context.routes, context.ideA, bypass);
+
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideA.id,
+      resolutionGeneration: 4,
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(context.browserConnection.sent).toEqual([
+      firstResolution,
+      firstMatches,
+      invalidation,
+    ]);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+
+    const repeatedResolution = {
+      ...firstResolution,
+      messageId: "resolution-ide-a-4-repeated",
+    };
+    const repeatedMatches = matches("ide-a", 4, ["re-enabled-match"]);
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      repeatedResolution,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      repeatedMatches,
+    );
+    expect(context.browserConnection.sent.slice(-2)).toEqual([
+      repeatedResolution,
+      repeatedMatches,
+    ]);
+  });
+
   it("rejects second-IDE and stale empty invalidations without changing authority", () => {
     const context = setup();
     const claimed = matches("ide-a", 2, []);
+    const currentResolution = resolution("ide-a", 2);
     const current = matches("ide-a", 2, ["current-match"]);
     const raced = matches("ide-b", 3, []);
     const stale = matches("ide-a", 1, []);
 
     routeMessage(context.registry, context.routes, context.ideA, claimed);
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      currentResolution,
+    );
     routeMessage(context.registry, context.routes, context.ideA, current);
     routeMessage(context.registry, context.routes, context.ideB, raced);
     routeMessage(context.registry, context.routes, context.ideA, stale);
@@ -301,9 +405,14 @@ describe("protocol v6 bridge routing", () => {
     expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
       ideConnectionId: context.ideA.id,
       resolutionGeneration: 2,
+      resolutionClaimed: true,
       matchIds: new Set(["current-match"]),
     });
-    expect(context.browserConnection.sent).toEqual([claimed, current]);
+    expect(context.browserConnection.sent).toEqual([
+      claimed,
+      currentResolution,
+      current,
+    ]);
     expect(context.ideBConnection.sent).toEqual([
       expect.objectContaining({
         type: "error",

@@ -183,19 +183,29 @@ export function createPresenterRuntime(
     runSink(host, () => tree.clear());
     runSink(host, () => highlights.clear());
     runSink(host, () => options.diagnostics?.clearResolution());
-    runSink(host, () => sourceNavigator.invalidate());
-    const empty = sourceExcerpts.invalidate(invalidation
-      ? {
-          inspectMessageId: invalidation.inspectMessageId,
-          resolutionGeneration: invalidation.resolutionGeneration,
-          ...(invalidation.editor
-            ? { editor: invalidation.editor as PresenterEditorLike }
-            : {}),
-        }
-      : undefined);
+    let empty: SourceMatchesInput | undefined;
+    runSink(host, () => {
+      empty = sourceExcerpts.invalidate(invalidation
+        ? {
+            inspectMessageId: invalidation.inspectMessageId,
+            resolutionGeneration: invalidation.resolutionGeneration,
+            ...(invalidation.editor
+              ? { editor: invalidation.editor as PresenterEditorLike }
+              : {}),
+          }
+        : undefined);
+    });
     if (empty) {
-      runSink(host, () => options.sendSourceMatches?.(empty));
+      const emptySourceMatches = empty;
+      runSink(host, () => options.sendSourceMatches?.(emptySourceMatches));
     }
+    const navigationInvalidation = empty ?? invalidation;
+    runSink(host, () => sourceNavigator.invalidate(navigationInvalidation
+      ? {
+          inspectMessageId: navigationInvalidation.inspectMessageId,
+          resolutionGeneration: navigationInvalidation.resolutionGeneration,
+        }
+      : undefined));
   };
   const coordinator = new ActiveEditorCoordinator({
     host,
@@ -257,7 +267,10 @@ export function createPresenterRuntime(
         message.messageId,
         message.ideHighlightEnabled,
       ));
-      runSink(host, () => sourceNavigator.beginInspect(message.messageId));
+      runSink(host, () => sourceNavigator.beginInspect(
+        message.messageId,
+        { publish: false },
+      ));
       coordinator.select(message);
     },
     navigate(message) {

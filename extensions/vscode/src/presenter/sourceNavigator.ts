@@ -34,6 +34,15 @@ export interface SourceNavigationIncludedMatch {
   readonly range: SourceRange;
 }
 
+export interface SourceNavigationInvalidation {
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+}
+
+export interface SourceNavigationBeginOptions {
+  readonly publish?: boolean;
+}
+
 export function replacePrimarySelection<T>(
   selections: readonly T[],
   primary: T,
@@ -143,7 +152,10 @@ export class SourceNavigator implements DisposableLike {
     this.publishState();
   }
 
-  public beginInspect(inspectMessageId: string): void {
+  public beginInspect(
+    inspectMessageId: string,
+    options: SourceNavigationBeginOptions = {},
+  ): void {
     if (this.disposed) return;
     this.preferredTarget = undefined;
     this.inspectMessageId = inspectMessageId;
@@ -152,11 +164,15 @@ export class SourceNavigator implements DisposableLike {
     this.ranges = [];
     this.matches = [];
     this.includedMatches = [];
-    this.publishState();
+    if (options.publish !== false) this.publishState();
   }
 
-  public invalidate(): void {
+  public invalidate(invalidation?: SourceNavigationInvalidation): void {
     if (this.disposed) return;
+    if (invalidation) {
+      this.inspectMessageId = invalidation.inspectMessageId;
+      this.resolutionGeneration = invalidation.resolutionGeneration;
+    }
     this.preferredTarget = undefined;
     this.documentUri = undefined;
     this.ranges = [];

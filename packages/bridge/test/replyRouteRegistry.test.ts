@@ -228,7 +228,7 @@ describe("reply route registry", () => {
     expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(new Set());
   });
 
-  it("claims source invalidation authority and clears same-generation match IDs", () => {
+  it("keeps source invalidation authority provisional until resolution", () => {
     const routes = new ReplyRouteRegistry();
     commitRoute(routes, "session-1", "inspect-a", "browser-1");
 
@@ -242,8 +242,32 @@ describe("reply route registry", () => {
     ).toMatchObject({
       ideConnectionId: "ide-1",
       resolutionGeneration: 2,
+      resolutionClaimed: false,
       matchIds: new Set(),
     });
+    expect(routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["premature-match"],
+    )).toBeUndefined();
+    expect(
+      routes.claimResolution("session-1", "inspect-a", "ide-1", 2),
+    ).toMatchObject({ resolutionClaimed: true });
+    expect(routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["resolved-match"],
+    )).toMatchObject({ matchIds: new Set(["resolved-match"]) });
+  });
+
+  it("makes repeated same-generation invalidation provisional and clears matches", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(routes, "session-1", "inspect-a", "browser-1");
+    routes.claimResolution("session-1", "inspect-a", "ide-1", 2);
     routes.replaceMatchIds(
       "session-1",
       "inspect-a",
@@ -259,7 +283,17 @@ describe("reply route registry", () => {
         "ide-1",
         2,
       ),
-    ).toMatchObject({ matchIds: new Set() });
+    ).toMatchObject({
+      resolutionClaimed: false,
+      matchIds: new Set(),
+    });
+    expect(routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["bypass-match"],
+    )).toBeUndefined();
   });
 
   it("removes routes through both origin and owner reverse indexes", () => {

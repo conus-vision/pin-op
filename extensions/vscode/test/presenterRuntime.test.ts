@@ -115,6 +115,28 @@ describe("presenter runtime", () => {
     });
   });
 
+  it("publishes empty Source before same-generation navigation on inspect invalidation", () => {
+    const harness = runtimeHarness({ activeLanguageId: "fixture" });
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+
+    expect(harness.transportEvents.slice(0, 2)).toEqual([
+      "source.matches",
+      "source.navigationState",
+    ]);
+    expect(harness.sourceMatches[0]).toMatchObject({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      matches: [],
+      omittedMatchCount: 0,
+    });
+    expect(harness.navigationStates[0]).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 0,
+    });
+  });
+
   it("invalidates navigable ranges immediately when the active document changes", async () => {
     const harness = await resolvedRuntimeHarness();
     expect(harness.navigationStates.at(-1)).toMatchObject({
@@ -125,10 +147,12 @@ describe("presenter runtime", () => {
 
     expect(harness.navigationStates.at(-1)).toEqual({
       inspectMessageId: "inspect-1",
-      resolutionGeneration: 0,
+      resolutionGeneration: 1,
       selectedMatchCount: 0,
     });
-    harness.runtime.navigate(sourceNavigate("next"));
+    harness.runtime.navigate(sourceNavigate("next", {
+      resolutionGeneration: 1,
+    }));
     expect(harness.cursorSets).toEqual([]);
     expect(harness.revealedRanges).toEqual([]);
     harness.runtime.dispose();
@@ -232,13 +256,18 @@ describe("presenter runtime", () => {
     harness.changeTextDocument("fixture changed");
 
     expect(harness.transportEvents.slice(eventCount)).toEqual([
-      "source.navigationState",
       "source.matches",
+      "source.navigationState",
     ]);
     expect(harness.sourceMatches.at(-1)).toMatchObject({
       inspectMessageId: "inspect-1",
       resolutionGeneration: 1,
       matches: [],
+    });
+    expect(harness.navigationStates.at(-1)).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 1,
+      selectedMatchCount: 0,
     });
     harness.runtime.open(sourceOpen(staleId));
     expect(harness.cursorSets).toEqual([]);
@@ -311,6 +340,27 @@ describe("presenter runtime", () => {
     expect(harness.errors).toEqual([transportError]);
     expect(harness.diagnosticRecords).toHaveLength(1);
     expect(harness.resolutions).toHaveLength(1);
+  });
+
+  it("still publishes invalidation navigation when empty Source sending fails", () => {
+    const sendError = new Error("source invalidation write failed");
+    const harness = runtimeHarness({
+      activeLanguageId: "fixture",
+      sourceMatchesSendError: sendError,
+    });
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+
+    expect(harness.transportEvents.slice(0, 2)).toEqual([
+      "source.matches",
+      "source.navigationState",
+    ]);
+    expect(harness.navigationStates[0]).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 0,
+      selectedMatchCount: 0,
+    });
+    expect(harness.errors).toEqual([sendError]);
   });
 
   it("keeps every resolution sink running when navigation state publication fails", async () => {
@@ -576,6 +626,7 @@ function runtimeHarness(options: {
   readonly diagnosticRecordError?: Error;
   readonly reporterError?: Error;
   readonly excerptReadError?: Error;
+  readonly sourceMatchesSendError?: Error;
 }) {
   const registeredPluginIds: string[] = [];
   const disposed: string[] = [];
@@ -653,6 +704,9 @@ function runtimeHarness(options: {
     sendSourceMatches(matches) {
       sourceMatches.push(matches);
       transportEvents.push("source.matches");
+      if (options.sourceMatchesSendError) {
+        throw options.sourceMatchesSendError;
+      }
     },
     measureSourceMatchesEnvelope(matches) {
       return Buffer.byteLength(JSON.stringify({
