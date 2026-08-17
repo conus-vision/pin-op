@@ -564,6 +564,98 @@ describe("startPanelRuntime", () => {
     },
   );
 
+  it.each([
+    [7, "7"],
+    ["unknown", "unknown"],
+  ] as const)(
+    "refreshes a rebound mismatch to IDE protocol %s without releasing feature authority",
+    async (peerProtocolVersion, expectedPeerVersion) => {
+      const runtime = createRuntime();
+      await runtime.ready;
+      const port = requiredPort(ports, 0);
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      });
+      port.emitMessage(compatible());
+      port.emitMessage(tabState(true, true));
+      showReadySourceNavigation(
+        port,
+        "selected-before-relink",
+        "inspect-before-relink",
+      );
+      port.emitMessage({
+        type: "pin-op.protocol.compatibility",
+        compatible: false,
+        browserProtocolVersion: PROTOCOL_VERSION,
+        peerProtocolVersion: 5,
+      });
+      await flushAsync();
+
+      dom.element("disconnect-button").dispatch("click");
+      await flushAsync();
+      port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "linking",
+        displayLinkCode: "48735 07",
+      });
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "incompatible",
+        displayLinkCode: "48735 07",
+      });
+      port.emitMessage({
+        type: "pin-op.protocol.compatibility",
+        compatible: false,
+        browserProtocolVersion: PROTOCOL_VERSION,
+        peerProtocolVersion,
+      });
+      port.emitMessage(tabState(false, false));
+      await flushAsync();
+
+      expect(dom.element("protocol-mismatch").hidden).toBe(false);
+      expect(dom.element("protocol-mismatch-versions").textContent).toBe(
+        `Browser protocol: 6 - IDE protocol: ${expectedPeerVersion}`,
+      );
+      expect(runtime.settingsController.snapshot()).toMatchObject({
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: true,
+        compatibility: "incompatible",
+        peerProtocolVersion,
+        snapshotReady: false,
+        controlsEnabled: false,
+      });
+      expect(dom.element("inspect-mode").disabled).toBe(true);
+      expect(dom.element("source-pane-root").text()).toContain(
+        "Extensions are incompatible",
+      );
+      expect(dom.element("source-navigation-footer").hidden).toBe(true);
+      expect(dom.element("disconnect-button").hidden).toBe(false);
+      expect(dom.element("disconnect-button").disabled).toBe(false);
+
+      port.emitMessage({
+        type: "pin-op.windowState",
+        state: "linked",
+        displayLinkCode: "48735 07",
+      });
+      expect(dom.element("protocol-mismatch").hidden).toBe(false);
+      expect(dom.element("inspect-mode").disabled).toBe(true);
+      port.emitMessage(compatible());
+      await flushAsync();
+
+      expect(dom.element("protocol-mismatch").hidden).toBe(true);
+      expect(runtime.settingsController.snapshot()).toMatchObject({
+        compatibility: "compatible",
+        snapshotReady: false,
+        controlsEnabled: false,
+      });
+      expect(dom.element("inspect-mode").disabled).toBe(false);
+      runtime.dispose();
+    },
+  );
+
   it("renders an unknown IDE protocol only from a validated incompatible state", async () => {
     const runtime = createRuntime();
     await runtime.ready;

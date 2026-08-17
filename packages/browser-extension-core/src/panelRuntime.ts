@@ -472,6 +472,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       deferredLinkedState = undefined;
       clearLinkedInspectionState();
     } else if (windowState?.state === "incompatible") {
+      if (!settingsBinding) {
+        activatePanelBinding();
+      }
       acceptSettingsWindowState(windowState.state);
       compatibility = "incompatible";
       mismatchBlocked = true;
