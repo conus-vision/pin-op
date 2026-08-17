@@ -30,6 +30,73 @@ describe("TabRefreshCoordinator", () => {
     });
   });
 
+  it("closes an enabled panel without losing its preference or restoring ownership", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+    });
+    await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 4, mode: "reload" },
+    );
+    context.setRefreshParticipant.mockClear();
+
+    const closing = context.coordinator.panelClosed(11, 7);
+
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, false);
+    const closed = await closing;
+    expect(closed).toMatchObject({
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 4,
+    });
+    expect(closed).not.toHaveProperty("pending");
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(7, 11, false);
+
+    const replacement = setup(context.storage);
+    await replacement.coordinator.initialize();
+    expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
+    expect(await replacement.coordinator.state(11, 7)).toEqual(closed);
+
+    const reopened = await replacement.coordinator.panelOpened(11, 7);
+    expect(reopened).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+      lastAcceptedGeneration: 4,
+    });
+    expect(reopened).not.toHaveProperty("pending");
+    expect(replacement.setRefreshParticipant).toHaveBeenLastCalledWith(
+      7,
+      11,
+      true,
+    );
+  });
+
+  it("lets panel close win a race with an in-flight panel open", async () => {
+    const context = setup();
+
+    const opening = context.coordinator.panelOpened(11, 7);
+    const closing = context.coordinator.panelClosed(11, 7);
+    await Promise.all([opening, closing]);
+
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(7, 11, false);
+
+    const replacement = setup(context.storage);
+    await replacement.coordinator.initialize();
+    expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
+  });
+
   it("refreshes the active participant and leaves only newest work for inactive tabs", async () => {
     let activeTabId = 11;
     const context = setup(undefined, () => activeTabId);
@@ -169,6 +236,12 @@ describe("TabRefreshCoordinator", () => {
     await context.coordinator.updateSettings(11, 7, {
       autoRefreshEnabled: false,
       ideHighlightEnabled: true,
+    });
+    const closed = await context.coordinator.panelClosed(11, 7);
+    expect(closed).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      participant: false,
     });
     context.setRefreshParticipant.mockClear();
 

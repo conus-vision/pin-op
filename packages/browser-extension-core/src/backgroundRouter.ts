@@ -149,7 +149,7 @@ export type BackgroundTabRefreshCoordinator = Pick<
   | "detachTab"
   | "removeTab"
   | "removeWindow"
->;
+> & Partial<Pick<TabRefreshCoordinator, "panelClosed">>;
 
 export type BackgroundContentRefreshRuntime = Pick<
   BackgroundContentRefreshCoordinator,
@@ -1258,10 +1258,24 @@ export class BackgroundRouter {
     if (this.panelPorts.get(record.channel) !== record) {
       return;
     }
+    const binding = this.bindings.get(record.channel);
+    const token = record.activationToken;
+    const activeBinding = binding && token &&
+        this.isCurrentActivation(record, token, binding)
+      ? binding
+      : undefined;
     this.panelPorts.delete(record.channel);
     record.port.onMessage.removeListener(record.onMessage);
     record.port.onDisconnect.removeListener(record.onDisconnect);
     this.clearPanelActivation(record);
+    if (activeBinding) {
+      this.contentRefreshCoordinator.revokeTab(activeBinding.tabId);
+      const closing = this.tabRefreshCoordinator.panelClosed?.(
+        activeBinding.tabId,
+        activeBinding.windowId,
+      );
+      void closing?.catch((error) => this.reportError(error));
+    }
     if (disconnect) {
       safeDisconnect(record.port);
     }

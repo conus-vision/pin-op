@@ -92,6 +92,34 @@ export class TabRefreshCoordinator {
     });
   }
 
+  public async panelClosed(
+    tabId: number,
+    windowId: number,
+  ): Promise<TabRefreshState> {
+    this.setParticipant(windowId, tabId, false);
+    await this.ensureInitialized();
+    return this.enqueue(async () => {
+      const states = await this.store.loadAll();
+      const existing = states.find(
+        (state) => state.tabId === tabId && state.windowId === windowId,
+      );
+      const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
+      const next = stateSnapshot({
+        tabId,
+        windowId,
+        autoRefreshEnabled: current.autoRefreshEnabled,
+        ideHighlightEnabled: current.ideHighlightEnabled,
+        participant: false,
+        lastAcceptedGeneration: current.lastAcceptedGeneration,
+      });
+      if (existing) {
+        await this.store.save(next);
+      }
+      this.updateParticipant(next);
+      return next;
+    });
+  }
+
   public async state(tabId: number, windowId: number): Promise<TabRefreshState> {
     await this.ensureInitialized();
     return this.enqueue(async () => {

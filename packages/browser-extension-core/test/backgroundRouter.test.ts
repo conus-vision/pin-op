@@ -100,6 +100,27 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("revokes active refresh work and participation when the panel closes", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-refresh-close",
+      17,
+      "source-refresh-close",
+    );
+    await flushMicrotasks();
+    harness.contentRefresh.revokedTabs.length = 0;
+
+    port.disconnect();
+
+    expect(harness.contentRefresh.revokedTabs).toEqual([17]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([[17, 10]]);
+    await flushMicrotasks();
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+  });
+
   it("publishes a fresh tab snapshot only after linked compatibility", async () => {
     const harness = createHarness({ initialPanelState: "notLinked" });
     const preHandshake = deferred<TabRefreshState>();
@@ -5147,6 +5168,7 @@ class FakeContentRefreshCoordinator {
 
 class FakeTabRefreshCoordinator {
   public readonly panelOpenCalls: Array<[number, number]> = [];
+  public readonly panelCloseCalls: Array<[number, number]> = [];
   public readonly stateCalls: Array<[number, number]> = [];
   public readonly settingCalls: Array<[
     number,
@@ -5183,6 +5205,24 @@ class FakeTabRefreshCoordinator {
       ...current,
       windowId,
       participant: current.autoRefreshEnabled,
+    };
+    this.states.set(tabId, next);
+    return next;
+  }
+
+  public async panelClosed(
+    tabId: number,
+    windowId: number,
+  ): Promise<TabRefreshState> {
+    this.panelCloseCalls.push([tabId, windowId]);
+    const current = this.states.get(tabId) ?? defaultTabState(tabId, windowId);
+    const next = {
+      tabId,
+      windowId,
+      autoRefreshEnabled: current.autoRefreshEnabled,
+      ideHighlightEnabled: current.ideHighlightEnabled,
+      participant: false,
+      lastAcceptedGeneration: current.lastAcceptedGeneration,
     };
     this.states.set(tabId, next);
     return next;
