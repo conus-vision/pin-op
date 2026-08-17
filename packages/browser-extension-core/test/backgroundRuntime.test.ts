@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { PROTOCOL_VERSION, type PageRefreshMessage } from "@pin-op/protocol";
+import {
+  PROTOCOL_VERSION,
+  type PageRefreshMessage,
+  type PeerStateMessage,
+} from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 import type { BrowserProtocolMismatch } from "../src/bridgeClient.js";
+import { TAB_REFRESH_STATE_STORAGE_KEY } from "../src/tabRefreshStateStore.js";
+import type { BrowserWindowConnectionState } from "../src/windowConnectionCoordinator.js";
 
 describe("startBackgroundRuntime", () => {
   it("wires bridge protocol events into the router and disposes subscriptions", () => {
@@ -11,6 +17,7 @@ describe("startBackgroundRuntime", () => {
     const detachedTabs = eventHarness();
     const attachedTabs = eventHarness();
     const resolutionDispose = vi.fn();
+    const stateDispose = vi.fn();
     const peerStateDispose = vi.fn();
     const sourceNavigationStateDispose = vi.fn();
     const pageRefreshDispose = vi.fn();
@@ -24,6 +31,8 @@ describe("startBackgroundRuntime", () => {
       publishSourceNavigation: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
+      state: vi.fn(() => "notLinked" as const),
+      onStateChanged: vi.fn(() => ({ dispose: stateDispose })),
       onResolution: vi.fn(() => ({ dispose: resolutionDispose })),
       onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
       onSourceNavigationState: vi.fn(() => ({
@@ -50,19 +59,21 @@ describe("startBackgroundRuntime", () => {
     });
 
     expect(coordinator.onResolution).toHaveBeenCalledOnce();
-    expect(coordinator.onPeerState).toHaveBeenCalledOnce();
+    expect(coordinator.onStateChanged).toHaveBeenCalledOnce();
+    expect(coordinator.onPeerState).toHaveBeenCalledTimes(2);
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
-    expect(coordinator.onProtocolMismatch).toHaveBeenCalledOnce();
+    expect(coordinator.onProtocolMismatch).toHaveBeenCalledTimes(2);
 
     runtime.dispose();
     runtime.dispose();
 
     expect(resolutionDispose).toHaveBeenCalledOnce();
-    expect(peerStateDispose).toHaveBeenCalledOnce();
+    expect(stateDispose).toHaveBeenCalledOnce();
+    expect(peerStateDispose).toHaveBeenCalledTimes(2);
     expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
     expect(pageRefreshDispose).toHaveBeenCalledOnce();
-    expect(protocolMismatchDispose).toHaveBeenCalledOnce();
+    expect(protocolMismatchDispose).toHaveBeenCalledTimes(2);
     expect(coordinatorDispose).toHaveBeenCalledOnce();
   });
 
@@ -89,6 +100,8 @@ describe("startBackgroundRuntime", () => {
       publishSourceNavigation: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
+      state: vi.fn(() => "notLinked" as const),
+      onStateChanged: vi.fn(() => ({ dispose: vi.fn() })),
       onResolution: vi.fn(() => ({ dispose: vi.fn() })),
       onPeerState: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
@@ -202,6 +215,137 @@ describe("startBackgroundRuntime", () => {
     });
     runtime.dispose();
     expect(contentRefresh.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("restores refresh without a panel only after transport and IDE peer are ready", async () => {
+    const storage = memoryStorage();
+    await storage.set({
+      [TAB_REFRESH_STATE_STORAGE_KEY]: [{
+        tabId: 11,
+        windowId: 7,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: true,
+        participant: true,
+        lastAcceptedGeneration: 0,
+      }],
+    });
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const connectionStates = subscriptionEventHarness<
+      (windowId: number, state: BrowserWindowConnectionState) => void
+    >();
+    const peerStates = subscriptionEventHarness<
+      (windowId: number, message: PeerStateMessage) => void
+    >();
+    const pageRefreshes = subscriptionEventHarness<
+      (windowId: number, message: PageRefreshMessage) => void
+    >();
+    const protocolMismatches = subscriptionEventHarness<
+      (windowId: number, details: BrowserProtocolMismatch) => void
+    >();
+    const setRefreshParticipant = vi.fn();
+    let eligible = false;
+    const contentRefresh = {
+      dispatch: vi.fn(async () => {
+        if (!eligible) throw new Error("refresh window is not eligible");
+      }),
+      routeMessage: vi.fn(async () => undefined),
+      observeTabUpdate: vi.fn(),
+      tabUpdated: vi.fn(async () => undefined),
+      removeTab: vi.fn(async () => undefined),
+      detachTab: vi.fn(async () => undefined),
+      setTabParticipation: vi.fn(),
+      setWindowEligibility: vi.fn((_windowId: number, next: boolean) => {
+        eligible = next;
+      }),
+      revokeTab: vi.fn(),
+      revokeWindow: vi.fn(() => { eligible = false; }),
+      dispose: vi.fn(),
+    };
+    const coordinator = {
+      linkWindow: vi.fn(async () => undefined),
+      unlinkWindow: vi.fn(async () => undefined),
+      registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
+      publishInspect: vi.fn(() => "sent" as const),
+      publishSourceNavigation: vi.fn(() => "sent" as const),
+      setRefreshParticipant,
+      removeWindow: vi.fn(async () => undefined),
+      state: vi.fn(() => "notLinked" as BrowserWindowConnectionState),
+      onStateChanged: connectionStates.subscribe,
+      onResolution: vi.fn(() => ({ dispose: vi.fn() })),
+      onPeerState: peerStates.subscribe,
+      onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
+      onPageRefresh: pageRefreshes.subscribe,
+      onProtocolMismatch: protocolMismatches.subscribe,
+      dispose: vi.fn(),
+    };
+    const onError = vi.fn();
+
+    const runtime = startBackgroundRuntime({
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
+      storage,
+      executeScript: vi.fn(async () => []),
+      sendTabMessage: vi.fn(async () => undefined),
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      getActiveTabId: vi.fn(async () => 11),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      createWindowConnectionCoordinator: () => coordinator,
+      createContentRefreshCoordinator: () => contentRefresh,
+      onError,
+    });
+    await flushAsync();
+
+    expect(setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+    expect(contentRefresh.setTabParticipation).toHaveBeenCalledWith(
+      11,
+      7,
+      true,
+    );
+    expect(contentRefresh.dispatch).not.toHaveBeenCalled();
+
+    connectionStates.emit(7, "linked");
+    expect(contentRefresh.setWindowEligibility).not.toHaveBeenCalledWith(
+      7,
+      true,
+    );
+    peerStates.emit(7, peerState(true, 1));
+    expect(contentRefresh.setWindowEligibility).toHaveBeenLastCalledWith(
+      7,
+      true,
+    );
+    await flushAsync();
+
+    pageRefreshes.emit(7, pageRefresh(1));
+    await flushAsync();
+    expect(contentRefresh.dispatch).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+    expect(onError).not.toHaveBeenCalled();
+
+    connectionStates.emit(7, "offline");
+    expect(contentRefresh.setWindowEligibility).toHaveBeenLastCalledWith(
+      7,
+      false,
+    );
+    connectionStates.emit(7, "linked");
+    peerStates.emit(7, peerState(true, 2));
+    protocolMismatches.emit(7, {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    expect(contentRefresh.revokeWindow).toHaveBeenCalledWith(7);
+
+    runtime.dispose();
   });
 
   it("composes the background services and removes every platform listener", async () => {
@@ -332,6 +476,19 @@ function validStoredLink(): Record<string, unknown> {
   };
 }
 
+function subscriptionEventHarness<Listener extends (...args: any[]) => void>() {
+  const listeners = new Set<Listener>();
+  return {
+    subscribe(listener: Listener) {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    emit(...args: Parameters<Listener>) {
+      for (const listener of [...listeners]) listener(...args);
+    },
+  };
+}
+
 function tabState(tabId: number, windowId: number) {
   return {
     tabId,
@@ -352,6 +509,22 @@ function pageRefresh(refreshGeneration: number): PageRefreshMessage {
     source: { role: "ide", id: "vscode-a" },
     refreshGeneration,
     mode: "styles",
+    metadata: {},
+  };
+}
+
+function peerState(
+  connected: boolean,
+  peerGeneration: number,
+): PeerStateMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState",
+    messageId: `peer-${peerGeneration}`,
+    sessionId: "session-a",
+    role: "ide",
+    connected,
+    peerGeneration,
     metadata: {},
   };
 }

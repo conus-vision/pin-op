@@ -158,6 +158,9 @@ export class WindowConnectionCoordinator {
   private readonly peerStateListeners = new Set<
     (windowId: number, message: PeerStateMessage) => void
   >();
+  private readonly stateListeners = new Set<
+    (windowId: number, state: BrowserWindowConnectionState) => void
+  >();
   private readonly sourceNavigationStateListeners = new Set<
     (windowId: number, message: SourceNavigationStateMessage) => void
   >();
@@ -431,6 +434,15 @@ export class WindowConnectionCoordinator {
     return subscribeWindowEvent(this.peerStateListeners, listener);
   }
 
+  public onStateChanged(
+    listener: (
+      windowId: number,
+      state: BrowserWindowConnectionState,
+    ) => void,
+  ): BrowserBridgeSubscription {
+    return subscribeWindowEvent(this.stateListeners, listener);
+  }
+
   public onSourceNavigationState(
     listener: (windowId: number, message: SourceNavigationStateMessage) => void,
   ): BrowserBridgeSubscription {
@@ -496,6 +508,7 @@ export class WindowConnectionCoordinator {
     this.tabOwners.clear();
     this.resolutionListeners.clear();
     this.peerStateListeners.clear();
+    this.stateListeners.clear();
     this.sourceNavigationStateListeners.clear();
     this.pageRefreshListeners.clear();
     this.protocolMismatchListeners.clear();
@@ -1217,6 +1230,7 @@ export class WindowConnectionCoordinator {
       return;
     }
     record.state = state;
+    notifyWindowEvent(this.stateListeners, record.windowId, state);
     const displayLinkCode = displayLinkCodeFor(record);
     for (const entry of [...record.registrations.values()]) {
       notifyRegistration(

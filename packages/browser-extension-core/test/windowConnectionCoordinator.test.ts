@@ -98,6 +98,33 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.coordinator.state(10)).toBe("offline");
   });
 
+  it("restores a retained participant connection and publishes state without a panel", async () => {
+    const harness = coordinatorHarness();
+    const saved = windowLink();
+    await harness.store.save(10, saved);
+    const states: string[] = [];
+    const subscription = harness.coordinator.onStateChanged(
+      (windowId, state) => states.push(`${windowId}:${state}`),
+    );
+
+    harness.coordinator.setRefreshParticipant(10, 101, true);
+    await harness.flush();
+
+    expect(harness.createdClients).toHaveLength(1);
+    expect(harness.createdClients[0]).toMatchObject({
+      url: saved.url,
+      connectCalls: [credentialsFor(saved)],
+    });
+    expect(states).toContain("10:linking");
+
+    harness.createdClients[0].emitState("connected");
+    expect(states.at(-1)).toBe("10:linked");
+    harness.createdClients[0].emitState("disconnected");
+    expect(states.at(-1)).toBe("10:reconnecting");
+
+    subscription.dispose();
+  });
+
   it("forwards refresh and mismatch only from the current retained window client", async () => {
     const harness = coordinatorHarness();
     await harness.coordinator.linkWindow(

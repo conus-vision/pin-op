@@ -19,7 +19,10 @@ import {
   BrowserWindowLinkStore,
   type SessionStorage,
 } from "./browserWindowLinkStore.js";
-import { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";
+import {
+  WindowConnectionCoordinator,
+  type BrowserWindowConnectionState,
+} from "./windowConnectionCoordinator.js";
 import { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "./tabRefreshStateStore.js";
 
@@ -54,10 +57,12 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
     Pick<
       WindowConnectionCoordinator,
       | "onResolution"
+      | "onStateChanged"
       | "onPeerState"
       | "onSourceNavigationState"
       | "onPageRefresh"
       | "onProtocolMismatch"
+      | "state"
       | "dispose"
     >;
   readonly createTabRefreshCoordinator?: (
@@ -119,6 +124,48 @@ export function startBackgroundRuntime(
     },
     onError: options.onError,
   });
+  const refreshWindows = new Map<number, RefreshWindowReadiness>();
+  const publishRefreshEligibility = (windowId: number): void => {
+    const readiness = refreshWindows.get(windowId);
+    contentRefreshCoordinator.setWindowEligibility(
+      windowId,
+      readiness?.state === "linked" && readiness.peer?.connected === true,
+    );
+  };
+  const refreshStateSubscription = coordinator.onStateChanged(
+    (windowId, state) => {
+      const readiness = refreshWindows.get(windowId) ?? { state };
+      readiness.state = state;
+      if (state !== "linked") readiness.peer = undefined;
+      refreshWindows.set(windowId, readiness);
+      publishRefreshEligibility(windowId);
+    },
+  );
+  const refreshPeerSubscription = coordinator.onPeerState(
+    (windowId, message) => {
+      const readiness = refreshWindows.get(windowId) ?? {
+        state: coordinator.state(windowId),
+      };
+      if (
+        readiness.peer?.sessionId === message.sessionId &&
+        message.peerGeneration <= readiness.peer.generation
+      ) {
+        return;
+      }
+      readiness.peer = {
+        sessionId: message.sessionId,
+        generation: message.peerGeneration,
+        connected: message.connected,
+      };
+      refreshWindows.set(windowId, readiness);
+      publishRefreshEligibility(windowId);
+    },
+  );
+  const refreshMismatchSubscription = coordinator.onProtocolMismatch(
+    (windowId) => {
+      refreshWindows.delete(windowId);
+    },
+  );
   void tabRefreshCoordinator.initialize?.().catch((error) =>
     options.onError?.(error),
   );
@@ -181,8 +228,21 @@ export function startBackgroundRuntime(
       }
       disposed = true;
       router.dispose();
+      refreshStateSubscription.dispose();
+      refreshPeerSubscription.dispose();
+      refreshMismatchSubscription.dispose();
+      refreshWindows.clear();
       coordinator.dispose();
     },
+  };
+}
+
+interface RefreshWindowReadiness {
+  state: BrowserWindowConnectionState;
+  peer?: {
+    readonly sessionId: string;
+    readonly generation: number;
+    readonly connected: boolean;
   };
 }
 

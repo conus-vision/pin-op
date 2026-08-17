@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionStorage } from "../src/browserWindowLinkStore.js";
 import {
@@ -5,6 +6,8 @@ import {
   SessionTopScrollSnapshotStorage,
 } from "../src/backgroundContentRefresh.js";
 import { captureTopScrollSnapshot } from "../src/topScrollRestoration.js";
+import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
+import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("BackgroundContentRefreshCoordinator", () => {
   it("injects a missing top runtime and sends one exact bound command", async () => {
@@ -203,7 +206,7 @@ describe("BackgroundContentRefreshCoordinator", () => {
     expect(second).toBeUndefined();
   });
 
-  it("does not revoke a new-document runtime when reload completion is late", async () => {
+  it("preserves restoration when loading precedes reload Promise completion", async () => {
     const storage = new MemorySessionStorage();
     const reload = deferred<void>();
     const reloadTab = vi.fn(() => reload.promise);
@@ -276,8 +279,13 @@ describe("BackgroundContentRefreshCoordinator", () => {
       contentRuntimeId: "runtime-new",
     }, sender);
     reload.resolve();
-    await expect(pendingReload).rejects.toThrow("Content refresh command revoked");
-    await newReady;
+    await expect(pendingReload).resolves.toBeUndefined();
+    await expect(newReady).resolves.toMatchObject({
+      type: "pin-op.refresh.scroll.restore",
+      contentRuntimeId: "runtime-new",
+      refreshGeneration: 10,
+      snapshot: expect.objectContaining({ refreshGeneration: 10 }),
+    });
     await coordinator.dispatch(27, {
       type: "pin-op.refresh.execute",
       refreshGeneration: 11,
@@ -289,6 +297,197 @@ describe("BackgroundContentRefreshCoordinator", () => {
       contentRuntimeId: "runtime-new",
       refreshGeneration: 11,
     }));
+  });
+
+  it("preserves restoration when reload resolves before loading", async () => {
+    const storage = new MemorySessionStorage();
+    const sender = topSender(34, "https://example.test/page");
+    let coordinator: BackgroundContentRefreshCoordinator;
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+      const command = message as {
+        readonly contentRuntimeId: string;
+        readonly refreshCommandId: string;
+        readonly refreshGeneration: number;
+      };
+      const result = await coordinator.routeMessage(reloadRequest(
+        34,
+        command.contentRuntimeId,
+        command.refreshGeneration,
+        command.refreshCommandId,
+      ), sender);
+      return {
+        ...(message as object),
+        type: "pin-op.refresh.content.result",
+        accepted: (result as { accepted?: boolean } | undefined)?.accepted === true,
+      };
+    });
+    coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(storage),
+      executeContentScript: vi.fn(async () => {
+        await bind(coordinator, sender, "runtime-before-loading");
+      }),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => undefined),
+      now: () => 600,
+      createRefreshCommandId: () => "command-before-loading",
+    });
+    authorize(coordinator, 34);
+
+    await coordinator.dispatch(34, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 12,
+      mode: "reload",
+    });
+    coordinator.observeTabUpdate(34, {
+      status: "loading",
+      url: sender.url,
+      windowId: 7,
+    });
+    await coordinator.routeMessage({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-after-loading",
+    }, sender);
+
+    await expect(coordinator.routeMessage({
+      type: "pin-op.refresh.content.ready",
+      tabId: 34,
+      frameId: 0,
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-after-loading",
+    }, sender)).resolves.toMatchObject({
+      type: "pin-op.refresh.scroll.restore",
+      refreshGeneration: 12,
+    });
+  });
+
+  it("treats observed loading as authoritative when reload rejects", async () => {
+    const storage = new MemorySessionStorage();
+    const sender = topSender(35, "https://example.test/page");
+    const onError = vi.fn();
+    let coordinator: BackgroundContentRefreshCoordinator;
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+      const command = message as {
+        readonly contentRuntimeId: string;
+        readonly refreshCommandId: string;
+        readonly refreshGeneration: number;
+      };
+      const result = await coordinator.routeMessage(reloadRequest(
+        35,
+        command.contentRuntimeId,
+        command.refreshGeneration,
+        command.refreshCommandId,
+      ), sender);
+      return {
+        ...(message as object),
+        type: "pin-op.refresh.content.result",
+        accepted: (result as { accepted?: boolean } | undefined)?.accepted === true,
+      };
+    });
+    coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(storage),
+      executeContentScript: vi.fn(async () => {
+        await bind(coordinator, sender, "runtime-rejected-after-loading");
+      }),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => {
+        coordinator.observeTabUpdate(35, {
+          status: "loading",
+          url: sender.url,
+          windowId: 7,
+        });
+        throw new Error("reload API rejected after navigation");
+      }),
+      now: () => 600,
+      createRefreshCommandId: () => "command-rejected-after-loading",
+      onError,
+    });
+    authorize(coordinator, 35);
+
+    await expect(coordinator.dispatch(35, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 13,
+      mode: "reload",
+    })).resolves.toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+    await coordinator.routeMessage({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-after-rejected-reload",
+    }, sender);
+    await expect(coordinator.routeMessage({
+      type: "pin-op.refresh.content.ready",
+      tabId: 35,
+      frameId: 0,
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-after-rejected-reload",
+    }, sender)).resolves.toMatchObject({
+      type: "pin-op.refresh.scroll.restore",
+      refreshGeneration: 13,
+    });
+  });
+
+  it("reports a true reload failure exactly once through the refresh owner", async () => {
+    const storage = new MemorySessionStorage();
+    const onError = vi.fn();
+    const sender = topSender(36, "https://example.test/page");
+    let content: BackgroundContentRefreshCoordinator;
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+      const command = message as {
+        readonly contentRuntimeId: string;
+        readonly refreshCommandId: string;
+        readonly refreshGeneration: number;
+      };
+      const result = await content.routeMessage(reloadRequest(
+        36,
+        command.contentRuntimeId,
+        command.refreshGeneration,
+        command.refreshCommandId,
+      ), sender);
+      return {
+        ...(message as object),
+        type: "pin-op.refresh.content.result",
+        accepted: (result as { accepted?: boolean } | undefined)?.accepted === true,
+      };
+    });
+    content = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(storage),
+      executeContentScript: vi.fn(async () => {
+        await bind(content, sender, "runtime-single-diagnostic");
+      }),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => { throw new Error("reload failed"); }),
+      createRefreshCommandId: () => "command-single-diagnostic",
+      onError,
+    });
+    const tabs = new TabRefreshCoordinator({
+      store: new TabRefreshStateStore(storage),
+      getActiveTabId: async () => 36,
+      dispatchRefresh: (tabId, command) => content.dispatch(tabId, command),
+      setRefreshParticipant: (windowId, tabId, participant) => {
+        content.setTabParticipation(tabId, windowId, participant);
+        content.setWindowEligibility(windowId, true);
+      },
+      onError,
+    });
+    await tabs.panelOpened(36, 7);
+
+    await tabs.acceptPageRefresh(7, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "page.refresh",
+      messageId: "refresh-single-diagnostic",
+      sessionId: "session-a",
+      source: { role: "ide", id: "vscode-a" },
+      refreshGeneration: 14,
+      mode: "reload",
+      metadata: {},
+    });
+
+    expect(sendTopFrameMessage).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe(
+      "Content refresh command was rejected",
+    );
   });
 
   it("injects after completed reload only for a participating tab and cleans removal", async () => {

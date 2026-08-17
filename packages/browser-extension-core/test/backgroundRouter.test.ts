@@ -90,14 +90,14 @@ describe("BackgroundRouter", () => {
     });
   });
 
-  it("revokes refresh authority synchronously on window and protocol lifecycle changes", async () => {
+  it("keeps eligibility independent of panel state and revokes explicit window authority", async () => {
     const harness = createHarness();
     await harness.registerAndConnect("channel-revoke", 17, "source-revoke");
     await flushMicrotasks();
-    expect(harness.contentRefresh.windowEligibility).toContainEqual([10, true]);
+    expect(harness.contentRefresh.windowEligibility).toEqual([]);
 
     harness.coordinator.emitState(10, "offline");
-    expect(harness.contentRefresh.windowEligibility.at(-1)).toEqual([10, false]);
+    expect(harness.contentRefresh.windowEligibility).toEqual([]);
 
     harness.protocolMismatches.emit(10, {
       browserProtocolVersion: PROTOCOL_VERSION,

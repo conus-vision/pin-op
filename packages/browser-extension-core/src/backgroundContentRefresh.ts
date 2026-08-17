@@ -78,11 +78,18 @@ interface RefreshCommandLease extends OwnedContentRefreshBinding {
   readonly refreshGeneration: number;
   readonly mode: RefreshExecutionCommand["mode"];
   consumed: boolean;
+  completion?: "accepted" | "rejected";
 }
 
 interface ReadinessAttempt {
   readonly lifecycleEpoch: number;
   readonly promise: Promise<OwnedContentRefreshBinding>;
+}
+
+interface ReloadTransition extends OwnedContentRefreshBinding {
+  readonly refreshCommandId: string;
+  readonly refreshGeneration: number;
+  navigationObserved: boolean;
 }
 
 export class SessionTopScrollSnapshotStorage
@@ -124,6 +131,7 @@ export class BackgroundContentRefreshCoordinator {
   private readonly provisional = new Map<number, OwnedContentRefreshBinding>();
   private readonly ready = new Map<number, OwnedContentRefreshBinding>();
   private readonly commandLeases = new Map<number, RefreshCommandLease>();
+  private readonly reloadTransitions = new Map<number, ReloadTransition>();
   private readonly readyWaiters = new Map<number, Set<ReadyWaiter>>();
   private readonly readinessAttempts = new Map<number, ReadinessAttempt>();
   private readonly tabTails = new Map<number, Promise<void>>();
@@ -178,7 +186,12 @@ export class BackgroundContentRefreshCoordinator {
       const response = parseContentRefreshResult(
         await this.sendTopFrameMessage(tabId, contentCommand),
       );
-      if (this.commandLeases.get(tabId) !== lease || !this.isLeaseCurrent(lease)) {
+      const completedReload = command.mode === "reload" &&
+        lease.completion !== undefined;
+      if (
+        !completedReload &&
+        (this.commandLeases.get(tabId) !== lease || !this.isLeaseCurrent(lease))
+      ) {
         throw new Error("Content refresh command revoked");
       }
       if (
@@ -187,7 +200,8 @@ export class BackgroundContentRefreshCoordinator {
         response.refreshCommandId !== lease.refreshCommandId ||
         response.refreshGeneration !== command.refreshGeneration ||
         response.mode !== command.mode ||
-        (command.mode === "reload" && response.accepted && !lease.consumed)
+        (command.mode === "reload" && response.accepted &&
+          lease.completion !== "accepted")
       ) {
         throw new Error("Content refresh returned an invalid result");
       }
@@ -291,15 +305,24 @@ export class BackgroundContentRefreshCoordinator {
       this.provisional.get(tabId)?.pageUrl;
     const urlChanged = pageUrl !== undefined && knownUrl !== undefined &&
       pageUrl !== knownUrl;
+    const reloadTransition = this.reloadTransitions.get(tabId);
+    const expectedReloadLoading = update.status === "loading" &&
+      reloadTransition !== undefined &&
+      pageUrl === reloadTransition.pageUrl &&
+      lifecycle.windowId === reloadTransition.windowId &&
+      (!isBrowserId(update.windowId) ||
+        update.windowId === reloadTransition.windowId);
     if (update.status === "loading" || urlChanged) {
       const currentRuntimeId = this.ready.get(tabId)?.contentRuntimeId ??
         this.provisional.get(tabId)?.contentRuntimeId;
-      const preserveSnapshot = lifecycle.preserveSnapshot && !urlChanged;
+      if (expectedReloadLoading) reloadTransition.navigationObserved = true;
+      const preserveSnapshot = expectedReloadLoading && !urlChanged;
       this.invalidateLifecycle(
         tabId,
         lifecycle,
         new Error("Content document navigated"),
         !preserveSnapshot,
+        preserveSnapshot,
       );
       lifecycle.pageUrl = pageUrl;
       lifecycle.blockedRuntimeId = update.status === "loading"
@@ -457,7 +480,16 @@ export class BackgroundContentRefreshCoordinator {
     });
     if (!this.isCurrentBinding(owned)) return undefined;
     const lifecycle = this.lifecycle.get(request.tabId);
-    if (snapshot && lifecycle) lifecycle.preserveSnapshot = false;
+    if (snapshot) {
+      if (lifecycle) lifecycle.preserveSnapshot = false;
+      const transition = this.reloadTransitions.get(request.tabId);
+      if (
+        transition?.pageUrl === request.pageUrl &&
+        transition.refreshGeneration === snapshot.refreshGeneration
+      ) {
+        this.reloadTransitions.delete(request.tabId);
+      }
+    }
     return snapshot
       ? parseScrollRestoreCommand({
           type: "pin-op.refresh.scroll.restore",
@@ -476,31 +508,74 @@ export class BackgroundContentRefreshCoordinator {
       !this.isLeaseCurrent(lease) || lease.consumed) return undefined;
     lease.consumed = true;
     let accepted = false;
+    let transition: ReloadTransition | undefined;
     try {
       await this.leases.persist(request.snapshot);
       if (this.commandLeases.get(request.tabId) !== lease ||
         !this.isLeaseCurrent(lease)) {
         throw new Error("Content refresh command revoked");
       }
+      const lifecycle = this.lifecycle.get(request.tabId);
+      if (!lifecycle || lifecycle.lifecycleEpoch !== lease.lifecycleEpoch) {
+        throw new Error("Content refresh command revoked");
+      }
+      transition = {
+        ...lease,
+        navigationObserved: false,
+      };
+      this.reloadTransitions.set(request.tabId, transition);
+      lifecycle.preserveSnapshot = true;
+      lifecycle.blockedRuntimeId = request.contentRuntimeId;
+
       await this.reloadTab(request.tabId);
-      if (this.commandLeases.get(request.tabId) !== lease ||
-        !this.isLeaseCurrent(lease)) {
+      if (this.reloadTransitions.get(request.tabId) !== transition) {
         throw new Error("Content refresh command revoked");
       }
       accepted = true;
-      const lifecycle = this.lifecycle.get(request.tabId);
-      if (lifecycle) {
-        lifecycle.preserveSnapshot = true;
-        lifecycle.blockedRuntimeId = request.contentRuntimeId;
+      lease.completion = "accepted";
+      if (!transition.navigationObserved) {
+        this.clearBinding(
+          request.tabId,
+          lease,
+          new Error("Content tab reloading"),
+        );
       }
-      this.clearBinding(request.tabId, lease, new Error("Content tab reloading"));
-    } catch (error) {
-      try {
-        await this.storage.remove(request.tabId);
-      } catch (cleanupError) {
-        this.report(cleanupError);
+    } catch {
+      const currentTransition = transition !== undefined &&
+          this.reloadTransitions.get(request.tabId) === transition
+        ? transition
+        : undefined;
+      // A matching loading event proves navigation committed even when the
+      // browser reload Promise rejects. The incoming document owns restore.
+      if (currentTransition?.navigationObserved) {
+        accepted = true;
+        lease.completion = "accepted";
+      } else {
+        if (currentTransition) {
+          this.reloadTransitions.delete(request.tabId);
+          const lifecycle = this.lifecycle.get(request.tabId);
+          if (
+            lifecycle?.windowId === lease.windowId &&
+            lifecycle.pageUrl === lease.pageUrl &&
+            lifecycle.blockedRuntimeId === lease.contentRuntimeId
+          ) {
+            lifecycle.preserveSnapshot = false;
+            lifecycle.blockedRuntimeId = undefined;
+          }
+          lease.completion = "rejected";
+        } else if (
+          transition === undefined &&
+          this.commandLeases.get(request.tabId) === lease &&
+          this.isLeaseCurrent(lease)
+        ) {
+          lease.completion = "rejected";
+        }
+        try {
+          await this.storage.remove(request.tabId);
+        } catch (cleanupError) {
+          this.report(cleanupError);
+        }
       }
-      this.report(error);
     }
     return parseReloadTabResult({
       type: "pin-op.refresh.reload.result",
@@ -675,9 +750,13 @@ export class BackgroundContentRefreshCoordinator {
     lifecycle: TabLifecycle,
     reason: Error,
     removeSnapshot: boolean,
+    preserveReloadTransition = false,
   ): void {
     lifecycle.lifecycleEpoch += 1;
     lifecycle.preserveSnapshot = false;
+    if (!preserveReloadTransition) {
+      this.reloadTransitions.delete(tabId);
+    }
     this.clearRuntime(tabId, reason);
     if (removeSnapshot) {
       void this.storage.remove(tabId).catch((error) => this.report(error));

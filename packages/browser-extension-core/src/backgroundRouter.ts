@@ -1878,10 +1878,6 @@ export class BackgroundRouter {
     ) {
       return;
     }
-    this.contentRefreshCoordinator.setWindowEligibility(
-      binding.windowId,
-      state === "linked" && protocolMismatch === undefined,
-    );
     const operation = queue.tail.then(async () => {
       if (
         record.windowStateQueue !== queue ||
