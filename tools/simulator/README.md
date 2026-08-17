@@ -28,10 +28,12 @@ corepack pnpm --filter @pin-op/simulator send -- --url ws://127.0.0.1:48735 --se
 corepack pnpm --filter @pin-op/simulator test
 ```
 
-The suite exercises production routing for style, script, and PHP save refresh
-messages; inactive-tab refresh on activation; Auto Refresh and IDE Highlight
-off/on; exact source opening; stale source-click rejection; and a real bridge
-rejecting a protocol-v5 handshake.
+The suite drives changed CSS, SCSS, JavaScript, and PHP saves through the
+production refresh classifier, SaveObserver scheduler, IDE client, bridge
+router, browser background router, and tab refresh coordinator. It also covers
+inactive-tab refresh on activation; Auto Refresh and IDE Highlight off/on;
+exact source opening; stale source-click rejection; and a real bridge rejecting
+a protocol-v5 handshake.
 
 Protocol mismatch close code `1002` is terminal. The simulator strictly decodes
 the bridge reason into expected and received versions, does not retry the
