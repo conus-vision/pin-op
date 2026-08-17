@@ -7,6 +7,8 @@ const PREPROCESSOR_QUIET_MS = 750;
 const PREPROCESSOR_MAX_MS = 2_000;
 const PREPROCESSOR_SUFFIXES = [".scss", ".sass", ".less"] as const;
 
+type PendingStylesCause = "save" | "generated";
+
 export interface RefreshCandidateSink {
   publish(mode: RefreshMode): void;
 }
@@ -69,6 +71,7 @@ export class SaveObserver {
   private readonly clock: () => number;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pendingMode: RefreshMode | undefined;
+  private pendingStylesCause: PendingStylesCause | undefined;
   private preprocessorDeadline: number | undefined;
   private retainPreprocessorWindow = false;
   private disposed = false;
@@ -107,10 +110,14 @@ export class SaveObserver {
     }
 
     if (this.pendingMode === "reload") {
+      this.pendingStylesCause = undefined;
       this.retainPreprocessorWindow =
         this.preprocessorDeadline !== undefined;
-    } else if (isPreprocessorUri(uri)) {
-      settleMs = PREPROCESSOR_QUIET_MS;
+    } else {
+      this.pendingStylesCause ??= "save";
+      if (isPreprocessorUri(uri)) {
+        settleMs = PREPROCESSOR_QUIET_MS;
+      }
     }
     if (this.pendingMode === "styles" && this.preprocessorDeadline !== undefined) {
       settleMs = Math.min(
@@ -135,6 +142,7 @@ export class SaveObserver {
     const remaining = this.preprocessorDeadline - this.clock();
     if (remaining <= 0) return;
     this.pendingMode = "styles";
+    this.pendingStylesCause = "generated";
     this.schedule(Math.min(
       DIRECT_SETTLE_MS,
       remaining,
@@ -147,6 +155,7 @@ export class SaveObserver {
     if (this.timer !== undefined) this.cancelTimer(this.timer);
     this.timer = undefined;
     this.pendingMode = undefined;
+    this.pendingStylesCause = undefined;
     this.preprocessorDeadline = undefined;
     this.retainPreprocessorWindow = false;
     this.dirtyUris.clear();
@@ -157,13 +166,18 @@ export class SaveObserver {
     this.timer = this.scheduleTimer(() => {
       this.timer = undefined;
       const pendingMode = this.pendingMode;
+      const pendingStylesCause = this.pendingStylesCause;
       this.pendingMode = undefined;
+      this.pendingStylesCause = undefined;
       const now = this.clock();
+      const preservesRetainedWindow =
+        pendingMode === "reload" ||
+        (pendingMode === "styles" && pendingStylesCause === "save");
       if (
-        pendingMode === "reload" &&
         this.retainPreprocessorWindow &&
         this.preprocessorDeadline !== undefined &&
-        now < this.preprocessorDeadline
+        now < this.preprocessorDeadline &&
+        preservesRetainedWindow
       ) {
         this.schedule(this.preprocessorDeadline - now);
       } else {

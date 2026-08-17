@@ -362,6 +362,80 @@ describe("SaveObserver", () => {
     expect(harness.pendingTimerCount()).toBe(0);
   });
 
+  it.each([
+    ["direct CSS", document("file:///workspace/unrelated.css", "css"), 150],
+    ["custom styles", document("file:///workspace/App.vue", "vue"), 150],
+    ["preprocessor", document("file:///workspace/other.less", "less"), 750],
+  ])(
+    "keeps a retained build window after an ordinary %s dispatch",
+    (kind, styleDocument, settleMs) => {
+      const harness = createHarness();
+      if (kind === "custom styles") {
+        harness.classifierRegistry.register({
+          id: "fixture.vue-retained-window",
+          classify: ({ uri }) => uri.endsWith(".vue")
+            ? "styles"
+            : undefined,
+        });
+      }
+      const source = document("file:///workspace/app.scss", "scss");
+      const script = document("file:///workspace/app.ts", "typescript");
+
+      changeAndSave(harness.observer, source);
+      harness.advance(500);
+      changeAndSave(harness.observer, script);
+      harness.advance(150);
+      expect(harness.publish.mock.calls).toEqual([["reload"]]);
+
+      harness.advance(50);
+      changeAndSave(harness.observer, styleDocument);
+      harness.advance(settleMs);
+      expect(harness.publish.mock.calls).toEqual([["reload"], ["styles"]]);
+      expect(harness.pendingTimerCount()).toBe(1);
+
+      harness.advance(100);
+      harness.observer.onDidGeneratedCssFileEvent();
+      harness.advance(149);
+      expect(harness.publish).toHaveBeenCalledTimes(2);
+      harness.advance(1);
+
+      expect(harness.publish.mock.calls).toEqual([
+        ["reload"],
+        ["styles"],
+        ["styles"],
+      ]);
+      expect(harness.pendingTimerCount()).toBe(0);
+    },
+  );
+
+  it("keeps a generated event as the closing cause through a direct save", () => {
+    const harness = createHarness();
+    const source = document("file:///workspace/app.scss", "scss");
+    const script = document("file:///workspace/app.ts", "typescript");
+    const css = document("file:///workspace/unrelated.css", "css");
+
+    changeAndSave(harness.observer, source);
+    harness.advance(500);
+    changeAndSave(harness.observer, script);
+    harness.advance(150);
+
+    harness.advance(350);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(50);
+    changeAndSave(harness.observer, css);
+    harness.advance(149);
+    expect(harness.publish.mock.calls).toEqual([["reload"]]);
+    harness.advance(1);
+
+    expect(harness.publish.mock.calls).toEqual([["reload"], ["styles"]]);
+    expect(harness.pendingTimerCount()).toBe(0);
+
+    harness.advance(100);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(1_000);
+    expect(harness.publish).toHaveBeenCalledTimes(2);
+  });
+
   it("disposes every timer and state idempotently", () => {
     const harness = createHarness();
     const classify = vi.spyOn(harness.classifierRegistry, "classify");
