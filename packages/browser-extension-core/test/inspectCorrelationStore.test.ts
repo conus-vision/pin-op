@@ -7,10 +7,12 @@ import {
 } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
-  createTrustedIdePeerContext,
   InspectCorrelationStore,
-  type TrustedIdePeerContext,
 } from "../src/inspectCorrelationStore.js";
+import {
+  createTransportTrustedIdePeerContext,
+  type TrustedIdePeerContext,
+} from "../src/trustedIdePeerContext.js";
 
 describe("InspectCorrelationStore", () => {
   it("routes only increasing resolution generations to the recorded channel", () => {
@@ -440,7 +442,7 @@ function trustedPeer(
     readonly sourceId?: string;
   } = {},
 ): TrustedIdePeerContext {
-  return createTrustedIdePeerContext(
+  return createTransportTrustedIdePeerContext(
     overrides.windowId ?? 10,
     overrides.sessionId ?? "session-a",
     overrides.sourceId ?? "vscode-a",

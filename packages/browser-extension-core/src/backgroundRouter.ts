@@ -31,10 +31,8 @@ import {
   type DomErrorCode,
   type DomRequest,
 } from "./domProtocol.js";
-import {
-  InspectCorrelationStore,
-  type TrustedIdePeerContext,
-} from "./inspectCorrelationStore.js";
+import { InspectCorrelationStore } from "./inspectCorrelationStore.js";
+import type { TrustedIdePeerContext } from "./trustedIdePeerContext.js";
 import type {
   BackgroundContentRefreshCoordinator,
   BackgroundTabUpdate,

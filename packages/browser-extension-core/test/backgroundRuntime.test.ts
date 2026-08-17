@@ -3,11 +3,16 @@ import {
   PROTOCOL_VERSION,
   type PageRefreshMessage,
   type PeerStateMessage,
+  type ResolutionMessage,
 } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 import type { BrowserProtocolMismatch } from "../src/bridgeClient.js";
 import { TAB_REFRESH_STATE_STORAGE_KEY } from "../src/tabRefreshStateStore.js";
 import type { BrowserWindowConnectionState } from "../src/windowConnectionCoordinator.js";
+import {
+  createTransportTrustedIdePeerContext,
+  type TrustedIdePeerContext,
+} from "../src/trustedIdePeerContext.js";
 
 describe("startBackgroundRuntime", () => {
   it("wires bridge protocol events into the router and disposes subscriptions", () => {
@@ -23,6 +28,12 @@ describe("startBackgroundRuntime", () => {
     const pageRefreshDispose = vi.fn();
     const protocolMismatchDispose = vi.fn();
     const coordinatorDispose = vi.fn();
+    let resolutionListener:
+      | ((
+        context: TrustedIdePeerContext,
+        message: ResolutionMessage,
+      ) => void)
+      | undefined;
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
       unlinkWindow: vi.fn(async () => undefined),
@@ -33,7 +44,10 @@ describe("startBackgroundRuntime", () => {
       removeWindow: vi.fn(async () => undefined),
       state: vi.fn(() => "notLinked" as const),
       onStateChanged: vi.fn(() => ({ dispose: stateDispose })),
-      onResolution: vi.fn(() => ({ dispose: resolutionDispose })),
+      onResolution: vi.fn((listener) => {
+        resolutionListener = listener;
+        return { dispose: resolutionDispose };
+      }),
       onPeerState: vi.fn(() => ({ dispose: peerStateDispose })),
       onSourceNavigationState: vi.fn(() => ({
         dispose: sourceNavigationStateDispose,
@@ -64,6 +78,16 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
     expect(coordinator.onProtocolMismatch).toHaveBeenCalledTimes(2);
+
+    const trusted = createTransportTrustedIdePeerContext(
+      7,
+      "session-a",
+      "vscode-a",
+    );
+    expect(() => resolutionListener?.(
+      trusted,
+      resolution("inspect-mismatch", 1, "session-b", "vscode-b"),
+    )).not.toThrow();
 
     runtime.dispose();
     runtime.dispose();
@@ -509,6 +533,29 @@ function pageRefresh(refreshGeneration: number): PageRefreshMessage {
     source: { role: "ide", id: "vscode-a" },
     refreshGeneration,
     mode: "styles",
+    metadata: {},
+  };
+}
+
+function resolution(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+  sessionId = "session-a",
+  sourceId = "vscode-a",
+): ResolutionMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "resolution",
+    messageId: `resolution-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId,
+    source: { role: "ide", id: sourceId },
+    inspectMessageId,
+    resolutionGeneration,
+    status: "no-active-editor",
+    selectedMatchCount: 0,
+    parentMatchCount: 0,
+    inaccessibleStylesheetCount: 0,
+    diagnosticCodes: [],
     metadata: {},
   };
 }

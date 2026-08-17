@@ -13,45 +13,13 @@ import {
   parseProtocolData,
   snapshotExactDataRecord,
 } from "./protocolDataSnapshot.js";
+import {
+  isTrustedIdePeerContext,
+  trustedIdePeerMatchesPayload,
+  type TrustedIdePeerContext,
+} from "./trustedIdePeerContext.js";
 
 export const DEFAULT_MAX_INSPECT_CORRELATIONS = 256;
-
-const trustedIdePeerContextBrand: unique symbol = Symbol(
-  "trustedIdePeerContext",
-);
-const trustedIdePeerContexts = new WeakSet<object>();
-
-export interface TrustedIdePeerContext {
-  readonly windowId: number;
-  readonly sessionId: string;
-  readonly source: {
-    readonly role: "ide";
-    readonly id: string;
-  };
-  readonly [trustedIdePeerContextBrand]: true;
-}
-
-export function createTrustedIdePeerContext(
-  windowId: number,
-  sessionId: string,
-  sourceId: string,
-): TrustedIdePeerContext {
-  if (
-    !isBrowserId(windowId) ||
-    !isOpaqueId(sessionId) ||
-    !isOpaqueId(sourceId)
-  ) {
-    throw new TypeError("Invalid trusted IDE peer context");
-  }
-  const context = Object.freeze({
-    windowId,
-    sessionId,
-    source: Object.freeze({ role: "ide" as const, id: sourceId }),
-    [trustedIdePeerContextBrand]: true as const,
-  });
-  trustedIdePeerContexts.add(context);
-  return context;
-}
 
 interface InspectCorrelation {
   readonly channel: string;
@@ -342,18 +310,7 @@ function payloadMatchesPeer(
   },
   peerContext: TrustedIdePeerContext,
 ): boolean {
-  return message.sessionId === peerContext.sessionId &&
-    message.source.id === peerContext.source.id;
-}
-
-function isTrustedIdePeerContext(
-  value: unknown,
-): value is TrustedIdePeerContext {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      trustedIdePeerContexts.has(value),
-  );
+  return trustedIdePeerMatchesPayload(peerContext, message);
 }
 
 function isOpaqueId(value: unknown): value is string {

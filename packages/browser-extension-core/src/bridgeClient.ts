@@ -14,6 +14,10 @@ import {
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
+import {
+  createTransportTrustedIdePeerContext,
+  type TrustedIdePeerContext,
+} from "./trustedIdePeerContext.js";
 
 export class BrowserProtocolError extends Error {
   public readonly name = "BrowserProtocolError";
@@ -62,6 +66,7 @@ export interface BrowserSocket {
 
 export interface BrowserBridgeClientOptions {
   readonly url: string;
+  readonly windowId: number;
   readonly sourceId: string;
   readonly source?: ClientSource;
   readonly autoReconnect?: boolean;
@@ -95,6 +100,11 @@ export interface BrowserBridgeSubscription {
   dispose(): void;
 }
 
+export type TrustedIdeMessageListener<T> = (
+  context: TrustedIdePeerContext,
+  message: T,
+) => void;
+
 type ConnectionIntent =
   | { readonly kind: "link"; readonly pin: string }
   | { readonly kind: "credentials"; readonly credentials: BrowserCredentials };
@@ -115,6 +125,7 @@ export class BrowserBridgeClient {
   private readonly socketFactory: (url: string) => BrowserSocket;
   private readonly messageId: () => string;
   private readonly now: () => Date;
+  private readonly windowId: number;
   private readonly connectionSource: ClientSource;
   private readonly scheduleTimer: NonNullable<BrowserBridgeClientOptions["setTimeout"]>;
   private readonly cancelTimer: NonNullable<BrowserBridgeClientOptions["clearTimeout"]>;
@@ -129,13 +140,13 @@ export class BrowserBridgeClient {
   private pendingCredentialNotification = false;
   private state: BrowserConnectionState = "disconnected";
   private readonly resolutionListeners = new Set<
-    (message: ResolutionMessage) => void
+    TrustedIdeMessageListener<ResolutionMessage>
   >();
   private readonly peerStateListeners = new Set<
     (message: PeerStateMessage) => void
   >();
   private readonly sourceNavigationStateListeners = new Set<
-    (message: SourceNavigationStateMessage) => void
+    TrustedIdeMessageListener<SourceNavigationStateMessage>
   >();
   private readonly pageRefreshListeners = new Set<
     (message: PageRefreshMessage) => void
@@ -149,6 +160,10 @@ export class BrowserBridgeClient {
       options.socketFactory ?? ((url) => new WebSocket(url) as BrowserSocket);
     this.messageId = options.messageId ?? defaultMessageId;
     this.now = options.now ?? (() => new Date());
+    if (!isBrowserId(options.windowId)) {
+      throw new TypeError("Browser bridge window ID is invalid");
+    }
+    this.windowId = options.windowId;
     const connectionSource = ClientSourceSchema.parse(
       options.source ?? {
         role: "browser",
@@ -263,9 +278,9 @@ export class BrowserBridgeClient {
   }
 
   public onResolution(
-    listener: (message: ResolutionMessage) => void,
+    listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription {
-    return subscribe(this.resolutionListeners, listener);
+    return subscribeTrusted(this.resolutionListeners, listener);
   }
 
   public onPeerState(
@@ -275,9 +290,9 @@ export class BrowserBridgeClient {
   }
 
   public onSourceNavigationState(
-    listener: (message: SourceNavigationStateMessage) => void,
+    listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
   ): BrowserBridgeSubscription {
-    return subscribe(this.sourceNavigationStateListeners, listener);
+    return subscribeTrusted(this.sourceNavigationStateListeners, listener);
   }
 
   public onPageRefresh(
@@ -478,7 +493,11 @@ export class BrowserBridgeClient {
       ) {
         return;
       }
-      this.notifyListeners(this.sourceNavigationStateListeners, message);
+      this.notifyTrustedIdeListeners(
+        this.sourceNavigationStateListeners,
+        this.trustedIdePeerContext(message.source.id),
+        message,
+      );
       return;
     }
     if (message.type === "page.refresh") {
@@ -507,7 +526,11 @@ export class BrowserBridgeClient {
         return;
       }
       if (message.type === "resolution") {
-        this.notifyListeners(this.resolutionListeners, message);
+        this.notifyTrustedIdeListeners(
+          this.resolutionListeners,
+          this.trustedIdePeerContext(message.source.id),
+          message,
+        );
       } else {
         this.notifyListeners(this.peerStateListeners, message);
       }
@@ -587,6 +610,32 @@ export class BrowserBridgeClient {
         this.report(new Error("Browser bridge listener failed"));
       }
     }
+  }
+
+  private notifyTrustedIdeListeners<T>(
+    listeners: Set<TrustedIdeMessageListener<T>>,
+    context: TrustedIdePeerContext,
+    message: T,
+  ): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener(context, message);
+      } catch {
+        this.report(new Error("Browser bridge listener failed"));
+      }
+    }
+  }
+
+  private trustedIdePeerContext(sourceId: string): TrustedIdePeerContext {
+    const credentials = this.credentials;
+    if (!this.authenticated || !credentials) {
+      throw new Error("IDE peer context requires an authenticated bridge");
+    }
+    return createTransportTrustedIdePeerContext(
+      this.windowId,
+      credentials.sessionId,
+      sourceId,
+    );
   }
 
   private stopForProtocolError(error: BrowserProtocolError): void {
@@ -725,6 +774,26 @@ export function withoutInternalRoutingMetadata(
   };
 }
 
+function subscribeTrusted<T>(
+  listeners: Set<TrustedIdeMessageListener<T>>,
+  listener: TrustedIdeMessageListener<T>,
+): BrowserBridgeSubscription {
+  if (typeof listener !== "function") {
+    throw new TypeError("Browser bridge listener must be a function");
+  }
+  listeners.add(listener);
+  let disposed = false;
+  return {
+    dispose(): void {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      listeners.delete(listener);
+    },
+  };
+}
+
 function snapshotCloseEvent(event: unknown): BrowserSocketCloseEvent {
   if (!event || typeof event !== "object" || Array.isArray(event)) {
     return { code: 0, reason: "" };
@@ -743,6 +812,10 @@ function guardedGet(value: object, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function isBrowserId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 function mismatchDetails(reason: string): BrowserProtocolMismatch {

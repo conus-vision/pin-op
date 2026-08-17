@@ -28,9 +28,9 @@ import {
   createInspectContentLeasePortName,
 } from "../src/inspectPortProtocol.js";
 import {
-  createTrustedIdePeerContext,
+  createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
-} from "../src/inspectCorrelationStore.js";
+} from "../src/trustedIdePeerContext.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
 import type {
   BrowserWindowConnectionState,
@@ -773,7 +773,10 @@ describe("BackgroundRouter", () => {
     );
     await harness.attachContentSession(17);
     harness.coordinator.onPublish = ({ inspectMessageId }) => {
-      harness.resolutions.emit(resolution(inspectMessageId, 1));
+      harness.resolutions.emit(
+        trustedIdePeer(),
+        resolution(inspectMessageId, 1),
+      );
     };
 
     await harness.router.routeMessage(
@@ -790,7 +793,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-2", 1));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-2", 1));
 
     expect(messagesOfType(panel, "resolution")).toHaveLength(1);
     expect(panel.sent.filter((message) =>
@@ -840,8 +843,8 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 9));
-    harness.resolutions.emit(resolution("inspect-2", 1));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 9));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-2", 1));
 
     expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
       {
@@ -942,7 +945,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     )).resolves.toEqual({ ok: true });
-    harness.resolutions.emit(resolution("inspect-1", 1));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 1));
 
     expect(messagesOfType(panel, "resolution")).toEqual([]);
     expect(messagesOfType(panel, "pin-op.ideState")).toEqual([
@@ -978,13 +981,40 @@ describe("BackgroundRouter", () => {
       contentSender(17, 10),
     );
 
-    harness.resolutions.emit(resolution("inspect-1", 2));
-    harness.resolutions.emit(resolution("inspect-1", 1));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 1));
 
     expect(messagesOfType(panelA, "resolution")).toEqual([
       resolution("inspect-1", 2),
     ]);
     expect(messagesOfType(panelB, "resolution")).toEqual([]);
+  });
+
+  it("rejects mismatched transport identity without consuming resolution authority", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17);
+    await harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID),
+      contentSender(17, 10),
+    );
+    const trusted = trustedIdePeer();
+    const spoofed = {
+      ...resolution("inspect-1", 1),
+      sessionId: "session-b",
+      source: { role: "ide", id: "vscode-b" },
+    } as ResolutionMessage;
+
+    harness.resolutions.emit(trusted, spoofed);
+    harness.resolutions.emit(trusted, resolution("inspect-1", 1));
+
+    expect(messagesOfType(panel, "resolution")).toEqual([
+      resolution("inspect-1", 1),
+    ]);
   });
 
   it("forwards repeated strict source navigation for the current correlation without DOM work", async () => {
@@ -999,7 +1029,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
     harness.inspectCalls.length = 0;
     const navigation = panelSourceNavigation("previous");
 
@@ -1053,7 +1083,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
 
     panelA.emitMessage(panelSourceNavigation("next", "inspect-missing", 2));
     panelA.emitMessage(panelSourceNavigation("next", "inspect-1", 1));
@@ -1076,7 +1106,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
 
     tabs.set(17, 20);
     panel.emitMessage(panelSourceNavigation("next"));
@@ -1104,7 +1134,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(replacementSessionId),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
 
     staleListener?.(panelSourceNavigation("previous"));
     replacement.emitMessage(panelSourceNavigation("next"));
@@ -1142,19 +1172,22 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
     const first = sourceNavigationState("inspect-1", 2, 0);
     const second = sourceNavigationState("inspect-1", 2, 1);
 
-    harness.sourceNavigationStates.emit(20, first);
-    harness.sourceNavigationStates.emit(10, first);
-    harness.sourceNavigationStates.emit(10, second);
     harness.sourceNavigationStates.emit(
-      10,
+      trustedIdePeer({ windowId: 20 }),
+      first,
+    );
+    harness.sourceNavigationStates.emit(trustedIdePeer(), first);
+    harness.sourceNavigationStates.emit(trustedIdePeer(), second);
+    harness.sourceNavigationStates.emit(
+      trustedIdePeer(),
       sourceNavigationState("inspect-1", 1),
     );
     harness.sourceNavigationStates.emit(
-      10,
+      trustedIdePeer(),
       sourceNavigationState("inspect-missing", 2),
     );
 
@@ -1183,12 +1216,12 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
 
     panel.emitMessage(panelSourceNavigation("next"));
     await flushMicrotasks();
     harness.sourceNavigationStates.emit(
-      10,
+      trustedIdePeer(),
       sourceNavigationState("inspect-1", 2, 0),
     );
 
@@ -1216,12 +1249,12 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
-    harness.resolutions.emit(resolution("inspect-1", 2));
+    harness.resolutions.emit(trustedIdePeer(), resolution("inspect-1", 2));
 
     panel.emitMessage(panelSourceNavigation("previous"));
     await flushMicrotasks();
     harness.sourceNavigationStates.emit(
-      10,
+      trustedIdePeer(),
       sourceNavigationState("inspect-1", 2, 0),
     );
 
@@ -1420,8 +1453,14 @@ describe("BackgroundRouter", () => {
     expect(secondId).toBe("inspect-2");
     expect(secondId).not.toBe(firstId);
 
-    harness.resolutions.emit(resolution(String(firstId), 99));
-    harness.resolutions.emit(resolution(String(secondId), 1));
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      resolution(String(firstId), 99),
+    );
+    harness.resolutions.emit(
+      trustedIdePeer(),
+      resolution(String(secondId), 1),
+    );
 
     expect(messagesOfType(panel, "resolution")).toEqual([
       resolution("inspect-2", 1),
@@ -3522,12 +3561,18 @@ function createHarness(options: HarnessOptions = {}) {
   const getTabCalls: number[] = [];
   const inspectCalls: unknown[] = [];
   const reportedErrors: unknown[] = [];
-  const resolutions = new FakeEvent<(message: ResolutionMessage) => void>();
+  const resolutions = new FakeEvent<(
+    context: TrustedIdePeerContext,
+    message: ResolutionMessage,
+  ) => void>();
   const peerStates = new FakeEvent<
     (windowId: number, message: PeerStateMessage) => void
   >();
   const sourceNavigationStates = new FakeEvent<
-    (windowId: number, message: SourceNavigationStateMessage) => void
+    (
+      context: TrustedIdePeerContext,
+      message: SourceNavigationStateMessage,
+    ) => void
   >();
   const pageRefreshes = new FakeEvent<
     (windowId: number, message: PageRefreshMessage) => void
@@ -3633,16 +3678,8 @@ function createHarness(options: HarnessOptions = {}) {
         message: ResolutionMessage,
       ) => void,
     ) => {
-      const adapter = (message: ResolutionMessage) => listener(
-        createTrustedIdePeerContext(
-          10,
-          message.sessionId,
-          message.source.id,
-        ),
-        message,
-      );
-      resolutions.addListener(adapter);
-      return () => resolutions.removeListener(adapter);
+      resolutions.addListener(listener);
+      return () => resolutions.removeListener(listener);
     },
     subscribePeerStates: (
       listener: (windowId: number, message: PeerStateMessage) => void,
@@ -3656,19 +3693,8 @@ function createHarness(options: HarnessOptions = {}) {
         message: SourceNavigationStateMessage,
       ) => void,
     ) => {
-      const adapter = (
-        windowId: number,
-        message: SourceNavigationStateMessage,
-      ) => listener(
-        createTrustedIdePeerContext(
-          windowId,
-          message.sessionId,
-          message.source.id,
-        ),
-        message,
-      );
-      sourceNavigationStates.addListener(adapter);
-      return () => sourceNavigationStates.removeListener(adapter);
+      sourceNavigationStates.addListener(listener);
+      return () => sourceNavigationStates.removeListener(listener);
     },
     subscribePageRefreshes: (listener) => {
       pageRefreshes.addListener(listener);
@@ -4258,6 +4284,20 @@ function resolution(
     diagnosticCodes: [],
     metadata: {},
   };
+}
+
+function trustedIdePeer(
+  overrides: {
+    readonly windowId?: number;
+    readonly sessionId?: string;
+    readonly sourceId?: string;
+  } = {},
+): TrustedIdePeerContext {
+  return createTransportTrustedIdePeerContext(
+    overrides.windowId ?? 10,
+    overrides.sessionId ?? "session-a",
+    overrides.sourceId ?? "vscode-a",
+  );
 }
 
 function panelSourceNavigation(

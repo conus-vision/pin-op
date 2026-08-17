@@ -22,6 +22,7 @@ import {
 import type {
   InspectSendOutcome,
   SourceNavigationSendOutcome,
+  TrustedIdeMessageListener,
 } from "../src/bridgeClient.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
@@ -369,7 +370,9 @@ class FakeWindowClient implements WindowConnectionClient {
     return this.active ? "sent" : "not-connected";
   }
 
-  public onResolution(_listener: (message: ResolutionMessage) => void) {
+  public onResolution(
+    _listener: TrustedIdeMessageListener<ResolutionMessage>,
+  ) {
     return { dispose(): void {} };
   }
 
@@ -378,7 +381,7 @@ class FakeWindowClient implements WindowConnectionClient {
   }
 
   public onSourceNavigationState(
-    _listener: (message: SourceNavigationStateMessage) => void,
+    _listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
   ) {
     return { dispose(): void {} };
   }

@@ -634,7 +634,7 @@ describe("BrowserBridgeClient", () => {
     const harness = createHarness();
     const resolutions: ResolutionMessage[] = [];
     const peerStates: PeerStateMessage[] = [];
-    const resolutionSubscription = harness.client.onResolution((message) => {
+    const resolutionSubscription = harness.client.onResolution((_context, message) => {
       resolutions.push(message);
     });
     const peerSubscription = harness.client.onPeerState((message) => {
@@ -657,10 +657,40 @@ describe("BrowserBridgeClient", () => {
     expect(peerStates).toHaveLength(1);
   });
 
+  it("carries authenticated IDE identity separately from routed payloads", () => {
+    const harness = createHarness();
+    const resolutionEvents: Array<readonly [unknown, unknown]> = [];
+    const navigationEvents: Array<readonly [unknown, unknown]> = [];
+    harness.client.onResolution((context, message) => {
+      resolutionEvents.push([context, message]);
+    });
+    harness.client.onSourceNavigationState((context, message) => {
+      navigationEvents.push([context, message]);
+    });
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const resolution = resolutionMessage("inspect-a", 1);
+    const navigation = sourceNavigationState(SESSION_ID, 1, 0);
+
+    harness.sockets[0].message(resolution);
+    harness.sockets[0].message(navigation);
+
+    expect(resolutionEvents).toHaveLength(1);
+    expect(resolutionEvents[0]?.[0]).toMatchObject({
+      windowId: 10,
+      sessionId: CREDENTIALS.sessionId,
+      source: { role: "ide", id: "vscode-test" },
+    });
+    expect(resolutionEvents[0]?.[1]).toEqual(resolution);
+    expect(navigationEvents[0]?.[0]).toEqual(resolutionEvents[0]?.[0]);
+    expect(navigationEvents[0]?.[1]).toEqual(navigation);
+  });
+
   it("delivers only same-session source navigation state to active listeners", () => {
     const harness = createHarness();
     const received: SourceNavigationStateMessage[] = [];
-    const subscription = harness.client.onSourceNavigationState((message) => {
+    const subscription = harness.client.onSourceNavigationState((_context, message) => {
       received.push(message);
     });
     harness.client.connect(CREDENTIALS);
@@ -819,6 +849,7 @@ function createHarness(
   let timerSequence = 0;
   const client = new BrowserBridgeClient({
     url: "ws://127.0.0.1:48735",
+    windowId: 10,
     sourceId: "firefox-test",
     socketFactory: () => {
       const socket = new FakeSocket();

@@ -24,6 +24,10 @@ import type {
   InspectSendOutcome,
   SourceNavigationSendOutcome,
 } from "../src/bridgeClient.js";
+import {
+  createTransportTrustedIdePeerContext,
+  type TrustedIdePeerContext,
+} from "../src/trustedIdePeerContext.js";
 
 const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
@@ -758,45 +762,73 @@ describe("WindowConnectionCoordinator", () => {
       tabId: 101,
       sourceId: "panel-101",
     });
-    const receivedResolutions: Array<[number, ResolutionMessage]> = [];
+    const receivedResolutions: Array<
+      [TrustedIdePeerContext, ResolutionMessage]
+    > = [];
     const receivedPeerStates: Array<[number, PeerStateMessage]> = [];
     const receivedNavigationStates: Array<
-      [number, SourceNavigationStateMessage]
+      [TrustedIdePeerContext, SourceNavigationStateMessage]
     > = [];
     const resolutionSubscription = harness.coordinator.onResolution(
-      (windowId, message) => receivedResolutions.push([windowId, message]),
+      (context, message) => receivedResolutions.push([context, message]),
     );
     const peerSubscription = harness.coordinator.onPeerState(
       (windowId, message) => receivedPeerStates.push([windowId, message]),
     );
     const navigationSubscription = harness.coordinator.onSourceNavigationState(
-      (windowId, message) => receivedNavigationStates.push([windowId, message]),
+      (context, message) => receivedNavigationStates.push([context, message]),
     );
     const client = await harness.link(10, "4873507");
     await harness.authenticate(client, windowLink());
     const currentResolution = resolution("inspect-current", 1);
     const currentPeerState = peerState(true, 1);
     const currentNavigationState = sourceNavigationState("inspect-current", 1);
+    const trusted = trustedIdePeer();
 
-    client.emitResolution(currentResolution);
+    client.emitResolution(trusted, currentResolution);
     client.emitPeerState(currentPeerState);
-    client.emitSourceNavigationState(currentNavigationState);
+    client.emitSourceNavigationState(trusted, currentNavigationState);
 
-    expect(receivedResolutions).toEqual([[10, currentResolution]]);
+    expect(receivedResolutions).toEqual([[trusted, currentResolution]]);
     expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
-    expect(receivedNavigationStates).toEqual([[10, currentNavigationState]]);
+    expect(receivedNavigationStates).toEqual([[trusted, currentNavigationState]]);
 
     await harness.coordinator.unlinkWindow(10);
-    client.emitResolution(resolution("inspect-revoked", 2));
+    client.emitResolution(trusted, resolution("inspect-revoked", 2));
     client.emitPeerState(peerState(false, 2));
-    client.emitSourceNavigationState(sourceNavigationState("inspect-revoked", 2));
-    expect(receivedResolutions).toEqual([[10, currentResolution]]);
+    client.emitSourceNavigationState(
+      trusted,
+      sourceNavigationState("inspect-revoked", 2),
+    );
+    expect(receivedResolutions).toEqual([[trusted, currentResolution]]);
     expect(receivedPeerStates).toEqual([[10, currentPeerState]]);
-    expect(receivedNavigationStates).toEqual([[10, currentNavigationState]]);
+    expect(receivedNavigationStates).toEqual([[trusted, currentNavigationState]]);
 
     resolutionSubscription.dispose();
     peerSubscription.dispose();
     navigationSubscription.dispose();
+  });
+
+  it("rejects a routed payload that disagrees with authenticated IDE context", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const received: ResolutionMessage[] = [];
+    harness.coordinator.onResolution((_context, message) => received.push(message));
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const trusted = trustedIdePeer();
+    const spoofed = {
+      ...resolution("inspect-spoofed", 1),
+      source: { role: "ide", id: "vscode-b" },
+    } as ResolutionMessage;
+
+    client.emitResolution(trusted, spoofed);
+
+    expect(received).toEqual([]);
   });
 
   it("snapshots registration identity, metadata, callback, and disposal", async () => {
@@ -1013,13 +1045,16 @@ class FakeWindowClient {
   public throwOnSourceNavigation = false;
   public throwOnPeerStateSubscription = false;
   private readonly resolutionListeners = new Set<
-    (message: ResolutionMessage) => void
+    (context: TrustedIdePeerContext, message: ResolutionMessage) => void
   >();
   private readonly peerStateListeners = new Set<
     (message: PeerStateMessage) => void
   >();
   private readonly sourceNavigationStateListeners = new Set<
-    (message: SourceNavigationStateMessage) => void
+    (
+      context: TrustedIdePeerContext,
+      message: SourceNavigationStateMessage,
+    ) => void
   >();
   private readonly pageRefreshListeners = new Set<
     (message: PageRefreshMessage) => void
@@ -1072,7 +1107,12 @@ class FakeWindowClient {
     return this.sourceNavigationResult;
   }
 
-  public onResolution(listener: (message: ResolutionMessage) => void) {
+  public onResolution(
+    listener: (
+      context: TrustedIdePeerContext,
+      message: ResolutionMessage,
+    ) => void,
+  ) {
     this.resolutionListeners.add(listener);
     return {
       dispose: () => this.resolutionListeners.delete(listener),
@@ -1090,7 +1130,10 @@ class FakeWindowClient {
   }
 
   public onSourceNavigationState(
-    listener: (message: SourceNavigationStateMessage) => void,
+    listener: (
+      context: TrustedIdePeerContext,
+      message: SourceNavigationStateMessage,
+    ) => void,
   ) {
     this.sourceNavigationStateListeners.add(listener);
     return {
@@ -1114,9 +1157,12 @@ class FakeWindowClient {
     };
   }
 
-  public emitResolution(message: ResolutionMessage): void {
+  public emitResolution(
+    context: TrustedIdePeerContext,
+    message: ResolutionMessage,
+  ): void {
     for (const listener of this.resolutionListeners) {
-      listener(message);
+      listener(context, message);
     }
   }
 
@@ -1130,9 +1176,12 @@ class FakeWindowClient {
     }
   }
 
-  public emitSourceNavigationState(message: SourceNavigationStateMessage): void {
+  public emitSourceNavigationState(
+    context: TrustedIdePeerContext,
+    message: SourceNavigationStateMessage,
+  ): void {
     for (const listener of this.sourceNavigationStateListeners) {
-      listener(message);
+      listener(context, message);
     }
   }
 
@@ -1315,6 +1364,10 @@ function resolution(
     diagnosticCodes: [],
     metadata: {},
   };
+}
+
+function trustedIdePeer(): TrustedIdePeerContext {
+  return createTransportTrustedIdePeerContext(10, "session-a", "vscode-a");
 }
 
 function peerState(

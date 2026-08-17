@@ -19,12 +19,17 @@ import {
   type InspectPayload,
   type InspectSendOutcome,
   type SourceNavigationSendOutcome,
+  type TrustedIdeMessageListener,
 } from "./bridgeClient.js";
 import {
   BrowserWindowLinkStore,
   type BrowserWindowLink,
 } from "./browserWindowLinkStore.js";
 import { parseLinkCode } from "./linkCode.js";
+import {
+  trustedIdePeerMatchesPayload,
+  type TrustedIdePeerContext,
+} from "./trustedIdePeerContext.js";
 
 export type BrowserWindowConnectionState =
   | "notLinked"
@@ -64,13 +69,13 @@ export interface WindowConnectionClient {
     >,
   ): SourceNavigationSendOutcome;
   onResolution(
-    listener: (message: ResolutionMessage) => void,
+    listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription;
   onPeerState(
     listener: (message: PeerStateMessage) => void,
   ): BrowserBridgeSubscription;
   onSourceNavigationState(
-    listener: (message: SourceNavigationStateMessage) => void,
+    listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
   ): BrowserBridgeSubscription;
   onPageRefresh(
     listener: (message: PageRefreshMessage) => void,
@@ -153,7 +158,7 @@ export class WindowConnectionCoordinator {
   private readonly tabOwners = new Map<number, RegistrationEntry>();
   private readonly storeTails = new Map<number, Promise<void>>();
   private readonly resolutionListeners = new Set<
-    (windowId: number, message: ResolutionMessage) => void
+    TrustedIdeMessageListener<ResolutionMessage>
   >();
   private readonly peerStateListeners = new Set<
     (windowId: number, message: PeerStateMessage) => void
@@ -162,7 +167,7 @@ export class WindowConnectionCoordinator {
     (windowId: number, state: BrowserWindowConnectionState) => void
   >();
   private readonly sourceNavigationStateListeners = new Set<
-    (windowId: number, message: SourceNavigationStateMessage) => void
+    TrustedIdeMessageListener<SourceNavigationStateMessage>
   >();
   private readonly pageRefreshListeners = new Set<
     (windowId: number, message: PageRefreshMessage) => void
@@ -423,9 +428,9 @@ export class WindowConnectionCoordinator {
   }
 
   public onResolution(
-    listener: (windowId: number, message: ResolutionMessage) => void,
+    listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription {
-    return subscribeWindowEvent(this.resolutionListeners, listener);
+    return subscribeTrustedIdeEvent(this.resolutionListeners, listener);
   }
 
   public onPeerState(
@@ -444,9 +449,12 @@ export class WindowConnectionCoordinator {
   }
 
   public onSourceNavigationState(
-    listener: (windowId: number, message: SourceNavigationStateMessage) => void,
+    listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
   ): BrowserBridgeSubscription {
-    return subscribeWindowEvent(this.sourceNavigationStateListeners, listener);
+    return subscribeTrustedIdeEvent(
+      this.sourceNavigationStateListeners,
+      listener,
+    );
   }
 
   public onPageRefresh(
@@ -651,6 +659,7 @@ export class WindowConnectionCoordinator {
     try {
       client = this.createClient({
         url,
+        windowId: record.windowId,
         sourceId: source.id,
         source,
         autoReconnect: false,
@@ -678,17 +687,18 @@ export class WindowConnectionCoordinator {
     const subscriptions: BrowserBridgeSubscription[] = [];
     record.clientSubscriptions = subscriptions;
     try {
-      subscriptions.push(client.onResolution((message) =>
-        this.forwardResolution(record, generation, token, message),
+      subscriptions.push(client.onResolution((context, message) =>
+        this.forwardResolution(record, generation, token, context, message),
       ));
       subscriptions.push(client.onPeerState((message) =>
         this.forwardPeerState(record, generation, token, message),
       ));
-      subscriptions.push(client.onSourceNavigationState((message) =>
+      subscriptions.push(client.onSourceNavigationState((context, message) =>
         this.forwardSourceNavigationState(
           record,
           generation,
           token,
+          context,
           message,
         ),
       ));
@@ -1123,12 +1133,17 @@ export class WindowConnectionCoordinator {
     record: WindowRecord,
     generation: number,
     token: object,
+    context: TrustedIdePeerContext,
     message: ResolutionMessage,
   ): void {
-    if (!this.isCurrentToken(record, generation, token)) {
+    if (
+      !this.isCurrentToken(record, generation, token) ||
+      !trustedIdePeerMatchesPayload(context, message) ||
+      context.windowId !== record.windowId
+    ) {
       return;
     }
-    notifyWindowEvent(this.resolutionListeners, record.windowId, message);
+    notifyTrustedIdeEvent(this.resolutionListeners, context, message);
   }
 
   private forwardPeerState(
@@ -1147,14 +1162,19 @@ export class WindowConnectionCoordinator {
     record: WindowRecord,
     generation: number,
     token: object,
+    context: TrustedIdePeerContext,
     message: SourceNavigationStateMessage,
   ): void {
-    if (!this.isCurrentToken(record, generation, token)) {
+    if (
+      !this.isCurrentToken(record, generation, token) ||
+      !trustedIdePeerMatchesPayload(context, message) ||
+      context.windowId !== record.windowId
+    ) {
       return;
     }
-    notifyWindowEvent(
+    notifyTrustedIdeEvent(
       this.sourceNavigationStateListeners,
-      record.windowId,
+      context,
       message,
     );
   }
@@ -1413,6 +1433,23 @@ function subscribeWindowEvent<T>(
   };
 }
 
+function subscribeTrustedIdeEvent<T>(
+  listeners: Set<TrustedIdeMessageListener<T>>,
+  listener: TrustedIdeMessageListener<T>,
+): BrowserBridgeSubscription {
+  listeners.add(listener);
+  let disposed = false;
+  return {
+    dispose(): void {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      listeners.delete(listener);
+    },
+  };
+}
+
 function notifyWindowEvent<T>(
   listeners: Set<(windowId: number, message: T) => void>,
   windowId: number,
@@ -1421,6 +1458,20 @@ function notifyWindowEvent<T>(
   for (const listener of [...listeners]) {
     try {
       listener(windowId, message);
+    } catch {
+      // One router listener cannot interrupt delivery to another listener.
+    }
+  }
+}
+
+function notifyTrustedIdeEvent<T>(
+  listeners: Set<TrustedIdeMessageListener<T>>,
+  context: TrustedIdePeerContext,
+  message: T,
+): void {
+  for (const listener of [...listeners]) {
+    try {
+      listener(context, message);
     } catch {
       // One router listener cannot interrupt delivery to another listener.
     }
