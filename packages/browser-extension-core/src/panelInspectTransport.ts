@@ -1,6 +1,7 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
 } from "@pin-op/protocol";
 import {
@@ -17,11 +18,17 @@ import {
   parseInspectControllerCommand,
   parseInspectPortInvalidated,
   parseInspectPortResult,
+  parsePanelPresentationSettingsCommand,
+  parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
+  parsePanelTabSettingsCommand,
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
   type InspectPortRequest,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
 import { parseLinkCode } from "./linkCode.js";
+import { parseProtocolData } from "./protocolDataSnapshot.js";
 
 const DOM_WIRE_REQUEST_ID_PREFIX = "domq-";
 
@@ -51,6 +58,7 @@ export class PanelInspectTransport {
     private readonly createPort: () => PanelInspectPort,
     private readonly onUnexpectedDisconnect: () => void = () => {},
     private readonly onUnhandledMessage: (message: unknown) => void = () => {},
+    private readonly onConnectionActivated: () => void = () => {},
   ) {}
 
   public connect(): void {
@@ -174,6 +182,30 @@ export class PanelInspectTransport {
     }
   }
 
+  public dispatchSourceOpen(message: unknown): void {
+    this.dispatchLocalCommand(
+      message,
+      parsePanelSourceOpenCommand,
+      "Invalid source open command",
+    );
+  }
+
+  public dispatchPresentationSettings(message: unknown): void {
+    this.dispatchLocalCommand(
+      message,
+      parsePanelPresentationSettingsCommand,
+      "Invalid presentation settings command",
+    );
+  }
+
+  public dispatchTabSettings(message: unknown): void {
+    this.dispatchLocalCommand(
+      message,
+      parsePanelTabSettingsCommand,
+      "Invalid tab settings command",
+    );
+  }
+
   public cancelDomRequests(reason = "DOM session changed"): void {
     const error = new Error(reason);
     for (const pending of this.pendingDom.values()) {
@@ -212,7 +244,33 @@ export class PanelInspectTransport {
     this.connection = connection;
     port.onMessage.addListener(connection.onMessage);
     port.onDisconnect.addListener(connection.onDisconnect);
+    this.onConnectionActivated();
     return connection;
+  }
+
+  private dispatchLocalCommand<T>(
+    message: unknown,
+    parse: (value: unknown) => T | undefined,
+    invalidMessage: string,
+  ): void {
+    if (this.disposed) {
+      throw new Error("Inspect connection is closed");
+    }
+    const command = parse(message);
+    if (!command) {
+      throw new Error(invalidMessage);
+    }
+
+    let connection: PortConnection | undefined;
+    try {
+      connection = this.connection ?? this.openConnection();
+      connection.port.postMessage(command);
+    } catch {
+      if (connection) {
+        this.closeConnection(connection, true);
+      }
+      throw new Error("Inspect connection is closed");
+    }
   }
 
   private handleMessage(
@@ -404,6 +462,18 @@ function validatedPushMessage(message: unknown): unknown | undefined {
   if (invalidated) {
     return invalidated;
   }
+  const sourceMatches = parseProtocolData(message, SourceMatchesMessageSchema);
+  if (sourceMatches) {
+    return sourceMatches;
+  }
+  const tabState = parsePanelTabStateMessage(message);
+  if (tabState) {
+    return tabState;
+  }
+  const compatibility = parseProtocolCompatibilityMessage(message);
+  if (compatibility) {
+    return compatibility;
+  }
   return validatedLocalPanelState(message);
 }
 
@@ -477,6 +547,7 @@ const WINDOW_STATES = new Set([
   "reconnecting",
   "offline",
   "rateLimited",
+  "incompatible",
   "error",
 ]);
 
@@ -485,6 +556,7 @@ const LINKED_WINDOW_STATES = new Set([
   "linked",
   "reconnecting",
   "offline",
+  "incompatible",
   "error",
 ]);
 

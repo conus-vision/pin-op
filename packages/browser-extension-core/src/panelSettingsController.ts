@@ -98,7 +98,13 @@ export class PanelSettingsController {
     if (token !== this.bindingToken) {
       return false;
     }
-    if (state !== "linked") {
+    if (state === "incompatible") {
+      this.inspectMessageId = undefined;
+      this.update({
+        ...initialModel,
+        compatibility: "incompatible",
+      });
+    } else if (state !== "linked") {
       this.bindingToken = undefined;
       this.inspectMessageId = undefined;
       this.update(initialModel);
@@ -123,6 +129,10 @@ export class PanelSettingsController {
     }
     this.inspectMessageId = inspectMessageId;
     return true;
+  }
+
+  public invalidateInspect(): void {
+    this.inspectMessageId = undefined;
   }
 
   public setAutoRefreshEnabled(enabled: boolean): boolean {

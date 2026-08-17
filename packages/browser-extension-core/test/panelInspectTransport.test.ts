@@ -2,6 +2,8 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceExcerpt,
+  type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
@@ -502,6 +504,109 @@ describe("PanelInspectTransport source navigation", () => {
   });
 });
 
+describe("PanelInspectTransport source presentation", () => {
+  it("posts only exact source open, presentation, and tab settings commands", () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const sourceOpen = {
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 2,
+      matchId: "match-1",
+    } as const;
+    const presentation = {
+      type: "pin-op.presentation.settings",
+      inspectMessageId: "inspect-1",
+      ideHighlightEnabled: false,
+    } as const;
+    const tabSettings = {
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+    } as const;
+
+    transport.dispatchSourceOpen(sourceOpen);
+    transport.dispatchPresentationSettings(presentation);
+    transport.dispatchTabSettings(tabSettings);
+
+    expect(port.sent).toEqual([sourceOpen, presentation, tabSettings]);
+    expect(port.sent[0]).not.toBe(sourceOpen);
+    expect(port.sent[1]).not.toBe(presentation);
+    expect(port.sent[2]).not.toBe(tabSettings);
+
+    expect(() => transport.dispatchSourceOpen({ ...sourceOpen, extra: true }))
+      .toThrow("Invalid source open command");
+    expect(() => transport.dispatchPresentationSettings({
+      ...presentation,
+      inspectMessageId: "",
+    })).toThrow("Invalid presentation settings command");
+    expect(() => transport.dispatchTabSettings({
+      ...tabSettings,
+      autoRefreshEnabled: "yes",
+    })).toThrow("Invalid tab settings command");
+    expect(port.sent).toHaveLength(3);
+  });
+
+  it("forwards strict v6 source, settings, compatibility, and incompatible states", () => {
+    const port = new FakePort();
+    const received: unknown[] = [];
+    const transport = new PanelInspectTransport(
+      () => port,
+      () => undefined,
+      (message) => received.push(message),
+    );
+    transport.connect();
+    const matches = sourceMatches();
+    const tabState = {
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+      lastAcceptedGeneration: 2,
+    } as const;
+    const compatible = {
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    } as const;
+    const incompatible = {
+      type: "pin-op.windowState",
+      state: "incompatible",
+      displayLinkCode: "48735 07",
+    } as const;
+
+    port.emitMessage(matches);
+    port.emitMessage(tabState);
+    port.emitMessage(compatible);
+    port.emitMessage(incompatible);
+    port.emitMessage({ ...matches, extra: true });
+    port.emitMessage({ ...tabState, participant: "yes" });
+    port.emitMessage({ ...compatible, browserProtocolVersion: 5 });
+    port.emitMessage({ ...incompatible, state: "connected" });
+
+    expect(received).toEqual([matches, tabState, compatible, incompatible]);
+  });
+
+  it("ignores messages from an old port after reconnecting", () => {
+    const ports = [new FakePort(), new FakePort()];
+    const received: unknown[] = [];
+    let index = 0;
+    const transport = new PanelInspectTransport(
+      () => ports[index++]!,
+      () => undefined,
+      (message) => received.push(message),
+    );
+    transport.connect();
+    ports[0]!.disconnect();
+    transport.connect();
+
+    ports[0]!.emitMessage(sourceMatches());
+    ports[1]!.emitMessage(sourceMatches());
+
+    expect(received).toEqual([sourceMatches()]);
+  });
+});
+
 class FakePort implements PanelInspectPort {
   public readonly name = "pin-op.devtools.channel-1";
   public readonly sent: unknown[] = [];
@@ -559,6 +664,37 @@ function sourceNavigateCommand(direction: "previous" | "next") {
     inspectMessageId: "inspect-1",
     resolutionGeneration: 2,
     direction,
+  };
+}
+
+function sourceMatches(): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: "source-matches-1",
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    resolutionGeneration: 2,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [sourceExcerpt()],
+    omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function sourceExcerpt(): SourceExcerpt {
+  return {
+    matchId: "match-1",
+    targetRole: "selected",
+    label: "card.scss:1",
+    kind: "rule",
+    relation: "selected",
+    confidence: "exact",
+    startLine: 1,
+    endLine: 3,
+    text: ".card {\n  color: red;\n}",
+    truncated: false,
   };
 }
 

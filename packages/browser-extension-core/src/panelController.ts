@@ -13,6 +13,7 @@ export type PanelOperationalState =
   | "reconnecting"
   | "offline"
   | "rateLimited"
+  | "incompatible"
   | "error";
 
 export type PanelCommand =
@@ -98,6 +99,7 @@ const statusLabels: Readonly<Record<PanelOperationalState, string>> = {
   reconnecting: "Reconnecting",
   offline: "Linked IDE offline",
   rateLimited: "Rate limited",
+  incompatible: "Extensions are incompatible",
   error: "Error",
 };
 
@@ -564,6 +566,7 @@ function parseWindowState(value: unknown): ParsedWindowState | undefined {
     case "reconnecting":
     case "offline":
     case "rateLimited":
+    case "incompatible":
     case "error":
       state = value.state;
       break;
@@ -634,6 +637,7 @@ function canCarryDisplayLinkCode(state: PanelOperationalState): boolean {
     state === "connected" ||
     state === "reconnecting" ||
     state === "offline" ||
+    state === "incompatible" ||
     state === "error"
   );
 }
@@ -647,6 +651,7 @@ function retainsLinkIntent(
     state === "connected" ||
     state === "reconnecting" ||
     state === "offline" ||
+    state === "incompatible" ||
     (state === "error" && displayLinkCode !== undefined)
   );
 }

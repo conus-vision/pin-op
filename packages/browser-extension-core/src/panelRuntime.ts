@@ -1,6 +1,7 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
 } from "@pin-op/protocol";
 import {
@@ -18,16 +19,25 @@ import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
 import { PanelInspectController } from "./panelInspectController.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
+import {
+  PanelSettingsController,
+  type PanelSettingsBindingToken,
+} from "./panelSettingsController.js";
 import type { PanelInspectStartedState } from "./panelSessionTransport.js";
 import { DomPanelView, type PanelDocument } from "./panelView.js";
+import { parseProtocolData } from "./protocolDataSnapshot.js";
 import { ResolutionPresenter } from "./resolutionPresenter.js";
 import { SourceNavigationController } from "./sourceNavigationController.js";
+import { SourcePaneController } from "./sourcePaneController.js";
 import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
   parseInspectPortInvalidated,
+  parsePanelTabStateMessage,
+  parseProtocolCompatibilityMessage,
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
+import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
 
 export interface PanelRuntimeOptions {
   readonly locationSearch: string;
@@ -44,6 +54,8 @@ export interface PanelRuntimeOptions {
 export interface PanelRuntime {
   readonly ready: Promise<void>;
   readonly closed: Promise<void>;
+  readonly sourcePaneController: SourcePaneController;
+  readonly settingsController: PanelSettingsController;
   dispose(): void;
 }
 
@@ -78,15 +90,43 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   let domRecoveryStatusGeneration = 0;
   let acceptedSelectionRevision: number | undefined;
   let activeInspectSelectionRevision: number | undefined;
+  let settingsBinding: PanelSettingsBindingToken | undefined;
+  let compatibility: "pending" | "compatible" | "incompatible" = "pending";
+  let mismatchBlocked = false;
+  let deferredLinkedState: unknown;
 
-  const inspectTransport = new PanelInspectTransport(
+  let inspectTransport!: PanelInspectTransport;
+  const sourcePaneController = new SourcePaneController((message) =>
+    inspectTransport.dispatchSourceOpen(message),
+  );
+  const settingsController = new PanelSettingsController((message) => {
+    if (message.type === "pin-op.tab.settings") {
+      inspectTransport.dispatchTabSettings(message);
+    } else {
+      inspectTransport.dispatchPresentationSettings(message);
+    }
+  });
+  inspectTransport = new PanelInspectTransport(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
+      const preserveMismatch = mismatchBlocked;
       deactivateTreeSession();
-      void controller.handleTransportDisconnect().catch(reportError);
-      void ensurePanelPort();
+      disconnectFeatureControllers(preserveMismatch);
+      void controller.handleTransportDisconnect()
+        .catch(reportError)
+        .then(() => {
+          if (preserveMismatch && !disposed) {
+            notifyStateListeners({
+              type: "pin-op.windowState",
+              state: "incompatible",
+            });
+          }
+          return ensurePanelPort();
+        })
+        .catch(reportError);
     },
     (message) => routePanelMessage(message),
+    activatePanelBinding,
   );
   const sourceNavigationController = new SourceNavigationController(
     (message) => inspectTransport.dispatchSourceNavigation(message),
@@ -161,9 +201,52 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   }
 
   function routePanelMessage(message: unknown): void {
+    const compatibilityMessage = parseProtocolCompatibilityMessage(message);
+    const tabState = parsePanelTabStateMessage(message);
     const inspectStarted = validatedInspectStarted(message);
     const domEvent = validatedDomEvent(message);
-    if (inspectStarted) {
+    const sourceMatches = parseProtocolData(message, SourceMatchesMessageSchema);
+    const windowState = validatedWindowState(message);
+    let forwardToStateListeners = true;
+    if (compatibilityMessage) {
+      if (!settingsBinding) {
+        return;
+      }
+      if (!settingsController.acceptCompatibility(
+        settingsBinding,
+        compatibilityMessage,
+      )) {
+        return;
+      }
+      compatibility = compatibilityMessage.compatible
+        ? "compatible"
+        : "incompatible";
+      sourcePaneController.setCompatible(compatibilityMessage.compatible);
+      if (!compatibilityMessage.compatible) {
+        mismatchBlocked = true;
+        sourceNavigationController.invalidate();
+        settingsController.invalidateInspect();
+        notifyStateListeners({
+          type: "pin-op.windowState",
+          state: "incompatible",
+        });
+      } else if (mismatchBlocked) {
+        mismatchBlocked = false;
+        const linkedState = deferredLinkedState;
+        deferredLinkedState = undefined;
+        if (linkedState) {
+          notifyStateListeners(linkedState);
+        }
+      }
+    } else if (tabState) {
+      if (!settingsBinding) {
+        return;
+      }
+      settingsController.acceptTabState(settingsBinding, tabState);
+    } else if (inspectStarted) {
+      if (compatibility === "incompatible") {
+        return;
+      }
       if (
         acceptedSelectionRevision !== undefined &&
         inspectStarted.selectionRevision < acceptedSelectionRevision
@@ -173,6 +256,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       acceptedSelectionRevision = inspectStarted.selectionRevision;
       activeInspectSelectionRevision = inspectStarted.selectionRevision;
       sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
+      sourcePaneController.beginInspect(inspectStarted.inspectMessageId);
+      settingsController.beginInspect(inspectStarted.inspectMessageId);
       const model = resolutionPresenter.beginCorrelatedInspect(
         inspectStarted.inspectMessageId,
       );
@@ -197,10 +282,14 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
           acceptedSelectionRevision = domEvent.selectionRevision;
           activeInspectSelectionRevision = undefined;
           sourceNavigationController.invalidate();
+          sourcePaneController.invalidate();
+          settingsController.invalidateInspect();
         } else if (
           activeInspectSelectionRevision !== domEvent.selectionRevision
         ) {
           sourceNavigationController.invalidate();
+          sourcePaneController.invalidate();
+          settingsController.invalidateInspect();
         }
       }
       treeController.handleEvent(domEvent);
@@ -215,20 +304,25 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       }
     } else if (validatedResolution(message)) {
       const resolution = ResolutionMessageSchema.parse(message);
+      sourcePaneController.acceptResolution(resolution);
       const model = resolutionPresenter.acceptResolution(resolution);
       if (model) {
         sourceNavigationController.acceptResolution(resolution);
         diagnostics.recordResolution(resolution);
         view.renderResolution(model);
       }
+    } else if (sourceMatches) {
+      sourcePaneController.acceptMatches(sourceMatches);
     } else if (validatedSourceNavigationState(message)) {
-      sourceNavigationController.acceptState(
-        SourceNavigationStateMessageSchema.parse(message),
-      );
+      const navigationState = SourceNavigationStateMessageSchema.parse(message);
+      sourcePaneController.acceptNavigationState(navigationState);
+      sourceNavigationController.acceptState(navigationState);
     } else if (validatedPeerState(message)) {
       const peer = PeerStateMessageSchema.parse(message);
       if (!peer.connected) {
         sourceNavigationController.invalidate();
+        sourcePaneController.invalidate();
+        settingsController.invalidateInspect();
       }
       const model = peer.connected
         ? resolutionPresenter.restartResolution()
@@ -249,16 +343,31 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       );
       if (model) {
         sourceNavigationController.invalidate();
+        sourcePaneController.invalidate();
+        settingsController.invalidateInspect();
         diagnostics.recordIdeDisconnected();
         view.renderResolution(model);
       }
-    } else if (
-      isWindowState(message, "linked") ||
-      isWindowState(message, "offline") ||
-      isWindowState(message, "reconnecting")
-    ) {
-      if (!isWindowState(message, "linked")) {
+    } else if (windowState && (
+      windowState.state === "linked" ||
+      windowState.state === "offline" ||
+      windowState.state === "reconnecting"
+    )) {
+      acceptSettingsWindowState(windowState.state);
+      if (windowState.state === "linked") {
+        deferredLinkedState = message;
+        if (!settingsBinding) {
+          activatePanelBinding();
+          deferredLinkedState = message;
+        }
+        if (mismatchBlocked) {
+          forwardToStateListeners = false;
+        }
+      } else {
         sourceNavigationController.invalidate();
+        sourcePaneController.disconnect();
+        settingsController.invalidateInspect();
+        compatibility = "pending";
       }
       treeSessionActive = true;
       void treeController.loadRoot();
@@ -266,6 +375,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       const shouldRecover = treeSessionActive;
       resetSelectionOwnership();
       sourceNavigationController.invalidate();
+      sourcePaneController.invalidate();
+      settingsController.invalidateInspect();
       if (shouldRecover) {
         const statusGeneration = ++domRecoveryStatusGeneration;
         resetResolutionState("restoring");
@@ -280,21 +391,34 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         treeController.reset();
         resetResolutionState();
       }
-    } else if (
-      isWindowState(message, "notLinked") ||
-      isWindowState(message, "linking") ||
-      isWindowState(message, "rateLimited")
-    ) {
+    } else if (windowState && (
+      windowState.state === "notLinked" ||
+      windowState.state === "linking" ||
+      windowState.state === "rateLimited"
+    )) {
+      acceptSettingsWindowState(windowState.state);
+      mismatchBlocked = false;
+      deferredLinkedState = undefined;
       clearLinkedInspectionState();
-    } else if (isWindowState(message, "error")) {
+    } else if (windowState?.state === "incompatible") {
+      acceptSettingsWindowState(windowState.state);
+      compatibility = "incompatible";
+      mismatchBlocked = true;
+      sourcePaneController.setCompatible(false);
+      settingsController.invalidateInspect();
+      clearLinkedInspectionState(true);
+    } else if (windowState?.state === "error") {
+      acceptSettingsWindowState(windowState.state);
       if (hasDisplayLinkCode(message)) {
         sourceNavigationController.invalidate();
+        sourcePaneController.invalidate();
+        settingsController.invalidateInspect();
       } else {
         clearLinkedInspectionState();
       }
     }
-    for (const listener of [...stateListeners]) {
-      void Promise.resolve(listener(message)).catch(reportError);
+    if (forwardToStateListeners) {
+      notifyStateListeners(message);
     }
   }
 
@@ -303,17 +427,66 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     return options.sendRuntimeMessage(message);
   }
 
+  function activatePanelBinding(): void {
+    settingsBinding = settingsController.beginBinding();
+    sourcePaneController.beginBinding();
+    compatibility = mismatchBlocked ? "incompatible" : "pending";
+    if (mismatchBlocked) {
+      settingsController.acceptWindowState(settingsBinding, "incompatible");
+    }
+    if (!mismatchBlocked) {
+      deferredLinkedState = undefined;
+    }
+  }
+
+  function acceptSettingsWindowState(
+    state: BrowserWindowConnectionState,
+  ): void {
+    if (settingsBinding) {
+      settingsController.acceptWindowState(settingsBinding, state);
+    }
+    if (state !== "linked" && state !== "incompatible") {
+      settingsBinding = undefined;
+      compatibility = "pending";
+    }
+  }
+
+  function disconnectFeatureControllers(preserveMismatch = false): void {
+    sourcePaneController.disconnect();
+    if (settingsBinding) {
+      settingsController.acceptWindowState(settingsBinding, "offline");
+    }
+    settingsBinding = undefined;
+    compatibility = preserveMismatch ? "incompatible" : "pending";
+    mismatchBlocked = preserveMismatch;
+    if (!preserveMismatch) {
+      deferredLinkedState = undefined;
+    }
+  }
+
+  function notifyStateListeners(message: unknown): void {
+    for (const listener of [...stateListeners]) {
+      void Promise.resolve(listener(message)).catch(reportError);
+    }
+  }
+
   function deactivateTreeSession(): void {
     treeSessionActive = false;
     domRecoveryStatusGeneration += 1;
     resetSelectionOwnership();
     sourceNavigationController.invalidate();
+    sourcePaneController.invalidate();
+    settingsController.invalidateInspect();
     recoveryCoordinator.cancel("DOM tree session deactivated");
     treeController.reset();
   }
 
-  function clearLinkedInspectionState(): void {
+  function clearLinkedInspectionState(preserveMismatch = false): void {
     deactivateTreeSession();
+    if (!preserveMismatch) {
+      sourcePaneController.disconnect();
+      compatibility = "pending";
+    }
     resetResolutionState();
   }
 
@@ -351,6 +524,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     remove?.();
     stateListeners.clear();
     removeSourceNavigationBindings();
+    disconnectFeatureControllers(false);
     diagnostics.clearResolution();
     recoveryCoordinator.dispose();
     treeView.dispose();
@@ -381,7 +555,13 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     .then(ensurePanelPort)
     .catch(reportError);
 
-  return { ready, closed, dispose };
+  return {
+    ready,
+    closed,
+    sourcePaneController,
+    settingsController,
+    dispose,
+  };
 }
 
 function validatedDomEvent(message: unknown) {
@@ -443,13 +623,34 @@ function isIdeDisconnected(
   );
 }
 
-function isWindowState(message: unknown, state: string): boolean {
-  return Boolean(
-    message &&
-    typeof message === "object" &&
-    (message as Record<string, unknown>).type === "pin-op.windowState" &&
-    (message as Record<string, unknown>).state === state,
-  );
+function validatedWindowState(
+  message: unknown,
+): { readonly state: BrowserWindowConnectionState } | undefined {
+  if (
+    !isRecord(message) ||
+    (!hasOnlyKeys(message, ["type", "state"]) &&
+      !hasOnlyKeys(message, ["type", "state", "displayLinkCode"])) ||
+    message.type !== "pin-op.windowState" ||
+    !isBrowserWindowConnectionState(message.state) ||
+    (message.displayLinkCode !== undefined &&
+      typeof message.displayLinkCode !== "string")
+  ) {
+    return undefined;
+  }
+  return { state: message.state };
+}
+
+function isBrowserWindowConnectionState(
+  value: unknown,
+): value is BrowserWindowConnectionState {
+  return value === "notLinked" ||
+    value === "linking" ||
+    value === "linked" ||
+    value === "reconnecting" ||
+    value === "offline" ||
+    value === "rateLimited" ||
+    value === "incompatible" ||
+    value === "error";
 }
 
 function hasDisplayLinkCode(message: unknown): boolean {

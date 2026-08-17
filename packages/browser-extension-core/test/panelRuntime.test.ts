@@ -1,6 +1,8 @@
 import {
   PROTOCOL_VERSION,
   type ResolutionMessage,
+  type SourceExcerpt,
+  type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { readFileSync } from "node:fs";
@@ -50,6 +52,363 @@ describe("startPanelRuntime", () => {
     expect(clipboardReads).toBe(0);
     expect(pressed(dom.element("inspect-mode"))).toBe(false);
     expect(dom.element("inspect-mode").disabled).toBe(true);
+    runtime.dispose();
+  });
+
+  it("exposes default-on settings without enabling controls before a compatible fresh snapshot", async () => {
+    const runtime = createRuntime();
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      compatibility: "pending",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+
+    port.emitMessage(tabState(false, false));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    port.emitMessage(compatible());
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    port.emitMessage(tabState(false, true));
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      snapshotReady: true,
+      controlsEnabled: true,
+    });
+    runtime.dispose();
+  });
+
+  it("dispatches tab settings immediately and presentation settings only for a current inspect", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+
+    expect(runtime.settingsController.setAutoRefreshEnabled(false)).toBe(true);
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.slice(-2)).toEqual([
+      {
+        type: "pin-op.tab.settings",
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: true,
+      },
+      {
+        type: "pin-op.tab.settings",
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: false,
+      },
+    ]);
+    expect(port.sent.some(isPresentationSettings)).toBe(false);
+
+    port.emitMessage(inspectStarted("inspect-settings", 1));
+    expect(runtime.settingsController.setIdeHighlightEnabled(true)).toBe(true);
+    expect(port.sent.slice(-2)).toEqual([
+      {
+        type: "pin-op.tab.settings",
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: true,
+      },
+      {
+        type: "pin-op.presentation.settings",
+        inspectMessageId: "inspect-settings",
+        ideHighlightEnabled: true,
+      },
+    ]);
+
+    port.emitMessage(peerState(false, 2));
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.at(-1)).toEqual({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    runtime.dispose();
+  });
+
+  it("binds source matches and exact opens to the current inspect resolution", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(inspectStarted("inspect-source", 1));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-source",
+      resolutionGeneration: 3,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-source", 3));
+
+    expect(runtime.sourcePaneController.snapshot().groups.selected.matches)
+      .toHaveLength(1);
+    expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+    expect(port.sent.at(-1)).toEqual({
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-source",
+      resolutionGeneration: 3,
+      matchId: "match-1",
+    });
+
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    expect(runtime.sourcePaneController.snapshot().groups.selected.matches)
+      .toEqual([]);
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+
+    port.emitMessage(inspectStarted("inspect-new", 2));
+    expect(runtime.sourcePaneController.snapshot().groups.selected.matches)
+      .toEqual([]);
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    port.emitMessage(sourceMatches("inspect-source", 3));
+    expect(runtime.sourcePaneController.snapshot().groups.selected.matches)
+      .toEqual([]);
+    runtime.dispose();
+  });
+
+  it("rejects stale old-port settings and source authority after reconnect", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const oldPort = requiredPort(ports, 0);
+    oldPort.emitMessage(compatible());
+    oldPort.emitMessage(tabState(true, true));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(true);
+
+    oldPort.disconnect();
+    await flushAsync();
+    const currentPort = requiredPort(ports, 1);
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "pending",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+
+    oldPort.emitMessage(compatible());
+    oldPort.emitMessage(tabState(false, false));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    currentPort.emitMessage(tabState(false, false));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    currentPort.emitMessage(compatible());
+    currentPort.emitMessage(tabState(false, true));
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      controlsEnabled: true,
+    });
+    runtime.dispose();
+  });
+
+  it("blocks feature authority on mismatch until compatibility, snapshot, and a fresh inspect", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(inspectStarted("inspect-before-mismatch", 1));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-before-mismatch",
+      resolutionGeneration: 4,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-before-mismatch", 4));
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "incompatible",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushAsync();
+
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      controlsEnabled: false,
+    });
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(dom.element("disconnect-button").hidden).toBe(false);
+    expect(dom.element("disconnect-button").disabled).toBe(false);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    port.emitMessage(compatible());
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    port.emitMessage(tabState(true, true));
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(true);
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+
+    port.emitMessage(inspectStarted("inspect-after-mismatch", 2));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-after-mismatch",
+      resolutionGeneration: 5,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-after-mismatch", 5));
+    expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+    runtime.dispose();
+  });
+
+  it("fails closed when protocol mismatch arrives before the incompatible window state", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushAsync();
+
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(dom.element("disconnect-button").hidden).toBe(false);
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    port.emitMessage(compatible());
+    await flushAsync();
+    expect(dom.element("inspect-mode").disabled).toBe(false);
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    runtime.dispose();
+  });
+
+  it("keeps mismatch blocking when linked must mint a replacement settings binding", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "offline",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "incompatible",
+      displayLinkCode: "48735 07",
+    });
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    await flushAsync();
+
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    await flushAsync();
+    expect(dom.element("inspect-mode").disabled).toBe(false);
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(true);
+    runtime.dispose();
+  });
+
+  it("preserves mismatch across port rebind until the new port proves compatibility", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const oldPort = requiredPort(ports, 0);
+    oldPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    oldPort.emitMessage(compatible());
+    oldPort.emitMessage(tabState(true, true));
+    oldPort.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushAsync();
+    expect(dom.element("connection-status").value)
+      .toBe("Extensions are incompatible");
+
+    oldPort.disconnect();
+    await flushAsync();
+    const currentPort = requiredPort(ports, 1);
+    expect(dom.element("connection-status").value)
+      .toBe("Extensions are incompatible");
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "incompatible",
+      controlsEnabled: false,
+    });
+
+    currentPort.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    currentPort.emitMessage(tabState(false, false));
+    await flushAsync();
+    expect(dom.element("connection-status").value)
+      .toBe("Extensions are incompatible");
+    expect(dom.element("inspect-mode").disabled).toBe(true);
+    expect(runtime.settingsController.snapshot().controlsEnabled).toBe(false);
+
+    currentPort.emitMessage(compatible());
+    await flushAsync();
+    expect(dom.element("connection-status").value).toBe("Connected");
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      compatibility: "compatible",
+      snapshotReady: false,
+      controlsEnabled: false,
+    });
+    currentPort.emitMessage(tabState(false, true));
+    expect(runtime.settingsController.snapshot()).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      controlsEnabled: true,
+    });
     runtime.dispose();
   });
 
@@ -1925,6 +2284,62 @@ function sourceNavigationState(
     metadata: {},
     ...overrides,
   };
+}
+
+function compatible() {
+  return {
+    type: "pin-op.protocol.compatibility" as const,
+    compatible: true as const,
+    browserProtocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+function tabState(autoRefreshEnabled: boolean, ideHighlightEnabled: boolean) {
+  return {
+    type: "pin-op.tab.state" as const,
+    autoRefreshEnabled,
+    ideHighlightEnabled,
+    participant: autoRefreshEnabled,
+    lastAcceptedGeneration: 0,
+  };
+}
+
+function sourceMatches(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: `matches-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-1",
+    source: { role: "ide", id: "vscode-1" },
+    inspectMessageId,
+    resolutionGeneration,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [sourceExcerpt()],
+    omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function sourceExcerpt(): SourceExcerpt {
+  return {
+    matchId: "match-1",
+    targetRole: "selected",
+    label: "card.scss:1",
+    kind: "rule",
+    relation: "selected",
+    confidence: "exact",
+    startLine: 1,
+    endLine: 3,
+    text: ".card {\n  color: red;\n}",
+    truncated: false,
+  };
+}
+
+function isPresentationSettings(message: unknown): boolean {
+  return isRecord(message) && message.type === "pin-op.presentation.settings";
 }
 
 function rowSourceButton(
