@@ -336,6 +336,31 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
+  test(`common ${browser} artifact verifier decodes toolbar class character references`, () => {
+    for (const encodedClass of [
+      "secondary panel&#45;toolbar",
+      "secondary panel&#x2d;toolbar",
+      "secondary&Tab;panel-toolbar",
+    ]) {
+      const archive = browserArchive(browser);
+      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      archive.files.set(
+        "dist/panel.html",
+        Buffer.from(`${panel}\n<header class="${encodedClass}"></header>\n`),
+      );
+
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /toolbar.*exactly one/i,
+        encodedClass,
+      );
+    }
+  });
+
   test(`common ${browser} artifact verifier rejects hidden connection controls`, () => {
     for (const [name, source, replacement] of [
       [
@@ -364,6 +389,37 @@ for (const browser of ["firefox", "chrome"]) {
       const hidden = panel.replace(source, replacement);
       assert.notEqual(hidden, panel, name);
       archive.files.set("dist/panel.html", Buffer.from(hidden));
+
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /connection controls.*visible/i,
+        name,
+      );
+    }
+  });
+
+  test(`common ${browser} artifact verifier rejects controls hidden by packaged CSS`, () => {
+    for (const [name, rule] of [
+      [
+        "ID display rule",
+        "#link-code { DISPLAY/**/:/**/NONE !IMPORTANT; }",
+      ],
+      [
+        "class visibility rule",
+        ".connection/**/ { VISIBILITY : hidden; }",
+      ],
+      [
+        "element content-visibility rule",
+        "section { content-visibility : HIDDEN; }",
+      ],
+    ]) {
+      const archive = browserArchive(browser);
+      const css = archive.files.get("dist/panel.css").toString("utf8");
+      archive.files.set("dist/panel.css", Buffer.from(`${css}\n${rule}\n`));
 
       assert.throws(
         () => validateBrowserArchive(

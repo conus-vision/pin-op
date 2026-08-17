@@ -221,6 +221,36 @@ test("requires exactly one packaged toolbar", () => {
   );
 });
 
+test("rejects an entity-encoded duplicate packaged toolbar", () => {
+  const archive = createArchive();
+  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  archive.files.set(
+    "dist/panel.html",
+    Buffer.from(
+      `${panel}\n<header class="secondary panel&#45;toolbar"></header>\n`,
+    ),
+  );
+
+  assert.throws(
+    () => validatePackagedChromeArchive(archive),
+    /toolbar.*exactly one/i,
+  );
+});
+
+test("rejects a packaged stylesheet that hides the link code", () => {
+  const archive = createArchive();
+  const css = archive.files.get("dist/panel.css").toString("utf8");
+  archive.files.set(
+    "dist/panel.css",
+    Buffer.from(`${css}\n#link-code { display : none !important; }\n`),
+  );
+
+  assert.throws(
+    () => validatePackagedChromeArchive(archive),
+    /connection controls.*visible/i,
+  );
+});
+
 test("accepts the packaged toolbar class token with additional classes", () => {
   const archive = createArchive();
   const panel = archive.files.get("dist/panel.html").toString("utf8");

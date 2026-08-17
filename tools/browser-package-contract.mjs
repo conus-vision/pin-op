@@ -1,3 +1,5 @@
+import { load } from "cheerio";
+import postcss from "postcss";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 
 const PANEL_HTML_MARKERS = Object.freeze([
@@ -55,21 +57,10 @@ const PANEL_BUNDLE_MARKERS = Object.freeze([
   ["opaque match identity", "matchId"],
   ["locator recovery", "dom.resolveLocator"],
 ]);
-const VOID_ELEMENTS = new Set([
-  "area",
-  "base",
-  "br",
-  "col",
-  "embed",
-  "hr",
-  "img",
-  "input",
-  "link",
-  "meta",
-  "param",
-  "source",
-  "track",
-  "wbr",
+const HIDDEN_CSS_VALUES = new Map([
+  ["display", "none"],
+  ["visibility", "hidden"],
+  ["content-visibility", "hidden"],
 ]);
 
 export function assertBrowserPackageRuntimeContract(
@@ -107,14 +98,29 @@ function assertPanelHtmlContract(archive, artifactLabel) {
   if (!Buffer.isBuffer(bytes)) {
     throw new Error(`${artifactLabel} is missing ${path}`);
   }
-  let elements;
+  let document;
   try {
-    elements = parseStaticHtmlElements(bytes.toString("utf8"));
+    document = parseStaticHtmlElements(bytes.toString("utf8"));
   } catch (error) {
     throw new Error(
       `${artifactLabel} ${path} has invalid static HTML: ${error.message}`,
     );
   }
+  const cssPath = "dist/panel.css";
+  const cssBytes = archive.files.get(cssPath);
+  if (!Buffer.isBuffer(cssBytes)) {
+    throw new Error(`${artifactLabel} is missing ${cssPath}`);
+  }
+  let hidingRules;
+  try {
+    hidingRules = parseStylesheetHidingRules(cssBytes.toString("utf8"));
+  } catch (error) {
+    throw new Error(
+      `${artifactLabel} ${cssPath} has invalid static CSS: ${error.message}`,
+    );
+  }
+  const { elements, matchesSelector } = document;
+  const visibilityContext = { hidingRules, matchesSelector };
 
   const toolbars = elements.filter((element) =>
     hasClassToken(element, "panel-toolbar")
@@ -175,6 +181,7 @@ function assertPanelHtmlContract(archive, artifactLabel) {
       specification,
       featureGroup,
       "toolbar-features",
+      visibilityContext,
       artifactLabel,
       path,
     );
@@ -204,6 +211,7 @@ function assertPanelHtmlContract(archive, artifactLabel) {
       { label: "connection controls", ...specification },
       connectionGroup,
       "connection-summary",
+      visibilityContext,
       artifactLabel,
       path,
     );
@@ -244,6 +252,7 @@ function requireControl(
   specification,
   container,
   containerClass,
+  visibilityContext,
   artifactLabel,
   path,
 ) {
@@ -279,7 +288,10 @@ function requireControl(
       );
     }
   }
-  if (specification.visible !== false && isStaticallyHidden(control)) {
+  if (
+    specification.visible !== false &&
+    isStaticallyHidden(control, visibilityContext)
+  ) {
     throw new Error(
       `${artifactLabel} ${specification.label} id="${specification.id}" must be ` +
         `visible in ${path}`,
@@ -301,7 +313,7 @@ function isDescendantOf(element, ancestor) {
   return false;
 }
 
-function isStaticallyHidden(element) {
+function isStaticallyHidden(element, { hidingRules, matchesSelector }) {
   for (
     let current = element;
     current?.tagName !== "#document";
@@ -312,156 +324,110 @@ function isStaticallyHidden(element) {
       return true;
     }
     if (inlineStyleHides(current.attributes.get("style"))) return true;
+    if (
+      hidingRules.some((rule) => matchesSelector(current, rule.selector))
+    ) {
+      return true;
+    }
   }
   return false;
 }
 
 function inlineStyleHides(style) {
   if (typeof style !== "string") return false;
-  const declarations = style.replace(/\/\*[\s\S]*?\*\//g, "").split(";");
-  for (const declaration of declarations) {
-    const separator = declaration.indexOf(":");
-    if (separator < 0) continue;
-    const property = declaration.slice(0, separator).trim().toLowerCase();
-    const value = declaration
-      .slice(separator + 1)
-      .replace(/\s*!important\s*$/i, "")
-      .trim()
-      .toLowerCase();
-    if (property === "display" && value === "none") return true;
-    if (property === "visibility" && value === "hidden") return true;
+  try {
+    const root = postcss.parse(`element { ${style} }`);
+    return root.first?.nodes?.some(declarationHides) ?? false;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 function parseStaticHtmlElements(html) {
+  const $ = load(html);
   const document = {
     tagName: "#document",
     attributes: new Map(),
     parent: undefined,
   };
-  const elements = [];
-  const stack = [document];
-  let cursor = 0;
-
-  while (cursor < html.length) {
-    const start = html.indexOf("<", cursor);
-    if (start < 0) break;
-    if (html.startsWith("<!--", start)) {
-      const commentEnd = html.indexOf("-->", start + 4);
-      if (commentEnd < 0) throw new Error("unterminated comment");
-      cursor = commentEnd + 3;
-      continue;
-    }
-    const end = findTagEnd(html, start + 1);
-    if (end < 0) throw new Error("unterminated tag");
-    const body = html.slice(start + 1, end).trim();
-    cursor = end + 1;
-    if (body === "" || body.startsWith("!") || body.startsWith("?")) {
-      continue;
-    }
-    if (body.startsWith("/")) {
-      const match = /^\/\s*([A-Za-z][A-Za-z0-9:-]*)\s*$/.exec(body);
-      if (!match) throw new Error(`malformed closing tag <${body}>`);
-      const tagName = match[1].toLowerCase();
-      const current = stack.at(-1);
-      if (current.tagName !== tagName) {
-        throw new Error(
-          `closing tag </${tagName}> does not match <${current.tagName}>`,
-        );
-      }
-      stack.pop();
-      continue;
-    }
-
-    const parsed = parseOpeningTag(body);
-    if (!parsed) continue;
-    const element = {
-      tagName: parsed.tagName,
-      attributes: parsed.attributes,
-      parent: stack.at(-1),
-    };
-    elements.push(element);
-    if (!parsed.selfClosing && !VOID_ELEMENTS.has(parsed.tagName)) {
-      stack.push(element);
-    }
+  const nodes = $("*").toArray();
+  const wrappers = new Map(
+    nodes.map((node) => [
+      node,
+      {
+        tagName: node.tagName.toLowerCase(),
+        attributes: new Map(Object.entries(node.attribs ?? {})),
+        node,
+        parent: undefined,
+      },
+    ]),
+  );
+  for (const [node, element] of wrappers) {
+    element.parent = wrappers.get(node.parent) ?? document;
   }
-
-  if (stack.length !== 1) {
-    throw new Error(`unclosed <${stack.at(-1).tagName}> tag`);
-  }
-  return elements;
+  return {
+    elements: [...wrappers.values()],
+    matchesSelector(element, selector) {
+      return $(element.node).is(selector);
+    },
+  };
 }
 
-function findTagEnd(html, start) {
-  let quote;
-  for (let cursor = start; cursor < html.length; cursor += 1) {
-    const character = html[cursor];
-    if (quote) {
-      if (character === quote) quote = undefined;
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === ">") {
-      return cursor;
+function parseStylesheetHidingRules(css) {
+  const rules = [];
+  const root = postcss.parse(css);
+  root.walkRules((rule) => {
+    if (rule.nodes?.some(declarationHides)) {
+      rules.push({ selector: rule.selector });
     }
-  }
-  return -1;
+  });
+  return rules;
 }
 
-function parseOpeningTag(body) {
-  const tagMatch = /^[A-Za-z][A-Za-z0-9:-]*/.exec(body);
-  if (!tagMatch) return undefined;
-  const tagName = tagMatch[0].toLowerCase();
-  const attributes = new Map();
-  let cursor = tagMatch[0].length;
-  let selfClosing = false;
+function declarationHides(node) {
+  if (node.type !== "decl") return false;
+  const property = decodeCssIdentifier(node.prop);
+  const value = decodeCssIdentifier(node.value);
+  const hiddenValue = HIDDEN_CSS_VALUES.get(property);
+  return hiddenValue !== undefined && hiddenValue === value;
+}
 
-  while (cursor < body.length) {
-    while (/\s/.test(body[cursor])) cursor += 1;
-    if (cursor >= body.length) break;
-    if (body[cursor] === "/" && body.slice(cursor + 1).trim() === "") {
-      selfClosing = true;
-      break;
+function decodeCssIdentifier(identifier) {
+  const input = identifier.trim();
+  let decoded = "";
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (/\s/.test(character)) return undefined;
+    if (character !== "\\") {
+      decoded += character;
+      continue;
     }
 
-    const nameStart = cursor;
-    while (
-      cursor < body.length &&
-      !/[\s"'=<>`/]/.test(body[cursor])
-    ) {
+    const next = input[index + 1];
+    if (next === undefined || next === "\n" || next === "\r" || next === "\f") {
+      return undefined;
+    }
+    if (!/[0-9a-f]/i.test(next)) {
+      decoded += next;
+      index += 1;
+      continue;
+    }
+
+    let hexadecimal = "";
+    let cursor = index + 1;
+    while (cursor < input.length && hexadecimal.length < 6) {
+      if (!/[0-9a-f]/i.test(input[cursor])) break;
+      hexadecimal += input[cursor];
       cursor += 1;
     }
-    if (cursor === nameStart) {
-      throw new Error(`malformed attribute in <${tagName}>`);
-    }
-    const name = body.slice(nameStart, cursor).toLowerCase();
-    while (/\s/.test(body[cursor])) cursor += 1;
-    let value = "";
-    if (body[cursor] === "=") {
-      cursor += 1;
-      while (/\s/.test(body[cursor])) cursor += 1;
-      const quote = body[cursor];
-      if (quote === '"' || quote === "'") {
-        cursor += 1;
-        const valueStart = cursor;
-        const valueEnd = body.indexOf(quote, cursor);
-        if (valueEnd < 0) {
-          throw new Error(`unterminated ${name} attribute in <${tagName}>`);
-        }
-        value = body.slice(valueStart, valueEnd);
-        cursor = valueEnd + 1;
-      } else {
-        const valueStart = cursor;
-        while (cursor < body.length && !/\s/.test(body[cursor])) cursor += 1;
-        value = body.slice(valueStart, cursor);
-      }
-    }
-    if (attributes.has(name)) {
-      throw new Error(`duplicate ${name} attribute in <${tagName}>`);
-    }
-    attributes.set(name, value);
+    const codePoint = Number.parseInt(hexadecimal, 16);
+    decoded += String.fromCodePoint(
+      codePoint === 0 || codePoint > 0x10ffff ? 0xfffd : codePoint,
+    );
+    if (/\s/.test(input[cursor] ?? "")) cursor += 1;
+    index = cursor - 1;
   }
-  return { attributes, selfClosing, tagName };
+  return decoded.toLowerCase();
 }
 
 function assertTextMarkers(archive, artifactLabel, path, markers) {
