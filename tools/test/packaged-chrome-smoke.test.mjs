@@ -242,6 +242,8 @@ test("rejects packaged stylesheets that hide the link code", () => {
     "#link-code { display : none !important; }",
     "#link-code { --hide:none; display:var(--hide)!important }",
     "#link-code { visibility:collapse!important }",
+    "@media all { #link-code { display:none!important } } " +
+      "@media not all { #link-code { display:block!important } }",
   ]) {
     const archive = createArchive();
     const css = archive.files.get("dist/panel.css").toString("utf8");

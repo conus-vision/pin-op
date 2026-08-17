@@ -64,6 +64,7 @@ const VISIBILITY_PROPERTIES = new Set([
   "visibility",
   "content-visibility",
 ]);
+const STYLE_CONTEXT_AT_RULES = new Set(["layer", "media", "supports"]);
 const HIDDEN_CSS_VALUES = new Map([
   ["display", new Set(["none", "contents"])],
   ["visibility", new Set(["hidden", "collapse"])],
@@ -113,6 +114,7 @@ const CSS_WIDE_KEYWORDS = new Set([
 ]);
 const MAX_CUSTOM_PROPERTY_DEPTH = 32;
 const MAX_RESOLVED_CSS_VALUE_LENGTH = 16_384;
+const MAX_STYLE_CONTEXTS = 12;
 
 export function assertBrowserPackageRuntimeContract(
   archive,
@@ -382,6 +384,12 @@ function isStaticallyHidden(element, { styleCascade }) {
 }
 
 function styleCascadeHides(element, cascade) {
+  return cascade.variants.some((variant) =>
+    styleCascadeVariantHides(element, variant)
+  );
+}
+
+function styleCascadeVariantHides(element, cascade) {
   const visibility = resolveComputedProperty(element, "visibility", cascade);
   if (resolvedPropertyHides("visibility", visibility, true)) return true;
 
@@ -472,6 +480,8 @@ function parseStaticHtmlElements(html) {
 
 function parsePanelStyleCascade(document, panelCss) {
   const state = {
+    contextIds: new WeakMap(),
+    contexts: [],
     declarations: [],
     inlineDeclarations: new Map(),
     order: 0,
@@ -526,10 +536,7 @@ function parsePanelStyleCascade(document, panelCss) {
   }
 
   return {
-    declarations: state.declarations,
-    inlineDeclarations: state.inlineDeclarations,
-    matchesSelector: document.matchesSelector,
-    winnerCache: new WeakMap(),
+    variants: buildStyleCascadeVariants(state, document.matchesSelector),
   };
 }
 
@@ -563,6 +570,7 @@ function appendStylesheetDeclarations(css, label, state) {
         : [];
     });
     if (declarations.length === 0) return;
+    const { contextIds, layered } = styleContextForRule(rule, label, state);
     const selectors = parseSelectorEntries(rule.selector, label);
     for (const { node, property } of declarations) {
       const order = state.order;
@@ -570,6 +578,8 @@ function appendStylesheetDeclarations(css, label, state) {
       for (const selector of selectors) {
         state.declarations.push({
           important: node.important,
+          contextIds,
+          layered,
           order,
           property,
           selector: selector.text,
@@ -579,6 +589,76 @@ function appendStylesheetDeclarations(css, label, state) {
       }
     }
   });
+}
+
+function styleContextForRule(rule, label, state) {
+  const atRules = [];
+  for (let current = rule.parent; current?.type !== "root"; current = current?.parent) {
+    if (current?.type === "atrule") atRules.unshift(current);
+  }
+
+  const ids = [];
+  let layered = false;
+  let parentId;
+  for (const atRule of atRules) {
+    const name = decodeCssIdentifier(atRule.name);
+    if (!STYLE_CONTEXT_AT_RULES.has(name)) {
+      throw new Error(
+        `${label} uses unsupported @${atRule.name} context for static visibility`,
+      );
+    }
+    if (name === "layer") layered = true;
+    let id = state.contextIds.get(atRule);
+    if (id === undefined) {
+      if (state.contexts.length >= MAX_STYLE_CONTEXTS) {
+        throw new Error(
+          `${label} exceeds ${MAX_STYLE_CONTEXTS} static style contexts`,
+        );
+      }
+      id = state.contexts.length;
+      state.contextIds.set(atRule, id);
+      state.contexts.push({ id, parentId });
+    }
+    ids.push(id);
+    parentId = id;
+  }
+  return { contextIds: ids, layered };
+}
+
+function buildStyleCascadeVariants(state, matchesSelector) {
+  const activations = enumerateStyleContextActivations(state.contexts);
+  return activations.map((activeContexts) => ({
+    declarations: state.declarations.filter((declaration) =>
+      declaration.contextIds.every((id) => activeContexts.has(id))
+    ),
+    inlineDeclarations: state.inlineDeclarations,
+    matchesSelector,
+    winnerCache: new WeakMap(),
+  }));
+}
+
+function enumerateStyleContextActivations(contexts) {
+  // Each context may be active independently, but a nested context requires its parent.
+  const activations = [];
+  const active = new Set();
+
+  function visit(index) {
+    if (index === contexts.length) {
+      activations.push(new Set(active));
+      return;
+    }
+
+    const context = contexts[index];
+    visit(index + 1);
+    if (context.parentId === undefined || active.has(context.parentId)) {
+      active.add(context.id);
+      visit(index + 1);
+      active.delete(context.id);
+    }
+  }
+
+  visit(0);
+  return activations;
 }
 
 function normalizeCssProperty(property) {
@@ -682,6 +762,11 @@ function winningDeclaration(element, property, cascade) {
 function declarationWins(candidate, current) {
   if (!current) return true;
   if (candidate.important !== current.important) return candidate.important;
+  const candidateLayered = Boolean(candidate.layered);
+  const currentLayered = Boolean(current.layered);
+  if (candidateLayered !== currentLayered) {
+    return candidate.important ? candidateLayered : !candidateLayered;
+  }
   const specificity = compareSpecificity(candidate.specificity, current.specificity);
   if (specificity !== 0) return specificity > 0;
   return candidate.order > current.order;

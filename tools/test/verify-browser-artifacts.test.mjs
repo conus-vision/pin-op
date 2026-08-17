@@ -472,6 +472,65 @@ for (const browser of ["firefox", "chrome"]) {
     }
   });
 
+  for (const [name, rules] of [
+    [
+      "media hidden branch before false visible branch",
+      "@media all { #link-code { display: none !important; } } " +
+        "@media not all { #link-code { display: block !important; } }",
+    ],
+    [
+      "media false visible branch before hidden branch",
+      "@media not all { html #link-code { display: block !important; } } " +
+        "@media all { #link-code { display: none !important; } }",
+    ],
+    [
+      "supports true and false-shaped branches",
+      "@supports (display: grid) { " +
+        "#link-code { display: none !important; } } " +
+        "@supports not (display: grid) { " +
+        "html #link-code { display: block !important; } }",
+    ],
+    [
+      "reversed important layer order",
+      "@layer contract, override; " +
+        "@layer contract { #link-code { display: none !important; } } " +
+        "@layer override { html #link-code { display: block !important; } }",
+    ],
+    [
+      "layered important declaration before unlayered fallback",
+      "@layer contract { #link-code { display: none !important; } } " +
+        "html #link-code { display: block !important; }",
+    ],
+    [
+      "conditional custom property branch",
+      "@media all { :root { --conditional-display: none; } } " +
+        "@media not all { :root { --conditional-display: block; } } " +
+        "#link-code { display: var(--conditional-display) !important; }",
+    ],
+    [
+      "nested mixed-case conditional layers",
+      "@MeDiA/**/ all { @SuPpOrTs (display: grid) { @LaYeR contract { " +
+        "#link-code { VISIBILITY:/**/COLLAPSE !ImPoRtAnT; } } } } " +
+        "@media not all { html #link-code { visibility: visible !important; } }",
+    ],
+  ]) {
+    test(`common ${browser} artifact verifier rejects ${name}`, () => {
+      const archive = browserArchive(browser);
+      const css = archive.files.get("dist/panel.css").toString("utf8");
+      archive.files.set("dist/panel.css", Buffer.from(`${css}\n${rules}\n`));
+
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /connection controls.*visible/i,
+        name,
+      );
+    });
+  }
+
   test(`common ${browser} artifact verifier rejects controls hidden by inline style blocks`, () => {
     for (const [name, rule] of [
       [
@@ -523,9 +582,19 @@ for (const browser of ["firefox", "chrome"]) {
           "#link-code { display: block; }",
       ],
       [
+        "winning visible important declaration",
+        "#link-code { display: none !important; } " +
+          "#link-code { display: block !important; }",
+      ],
+      [
         "unrelated styles",
         ".unrelated { display: var(--missing) !important; " +
           "visibility: collapse !important; }",
+      ],
+      [
+        "unrelated conditional styles",
+        "@media all { @supports (display: grid) { @layer unrelated { " +
+          ".unrelated { display: none !important; } } } }",
       ],
     ]) {
       const archive = browserArchive(browser);
