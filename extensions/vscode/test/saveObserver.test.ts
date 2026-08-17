@@ -436,6 +436,43 @@ describe("SaveObserver", () => {
     expect(harness.publish).toHaveBeenCalledTimes(2);
   });
 
+  it("lets a newer preprocessor save replace a generated closing cause", () => {
+    const harness = createHarness();
+    const source = document("file:///workspace/app.scss", "scss");
+    const script = document("file:///workspace/app.ts", "typescript");
+
+    changeAndSave(harness.observer, source);
+    harness.advance(500);
+    changeAndSave(harness.observer, script);
+    harness.advance(150);
+
+    harness.advance(350);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(50);
+    changeAndSave(harness.observer, source);
+    harness.advance(749);
+    expect(harness.publish.mock.calls).toEqual([["reload"]]);
+    harness.advance(1);
+
+    expect(harness.now()).toBe(1_800);
+    expect(harness.publish.mock.calls).toEqual([["reload"], ["styles"]]);
+    expect(harness.pendingTimerCount()).toBe(1);
+
+    harness.advance(100);
+    harness.observer.onDidGeneratedCssFileEvent();
+    harness.advance(99);
+    expect(harness.publish).toHaveBeenCalledTimes(2);
+    harness.advance(1);
+
+    expect(harness.now()).toBe(2_000);
+    expect(harness.publish.mock.calls).toEqual([
+      ["reload"],
+      ["styles"],
+      ["styles"],
+    ]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
   it("disposes every timer and state idempotently", () => {
     const harness = createHarness();
     const classify = vi.spyOn(harness.classifierRegistry, "classify");

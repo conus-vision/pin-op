@@ -113,11 +113,11 @@ export class SaveObserver {
       this.pendingStylesCause = undefined;
       this.retainPreprocessorWindow =
         this.preprocessorDeadline !== undefined;
+    } else if (isPreprocessorUri(uri)) {
+      this.pendingStylesCause = "save";
+      settleMs = PREPROCESSOR_QUIET_MS;
     } else {
       this.pendingStylesCause ??= "save";
-      if (isPreprocessorUri(uri)) {
-        settleMs = PREPROCESSOR_QUIET_MS;
-      }
     }
     if (this.pendingMode === "styles" && this.preprocessorDeadline !== undefined) {
       settleMs = Math.min(
