@@ -364,6 +364,62 @@ describe("DomTreeView", () => {
     },
   );
 
+  it("drops queued source navigation after authority changes", async () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-old");
+    harness.sourceNavigation.acceptResolution(resolution({
+      inspectMessageId: "inspect-old",
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+    }));
+    harness.sourceNavigation.acceptState(navigationState({
+      inspectMessageId: "inspect-old",
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    const tree = harness.dom.element("dom-tree");
+    const original = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    if (!original) {
+      throw new Error("Missing original next source navigation control");
+    }
+    expect(original.disabled).toBe(false);
+
+    const click = tree.dispatch("click", { target: original });
+    expect(click.defaultPrevented).toBe(true);
+    expect(click.propagationStopped).toBe(true);
+    expect(harness.sourceCommands).toEqual([]);
+
+    harness.sourceNavigation.beginInspect("inspect-new");
+    harness.sourceNavigation.acceptResolution(resolution({
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 7,
+      selectedMatchCount: 2,
+    }));
+    harness.sourceNavigation.acceptState(navigationState({
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 7,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+
+    const replacement = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(original);
+    expect(replacement?.disabled).toBe(false);
+    expect(harness.dom.element("dom-tree-spacer").contains(original)).toBe(false);
+
+    await flushAsync();
+
+    expect(harness.sourceCommands).toEqual([]);
+  });
+
   it("does not transfer source control focus into a new document authority", () => {
     const harness = createHarness();
     const path = [
