@@ -65,6 +65,7 @@ export class DomTreeView {
   private seenRevealVersion = 0;
   private seenFocusedRef: string | undefined;
   private seenRecovering = false;
+  private suspendedForZeroSize = false;
   private disposed = false;
 
   private readonly onScroll = (): void => this.render();
@@ -191,6 +192,12 @@ export class DomTreeView {
     if (this.disposed) {
       return;
     }
+    if (this.tree.clientHeight <= 0) {
+      this.suspendedForZeroSize = true;
+      return;
+    }
+    const resumingFromZeroSize = this.suspendedForZeroSize;
+    this.suspendedForZeroSize = false;
     const snapshot = this.controller.snapshot();
     const sourceNavigation = this.sourceNavigationController.snapshot();
     const restoreFocus = this.tree.contains(this.document.activeElement);
@@ -214,7 +221,9 @@ export class DomTreeView {
     if (pendingReveal) {
       this.seenRevealVersion = snapshot.revealVersion;
     }
-    if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
+    if (resumingFromZeroSize && snapshot.focusedRef) {
+      this.ensureVisible(snapshot.focusedRef);
+    } else if (restoreRecoveredFocus && snapshot.recoveredFocusRef) {
       this.ensureVisible(snapshot.recoveredFocusRef);
     } else if (pendingReveal && snapshot.revealRef) {
       this.ensureVisible(snapshot.revealRef);

@@ -420,10 +420,54 @@ describe("DomTreeView", () => {
     harness.resize.trigger();
     expect(harness.dom.element("dom-tree-spacer").children).toHaveLength(6);
 
-    tree.clientHeight = 20;
+    tree.clientHeight = 1;
     harness.resize.trigger();
     expect(harness.dom.element("dom-tree-spacer").children).toHaveLength(2);
     expect(tabbableRows(harness.dom)).toHaveLength(1);
+  });
+
+  it("preserves deep focus authority while hidden and restores it on resize", () => {
+    const harness = createHarness({ clientHeight: 80, rowHeight: 20, overscan: 0 });
+    const path = Array.from({ length: 12 }, (_, index) =>
+      node(`node-${index}`, `div.level-${index}`, index < 11));
+    harness.controller.handleEvent(selectionChanged(1, path));
+    harness.view.focus("node-11");
+    const tree = harness.dom.element("dom-tree");
+    const spacer = harness.dom.element("dom-tree-spacer");
+    const snapshot = harness.controller.snapshot();
+    const expanded = harness.controller.expandedRefs();
+    const scrollTop = tree.scrollTop;
+    const renderedRefs = spacer.children.map((row) => row.dataset.nodeRef);
+    expect(snapshot).toMatchObject({
+      focusedRef: "node-11",
+      selectedRef: "node-11",
+    });
+    expect(expanded).toContain("node-10");
+    expect(scrollTop).toBeGreaterThan(0);
+    expect(renderedRefs).toContain("node-11");
+
+    tree.clientHeight = 0;
+    harness.resize.trigger();
+
+    expect(harness.controller.snapshot()).toEqual(snapshot);
+    expect(harness.controller.expandedRefs()).toEqual(expanded);
+    expect(tree.scrollTop).toBe(scrollTop);
+    expect(spacer.children.map((row) => row.dataset.nodeRef)).toEqual(renderedRefs);
+    expect(harness.dom.activeElement?.dataset.nodeRef).toBe("node-11");
+    expect(harness.transport.requests).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
+
+    tree.scrollTop = 0;
+    tree.clientHeight = 80;
+    harness.resize.trigger();
+
+    expect(harness.controller.snapshot()).toEqual(snapshot);
+    expect(harness.controller.expandedRefs()).toEqual(expanded);
+    expect(spacer.findByData("nodeRef", "node-11")).toBeDefined();
+    expect(harness.dom.activeElement?.dataset.nodeRef).toBe("node-11");
+    expect(tree.scrollTop).toBeGreaterThan(0);
+    expect(harness.transport.requests).toEqual([]);
+    expect(harness.transport.dispatched).toEqual([]);
   });
 
   it("deduplicates hover clearing across blank and non-previewable rows", () => {
@@ -848,6 +892,7 @@ describe("DomTreeView", () => {
 
     harness.view.dispose();
     harness.controller.handleEvent(selectionChanged(2, [node("next", "body")]));
+    harness.resize.trigger();
 
     expect(harness.dom.totalListeners()).toBe(0);
     expect(harness.dom.element("dom-tree-spacer").children).toEqual([]);
