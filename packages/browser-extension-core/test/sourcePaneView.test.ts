@@ -179,6 +179,44 @@ describe("SourcePaneView", () => {
     ]);
   });
 
+  it("lets a late active match replace the automatic first-option fallback", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ]);
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      0,
+      -1,
+    ]);
+
+    harness.controller.acceptNavigationState(navigationState("selected-2"));
+
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      -1,
+      0,
+    ]);
+  });
+
+  it("remembers a clicked non-roving option across controller rerenders", () => {
+    const dispatch = vi.fn();
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ], { dispatch });
+
+    harness.root.dispatch("click", { target: harness.row("selected-2") });
+    expect(harness.row("selected-2").tabIndex).toBe(0);
+    expect(dispatch.mock.calls.map(([message]) => message.matchId)).toEqual([
+      "selected-2",
+    ]);
+
+    harness.controller.acceptNavigationState(navigationState("selected-1"));
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      -1,
+      0,
+    ]);
+  });
+
   it.each<SourcePaneViewState>([
     { kind: "loading", statusText: "Loading source excerpts" },
     { kind: "empty", statusText: "No source matches" },
@@ -314,6 +352,107 @@ describe("SourcePaneView", () => {
     expect(harness.row("selected-new").dataset.matchId).toBe("selected-new");
   });
 
+  it("keeps an explicit keyboard target ahead of a late active match", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+      excerpt("selected-3", "selected"),
+    ]);
+    harness.root.dispatch("keydown", {
+      target: harness.row("selected-1"),
+      key: "ArrowDown",
+    });
+
+    harness.controller.acceptNavigationState(navigationState("selected-3"));
+
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      -1,
+      0,
+      -1,
+    ]);
+    expect(harness.row("selected-3").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("drops a removed explicit target and lets the next active match lead", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ]);
+    harness.root.dispatch("keydown", {
+      target: harness.row("selected-1"),
+      key: "ArrowDown",
+    });
+
+    harness.controller.acceptMatches(sourceMatches([
+      excerpt("replacement-1", "selected"),
+      excerpt("replacement-2", "selected"),
+    ]));
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      0,
+      -1,
+    ]);
+    harness.controller.acceptNavigationState(navigationState("replacement-2"));
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      -1,
+      0,
+    ]);
+  });
+
+  it("clears explicit intent for a newly published match set even when an ID is reused", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+    ]);
+    harness.root.dispatch("keydown", {
+      target: harness.row("selected-1"),
+      key: "ArrowDown",
+    });
+    expect(harness.row("selected-2").tabIndex).toBe(0);
+
+    harness.controller.acceptMatches(sourceMatches([
+      excerpt("selected-2", "selected", { text: ".new-authority {}" }),
+      excerpt("selected-3", "selected"),
+    ]));
+    harness.controller.acceptNavigationState(navigationState("selected-3"));
+
+    expect(harness.groupRows("selected").map((row) => row.tabIndex)).toEqual([
+      -1,
+      0,
+    ]);
+  });
+
+  it("keeps group choices independent and clears only a collapsed group's intent", () => {
+    const harness = createHarness([
+      excerpt("selected-1", "selected"),
+      excerpt("selected-2", "selected"),
+      excerpt("parent-1", "parent"),
+      excerpt("parent-2", "parent"),
+    ]);
+    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
+    harness.root.dispatch("keydown", {
+      target: harness.row("selected-1"),
+      key: "ArrowDown",
+    });
+    harness.root.dispatch("keydown", {
+      target: harness.row("parent-1"),
+      key: "ArrowDown",
+    });
+    expect(harness.row("selected-2").tabIndex).toBe(0);
+    expect(harness.row("parent-2").tabIndex).toBe(0);
+
+    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
+    harness.controller.acceptNavigationState(navigationState("parent-1"));
+    expect(harness.row("selected-2").tabIndex).toBe(0);
+    expect(harness.groupRows("parent")).toEqual([]);
+
+    harness.root.dispatch("click", { target: harness.groupToggle("parent") });
+    expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
+      0,
+      -1,
+    ]);
+    expect(harness.row("selected-2").tabIndex).toBe(0);
+  });
+
   it("excludes collapsed Parent entries from keyboard navigation", () => {
     const harness = createHarness([
       excerpt("selected-1", "selected"),
@@ -339,8 +478,8 @@ describe("SourcePaneView", () => {
 
     harness.root.dispatch("click", { target: harness.groupToggle("parent") });
     expect(harness.groupRows("parent").map((row) => row.tabIndex)).toEqual([
-      -1,
       0,
+      -1,
     ]);
   });
 

@@ -45,7 +45,7 @@ export class SourcePaneView {
   private parentMatches: readonly SourceExcerpt[] | undefined;
   private selectedCollapsed = false;
   private parentCollapsed = true;
-  private readonly rovingMatchIds: Record<GroupKey, string | undefined> = {
+  private readonly explicitRovingMatchIds: Record<GroupKey, string | undefined> = {
     selected: undefined,
     parent: undefined,
   };
@@ -161,16 +161,38 @@ export class SourcePaneView {
 
     const model = this.controller.snapshot();
     this.resetDisclosureFromModel(model);
-    this.normalizeRovingTarget("selected", model.groups.selected, model.activeMatchId);
-    this.normalizeRovingTarget("parent", model.groups.parent, model.activeMatchId);
+    const selectedRovingMatchId = this.rovingTarget(
+      "selected",
+      model.groups.selected,
+      model.activeMatchId,
+    );
+    const parentRovingMatchId = this.rovingTarget(
+      "parent",
+      model.groups.parent,
+      model.activeMatchId,
+    );
     const children: HTMLElement[] = [];
     const header = this.createDocumentHeader(model);
     if (header) children.push(header);
 
     const entries: RenderedEntry[] = [];
     children.push(
-      this.createGroup("selected", model.groups.selected, this.selectedCollapsed, epoch, entries),
-      this.createGroup("parent", model.groups.parent, this.parentCollapsed, epoch, entries),
+      this.createGroup(
+        "selected",
+        model.groups.selected,
+        this.selectedCollapsed,
+        selectedRovingMatchId,
+        epoch,
+        entries,
+      ),
+      this.createGroup(
+        "parent",
+        model.groups.parent,
+        this.parentCollapsed,
+        parentRovingMatchId,
+        epoch,
+        entries,
+      ),
     );
     if (model.omittedMatchCount > 0) {
       const omitted = this.document.createElement("p");
@@ -208,6 +230,7 @@ export class SourcePaneView {
     key: GroupKey,
     group: SourcePaneGroup,
     collapsed: boolean,
+    rovingMatchId: string | undefined,
     epoch: number,
     entries: RenderedEntry[],
   ): HTMLElement {
@@ -236,7 +259,7 @@ export class SourcePaneView {
           match,
           key,
           epoch,
-          this.rovingMatchIds[key] === match.matchId,
+          rovingMatchId === match.matchId,
         );
         entries.push({ matchId: match.matchId, group: key, element: row });
         list.append(row);
@@ -305,32 +328,41 @@ export class SourcePaneView {
     if (model.groups.selected.matches !== this.selectedMatches) {
       this.selectedMatches = model.groups.selected.matches;
       this.selectedCollapsed = model.groups.selected.collapsed;
+      this.explicitRovingMatchIds.selected = undefined;
     }
     if (model.groups.parent.matches !== this.parentMatches) {
       this.parentMatches = model.groups.parent.matches;
       this.parentCollapsed = model.groups.parent.collapsed;
+      this.explicitRovingMatchIds.parent = undefined;
     }
   }
 
   private toggleGroup(group: GroupKey): void {
     if (group === "selected") {
       this.selectedCollapsed = !this.selectedCollapsed;
+      if (this.selectedCollapsed) {
+        this.explicitRovingMatchIds.selected = undefined;
+      }
     } else {
       this.parentCollapsed = !this.parentCollapsed;
+      if (this.parentCollapsed) {
+        this.explicitRovingMatchIds.parent = undefined;
+      }
     }
     this.render();
   }
 
-  private normalizeRovingTarget(
+  private rovingTarget(
     key: GroupKey,
     group: SourcePaneGroup,
     activeMatchId: string | undefined,
-  ): void {
-    const current = this.rovingMatchIds[key];
-    if (current && group.matches.some((match) => match.matchId === current)) {
-      return;
+  ): string | undefined {
+    const explicit = this.explicitRovingMatchIds[key];
+    if (explicit && group.matches.some((match) => match.matchId === explicit)) {
+      return explicit;
     }
-    this.rovingMatchIds[key] = group.matches.some(
+    this.explicitRovingMatchIds[key] = undefined;
+    return group.matches.some(
         (match) => match.matchId === activeMatchId,
       )
       ? activeMatchId
@@ -338,11 +370,20 @@ export class SourcePaneView {
   }
 
   private open(matchId: string | undefined): void {
-    if (!matchId || !this.currentEntry(matchId)) {
+    if (!matchId) {
       return;
     }
+    const entry = this.currentEntry(matchId);
+    if (!entry) return;
+    const epoch = this.renderEpoch;
     this.run(() => {
-      this.controller.open(matchId);
+      if (
+        this.controller.open(matchId) &&
+        this.renderEpoch === epoch &&
+        this.currentEntry(matchId)?.group === entry.group
+      ) {
+        this.rememberRovingTarget(entry.group, matchId);
+      }
     });
   }
 
@@ -375,14 +416,24 @@ export class SourcePaneView {
     if (!target) {
       return;
     }
-    this.rovingMatchIds[currentEntry.group] = target.matchId;
+    this.rememberRovingTarget(currentEntry.group, target.matchId);
+    this.run(() => target.element.focus());
+  }
+
+  private rememberRovingTarget(group: GroupKey, matchId: string): void {
+    const groupEntries = this.renderedEntries.filter(
+      (entry) => entry.group === group,
+    );
+    if (!groupEntries.some((entry) => entry.matchId === matchId)) {
+      return;
+    }
+    this.explicitRovingMatchIds[group] = matchId;
     for (const entry of groupEntries) {
       entry.element.setAttribute(
         "tabindex",
-        entry.matchId === target.matchId ? "0" : "-1",
+        entry.matchId === matchId ? "0" : "-1",
       );
     }
-    this.run(() => target.element.focus());
   }
 
   private currentEntry(matchId: string): RenderedEntry | undefined {
