@@ -5667,8 +5667,7 @@ class FakeTabRefreshCoordinator {
     if (this.terminalTabs.has(tabId)) {
       return undefined;
     }
-    const ownerWindowId =
-      this.panelWindows.get(tabId) ?? this.states.get(tabId)?.windowId;
+    const ownerWindowId = this.panelWindows.get(tabId);
     if (
       windowId !== undefined &&
       ownerWindowId !== undefined &&
@@ -5677,41 +5676,26 @@ class FakeTabRefreshCoordinator {
       return this.states.get(tabId);
     }
     if (ownerWindowId === undefined) {
-      return undefined;
-    }
-    const revision = this.advanceLifecycle(tabId);
-    if (
-      windowId === undefined ||
-      this.panelWindows.get(tabId) === windowId
-    ) {
-      this.panelWindows.delete(tabId);
-    }
-    await this.panelClosedBehavior?.(tabId, windowId);
-    if (!this.isCurrentLifecycle(tabId, revision)) {
+      await this.panelClosedBehavior?.(tabId, windowId);
       return this.states.get(tabId);
     }
+    const revision = this.advanceLifecycle(tabId);
     const existing = this.states.get(tabId);
-    if (
-      windowId !== undefined &&
-      existing !== undefined &&
-      existing.windowId !== windowId
-    ) {
-      return existing;
-    }
-    const resolvedWindowId = existing?.windowId ?? windowId;
-    if (resolvedWindowId === undefined) {
-      return undefined;
-    }
-    const current = existing ?? defaultTabState(tabId, resolvedWindowId);
+    const current = existing ?? defaultTabState(tabId, ownerWindowId);
     const next = {
       tabId,
-      windowId: current.windowId,
+      windowId: ownerWindowId,
       autoRefreshEnabled: current.autoRefreshEnabled,
       ideHighlightEnabled: current.ideHighlightEnabled,
       participant: false,
       lastAcceptedGeneration: current.lastAcceptedGeneration,
     };
+    this.panelWindows.delete(tabId);
     this.states.set(tabId, next);
+    await this.panelClosedBehavior?.(tabId, windowId);
+    if (!this.isCurrentLifecycle(tabId, revision)) {
+      return this.states.get(tabId);
+    }
     return next;
   }
 
@@ -5801,13 +5785,7 @@ class FakeTabRefreshCoordinator {
   public async removeTab(tabId: number): Promise<void> {
     this.lifecycleCalls.push(`removeTab:${tabId}`);
     this.removedTabs.push(tabId);
-    this.terminalTabs.delete(tabId);
     this.terminalTabs.add(tabId);
-    while (this.terminalTabs.size > 4_096) {
-      const oldest = this.terminalTabs.values().next().value;
-      if (oldest === undefined) break;
-      this.terminalTabs.delete(oldest);
-    }
     this.panelWindows.delete(tabId);
     this.states.delete(tabId);
     this.lifecycleRevisions.delete(tabId);

@@ -167,7 +167,7 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.createdClients).toHaveLength(1);
   });
 
-  it("cancels a restored reconnect before unknown-window close awaits storage", async () => {
+  it("requires a reopened panel before reconnect and cancels unknown-window close", async () => {
     const storage = new MemorySessionStorage();
     const harness = coordinatorHarness(storage);
     const saved = windowLink();
@@ -193,6 +193,10 @@ describe("WindowConnectionCoordinator", () => {
         ),
     });
     await tabs.initialize();
+    await harness.flush();
+    expect(harness.createdClients).toHaveLength(0);
+
+    await tabs.panelOpened(101, 10);
     await harness.flush();
     const client = harness.createdClients[0];
     expect(client.connectCalls).toEqual([credentialsFor(saved)]);
@@ -376,7 +380,7 @@ describe("WindowConnectionCoordinator", () => {
       router.connectPort(port);
       await flushMicrotasks();
       expect(await tabStore.loadAll()).toEqual([
-        expect.objectContaining({ tabId: 101, participant: true }),
+        expect.objectContaining({ tabId: 101, participant: false }),
       ]);
       storage.operations.length = 0;
 
@@ -389,10 +393,8 @@ describe("WindowConnectionCoordinator", () => {
       });
 
       expect(port.disconnected).toBe(true);
-      expect(storage.operations.slice(-3)).toEqual([
-        "set:pin-op.tabRefreshStateRecovery",
+      expect(storage.operations).toEqual([
         "remove:pin-op.tabRefreshStates",
-        "remove:pin-op.tabRefreshStateRecovery",
       ]);
       const restoredParticipation = vi.fn();
       const replacement = new TabRefreshCoordinator({
@@ -409,7 +411,7 @@ describe("WindowConnectionCoordinator", () => {
   );
 
   it.each(["absent", "rejected"] as const)(
-    "revokes a restored reconnect when panel tab lookup is %s",
+    "revokes a runtime reconnect when panel tab lookup is %s",
     async (lookupFailure) => {
       const storage = new MemorySessionStorage();
       const harness = coordinatorHarness(storage);
@@ -436,6 +438,9 @@ describe("WindowConnectionCoordinator", () => {
           ),
       });
       await tabs.initialize();
+      await harness.flush();
+      expect(harness.createdClients).toHaveLength(0);
+      await tabs.panelOpened(101, 10);
       await harness.flush();
       const client = harness.createdClients[0];
       expect(client).toBeDefined();
@@ -504,7 +509,7 @@ describe("WindowConnectionCoordinator", () => {
     },
   );
 
-  it("retries failed invalid-binding close and recovers it after background restart", async () => {
+  it("closes an invalid binding without durable ownership and stays closed after restart", async () => {
     const storage = new FailNextTabStateSetStorage();
     const harness = coordinatorHarness(storage);
     const saved = windowLink();
@@ -568,7 +573,7 @@ describe("WindowConnectionCoordinator", () => {
       expect.objectContaining({
         tabId: 101,
         windowId: 10,
-        participant: true,
+        participant: false,
       }),
     ]);
 
@@ -586,16 +591,10 @@ describe("WindowConnectionCoordinator", () => {
     expect(lookupCount).toBe(lookupCountBeforeClose + 1);
     expect(panelClosed).toHaveBeenCalledWith(101, 10);
     const firstClose = panelClosed.mock.results[0]?.value;
-    await expect(firstClose).rejects.toThrow(
-      "transient tab state write failure",
-    );
-    expect(storage.setKeys.slice(setCountBeforeClose)).toContainEqual([
-      "pin-op.tabRefreshStates",
-    ]);
-    expect(storage.failedTabStateSets).toBe(1);
-    await vi.waitFor(() => expect(errors).toContainEqual(
-      new Error("transient tab state write failure"),
-    ));
+    await expect(firstClose).resolves.toMatchObject({ participant: false });
+    expect(storage.setKeys.slice(setCountBeforeClose)).toEqual([]);
+    expect(storage.failedTabStateSets).toBe(0);
+    expect(errors).toEqual([]);
 
     const replacementHarness = coordinatorHarness(storage);
     const replacementStore = new TabRefreshStateStore(storage);
@@ -630,7 +629,7 @@ describe("WindowConnectionCoordinator", () => {
     });
     await flushMicrotasks();
     expect(lookupCount).toBe(lookupCountBeforeClose + 1);
-    expect(panelClosed).toHaveBeenCalledTimes(2);
+    expect(panelClosed).toHaveBeenCalledOnce();
     router.dispose();
   });
 

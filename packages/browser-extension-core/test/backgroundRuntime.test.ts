@@ -376,7 +376,7 @@ describe("startBackgroundRuntime", () => {
     expect(contentRefresh.dispose).toHaveBeenCalledOnce();
   });
 
-  it("restores refresh without a panel only after transport and IDE peer are ready", async () => {
+  it("keeps stale persisted ownership inactive until the panel re-registers", async () => {
     const storage = memoryStorage();
     await storage.set({
       [TAB_REFRESH_STATE_STORAGE_KEY]: [{
@@ -465,12 +465,8 @@ describe("startBackgroundRuntime", () => {
     });
     await flushAsync();
 
-    expect(setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
-    expect(contentRefresh.setTabParticipation).toHaveBeenCalledWith(
-      11,
-      7,
-      true,
-    );
+    expect(setRefreshParticipant).not.toHaveBeenCalled();
+    expect(contentRefresh.setTabParticipation).not.toHaveBeenCalled();
     expect(contentRefresh.dispatch).not.toHaveBeenCalled();
 
     connectionStates.emit(7, "linked");
@@ -484,6 +480,24 @@ describe("startBackgroundRuntime", () => {
       true,
     );
     await flushAsync();
+
+    const channel = "runtime-refresh-panel";
+    await messages.emit(
+      registerMessage(channel, 11, "firefox-runtime-refresh"),
+      devtoolsSender(),
+    );
+    ports.emit(new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      panelSender(channel),
+    ));
+    await flushAsync();
+
+    expect(setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+    expect(contentRefresh.setTabParticipation).toHaveBeenCalledWith(
+      11,
+      7,
+      true,
+    );
 
     pageRefreshes.emit(7, pageRefresh(1));
     await flushAsync();

@@ -8,7 +8,7 @@ import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("TabRefreshCoordinator", () => {
-  it("makes a default-on tab a persistent participant when its panel opens", async () => {
+  it("keeps ownership runtime-only and requires panel re-registration after restart", async () => {
     const context = setup();
     const opened = await context.coordinator.panelOpened(11, 7);
 
@@ -20,14 +20,61 @@ describe("TabRefreshCoordinator", () => {
       participant: true,
     });
     expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+    expect(await context.store.loadAll()).toEqual([{
+      ...opened,
+      participant: false,
+    }]);
 
     const replacement = setup(context.storage);
     await replacement.coordinator.initialize();
-    expect(replacement.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+    expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
     expect(await replacement.coordinator.state(11, 7)).toMatchObject({
-      participant: true,
+      participant: false,
       autoRefreshEnabled: true,
     });
+
+    const reopened = await replacement.coordinator.panelOpened(11, 7);
+    expect(reopened).toMatchObject({ participant: true });
+    expect(replacement.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+  });
+
+  it("never trusts stale ownership or pending work when normalization cannot persist", async () => {
+    const storage = normalizationWriteFailureStorage({
+      "pin-op.tabRefreshStates": [{
+        tabId: 11,
+        windowId: 7,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: false,
+        participant: true,
+        lastAcceptedGeneration: 5,
+        pending: { generation: 5, mode: "reload" },
+      }],
+    });
+    const context = setup(storage, () => 11);
+
+    await context.coordinator.initialize();
+    await context.coordinator.activateTab(11, 7);
+
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+    expect(await context.coordinator.state(11, 7)).toEqual({
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 5,
+    });
+
+    const opened = await context.coordinator.panelOpened(11, 7);
+    expect(opened).toMatchObject({ participant: true });
+    expect(opened).not.toHaveProperty("pending");
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, true);
+
+    context.setRefreshParticipant.mockClear();
+    const closing = context.coordinator.panelClosed(11, 7);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, false);
+    await closing;
   });
 
   it("closes an enabled panel without losing its preference or restoring ownership", async () => {
@@ -164,6 +211,34 @@ describe("TabRefreshCoordinator", () => {
     });
   });
 
+  it("lets disable win when it overlaps the first panel open", async () => {
+    const initialLoad = deferred<Record<string, unknown>>();
+    const context = setup(gatedInitialStorage(initialLoad.promise));
+
+    const opening = context.coordinator.panelOpened(11, 7);
+    const disabling = context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    initialLoad.resolve({});
+
+    const [, disabled] = await Promise.all([opening, disabling]);
+
+    expect(disabled).toMatchObject({
+      autoRefreshEnabled: false,
+      participant: false,
+    });
+    expect(context.setRefreshParticipant).toHaveBeenLastCalledWith(
+      7,
+      11,
+      false,
+    );
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      autoRefreshEnabled: false,
+      participant: false,
+    });
+  });
+
   it("retries initialization after transient storage failure without duplicate ownership", async () => {
     const storage = transientReadFailureStorage({
       "pin-op.tabRefreshStates": [{
@@ -183,14 +258,29 @@ describe("TabRefreshCoordinator", () => {
     expect(context.setRefreshParticipant).not.toHaveBeenCalled();
 
     await expect(context.coordinator.state(11, 7)).resolves.toMatchObject({
-      participant: true,
+      participant: false,
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 5,
     });
     await context.coordinator.initialize();
-    expect(context.setRefreshParticipant.mock.calls).toEqual([
-      [7, 11, true],
-    ]);
+    expect(context.setRefreshParticipant).not.toHaveBeenCalled();
+  });
+
+  it("retires runtime lifecycle bookkeeping after a failed panel open", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    storage.failNextGet();
+
+    await expect(context.coordinator.panelOpened(11, 7)).rejects.toThrow(
+      "transient storage failure",
+    );
+
+    expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
+    expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(
+      7,
+      11,
+      true,
+    );
   });
 
   it("lets a new panel supersede close while an old refresh remains blocked", async () => {
@@ -506,12 +596,12 @@ describe("TabRefreshCoordinator", () => {
       autoRefreshEnabled: false,
       ideHighlightEnabled: false,
     });
-    const snapshotWrite = storage.gateSetFor("pin-op.tabRefreshStates");
+    const snapshotRead = storage.gateNextGet();
 
     const removing = context.coordinator.removeWindow(7);
-    await snapshotWrite.started;
+    await snapshotRead.started;
     const opening = context.coordinator.panelOpened(11, 8);
-    snapshotWrite.release();
+    snapshotRead.release();
     const [, moved] = await Promise.all([removing, opening]);
 
     expect(moved).toMatchObject({
@@ -521,21 +611,24 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
     });
-    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      participant: false,
+    }]);
   });
 
   it("rejects a stale same-window panel while window removal owns lifecycle", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
     await context.coordinator.panelOpened(11, 7);
-    const snapshotWrite = storage.gateSetFor("pin-op.tabRefreshStates");
+    const snapshotRead = storage.gateNextGet();
 
     const removing = context.coordinator.removeWindow(7);
-    await snapshotWrite.started;
+    await snapshotRead.started;
     await expect(context.coordinator.panelOpened(11, 7)).rejects.toThrow(
       "Window refresh lifecycle is closing",
     );
-    snapshotWrite.release();
+    snapshotRead.release();
     await removing;
 
     expect(await context.store.loadAll()).toEqual([
@@ -547,7 +640,7 @@ describe("TabRefreshCoordinator", () => {
     ]);
   });
 
-  it("retires successful window snapshots independently after a partial failure", async () => {
+  it("retires window lifecycle fences when best-effort storage access fails", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
     await context.coordinator.panelOpened(11, 7);
@@ -560,13 +653,11 @@ describe("TabRefreshCoordinator", () => {
       autoRefreshEnabled: false,
       ideHighlightEnabled: true,
     });
-    storage.failNextStateSets();
+    storage.failNextGet();
 
-    await expect(context.coordinator.removeWindow(7)).rejects.toThrow(
-      "transient state write failure",
-    );
+    await expect(context.coordinator.removeWindow(7)).resolves.toBeUndefined();
 
-    expect(lifecycleRevisionTabIds(context.coordinator)).toEqual([11]);
+    expect(lifecycleRevisionTabIds(context.coordinator)).toEqual([]);
     expect(await context.store.loadAll()).toEqual([
       expect.objectContaining({
         tabId: 11,
@@ -580,14 +671,8 @@ describe("TabRefreshCoordinator", () => {
       }),
     ]);
 
-    storage.failNextStateSets();
-    await expect(context.coordinator.removeWindow(7)).rejects.toThrow(
-      "transient state write failure",
-    );
-    expect(lifecycleRevisionTabIds(context.coordinator)).toEqual([11]);
-
-    await context.coordinator.removeWindow(7);
-    expect(lifecycleRevisionTabIds(context.coordinator)).toEqual([]);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 11, false);
+    expect(context.setRefreshParticipant).toHaveBeenCalledWith(7, 12, false);
   });
 
   it("retires lifecycle revisions after terminal tab and window removal", async () => {
@@ -650,7 +735,7 @@ describe("TabRefreshCoordinator", () => {
     );
   });
 
-  it("recovers a fail-closed terminal journal after primary deletion fails", async () => {
+  it("keeps terminal authority when best-effort preference deletion fails", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
     await context.coordinator.panelOpened(11, 7);
@@ -662,9 +747,7 @@ describe("TabRefreshCoordinator", () => {
 
     storage.failNextRemoveFor("pin-op.tabRefreshStates");
 
-    await expect(context.coordinator.removeTab(11)).rejects.toThrow(
-      "transient storage remove failure",
-    );
+    await expect(context.coordinator.removeTab(11)).resolves.toBeUndefined();
     await expect(context.coordinator.panelOpened(11, 8)).rejects.toThrow(
       "Tab refresh lifecycle is terminal",
     );
@@ -681,18 +764,22 @@ describe("TabRefreshCoordinator", () => {
     }]);
   });
 
-  it("retains a terminal lifecycle fence until failed storage teardown retries", async () => {
+  it("retires lifecycle bookkeeping while terminal authority survives read failure", async () => {
     const storage = gateableStorage();
     const context = setup(storage);
     const opened = await context.coordinator.panelOpened(11, 7);
     storage.failNextGet();
 
-    await expect(context.coordinator.removeTab(11)).rejects.toThrow(
-      "transient storage failure",
-    );
+    await expect(context.coordinator.removeTab(11)).resolves.toBeUndefined();
 
-    expect(await context.store.loadAll()).toEqual([opened]);
-    expect(lifecycleRevisionCount(context.coordinator)).toBe(1);
+    expect(await context.store.loadAll()).toEqual([{
+      ...opened,
+      participant: false,
+    }]);
+    expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
+    await expect(context.coordinator.panelOpened(11, 8)).rejects.toThrow(
+      "Tab refresh lifecycle is terminal",
+    );
 
     await context.coordinator.removeTab(11);
     expect(await context.store.loadAll()).toEqual([]);
@@ -731,17 +818,18 @@ describe("TabRefreshCoordinator", () => {
     expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
   });
 
-  it("bounds terminal tab authority while keeping late closes revision-free", async () => {
+  it("keeps session terminal authority without evicting stale tab ids", async () => {
     const context = setup();
     for (let tabId = 1; tabId <= 4_100; tabId += 1) {
       await context.coordinator.removeTab(tabId);
       await context.coordinator.panelClosed(tabId);
     }
 
-    expect(terminalAuthorityCount(context.coordinator)).toBeLessThanOrEqual(
-      4_096,
-    );
+    expect(terminalAuthorityCount(context.coordinator)).toBe(4_100);
     await context.coordinator.panelClosed(1);
+    await expect(context.coordinator.panelOpened(1, 7)).rejects.toThrow(
+      "Tab refresh lifecycle is terminal",
+    );
     expect(lifecycleRevisionCount(context.coordinator)).toBe(0);
   });
 
@@ -800,7 +888,10 @@ describe("TabRefreshCoordinator", () => {
       [7, 11, false],
       [8, 11, true],
     ]);
-    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      participant: false,
+    }]);
   });
 
   it("ignores a known old-window close after the tab has moved", async () => {
@@ -829,6 +920,7 @@ describe("TabRefreshCoordinator", () => {
     expect(await context.store.loadAll()).toEqual([{
       ...moved,
       ideHighlightEnabled: true,
+      participant: false,
     }]);
   });
 
@@ -851,9 +943,11 @@ describe("TabRefreshCoordinator", () => {
       windowId: 8,
       participant: true,
     });
-    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      participant: false,
+    }]);
     expect(context.setRefreshParticipant.mock.calls).toEqual([
-      [7, 11, false],
       [8, 11, true],
     ]);
   });
@@ -975,7 +1069,7 @@ describe("TabRefreshCoordinator", () => {
     });
   });
 
-  it("recovers a fail-closed detached snapshot after its primary write fails", async () => {
+  it("detaches without a durable ownership write and restarts nonparticipating", async () => {
     const storage = gateableStorage();
     const context = setup(storage, () => 99);
     await context.coordinator.panelOpened(11, 7);
@@ -986,9 +1080,7 @@ describe("TabRefreshCoordinator", () => {
     await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
     storage.failNextStateSets();
 
-    await expect(context.coordinator.detachTab(11, 7)).rejects.toThrow(
-      "transient state write failure",
-    );
+    await expect(context.coordinator.detachTab(11, 7)).resolves.toBeUndefined();
 
     const replacement = setup(storage);
     await replacement.coordinator.initialize();
@@ -1022,7 +1114,10 @@ describe("TabRefreshCoordinator", () => {
       autoRefreshEnabled: true,
       participant: true,
     });
-    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      participant: false,
+    }]);
     expect(context.setRefreshParticipant).not.toHaveBeenCalledWith(
       8,
       11,
@@ -1053,7 +1148,10 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
     });
-    expect(await context.store.loadAll()).toEqual([moved]);
+    expect(await context.store.loadAll()).toEqual([{
+      ...moved,
+      participant: false,
+    }]);
   });
 
   it("ignores refresh for another window and reports dispatch failures without replay", async () => {
@@ -1192,6 +1290,33 @@ function transientReadFailureStorage(
       return values.has(key) ? { [key]: values.get(key) } : {};
     },
     async set(records: Record<string, unknown>) {
+      for (const [key, value] of Object.entries(records)) {
+        values.set(key, structuredClone(value));
+      }
+    },
+    async remove(key: string) {
+      values.delete(key);
+    },
+  };
+}
+
+function normalizationWriteFailureStorage(
+  initial: Record<string, unknown>,
+): SessionStorage {
+  const values = new Map(Object.entries(initial));
+  let failedStateWrite = false;
+  return {
+    async get(key: string) {
+      return values.has(key) ? { [key]: values.get(key) } : {};
+    },
+    async set(records: Record<string, unknown>) {
+      if (
+        !failedStateWrite &&
+        Object.hasOwn(records, "pin-op.tabRefreshStates")
+      ) {
+        failedStateWrite = true;
+        throw new Error("normalization write unavailable");
+      }
       for (const [key, value] of Object.entries(records)) {
         values.set(key, structuredClone(value));
       }

@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionStorage } from "../src/browserWindowLinkStore.js";
-import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
+import {
+  MAX_PERSISTED_TAB_REFRESH_STATES,
+  TabRefreshStateStore,
+} from "../src/tabRefreshStateStore.js";
 
 describe("TabRefreshStateStore", () => {
-  it("returns default-on tab-local state and persists it across store instances", async () => {
+  it("persists only preferences and generation across store instances", async () => {
     const storage = memoryStorage();
     const first = new TabRefreshStateStore(storage);
 
@@ -27,11 +30,14 @@ describe("TabRefreshStateStore", () => {
     const replacement = new TabRefreshStateStore(storage);
     expect(await replacement.load(11, 7)).toEqual({
       ...defaults,
-      participant: true,
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 4,
-      pending: { generation: 4, mode: "styles" },
     });
+    expect(storage.value("pin-op.tabRefreshStates")).toEqual([{
+      ...defaults,
+      ideHighlightEnabled: false,
+      lastAcceptedGeneration: 4,
+    }]);
   });
 
   it("rejects the complete persisted collection instead of partially trusting it", async () => {
@@ -139,7 +145,7 @@ describe("TabRefreshStateStore", () => {
     await store.removeTab(21);
     expect(await store.loadAll()).toEqual([]);
     expect(storage.remove).toHaveBeenCalledWith("pin-op.tabRefreshStates");
-    expect(storage.remove).toHaveBeenLastCalledWith(
+    expect(storage.remove).not.toHaveBeenCalledWith(
       "pin-op.tabRefreshStateRecovery",
     );
   });
@@ -209,34 +215,25 @@ describe("TabRefreshStateStore", () => {
     const store = new TabRefreshStateStore(storage);
 
     await expect(store.loadAll()).rejects.toThrow("transient storage failure");
-    await expect(store.loadAll()).resolves.toEqual([state(11, 7)]);
+    await expect(store.loadAll()).resolves.toEqual([{
+      ...state(11, 7),
+      participant: false,
+    }]);
   });
 
-  it("fails closed a valid primary state before reporting a malformed recovery journal", async () => {
-    const primary = {
+  it("normalizes stale runtime ownership even when the compaction write fails", async () => {
+    const stale = {
       ...state(11, 7),
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 9,
       pending: { generation: 9, mode: "reload" as const },
     };
     const storage = memoryStorage({
-      "pin-op.tabRefreshStates": [primary],
-      "pin-op.tabRefreshStateRecovery": { malformed: true },
+      "pin-op.tabRefreshStates": [stale],
     });
+    storage.failNextSetFor("pin-op.tabRefreshStates");
     const store = new TabRefreshStateStore(storage);
 
-    await expect(store.loadAll()).rejects.toThrow(
-      "Invalid tab refresh recovery journal",
-    );
-    expect(storage.value("pin-op.tabRefreshStates")).toEqual([{
-      tabId: 11,
-      windowId: 7,
-      autoRefreshEnabled: true,
-      ideHighlightEnabled: false,
-      participant: false,
-      lastAcceptedGeneration: 9,
-    }]);
-    expect(storage.value("pin-op.tabRefreshStateRecovery")).toBeUndefined();
     await expect(store.loadAll()).resolves.toEqual([{
       tabId: 11,
       windowId: 7,
@@ -245,9 +242,43 @@ describe("TabRefreshStateStore", () => {
       participant: false,
       lastAcceptedGeneration: 9,
     }]);
+    expect(storage.value("pin-op.tabRefreshStates")).toEqual([stale]);
+
+    const replacement = new TabRefreshStateStore(storage);
+    await expect(replacement.loadAll()).resolves.toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 9,
+    }]);
   });
 
-  it("retries malformed recovery cleanup without defaulting on after a failed fail-closed write", async () => {
+  it("preserves preferences while discarding malformed legacy runtime fields", async () => {
+    const storage = memoryStorage({
+      "pin-op.tabRefreshStates": [{
+        tabId: 11,
+        windowId: 7,
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: false,
+        participant: "stale-owner",
+        lastAcceptedGeneration: 8,
+        pending: { malformed: true },
+      }],
+    });
+
+    await expect(new TabRefreshStateStore(storage).loadAll()).resolves.toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 8,
+    }]);
+  });
+
+  it("ignores and removes a legacy recovery journal without trusting it", async () => {
     const storage = memoryStorage({
       "pin-op.tabRefreshStates": [{
         ...state(11, 7),
@@ -256,20 +287,13 @@ describe("TabRefreshStateStore", () => {
         participant: false,
         lastAcceptedGeneration: 6,
       }],
-      "pin-op.tabRefreshStateRecovery": "corrupt",
+      "pin-op.tabRefreshStateRecovery": [{
+        ...state(11, 7),
+        lastAcceptedGeneration: 99,
+      }],
     });
-    storage.failNextSetFor("pin-op.tabRefreshStates");
 
-    await expect(new TabRefreshStateStore(storage).loadAll()).rejects.toThrow(
-      "transient storage set failure",
-    );
-    expect(storage.value("pin-op.tabRefreshStateRecovery")).toBe("corrupt");
-
-    const replacement = new TabRefreshStateStore(storage);
-    await expect(replacement.loadAll()).rejects.toThrow(
-      "Invalid tab refresh recovery journal",
-    );
-    await expect(replacement.loadAll()).resolves.toEqual([{
+    await expect(new TabRefreshStateStore(storage).loadAll()).resolves.toEqual([{
       tabId: 11,
       windowId: 7,
       autoRefreshEnabled: false,
@@ -277,6 +301,48 @@ describe("TabRefreshStateStore", () => {
       participant: false,
       lastAcceptedGeneration: 6,
     }]);
+    expect(storage.value("pin-op.tabRefreshStateRecovery")).toBeUndefined();
+  });
+
+  it("compacts orphan preference snapshots to the startup bound", async () => {
+    const stored = Array.from(
+      { length: MAX_PERSISTED_TAB_REFRESH_STATES + 2 },
+      (_, index) => ({
+        ...state(index + 1, 7),
+        participant: false,
+      }),
+    );
+    const storage = memoryStorage({ "pin-op.tabRefreshStates": stored });
+
+    const loaded = await new TabRefreshStateStore(storage).loadAll();
+
+    expect(loaded).toHaveLength(MAX_PERSISTED_TAB_REFRESH_STATES);
+    expect(loaded[0]?.tabId).toBe(3);
+    expect(storage.value("pin-op.tabRefreshStates")).toEqual(loaded);
+  });
+
+  it("evicts an orphan preference instead of blocking a new tab at the bound", async () => {
+    const stored = Array.from(
+      { length: MAX_PERSISTED_TAB_REFRESH_STATES },
+      (_, index) => ({
+        ...state(index + 1, 7),
+        participant: false,
+      }),
+    );
+    const storage = memoryStorage({ "pin-op.tabRefreshStates": stored });
+    const store = new TabRefreshStateStore(storage);
+
+    await expect(store.save(state(
+      MAX_PERSISTED_TAB_REFRESH_STATES + 1,
+      7,
+    ))).resolves.toBeUndefined();
+
+    const loaded = await store.loadAll();
+    expect(loaded).toHaveLength(MAX_PERSISTED_TAB_REFRESH_STATES);
+    expect(loaded.some(({ tabId }) => tabId === 1)).toBe(false);
+    expect(loaded.some(
+      ({ tabId }) => tabId === MAX_PERSISTED_TAB_REFRESH_STATES + 1,
+    )).toBe(true);
   });
 });
 
