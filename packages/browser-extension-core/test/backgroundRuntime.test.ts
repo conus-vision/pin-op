@@ -6,16 +6,30 @@ import {
   type ResolutionMessage,
 } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
-import type { BrowserProtocolMismatch } from "../src/bridgeClient.js";
+import type {
+  BrowserProtocolMismatch,
+  InspectPayload,
+} from "../src/bridgeClient.js";
+import type {
+  BackgroundMessageSender,
+  BackgroundRuntimePort,
+} from "../src/backgroundRouter.js";
+import {
+  createDevtoolsPanelPortName,
+  createInspectContentLeasePortName,
+} from "../src/inspectPortProtocol.js";
 import { TAB_REFRESH_STATE_STORAGE_KEY } from "../src/tabRefreshStateStore.js";
-import type { BrowserWindowConnectionState } from "../src/windowConnectionCoordinator.js";
+import type {
+  BrowserWindowConnectionState,
+  PanelRegistration,
+} from "../src/windowConnectionCoordinator.js";
 import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
 } from "../src/trustedIdePeerContext.js";
 
 describe("startBackgroundRuntime", () => {
-  it("wires bridge protocol events into the router and disposes subscriptions", () => {
+  it("wires authenticated resolutions into the live correlated panel route", async () => {
     const messages = eventHarness();
     const ports = eventHarness();
     const windows = eventHarness();
@@ -34,15 +48,28 @@ describe("startBackgroundRuntime", () => {
         message: ResolutionMessage,
       ) => void)
       | undefined;
+    let panelRegistration: PanelRegistration | undefined;
+    let publishedInspectMessageId: string | undefined;
     const coordinator = {
       linkWindow: vi.fn(async () => undefined),
       unlinkWindow: vi.fn(async () => undefined),
-      registerPanel: vi.fn(() => ({ dispose: vi.fn() })),
-      publishInspect: vi.fn(() => "sent" as const),
+      registerPanel: vi.fn((registration: PanelRegistration) => {
+        panelRegistration = registration;
+        return { dispose: vi.fn() };
+      }),
+      publishInspect: vi.fn((
+        _windowId: number,
+        inspectMessageId: string,
+        _sourceId: string,
+        _payload: InspectPayload,
+      ) => {
+        publishedInspectMessageId = inspectMessageId;
+        return "sent" as const;
+      }),
       publishSourceNavigation: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
-      state: vi.fn(() => "notLinked" as const),
+      state: vi.fn(() => "linked" as const),
       onStateChanged: vi.fn(() => ({ dispose: stateDispose })),
       onResolution: vi.fn((listener) => {
         resolutionListener = listener;
@@ -79,15 +106,64 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
     expect(coordinator.onProtocolMismatch).toHaveBeenCalledTimes(2);
 
+    const channel = "channel-resolution-authority";
+    const tabId = 17;
+    const contentSessionId = "content-session-runtime";
+    await messages.emit(
+      registerMessage(channel, tabId, "firefox-source-a"),
+      devtoolsSender(),
+    );
+    const panel = new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      panelSender(channel),
+    );
+    ports.emit(panel);
+    panelRegistration?.onStateChanged?.("linked");
+    await flushAsync();
+    expect(panel.disconnected).toBe(false);
+    expect(coordinator.registerPanel).toHaveBeenCalledOnce();
+    const contentLease = new TestRuntimePort(
+      createInspectContentLeasePortName(contentSessionId),
+      contentSender(tabId, 7),
+    );
+    ports.emit(contentLease);
+    await flushAsync();
+    expect(contentLease.disconnected).toBe(false);
+    const selectionResult = await messages.emit(
+      selectedMessage(contentSessionId),
+      contentSender(tabId, 7),
+    );
+    expect(selectionResult).toEqual({ ok: true });
+
+    expect(coordinator.publishInspect).toHaveBeenCalledOnce();
+    const inspectMessageId = publishedInspectMessageId;
+    expect(inspectMessageId).toEqual(expect.any(String));
+    if (typeof inspectMessageId !== "string") {
+      throw new Error("Expected the runtime to publish an inspect message");
+    }
     const trusted = createTransportTrustedIdePeerContext(
       7,
       "session-a",
       "vscode-a",
     );
-    expect(() => resolutionListener?.(
+    const spoofed = {
+      ...resolution(
+        inspectMessageId,
+        1,
+        "session-b",
+        "vscode-b",
+      ),
+      messageId: `resolution-spoofed-${inspectMessageId}`,
+    } satisfies ResolutionMessage;
+    const matching = resolution(inspectMessageId, 1);
+    resolutionListener?.(
       trusted,
-      resolution("inspect-mismatch", 1, "session-b", "vscode-b"),
-    )).not.toThrow();
+      spoofed,
+    );
+    expect(messagesOfType(panel, "resolution")).toEqual([]);
+    resolutionListener?.(trusted, matching);
+
+    expect(messagesOfType(panel, "resolution")).toEqual([matching]);
 
     runtime.dispose();
     runtime.dispose();
@@ -454,6 +530,106 @@ describe("startBackgroundRuntime", () => {
     runtime.dispose();
   });
 });
+
+class TestRuntimePort implements BackgroundRuntimePort {
+  public readonly sent: unknown[] = [];
+  public readonly onMessage = new TestEvent<(message: unknown) => void>();
+  public readonly onDisconnect = new TestEvent<() => void>();
+  public disconnected = false;
+
+  public constructor(
+    public readonly name: string,
+    public readonly sender: BackgroundMessageSender,
+  ) {}
+
+  public postMessage(message: unknown): void {
+    this.sent.push(message);
+  }
+
+  public disconnect(): void {
+    if (this.disconnected) return;
+    this.disconnected = true;
+    this.onDisconnect.emit();
+  }
+}
+
+class TestEvent<T extends (...args: never[]) => void> {
+  private readonly listeners = new Set<T>();
+
+  public addListener(listener: T): void {
+    this.listeners.add(listener);
+  }
+
+  public removeListener(listener: T): void {
+    this.listeners.delete(listener);
+  }
+
+  public emit(...args: Parameters<T>): void {
+    for (const listener of [...this.listeners]) listener(...args);
+  }
+}
+
+function registerMessage(channel: string, tabId: number, sourceId: string) {
+  return {
+    type: "pin-op.registerDevtools",
+    channel,
+    tabId,
+    sourceId,
+  } as const;
+}
+
+function devtoolsSender(): BackgroundMessageSender {
+  return { url: "moz-extension://pin-op/dist/devtools.html" };
+}
+
+function panelSender(channel: string): BackgroundMessageSender {
+  return {
+    url:
+      `moz-extension://pin-op/dist/panel.html?channel=${encodeURIComponent(channel)}`,
+  };
+}
+
+function contentSender(
+  tabId: number,
+  windowId: number,
+): BackgroundMessageSender {
+  return { tab: { id: tabId, windowId } };
+}
+
+function inspectPayload(): InspectPayload {
+  return {
+    targets: [{
+      role: "selected",
+      depth: 0,
+      subject: { selector: ".card", metadata: {} },
+      facts: [],
+      metadata: {},
+    }],
+    context: { url: "https://example.test/page", metadata: {} },
+    ideHighlightEnabled: true,
+    metadata: {},
+  };
+}
+
+function selectedMessage(contentSessionId: string) {
+  return {
+    type: "elementSelected" as const,
+    contentSessionId,
+    selectionRevision: 1,
+    payload: inspectPayload(),
+  };
+}
+
+function messagesOfType(
+  port: TestRuntimePort,
+  type: string,
+): unknown[] {
+  return port.sent.filter((message) =>
+    typeof message === "object" &&
+    message !== null &&
+    (message as { type?: unknown }).type === type
+  );
+}
 
 function eventHarness() {
   let listener: ((...args: any[]) => unknown) | undefined;
