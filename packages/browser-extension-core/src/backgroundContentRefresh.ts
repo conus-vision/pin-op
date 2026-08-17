@@ -183,9 +183,14 @@ export class BackgroundContentRefreshCoordinator {
     });
     if (!contentCommand) throw new TypeError("Invalid content refresh command");
     try {
-      const response = parseContentRefreshResult(
-        await this.sendTopFrameMessage(tabId, contentCommand),
-      );
+      let rawResponse: unknown;
+      try {
+        rawResponse = await this.sendTopFrameMessage(tabId, contentCommand);
+      } catch (error) {
+        if (!this.hasAcceptedReloadSnapshotAuthority(tabId, lease)) throw error;
+        return;
+      }
+      const response = parseContentRefreshResult(rawResponse);
       const completedReload = command.mode === "reload" &&
         lease.completion !== undefined;
       if (
@@ -782,6 +787,24 @@ export class BackgroundContentRefreshCoordinator {
     const lifecycle = this.lifecycle.get(lease.tabId);
     return lease.mode === "reload" && lease.consumed &&
       lifecycle?.blockedRuntimeId === lease.contentRuntimeId;
+  }
+
+  private hasAcceptedReloadSnapshotAuthority(
+    tabId: number,
+    lease: RefreshCommandLease,
+  ): boolean {
+    if (lease.mode !== "reload" || lease.completion !== "accepted") return false;
+    const transition = this.reloadTransitions.get(tabId);
+    const lifecycle = this.authorizedLifecycle(tabId, lease.windowId);
+    const currentLease = this.commandLeases.get(tabId);
+    return sameOwnedBinding(transition, lease) &&
+      transition?.refreshCommandId === lease.refreshCommandId &&
+      transition.refreshGeneration === lease.refreshGeneration &&
+      transition.navigationObserved &&
+      lifecycle?.pageUrl === lease.pageUrl &&
+      lifecycle.preserveSnapshot &&
+      lifecycle.blockedRuntimeId === lease.contentRuntimeId &&
+      (currentLease === undefined || currentLease === lease);
   }
 
   private trustedCurrentBinding(

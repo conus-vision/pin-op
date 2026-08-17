@@ -299,6 +299,70 @@ describe("BackgroundContentRefreshCoordinator", () => {
     }));
   });
 
+  it("accepts an exact completed reload when loading destroys its message channel", async () => {
+    const storage = new MemorySessionStorage();
+    const sender = topSender(37, "https://example.test/page");
+    const onError = vi.fn();
+    let coordinator: BackgroundContentRefreshCoordinator;
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+      const command = message as {
+        readonly contentRuntimeId: string;
+        readonly refreshCommandId: string;
+        readonly refreshGeneration: number;
+      };
+      const result = await coordinator.routeMessage(reloadRequest(
+        37,
+        command.contentRuntimeId,
+        command.refreshGeneration,
+        command.refreshCommandId,
+      ), sender);
+      expect(result).toMatchObject({ accepted: true });
+      throw new Error("The message port closed before a response was received");
+    });
+    coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(storage),
+      executeContentScript: vi.fn(async () => {
+        await bind(coordinator, sender, "runtime-channel-old");
+      }),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => {
+        coordinator.observeTabUpdate(37, {
+          status: "loading",
+          url: sender.url,
+          windowId: 7,
+        });
+      }),
+      now: () => 600,
+      createRefreshCommandId: () => "command-channel-destroyed",
+      onError,
+    });
+    authorize(coordinator, 37);
+
+    await expect(coordinator.dispatch(37, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 15,
+      mode: "reload",
+    })).resolves.toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+
+    await coordinator.routeMessage({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-channel-new",
+    }, sender);
+    await expect(coordinator.routeMessage({
+      type: "pin-op.refresh.content.ready",
+      tabId: 37,
+      frameId: 0,
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-channel-new",
+    }, sender)).resolves.toMatchObject({
+      type: "pin-op.refresh.scroll.restore",
+      contentRuntimeId: "runtime-channel-new",
+      refreshGeneration: 15,
+    });
+  });
+
   it("preserves restoration when reload resolves before loading", async () => {
     const storage = new MemorySessionStorage();
     const sender = topSender(34, "https://example.test/page");
