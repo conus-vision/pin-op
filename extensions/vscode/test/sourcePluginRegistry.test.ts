@@ -220,6 +220,25 @@ describe("SourcePluginRegistry", () => {
     ]);
   });
 
+  it("preserves canonical template plugin categories", async () => {
+    const registry = registryWithMatches([{
+      ...match("selected", range(0, 0, 0, 4), "instrumented"),
+      label: "Twig template block",
+      kind: "template",
+      relation: "templates",
+    }]);
+
+    const result = resolved(await resolveCss(registry));
+
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        label: "Twig template block",
+        kind: "template",
+        relation: "templates",
+      }),
+    ]);
+  });
+
   it("rejects incompatible and duplicate registrations and emits changes", () => {
     const registry = new SourcePluginRegistry();
     const listener = vi.fn();

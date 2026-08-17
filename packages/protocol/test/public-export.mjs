@@ -22,10 +22,14 @@ import {
   ResolutionSourceSchema,
   ResolutionStatusSchema,
   SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES,
+  SOURCE_EXCERPT_KINDS,
+  SOURCE_EXCERPT_RELATIONS,
   SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
   SOURCE_PRESENTATION_LIMITS,
   SourceDocumentSchema,
   SourceExcerptConfidenceSchema,
+  SourceExcerptKindSchema,
+  SourceExcerptRelationSchema,
   SourceExcerptSchema,
   SourceExcerptTargetRoleSchema,
   SourceMatchesMessageSchema,
@@ -68,6 +72,29 @@ assert.equal(typeof PageRefreshMessageSchema.parse, "function");
 assert.equal(typeof SourceExcerptSchema.parse, "function");
 assert.equal(typeof SourceExcerptTargetRoleSchema.parse, "function");
 assert.equal(typeof SourceExcerptConfidenceSchema.parse, "function");
+assert.equal(typeof SourceExcerptKindSchema.parse, "function");
+assert.equal(typeof SourceExcerptRelationSchema.parse, "function");
+assert.deepEqual(SOURCE_EXCERPT_KINDS, [
+  "component",
+  "fixture",
+  "rule",
+  "source",
+  "style-rule",
+  "template",
+]);
+assert.deepEqual(SOURCE_EXCERPT_RELATIONS, [
+  "applies",
+  "contains",
+  "declared-in",
+  "matches",
+  "parent",
+  "renders",
+  "selected",
+  "styles",
+  "templates",
+]);
+assert.equal(SourceExcerptKindSchema.safeParse("template").success, true);
+assert.equal(SourceExcerptRelationSchema.safeParse("templates").success, true);
 assert.equal(typeof SourceDocumentSchema.parse, "function");
 assert.equal(typeof createSourceMatchesMessageSchema, "function");
 assert.equal(typeof SourceMatchesMessageSchema.parse, "function");

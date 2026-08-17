@@ -20,6 +20,14 @@ import type {
 } from "../src/sourcePlugins/types.js";
 
 const DOCUMENT_URI = "file:///private/customer/src/Card.tsx";
+const ENCODED_SENSITIVE_PLUGIN_VALUES = [
+  Buffer.from(String.raw`C:\Users\alice\workspace\src\Card.scss`).toString(
+    "base64",
+  ),
+  Buffer.from("/home/alice/workspace/src/Card.scss").toString("base64url"),
+  Buffer.from("file:///home/alice/workspace/src/Card.scss").toString("base64"),
+  Buffer.from("webpack:///sources/Card.scss:17:3").toString("base64url"),
+] as const;
 const SENSITIVE_PLUGIN_VALUES = [
   String.raw`C:\Users\alice\workspace\src\Card.scss`,
   "/home/alice/workspace/src/Card.scss",
@@ -31,6 +39,15 @@ const SENSITIVE_PLUGIN_VALUES = [
   "Card.scss#L17C3",
   '{"targetKind":"element","path":[{"tag":"div","index":0}],"boundaries":[]}',
   '["html","body","div",0]',
+  ...ENCODED_SENSITIVE_PLUGIN_VALUES,
+  "app.css.map",
+  "APP.JS.MAP",
+  "bundle.map#generated",
+  "theme.CSS.MAP ?v=7#source",
+  "sourceMappingURL=app.css.map",
+  " SOURCEMAPPINGURL = APP.JS.MAP ",
+  "sourceMappingURL = bundle.map #generated",
+  "# sourceMappingURL = app.css.map",
 ] as const;
 
 describe("SourceExcerptRegistry", () => {
@@ -144,11 +161,11 @@ describe("SourceExcerptRegistry", () => {
     expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
   });
 
-  it("preserves neutral component and built-in stylesheet presentation", () => {
+  it("preserves neutral component, template, and stylesheet presentation", () => {
     const document = textDocument(
       "file:///private/customer/workspace/styles.scss",
       "scss",
-      ".card {} Card",
+      ".card {} Card Twig",
     );
 
     const publication = excerptRegistry().publish({
@@ -168,6 +185,12 @@ describe("SourceExcerptRegistry", () => {
           kind: "component",
           relation: "renders",
         },
+        {
+          ...match("parent", range(0, 14, 0, 18), "Twig template block"),
+          kind: "template",
+          relation: "templates",
+          confidence: "instrumented",
+        },
       ], "inspect-safe-metadata"),
     });
 
@@ -183,7 +206,60 @@ describe("SourceExcerptRegistry", () => {
         kind: "component",
         relation: "renders",
       }),
+      expect.objectContaining({
+        label: "Twig template block",
+        kind: "template",
+        relation: "templates",
+        confidence: "instrumented",
+      }),
     ]);
+  });
+
+  it("preserves selectors and component labels that only resemble locators", () => {
+    const labels = [
+      ".app.css.map",
+      "#app.css.map",
+      "[data-map='app.css.map']",
+      "SourceMappingURL",
+      "SourceMapCard",
+      "ButtonCard",
+    ] as const;
+    const document = textDocument(
+      "file:///private/customer/workspace/styles.scss",
+      "scss",
+      "x ".repeat(labels.length).trimEnd(),
+    );
+    const matches = labels.map((label, index) => ({
+      ...match("selected", range(0, index * 2, 0, index * 2 + 1), label),
+      kind: label.startsWith(".") || label.startsWith("#") ||
+          label.startsWith("[")
+        ? "style-rule"
+        : "component",
+      relation: label.startsWith(".") || label.startsWith("#") ||
+          label.startsWith("[")
+        ? "styles"
+        : "renders",
+    }));
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: "inspect-safe-lookalikes",
+      resolutionGeneration: 3,
+      editor: { document },
+      resolution: resolution(
+        document,
+        matches,
+        "inspect-safe-lookalikes",
+      ),
+    });
+
+    expect(publication.message.matches.map((entry) => entry.label)).toEqual(
+      labels,
+    );
+    expect(
+      SourceMatchesMessageSchema.parse(
+        JSON.parse(JSON.stringify(wireMessage(publication.message))),
+      ),
+    ).toBeTruthy();
   });
 
   it("fails closed when plugin display metadata cannot be normalized", () => {

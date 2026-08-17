@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as protocolExports from "../src/index.js";
 import {
   PROTOCOL_VERSION,
   PresentationSettingsMessageSchema,
@@ -111,6 +112,47 @@ describe("source presentation protocol messages", () => {
       });
     },
   );
+
+  it("accepts canonical template presentation metadata", () => {
+    expect(
+      SourceExcerptSchema.parse(excerpt({
+        kind: "template",
+        relation: "templates",
+      })),
+    ).toMatchObject({ kind: "template", relation: "templates" });
+  });
+
+  it("exports one canonical closed presentation vocabulary", () => {
+    expect(Reflect.get(protocolExports, "SOURCE_EXCERPT_KINDS")).toEqual([
+      "component",
+      "fixture",
+      "rule",
+      "source",
+      "style-rule",
+      "template",
+    ]);
+    expect(Reflect.get(protocolExports, "SOURCE_EXCERPT_RELATIONS")).toEqual([
+      "applies",
+      "contains",
+      "declared-in",
+      "matches",
+      "parent",
+      "renders",
+      "selected",
+      "styles",
+      "templates",
+    ]);
+    expect(
+      Reflect.get(protocolExports, "SourceExcerptKindSchema")?.safeParse(
+        "template",
+      ).success,
+    ).toBe(true);
+    expect(
+      Reflect.get(protocolExports, "SourceExcerptRelationSchema")?.safeParse(
+        "templates",
+      ).success,
+    ).toBe(true);
+  });
 
   it.each([
     ["kind", "file:///workspace/private/Card.tsx"],

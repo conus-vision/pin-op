@@ -259,6 +259,60 @@ When otherwise equivalent matches overlap, core prefers `exact`, `sourcemap`,
 `instrumented`, `heuristic`, then `unknown`. A selected-element match is
 presented ahead of a parent-element match for the same range.
 
+## Browser Presentation Metadata
+
+The plugin API accepts string `label`, `kind`, and `relation` values so new
+plugins can evolve independently. Those strings are not trusted wire metadata.
+Before a `source.matches` message crosses to the browser, the VS Code host
+normalizes them to the closed protocol vocabulary exported by
+`SOURCE_EXCERPT_KINDS`, `SOURCE_EXCERPT_RELATIONS`,
+`SourceExcerptKindSchema`, and `SourceExcerptRelationSchema`.
+
+The complete allowed `kind` vocabulary is:
+
+- `component`
+- `fixture`
+- `rule`
+- `source`
+- `style-rule`
+- `template`
+
+The complete allowed `relation` vocabulary is:
+
+- `applies`
+- `contains`
+- `declared-in`
+- `matches`
+- `parent`
+- `renders`
+- `selected`
+- `styles`
+- `templates`
+
+An unknown `kind` becomes `source`; an unknown `relation` becomes `matches`.
+Use `component` for framework components and `template` / `templates` for
+HTML, Vue template blocks, Twig, Blade, PHP render templates, and WordPress ACF
+render templates. Use the closest neutral category for JavaScript or other
+source presentations. Do not invent a category string when none fits; propose
+a protocol vocabulary addition instead.
+
+Labels are normalized separately at this trusted boundary. A short selector,
+component name, or descriptive label such as `Twig template block` remains
+useful. Core rejects path separators and percent-encoding, absolute paths and
+URIs, workspace and source-map locators, line/column locator suffixes,
+structured browser locators, relative `.map` filenames,
+`sourceMappingURL` directives, and bounded plausible base64 or base64url labels
+whose UTF-8 decoded value has one of those sensitive forms. Control characters
+are replaced with spaces, only a strict display-character set is allowed, and
+the final value is protocol-bounded. Unsafe, oversized, or malformed labels
+fall back to the host-derived active-document basename, or `untitled` when no
+safe basename is available. Normalizer failures fail closed.
+
+The browser receives only bounded source text excerpts and this IDE-neutral
+presentation metadata. It never receives a document URI or source locator.
+Opening an excerpt sends back only its exact opaque `matchId`; the VS Code host
+retains and revalidates the active-document range authority.
+
 ## Runtime Facts
 
 Built-in facts such as `css-rule` and `dom-attribute` have strict schemas.

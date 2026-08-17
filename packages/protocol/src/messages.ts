@@ -413,15 +413,16 @@ export const SourceExcerptConfidenceSchema = z.enum([
   "unknown",
 ]);
 
-const SourceExcerptKindSchema = z.enum([
+export const SOURCE_EXCERPT_KINDS = Object.freeze([
   "component",
   "fixture",
   "rule",
   "source",
   "style-rule",
-]);
+  "template",
+] as const);
 
-const SourceExcerptRelationSchema = z.enum([
+export const SOURCE_EXCERPT_RELATIONS = Object.freeze([
   "applies",
   "contains",
   "declared-in",
@@ -430,7 +431,12 @@ const SourceExcerptRelationSchema = z.enum([
   "renders",
   "selected",
   "styles",
-]);
+  "templates",
+] as const);
+
+export const SourceExcerptKindSchema = z.enum(SOURCE_EXCERPT_KINDS);
+
+export const SourceExcerptRelationSchema = z.enum(SOURCE_EXCERPT_RELATIONS);
 
 const sourceExcerptObjectSchema = z
   .object({
@@ -742,6 +748,10 @@ export type SourceExcerptTargetRole = z.infer<
 >;
 export type SourceExcerptConfidence = z.infer<
   typeof SourceExcerptConfidenceSchema
+>;
+export type SourceExcerptKind = z.infer<typeof SourceExcerptKindSchema>;
+export type SourceExcerptRelation = z.infer<
+  typeof SourceExcerptRelationSchema
 >;
 export type SourceExcerpt = z.infer<typeof SourceExcerptSchema>;
 export type SourceDocument = z.infer<typeof SourceDocumentSchema>;

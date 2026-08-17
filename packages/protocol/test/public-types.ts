@@ -1,3 +1,9 @@
+import {
+  SOURCE_EXCERPT_KINDS,
+  SOURCE_EXCERPT_RELATIONS,
+  SourceExcerptKindSchema,
+  SourceExcerptRelationSchema,
+} from "@pin-op/protocol";
 import type {
   PinOpMessage,
   EmptyMetadata,
@@ -7,6 +13,8 @@ import type {
   ProtocolVersionProbe,
   ResolutionMessage,
   SourceExcerpt,
+  SourceExcerptKind,
+  SourceExcerptRelation,
   SourceMatchesMessage,
   SourceNavigateMessage,
   SourceNavigationDirection,
@@ -128,6 +136,18 @@ const sourceExcerpt: SourceExcerpt = {
   truncated: false,
 };
 
+const templateSourceExcerpt: SourceExcerpt = {
+  ...sourceExcerpt,
+  kind: "template",
+  relation: "templates",
+};
+const canonicalSourceKind: SourceExcerptKind = SOURCE_EXCERPT_KINDS.at(-1)!;
+const canonicalSourceRelation: SourceExcerptRelation =
+  SOURCE_EXCERPT_RELATIONS.at(-1)!;
+
+SourceExcerptKindSchema.parse(canonicalSourceKind);
+SourceExcerptRelationSchema.parse(canonicalSourceRelation);
+
 const sourceMatches: SourceMatchesMessage = {
   protocolVersion: 6,
   type: "source.matches",
@@ -177,6 +197,7 @@ void sourceNavigate;
 void sourceNavigationStateWithActiveMatch;
 void pageRefresh;
 void sourceMatches;
+void templateSourceExcerpt;
 void sourceOpen;
 void presentationSettings;
 void protocolVersionProbe;
