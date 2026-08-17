@@ -181,6 +181,316 @@ describe("protocol v6 bridge routing", () => {
     ]);
   });
 
+  it("lets a strict empty invalidation claim a new route before its resolution", () => {
+    const context = setup();
+    const invalidation = matches("ide-a", 0, []);
+    const sameGenerationResolution = resolution("ide-a", 0);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      invalidation,
+    );
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideA.id,
+      resolutionGeneration: 0,
+      matchIds: new Set(),
+    });
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      sameGenerationResolution,
+    );
+
+    expect(context.browserConnection.sent).toEqual([
+      invalidation,
+      sameGenerationResolution,
+    ]);
+    expect(context.otherBrowserConnection.sent).toEqual([]);
+  });
+
+  it("advances an owned route with empty invalidation and clears match IDs immediately", () => {
+    const context = setup();
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      resolution("ide-a", 2),
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      matches("ide-a", 2, ["old-match"]),
+    );
+    const invalidation = matches("ide-a", 3, []);
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      invalidation,
+    );
+
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideA.id,
+      resolutionGeneration: 3,
+      matchIds: new Set(),
+    });
+    expect(context.browserConnection.sent.at(-1)).toEqual(invalidation);
+
+    const staleOpen: SourceOpenMessage = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.open",
+      messageId: "open-cleared-match",
+      sessionId: "session-1",
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 3,
+      matchId: "old-match",
+      metadata: {},
+    };
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.browser,
+      staleOpen,
+    );
+    expect(context.ideAConnection.sent).toEqual([]);
+    expect(context.browserConnection.sent.at(-1)).toEqual(
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    );
+
+    const nextResolution = resolution("ide-a", 3);
+    const nextMatches = matches("ide-a", 3, ["next-match"]);
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      nextResolution,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      nextMatches,
+    );
+    expect(context.browserConnection.sent.slice(-2)).toEqual([
+      nextResolution,
+      nextMatches,
+    ]);
+  });
+
+  it("rejects second-IDE and stale empty invalidations without changing authority", () => {
+    const context = setup();
+    const claimed = matches("ide-a", 2, []);
+    const current = matches("ide-a", 2, ["current-match"]);
+    const raced = matches("ide-b", 3, []);
+    const stale = matches("ide-a", 1, []);
+
+    routeMessage(context.registry, context.routes, context.ideA, claimed);
+    routeMessage(context.registry, context.routes, context.ideA, current);
+    routeMessage(context.registry, context.routes, context.ideB, raced);
+    routeMessage(context.registry, context.routes, context.ideA, stale);
+
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: context.ideA.id,
+      resolutionGeneration: 2,
+      matchIds: new Set(["current-match"]),
+    });
+    expect(context.browserConnection.sent).toEqual([claimed, current]);
+    expect(context.ideBConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+  });
+
+  it("requires exact claimed generation for nonempty or omitted empty matches", () => {
+    const context = setup();
+    const nonempty = matches("ide-a", 0, ["unclaimed"]);
+    const omittedEmpty = {
+      ...matches("ide-a", 0, []),
+      messageId: "matches-empty-omitted",
+      omittedMatchCount: 1,
+    };
+
+    routeMessage(context.registry, context.routes, context.ideA, nonempty);
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      omittedEmpty,
+    );
+
+    expect(context.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: undefined,
+      resolutionGeneration: undefined,
+      matchIds: new Set(),
+    });
+    expect(context.browserConnection.sent).toEqual([]);
+    expect(context.ideAConnection.sent).toHaveLength(2);
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+    ]);
+  });
+
+  it("fails closed for invalid empty-invalidation peers and revoked routes", () => {
+    const wrongSession = setup();
+    routeMessage(
+      wrongSession.registry,
+      wrongSession.routes,
+      wrongSession.ideA,
+      { ...matches("ide-a", 0, []), sessionId: "session-2" },
+    );
+    expect(wrongSession.browserConnection.sent).toEqual([]);
+    expect(wrongSession.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: undefined,
+    });
+
+    const wrongRole = setup();
+    routeMessage(
+      wrongRole.registry,
+      wrongRole.routes,
+      wrongRole.browser,
+      matches("ide-a", 0, []),
+    );
+    expect(wrongRole.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: undefined,
+    });
+
+    const incapable = setup();
+    const sourceOnlyConnection = client(
+      "ide",
+      "session-1",
+      ["source-presentation"],
+      "source-only",
+    );
+    const sourceOnly = incapable.registry.add(sourceOnlyConnection);
+    routeMessage(
+      incapable.registry,
+      incapable.routes,
+      sourceOnly,
+      matches("source-only", 0, []),
+    );
+    expect(incapable.routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: undefined,
+    });
+    expect(incapable.browserConnection.sent).toEqual([]);
+
+    const revoked = setup();
+    revoked.routes.remove("session-1", "inspect-1");
+    routeMessage(
+      revoked.registry,
+      revoked.routes,
+      revoked.ideA,
+      matches("ide-a", 0, []),
+    );
+    expect(revoked.routes.get("session-1", "inspect-1")).toBeUndefined();
+    expect(revoked.browserConnection.sent).toEqual([]);
+  });
+
+  it("removes a newly claimed invalidation route when browser send fails", () => {
+    const context = setup();
+    context.browserConnection.connection.send = () => false;
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      matches("ide-a", 0, []),
+    );
+
+    expect(context.routes.get("session-1", "inspect-1")).toBeUndefined();
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+  });
+
+  it("removes an advanced route when invalidation forwarding fails", () => {
+    const context = setup();
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      resolution("ide-a", 1),
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      matches("ide-a", 1, ["old-match"]),
+    );
+    context.browserConnection.connection.send = () => false;
+
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
+      matches("ide-a", 2, []),
+    );
+
+    expect(context.routes.get("session-1", "inspect-1")).toBeUndefined();
+    expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+  });
+
+  it("does not claim invalidation authority for an incapable origin browser", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect"],
+      "browser-a",
+    );
+    const ideConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "source-presentation"],
+      "ide-a",
+    );
+    const browser = registry.add(browserConnection);
+    const ide = registry.add(ideConnection);
+    routeMessage(registry, routes, browser, inspect());
+    ideConnection.sent.length = 0;
+
+    routeMessage(registry, routes, ide, matches("ide-a", 0, []));
+
+    expect(routes.get("session-1", "inspect-1")).toMatchObject({
+      ideConnectionId: undefined,
+      resolutionGeneration: undefined,
+      matchIds: new Set(),
+    });
+    expect(browserConnection.sent).toEqual([]);
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
+  });
+
   it("allows the owner to advance generation, rejects stale resolution, and clears match IDs", () => {
     const context = setup();
     routeMessage(context.registry, context.routes, context.ideA, resolution("ide-a", 2));

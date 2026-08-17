@@ -228,6 +228,40 @@ describe("reply route registry", () => {
     expect(routes.get("session-1", "inspect-a")?.matchIds).toEqual(new Set());
   });
 
+  it("claims source invalidation authority and clears same-generation match IDs", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(routes, "session-1", "inspect-a", "browser-1");
+
+    expect(
+      routes.claimSourceInvalidation(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+      ),
+    ).toMatchObject({
+      ideConnectionId: "ide-1",
+      resolutionGeneration: 2,
+      matchIds: new Set(),
+    });
+    routes.replaceMatchIds(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      ["match-a"],
+    );
+
+    expect(
+      routes.claimSourceInvalidation(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+      ),
+    ).toMatchObject({ matchIds: new Set() });
+  });
+
   it("removes routes through both origin and owner reverse indexes", () => {
     const routes = new ReplyRouteRegistry();
     commitRoute(routes, "session-1", "inspect-a", "browser-1");

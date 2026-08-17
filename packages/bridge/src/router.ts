@@ -111,6 +111,16 @@ export function routeMessage(
         return;
       }
 
+      const isEmptyInvalidation = message.matches.length === 0 &&
+        message.omittedMatchCount === 0;
+      if (
+        isEmptyInvalidation &&
+        !supportsCapability(sender, "resolution")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
       const route = replyRoutes.get(
         message.sessionId,
         message.inspectMessageId,
@@ -118,8 +128,6 @@ export function routeMessage(
       const recipient = route ? getOriginRecipient(registry, route) : undefined;
       if (
         !route ||
-        route.ideConnectionId !== sender.id ||
-        route.resolutionGeneration !== message.resolutionGeneration ||
         !recipient ||
         !supportsCapability(recipient, "source-presentation")
       ) {
@@ -127,13 +135,20 @@ export function routeMessage(
         return;
       }
 
-      const updatedRoute = replyRoutes.replaceMatchIds(
-        message.sessionId,
-        message.inspectMessageId,
-        sender.id,
-        message.resolutionGeneration,
-        message.matches.map((match) => match.matchId),
-      );
+      const updatedRoute = isEmptyInvalidation
+        ? replyRoutes.claimSourceInvalidation(
+            message.sessionId,
+            message.inspectMessageId,
+            sender.id,
+            message.resolutionGeneration,
+          )
+        : replyRoutes.replaceMatchIds(
+            message.sessionId,
+            message.inspectMessageId,
+            sender.id,
+            message.resolutionGeneration,
+            message.matches.map((match) => match.matchId),
+          );
       if (!updatedRoute || !sendMessage(recipient, message)) {
         if (updatedRoute) {
           replyRoutes.remove(message.sessionId, message.inspectMessageId);

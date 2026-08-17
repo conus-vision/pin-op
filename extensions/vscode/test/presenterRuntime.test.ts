@@ -227,9 +227,14 @@ describe("presenter runtime", () => {
   it("invalidates source authority immediately on active-document version changes", async () => {
     const harness = await resolvedRuntimeHarness();
     const staleId = harness.sourceMatches.at(-1)!.matches[0]!.matchId;
+    const eventCount = harness.transportEvents.length;
 
     harness.changeTextDocument("fixture changed");
 
+    expect(harness.transportEvents.slice(eventCount)).toEqual([
+      "source.navigationState",
+      "source.matches",
+    ]);
     expect(harness.sourceMatches.at(-1)).toMatchObject({
       inspectMessageId: "inspect-1",
       resolutionGeneration: 1,

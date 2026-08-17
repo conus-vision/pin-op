@@ -126,6 +126,37 @@ export class ReplyRouteRegistry {
     ideConnectionId: string,
     resolutionGeneration: number,
   ): ReplyRoute | undefined {
+    return this.claimAuthority(
+      sessionId,
+      inspectMessageId,
+      ideConnectionId,
+      resolutionGeneration,
+      false,
+    );
+  }
+
+  claimSourceInvalidation(
+    sessionId: string,
+    inspectMessageId: string,
+    ideConnectionId: string,
+    resolutionGeneration: number,
+  ): ReplyRoute | undefined {
+    return this.claimAuthority(
+      sessionId,
+      inspectMessageId,
+      ideConnectionId,
+      resolutionGeneration,
+      true,
+    );
+  }
+
+  private claimAuthority(
+    sessionId: string,
+    inspectMessageId: string,
+    ideConnectionId: string,
+    resolutionGeneration: number,
+    clearMatchIds: boolean,
+  ): ReplyRoute | undefined {
     const route = this.routes.get(sessionId)?.get(inspectMessageId);
     if (!route) {
       return undefined;
@@ -152,8 +183,12 @@ export class ReplyRouteRegistry {
       );
     }
 
-    if (route.resolutionGeneration !== resolutionGeneration) {
+    const generationChanged =
+      route.resolutionGeneration !== resolutionGeneration;
+    if (generationChanged) {
       route.resolutionGeneration = resolutionGeneration;
+    }
+    if (generationChanged || clearMatchIds) {
       route.matchIds = new Set();
     }
 
