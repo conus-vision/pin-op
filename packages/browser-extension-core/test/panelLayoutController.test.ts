@@ -1,0 +1,439 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  PanelLayoutController,
+  type PanelLayoutScheduler,
+  type PanelResizeObserverEntryLike,
+  type PanelResizeObserverFactory,
+  type PanelResizeObserverLike,
+  type PanelSessionStateStorage,
+} from "../src/panelLayoutController.js";
+
+describe("PanelLayoutController", () => {
+  it.each([
+    [679, 519, "tabs"],
+    [679, 520, "stack"],
+    [680, 519, "split"],
+    [680, 520, "split"],
+  ] as const)("selects the exact responsive mode at %d x %d", (width, height, mode) => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+
+    harness.resize(width, height);
+    harness.flush();
+
+    expect(harness.controller.snapshot()).toMatchObject({ width, height, mode });
+  });
+
+  it.each([
+    [Number.NaN, 600, 0, 600, "stack"],
+    [Number.POSITIVE_INFINITY, 600, 0, 600, "stack"],
+    [-1, 600, 0, 600, "stack"],
+    [700, Number.NEGATIVE_INFINITY, 700, 0, "split"],
+  ] as const)(
+    "sanitizes hostile dimensions %s x %s",
+    (width, height, expectedWidth, expectedHeight, mode) => {
+      const harness = createHarness();
+      harness.controller.start(harness.target);
+
+      harness.resize(width, height);
+      harness.flush();
+
+      expect(harness.controller.snapshot()).toMatchObject({
+        width: expectedWidth,
+        height: expectedHeight,
+        mode,
+      });
+    },
+  );
+
+  it("coalesces resize noise and publishes only the latest dimensions", () => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    harness.controller.subscribe(listener);
+    harness.controller.start(harness.target);
+
+    harness.resize(400, 300);
+    harness.resize(500, 600);
+    harness.resize(900, 700);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(harness.scheduler.size()).toBe(1);
+    harness.flush();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({
+      width: 900,
+      height: 700,
+      mode: "split",
+    }));
+  });
+
+  it("ignores entries for another target and stale callbacks after rebind", () => {
+    const harness = createHarness();
+    const nextTarget = {};
+    harness.controller.start(harness.target);
+    const staleObserver = harness.observers[0]!;
+    staleObserver.emit(harness.target, 900, 700);
+
+    harness.controller.start(nextTarget);
+    staleObserver.emit(harness.target, 1000, 800);
+    harness.observers[1]!.emit({}, 700, 700);
+    harness.observers[1]!.emit(nextTarget, 500, 600);
+    harness.flush();
+
+    expect(staleObserver.disconnect).toHaveBeenCalledTimes(1);
+    expect(harness.controller.snapshot()).toMatchObject({
+      width: 500,
+      height: 600,
+      mode: "stack",
+    });
+  });
+
+  it("restores, clamps, and persists divider proportions rather than pixels", () => {
+    const storage = new MemoryStorage("0.1");
+    const harness = createHarness({ storage });
+    harness.controller.start(harness.target);
+    harness.resize(800, 600);
+    harness.flush();
+
+    expect(harness.controller.snapshot().dividerProportion).toBe(0.2);
+    expect(harness.controller.setDividerFromPosition(640)).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBe(0.8);
+    expect(storage.writes).toEqual([["pin-op.panel.layout.divider", "0.8"]]);
+  });
+
+  it("keeps both panes at least 160px at the narrowest viable dimensions", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(679, 520);
+    harness.flush();
+
+    expect(harness.controller.setDividerProportion(0.9)).toBe(true);
+    expect(harness.controller.snapshot()).toMatchObject({
+      mode: "stack",
+      dividerProportion: 1 - 160 / 520,
+    });
+
+    harness.resize(680, 519);
+    harness.flush();
+    expect(harness.controller.setDividerProportion(0.9)).toBe(true);
+    expect(harness.controller.snapshot()).toMatchObject({
+      mode: "split",
+      dividerProportion: 1 - 160 / 680,
+    });
+  });
+
+  it.each([
+    ["garbage", 0.5],
+    ["", 0.5],
+    ["null", 0.5],
+    ["2", 1],
+    ["-2", 0],
+    ["NaN", 0.5],
+  ] as const)("validates stored divider value %j", (stored, expected) => {
+    const harness = createHarness({ storage: new MemoryStorage(stored) });
+    expect(harness.controller.snapshot().dividerProportion).toBe(expected);
+  });
+
+  it("survives storage read and write failures", () => {
+    const storage: PanelSessionStateStorage = {
+      getItem: () => { throw new Error("read failed"); },
+      setItem: () => { throw new Error("write failed"); },
+    };
+    const harness = createHarness({ storage });
+
+    expect(harness.controller.snapshot().dividerProportion).toBe(0.5);
+    expect(() => harness.controller.setDividerProportion(0.75)).not.toThrow();
+    expect(harness.controller.snapshot().dividerProportion).toBe(0.75);
+  });
+
+  it("rejects a non-string storage result without reading hostile properties", () => {
+    const length = vi.fn(() => 3);
+    const hostile = {};
+    Object.defineProperty(hostile, "length", { get: length });
+    const storage = {
+      getItem: () => hostile,
+      setItem: vi.fn(),
+    } as unknown as PanelSessionStateStorage;
+
+    expect(() => new PanelLayoutController({
+      createResizeObserver: () => ({ observe() {}, disconnect() {} }),
+      storage,
+    })).not.toThrow();
+    expect(length).not.toHaveBeenCalled();
+  });
+
+  it("preserves the selected tab while moving through every layout mode", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+
+    expect(harness.controller.snapshot().activeTab).toBe("dom");
+    expect(harness.controller.setActiveTab("source")).toBe(true);
+    expect(harness.controller.setActiveTab("SOURCE")).toBe(false);
+    expect(harness.controller.setActiveTab({ toString: () => "dom" })).toBe(false);
+
+    harness.resize(680, 519);
+    harness.flush();
+    harness.resize(679, 520);
+    harness.flush();
+    harness.resize(679, 519);
+    harness.flush();
+
+    expect(harness.controller.snapshot()).toMatchObject({
+      mode: "tabs",
+      activeTab: "source",
+    });
+  });
+
+  it("supports deterministic separator keyboard commands and accessible values", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(800, 600);
+    harness.flush();
+
+    expect(harness.controller.handleSeparatorKey("ArrowRight")).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBeCloseTo(0.52);
+    expect(harness.controller.handleSeparatorKey("ArrowLeft", true)).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBeCloseTo(0.42);
+    expect(harness.controller.handleSeparatorKey("Home")).toBe(true);
+    expect(harness.controller.snapshot().separator).toEqual({
+      enabled: true,
+      orientation: "vertical",
+      valueMin: 20,
+      valueMax: 80,
+      valueNow: 20,
+      valueText: "20%",
+    });
+    expect(harness.controller.handleSeparatorKey("End")).toBe(true);
+    expect(harness.controller.snapshot().separator.valueNow).toBe(80);
+    expect(harness.controller.handleSeparatorKey("Enter")).toBe(false);
+
+    harness.resize(679, 600);
+    harness.flush();
+    expect(harness.controller.snapshot().separator.orientation).toBe("horizontal");
+  });
+
+  it("moves Home and End to exact pane minimums when percentages are fractional", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(680, 519);
+    harness.flush();
+
+    expect(harness.controller.handleSeparatorKey("Home")).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBe(160 / 680);
+    expect(harness.controller.handleSeparatorKey("End")).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBe(1 - 160 / 680);
+  });
+
+  it("accepts a synchronous scheduler without suppressing later resizes", () => {
+    const observers: FakeResizeObserver[] = [];
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        const observer = new FakeResizeObserver(callback);
+        observers.push(observer);
+        return observer;
+      },
+      scheduler: {
+        schedule(callback) {
+          callback();
+          return () => undefined;
+        },
+      },
+    });
+    const target = {};
+    controller.start(target);
+
+    observers[0]!.emit(target, 500, 600);
+    observers[0]!.emit(target, 900, 400);
+
+    expect(controller.snapshot()).toMatchObject({
+      width: 900,
+      height: 400,
+      mode: "split",
+    });
+  });
+
+  it("disables separator commands in tabs mode", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(500, 400);
+    harness.flush();
+
+    expect(harness.controller.handleSeparatorKey("ArrowRight")).toBe(false);
+    expect(harness.controller.setDividerFromPosition(200)).toBe(false);
+    expect(harness.controller.snapshot().separator.enabled).toBe(false);
+  });
+
+  it("returns deeply immutable snapshots", () => {
+    const snapshot = createHarness().controller.snapshot();
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.separator)).toBe(true);
+  });
+
+  it("isolates listener failures and serializes reentrant updates", () => {
+    const harness = createHarness();
+    const observed: string[] = [];
+    harness.controller.subscribe((snapshot) => {
+      observed.push(`first:${snapshot.activeTab}`);
+      if (snapshot.activeTab === "source") {
+        harness.controller.setActiveTab("dom");
+      }
+      throw new Error("view failed");
+    });
+    harness.controller.subscribe((snapshot) => {
+      observed.push(`second:${snapshot.activeTab}`);
+    });
+
+    expect(() => harness.controller.setActiveTab("source")).not.toThrow();
+    expect(observed).toEqual([
+      "first:source",
+      "second:source",
+      "first:dom",
+      "second:dom",
+    ]);
+  });
+
+  it("is idempotent and invokes no callbacks after disposal", () => {
+    const harness = createHarness();
+    const listener = vi.fn(() => harness.controller.dispose());
+    const laterListener = vi.fn();
+    harness.controller.subscribe(listener);
+    harness.controller.subscribe(laterListener);
+
+    expect(harness.controller.start(harness.target)).toBe(true);
+    expect(harness.controller.start(harness.target)).toBe(true);
+    expect(harness.observers).toHaveLength(1);
+    harness.resize(900, 700);
+    harness.flush();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(laterListener).not.toHaveBeenCalled();
+
+    const stale = harness.observers[0]!;
+    const disposedSnapshot = harness.controller.snapshot();
+    expect(() => harness.controller.dispose()).not.toThrow();
+    stale.emit(harness.target, 400, 600);
+    harness.flush();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(harness.controller.snapshot()).toBe(disposedSnapshot);
+    expect(harness.controller.start({})).toBe(false);
+    expect(harness.controller.setActiveTab("source")).toBe(false);
+  });
+
+  it("fails safely when observer construction, observation, or disconnection throws", () => {
+    const target = {};
+    const controller = new PanelLayoutController({
+      createResizeObserver: () => { throw new Error("construct failed"); },
+    });
+    expect(() => controller.start(target)).not.toThrow();
+    expect(controller.snapshot()).toMatchObject({
+      mode: "tabs",
+      width: 0,
+      height: 0,
+      dividerProportion: 0.5,
+    });
+
+    const failingObserver: PanelResizeObserverLike = {
+      observe: () => { throw new Error("observe failed"); },
+      disconnect: () => { throw new Error("disconnect failed"); },
+    };
+    const another = new PanelLayoutController({
+      createResizeObserver: () => failingObserver,
+    });
+    expect(() => another.start({})).not.toThrow();
+    expect(() => another.start({})).not.toThrow();
+    expect(() => another.dispose()).not.toThrow();
+  });
+
+  it("remains disposable when scheduled-work cancellation throws", () => {
+    let emit: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        emit = callback;
+        return { observe() {}, disconnect() {} };
+      },
+      scheduler: {
+        schedule: () => () => { throw new Error("cancel failed"); },
+      },
+    });
+    const target = {};
+    controller.start(target);
+    emit!([{ target, contentRect: { width: 700, height: 600 } }]);
+
+    expect(() => controller.dispose()).not.toThrow();
+  });
+});
+
+class FakeScheduler implements PanelLayoutScheduler {
+  private readonly pending = new Set<() => void>();
+
+  public schedule(callback: () => void): () => void {
+    this.pending.add(callback);
+    return () => this.pending.delete(callback);
+  }
+
+  public flush(): void {
+    for (const callback of [...this.pending]) {
+      this.pending.delete(callback);
+      callback();
+    }
+  }
+
+  public size(): number {
+    return this.pending.size;
+  }
+}
+
+class FakeResizeObserver implements PanelResizeObserverLike {
+  public readonly disconnect = vi.fn();
+  public readonly observe = vi.fn();
+
+  public constructor(
+    private readonly callback: (entries: readonly PanelResizeObserverEntryLike[]) => void,
+  ) {}
+
+  public emit(target: object, width: number, height: number): void {
+    this.callback([{ target, contentRect: { width, height } }]);
+  }
+}
+
+class MemoryStorage implements PanelSessionStateStorage {
+  public readonly writes: Array<[string, string]> = [];
+
+  public constructor(private value: string | null = null) {}
+
+  public getItem(): string | null {
+    return this.value;
+  }
+
+  public setItem(key: string, value: string): void {
+    this.value = value;
+    this.writes.push([key, value]);
+  }
+}
+
+function createHarness(options: { storage?: PanelSessionStateStorage } = {}) {
+  const target = {};
+  const scheduler = new FakeScheduler();
+  const observers: FakeResizeObserver[] = [];
+  const createResizeObserver: PanelResizeObserverFactory = (callback) => {
+    const observer = new FakeResizeObserver(callback);
+    observers.push(observer);
+    return observer;
+  };
+  const controller = new PanelLayoutController({
+    createResizeObserver,
+    scheduler,
+    storage: options.storage,
+  });
+  return {
+    controller,
+    target,
+    scheduler,
+    observers,
+    resize(width: number, height: number): void {
+      observers.at(-1)!.emit(target, width, height);
+    },
+    flush(): void {
+      scheduler.flush();
+    },
+  };
+}
