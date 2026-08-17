@@ -53,10 +53,16 @@ export interface PanelLayoutControllerOptions {
 }
 
 interface ScheduledResizeCell {
-  readonly generation: number;
-  readonly target: object;
+  readonly binding: ObserverBindingCell;
   pending: { width: number; height: number } | undefined;
   cancel: (() => void) | undefined;
+}
+
+interface ObserverBindingCell {
+  readonly generation: number;
+  readonly target: object;
+  observer: PanelResizeObserverLike | undefined;
+  handle: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
 }
 
 const SPLIT_WIDTH = 680;
@@ -88,8 +94,7 @@ export class PanelLayoutController {
   private current: PanelLayoutSnapshot;
   private activeTab: PanelLayoutTab = "dom";
   private dividerProportion: number;
-  private target: object | undefined;
-  private observer: PanelResizeObserverLike | undefined;
+  private observerBinding: ObserverBindingCell | undefined;
   private bindingGeneration = 0;
   private scheduledResize: ScheduledResizeCell | undefined;
   private readonly notificationQueue: PanelLayoutSnapshot[] = [];
@@ -112,31 +117,59 @@ export class PanelLayoutController {
     if (this.disposed || !isObject(target)) {
       return false;
     }
-    if (this.target === target) {
+    const previous = this.observerBinding;
+    if (previous?.target === target) {
       return true;
     }
 
-    this.detachObserver();
-    this.target = target;
-    const generation = ++this.bindingGeneration;
+    const binding: ObserverBindingCell = {
+      generation: ++this.bindingGeneration,
+      target,
+      observer: undefined,
+      handle: undefined,
+    };
+    this.observerBinding = binding;
+    if (previous) {
+      this.retireObserverBinding(previous);
+    }
+    if (!this.isCurrentBinding(binding)) {
+      return true;
+    }
+
     this.applyDimensions(0, 0);
+    if (!this.isCurrentBinding(binding)) {
+      return true;
+    }
+
+    binding.handle = (entries) => {
+      this.acceptResizeEntries(binding, entries);
+    };
+    const callback = (entries: readonly PanelResizeObserverEntryLike[]) => {
+      binding.handle?.(entries);
+    };
 
     let observer: PanelResizeObserverLike | undefined;
     try {
-      observer = this.options.createResizeObserver((entries) => {
-        this.acceptResizeEntries(generation, target, entries);
-      });
-      this.observer = observer;
+      observer = this.options.createResizeObserver(callback);
+    } catch {
+      this.retireObserverBinding(binding);
+      return true;
+    }
+    if (!this.isCurrentBinding(binding)) {
+      binding.handle = undefined;
+      this.disconnectDetachedObserver(observer);
+      return true;
+    }
+
+    binding.observer = observer;
+    try {
       observer.observe(target);
     } catch {
-      this.observer = undefined;
-      if (observer) {
-        try {
-          observer.disconnect();
-        } catch {
-          // An unavailable observer leaves the controller at its safe default.
-        }
-      }
+      this.retireObserverBinding(binding);
+      return true;
+    }
+    if (!this.isCurrentBinding(binding)) {
+      return true;
     }
     return true;
   }
@@ -147,7 +180,10 @@ export class PanelLayoutController {
     }
     this.disposed = true;
     this.bindingGeneration += 1;
-    this.detachObserver();
+    const binding = this.observerBinding;
+    if (binding) {
+      this.retireObserverBinding(binding);
+    }
     this.listeners.clear();
     this.notificationQueue.length = 0;
   }
@@ -236,11 +272,17 @@ export class PanelLayoutController {
     if (key === "End") {
       return this.setDividerProportion(bounds.maximum);
     }
-    const direction = key === "ArrowLeft" || key === "ArrowUp"
-      ? -1
-      : key === "ArrowRight" || key === "ArrowDown"
-        ? 1
-        : 0;
+    const direction = this.current.mode === "split"
+      ? key === "ArrowLeft"
+        ? -1
+        : key === "ArrowRight"
+          ? 1
+          : 0
+      : key === "ArrowUp"
+        ? -1
+        : key === "ArrowDown"
+          ? 1
+          : 0;
     if (direction === 0) {
       return false;
     }
@@ -249,21 +291,16 @@ export class PanelLayoutController {
   }
 
   private acceptResizeEntries(
-    generation: number,
-    target: object,
+    binding: ObserverBindingCell,
     entries: readonly PanelResizeObserverEntryLike[],
   ): void {
-    if (
-      this.disposed
-      || generation !== this.bindingGeneration
-      || target !== this.target
-    ) {
+    if (!this.isCurrentBinding(binding)) {
       return;
     }
     let latest: { width: number; height: number } | undefined;
     try {
       for (const entry of entries) {
-        if (entry.target === target) {
+        if (entry.target === binding.target) {
           latest = {
             width: sanitizeDimension(entry.contentRect.width),
             height: sanitizeDimension(entry.contentRect.height),
@@ -273,22 +310,20 @@ export class PanelLayoutController {
     } catch {
       return;
     }
-    if (!latest) {
+    if (!latest || !this.isCurrentBinding(binding)) {
       return;
     }
     const currentSchedule = this.scheduledResize;
     if (
       currentSchedule
-      && currentSchedule.generation === generation
-      && currentSchedule.target === target
+      && currentSchedule.binding === binding
     ) {
       currentSchedule.pending = latest;
       return;
     }
 
     const schedule: ScheduledResizeCell = {
-      generation,
-      target,
+      binding,
       pending: latest,
       cancel: undefined,
     };
@@ -299,7 +334,11 @@ export class PanelLayoutController {
         completedSynchronously = true;
         this.flushScheduledResize(schedule);
       });
-      if (!completedSynchronously && this.scheduledResize === schedule) {
+      if (
+        !completedSynchronously
+        && this.scheduledResize === schedule
+        && this.isCurrentBinding(binding)
+      ) {
         schedule.cancel = cancel;
       }
     } catch {
@@ -310,9 +349,7 @@ export class PanelLayoutController {
   private flushScheduledResize(schedule: ScheduledResizeCell): void {
     if (
       this.scheduledResize !== schedule
-      || this.disposed
-      || schedule.generation !== this.bindingGeneration
-      || schedule.target !== this.target
+      || !this.isCurrentBinding(schedule.binding)
     ) {
       return;
     }
@@ -384,9 +421,13 @@ export class PanelLayoutController {
     }
   }
 
-  private detachObserver(): void {
+  private retireObserverBinding(binding: ObserverBindingCell): void {
+    if (this.observerBinding === binding) {
+      this.observerBinding = undefined;
+    }
+    binding.handle = undefined;
     const schedule = this.scheduledResize;
-    if (schedule && this.scheduledResize === schedule) {
+    if (schedule?.binding === binding && this.scheduledResize === schedule) {
       this.scheduledResize = undefined;
       const cancel = schedule.cancel;
       schedule.pending = undefined;
@@ -397,16 +438,25 @@ export class PanelLayoutController {
         // Removing the current cell first makes a leaked callback inert.
       }
     }
-    const observer = this.observer;
-    this.observer = undefined;
-    this.target = undefined;
+    const observer = binding.observer;
+    binding.observer = undefined;
     if (observer) {
-      try {
-        observer.disconnect();
-      } catch {
-        // A detached callback is authority-inert through its generation token.
-      }
+      this.disconnectDetachedObserver(observer);
     }
+  }
+
+  private disconnectDetachedObserver(observer: PanelResizeObserverLike): void {
+    try {
+      observer.disconnect();
+    } catch {
+      // Its binding handle was cleared before this external call.
+    }
+  }
+
+  private isCurrentBinding(binding: ObserverBindingCell): boolean {
+    return !this.disposed
+      && this.observerBinding === binding
+      && binding.generation === this.bindingGeneration;
   }
 
   private publish(snapshot: PanelLayoutSnapshot): void {

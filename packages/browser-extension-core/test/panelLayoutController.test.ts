@@ -140,6 +140,262 @@ describe("PanelLayoutController", () => {
     expect(controller.snapshot()).toBe(disposedSnapshot);
   });
 
+  it("keeps a factory rebind authoritative before the old factory returns", () => {
+    const scheduler = new FakeScheduler();
+    const records: Array<{
+      callback: (entries: readonly PanelResizeObserverEntryLike[]) => void;
+      observer: FakeResizeObserver;
+    }> = [];
+    const oldTarget = {};
+    const newTarget = {};
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        const observer = new FakeResizeObserver(callback);
+        records.push({ callback, observer });
+        factoryCalls += 1;
+        if (factoryCalls === 1) {
+          controller.start(newTarget);
+        }
+        return observer;
+      },
+      scheduler,
+    });
+
+    controller.start(oldTarget);
+    expect(records).toHaveLength(2);
+    expect(records[0]!.observer.observe).not.toHaveBeenCalled();
+    expect(records[0]!.observer.disconnect).toHaveBeenCalledTimes(1);
+    expect(records[1]!.observer.observe).toHaveBeenCalledWith(newTarget);
+
+    records[0]!.callback([{
+      target: oldTarget,
+      contentRect: { width: 1000, height: 800 },
+    }]);
+    records[1]!.callback([{
+      target: newTarget,
+      contentRect: { width: 500, height: 600 },
+    }]);
+    scheduler.flush();
+    expect(controller.snapshot()).toMatchObject({ width: 500, height: 600 });
+
+    controller.dispose();
+    expect(records[1]!.observer.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not install an observer returned after its factory disposes", () => {
+    let controller: PanelLayoutController;
+    let leakedCallback: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const observer = new FakeResizeObserver(() => undefined);
+    controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        leakedCallback = callback;
+        controller.dispose();
+        return observer;
+      },
+    });
+    const target = {};
+    const snapshot = controller.snapshot();
+
+    controller.start(target);
+    leakedCallback!([{
+      target,
+      contentRect: { width: 900, height: 700 },
+    }]);
+
+    expect(observer.observe).not.toHaveBeenCalled();
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot()).toBe(snapshot);
+  });
+
+  it("does not let an old factory failure clear a newer binding", () => {
+    const observers: PanelResizeObserverLike[] = [];
+    const oldTarget = {};
+    const newTarget = {};
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: () => {
+        factoryCalls += 1;
+        if (factoryCalls === 1) {
+          controller.start(newTarget);
+          throw new Error("old factory failed");
+        }
+        const observer = { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+    });
+
+    controller.start(oldTarget);
+    controller.dispose();
+
+    expect(observers).toHaveLength(1);
+    expect(observers[0]!.observe).toHaveBeenCalledWith(newTarget);
+    expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an observe-time rebind authoritative", () => {
+    const callbacks: Array<(entries: readonly PanelResizeObserverEntryLike[]) => void> = [];
+    const observers: PanelResizeObserverLike[] = [];
+    const oldTarget = {};
+    const newTarget = {};
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        callbacks.push(callback);
+        factoryCalls += 1;
+        const observer: PanelResizeObserverLike = factoryCalls === 1
+          ? {
+            observe: () => controller.start(newTarget),
+            disconnect: vi.fn(),
+          }
+          : { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+      scheduler: new FakeScheduler(),
+    });
+
+    controller.start(oldTarget);
+    expect(callbacks).toHaveLength(2);
+    expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1);
+    expect(observers[1]!.observe).toHaveBeenCalledWith(newTarget);
+
+    controller.dispose();
+    expect(observers[1]!.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retain an observer when observe disposes the controller", () => {
+    let controller: PanelLayoutController;
+    let leakedCallback: ((entries: readonly PanelResizeObserverEntryLike[]) => void) | undefined;
+    const disconnect = vi.fn();
+    controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        leakedCallback = callback;
+        return {
+          observe: () => controller.dispose(),
+          disconnect,
+        };
+      },
+    });
+    const target = {};
+    const snapshot = controller.snapshot();
+
+    controller.start(target);
+    leakedCallback!([{
+      target,
+      contentRect: { width: 900, height: 700 },
+    }]);
+
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot()).toBe(snapshot);
+  });
+
+  it("allows a same-target retry after observe throws", () => {
+    const observers: PanelResizeObserverLike[] = [];
+    let factoryCalls = 0;
+    const controller = new PanelLayoutController({
+      createResizeObserver: () => {
+        factoryCalls += 1;
+        const observer: PanelResizeObserverLike = factoryCalls === 1
+          ? {
+            observe: () => { throw new Error("observe failed"); },
+            disconnect: vi.fn(),
+          }
+          : { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+    });
+    const target = {};
+
+    expect(controller.start(target)).toBe(true);
+    expect(controller.start(target)).toBe(true);
+
+    expect(factoryCalls).toBe(2);
+    expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1);
+    expect(observers[1]!.observe).toHaveBeenCalledWith(target);
+  });
+
+  it("does not let an old observe failure clear a newer binding", () => {
+    const observers: PanelResizeObserverLike[] = [];
+    const oldTarget = {};
+    const newTarget = {};
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: () => {
+        factoryCalls += 1;
+        const observer: PanelResizeObserverLike = factoryCalls === 1
+          ? {
+            observe: () => {
+              controller.start(newTarget);
+              throw new Error("old observe failed");
+            },
+            disconnect: vi.fn(),
+          }
+          : { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+    });
+
+    controller.start(oldTarget);
+    controller.dispose();
+
+    expect(observers).toHaveLength(2);
+    expect(observers[1]!.observe).toHaveBeenCalledWith(newTarget);
+    expect(observers[1]!.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a reentrant disconnect binding authoritative and leaks no callback authority", () => {
+    const scheduler = new FakeScheduler();
+    const callbacks: Array<(entries: readonly PanelResizeObserverEntryLike[]) => void> = [];
+    const observers: PanelResizeObserverLike[] = [];
+    const firstTarget = {};
+    const secondTarget = {};
+    const newestTarget = {};
+    let controller: PanelLayoutController;
+    let factoryCalls = 0;
+    controller = new PanelLayoutController({
+      createResizeObserver: (callback) => {
+        callbacks.push(callback);
+        factoryCalls += 1;
+        const observer: PanelResizeObserverLike = factoryCalls === 1
+          ? {
+            observe: vi.fn(),
+            disconnect: () => {
+              controller.start(newestTarget);
+              throw new Error("disconnect failed");
+            },
+          }
+          : { observe: vi.fn(), disconnect: vi.fn() };
+        observers.push(observer);
+        return observer;
+      },
+      scheduler,
+    });
+    controller.start(firstTarget);
+
+    controller.start(secondTarget);
+    expect(observers).toHaveLength(2);
+    expect(observers[1]!.observe).toHaveBeenCalledWith(newestTarget);
+
+    callbacks[0]!([{
+      target: firstTarget,
+      contentRect: { width: 1000, height: 800 },
+    }]);
+    callbacks[1]!([{
+      target: newestTarget,
+      contentRect: { width: 500, height: 600 },
+    }]);
+    scheduler.flush();
+    expect(controller.snapshot()).toMatchObject({ width: 500, height: 600 });
+  });
+
   it("restores, clamps, and persists divider proportions rather than pixels", () => {
     const storage = new MemoryStorage("0.1");
     const harness = createHarness({ storage });
@@ -274,6 +530,34 @@ describe("PanelLayoutController", () => {
     expect(harness.controller.snapshot().dividerProportion).toBe(160 / 680);
     expect(harness.controller.handleSeparatorKey("End")).toBe(true);
     expect(harness.controller.snapshot().dividerProportion).toBe(1 - 160 / 680);
+  });
+
+  it("accepts only horizontal arrows for a split layout", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(800, 600);
+    harness.flush();
+    const initial = harness.controller.snapshot().dividerProportion;
+
+    expect(harness.controller.handleSeparatorKey("ArrowUp")).toBe(false);
+    expect(harness.controller.handleSeparatorKey("ArrowDown")).toBe(false);
+    expect(harness.controller.snapshot().dividerProportion).toBe(initial);
+    expect(harness.controller.handleSeparatorKey("ArrowLeft")).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBeCloseTo(initial - 0.02);
+  });
+
+  it("accepts only vertical arrows for a stacked layout", () => {
+    const harness = createHarness();
+    harness.controller.start(harness.target);
+    harness.resize(679, 600);
+    harness.flush();
+    const initial = harness.controller.snapshot().dividerProportion;
+
+    expect(harness.controller.handleSeparatorKey("ArrowLeft")).toBe(false);
+    expect(harness.controller.handleSeparatorKey("ArrowRight")).toBe(false);
+    expect(harness.controller.snapshot().dividerProportion).toBe(initial);
+    expect(harness.controller.handleSeparatorKey("ArrowUp")).toBe(true);
+    expect(harness.controller.snapshot().dividerProportion).toBeCloseTo(initial - 0.02);
   });
 
   it("accepts a synchronous scheduler without suppressing later resizes", () => {
