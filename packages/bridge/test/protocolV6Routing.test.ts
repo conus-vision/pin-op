@@ -1,4 +1,5 @@
 import {
+  PinOpMessageSchema,
   PROTOCOL_VERSION,
   type InspectMessage,
   type PageRefreshMessage,
@@ -366,16 +367,21 @@ describe("protocol v6 bridge routing", () => {
     expect(context.otherBrowserConnection.sent).toEqual([]);
   });
 
-  it("does not let ownerless zero navigation authorize later active state", () => {
+  it("rejects nonzero, malformed, and forged ownerless navigation without granting authority", () => {
     const context = setup();
     const zeroState = navigationState("ide-a", 0);
     const nonzeroState = navigationState("ide-a", 0, {
       selectedMatchCount: 1,
       activeMatchIndex: 0,
     });
+    const malformedZeroState = navigationState("ide-a", 0, {
+      activeMatchIndex: 0,
+    });
     const forgedActiveState = navigationState("ide-a", 0, {
       activeMatchId: "forged-match",
     });
+
+    expect(PinOpMessageSchema.safeParse(malformedZeroState).success).toBe(false);
 
     routeMessage(
       context.registry,
@@ -393,11 +399,21 @@ describe("protocol v6 bridge routing", () => {
       context.registry,
       context.routes,
       context.ideA,
+      malformedZeroState,
+    );
+    routeMessage(
+      context.registry,
+      context.routes,
+      context.ideA,
       forgedActiveState,
     );
 
     expect(context.browserConnection.sent).toEqual([zeroState]);
     expect(context.ideAConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
       expect.objectContaining({
         type: "error",
         code: "bridge.noBrowserClient",
