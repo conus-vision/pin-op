@@ -413,13 +413,32 @@ export const SourceExcerptConfidenceSchema = z.enum([
   "unknown",
 ]);
 
+const SourceExcerptKindSchema = z.enum([
+  "component",
+  "fixture",
+  "rule",
+  "source",
+  "style-rule",
+]);
+
+const SourceExcerptRelationSchema = z.enum([
+  "applies",
+  "contains",
+  "declared-in",
+  "matches",
+  "parent",
+  "renders",
+  "selected",
+  "styles",
+]);
+
 const sourceExcerptObjectSchema = z
   .object({
     matchId: opaqueIdSchema,
     targetRole: SourceExcerptTargetRoleSchema,
     label: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
-    kind: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
-    relation: z.string().min(1).max(RESOLUTION_LIMITS.labelLength),
+    kind: SourceExcerptKindSchema,
+    relation: SourceExcerptRelationSchema,
     confidence: SourceExcerptConfidenceSchema,
     startLine: z.number().int().min(1).max(RESOLUTION_LIMITS.count),
     endLine: z.number().int().min(1).max(RESOLUTION_LIMITS.count),

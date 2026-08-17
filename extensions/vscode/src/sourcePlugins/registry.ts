@@ -19,6 +19,10 @@ import type {
   SourcePluginDispatch,
   SourceResolution,
 } from "./types.js";
+import {
+  normalizeSourceKind,
+  normalizeSourceRelation,
+} from "../sourcePresentationMetadata.js";
 
 interface PluginPayload {
   readonly matches: readonly ResolvedSourceMatch[];
@@ -385,7 +389,12 @@ function normalizePluginResult(
     return invalidResultResolution(pluginId);
   }
 
-  const matches = value.matches.map((match) => ({ ...match, pluginId }));
+  const matches = value.matches.map((match) => ({
+    ...match,
+    kind: normalizeSourceKind(match.kind),
+    relation: normalizeSourceRelation(match.relation),
+    pluginId,
+  }));
   const resolvedDiagnostics = diagnostics.map((diagnostic) => ({
       ...diagnostic,
       pluginId,

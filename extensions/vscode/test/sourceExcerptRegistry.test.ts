@@ -20,6 +20,18 @@ import type {
 } from "../src/sourcePlugins/types.js";
 
 const DOCUMENT_URI = "file:///private/customer/src/Card.tsx";
+const SENSITIVE_PLUGIN_VALUES = [
+  String.raw`C:\Users\alice\workspace\src\Card.scss`,
+  "/home/alice/workspace/src/Card.scss",
+  "file:///home/alice/workspace/src/Card.scss",
+  "vscode-workspace://workspace-7/src/Card.scss",
+  "webpack:///sources/Card.scss:17:3",
+  "Card.scss:17:3",
+  "Card.scss(17,3)",
+  "Card.scss#L17C3",
+  '{"targetKind":"element","path":[{"tag":"div","index":0}],"boundaries":[]}',
+  '["html","body","div",0]',
+] as const;
 
 describe("SourceExcerptRegistry", () => {
   it("publishes only active-document excerpts and protocol public fields", () => {
@@ -70,6 +82,229 @@ describe("SourceExcerptRegistry", () => {
     expect(wire).not.toContain("plugin-provided");
     expect(wire).not.toContain("forged");
     expect(wire).not.toContain("C:/plugin");
+  });
+
+  it("never serializes plugin-controlled paths, URIs, or locators", () => {
+    const document = textDocument(
+      "file:///private/customer/workspace/styles.scss",
+      "scss",
+      "a ".repeat(SENSITIVE_PLUGIN_VALUES.length).trimEnd(),
+    );
+    const hostileMatches = SENSITIVE_PLUGIN_VALUES.map((value, index) => ({
+      ...match("selected", range(0, index * 2, 0, index * 2 + 1), value),
+      kind: value,
+      relation: value,
+      metadata: {
+        path: value,
+        uri: value,
+        sourceMapLocator: value,
+      },
+    }));
+    const registry = excerptRegistry();
+
+    const publication = registry.publish({
+      inspectMessageId: "inspect-hostile-metadata",
+      resolutionGeneration: 9,
+      editor: { document },
+      resolution: resolution(
+        document,
+        hostileMatches,
+        "inspect-hostile-metadata",
+      ),
+    });
+    const serialized = JSON.stringify(wireMessage(publication.message));
+
+    for (const value of SENSITIVE_PLUGIN_VALUES) {
+      expect(serialized).not.toContain(value);
+      expect(serialized).not.toContain(serializedStringFragment(value));
+    }
+    expect(serialized).not.toContain("/private/customer/workspace");
+    expect(publication.message.matches).toHaveLength(
+      SENSITIVE_PLUGIN_VALUES.length,
+    );
+    expect(publication.message.matches.map((entry) => entry.label)).toEqual(
+      SENSITIVE_PLUGIN_VALUES.map(() => "styles.scss"),
+    );
+    expect(publication.message.matches.map((entry) => entry.kind)).toEqual(
+      SENSITIVE_PLUGIN_VALUES.map(() => "source"),
+    );
+    expect(publication.message.matches.map((entry) => entry.relation)).toEqual(
+      SENSITIVE_PLUGIN_VALUES.map(() => "matches"),
+    );
+    expect(publication.message.matches.map((entry) => entry.matchId)).toEqual(
+      SENSITIVE_PLUGIN_VALUES.map((_, index) => `opaque-${index + 1}`),
+    );
+    for (const [index, excerpt] of publication.message.matches.entries()) {
+      expect(registry.resolveOpen({
+        ...openMessage(excerpt.matchId),
+        inspectMessageId: "inspect-hostile-metadata",
+        resolutionGeneration: 9,
+      }, document)?.range).toEqual(range(0, index * 2, 0, index * 2 + 1));
+    }
+    expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
+  });
+
+  it("preserves neutral component and built-in stylesheet presentation", () => {
+    const document = textDocument(
+      "file:///private/customer/workspace/styles.scss",
+      "scss",
+      ".card {} Card",
+    );
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: "inspect-safe-metadata",
+      resolutionGeneration: 2,
+      editor: { document },
+      resolution: resolution(document, [
+        {
+          ...match("selected", range(0, 0, 0, 8), ".card:hover"),
+          pluginId: "pin-op.scss",
+          kind: "style-rule",
+          relation: "styles",
+          confidence: "sourcemap",
+        },
+        {
+          ...match("parent", range(0, 9, 0, 13), "Card"),
+          kind: "component",
+          relation: "renders",
+        },
+      ], "inspect-safe-metadata"),
+    });
+
+    expect(publication.message.matches).toEqual([
+      expect.objectContaining({
+        label: ".card:hover",
+        kind: "style-rule",
+        relation: "styles",
+        confidence: "sourcemap",
+      }),
+      expect.objectContaining({
+        label: "Card",
+        kind: "component",
+        relation: "renders",
+      }),
+    ]);
+  });
+
+  it("fails closed when plugin display metadata cannot be normalized", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    const hostile = match("selected", range(0, 0, 0, 8));
+    Object.defineProperty(hostile, "label", {
+      get() {
+        throw new Error("private path getter failed");
+      },
+    });
+    const registry = excerptRegistry();
+
+    let publication: ReturnType<typeof registry.publish> | undefined;
+    expect(() => {
+      publication = registry.publish({
+        inspectMessageId: "inspect-normalizer-failure",
+        resolutionGeneration: 1,
+        editor: { document },
+        resolution: resolution(
+          document,
+          [hostile],
+          "inspect-normalizer-failure",
+        ),
+      });
+    }).not.toThrow();
+
+    expect(publication?.message.matches).toEqual([]);
+    expect(registry.resolveOpen({
+      ...openMessage("opaque-1"),
+      inspectMessageId: "inspect-normalizer-failure",
+      resolutionGeneration: 1,
+    }, document)).toBeUndefined();
+  });
+
+  it("fails closed when host-derived presentation metadata cannot be read", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    document.uri.toString = () => {
+      throw new Error("workspace URI getter failed");
+    };
+    const registry = excerptRegistry();
+    let publication: ReturnType<typeof registry.publish> | undefined;
+
+    expect(() => {
+      publication = registry.publish({
+        inspectMessageId: "inspect-host-normalizer-failure",
+        resolutionGeneration: 1,
+        editor: { document },
+        resolution: {
+          selectionMessageId: "inspect-host-normalizer-failure",
+          documentUri: DOCUMENT_URI,
+          documentVersion: document.version,
+          matches: [match("selected", range(0, 0, 0, 8))],
+          diagnostics: [],
+        },
+      });
+    }).not.toThrow();
+
+    expect(publication?.message).toMatchObject({
+      document: { label: "untitled", languageId: "unknown" },
+      matches: [],
+      omittedMatchCount: 0,
+    });
+    expect(publication?.navigationMatches).toEqual([]);
+  });
+
+  it("fails closed when active-document identity cannot be revalidated", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    let uriReads = 0;
+    document.uri.toString = () => {
+      uriReads += 1;
+      if (uriReads === 1) return DOCUMENT_URI;
+      throw new Error("workspace URI changed during publication");
+    };
+    const registry = excerptRegistry();
+    let publication: ReturnType<typeof registry.publish> | undefined;
+
+    expect(() => {
+      publication = registry.publish({
+        inspectMessageId: "inspect-document-revalidation-failure",
+        resolutionGeneration: 1,
+        editor: { document },
+        resolution: {
+          selectionMessageId: "inspect-document-revalidation-failure",
+          documentUri: DOCUMENT_URI,
+          documentVersion: document.version,
+          matches: [match("selected", range(0, 0, 0, 8))],
+          diagnostics: [],
+        },
+      });
+    }).not.toThrow();
+
+    expect(publication?.message).toMatchObject({
+      document: { label: "Card.tsx", languageId: "css" },
+      matches: [],
+    });
+    expect(publication?.navigationMatches).toEqual([]);
+  });
+
+  it("fails closed when invalidation metadata cannot be read", () => {
+    const document = textDocument(DOCUMENT_URI, "css", ".card {}");
+    document.uri.toString = () => {
+      throw new Error("workspace URI getter failed");
+    };
+    const registry = excerptRegistry();
+    let invalidation: SourceMatchesInput | undefined;
+
+    expect(() => {
+      invalidation = registry.invalidate({
+        inspectMessageId: "inspect-invalidation-normalizer-failure",
+        resolutionGeneration: 4,
+        editor: { document },
+      });
+    }).not.toThrow();
+
+    expect(invalidation).toEqual({
+      inspectMessageId: "inspect-invalidation-normalizer-failure",
+      resolutionGeneration: 4,
+      document: { label: "untitled", languageId: "unknown" },
+      matches: [],
+      omittedMatchCount: 0,
+    });
   });
 
   it("reduces encoded URI segments to a public basename", () => {
@@ -668,6 +903,10 @@ function wireMessage(message: SourceMatchesInput) {
 
 function wireBytes(message: SourceMatchesInput): number {
   return Buffer.byteLength(JSON.stringify(wireMessage(message)), "utf8");
+}
+
+function serializedStringFragment(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
 }
 
 function resolution(

@@ -9,6 +9,13 @@ import {
   type SourceOpenMessage,
 } from "@pin-op/protocol";
 import type { SourceMatchesInput } from "../bridgeClient.js";
+import {
+  normalizeLanguageId,
+  normalizeSourceDisplayLabel,
+  normalizeSourceKind,
+  normalizeSourceRelation,
+  sourceDocumentLabel,
+} from "../sourcePresentationMetadata.js";
 import type { TextDocumentLike } from "../sourcePlugins/sourceDocument.js";
 import type {
   ResolvedSourceMatch,
@@ -104,15 +111,28 @@ export class SourceExcerptRegistry {
   public publish(input: SourceExcerptPublicationInput): SourceExcerptPublication {
     const { document } = input.editor;
     this.authorities.clear();
-    this.current = sourceState(
-      input.inspectMessageId,
-      input.resolutionGeneration,
-      document,
-    );
+    try {
+      this.current = sourceState(
+        input.inspectMessageId,
+        input.resolutionGeneration,
+        document,
+      );
+    } catch {
+      this.current = Object.freeze({
+        inspectMessageId: input.inspectMessageId,
+        resolutionGeneration: input.resolutionGeneration,
+        document: unknownDocument(),
+      });
+      return this.emptyPublication();
+    }
 
-    if (!matchesActiveDocument(input)) return this.emptyPublication();
-
-    const valid = validMatches(input.resolution.matches, document);
+    let valid: ValidMatch[];
+    try {
+      if (!matchesActiveDocument(input)) return this.emptyPublication();
+      valid = validMatches(input.resolution.matches, document);
+    } catch {
+      return this.emptyPublication();
+    }
     if (valid.length === 0) return this.emptyPublication();
 
     let text: string;
@@ -122,13 +142,22 @@ export class SourceExcerptRegistry {
       return this.emptyPublication(true);
     }
 
-    const unique = deduplicateAndOrder(valid);
+    let unique: ValidMatch[];
+    try {
+      unique = deduplicateAndOrder(valid);
+    } catch {
+      return this.emptyPublication(false, valid.length);
+    }
     const matchIds = new Set<string>();
     const candidates: PublicationCandidate[] = [];
-    for (const entry of unique.slice(0, SOURCE_PRESENTATION_LIMITS.matches)) {
-      const matchId = this.allocateMatchId(matchIds);
-      if (!matchId) return this.emptyPublication(false, unique.length);
-      candidates.push(this.createCandidate(input, entry, text, matchId));
+    try {
+      for (const entry of unique.slice(0, SOURCE_PRESENTATION_LIMITS.matches)) {
+        const matchId = this.allocateMatchId(matchIds);
+        if (!matchId) return this.emptyPublication(false, unique.length);
+        candidates.push(this.createCandidate(input, entry, text, matchId));
+      }
+    } catch {
+      return this.emptyPublication(false, unique.length);
     }
     let included = candidates;
     let omittedMatchCount = unique.length - included.length;
@@ -167,12 +196,18 @@ export class SourceExcerptRegistry {
   ): SourceMatchesInput | undefined {
     this.authorities.clear();
     if (invalidation) {
+      let document = unknownDocument();
+      if (invalidation.editor) {
+        try {
+          document = publicDocument(invalidation.editor.document);
+        } catch {
+          // Keep the unknown public document and invalidate all authority.
+        }
+      }
       this.current = Object.freeze({
         inspectMessageId: invalidation.inspectMessageId,
         resolutionGeneration: invalidation.resolutionGeneration,
-        document: invalidation.editor
-          ? publicDocument(invalidation.editor.document)
-          : unknownDocument(),
+        document,
       });
     }
     return this.current ? this.message([], 0) : undefined;
@@ -225,12 +260,12 @@ export class SourceExcerptRegistry {
       excerpt: frozenExcerpt({
         matchId,
         targetRole: entry.match.targetRole,
-        label: boundedField(entry.match.label, RESOLUTION_LIMITS.labelLength),
-        kind: boundedField(entry.match.kind, RESOLUTION_LIMITS.labelLength),
-        relation: boundedField(
-          entry.match.relation,
-          RESOLUTION_LIMITS.labelLength,
+        label: normalizeSourceDisplayLabel(
+          entry.match.label,
+          this.current?.document.label ?? "untitled",
         ),
+        kind: normalizeSourceKind(entry.match.kind),
+        relation: normalizeSourceRelation(entry.match.relation),
         confidence: entry.match.confidence,
         startLine: authorityRange.start.line + 1,
         endLine: authorityRange.end.line + 1,
@@ -331,43 +366,13 @@ function publicDocument(
   document: TextDocumentLike,
 ): SourceMatchesInput["document"] {
   return frozenDocument({
-    label: boundedField(
-      documentLabel(document.uri.toString()),
-      RESOLUTION_LIMITS.labelLength,
-      "untitled",
-    ),
-    languageId: boundedField(
-      document.languageId,
-      RESOLUTION_LIMITS.languageIdLength,
-      "unknown",
-    ),
+    label: sourceDocumentLabel(document.uri.toString()),
+    languageId: normalizeLanguageId(document.languageId),
   });
 }
 
 function unknownDocument(): SourceMatchesInput["document"] {
   return frozenDocument({ label: "untitled", languageId: "unknown" });
-}
-
-function documentLabel(documentUri: string): string {
-  try {
-    const parsed = new URL(documentUri);
-    const segment = parsed.pathname.split("/").filter(Boolean).at(-1);
-    if (segment) {
-      try {
-        return basename(decodeURIComponent(segment));
-      } catch {
-        return basename(segment);
-      }
-    }
-  } catch {
-    const segment = documentUri.split(/[\\/]/).filter(Boolean).at(-1);
-    if (segment) return segment;
-  }
-  return "untitled";
-}
-
-function basename(value: string): string {
-  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? "untitled";
 }
 
 function validMatches(
@@ -428,10 +433,7 @@ function compareValidMatches(left: ValidMatch, right: ValidMatch): number {
     compareRanges(left.match.range, right.match.range) ||
     CONFIDENCE_PRIORITY[left.match.confidence] -
       CONFIDENCE_PRIORITY[right.match.confidence] ||
-    left.match.pluginId.localeCompare(right.match.pluginId) ||
-    left.match.label.localeCompare(right.match.label) ||
-    left.match.kind.localeCompare(right.match.kind) ||
-    left.match.relation.localeCompare(right.match.relation);
+    left.match.pluginId.localeCompare(right.match.pluginId);
 }
 
 function rolePriority(match: ResolvedSourceMatch): number {
@@ -512,14 +514,6 @@ function boundUtf8(
 
 function isSurrogate(value: number): boolean {
   return value >= 0xd800 && value <= 0xdfff;
-}
-
-function boundedField(value: string, limit: number, fallback = "unknown"): string {
-  const clean = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-  let bounded = clean.slice(0, limit);
-  const last = bounded.charCodeAt(bounded.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) bounded = bounded.slice(0, -1);
-  return bounded || fallback;
 }
 
 function validOpaqueId(value: unknown): value is string {

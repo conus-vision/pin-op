@@ -112,6 +112,14 @@ describe("source presentation protocol messages", () => {
     },
   );
 
+  it.each([
+    ["kind", "file:///workspace/private/Card.tsx"],
+    ["relation", "webpack:///sources/Card.tsx:9:2"],
+  ] as const)("rejects non-protocol %s presentation metadata", (field, value) => {
+    expect(SourceExcerptSchema.safeParse(excerpt({ [field]: value })).success)
+      .toBe(false);
+  });
+
   it("does not impose selected-before-parent schema ordering", () => {
     const matches = [
       excerpt({ matchId: "parent-1", targetRole: "parent" }),

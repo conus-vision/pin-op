@@ -187,15 +187,37 @@ describe("SourcePluginRegistry", () => {
       ]);
   });
 
-  it("does not collide when match kind or relation contains colons", async () => {
+  it("normalizes arbitrary plugin categories to neutral host values", async () => {
     const registry = registryWithMatches([
-      { ...match("selected", range(0, 0, 0, 8), "exact"), kind: "a:b", relation: "c" },
-      { ...match("selected", range(0, 0, 0, 8), "exact"), kind: "a", relation: "b:c" },
+      {
+        ...match("selected", range(0, 0, 0, 4), "exact"),
+        label: ".safe",
+        kind: "style-rule",
+        relation: "styles",
+      },
+      {
+        ...match("selected", range(0, 4, 0, 8), "exact"),
+        label: String.raw`C:\workspace\private\Card.tsx`,
+        kind: "file:///workspace/private/Card.tsx",
+        relation: "webpack:///sources/Card.tsx:9:2",
+      },
     ]);
 
     const result = resolved(await resolveCss(registry));
 
     expect(result.matches).toHaveLength(2);
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        label: ".safe",
+        kind: "style-rule",
+        relation: "styles",
+      }),
+      expect.objectContaining({
+        label: String.raw`C:\workspace\private\Card.tsx`,
+        kind: "source",
+        relation: "matches",
+      }),
+    ]);
   });
 
   it("rejects incompatible and duplicate registrations and emits changes", () => {
