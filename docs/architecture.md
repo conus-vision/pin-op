@@ -2,7 +2,7 @@
 
 Pin-op is a local, read-only bridge from browser DevTools inspection to
 source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
-protocol version is `5`.
+protocol version is `6`.
 
 ## Components
 
@@ -12,10 +12,17 @@ Firefox and Chrome/Chromium build the same Pin-op panel from the shared
 browser core. The panel owns:
 
 - explicit browser-window link controls and the displayed port-plus-PIN code;
-- a visual page picker;
+- one toolbar row with the visual page picker, tab-local **Auto Refresh** and
+  **IDE Highlight** controls, and the unchanged connection controls/code;
 - a virtualized, lazy DOM tree;
+- a responsive Source pane containing bounded active-document excerpts for the
+  Selected element and its immediate Parent;
 - the selected-element summary, exact IDE resolution footer, and selected-match
   source navigation controls.
+
+Wide panels place DOM and Source side by side. Narrow tall panels stack them,
+and narrow short panels use tabs. The footer carries the compact Pin-op product
+identity without replacing operational status.
 
 Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
@@ -26,7 +33,8 @@ WebSocket.
 The content runtime owns the browser-local Inspector session. One selection
 authority serves both page clicks and DOM-tree commands. It:
 
-- renders a style-isolated, pointer-inert box-model overlay;
+- renders a style-isolated, pointer-inert, half-alpha box-model overlay only
+  while a page element or DOM-tree row is hovered;
 - exposes element-only tree pages on demand;
 - traverses the top document, open shadow roots, and same-origin frame
   documents;
@@ -52,11 +60,18 @@ Disconnect revokes and removes only the current browser window's record. Closing
 the final panel closes its socket without converting session storage into
 durable storage.
 
+Refresh participation is tab-local and requires an open compatible panel with
+Auto Refresh enabled. Only the current tab refreshes immediately. A
+participating inactive tab records the newest pending refresh and applies it
+once when activated.
+
 ### Protocol And Bridge
 
-Protocol version `5` defines strict handshake, inspection, targeted resolution,
-capability-gated source navigation, peer state, error, and heartbeat messages.
-Every product message is validated before routing.
+Protocol version `6` defines strict handshake, inspection, targeted resolution,
+source presentation, presentation settings, auto-refresh, source navigation,
+peer state, error, and heartbeat messages. Every product message is validated
+before routing. Version 6 is breaking: a v5 peer is closed with WebSocket code
+`1002`, with no compatibility adapter or fallback.
 
 The bridge binds one managed port on `127.0.0.1`. A link request to that exact
 port exchanges the two-digit PIN for a role-bound browser token. The bridge does
@@ -64,10 +79,11 @@ not scan ports or discover clients.
 
 For each accepted inspect message, the bridge records a bounded reply route from
 `sessionId` plus `inspectMessageId` to the originating browser connection. IDE
-resolution messages return only through that route, so another linked browser
-connection cannot receive the reply. The bridge also publishes monotonically
-generated IDE peer state when IDE availability changes. Navigation intents and
-repeated cursor-state updates reuse the same exact inspect reply route.
+resolution and Source messages return only through that route, so another
+linked browser connection cannot receive them. The bridge also publishes
+monotonically generated IDE peer state when IDE availability changes.
+Navigation, exact Source-open intents, presentation settings, and repeated
+cursor-state updates reuse the same exact inspect reply route and generation.
 
 ### VS Code Presenter
 
@@ -77,13 +93,24 @@ the managed port and two-digit PIN and copies the ungrouped code on click.
 The presenter retains the latest valid selection and resolves it against only
 the active text document. It never switches editors. It owns Selected and Parent
 decorations, validates and deduplicates plugin ranges, updates Applicable
-Sources, and sends a bounded protocol-v5 resolution outcome back to the
-originating panel.
+Sources, creates bounded Source excerpts, and sends protocol-v6 resolution and
+source-presentation outcomes back to the originating panel. Clicking an excerpt
+returns only its opaque match ID; the IDE validates that private authority
+before revealing the exact range in the active document.
+
+The presenter also observes changed saves. Direct CSS settles for 150 ms.
+SCSS, Sass, and Less wait for a 750 ms quiet period within a two-second build
+window; generated CSS resets settlement to 150 ms. JavaScript, TypeScript, and
+PHP reload candidates settle for 150 ms, and reload wins a mixed burst.
+Unchanged saves do not publish refreshes.
 
 ### Source Plugins
 
-Built-in CSS and SCSS resolvers use the same versioned API available to
-separately installed VS Code extensions.
+Built-in CSS and SCSS resolvers use source-plugin API v2, the same versioned API
+available to separately installed VS Code extensions. API v2 also accepts
+synchronous refresh classifiers. This document-first, protocol-driven boundary
+keeps the browser independent of the IDE and permits future IDE adapters to
+implement the same v6 contract.
 
 Source lookup first chooses a workspace strategy. Workspace-bound resolution is
 selected when the document or stylesheet URL path begins with an open workspace
@@ -135,17 +162,33 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
 4. Picker click or tree selection resolves a live element through the same
    authority and updates the tree ancestor path.
 5. Only then does the browser collect and publish bounded selected/immediate-
-   parent facts as a protocol-v5 inspect message.
+   parent facts as a protocol-v6 inspect message.
 
 ### Resolve And Present
 
 1. The bridge validates the inspect envelope, registers its targeted reply
    route, and sends it to the IDE peer.
 2. The presenter asks compatible source plugins to resolve the active document.
-3. Core renders all accepted Selected and Parent ranges.
-4. The IDE sends one bounded resolution status and counts.
+3. Core renders accepted Selected and Parent ranges when IDE Highlight is on.
+4. The IDE sends one bounded resolution status, counts, and active-document
+   Source excerpts. Turning IDE Highlight off clears decorations only; it does
+   not discard resolution, Source presentation, or navigation authority.
 5. The bridge routes that reply only to the browser connection that originated
-   the inspect message; the panel renders the exact footer outcome.
+   the inspect message; the panel renders the exact footer outcome and Source
+   pane. Previous/Next remains Selected-only.
+
+### Refresh After Save
+
+1. VS Code records actual document changes and ignores an unchanged save.
+2. Built-in or plugin API v2 classifiers choose `styles` or `reload`; `reload`
+   wins a mixed burst.
+3. The IDE publishes one v6 `page.refresh` generation to linked browsers.
+4. The browser applies it only to participating tabs with Auto Refresh on.
+5. `styles` clones and cache-busts eligible top-document external HTTP(S)
+   stylesheet links, removing the old link only after the replacement loads.
+6. `reload` captures bounded top-level scroll, reloads the current tab, and
+   restores scroll in the replacement document. Inline, adopted, data/blob
+   stylesheets and iframe refresh are outside this behavior.
 
 ## Data Separation
 
@@ -153,10 +196,12 @@ The DOM tree, node refs, expansion state, ancestor paths used for tree reveal,
 and box-model geometry stay inside the browser extension. They are not protocol
 facts and are not available to VS Code.
 
-The product WebSocket receives only the bounded selection snapshot needed for
-source resolution: page context, selected/immediate-parent subjects, CSS facts,
-and inaccessible-stylesheet diagnostics. Workspace source and source maps stay
-inside the VS Code extension host.
+The product WebSocket receives the bounded selection snapshot needed for source
+resolution: page context, selected/immediate-parent subjects, CSS facts, and
+inaccessible-stylesheet diagnostics. In the reverse direction it can carry at
+most 32 active-document excerpts, each capped at 80 logical lines and 8 KiB,
+inside a 256 KiB message. Full source documents, workspace paths and URIs,
+source maps, browser tab IDs, and browser-local locators do not cross it.
 
 ## Trust Boundaries
 
@@ -170,9 +215,10 @@ cross-linking; it is not strong authentication. The bridge checks extension
 origins, handshake order, roles, session identity, message size, and schemas.
 
 VS Code and installed source plugins can read workspace documents. Separately
-installed plugins are independently trusted extension code. Pin-op itself
-has no remote service and exposes no write, page mutation, source edit, or
-arbitrary command path.
+installed plugins are independently trusted extension code. Pin-op itself has
+no remote service and exposes no source write, page-owned DOM edit, or arbitrary
+command path. Auto Refresh is a narrowly typed stylesheet replacement or
+current-tab reload operation, never a caller-supplied command.
 
 See [protocol.md](protocol.md), [security.md](security.md), and
 [../PRIVACY.md](../PRIVACY.md) for the complete contracts.

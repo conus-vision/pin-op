@@ -58,7 +58,7 @@ window's five-digit port and two-digit PIN code.
    `Not linked`, paste or type Window A's code, and select **Link**.
 3. Confirm `Connected` and the same grouped port/code in Browser Window A and
    VS Code Window A. That exact code associates this browser window with this
-   VS Code window; it is not a machine-wide pairing.
+   VS Code window; it is not a machine-wide association.
 4. Repeat with Browser Window B and VS Code Window B using B's different code.
    Alternate selections and confirm neither browser window updates the other
    VS Code window.
@@ -97,12 +97,21 @@ here. This document does not claim these checks were performed or passed.
 9. Select **Disconnect**. Confirm navigation controls are disabled or hidden,
    no stale route can update them, no old Previous/Next intent moves VS Code,
    and another linked browser window remains connected.
+10. Confirm the Source pane shows only bounded excerpts from the active IDE
+    document, with Selected expanded and immediate Parent collapsed. Click an
+    excerpt and confirm the cursor opens that exact range without switching the
+    active editor.
+11. Turn **IDE Highlight** off. Confirm decorations clear while Source excerpts
+    and Selected-only navigation continue to work; turn it back on.
+12. With **Auto Refresh** on, change and save CSS, SCSS, JavaScript, and PHP as
+    described below. Confirm unchanged saves do nothing.
 
 Repeat the scenario with the supported installed Firefox path and with the
 installed Chrome package. Also verify picker/DOM-tree parity, open shadow roots,
 same-origin frames, locked cross-origin frames, CSS fingerprint fallback,
-source-mapped SCSS, exact footer outcomes, browser-window isolation, and
-session-only reconnect/cleanup as described in the
+source-mapped SCSS, Source presentation, refresh behavior, exact footer
+outcomes, browser-window isolation, protocol mismatch, and session-only
+reconnect/cleanup as described in the
 [installed artifact verification guide](installed-verification.md).
 
 ## Development And Source Workflow
@@ -259,6 +268,9 @@ or reading the clipboard.
 6. Press Escape once to clear preview and again to turn off the picker.
 7. Repeat inside the same-origin frame and open shadow root.
 8. Confirm cross-origin frame contents and unsafe geometry fail closed.
+9. Confirm the overlay uses the lighter half-alpha fills and disappears when
+   the pointer leaves the hovered page element or DOM tree, while selection
+   remains intact.
 
 ### Lazy DOM Tree
 
@@ -308,6 +320,63 @@ For SCSS, temporarily test missing, unreadable/invalid, and unmapped source-map
 variants. Confirm `SCSS source map missing`, `SCSS source map invalid`, or
 `No matching rules in active file`, with no guessed highlight. Restore the
 fixture after the checks.
+
+### Source Pane And IDE Highlight
+
+1. Select an element with several Selected matches and an immediate Parent
+   match while the intended CSS or SCSS file is active.
+2. Confirm the Source pane contains excerpts only from that active document;
+   Selected is expanded and Parent is initially collapsed.
+3. Confirm no full source document, workspace path, URI, or browser tab ID is
+   displayed or exposed by panel diagnostics.
+4. Click each excerpt and confirm VS Code reveals the exact current range by
+   opaque match identity. Repeat after a newer inspect and confirm an old click
+   is ignored.
+5. Confirm Previous/Next cycles only through Selected matches and its counter
+   follows the VS Code primary cursor.
+6. Turn **IDE Highlight** off. Confirm all decorations clear, while the Source
+   pane, exact excerpt opening, resolution footer, and navigation still work.
+7. Turn it on and make a new selection; confirm Selected and Parent decorations
+   return.
+8. Resize DevTools: at 680 px or wider confirm side-by-side DOM/Source; below
+   680 px with at least 520 px height confirm stacked panes; below both
+   thresholds confirm DOM/Source tabs. Confirm the toolbar code and controls do
+   not overlap.
+
+### Auto Refresh
+
+Open the Pin-op panel in two fixture tabs and leave Auto Refresh enabled.
+
+1. Change and save direct CSS. Confirm the active tab replaces external
+   top-document HTTP(S) stylesheet links after the 150 ms settle without a page
+   reload or lost scroll.
+2. Force one replacement to fail and confirm its old stylesheet remains.
+3. Change and save SCSS. Confirm Pin-op waits for generated CSS using the 750 ms
+   quiet/two-second maximum window and refreshes styles after generation.
+4. Change and save JS, TS, or PHP. Confirm the active tab reloads after the
+   150 ms settle and restores its bounded top-level scroll position.
+5. Save an unchanged supported file and confirm no refresh occurs.
+6. Put the second participating tab in the background, save again, then
+   activate it. Confirm it refreshes once on activation and does not replay old
+   generations.
+7. Turn Auto Refresh off in one tab and save. Confirm that tab neither refreshes
+   nor queues stale work; re-enable it and verify a later changed save.
+8. Confirm inline, adopted, data/blob, and iframe styles are not claimed as
+   refreshed. In a mixed burst confirm `reload` wins over `styles`.
+
+### Protocol Mismatch
+
+Use intentionally mismatched development artifacts once:
+
+1. Confirm a protocol-v5 peer is closed with WebSocket code `1002`, with no
+   compatibility retry or fallback.
+2. Confirm the panel shows `Extensions are incompatible`, tells the user to
+   update both extensions and reconnect, and reports expected/received protocol
+   versions when known.
+3. Confirm picker, settings, Source, and navigation actions are blocked while
+   Link/Disconnect remains usable.
+4. Restore matching protocol-v6 artifacts, restart both extensions, reconnect,
+   and confirm a fresh compatible handshake and tab state restore the defaults.
 
 ### Optional `_ORB` Project Regression
 

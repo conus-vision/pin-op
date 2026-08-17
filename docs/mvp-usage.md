@@ -15,7 +15,7 @@ the installed workflow.
 4. Select Paste, or enter the code manually, and select **Link**.
 5. Confirm the panel reports `Connected` and shows the same displayed code as
    the VS Code status item.
-6. Keep the intended CSS or SCSS document active in VS Code.
+6. Keep the intended source document active in VS Code.
 7. Select an element with the page picker or DOM tree and read the exact footer
    outcome.
 
@@ -45,6 +45,13 @@ The DevTools header reports one of these states:
 - `Rate limited`;
 - `Error`.
 
+The picker, **Auto Refresh**, and **IDE Highlight** are on the left of one
+toolbar row. The current connection state, visible `<port> <PIN>` code, and
+Link/Disconnect interaction remain on the right. Auto Refresh and IDE Highlight
+are tab-local and default on only after a compatible protocol handshake and a
+fresh tab-state snapshot. Opening a linked panel makes that tab a refresh
+participant; linking alone does not silently enable a tab.
+
 After a successful link, code entry is replaced by the linked display code and
 **Disconnect**. DevTools panels in the same browser window share at most one
 authenticated WebSocket while panels are active. Closing the final panel closes
@@ -70,10 +77,11 @@ linked IDE. While the picker is active, its trusted selection gesture is
 suppressed before page handlers run.
 
 The overlay is isolated inside an extension-owned shadow root, ignores pointer
-events, and is excluded from the DOM tree. Press Escape once to clear a hover
-preview and again to turn off the picker. The selected element remains selected
-until another valid selection, navigation, removal, disconnect, or session
-reset replaces it.
+events, uses half-alpha box-model fills, and is excluded from the DOM tree. It
+disappears when the pointer leaves the page element or DOM list; the selection
+itself remains. Press Escape once to clear a hover preview and again to turn off
+the picker. The selected element remains selected until another valid selection,
+navigation, removal, disconnect, or session reset replaces it.
 
 ## Select From The DOM Tree
 
@@ -134,6 +142,65 @@ Every applicable complete block can be highlighted. The selected element uses
 the Selected decoration; only its immediate parent uses Parent. A single
 selection can create multiple source ranges for either role. `Applicable
 Sources` lists the same ranges without changing the active editor.
+
+## Source Pane And Navigation
+
+The DevTools Source pane shows bounded excerpts from the active IDE document
+only. Selected matches are expanded; the immediate Parent group is collapsed by
+default. A click sends only the excerpt's opaque match ID and moves the VS Code
+cursor to that exact current range after the IDE revalidates it. It cannot name
+or open an arbitrary path. Previous/Next remains Selected-only and does not
+include Parent matches.
+
+The panel adapts to its available space: wide panels show DOM and Source side by
+side, narrow tall panels stack them, and narrow short panels use tabs. The
+toolbar and connection code remain available in every layout. The centered
+footer shows the compact Pin-op mark and name, a mail link on Volodymyr Moskvin,
+and `(c) 2026 Conus Vision` linked to `https://conus.vision`.
+
+Turning **IDE Highlight** off clears only VS Code decorations. Resolution,
+Source excerpts, exact Source opening, and Selected-only navigation remain
+available. Turning it back on applies decoration behavior to the current
+selection.
+
+## Auto Refresh
+
+Auto Refresh reacts only to files that actually changed before Save. An
+unchanged Save does nothing.
+
+- CSS uses `styles` after a 150 ms settle.
+- SCSS, Sass, and Less use `styles` after a 750 ms quiet period within a
+  two-second generated-CSS window; a generated CSS event resets settlement to
+  150 ms.
+- JS, MJS, CJS, JSX, TS, TSX, and PHP use `reload` after 150 ms.
+- `reload` wins when a save burst contains both modes.
+
+`styles` replaces eligible external top-document HTTP(S) stylesheet links
+without reloading the page. The old link remains when its replacement fails.
+Inline styles, adopted stylesheets, data/blob URLs, and iframe documents are
+not refreshed. `reload` reloads only the current participating tab and restores
+its bounded top-level scroll position.
+
+Only the active tab refreshes immediately. If a participating tab is inactive
+when files change, it becomes stale and refreshes once after activation. A tab
+with Auto Refresh off does not queue that work. Switching tabs does not refresh
+tabs whose panel is closed.
+
+## Protocol Compatibility
+
+The browser and IDE extensions must both implement protocol v6. Protocol v5 is
+rejected with WebSocket close code `1002`; there is no fallback. On mismatch the
+panel keeps connection controls available but blocks inspection and source
+actions and shows:
+
+```text
+Extensions are incompatible
+Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.
+Browser protocol: 6 - IDE protocol: 5
+```
+
+Update both extensions to the same protocol generation, restart them, and link
+the browser window again.
 
 ## Footer Outcomes
 

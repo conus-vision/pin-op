@@ -23,11 +23,18 @@ personal data, secrets, or framework state. Do not inspect sensitive pages
 unless sending those values to the linked local VS Code window is acceptable.
 
 Pin-op does not deliberately collect cookies, request or response headers,
-form values, DOM text, source-map contents, or workspace source text. The
-browser side sends stylesheet identity and rule evidence. Local VS Code source
-plugins may then read relevant workspace files and source maps to resolve the
-active document. Pin-op does not upload workspace source or source maps to
-a remote service.
+form values, DOM text, or source-map contents. The browser side sends
+stylesheet identity and rule evidence. Local VS Code source plugins may read
+relevant workspace files and source maps to resolve the active document.
+
+For Source presentation, VS Code can send bounded excerpts from the active IDE
+document back to the explicitly linked browser window. An excerpt contains an
+opaque match ID, Selected/Parent role, display metadata, one-based line bounds,
+and bounded source text. At most 32 excerpts are sent; each is limited to 80
+logical lines and 8 KiB, and the complete message is limited to 256 KiB. Pin-op
+does not send full source documents, workspace paths, source URIs, source-map
+contents, or browser tab IDs over this channel. It does not upload workspace
+source to a remote service.
 
 ## Browser-Local Inspector Data
 
@@ -73,16 +80,20 @@ against a malicious process running as the same desktop user.
 | `http://127.0.0.1/*`, `http://localhost/*` | Declare local resource host access; product traffic still does not use HTTP. |
 
 The extension Content Security Policy separately permits loopback WebSocket
-connections. Opening DevTools does not begin collection. Page picking starts
-only after the panel is open, its browser window is linked, and the user enables
-the picker. Browser-protected pages can still reject injection.
+connections. Opening a compatible linked DevTools panel makes that tab eligible
+for Auto Refresh when the tab-local setting is on, but does not begin DOM
+inspection. Page picking starts only after the panel is open, its browser window
+is linked, and the user enables the picker. Browser-protected pages can still
+reject injection.
 
 ## Read-Only Design
 
 Pin-op does not write or edit page or workspace source and does not execute
-page, shell, workspace, or user-supplied commands. It highlights source ranges
-in the document already active in VS Code. These commitments apply to
-Pin-op-operated components, not to separately installed source plugins.
+page, shell, workspace, or user-supplied commands. It highlights and opens
+source ranges only in the document already active in VS Code. Auto Refresh can
+replace eligible stylesheet links or reload the current participating tab; it
+does not edit page-owned source or application data. These commitments apply
+to Pin-op-operated components, not to separately installed source plugins.
 
 ## Source Plugins
 

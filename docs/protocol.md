@@ -1,35 +1,41 @@
 # Pin-op Protocol
 
 Pin-op carries bounded inspection evidence from one explicitly linked
-browser window to local VS Code and returns source-resolution and navigation
-state only to the originating browser connection.
+browser window to local VS Code. It returns source-resolution, bounded Source
+presentation, and navigation state only to the originating browser connection,
+and routes typed refresh generations from the IDE to participating tabs.
 
 ## Version And Capability Negotiation
 
-The current protocol version is `5`. Every product message uses
-`protocolVersion: 5`; product release semver (`0.3.0`) is independent. Packaged
-runtime metadata reports protocol version `5`.
+The current protocol version is `6`. Every product message uses
+`protocolVersion: 6`; product release semver (`0.3.0`) is independent. Packaged
+runtime metadata reports protocol version `6`.
 
 The protocol uses exact version matching with no downgrade negotiation.
 Unsupported versions, unknown fields, and invalid message shapes are rejected.
-There is no protocol v4 compatibility branch.
+Protocol v6 is breaking. A v5 peer is rejected with WebSocket close code
+`1002`; there is no v5 compatibility adapter, downgrade, or retry fallback.
+The browser exposes the received and expected versions so the panel can tell
+the user to update both extensions and reconnect.
 
 After linking, each client sends a strict `hello` containing its active
 capabilities. Capability negotiation does not alter the protocol version. It
 authorizes only message families implemented by both endpoints and the bridge:
 
-- browser clients advertise `inspect`, `link`, and `source-navigation`;
+- browser clients advertise `inspect`, `link`, `source-navigation`,
+  `auto-refresh`, `source-presentation`, and `presentation-settings`;
 - an inspect-only simulator may advertise only `inspect`, while a simulator
   that sends navigation intents must also advertise `source-navigation`;
-- IDE clients advertise `resolution` and `source-navigation`.
+- IDE clients advertise `resolution`, `source-navigation`, `auto-refresh`,
+  `source-presentation`, and `presentation-settings`.
 
 The bridge stores the authenticated capability list and checks it again when
 routing optional messages. Advertising an unknown capability is invalid, and a
-client without `source-navigation` cannot send or receive that message family.
+client cannot send or receive an optional message family without its capability.
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "hello",
   "messageId": "hello-2",
   "sessionId": "default",
@@ -40,7 +46,14 @@ client without `source-navigation` cannot send or receive that message family.
     "id": "firefox-window-7",
     "metadata": {}
   },
-  "capabilities": ["inspect", "link", "source-navigation"],
+  "capabilities": [
+    "inspect",
+    "link",
+    "source-navigation",
+    "auto-refresh",
+    "source-presentation",
+    "presentation-settings"
+  ],
   "metadata": {}
 }
 ```
@@ -58,7 +71,7 @@ port from `48735` through `48834`. Pin-op exposes no product HTTP API and
 the browser does not scan the port range.
 
 Ordinary protocol messages are strict objects with a non-empty `messageId`, a
-message-specific `type`, JSON-only `metadata`, and protocol version `5`.
+message-specific `type`, JSON-only `metadata`, and protocol version `6`.
 Handshake and routed messages add the exact identity and correlation fields
 their schemas require. WebSocket frames larger than 1 MiB are rejected.
 
@@ -101,7 +114,7 @@ immediate-parent target:
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "inspect",
   "messageId": "inspect-42",
   "sessionId": "default",
@@ -110,6 +123,7 @@ immediate-parent target:
     "id": "firefox-window-7:tab-3",
     "metadata": {}
   },
+  "ideHighlightEnabled": true,
   "targets": [
     {
       "role": "selected",
@@ -145,7 +159,7 @@ results.
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "resolution",
   "messageId": "resolution-18",
   "sessionId": "default",
@@ -174,15 +188,93 @@ sources, source-map failures, no or ambiguous rule matches, and bounded plugin
 or internal errors. Wire source locations are one-based; the local source
 plugin API converts them to zero-based, end-exclusive editor ranges.
 
+## Auto Refresh
+
+The `auto-refresh` capability authorizes IDE-to-browser `page.refresh`
+messages. They contain only an increasing generation and one closed mode:
+
+```json
+{
+  "protocolVersion": 6,
+  "type": "page.refresh",
+  "messageId": "refresh-7",
+  "sessionId": "default",
+  "source": { "role": "ide", "id": "vscode-window-1" },
+  "refreshGeneration": 7,
+  "mode": "styles",
+  "metadata": {}
+}
+```
+
+`styles` asks a participating current tab to refresh eligible external
+top-document HTTP(S) stylesheet links. `reload` asks the browser adapter to
+reload the current tab with bounded top-level scroll restoration. The message
+contains no path, URL, script, selector, source text, tab ID, or command.
+
+Participation and pending work are browser-local. Auto Refresh is tab-local and
+defaults on only after `protocol.compatibility` reports v6 and a fresh tab-state
+snapshot is accepted. A panel must be open. An inactive participating tab keeps
+the strongest newest pending mode and applies it once when activated.
+
+## Source Presentation And Settings
+
+The `source-presentation` capability authorizes IDE `source.matches` replies
+and browser `source.open` intents on the exact inspect route and resolution
+generation. A match is a bounded excerpt from the active IDE document:
+
+```json
+{
+  "protocolVersion": 6,
+  "type": "source.matches",
+  "messageId": "matches-8",
+  "sessionId": "default",
+  "source": { "role": "ide", "id": "vscode-window-1" },
+  "inspectMessageId": "inspect-42",
+  "resolutionGeneration": 3,
+  "document": { "label": "card.scss", "languageId": "scss" },
+  "matches": [{
+    "matchId": "opaque-match-1",
+    "targetRole": "selected",
+    "label": ".card",
+    "kind": "rule",
+    "relation": "applies",
+    "confidence": "sourcemap",
+    "startLine": 18,
+    "endLine": 24,
+    "text": ".card {\n  display: grid;\n}",
+    "truncated": false
+  }],
+  "omittedMatchCount": 0,
+  "metadata": {}
+}
+```
+
+A message contains at most 32 excerpts and is at most 256 KiB. Each excerpt is
+at most 80 logical lines and 8 KiB. It carries a display label and line numbers,
+but no workspace path, source URI, browser tab ID, editor range, or full source
+document. Selected and immediate Parent excerpts are separate; Previous/Next
+navigation continues to include Selected matches only.
+
+Clicking an excerpt sends `source.open` with only `inspectMessageId`,
+`resolutionGeneration`, and the opaque `matchId`. The bridge and IDE re-prove
+the current private authority before revealing the exact range in the already
+active document. A stale or foreign ID fails closed.
+
+The `presentation-settings` capability authorizes `presentation.settings` for
+the current inspect route. It contains only the `ideHighlightEnabled` boolean.
+Disabling IDE Highlight clears editor decorations but preserves resolution,
+Source presentation, and source-navigation authority. Browser tab settings do
+not expose browser tab IDs on the product WebSocket.
+
 ## Source Navigation
 
-Protocol 5 adds the `source-navigation` capability and two strict messages.
+The `source-navigation` capability authorizes two strict messages.
 After a resolution with selected matches, a capable browser or simulator sends
 an intent with no source ranges or file identity:
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "source.navigate",
   "messageId": "navigate-19",
   "sessionId": "default",
@@ -201,7 +293,7 @@ The IDE answers with current cursor state:
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "source.navigationState",
   "messageId": "navigation-state-20",
   "sessionId": "default",
@@ -270,7 +362,7 @@ session and includes an increasing `peerGeneration`:
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "peerState",
   "messageId": "peer-9",
   "sessionId": "default",
@@ -339,6 +431,8 @@ branches per event, and 64 concurrent panel channels by default.
 
 An inspect envelope is at most 768 KiB with at most two targets and 256 facts
 per target. Resolution and source-navigation envelopes are at most 16 KiB.
+Source presentation is at most 256 KiB with at most 32 excerpts, 80 logical
+lines and 8 KiB per excerpt.
 URLs, routes, selectors, attributes, values, metadata, sources, counts,
 generations, and identifiers all have schema limits.
 
@@ -346,6 +440,9 @@ The router enforces direction and authority:
 
 - browser or simulator inspect messages go to IDE clients in the same session;
 - IDE resolution and navigation-state messages use targeted reply routes;
+- IDE page-refresh messages require `auto-refresh` at both endpoints;
+- source matches, exact opens, and presentation settings require their
+  capabilities and current inspect/generation authority;
 - source-navigation messages require the negotiated capability at both ends;
 - peer state is bridge-generated and heartbeat ping/pong maintains liveness;
 - invalid roles, sessions, source IDs, correlations, routes, schemas, and stale
@@ -379,9 +476,9 @@ The browser cannot ask the IDE to execute commands or edit files, and the IDE
 cannot execute page scripts or request changes to page-owned content or
 application state.
 
-Only bounded inspect facts and protocol state cross the loopback WebSocket.
-Browser-local locators and node refs never cross it. Source contents, source
-ranges, local file paths, and source-map contents never cross the WebSocket in
-the reverse direction. Protocol 5 exposes no page-owned DOM writes, source
-writes, shell execution, workspace command execution, or reverse
-synchronization.
+Only bounded inspect facts, bounded active-document excerpts, and protocol
+state cross the loopback WebSocket. Browser-local locators and node refs never
+cross it. Full source documents, editor ranges, local file paths and URIs,
+source maps, and browser tab IDs never cross in the reverse direction. Protocol
+6 exposes no page-owned DOM writes, source writes, shell execution, workspace
+command execution, or reverse synchronization.

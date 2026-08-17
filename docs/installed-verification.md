@@ -16,6 +16,10 @@ keep them with that draft's `SHA256SUMS`:
 The unsigned `pin-op-firefox-0.3.0.zip` is build and Mozilla-review input.
 It is not a persistent Firefox Stable add-on and cannot replace the signed XPI.
 
+Install browser and IDE candidates from the same protocol generation. This
+runbook requires protocol v6. Protocol v5 is rejected with WebSocket close code
+`1002`; there is no compatibility adapter or fallback.
+
 ## Privacy And Security Before Testing
 
 Pin-op is read-only. Product traffic uses a loopback WebSocket between one
@@ -26,9 +30,11 @@ cross-linking, not a malicious process running as the same desktop user.
 One selection can send bounded facts for the selected element and its immediate
 parent: full page URL/route, IDs, classes, permitted `data-*`, `aria-*`, and
 `role` names and values, CSS declarations and stylesheet identity, and bounded
-development metadata. These values are not content-redacted. Pin-op does
+development metadata. The IDE can return bounded excerpts from its active
+document: at most 32 excerpts, 80 logical lines and 8 KiB each, in a 256 KiB
+message. These values are not content-redacted. Pin-op does
 not deliberately read cookies, headers, form values, DOM text, workspace source
-text, or source-map contents in the browser.
+documents, workspace paths/URIs, or source-map contents in the browser.
 
 The DOM tree, browser-local node refs, child pages, and box-model geometry stay
 inside the browser extension. Cross-origin frames are locked, and closed shadow
@@ -90,16 +96,22 @@ Run this flow once in Firefox Stable and once in current Chrome/Chromium:
 4. Confirm `Not linked`, choose Paste or enter the code, then select **Link**.
 5. Confirm `Connected` and confirm the same displayed code appears in the panel
    and VS Code.
-6. Use either the visual page picker or the lazy DOM tree to select an element.
-7. Confirm VS Code highlights the expected source ranges without opening or
+6. Confirm the one-row toolbar shows the picker, checked **Auto Refresh** and
+   **IDE Highlight** on the left, and the unchanged connection/code controls on
+   the right.
+7. Use either the visual page picker or the lazy DOM tree to select an element.
+8. Confirm VS Code highlights the expected source ranges without opening or
    switching editor tabs.
-8. Read and record the exact footer outcome in DevTools.
+9. Confirm the Source pane shows active-document Selected and immediate Parent
+   excerpts, then click one and verify the exact range opens in VS Code.
+10. Read and record the exact footer outcome in DevTools.
 
 The page picker is the mouse-pointer button. Hover a normal element and verify a
 noninteractive box-model overlay with distinct margin, border, padding, and
-content geometry. Click to select it. While the picker is active, its selection
-gesture must not invoke the page's own handler. Press Escape to clear hover and
-then turn off the picker.
+content geometry and half-alpha fills. Move outside the element or DOM list and
+confirm the overlay clears without clearing selection. Click to select it.
+While the picker is active, its selection gesture must not invoke the page's
+own handler. Press Escape to clear hover and then turn off the picker.
 
 ## Lazy DOM Tree
 
@@ -152,6 +164,55 @@ For a match, the footer format is
 inaccessible-stylesheet count. Other exact outcomes are listed in the
 [usage guide](mvp-usage.md).
 
+## Source, Highlight, And Responsive Layout
+
+1. Confirm Source shows only bounded excerpts from the active IDE document,
+   with Selected expanded and immediate Parent collapsed.
+2. Click several excerpts. Confirm each opaque match ID opens its exact current
+   range and a stale excerpt cannot open after a newer selection.
+3. Confirm Previous/Next remains Selected-only and its counter follows the
+   primary VS Code cursor.
+4. Turn **IDE Highlight** off. Decorations must clear, but resolution, Source
+   excerpts, exact opening, and navigation must remain usable.
+5. Resize DevTools. Confirm DOM/Source are side by side at 680 px or wider,
+   stacked below 680 px when height is at least 520 px, and shown as tabs when
+   both dimensions are below those thresholds.
+6. Confirm the compact centered footer shows the Pin-op logo/name, Volodymyr
+   Moskvin email link, and `(c) 2026 Conus Vision` website link.
+
+## Auto Refresh
+
+Auto Refresh is tab-local, defaults on after the compatible handshake and fresh
+tab state, and applies only while that tab's panel participates.
+
+1. Change then save CSS. Confirm eligible external top-document HTTP(S)
+   stylesheet links update after 150 ms without a page reload. A failed
+   replacement must leave the old link in place.
+2. Change then save SCSS, Sass, or Less. Confirm the 750 ms quiet period and
+   generated-CSS events settle within two seconds, with generation resetting
+   settlement to 150 ms.
+3. Change then save JS, MJS, CJS, JSX, TS, TSX, or PHP. Confirm the current tab
+   reloads after 150 ms and restores bounded top-level scroll.
+4. Save an unchanged supported file and confirm nothing refreshes.
+5. Leave another participating tab inactive during a changed save. Confirm it
+   becomes stale and refreshes once when activated.
+6. Turn Auto Refresh off for one tab. Confirm it neither refreshes nor queues
+   the change. Re-enable it and verify the next changed save.
+7. Confirm inline/adopted styles, data/blob stylesheets, and iframe documents
+   are outside the refresh claim. Confirm `reload` wins a mixed burst.
+
+## Protocol Compatibility
+
+1. Temporarily combine a protocol-v6 extension with a v5 peer.
+2. Confirm the connection closes with code `1002`, does not retry v5, and shows
+   `Extensions are incompatible` plus instructions to update both extensions
+   and reconnect.
+3. Confirm the panel reports `Browser protocol: 6 - IDE protocol: 5` when both
+   values are known and blocks picker/settings/Source/navigation while keeping
+   Link/Disconnect usable.
+4. Restore matching protocol-v6 candidates, restart both extensions, reconnect,
+   and confirm defaults activate only after a fresh tab state.
+
 ## Window Isolation And Disconnect
 
 1. Link Browser Window A to VS Code Window A.
@@ -193,12 +254,17 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 - **Paste denied:** enter the same seven digits manually; spaces are optional.
 - **Link rejected:** copy the current code again from the intended VS Code
   window. Old bridge codes and credentials are intentionally invalid.
+- **Extensions are incompatible:** install browser and VS Code extensions from
+  the same protocol generation, restart both, and link again. A v5/v6 pair
+  cannot downgrade or continue partially.
 - **No DevTools panel:** confirm the browser extension is enabled, restart the
   browser, and open DevTools on a normal page.
 - **No overlay:** confirm the panel is connected, enable the picker, and use an
   ordinary page element. Unsafe geometry can fail closed.
-- **No highlights:** keep the expected CSS/SCSS document active and read the
-  footer. Pin-op never switches source files automatically.
+- **No highlights:** keep the expected source document active, ensure IDE
+  Highlight is on, and read the footer. Pin-op never switches source files
+  automatically. Source excerpts can remain available while highlighting is
+  intentionally off.
 - **Firefox rejects the file:** verify it is Mozilla's signed `.xpi`; the
   unsigned `.zip` cannot be installed persistently in Firefox Stable.
 
@@ -210,8 +276,8 @@ Pending external release evidence:
 - installed VSIX activation and restart from the final `0.3.0` artifact;
 - unpacked Chrome/Chromium installation and restart from the final artifact;
 - complete Firefox/Chrome parity, two-window isolation, DOM-tree boundary,
-  box-model overlay, CSS fingerprint, SCSS fail-closed, and footer-outcome
-  acceptance;
+  box-model overlay, Source pane, Auto Refresh, protocol mismatch, responsive
+  layout, CSS fingerprint, SCSS fail-closed, and footer-outcome acceptance;
 - checksum comparison against the final draft release;
 - privacy-reviewed screenshots and GIF evidence.
 

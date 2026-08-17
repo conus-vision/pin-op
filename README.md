@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml)
 
-Connect browser DevTools to your source code.
+Highlights styles and source code in your IDE for the DOM element selected in
+browser DevTools.
 
 [pin-op.conus.vision](https://pin-op.conus.vision) ·
 [Repository](https://github.com/conus-vision/pin-op)
@@ -42,10 +43,10 @@ Normal installed use is terminal-free:
 3. Open the Pin-op DevTools panel in one Firefox or Chrome/Chromium window.
 4. Paste the code, select **Link**, and confirm the panel shows the same
    displayed code as VS Code.
-5. Keep the intended CSS or SCSS document active in VS Code.
+5. Keep the intended source document active in VS Code.
 6. Select an element with the visual page picker or the lazy DOM tree.
-7. Read the exact footer outcome in DevTools and the highlighted source ranges
-   in VS Code.
+7. Use the highlighted ranges in VS Code or the bounded **Source** excerpts in
+   DevTools. A Source excerpt opens its exact range in the active IDE document.
 
 **Disconnect** unlinks only the current browser window. Other browser windows
 keep their independent links. The full workflow is in the
@@ -64,6 +65,11 @@ Firefox Stable and current Chrome/Chromium share the same Inspector workflow:
   its immediate parent;
 - VS Code can highlight multiple complete ranges, with Selected and Parent
   decorations kept distinct;
+- the Source pane shows bounded excerpts from the active IDE document for the
+  Selected element and its immediate Parent;
+- **Auto Refresh** updates changed styles without a page reload and reloads the
+  current tab after changed script or PHP saves; **IDE Highlight** controls
+  decorations without disabling resolution or source navigation;
 - CSS uses exact source evidence first and a conservative unique CSS fingerprint
   fallback when needed;
 - source-mapped SCSS fails closed when generated CSS, mappings, or the active
@@ -85,15 +91,17 @@ commands, or switch the active editor.
 | Source-mapped SCSS | Supported with a usable inline or external source map |
 | Separately installed source plugins | Supported through the versioned plugin API |
 | Remote SSH and WSL extension hosts | Not supported |
+| Auto Refresh | Supported for changed CSS/preprocessor, script, and PHP saves |
 | Source editing and reverse sync | Not supported |
 
 ## Architecture
 
-Browser-local DOM node references never cross the product WebSocket. Only a
-bounded selection snapshot travels over the authenticated loopback bridge.
-Protocol version `5` adds capability-gated selected-match source navigation
-while retaining targeted resolution replies and IDE peer state. Product semver
-remains independent.
+Browser-local DOM node references never cross the product WebSocket. Bounded
+selection facts travel to the IDE; bounded active-document source excerpts can
+return to the linked browser. Protocol version `6` is a breaking, exact-match
+contract for inspection, refresh, source presentation, presentation settings,
+and navigation. Protocol v5 is rejected with WebSocket close code `1002`; no
+adapter or downgrade fallback exists. Product semver remains independent.
 
 Read the [architecture overview](docs/architecture.md),
 [protocol contract](docs/protocol.md), and

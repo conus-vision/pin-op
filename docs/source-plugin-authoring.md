@@ -206,7 +206,7 @@ Follow these rules in every resolver:
   `exact`, `resolution.uris` contains exactly one URI, and that URI is exactly
   `context.document.uri`.
 - Return structured diagnostics for recoverable failures. Do not include page
-  secrets, pairing codes, or session tokens in a diagnostic or its metadata.
+  secrets, link codes, or session tokens in a diagnostic or its metadata.
 
 Every source URI resolution includes a required `strategy` field:
 

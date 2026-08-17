@@ -75,15 +75,23 @@ discarded.
 
 ## Targeted Replies And Peer State
 
-Protocol version `5` binds each accepted inspect ID to the exact browser
+Protocol version `6` binds each accepted inspect ID to the exact browser
 connection that sent it. IDE resolution replies are routed only to that
 connection. Cross-connection inspect-ID collisions, stale routes, wrong roles,
 and wrong sessions fail closed. Routes are bounded and removed with the client.
 
-Source-navigation intents and cursor-state updates require the negotiated
-`source-navigation` capability and reuse that exact route. They carry only
-direction, correlation, generation, and selected-match counts; browser-local
-locators and IDE source ranges do not cross the WebSocket.
+Auto-refresh, source-presentation, presentation-settings, and source-navigation
+messages require their negotiated capabilities and reuse exact authenticated
+routes. Source-open carries only an opaque current match ID; presentation
+settings carry only the current correlation and IDE Highlight boolean. Neither
+message exposes an arbitrary file, range, path, URI, tab ID, or command.
+
+Protocol v6 is an exact breaking contract. A v5 or otherwise incompatible peer
+is closed with WebSocket code `1002`; there is no adapter or downgrade fallback.
+The panel blocks inspection, refresh settings, Source actions, and navigation
+until both extensions report a compatible handshake and fresh tab state. Link
+and Disconnect controls remain usable so the user can update both extensions
+and reconnect.
 
 Bridge-generated peer state reports IDE availability with an increasing
 generation. A stale peer update or source-resolution generation cannot replace
@@ -106,15 +114,16 @@ Firefox and Chrome request `<all_urls>` because the background must inject the
 Inspector runtime into the arbitrary page being debugged. Opening DevTools does
 not grant `activeTab` access by itself.
 
-Injection requires all of these conditions:
+DOM inspection injection requires all of these conditions:
 
 - the Pin-op DevTools panel is open for the tab;
 - its browser window has an explicit link;
 - the user enables the page picker or requests the tab's DOM tree.
 
-Browser-protected pages can reject injection. Pin-op has no feature that
-navigates a page, submits forms, edits DOM or source, reads cookies, or invokes
-user-supplied code.
+Browser-protected pages can reject injection. Pin-op does not submit forms,
+edit page-owned DOM or source, read cookies, or invoke user-supplied code. Auto
+Refresh is limited to extension-owned replacement of eligible stylesheet links
+or a browser API reload of the current participating tab.
 
 ## Browser-Local DOM Tree
 
@@ -137,8 +146,10 @@ element nodes plus explicit open-shadow and frame-document boundaries.
 - A closed shadow root cannot be inspected and must fail closed.
 
 The overlay is extension-owned, `aria-hidden`, pointer-inert, style-isolated,
-and excluded from tree traversal. Unsafe transformed or fragmented geometry is
-omitted rather than approximated.
+half-alpha, hover-only, and excluded from tree traversal. It is removed when
+the pointer leaves the page element or DOM list and on refresh, document change,
+or disposal. Unsafe transformed or fragmented geometry is omitted rather than
+approximated.
 
 ## Bounded Facts Sent To VS Code
 
@@ -158,17 +169,21 @@ sensitive data. Avoid sensitive pages unless sending these values to the linked
 local VS Code window is acceptable.
 
 The browser does not deliberately collect cookies, headers, form-control values,
-DOM text, workspace files, source maps, or source text. Local VS Code plugins
-read workspace source and source maps only for local resolution. Pin-op
+DOM text, workspace files, or source maps. Local VS Code plugins read workspace
+source and source maps only for local resolution. The IDE can return bounded
+excerpts from its active document for Source presentation: at most 32 excerpts,
+80 logical lines and 8 KiB per excerpt, in a 256 KiB message. Full documents,
+workspace paths and URIs, source maps, and browser tab IDs are not sent. Pin-op
 does not upload source or maps to a remote service.
 
 ## Resource Bounds
 
-The bridge rejects WebSocket messages over 1 MiB. Protocol version `5` limits an
+The bridge rejects WebSocket messages over 1 MiB. Protocol version `6` limits an
 inspect envelope to 768 KiB, two targets, 256 facts per target, and bounded
 strings, arrays, metadata, selectors, declarations, URLs, and routes. Resolution
 replies and source-navigation messages are limited to 16 KiB and closed
-status/diagnostic vocabularies.
+status/diagnostic vocabularies. Source presentation is limited to 256 KiB and
+the per-excerpt limits above.
 
 Browser collection has byte, stylesheet, rule, nesting, declaration, class,
 attribute, and inaccessible-stylesheet budgets. The browser-local tree limits
@@ -185,7 +200,10 @@ rule, a valid source map, and a mapping into the active SCSS document. Missing,
 invalid, unmapped, ambiguous, or other-document cases fail closed and produce a
 bounded footer status.
 
-Pin-op does not load executable code from an inspected workspace. A
+Pin-op does not load executable code from an inspected workspace. Built-in CSS
+and SCSS resolvers use source-plugin API v2; its synchronous refresh classifiers
+receive only canonical URI and language ID, not source text or workspace
+services. A
 separately installed source plugin is independently trusted VS Code extension
 code. It receives the validated selection, active document, cancellation, and
 bounded workspace discovery/read services. Review third-party plugins and their
@@ -197,6 +215,21 @@ Pin-op does not deliberately place auth tokens or raw credentials in
 diagnostics, protocol errors, source-plugin metadata, or inspection facts.
 User-facing errors use bounded, sanitized vocabularies. Page-controlled values
 are not scanned for secret-looking content.
+
+## Refresh Boundary
+
+Auto Refresh is tab-local, defaults on only after a compatible handshake and a
+fresh tab-state snapshot, and participates only while the panel is open.
+Inactive participating tabs retain only the newest pending refresh and apply it
+once when activated.
+
+`styles` refresh examines at most 256 top-document external HTTP(S) stylesheet
+links. It inserts a cache-busted clone and removes the old link only after the
+replacement loads; failure leaves the old stylesheet in place. It does not
+refresh inline styles, adopted stylesheets, data/blob URLs, or iframe documents.
+`reload` captures bounded top-level scroll state and restores it after the
+current tab reloads. Refresh messages select only the closed modes `styles` and
+`reload`; they cannot carry script, URL, selector, or command payloads.
 
 See [../PRIVACY.md](../PRIVACY.md) for data handling and
 [../SECURITY.md](../SECURITY.md) for private reporting.
