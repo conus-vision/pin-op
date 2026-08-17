@@ -149,6 +149,7 @@ type ContentRuntimeScope = object & {
 
 type BrandedContentRefreshRuntime = ContentRefreshRuntime & {
   readonly [CONTENT_REFRESH_RUNTIME_BRAND]: true;
+  readonly binding: ContentRefreshBinding;
 };
 
 type BrandedContentRefreshBootstrapRuntime =
@@ -272,15 +273,18 @@ export function startContentRefreshRuntime(
   options: ContentRefreshRuntimeOptions,
 ): ContentRefreshRuntime {
   const scope = options.globalScope as ContentRuntimeScope;
-  const existing = scope[CONTENT_REFRESH_RUNTIME_KEY];
-  if (isContentRefreshRuntime(existing)) {
-    existing.republishReady();
-    return existing;
-  }
   if (!isTopView(options.view)) {
     throw new Error("Content refresh runtime requires the top frame");
   }
   const binding = createRefreshBinding(options);
+  const existing = scope[CONTENT_REFRESH_RUNTIME_KEY];
+  if (isContentRefreshRuntime(existing)) {
+    if (sameRefreshBinding(existing.binding, binding)) {
+      existing.republishReady();
+      return existing;
+    }
+    existing.dispose();
+  }
   const refreshStylesheets = options.refreshStylesheets ??
     refreshExternalStylesheets;
   const restoreScroll = options.restoreScroll ?? restoreTopScrollSnapshot;
@@ -324,6 +328,7 @@ export function startContentRefreshRuntime(
         return await executeRefreshCommand(
           options,
           binding,
+          command.refreshCommandId,
           command.refreshGeneration,
           command.mode,
           refreshStylesheets,
@@ -377,6 +382,7 @@ export function startContentRefreshRuntime(
 
   const runtime: BrandedContentRefreshRuntime = {
     [CONTENT_REFRESH_RUNTIME_BRAND]: true,
+    binding,
     republishReady: publishReady,
     dispose(): void {
       if (disposed) return;
@@ -487,6 +493,7 @@ export function startContentRefreshBootstrapRuntime(
 async function executeRefreshCommand(
   options: ContentRefreshRuntimeOptions,
   binding: ContentRefreshBinding,
+  refreshCommandId: string,
   refreshGeneration: number,
   mode: "styles" | "reload",
   refreshStylesheets: NonNullable<ContentRefreshRuntimeOptions["refreshStylesheets"]>,
@@ -513,6 +520,7 @@ async function executeRefreshCommand(
       if (!isActive()) return undefined;
       return createRefreshResult(
         binding,
+        refreshCommandId,
         refreshGeneration,
         mode,
         true,
@@ -520,7 +528,13 @@ async function executeRefreshCommand(
       );
     } catch (error) {
       reportError(error);
-      return createRefreshResult(binding, refreshGeneration, mode, false);
+      return createRefreshResult(
+        binding,
+        refreshCommandId,
+        refreshGeneration,
+        mode,
+        false,
+      );
     }
   }
 
@@ -537,6 +551,7 @@ async function executeRefreshCommand(
     const request = parseReloadTabRequest({
       type: "pin-op.refresh.reload.request",
       ...binding,
+      refreshCommandId,
       refreshGeneration,
       snapshot,
     });
@@ -549,23 +564,32 @@ async function executeRefreshCommand(
     const accepted = Boolean(
       response &&
       sameRefreshBinding(response, binding) &&
+      response.refreshCommandId === refreshCommandId &&
       response.refreshGeneration === refreshGeneration &&
       response.accepted,
     );
     return createRefreshResult(
       binding,
+      refreshCommandId,
       refreshGeneration,
       mode,
       accepted,
     );
   } catch (error) {
     reportError(error);
-    return createRefreshResult(binding, refreshGeneration, mode, false);
+    return createRefreshResult(
+      binding,
+      refreshCommandId,
+      refreshGeneration,
+      mode,
+      false,
+    );
   }
 }
 
 function createRefreshResult(
   binding: ContentRefreshBinding,
+  refreshCommandId: string,
   refreshGeneration: number,
   mode: "styles" | "reload",
   accepted: boolean,
@@ -574,6 +598,7 @@ function createRefreshResult(
   const result = parseContentRefreshResult({
     type: "pin-op.refresh.content.result",
     ...binding,
+    refreshCommandId,
     refreshGeneration,
     mode,
     accepted,

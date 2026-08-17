@@ -65,6 +65,7 @@ describe("BackgroundRouter", () => {
       autoRefreshEnabled: false,
       ideHighlightEnabled: false,
     });
+    expect(harness.contentRefresh.revokedTabs).toEqual([17]);
     port.emitMessage({
       type: "pin-op.tab.settings",
       autoRefreshEnabled: true,
@@ -87,6 +88,29 @@ describe("BackgroundRouter", () => {
       participant: false,
       lastAcceptedGeneration: 0,
     });
+  });
+
+  it("revokes refresh authority synchronously on window and protocol lifecycle changes", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-revoke", 17, "source-revoke");
+    await flushMicrotasks();
+    expect(harness.contentRefresh.windowEligibility).toContainEqual([10, true]);
+
+    harness.coordinator.emitState(10, "offline");
+    expect(harness.contentRefresh.windowEligibility.at(-1)).toEqual([10, false]);
+
+    harness.protocolMismatches.emit(10, {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    expect(harness.contentRefresh.revokedWindows).toContain(10);
+
+    const unlink = harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-revoke",
+    }, panelSender("channel-revoke"));
+    expect(harness.contentRefresh.revokedWindows.at(-1)).toBe(10);
+    await expect(unlink).resolves.toEqual({ ok: true });
   });
 
   it("routes page refresh by the exact window and uses current tab highlight state for inspect", async () => {
@@ -3508,6 +3532,7 @@ function createHarness(options: HarnessOptions = {}) {
     (windowId: number, details: BrowserProtocolMismatch) => void
   >();
   const tabRefresh = new FakeTabRefreshCoordinator();
+  const contentRefresh = new FakeContentRefreshCoordinator();
   const coordinator = new FakeWindowCoordinator(
     options.linkWindow,
     options.unlinkWindow,
@@ -3537,6 +3562,7 @@ function createHarness(options: HarnessOptions = {}) {
     pageRefreshes,
     protocolMismatches,
     tabRefresh,
+    contentRefresh,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
     port(
@@ -3593,6 +3619,7 @@ function createHarness(options: HarnessOptions = {}) {
       }),
     coordinator,
     tabRefreshCoordinator: tabRefresh,
+    contentRefreshCoordinator: contentRefresh,
     inspectCoordinator,
     panelSessionTransport: options.panelSessionTransport,
     subscriptions: options.subscriptions,
@@ -3756,6 +3783,50 @@ class FakeWindowCoordinator {
       .map((registration) => registration.sourceId)
       .sort();
   }
+
+  public emitState(
+    windowId: number,
+    state: BrowserWindowConnectionState,
+    protocolMismatch?: BrowserProtocolMismatch,
+  ): void {
+    for (const registration of this.active) {
+      if (registration.windowId === windowId) {
+        registration.onStateChanged?.(state, undefined, protocolMismatch);
+      }
+    }
+  }
+}
+
+class FakeContentRefreshCoordinator {
+  public readonly revokedTabs: number[] = [];
+  public readonly revokedWindows: number[] = [];
+  public readonly windowEligibility: Array<[number, boolean]> = [];
+  public readonly participation: Array<[number, number, boolean]> = [];
+  public readonly observedUpdates: Array<[number, unknown]> = [];
+
+  public async dispatch(): Promise<void> {}
+  public async routeMessage(): Promise<undefined> { return undefined; }
+  public observeTabUpdate(tabId: number, update: unknown): void {
+    this.observedUpdates.push([tabId, update]);
+  }
+  public async tabUpdated(): Promise<void> {}
+  public async removeTab(): Promise<void> {}
+  public async detachTab(): Promise<void> {}
+  public setTabParticipation(
+    tabId: number,
+    windowId: number,
+    participant: boolean,
+  ): void {
+    this.participation.push([tabId, windowId, participant]);
+  }
+  public setWindowEligibility(windowId: number, eligible: boolean): void {
+    this.windowEligibility.push([windowId, eligible]);
+  }
+  public revokeTab(tabId: number): void { this.revokedTabs.push(tabId); }
+  public revokeWindow(windowId: number): void {
+    this.revokedWindows.push(windowId);
+  }
+  public dispose(): void {}
 }
 
 class FakeTabRefreshCoordinator {

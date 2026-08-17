@@ -233,6 +233,7 @@ describe("refresh runtime protocol", () => {
       pageUrl: "https://example.test/page",
       contentRuntimeId: "runtime-a",
     };
+    const refreshCommandId = "command-a";
     const snapshot = {
       tabId: 11,
       url: binding.pageUrl,
@@ -251,33 +252,39 @@ describe("refresh runtime protocol", () => {
     expect(parseContentRefreshCommand({
       type: "pin-op.refresh.content.execute",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       mode: "styles",
     })).toEqual({
       type: "pin-op.refresh.content.execute",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       mode: "styles",
     });
     expect(parseReloadTabRequest({
       type: "pin-op.refresh.reload.request",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       snapshot,
     })).toEqual({
       type: "pin-op.refresh.reload.request",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       snapshot,
     });
     expect(parseReloadTabResult({
       type: "pin-op.refresh.reload.result",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       accepted: true,
     })).toEqual({
       type: "pin-op.refresh.reload.result",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       accepted: true,
     });
@@ -295,6 +302,7 @@ describe("refresh runtime protocol", () => {
     expect(parseContentRefreshResult({
       type: "pin-op.refresh.content.result",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       mode: "styles",
       accepted: true,
@@ -302,6 +310,7 @@ describe("refresh runtime protocol", () => {
     })).toEqual({
       type: "pin-op.refresh.content.result",
       ...binding,
+      refreshCommandId,
       refreshGeneration: 9,
       mode: "styles",
       accepted: true,
@@ -315,6 +324,7 @@ describe("refresh runtime protocol", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "runtime-a",
+      refreshCommandId: "command-a",
       refreshGeneration: 9,
     };
     expect(parseContentRefreshCommand({
@@ -328,6 +338,18 @@ describe("refresh runtime protocol", () => {
       ...binding,
       mode: "reload",
       path: "/secret",
+    })).toBeUndefined();
+    expect(parseContentRefreshCommand({
+      type: "pin-op.refresh.content.execute",
+      ...binding,
+      refreshCommandId: "contains spaces",
+      mode: "reload",
+    })).toBeUndefined();
+    const { refreshCommandId: _omitted, ...withoutCommandId } = binding;
+    expect(parseContentRefreshCommand({
+      type: "pin-op.refresh.content.execute",
+      ...withoutCommandId,
+      mode: "reload",
     })).toBeUndefined();
     expect(parseReloadTabRequest({
       type: "pin-op.refresh.reload.request",

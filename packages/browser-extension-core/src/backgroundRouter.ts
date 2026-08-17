@@ -129,7 +129,12 @@ export type BackgroundContentRefreshRuntime = Pick<
   BackgroundContentRefreshCoordinator,
   | "dispatch"
   | "routeMessage"
+  | "observeTabUpdate"
   | "tabUpdated"
+  | "setTabParticipation"
+  | "setWindowEligibility"
+  | "revokeTab"
+  | "revokeWindow"
   | "removeTab"
   | "detachTab"
   | "dispose"
@@ -282,7 +287,12 @@ const okResult = Object.freeze({ ok: true } as const);
 const nullContentRefreshRuntime: BackgroundContentRefreshRuntime = Object.freeze({
   async dispatch(): Promise<void> {},
   async routeMessage(): Promise<undefined> { return undefined; },
+  observeTabUpdate(): void {},
   async tabUpdated(): Promise<void> {},
+  setTabParticipation(): void {},
+  setWindowEligibility(): void {},
+  revokeTab(): void {},
+  revokeWindow(): void {},
   async removeTab(): Promise<void> {},
   async detachTab(): Promise<void> {},
   dispose(): void {},
@@ -491,6 +501,7 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
+    this.contentRefreshCoordinator.revokeWindow(windowId);
     this.removedWindows.add(windowId);
     this.peerStates.delete(windowId);
     this.availabilityStates.delete(windowId);
@@ -593,6 +604,7 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(tabId)) {
       return;
     }
+    this.contentRefreshCoordinator.revokeTab(tabId);
     const channel = this.channelByTab.get(tabId);
     const binding = channel ? this.bindings.get(channel) : undefined;
     const port = channel ? this.panelPorts.get(channel) : undefined;
@@ -618,6 +630,7 @@ export class BackgroundRouter {
     ) {
       return;
     }
+    this.contentRefreshCoordinator.revokeTab(tabId);
     for (const pending of this.pendingRegistrations.values()) {
       if (pending.tabId === tabId && this.isCurrentPending(pending)) {
         pending.detachedWindowId = oldWindowId;
@@ -965,6 +978,7 @@ export class BackgroundRouter {
     update: BackgroundTabUpdate,
   ): Promise<void> {
     if (this.disposed || !isBrowserId(tabId)) return;
+    this.contentRefreshCoordinator.observeTabUpdate(tabId, update);
     let participant = false;
     if (isBrowserId(update.windowId)) {
       try {
@@ -1196,6 +1210,10 @@ export class BackgroundRouter {
       }
     }
 
+    if (command.type === "pin-op.unlinkWindow") {
+      this.contentRefreshCoordinator.revokeWindow(binding.windowId);
+    }
+
     const commandToken = {};
     const pendingRecord: PanelCommandRecord = {
       commandToken,
@@ -1418,6 +1436,14 @@ export class BackgroundRouter {
     activationToken: object,
     settings: TabRefreshSettings,
   ): void {
+    const currentBinding = this.bindings.get(record.channel);
+    if (
+      !settings.autoRefreshEnabled &&
+      currentBinding &&
+      this.isCurrentActivation(record, activationToken, currentBinding)
+    ) {
+      this.contentRefreshCoordinator.revokeTab(currentBinding.tabId);
+    }
     const operation = record.inspectCommandTail.then(async () => {
       const binding = this.bindings.get(record.channel);
       if (
@@ -1852,6 +1878,10 @@ export class BackgroundRouter {
     ) {
       return;
     }
+    this.contentRefreshCoordinator.setWindowEligibility(
+      binding.windowId,
+      state === "linked" && protocolMismatch === undefined,
+    );
     const operation = queue.tail.then(async () => {
       if (
         record.windowStateQueue !== queue ||
@@ -2196,6 +2226,7 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
+    this.contentRefreshCoordinator.revokeWindow(windowId);
     this.peerBlockedWindows.add(windowId);
     this.peerStates.delete(windowId);
     this.availabilityStates.delete(windowId);

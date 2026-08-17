@@ -57,18 +57,21 @@ export interface ContentRefreshReadyRequest extends ContentRefreshBinding {
 
 export interface ContentRefreshCommand extends ContentRefreshBinding {
   readonly type: "pin-op.refresh.content.execute";
+  readonly refreshCommandId: string;
   readonly refreshGeneration: number;
   readonly mode: PageRefreshMode;
 }
 
 export interface ReloadTabRequest extends ContentRefreshBinding {
   readonly type: "pin-op.refresh.reload.request";
+  readonly refreshCommandId: string;
   readonly refreshGeneration: number;
   readonly snapshot: TopScrollSnapshot;
 }
 
 export interface ReloadTabResult extends ContentRefreshBinding {
   readonly type: "pin-op.refresh.reload.result";
+  readonly refreshCommandId: string;
   readonly refreshGeneration: number;
   readonly accepted: boolean;
 }
@@ -81,6 +84,7 @@ export interface ScrollRestoreCommand extends ContentRefreshBinding {
 
 export interface ContentRefreshResult extends ContentRefreshBinding {
   readonly type: "pin-op.refresh.content.result";
+  readonly refreshCommandId: string;
   readonly refreshGeneration: number;
   readonly mode: PageRefreshMode;
   readonly accepted: boolean;
@@ -132,6 +136,7 @@ const PANEL_STATE_REQUIRED_KEYS = [
 ] as const;
 const MAX_PROTOCOL_VERSION = 0x7fffffff;
 const CONTENT_RUNTIME_ID_MAX_LENGTH = 128;
+const REFRESH_COMMAND_ID_MAX_LENGTH = 128;
 
 export function createDefaultTabRefreshState(
   tabId: number,
@@ -286,17 +291,20 @@ export function parseContentRefreshCommand(
     "frameId",
     "pageUrl",
     "contentRuntimeId",
+    "refreshCommandId",
     "refreshGeneration",
     "mode",
   ]);
   const binding = parseContentBinding(record);
   return record?.type === "pin-op.refresh.content.execute" &&
       binding &&
+      isRefreshCommandId(record.refreshCommandId) &&
       isGeneration(record.refreshGeneration) &&
       isRefreshMode(record.mode)
     ? Object.freeze({
       type: record.type,
       ...binding,
+      refreshCommandId: record.refreshCommandId,
       refreshGeneration: record.refreshGeneration,
       mode: record.mode,
     })
@@ -312,6 +320,7 @@ export function parseReloadTabRequest(
     "frameId",
     "pageUrl",
     "contentRuntimeId",
+    "refreshCommandId",
     "refreshGeneration",
     "snapshot",
   ]);
@@ -319,11 +328,13 @@ export function parseReloadTabRequest(
   const snapshot = parseTopScrollSnapshot(record?.snapshot);
   return record?.type === "pin-op.refresh.reload.request" &&
       binding &&
+      isRefreshCommandId(record.refreshCommandId) &&
       isGeneration(record.refreshGeneration) &&
       snapshotMatches(snapshot, binding, record.refreshGeneration)
     ? Object.freeze({
       type: record.type,
       ...binding,
+      refreshCommandId: record.refreshCommandId,
       refreshGeneration: record.refreshGeneration,
       snapshot,
     })
@@ -339,17 +350,20 @@ export function parseReloadTabResult(
     "frameId",
     "pageUrl",
     "contentRuntimeId",
+    "refreshCommandId",
     "refreshGeneration",
     "accepted",
   ]);
   const binding = parseContentBinding(record);
   return record?.type === "pin-op.refresh.reload.result" &&
       binding &&
+      isRefreshCommandId(record.refreshCommandId) &&
       isGeneration(record.refreshGeneration) &&
       typeof record.accepted === "boolean"
     ? Object.freeze({
       type: record.type,
       ...binding,
+      refreshCommandId: record.refreshCommandId,
       refreshGeneration: record.refreshGeneration,
       accepted: record.accepted,
     })
@@ -394,6 +408,7 @@ export function parseContentRefreshResult(
       "frameId",
       "pageUrl",
       "contentRuntimeId",
+      "refreshCommandId",
       "refreshGeneration",
       "mode",
       "accepted",
@@ -407,6 +422,7 @@ export function parseContentRefreshResult(
   if (
     record?.type !== "pin-op.refresh.content.result" ||
     !binding ||
+    !isRefreshCommandId(record.refreshCommandId) ||
     !isGeneration(record.refreshGeneration) ||
     !isRefreshMode(record.mode) ||
     typeof record.accepted !== "boolean" ||
@@ -418,6 +434,7 @@ export function parseContentRefreshResult(
   return Object.freeze({
     type: record.type,
     ...binding,
+    refreshCommandId: record.refreshCommandId,
     refreshGeneration: record.refreshGeneration,
     mode: record.mode,
     accepted: record.accepted,
@@ -633,6 +650,13 @@ function isContentRuntimeId(value: unknown): value is string {
   return typeof value === "string" &&
     value.length > 0 &&
     value.length <= CONTENT_RUNTIME_ID_MAX_LENGTH &&
+    /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function isRefreshCommandId(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= REFRESH_COMMAND_ID_MAX_LENGTH &&
     /^[A-Za-z0-9_-]+$/u.test(value);
 }
 

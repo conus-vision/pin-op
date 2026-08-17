@@ -297,6 +297,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-a",
+      refreshCommandId: "command-a",
       refreshGeneration: 5,
       mode: "styles",
     })).resolves.toEqual({
@@ -305,6 +306,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-a",
+      refreshCommandId: "command-a",
       refreshGeneration: 5,
       mode: "styles",
       accepted: true,
@@ -323,6 +325,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "another-runtime",
+      refreshCommandId: "command-b",
       refreshGeneration: 6,
       mode: "styles",
     })).resolves.toBeUndefined();
@@ -357,6 +360,7 @@ describe("startContentRefreshRuntime", () => {
           frameId: 0,
           pageUrl: "https://example.test/page",
           contentRuntimeId: "refresh-runtime-b",
+          refreshCommandId: "command-c",
           refreshGeneration: 8,
           snapshot: {
             tabId: 22,
@@ -373,6 +377,7 @@ describe("startContentRefreshRuntime", () => {
           frameId: 0,
           pageUrl: "https://example.test/page",
           contentRuntimeId: "refresh-runtime-b",
+          refreshCommandId: "command-c",
           refreshGeneration: 8,
           accepted: true,
         };
@@ -388,6 +393,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-b",
+      refreshCommandId: "command-c",
       refreshGeneration: 8,
       mode: "reload",
     })).resolves.toEqual({
@@ -396,6 +402,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-b",
+      refreshCommandId: "command-c",
       refreshGeneration: 8,
       mode: "reload",
       accepted: true,
@@ -481,6 +488,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-d",
+      refreshCommandId: "command-d",
       refreshGeneration: 12,
       mode: "styles",
     });
@@ -494,6 +502,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-d",
+      refreshCommandId: "command-e",
       refreshGeneration: 13,
       mode: "styles",
     });
@@ -528,6 +537,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-e",
+      refreshCommandId: "command-f",
       refreshGeneration: 14,
       mode: "styles",
     });
@@ -581,6 +591,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-f",
+      refreshCommandId: "command-g",
       refreshGeneration: 15,
       mode: "styles",
     });
@@ -641,6 +652,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-g",
+      refreshCommandId: "command-h",
       refreshGeneration: 16,
       mode: "styles",
     });
@@ -651,6 +663,7 @@ describe("startContentRefreshRuntime", () => {
       frameId: 0,
       pageUrl: "https://example.test/page",
       contentRuntimeId: "refresh-runtime-g",
+      refreshCommandId: "command-i",
       refreshGeneration: 17,
       mode: "styles",
     });
@@ -672,6 +685,62 @@ describe("startContentRefreshRuntime", () => {
       stylesheet: { attempted: 1, updated: 1, failed: 0 },
     });
     expect(refreshStylesheets.mock.calls.map((call) => call[1])).toEqual([16, 17]);
+  });
+
+  it("replaces a global runtime when its authoritative URL or runtime identity changes", async () => {
+    const globalScope = {};
+    const page = refreshPageHarness();
+    const firstMessages = messageHarness();
+    const secondMessages = messageHarness();
+    const thirdMessages = messageHarness();
+    const base = {
+      globalScope,
+      document: page.document,
+      view: page.view,
+      tabId: 28,
+      sendRuntimeMessage: async () => undefined,
+      refreshStylesheets: async () => ({ attempted: 1, updated: 1, failed: 0 }),
+    } as const;
+    const first = startContentRefreshRuntime({
+      ...base,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "refresh-runtime-h",
+      subscribeRuntimeMessages: firstMessages.subscribe,
+    });
+    const second = startContentRefreshRuntime({
+      ...base,
+      pageUrl: "https://example.test/page#state",
+      contentRuntimeId: "refresh-runtime-h",
+      subscribeRuntimeMessages: secondMessages.subscribe,
+    });
+    const third = startContentRefreshRuntime({
+      ...base,
+      pageUrl: "https://example.test/page#state",
+      contentRuntimeId: "refresh-runtime-i",
+      subscribeRuntimeMessages: thirdMessages.subscribe,
+    });
+
+    expect(second).not.toBe(first);
+    expect(third).not.toBe(second);
+    expect(firstMessages.remove).toHaveBeenCalledOnce();
+    expect(secondMessages.remove).toHaveBeenCalledOnce();
+    await expect(thirdMessages.emit({
+      type: "pin-op.refresh.content.execute",
+      tabId: 28,
+      frameId: 0,
+      pageUrl: "https://example.test/page#state",
+      contentRuntimeId: "refresh-runtime-i",
+      refreshCommandId: "command-j",
+      refreshGeneration: 18,
+      mode: "styles",
+    })).resolves.toMatchObject({
+      type: "pin-op.refresh.content.result",
+      pageUrl: "https://example.test/page#state",
+      contentRuntimeId: "refresh-runtime-i",
+      refreshCommandId: "command-j",
+      accepted: true,
+    });
+    third.dispose();
   });
 });
 

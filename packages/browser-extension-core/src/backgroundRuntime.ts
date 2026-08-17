@@ -109,8 +109,14 @@ export function startBackgroundRuntime(
     dispatchRefresh: async (tabId, command) => {
       await contentRefreshCoordinator.dispatch(tabId, command);
     },
-    setRefreshParticipant: (windowId, tabId, participant) =>
-      coordinator.setRefreshParticipant(windowId, tabId, participant),
+    setRefreshParticipant: (windowId, tabId, participant) => {
+      contentRefreshCoordinator.setTabParticipation(
+        tabId,
+        windowId,
+        participant,
+      );
+      coordinator.setRefreshParticipant(windowId, tabId, participant);
+    },
     onError: options.onError,
   });
   void tabRefreshCoordinator.initialize?.().catch((error) =>

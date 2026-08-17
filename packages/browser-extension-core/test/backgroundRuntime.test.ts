@@ -121,9 +121,14 @@ describe("startBackgroundRuntime", () => {
         (message as { type?: string }).type === "pin-op.refresh.content.bootstrap"
           ? { accepted: true }
           : undefined),
+      observeTabUpdate: vi.fn(),
       tabUpdated: vi.fn(async () => undefined),
       removeTab: vi.fn(async () => undefined),
       detachTab: vi.fn(async () => undefined),
+      setTabParticipation: vi.fn(),
+      setWindowEligibility: vi.fn(),
+      revokeTab: vi.fn(),
+      revokeWindow: vi.fn(),
       dispose: vi.fn(),
     };
 
@@ -158,13 +163,18 @@ describe("startBackgroundRuntime", () => {
       browserProtocolVersion: PROTOCOL_VERSION,
       peerProtocolVersion: 5,
     });
+    expect(contentRefresh.revokeWindow).toHaveBeenCalledWith(7);
     activatedTabs.emit(11, 7);
     removedTabs.emit(12);
-    updatedTabs.emit(11, {
-      status: "complete",
-      url: "https://example.test/page",
+    expect(contentRefresh.revokeTab).toHaveBeenCalledWith(12);
+    detachedTabs.emit(13, 7);
+    expect(contentRefresh.revokeTab).toHaveBeenCalledWith(13);
+    const spaUpdate = {
+      url: "https://example.test/page#spa",
       windowId: 7,
-    });
+    };
+    updatedTabs.emit(11, spaUpdate);
+    expect(contentRefresh.observeTabUpdate).toHaveBeenCalledWith(11, spaUpdate);
     const bootstrap = { type: "pin-op.refresh.content.bootstrap" };
     await messages.emit(bootstrap, {
       url: "https://example.test/page",
@@ -178,11 +188,13 @@ describe("startBackgroundRuntime", () => {
     expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
     expect(tabRefresh.removeTab).toHaveBeenCalledWith(12);
     expect(contentRefresh.removeTab).toHaveBeenCalledWith(12);
-    expect(contentRefresh.tabUpdated).toHaveBeenCalledWith(11, {
-      status: "complete",
-      url: "https://example.test/page",
-      windowId: 7,
-    }, true);
+    expect(tabRefresh.detachTab).toHaveBeenCalledWith(13, 7);
+    expect(contentRefresh.detachTab).toHaveBeenCalledWith(13);
+    expect(contentRefresh.tabUpdated).toHaveBeenCalledWith(
+      11,
+      spaUpdate,
+      true,
+    );
     expect(contentRefresh.routeMessage).toHaveBeenCalledWith(bootstrap, {
       url: "https://example.test/page",
       frameId: 0,
