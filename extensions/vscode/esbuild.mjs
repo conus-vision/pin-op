@@ -13,16 +13,6 @@ const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const distDirectory = resolve(extensionRoot, "dist");
 const require = createRequire(import.meta.url);
 const sourceMapRoot = dirname(require.resolve("source-map/package.json"));
-const packageLicenseOverrides = new Map([
-  [
-    "source-map@0.7.6",
-    {
-      declaredLicense: "BSD-3-Clause",
-      displayPath: "licenses/source-map-0.7.6.txt",
-      path: resolve(extensionRoot, "licenses/source-map-0.7.6.txt"),
-    },
-  ],
-]);
 const builtinImports = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -183,25 +173,14 @@ async function readPackageNotice(root) {
     throw new Error(`Invalid package notice metadata in ${manifestPath}`);
   }
 
-  const packageKey = `${manifest.name}@${manifest.version}`;
   const licenseFile = await findLicenseFile(root);
-  const override = licenseFile
-    ? undefined
-    : packageLicenseOverrides.get(packageKey);
-  if (!licenseFile && !override) {
-    throw new Error(`Bundled package ${packageKey} has no license file`);
-  }
-  if (override && manifest.license !== override.declaredLicense) {
+  if (!licenseFile) {
     throw new Error(
-      `Bundled package ${packageKey} declares ${manifest.license}; ` +
-        `license override requires ${override.declaredLicense}`,
+      `Bundled package ${manifest.name}@${manifest.version} has no license file`,
     );
   }
   const licenseText = normalizeText(
-    await readFile(
-      licenseFile ? resolve(root, licenseFile) : override.path,
-      "utf8",
-    ),
+    await readFile(resolve(root, licenseFile), "utf8"),
   );
   if (!licenseText) {
     throw new Error(
@@ -213,7 +192,7 @@ async function readPackageNotice(root) {
     name: manifest.name,
     version: manifest.version,
     license: manifest.license,
-    licenseFile: licenseFile ?? `${override.displayPath} (vendored override)`,
+    licenseFile,
     licenseText,
   };
 }

@@ -19,10 +19,6 @@ const sourceWasmUrl = new URL(
   import.meta.url,
 );
 const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
-const sourceMapLicenseOverrideUrl = new URL(
-  "../licenses/source-map-0.7.6.txt",
-  import.meta.url,
-);
 const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
 const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
@@ -226,20 +222,10 @@ describe("VS Code package build", () => {
           /^(?:license|licence|copying)(?:[._-].*)?$/i.test(file)
         )
         .sort()[0];
-      const packageKey = `${name}@${manifest.version}`;
-      const override = packageKey === "source-map@0.7.6"
-        ? sourceMapLicenseOverrideUrl
-        : undefined;
-      expect(
-        licenseFile ?? override,
-        `${packageKey} package license or exact override`,
-      ).toBeDefined();
-      if (!licenseFile && !override) continue;
+      expect(licenseFile, `${name} license file`).toBeDefined();
+      if (!licenseFile) continue;
 
-      const licenseText = readFileSync(
-        licenseFile ? resolve(root, licenseFile) : override,
-        "utf8",
-      )
+      const licenseText = readFileSync(resolve(root, licenseFile), "utf8")
         .replaceAll("\r\n", "\n")
         .trim();
       const sectionStart = notices.indexOf(
@@ -251,11 +237,6 @@ describe("VS Code package build", () => {
         sectionEnd < 0 ? notices.length : sectionEnd,
       );
       expect(section, `${name} full license text`).toContain(licenseText);
-      if (override) {
-        expect(section).toContain(
-          "License file: licenses/source-map-0.7.6.txt (vendored override)",
-        );
-      }
     }
     expect(notices).toMatch(
       /Runtime asset: dist\/mappings\.wasm \(from source-map@[^)]+\)/,
