@@ -300,13 +300,21 @@ Labels are normalized separately at this trusted boundary. A short selector,
 component name, or descriptive label such as `Twig template block` remains
 useful. Core rejects path separators and percent-encoding, absolute paths and
 URIs, workspace and source-map locators, line/column locator suffixes,
-structured browser locators, relative `.map` filenames,
-`sourceMappingURL` directives, and bounded plausible base64 or base64url labels
-whose UTF-8 decoded value has one of those sensitive forms. Control characters
-are replaced with spaces, only a strict display-character set is allowed, and
-the final value is protocol-bounded. Unsafe, oversized, or malformed labels
-fall back to the host-derived active-document basename, or `untitled` when no
-safe basename is available. Normalizer failures fail closed.
+structured browser locators, and `sourceMappingURL` directives. Relative
+source-map filenames are rejected in every plugin-controlled context except a
+canonical `component` label. A selector that ends in `.map` is also preserved
+when the host assigned built-in CSS/SCSS provenance and normalized the match to
+`style-rule` / `styles`; plugins cannot declare that provenance themselves.
+
+Bounded plausible base64 or base64url candidates are checked after folding
+ASCII spaces, tabs, and line breaks. Core decodes only canonical round-tripping
+UTF-8 values and rejects the label when the decoded value has a sensitive form.
+Malformed or non-canonical lookalikes are not decoded and still pass through
+the ordinary label checks. Control characters are replaced with spaces, only a
+strict display-character set is allowed, and the final value is
+protocol-bounded. Unsafe or oversized labels fall back to the host-derived
+active-document basename, or `untitled` when no safe basename is available.
+Normalizer failures fail closed.
 
 The browser receives only bounded source text excerpts and this IDE-neutral
 presentation metadata. It never receives a document URI or source locator.

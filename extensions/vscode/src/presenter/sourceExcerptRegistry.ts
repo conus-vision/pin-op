@@ -256,6 +256,8 @@ export class SourceExcerptRegistry {
       documentVersion: input.editor.document.version,
       range: authorityRange,
     });
+    const kind = normalizeSourceKind(entry.match.kind);
+    const relation = normalizeSourceRelation(entry.match.relation);
     return {
       excerpt: frozenExcerpt({
         matchId,
@@ -263,9 +265,15 @@ export class SourceExcerptRegistry {
         label: normalizeSourceDisplayLabel(
           entry.match.label,
           this.current?.document.label ?? "untitled",
+          {
+            kind,
+            relation,
+            trustedStyleSelector:
+              entry.match.labelProvenance === "builtin-style-selector",
+          },
         ),
-        kind: normalizeSourceKind(entry.match.kind),
-        relation: normalizeSourceRelation(entry.match.relation),
+        kind,
+        relation,
         confidence: entry.match.confidence,
         startLine: authorityRange.start.line + 1,
         endLine: authorityRange.end.line + 1,

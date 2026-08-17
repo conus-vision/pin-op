@@ -7,7 +7,10 @@ import type { ResolutionStatus } from "@pin-op/protocol";
 
 export interface ResolvedSourceMatch extends SourceMatch {
   readonly pluginId: string;
+  readonly labelProvenance?: SourceLabelProvenance;
 }
+
+export type SourceLabelProvenance = "builtin-style-selector" | "plugin";
 
 export interface ResolvedPluginDiagnostic extends PluginDiagnostic {
   readonly pluginId: string;

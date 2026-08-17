@@ -1,12 +1,23 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
-import type { SourcePosition, SourceRange } from "@pin-op/plugin-api";
+import { SourceMapGenerator } from "source-map";
+import type {
+  SelectionSnapshot,
+  SourceDocument,
+  SourceMatch,
+  SourcePlugin,
+  SourcePosition,
+  SourceRange,
+  SourceWorkspace,
+} from "@pin-op/plugin-api";
 import {
   PROTOCOL_VERSION,
   RESOLUTION_LIMITS,
   SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES,
   SOURCE_PRESENTATION_LIMITS,
   SourceMatchesMessageSchema,
+  type CssRuleFact,
+  type InspectTarget,
   type SourceOpenMessage,
 } from "@pin-op/protocol";
 import type { SourceMatchesInput } from "../src/bridgeClient.js";
@@ -14,10 +25,14 @@ import {
   SourceExcerptRegistry,
   type SourceExcerptEditor,
 } from "../src/presenter/sourceExcerptRegistry.js";
+import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
+import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
+import { ScssSourcePlugin } from "../src/sourcePlugins/scssSourcePlugin.js";
 import type {
   ResolvedSourceMatch,
   SourceResolution,
 } from "../src/sourcePlugins/types.js";
+import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
 
 const DOCUMENT_URI = "file:///private/customer/src/Card.tsx";
 const ENCODED_SENSITIVE_PLUGIN_VALUES = [
@@ -28,6 +43,17 @@ const ENCODED_SENSITIVE_PLUGIN_VALUES = [
   Buffer.from("file:///home/alice/workspace/src/Card.scss").toString("base64"),
   Buffer.from("webpack:///sources/Card.scss:17:3").toString("base64url"),
 ] as const;
+const FOLDED_ENCODED_SENSITIVE_PLUGIN_VALUES = [
+  foldBase64(ENCODED_SENSITIVE_PLUGIN_VALUES[0], " "),
+  foldBase64(ENCODED_SENSITIVE_PLUGIN_VALUES[1], "\t"),
+  foldBase64(ENCODED_SENSITIVE_PLUGIN_VALUES[2], "\r\n"),
+] as const;
+const OVERSIZED_FOLDED_ENCODED_PATH = foldBase64(
+  Buffer.from(
+    `C:\\workspace\\${"private\\".repeat(80)}secret.scss`,
+  ).toString("base64"),
+  "\r\n",
+);
 const SENSITIVE_PLUGIN_VALUES = [
   String.raw`C:\Users\alice\workspace\src\Card.scss`,
   "/home/alice/workspace/src/Card.scss",
@@ -40,6 +66,8 @@ const SENSITIVE_PLUGIN_VALUES = [
   '{"targetKind":"element","path":[{"tag":"div","index":0}],"boundaries":[]}',
   '["html","body","div",0]',
   ...ENCODED_SENSITIVE_PLUGIN_VALUES,
+  ...FOLDED_ENCODED_SENSITIVE_PLUGIN_VALUES,
+  OVERSIZED_FOLDED_ENCODED_PATH,
   "app.css.map",
   "APP.JS.MAP",
   "bundle.map#generated",
@@ -220,9 +248,13 @@ describe("SourceExcerptRegistry", () => {
       ".app.css.map",
       "#app.css.map",
       "[data-map='app.css.map']",
+      "App.map",
       "SourceMappingURL",
       "SourceMapCard",
       "ButtonCard",
+      "Button Card",
+      "Q2Fy ZA==",
+      "Q2Fy= ZA==",
     ] as const;
     const document = textDocument(
       "file:///private/customer/workspace/styles.scss",
@@ -260,6 +292,157 @@ describe("SourceExcerptRegistry", () => {
         JSON.parse(JSON.stringify(wireMessage(publication.message))),
       ),
     ).toBeTruthy();
+  });
+
+  it("serializes button.map from the real trusted CSS plugin", async () => {
+    const documentUri = "file:///workspace/dist/app.css";
+    const text = "button.map { color: red; }";
+    const selection = cssSelection(
+      "inspect-css-map-selector",
+      "button.map",
+      "/dist/app.css",
+    );
+    const sourceResolution = await resolveRegisteredPlugin(
+      new CssSourcePlugin(),
+      sourcePluginDocument(documentUri, "css", text),
+      memorySourceWorkspace({ [documentUri]: text }),
+      selection,
+    );
+    const editorDocument = textDocument(documentUri, "css", text);
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: selection.messageId,
+      resolutionGeneration: 1,
+      editor: { document: editorDocument },
+      resolution: sourceResolution,
+    });
+    const serialized = JSON.stringify(wireMessage(publication.message));
+
+    expect(sourceResolution.matches).toHaveLength(1);
+    expect(Reflect.get(sourceResolution.matches[0]!, "labelProvenance")).toBe(
+      "builtin-style-selector",
+    );
+    expect(publication.message.matches).toEqual([
+      expect.objectContaining({
+        label: "button.map",
+        kind: "style-rule",
+        relation: "styles",
+      }),
+    ]);
+    expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
+  });
+
+  it("serializes custom-element.map from the real trusted SCSS plugin", async () => {
+    const activeUri = "file:///workspace/src/components.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const selector = "custom-element.map";
+    const original = `${selector} { color: red; }`;
+    const generated = [
+      `${selector} { color: red; }`,
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const sourceMap = new SourceMapGenerator({ file: "app.css" });
+    sourceMap.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/components.scss",
+    });
+    const selection = cssSelection(
+      "inspect-scss-map-selector",
+      selector,
+      "/dist/app.css",
+    );
+    const sourceResolution = await resolveRegisteredPlugin(
+      new ScssSourcePlugin(),
+      sourcePluginDocument(activeUri, "scss", original),
+      memorySourceWorkspace({
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: sourceMap.toString(),
+      }),
+      selection,
+    );
+    const editorDocument = textDocument(activeUri, "scss", original);
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: selection.messageId,
+      resolutionGeneration: 1,
+      editor: { document: editorDocument },
+      resolution: sourceResolution,
+    });
+    const serialized = JSON.stringify(wireMessage(publication.message));
+
+    expect(sourceResolution.matches).toHaveLength(1);
+    expect(Reflect.get(sourceResolution.matches[0]!, "labelProvenance")).toBe(
+      "builtin-style-selector",
+    );
+    expect(publication.message.matches).toEqual([
+      expect.objectContaining({
+        label: selector,
+        kind: "style-rule",
+        relation: "styles",
+      }),
+    ]);
+    expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
+  });
+
+  it("does not trust a third-party plugin that spoofs selector provenance", async () => {
+    const documentUri = "file:///workspace/app.css";
+    const text = "x x x";
+    const pluginDocument = sourcePluginDocument(documentUri, "css", text);
+    const labels = ["button.map", "app.css.map", "layout.js.map"] as const;
+    const forgedMatches = labels.map((label, index) => ({
+      targetRole: "selected" as const,
+      range: {
+        start: { line: 0, character: index * 2 },
+        end: { line: 0, character: index * 2 + 1 },
+      },
+      label,
+      kind: index === 0 ? "style-rule" : index === 1 ? "source" : "template",
+      relation: index === 0 ? "styles" : index === 1 ? "matches" : "templates",
+      confidence: "exact" as const,
+      labelProvenance: "builtin-style-selector",
+    } as SourceMatch));
+    const hostilePlugin: SourcePlugin = {
+      id: "pin-op.css",
+      displayName: "Spoofed CSS",
+      apiVersion: 2,
+      documentSelectors: [{ languageId: "css", scheme: "file" }],
+      supportedFactKinds: ["css-rule"],
+      async resolve() {
+        return { matches: forgedMatches };
+      },
+    };
+    const selection = cssSelection(
+      "inspect-third-party-map-labels",
+      ".fixture",
+      "/app.css",
+    );
+    const sourceResolution = await resolveRegisteredPlugin(
+      hostilePlugin,
+      pluginDocument,
+      memorySourceWorkspace({ [documentUri]: text }),
+      selection,
+    );
+    const editorDocument = textDocument(documentUri, "css", text);
+
+    const publication = excerptRegistry().publish({
+      inspectMessageId: selection.messageId,
+      resolutionGeneration: 1,
+      editor: { document: editorDocument },
+      resolution: sourceResolution,
+    });
+    const serialized = JSON.stringify(wireMessage(publication.message));
+
+    expect(sourceResolution.matches.map((entry) =>
+      Reflect.get(entry, "labelProvenance")
+    )).toEqual(labels.map(() => "plugin"));
+    expect(publication.message.matches.map((entry) => entry.label)).toEqual(
+      labels.map(() => "app.css"),
+    );
+    for (const label of labels) expect(serialized).not.toContain(label);
+    expect(SourceMatchesMessageSchema.parse(JSON.parse(serialized))).toBeTruthy();
   });
 
   it("fails closed when plugin display metadata cannot be normalized", () => {
@@ -983,6 +1166,80 @@ function wireBytes(message: SourceMatchesInput): number {
 
 function serializedStringFragment(value: string): string {
   return JSON.stringify(value).slice(1, -1);
+}
+
+function foldBase64(value: string, separator: string): string {
+  return value.match(/.{1,4}/gu)?.join(separator) ?? value;
+}
+
+async function resolveRegisteredPlugin(
+  plugin: SourcePlugin,
+  document: SourceDocument,
+  workspace: SourceWorkspace,
+  selection: SelectionSnapshot,
+): Promise<SourceResolution> {
+  const registry = new SourcePluginRegistry();
+  registry.register(plugin);
+  const dispatch = await registry.resolve(
+    selection,
+    document,
+    workspace,
+    new AbortController().signal,
+  );
+  if (dispatch.kind !== "resolved") {
+    throw new Error(`Expected resolved dispatch, received ${dispatch.kind}`);
+  }
+  return dispatch.resolution;
+}
+
+function cssSelection(
+  messageId: string,
+  selector: string,
+  sourceUrl: string,
+): SelectionSnapshot {
+  const target: InspectTarget & { facts: CssRuleFact[] } = {
+    role: "selected",
+    depth: 0,
+    subject: { selector, metadata: {} },
+    facts: [{
+      type: "css-rule",
+      selector,
+      property: "color",
+      value: "red",
+      metadata: {
+        sourceUrl,
+        media: [],
+        mediaTruncated: false,
+        rulePath: "0.0",
+        valueTruncated: false,
+        important: false,
+      },
+    }],
+    metadata: {},
+  };
+  return {
+    sessionId: "session-1",
+    messageId,
+    targets: [target],
+    context: { url: "http://localhost:4173/page", metadata: {} },
+    metadata: {},
+  };
+}
+
+function sourcePluginDocument(
+  uri: string,
+  languageId: string,
+  initialText: string,
+): SourceDocument {
+  const document = textDocument(uri, languageId, initialText);
+  return {
+    uri,
+    languageId,
+    version: document.version,
+    getText: document.getText,
+    positionAt: document.positionAt,
+    offsetAt: document.offsetAt,
+  };
 }
 
 function resolution(

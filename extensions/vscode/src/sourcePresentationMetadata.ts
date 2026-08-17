@@ -16,6 +16,7 @@ const DISPLAY_PUNCTUATION: ReadonlySet<string> = new Set(
 const LANGUAGE_ID_PUNCTUATION: ReadonlySet<string> = new Set("+-._");
 const MAX_DISPLAY_INPUT_LENGTH = RESOLUTION_LIMITS.labelLength * 4;
 const BASE64_CANDIDATE = /^[A-Za-z0-9+/_-]+={0,2}$/u;
+const BASE64_ASCII_WHITESPACE = /[\t-\r ]/gu;
 const MIN_BASE64_CANDIDATE_LENGTH = 8;
 const SOURCE_LOCATOR_SUFFIX = /:\d+(?::\d+)?$/u;
 const PARENTHESIZED_SOURCE_LOCATOR_SUFFIX = /\.[a-z0-9]+\(\d+(?:,\d+)?\)$/iu;
@@ -24,6 +25,18 @@ const SOURCE_MAPPING_URL_DIRECTIVE = /^(?:#\s*)?sourceMappingURL\s*=/iu;
 const RELATIVE_SOURCE_MAP_LABEL =
   /^[\p{L}\p{N}][\p{L}\p{M}\p{N} ._@()+,'&-]*\.map(?:\s*(?:[?#].*)?)?$/iu;
 const UNICODE_DISPLAY_CHARACTER = /^[\p{L}\p{M}\p{N}]$/u;
+
+export interface SourceDisplayLabelContext {
+  readonly kind: SourceExcerpt["kind"];
+  readonly relation: SourceExcerpt["relation"];
+  readonly trustedStyleSelector: boolean;
+}
+
+const DEFAULT_DISPLAY_LABEL_CONTEXT: SourceDisplayLabelContext = Object.freeze({
+  kind: "source",
+  relation: "matches",
+  trustedStyleSelector: false,
+});
 
 export function normalizeSourceKind(value: unknown): SourceExcerpt["kind"] {
   return typeof value === "string" && SOURCE_KINDS.has(value)
@@ -42,6 +55,7 @@ export function normalizeSourceRelation(
 export function normalizeSourceDisplayLabel(
   value: unknown,
   fallback: string,
+  context: SourceDisplayLabelContext = DEFAULT_DISPLAY_LABEL_CONTEXT,
 ): string {
   try {
     if (
@@ -51,7 +65,7 @@ export function normalizeSourceDisplayLabel(
       return fallback;
     }
     const cleaned = cleanText(value);
-    if (!isNeutralDisplayLabel(cleaned)) return fallback;
+    if (!isNeutralDisplayLabel(cleaned, value, context)) return fallback;
     return boundUtf16(cleaned, RESOLUTION_LIMITS.labelLength) || fallback;
   } catch {
     return fallback;
@@ -84,18 +98,25 @@ export function normalizeLanguageId(value: unknown): string {
   return boundUtf16(cleaned, RESOLUTION_LIMITS.languageIdLength) || "unknown";
 }
 
-function isNeutralDisplayLabel(value: string): boolean {
+function isNeutralDisplayLabel(
+  value: string,
+  encodedCandidate: string,
+  context: SourceDisplayLabelContext,
+): boolean {
   if (
     value.length === 0 ||
-    isSensitiveDisplayMetadata(value) ||
-    hasEncodedSensitiveMetadata(value)
+    isSensitiveDisplayMetadata(value, allowsRelativeMapLabel(context)) ||
+    hasEncodedSensitiveMetadata(encodedCandidate)
   ) {
     return false;
   }
   return [...value].every(isDisplayCharacter);
 }
 
-function isSensitiveDisplayMetadata(value: string): boolean {
+function isSensitiveDisplayMetadata(
+  value: string,
+  allowRelativeMapLabel = false,
+): boolean {
   return value.includes("/") ||
     value.includes("\\") ||
     value.includes("%") ||
@@ -103,7 +124,7 @@ function isSensitiveDisplayMetadata(value: string): boolean {
     PARENTHESIZED_SOURCE_LOCATOR_SUFFIX.test(value) ||
     FRAGMENT_SOURCE_LOCATOR_SUFFIX.test(value) ||
     SOURCE_MAPPING_URL_DIRECTIVE.test(value) ||
-    RELATIVE_SOURCE_MAP_LABEL.test(value) ||
+    (!allowRelativeMapLabel && RELATIVE_SOURCE_MAP_LABEL.test(value)) ||
     isStructuredLocator(value) ||
     isAbsoluteUri(value);
 }
@@ -117,15 +138,21 @@ function hasEncodedSensitiveMetadata(value: string): boolean {
 function decodeBase64Candidate(value: string): string | undefined {
   if (
     value.length < MIN_BASE64_CANDIDATE_LENGTH ||
-    value.length > MAX_DISPLAY_INPUT_LENGTH ||
-    !BASE64_CANDIDATE.test(value)
+    value.length > MAX_DISPLAY_INPUT_LENGTH
   ) {
     return undefined;
   }
 
-  const hasPadding = value.endsWith("=");
-  if (hasPadding && value.length % 4 !== 0) return undefined;
-  const unpadded = value.replace(/=+$/u, "");
+  const candidate = value.replace(BASE64_ASCII_WHITESPACE, "");
+  if (
+    candidate.length < MIN_BASE64_CANDIDATE_LENGTH ||
+    !BASE64_CANDIDATE.test(candidate)
+  ) {
+    return undefined;
+  }
+  const hasPadding = candidate.endsWith("=");
+  if (hasPadding && candidate.length % 4 !== 0) return undefined;
+  const unpadded = candidate.replace(/=+$/u, "");
   if (unpadded.length % 4 === 1) return undefined;
   const canonicalInput = unpadded.replaceAll("-", "+").replaceAll("_", "/");
   const bytes = Buffer.from(canonicalInput, "base64");
@@ -140,6 +167,13 @@ function decodeBase64Candidate(value: string): string | undefined {
 
   const decoded = bytes.toString("utf8");
   return Buffer.from(decoded, "utf8").equals(bytes) ? decoded : undefined;
+}
+
+function allowsRelativeMapLabel(context: SourceDisplayLabelContext): boolean {
+  return context.kind === "component" ||
+    (context.trustedStyleSelector &&
+      context.kind === "style-rule" &&
+      context.relation === "styles");
 }
 
 function isStructuredLocator(value: string): boolean {

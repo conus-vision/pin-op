@@ -16,6 +16,7 @@ import type {
   PluginResolutionCandidate,
   ResolvedPluginDiagnostic,
   ResolvedSourceMatch,
+  SourceLabelProvenance,
   SourcePluginDispatch,
   SourceResolution,
 } from "./types.js";
@@ -23,6 +24,8 @@ import {
   normalizeSourceKind,
   normalizeSourceRelation,
 } from "../sourcePresentationMetadata.js";
+import { CssSourcePlugin } from "./cssSourcePlugin.js";
+import { ScssSourcePlugin } from "./scssSourcePlugin.js";
 
 interface PluginPayload {
   readonly matches: readonly ResolvedSourceMatch[];
@@ -30,6 +33,11 @@ interface PluginPayload {
 }
 
 interface PluginResolution extends PluginPayload, PluginResolutionCandidate {}
+
+interface RegisteredSourcePlugin {
+  readonly plugin: SourcePlugin;
+  readonly labelProvenance: SourceLabelProvenance;
+}
 
 const CONFIDENCE_PRIORITY: Record<SourceMatch["confidence"], number> = {
   exact: 0,
@@ -40,7 +48,7 @@ const CONFIDENCE_PRIORITY: Record<SourceMatch["confidence"], number> = {
 };
 
 export class SourcePluginRegistry {
-  private readonly plugins = new Map<string, SourcePlugin>();
+  private readonly plugins = new Map<string, RegisteredSourcePlugin>();
   private readonly listeners = new Set<() => void>();
   private readonly timeoutMs: number;
 
@@ -57,7 +65,10 @@ export class SourcePluginRegistry {
     if (this.plugins.has(plugin.id)) {
       throw new Error(`Source plugin "${plugin.id}" is already registered`);
     }
-    this.plugins.set(plugin.id, plugin);
+    this.plugins.set(plugin.id, {
+      plugin,
+      labelProvenance: sourceLabelProvenance(plugin),
+    });
     this.emitChange();
     return {
       dispose: () => {
@@ -82,7 +93,7 @@ export class SourcePluginRegistry {
         target.facts.map((fact) => fact.type),
       ),
     );
-    const documentPlugins = [...this.plugins.values()].filter((plugin) =>
+    const documentPlugins = [...this.plugins.values()].filter(({ plugin }) =>
       matchesDocument(plugin, document),
     );
     if (documentPlugins.length === 0) {
@@ -92,12 +103,18 @@ export class SourcePluginRegistry {
         documentVersion: document.version,
       };
     }
-    const plugins = documentPlugins.filter((plugin) =>
+    const plugins = documentPlugins.filter(({ plugin }) =>
       plugin.supportedFactKinds.some((kind) => factKinds.has(kind)),
     );
     const settled = await Promise.all(
-      plugins.map((plugin) =>
-        this.resolvePlugin(plugin, selection, document, workspace, signal),
+      plugins.map((registration) =>
+        this.resolvePlugin(
+          registration,
+          selection,
+          document,
+          workspace,
+          signal,
+        ),
       ),
     );
     const candidates = settled.map((entry) =>
@@ -120,12 +137,13 @@ export class SourcePluginRegistry {
   }
 
   private async resolvePlugin(
-    plugin: SourcePlugin,
+    registration: RegisteredSourcePlugin,
     selection: SelectionSnapshot,
     document: SourceDocument,
     workspace: SourceWorkspace,
     signal: AbortSignal,
   ): Promise<PluginResolution> {
+    const { plugin } = registration;
     if (signal.aborted) return emptyResolution(plugin.id);
 
     const controller = new AbortController();
@@ -189,7 +207,11 @@ export class SourcePluginRegistry {
       }
 
       try {
-        return normalizePluginResult(plugin.id, outcome.result);
+        return normalizePluginResult(
+          plugin.id,
+          outcome.result,
+          registration.labelProvenance,
+        );
       } catch {
         return invalidResultResolution(plugin.id);
       }
@@ -369,6 +391,7 @@ function diagnosticResolution(
 function normalizePluginResult(
   pluginId: string,
   value: unknown,
+  labelProvenance: SourceLabelProvenance,
 ): PluginResolution {
   if (
     !isRecord(value) ||
@@ -389,12 +412,21 @@ function normalizePluginResult(
     return invalidResultResolution(pluginId);
   }
 
-  const matches = value.matches.map((match) => ({
-    ...match,
-    kind: normalizeSourceKind(match.kind),
-    relation: normalizeSourceRelation(match.relation),
-    pluginId,
-  }));
+  const matches = value.matches.map((match): ResolvedSourceMatch => {
+    const kind = normalizeSourceKind(match.kind);
+    const relation = normalizeSourceRelation(match.relation);
+    return {
+      ...match,
+      kind,
+      relation,
+      pluginId,
+      labelProvenance:
+        labelProvenance === "builtin-style-selector" &&
+          kind === "style-rule" && relation === "styles"
+          ? labelProvenance
+          : "plugin",
+    };
+  });
   const resolvedDiagnostics = diagnostics.map((diagnostic) => ({
       ...diagnostic,
       pluginId,
@@ -512,4 +544,12 @@ function isOptionalJsonObject(value: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sourceLabelProvenance(plugin: SourcePlugin): SourceLabelProvenance {
+  const prototype = Object.getPrototypeOf(plugin);
+  return prototype === CssSourcePlugin.prototype ||
+      prototype === ScssSourcePlugin.prototype
+    ? "builtin-style-selector"
+    : "plugin";
 }
