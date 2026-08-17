@@ -2,6 +2,8 @@ import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPanelTabStateMessage,
+  parseContentRefreshBootstrapRequest,
+  parseContentRefreshBootstrapResult,
   parseContentRefreshCommand,
   parseContentRefreshReadyRequest,
   parseContentRefreshResult,
@@ -16,6 +18,47 @@ import {
 } from "../src/refreshRuntimeProtocol.js";
 
 describe("refresh runtime protocol", () => {
+  it("parses strict unbound content bootstrap envelopes", () => {
+    expect(parseContentRefreshBootstrapRequest({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    })).toEqual({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    });
+    expect(parseContentRefreshBootstrapResult({
+      type: "pin-op.refresh.content.bootstrap.result",
+      accepted: true,
+      tabId: 11,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    })).toEqual({
+      type: "pin-op.refresh.content.bootstrap.result",
+      accepted: true,
+      tabId: 11,
+      frameId: 0,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    });
+    expect(parseContentRefreshBootstrapRequest({
+      type: "pin-op.refresh.content.bootstrap",
+      tabId: 11,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    })).toBeUndefined();
+    expect(parseContentRefreshBootstrapResult({
+      type: "pin-op.refresh.content.bootstrap.result",
+      accepted: true,
+      tabId: 11,
+      frameId: 1,
+      pageUrl: "https://example.test/page",
+      contentRuntimeId: "runtime-a",
+    })).toBeUndefined();
+  });
+
   it("parses strict tab state and refresh envelopes", () => {
     const state = {
       tabId: 11,

@@ -32,6 +32,10 @@ import {
   type DomRequest,
 } from "./domProtocol.js";
 import { InspectCorrelationStore } from "./inspectCorrelationStore.js";
+import type {
+  BackgroundContentRefreshCoordinator,
+  BackgroundTabUpdate,
+} from "./backgroundContentRefresh.js";
 import {
   isValidContentSessionId,
   isValidDevtoolsChannel,
@@ -69,6 +73,7 @@ export interface BackgroundTab {
 
 export interface BackgroundMessageSender {
   readonly url?: string;
+  readonly frameId?: number;
   readonly tab?: BackgroundTab;
 }
 
@@ -120,6 +125,16 @@ export type BackgroundTabRefreshCoordinator = Pick<
   | "removeWindow"
 >;
 
+export type BackgroundContentRefreshRuntime = Pick<
+  BackgroundContentRefreshCoordinator,
+  | "dispatch"
+  | "routeMessage"
+  | "tabUpdated"
+  | "removeTab"
+  | "detachTab"
+  | "dispose"
+>;
+
 export type BackgroundCommandError =
   | "invalidCode"
   | "stalePanel"
@@ -136,7 +151,7 @@ export interface BackgroundRouterSubscriptions {
     listener: (
       message: unknown,
       sender: BackgroundMessageSender,
-    ) => Promise<BackgroundRouteResult | undefined>,
+    ) => Promise<unknown>,
   ): () => void;
   subscribeRuntimePorts(
     listener: (port: BackgroundRuntimePort) => void,
@@ -152,6 +167,9 @@ export interface BackgroundRouterSubscriptions {
     listener: (tabId: number, windowId: number) => void,
   ): () => void;
   subscribeTabRemoved?(listener: (tabId: number) => void): () => void;
+  subscribeTabUpdated?(
+    listener: (tabId: number, update: BackgroundTabUpdate) => void,
+  ): () => void;
 }
 
 export interface BackgroundRouterOptions {
@@ -161,6 +179,7 @@ export interface BackgroundRouterOptions {
   readonly getTab: (tabId: number) => Promise<BackgroundTab | undefined>;
   readonly coordinator: BackgroundWindowCoordinator;
   readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
+  readonly contentRefreshCoordinator?: BackgroundContentRefreshRuntime;
   readonly inspectCoordinator: BackgroundInspectCoordinator;
   readonly panelSessionTransport?: PanelSessionTransport;
   readonly inspectCorrelationStore?: InspectCorrelationStore;
@@ -260,6 +279,14 @@ type PanelWindowCommand =
     };
 
 const okResult = Object.freeze({ ok: true } as const);
+const nullContentRefreshRuntime: BackgroundContentRefreshRuntime = Object.freeze({
+  async dispatch(): Promise<void> {},
+  async routeMessage(): Promise<undefined> { return undefined; },
+  async tabUpdated(): Promise<void> {},
+  async removeTab(): Promise<void> {},
+  async detachTab(): Promise<void> {},
+  dispose(): void {},
+});
 
 export class BackgroundRouter {
   private readonly expectedDevtoolsUrl: string | undefined;
@@ -268,6 +295,7 @@ export class BackgroundRouter {
   private readonly getTab: BackgroundRouterOptions["getTab"];
   private readonly coordinator: BackgroundWindowCoordinator;
   private readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
+  private readonly contentRefreshCoordinator: BackgroundContentRefreshRuntime;
   private readonly inspectCoordinator: BackgroundInspectCoordinator;
   private readonly panelSessions: PanelSessionTransport;
   private readonly correlations: InspectCorrelationStore;
@@ -308,6 +336,8 @@ export class BackgroundRouter {
     this.getTab = options.getTab;
     this.coordinator = options.coordinator;
     this.tabRefreshCoordinator = options.tabRefreshCoordinator;
+    this.contentRefreshCoordinator = options.contentRefreshCoordinator ??
+      nullContentRefreshRuntime;
     this.inspectCoordinator = options.inspectCoordinator;
     this.correlations = options.inspectCorrelationStore ??
       new InspectCorrelationStore();
@@ -365,7 +395,7 @@ export class BackgroundRouter {
   public async routeMessage(
     message: unknown,
     sender: BackgroundMessageSender,
-  ): Promise<BackgroundRouteResult | undefined> {
+  ): Promise<unknown> {
     if (this.disposed) {
       return undefined;
     }
@@ -403,7 +433,7 @@ export class BackgroundRouter {
 
     const selection = parseElementSelectedMessage(message);
     if (!selection) {
-      return undefined;
+      return this.contentRefreshCoordinator.routeMessage(message, sender);
     }
     return this.publishSelection(
       selection.payload,
@@ -506,6 +536,7 @@ export class BackgroundRouter {
     this.peerBlockedWindows.clear();
     this.peerStates.clear();
     this.availabilityStates.clear();
+    this.contentRefreshCoordinator.dispose();
   }
 
   private attachSubscriptions(
@@ -547,6 +578,15 @@ export class BackgroundRouter {
         }),
       );
     }
+    if (subscriptions.subscribeTabUpdated) {
+      this.removeSubscriptions.push(
+        subscriptions.subscribeTabUpdated((tabId, update) => {
+          void this.updateTab(tabId, update).catch((error) =>
+            this.reportError(error),
+          );
+        }),
+      );
+    }
   }
 
   private removeTab(tabId: number): void {
@@ -563,6 +603,9 @@ export class BackgroundRouter {
       this.removeBinding(binding);
     }
     void this.tabRefreshCoordinator
+      .removeTab(tabId)
+      .catch((error) => this.reportError(error));
+    void this.contentRefreshCoordinator
       .removeTab(tabId)
       .catch((error) => this.reportError(error));
   }
@@ -582,6 +625,9 @@ export class BackgroundRouter {
     }
     void this.tabRefreshCoordinator
       .detachTab(tabId, oldWindowId)
+      .catch((error) => this.reportError(error));
+    void this.contentRefreshCoordinator
+      .detachTab(tabId)
       .catch((error) => this.reportError(error));
 
     const channel = this.channelByTab.get(tabId);
@@ -912,6 +958,29 @@ export class BackgroundRouter {
     }
     record.registration = registration;
     void this.initializePanelTabState(record, token, binding);
+  }
+
+  private async updateTab(
+    tabId: number,
+    update: BackgroundTabUpdate,
+  ): Promise<void> {
+    if (this.disposed || !isBrowserId(tabId)) return;
+    let participant = false;
+    if (isBrowserId(update.windowId)) {
+      try {
+        const state = await this.tabRefreshCoordinator.state(
+          tabId,
+          update.windowId,
+        );
+        participant = state.tabId === tabId &&
+          state.windowId === update.windowId &&
+          state.participant &&
+          state.autoRefreshEnabled;
+      } catch (error) {
+        this.reportError(error);
+      }
+    }
+    await this.contentRefreshCoordinator.tabUpdated(tabId, update, participant);
   }
 
   private async initializePanelTabState(

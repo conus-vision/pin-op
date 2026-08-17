@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  startContentRefreshBootstrapRuntime,
   startContentRefreshRuntime,
   startContentScriptRuntime,
 } from "../src/contentScriptRuntime.js";
@@ -671,6 +672,79 @@ describe("startContentRefreshRuntime", () => {
       stylesheet: { attempted: 1, updated: 1, failed: 0 },
     });
     expect(refreshStylesheets.mock.calls.map((call) => call[1])).toEqual([16, 17]);
+  });
+});
+
+describe("startContentRefreshBootstrapRuntime", () => {
+  it("binds a top document through background before starting refresh", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    const sent: unknown[] = [];
+    const runtime = startContentRefreshBootstrapRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      location: { href: "https://example.test/page" },
+      createContentRuntimeId: () => "runtime-bootstrap-a",
+      sendRuntimeMessage: async (message) => {
+        sent.push(message);
+        if ((message as { type?: string }).type ===
+          "pin-op.refresh.content.bootstrap") {
+          return {
+            type: "pin-op.refresh.content.bootstrap.result",
+            accepted: true,
+            tabId: 31,
+            frameId: 0,
+            pageUrl: "https://example.test/page",
+            contentRuntimeId: "runtime-bootstrap-a",
+          };
+        }
+        return undefined;
+      },
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(sent).toEqual([
+      {
+        type: "pin-op.refresh.content.bootstrap",
+        pageUrl: "https://example.test/page",
+        contentRuntimeId: "runtime-bootstrap-a",
+      },
+      {
+        type: "pin-op.refresh.content.ready",
+        tabId: 31,
+        frameId: 0,
+        pageUrl: "https://example.test/page",
+        contentRuntimeId: "runtime-bootstrap-a",
+      },
+    ]);
+    runtime.dispose();
+  });
+
+  it("is a silent no-op in child frames", async () => {
+    const runtimeMessages = messageHarness();
+    const page = refreshPageHarness();
+    page.view.top = {} as Window;
+    const sendRuntimeMessage = vi.fn(async () => undefined);
+    const onError = vi.fn();
+
+    const runtime = startContentRefreshBootstrapRuntime({
+      globalScope: {},
+      document: page.document,
+      view: page.view,
+      location: { href: "https://example.test/frame" },
+      sendRuntimeMessage,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      onError,
+    });
+    await flushAsync();
+
+    expect(sendRuntimeMessage).not.toHaveBeenCalled();
+    expect(runtimeMessages.remove).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    runtime.dispose();
   });
 });
 

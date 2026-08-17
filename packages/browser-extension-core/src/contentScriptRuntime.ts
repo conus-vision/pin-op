@@ -17,6 +17,8 @@ import {
   type PageInspectionSessionOptions,
 } from "./pageInspectionSession.js";
 import {
+  parseContentRefreshBootstrapRequest,
+  parseContentRefreshBootstrapResult,
   parseContentRefreshCommand,
   parseContentRefreshReadyRequest,
   parseContentRefreshResult,
@@ -44,6 +46,12 @@ const CONTENT_RUNTIME_BRAND = Symbol.for("pin-op.contentScriptRuntime.brand");
 const CONTENT_REFRESH_RUNTIME_KEY = Symbol.for("pin-op.contentRefreshRuntime");
 const CONTENT_REFRESH_RUNTIME_BRAND = Symbol.for(
   "pin-op.contentRefreshRuntime.brand",
+);
+const CONTENT_REFRESH_BOOTSTRAP_KEY = Symbol.for(
+  "pin-op.contentRefreshBootstrapRuntime",
+);
+const CONTENT_REFRESH_BOOTSTRAP_BRAND = Symbol.for(
+  "pin-op.contentRefreshBootstrapRuntime.brand",
 );
 const CONTENT_OVERLAY_CLEAR_KEY = Symbol.for("pin-op.contentOverlayClear");
 
@@ -97,6 +105,25 @@ export interface ContentRefreshRuntimeOptions {
 }
 
 export interface ContentRefreshRuntime {
+  republishReady(): void;
+  dispose(): void;
+}
+
+export interface ContentRefreshBootstrapRuntimeOptions {
+  readonly globalScope: object;
+  readonly document: Document;
+  readonly view: Window;
+  readonly location: { readonly href: string };
+  readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
+  readonly subscribeRuntimeMessages: (
+    listener: (message: unknown) => unknown,
+  ) => () => void;
+  readonly createContentRuntimeId?: () => string;
+  readonly onError?: (error: unknown) => void;
+}
+
+export interface ContentRefreshBootstrapRuntime {
+  republish(): void;
   dispose(): void;
 }
 
@@ -116,12 +143,18 @@ type BrandedContentScriptRuntime = ContentScriptRuntime & {
 type ContentRuntimeScope = object & {
   [CONTENT_RUNTIME_KEY]?: unknown;
   [CONTENT_REFRESH_RUNTIME_KEY]?: unknown;
+  [CONTENT_REFRESH_BOOTSTRAP_KEY]?: unknown;
   [CONTENT_OVERLAY_CLEAR_KEY]?: unknown;
 };
 
 type BrandedContentRefreshRuntime = ContentRefreshRuntime & {
   readonly [CONTENT_REFRESH_RUNTIME_BRAND]: true;
 };
+
+type BrandedContentRefreshBootstrapRuntime =
+  ContentRefreshBootstrapRuntime & {
+    readonly [CONTENT_REFRESH_BOOTSTRAP_BRAND]: true;
+  };
 
 export function startContentScriptRuntime(
   options: ContentScriptRuntimeOptions,
@@ -241,6 +274,7 @@ export function startContentRefreshRuntime(
   const scope = options.globalScope as ContentRuntimeScope;
   const existing = scope[CONTENT_REFRESH_RUNTIME_KEY];
   if (isContentRefreshRuntime(existing)) {
+    existing.republishReady();
     return existing;
   }
   if (!isTopView(options.view)) {
@@ -316,8 +350,34 @@ export function startContentRefreshRuntime(
     return result;
   });
 
+  const publishReady = (): void => {
+    const ready = parseContentRefreshReadyRequest({
+      type: "pin-op.refresh.content.ready",
+      ...binding,
+    });
+    if (!ready) {
+      reportError(new Error("Invalid content refresh binding"));
+      return;
+    }
+    void options.sendRuntimeMessage(ready).then((response) => {
+      if (disposed) return;
+      const command = parseScrollRestoreCommand(response);
+      if (!command || !sameRefreshBinding(command, binding)) return;
+      try {
+        restoration?.dispose();
+        restoration = restoreScroll(command.snapshot, {
+          document: options.document,
+          view: options.view,
+        });
+      } catch (error) {
+        reportError(error);
+      }
+    }).catch(reportError);
+  };
+
   const runtime: BrandedContentRefreshRuntime = {
     [CONTENT_REFRESH_RUNTIME_BRAND]: true,
+    republishReady: publishReady,
     dispose(): void {
       if (disposed) return;
       disposed = true;
@@ -340,30 +400,87 @@ export function startContentRefreshRuntime(
     },
   };
   scope[CONTENT_REFRESH_RUNTIME_KEY] = runtime;
+  publishReady();
 
-  const ready = parseContentRefreshReadyRequest({
-    type: "pin-op.refresh.content.ready",
-    ...binding,
-  });
-  if (!ready) {
-    runtime.dispose();
-    throw new Error("Invalid content refresh binding");
+  return runtime;
+}
+
+export function startContentRefreshBootstrapRuntime(
+  options: ContentRefreshBootstrapRuntimeOptions,
+): ContentRefreshBootstrapRuntime {
+  if (!isTopView(options.view)) {
+    return Object.freeze({ republish(): void {}, dispose(): void {} });
   }
-  void options.sendRuntimeMessage(ready).then((response) => {
-    if (disposed) return;
-    const command = parseScrollRestoreCommand(response);
-    if (!command || !sameRefreshBinding(command, binding)) return;
+  const scope = options.globalScope as ContentRuntimeScope;
+  const existing = scope[CONTENT_REFRESH_BOOTSTRAP_KEY];
+  if (isContentRefreshBootstrapRuntime(existing)) {
+    existing.republish();
+    return existing;
+  }
+
+  const contentRuntimeId = createRefreshRuntimeId(options);
+  let disposed = false;
+  let publication = 0;
+  let boundRuntime: ContentRefreshRuntime | undefined;
+  const reportError = (error: unknown): void => {
     try {
-      restoration?.dispose();
-      restoration = restoreScroll(command.snapshot, {
+      options.onError?.(error);
+    } catch {
+      // Diagnostics cannot change content-runtime ownership.
+    }
+  };
+  const republish = (): void => {
+    if (disposed) return;
+    const request = parseContentRefreshBootstrapRequest({
+      type: "pin-op.refresh.content.bootstrap",
+      pageUrl: options.location.href,
+      contentRuntimeId,
+    });
+    if (!request) {
+      reportError(new Error("Invalid content refresh bootstrap binding"));
+      return;
+    }
+    publication += 1;
+    const current = publication;
+    void options.sendRuntimeMessage(request).then((response) => {
+      if (disposed || publication !== current) return;
+      const result = parseContentRefreshBootstrapResult(response);
+      if (
+        !result?.accepted ||
+        result.pageUrl !== request.pageUrl ||
+        result.contentRuntimeId !== contentRuntimeId
+      ) {
+        return;
+      }
+      boundRuntime = startContentRefreshRuntime({
+        globalScope: options.globalScope,
         document: options.document,
         view: options.view,
+        tabId: result.tabId,
+        pageUrl: result.pageUrl,
+        contentRuntimeId,
+        sendRuntimeMessage: options.sendRuntimeMessage,
+        subscribeRuntimeMessages: options.subscribeRuntimeMessages,
+        onError: options.onError,
       });
-    } catch (error) {
-      reportError(error);
-    }
-  }).catch(reportError);
-
+    }).catch(reportError);
+  };
+  const runtime: BrandedContentRefreshBootstrapRuntime = {
+    [CONTENT_REFRESH_BOOTSTRAP_BRAND]: true,
+    republish,
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      publication += 1;
+      boundRuntime?.dispose();
+      boundRuntime = undefined;
+      if (scope[CONTENT_REFRESH_BOOTSTRAP_KEY] === runtime) {
+        delete scope[CONTENT_REFRESH_BOOTSTRAP_KEY];
+      }
+    },
+  };
+  scope[CONTENT_REFRESH_BOOTSTRAP_KEY] = runtime;
+  republish();
   return runtime;
 }
 
@@ -573,6 +690,37 @@ function isContentRefreshRuntime(
     (value as Partial<BrandedContentRefreshRuntime>)[CONTENT_REFRESH_RUNTIME_BRAND] === true &&
     typeof (value as Partial<BrandedContentRefreshRuntime>).dispose === "function"
   );
+}
+
+function isContentRefreshBootstrapRuntime(
+  value: unknown,
+): value is BrandedContentRefreshBootstrapRuntime {
+  return Boolean(value && typeof value === "object") &&
+    (value as Partial<BrandedContentRefreshBootstrapRuntime>)[
+      CONTENT_REFRESH_BOOTSTRAP_BRAND
+    ] === true &&
+    typeof (value as Partial<BrandedContentRefreshBootstrapRuntime>).republish ===
+      "function" &&
+    typeof (value as Partial<BrandedContentRefreshBootstrapRuntime>).dispose ===
+      "function";
+}
+
+let refreshRuntimeSequence = 0;
+
+function createRefreshRuntimeId(
+  options: ContentRefreshBootstrapRuntimeOptions,
+): string {
+  let value: unknown;
+  try {
+    value = options.createContentRuntimeId?.() ?? globalThis.crypto?.randomUUID?.();
+  } catch {
+    value = undefined;
+  }
+  if (typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(value)) {
+    return value;
+  }
+  refreshRuntimeSequence += 1;
+  return `refresh-${Date.now().toString(36)}-${refreshRuntimeSequence.toString(36)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -36,7 +36,12 @@ describe("Chrome extension manifest", () => {
       "tabs",
     ]);
     expect(manifest.permissions).not.toEqual(
-      expect.arrayContaining(["nativeMessaging", "debugger"]),
+      expect.arrayContaining([
+        "webNavigation",
+        "debugger",
+        "nativeMessaging",
+        "unlimitedStorage",
+      ]),
     );
     const hostPermissions = manifest.host_permissions as string[];
     expect(hostPermissions).toEqual([

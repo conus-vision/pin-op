@@ -12,6 +12,7 @@ vi.mock("webextension-polyfill", () => ({ default: harness.browser }));
 vi.mock("@pin-op/browser-extension-core", () => ({
   startBackgroundRuntime: harness.starts.background,
   startContentScriptRuntime: harness.starts.contentScript,
+  startContentRefreshBootstrapRuntime: harness.starts.contentRefresh,
   startDevtoolsRuntime: harness.starts.devtools,
   startPanelRuntime: harness.starts.panel,
   sanitizeErrorMessage: harness.sanitize,

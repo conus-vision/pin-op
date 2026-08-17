@@ -74,6 +74,7 @@ describe("startBackgroundRuntime", () => {
     const attachedTabs = eventHarness();
     const activatedTabs = eventHarness();
     const removedTabs = eventHarness();
+    const updatedTabs = eventHarness();
     let pageRefreshListener:
       | ((windowId: number, message: PageRefreshMessage) => void)
       | undefined;
@@ -114,6 +115,17 @@ describe("startBackgroundRuntime", () => {
       removeTab: vi.fn(async () => undefined),
       removeWindow: vi.fn(async () => undefined),
     };
+    const contentRefresh = {
+      dispatch: vi.fn(async () => undefined),
+      routeMessage: vi.fn(async (message: unknown) =>
+        (message as { type?: string }).type === "pin-op.refresh.content.bootstrap"
+          ? { accepted: true }
+          : undefined),
+      tabUpdated: vi.fn(async () => undefined),
+      removeTab: vi.fn(async () => undefined),
+      detachTab: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    };
 
     const runtime = startBackgroundRuntime({
       expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
@@ -121,6 +133,8 @@ describe("startBackgroundRuntime", () => {
       storage: memoryStorage(),
       executeScript: vi.fn(async () => []),
       sendTabMessage: vi.fn(async () => undefined),
+      sendTopFrameMessage: vi.fn(async () => undefined),
+      reloadTab: vi.fn(async () => undefined),
       getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
       getActiveTabId: vi.fn(async () => 11),
       subscribeRuntimeMessages: messages.subscribe,
@@ -130,8 +144,10 @@ describe("startBackgroundRuntime", () => {
       subscribeTabAttached: attachedTabs.subscribe,
       subscribeTabActivated: activatedTabs.subscribe,
       subscribeTabRemoved: removedTabs.subscribe,
+      subscribeTabUpdated: updatedTabs.subscribe,
       createWindowConnectionCoordinator: () => coordinator,
       createTabRefreshCoordinator: () => tabRefresh,
+      createContentRefreshCoordinator: () => contentRefresh,
     });
     await flushAsync();
     expect(tabRefresh.initialize).toHaveBeenCalledOnce();
@@ -144,13 +160,36 @@ describe("startBackgroundRuntime", () => {
     });
     activatedTabs.emit(11, 7);
     removedTabs.emit(12);
+    updatedTabs.emit(11, {
+      status: "complete",
+      url: "https://example.test/page",
+      windowId: 7,
+    });
+    const bootstrap = { type: "pin-op.refresh.content.bootstrap" };
+    await messages.emit(bootstrap, {
+      url: "https://example.test/page",
+      frameId: 0,
+      tab: { id: 11, windowId: 7 },
+    });
     await flushAsync();
 
     expect(tabRefresh.acceptPageRefresh).toHaveBeenCalledWith(7, refresh);
     expect(tabRefresh.clearWindowPending).toHaveBeenCalledWith(7);
     expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
     expect(tabRefresh.removeTab).toHaveBeenCalledWith(12);
+    expect(contentRefresh.removeTab).toHaveBeenCalledWith(12);
+    expect(contentRefresh.tabUpdated).toHaveBeenCalledWith(11, {
+      status: "complete",
+      url: "https://example.test/page",
+      windowId: 7,
+    }, true);
+    expect(contentRefresh.routeMessage).toHaveBeenCalledWith(bootstrap, {
+      url: "https://example.test/page",
+      frameId: 0,
+      tab: { id: 11, windowId: 7 },
+    });
     runtime.dispose();
+    expect(contentRefresh.dispose).toHaveBeenCalledOnce();
   });
 
   it("composes the background services and removes every platform listener", async () => {

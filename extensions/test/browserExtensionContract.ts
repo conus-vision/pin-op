@@ -63,6 +63,9 @@ export function createBrowserAdapterHarness() {
   const windowRemoved = event();
   const tabDetached = event();
   const tabAttached = event();
+  const tabActivated = event();
+  const tabRemoved = event();
+  const tabUpdated = event();
   const panelShown = event();
   const runtimeOrigin = { value: "" };
   const runtimePort = {
@@ -77,6 +80,7 @@ export function createBrowserAdapterHarness() {
     starts: {
       background: vi.fn(() => ({ dispose: vi.fn() })),
       contentScript: vi.fn(() => ({ dispose: vi.fn() })),
+      contentRefresh: vi.fn(() => ({ dispose: vi.fn() })),
       devtools: vi.fn(() => ({ dispose: vi.fn() })),
       panel: vi.fn(() => ({ dispose: vi.fn() })),
     },
@@ -86,6 +90,9 @@ export function createBrowserAdapterHarness() {
     windowRemoved,
     tabDetached,
     tabAttached,
+    tabActivated,
+    tabRemoved,
+    tabUpdated,
     panelShown,
     runtimeOrigin,
     runtimePort,
@@ -94,14 +101,23 @@ export function createBrowserAdapterHarness() {
         executeScript: vi.fn(async (_details: unknown) => []),
       },
       tabs: {
+        query: vi.fn(async (_query: unknown) => [{ id: 91, windowId: 17 }]),
         get: vi.fn(async (tabId: number) => ({
           id: tabId,
           windowId: 17,
           title: "must not cross the adapter",
         })),
-        sendMessage: vi.fn(async (_tabId: number, _message: unknown) => undefined),
+        sendMessage: vi.fn(async (
+          _tabId: number,
+          _message: unknown,
+          _options?: unknown,
+        ) => undefined),
+        reload: vi.fn(async (_tabId: number) => undefined),
         onDetached: tabDetached,
         onAttached: tabAttached,
+        onActivated: tabActivated,
+        onRemoved: tabRemoved,
+        onUpdated: tabUpdated,
       },
       storage: {
         session: {
@@ -168,14 +184,20 @@ export function describeBrowserAdapterContract(
         "executeScript",
         "expectedDevtoolsUrl",
         "expectedPanelUrl",
+        "getActiveTabId",
         "getTab",
         "onError",
+        "reloadTab",
         "sendTabMessage",
+        "sendTopFrameMessage",
         "storage",
         "subscribeRuntimeMessages",
         "subscribeRuntimePorts",
+        "subscribeTabActivated",
         "subscribeTabAttached",
         "subscribeTabDetached",
+        "subscribeTabRemoved",
+        "subscribeTabUpdated",
         "subscribeWindowRemoved",
       ]);
       expect(options.expectedDevtoolsUrl).toBe(
@@ -204,8 +226,23 @@ export function describeBrowserAdapterContract(
         files: ["dist/contentScript.js"],
       });
       await callAsync(options.sendTabMessage, 91, { type: "enableInspectMode" });
+      await callAsync(options.sendTopFrameMessage, 91, {
+        type: "pin-op.refresh.content.execute",
+      });
+      expect(harness.browser.tabs.sendMessage).toHaveBeenLastCalledWith(
+        91,
+        { type: "pin-op.refresh.content.execute" },
+        { frameId: 0 },
+      );
+      await callAsync(options.reloadTab, 91);
+      expect(harness.browser.tabs.reload).toHaveBeenCalledWith(91);
       await expect(callAsync(options.getTab, 91)).resolves.toEqual({
         id: 91,
+        windowId: 17,
+      });
+      await expect(callAsync(options.getActiveTabId, 17)).resolves.toBe(91);
+      expect(harness.browser.tabs.query).toHaveBeenCalledWith({
+        active: true,
         windowId: 17,
       });
 
@@ -219,11 +256,12 @@ export function describeBrowserAdapterContract(
       await callAsync(wrappedRuntime, registration, {
         url: `${contract.extensionOrigin}/dist/devtools.html`,
         tab: { id: 91, windowId: 17, title: "not forwarded" },
-        frameId: 5,
+        frameId: 0,
       });
       expect(runtimeListener).toHaveBeenCalledWith(registration, {
         url: `${contract.extensionOrigin}/dist/devtools.html`,
         tab: { id: 91, windowId: 17 },
+        frameId: 0,
       });
       call(removeRuntime);
       expect(harness.runtimeMessage.removeListener).toHaveBeenCalledWith(
@@ -243,6 +281,15 @@ export function describeBrowserAdapterContract(
         options.subscribeTabAttached,
         attachedListener,
       );
+      const activatedListener = vi.fn();
+      const removedListener = vi.fn();
+      const updatedListener = vi.fn();
+      const removeActivated = call(
+        options.subscribeTabActivated,
+        activatedListener,
+      );
+      const removeRemoved = call(options.subscribeTabRemoved, removedListener);
+      const removeUpdated = call(options.subscribeTabUpdated, updatedListener);
       const wrappedPort = lastRegistered(harness.runtimeConnect);
       call(wrappedPort, harness.runtimePort);
       expect(portListener).toHaveBeenCalledWith(harness.runtimePort);
@@ -256,10 +303,51 @@ export function describeBrowserAdapterContract(
       });
       expect(detachedListener).toHaveBeenCalledWith(91, 17);
       expect(attachedListener).toHaveBeenCalledWith(91, 23);
+      call(lastRegistered(harness.tabActivated), {
+        tabId: 91,
+        windowId: 17,
+      });
+      call(lastRegistered(harness.tabRemoved), 91, {
+        windowId: 17,
+        isWindowClosing: false,
+      });
+      call(
+        lastRegistered(harness.tabUpdated),
+        91,
+        { status: "complete", url: "https://example.test/next", title: "drop" },
+        { id: 91, windowId: 17, title: "drop" },
+      );
+      expect(activatedListener).toHaveBeenCalledWith(91, 17);
+      expect(removedListener).toHaveBeenCalledWith(91);
+      expect(updatedListener).toHaveBeenCalledWith(91, {
+        status: "complete",
+        url: "https://example.test/next",
+        windowId: 17,
+      });
+      updatedListener.mockClear();
+      call(
+        lastRegistered(harness.tabUpdated),
+        91,
+        { status: "complete" },
+        {
+          id: 91,
+          windowId: 17,
+          url: "https://example.test/reloaded",
+          title: "drop",
+        },
+      );
+      expect(updatedListener).toHaveBeenCalledWith(91, {
+        status: "complete",
+        url: "https://example.test/reloaded",
+        windowId: 17,
+      });
       call(removePorts);
       call(removeWindows);
       call(removeDetached);
       call(removeAttached);
+      call(removeActivated);
+      call(removeRemoved);
+      call(removeUpdated);
       expect(harness.runtimeConnect.removeListener).toHaveBeenCalledWith(
         wrappedPort,
       );
@@ -270,14 +358,44 @@ export function describeBrowserAdapterContract(
       expect(harness.tabAttached.removeListener).toHaveBeenCalledWith(
         lastRegistered(harness.tabAttached),
       );
+      expect(harness.tabActivated.removeListener).toHaveBeenCalledWith(
+        lastRegistered(harness.tabActivated),
+      );
+      expect(harness.tabRemoved.removeListener).toHaveBeenCalledWith(
+        lastRegistered(harness.tabRemoved),
+      );
+      expect(harness.tabUpdated.removeListener).toHaveBeenCalledWith(
+        lastRegistered(harness.tabUpdated),
+      );
 
       const secret = new Error("secret background stack");
       call(options.onError, secret);
       expectSanitizedLog(consoleError, "background", secret, harness);
     });
 
+    it("fails closed when active-tab lookup is missing or ambiguous", async () => {
+      await contract.importBackground();
+      const options = calledOptions(harness.starts.background);
+
+      for (const tabs of [
+        [],
+        [{ windowId: 17 }],
+        [{ id: -1, windowId: 17 }],
+        [{ id: 91, windowId: 17 }, { id: 92, windowId: 17 }],
+      ]) {
+        harness.browser.tabs.query.mockResolvedValueOnce(tabs as never);
+        await expect(callAsync(options.getActiveTabId, 17)).resolves.toBeUndefined();
+      }
+    });
+
     it("starts the shared content runtime through narrow wrappers", async () => {
       const options = await loadContentOptions(contract, harness);
+
+      expect(harness.starts.contentRefresh).toHaveBeenCalledOnce();
+      expect(harness.starts.contentRefresh.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.starts.contentScript.mock.invocationCallOrder[0] ?? Infinity,
+      );
+      const refreshOptions = calledOptions(harness.starts.contentRefresh);
 
       expectOptionKeys(options, [
         "connectRuntimePort",
@@ -288,6 +406,16 @@ export function describeBrowserAdapterContract(
         "sendRuntimeMessage",
         "subscribeRuntimeMessages",
       ]);
+      expectOptionKeys(refreshOptions, [
+        "document",
+        "globalScope",
+        "location",
+        "onError",
+        "sendRuntimeMessage",
+        "subscribeRuntimeMessages",
+        "view",
+      ]);
+      expect(refreshOptions.view).toBe(globalThis.window);
       expect(options).not.toHaveProperty("createPageInspectionSession");
       expect(options.document).toBe(globalThis.document);
       expect(options.location).toBe(globalThis.location);
@@ -607,7 +735,7 @@ export function describeBrowserPackageContract(
       ) as unknown;
       expect(metadata).toEqual({
         schemaVersion: 1,
-        protocolVersion: 5,
+        protocolVersion: 6,
       });
 
       const adapter = readFileSync(
@@ -699,6 +827,14 @@ export function describeBrowserPackageContract(
         "storage",
         "tabs",
       ]);
+      expect(manifest.permissions).not.toEqual(
+        expect.arrayContaining([
+          "webNavigation",
+          "debugger",
+          "nativeMessaging",
+          "unlimitedStorage",
+        ]),
+      );
       expect(manifest.host_permissions).toEqual([
         "http://localhost/*",
         "http://127.0.0.1/*",
@@ -993,6 +1129,7 @@ const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "sanitizeErrorMessage",
   "startBackgroundRuntime",
   "startContentScriptRuntime",
+  "startContentRefreshBootstrapRuntime",
   "startDevtoolsRuntime",
   "startPanelRuntime",
 ]);

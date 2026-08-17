@@ -18,6 +18,15 @@ export type {
   BackgroundRuntimeOptions,
 } from "./backgroundRuntime.js";
 export {
+  BackgroundContentRefreshCoordinator,
+  SessionTopScrollSnapshotStorage,
+} from "./backgroundContentRefresh.js";
+export type {
+  BackgroundContentRefreshCoordinatorOptions,
+  BackgroundTabUpdate,
+  ContentRefreshMessageSender,
+} from "./backgroundContentRefresh.js";
+export {
   BackgroundRouter,
   createBackgroundRouter,
   DEFAULT_MAX_PANEL_PORTS,
@@ -46,6 +55,8 @@ export type {
 export {
   createDefaultTabRefreshState,
   createPanelTabStateMessage,
+  parseContentRefreshBootstrapRequest,
+  parseContentRefreshBootstrapResult,
   parseContentRefreshCommand,
   parseContentRefreshReadyRequest,
   parseContentRefreshResult,
@@ -59,6 +70,8 @@ export {
   parseTabRefreshState,
 } from "./refreshRuntimeProtocol.js";
 export type {
+  ContentRefreshBootstrapRequest,
+  ContentRefreshBootstrapResult,
   ContentRefreshBinding,
   ContentRefreshCommand,
   ContentRefreshReadyRequest,
@@ -142,10 +155,13 @@ export type {
   PageOverlayViewportSize,
 } from "./pageOverlay.js";
 export {
+  startContentRefreshBootstrapRuntime,
   startContentRefreshRuntime,
   startContentScriptRuntime,
 } from "./contentScriptRuntime.js";
 export type {
+  ContentRefreshBootstrapRuntime,
+  ContentRefreshBootstrapRuntimeOptions,
   ContentRefreshRuntime,
   ContentRefreshRuntimeOptions,
   ContentScriptDocument,

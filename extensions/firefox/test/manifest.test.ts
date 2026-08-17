@@ -39,7 +39,12 @@ describe("Firefox extension manifest", () => {
       "tabs",
     ]);
     expect(manifest.permissions).not.toEqual(
-      expect.arrayContaining(["nativeMessaging", "debugger"]),
+      expect.arrayContaining([
+        "webNavigation",
+        "debugger",
+        "nativeMessaging",
+        "unlimitedStorage",
+      ]),
     );
     expect(manifest.host_permissions).toEqual([
       "http://localhost/*",

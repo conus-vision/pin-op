@@ -16,9 +16,19 @@ startBackgroundRuntime({
   },
   executeScript: (details) => browser.scripting.executeScript(details),
   sendTabMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),
+  sendTopFrameMessage: (tabId, message) =>
+    browser.tabs.sendMessage(tabId, message, { frameId: 0 }),
+  reloadTab: (tabId) => browser.tabs.reload(tabId),
   getTab: async (tabId) => {
     const tab = await browser.tabs.get(tabId);
     return { id: tab.id, windowId: tab.windowId };
+  },
+  getActiveTabId: async (windowId) => {
+    const tabs = await browser.tabs.query({ active: true, windowId });
+    if (tabs.length !== 1 || !isBrowserId(tabs[0]?.id)) {
+      return undefined;
+    }
+    return tabs[0].id;
   },
   subscribeRuntimeMessages(listener) {
     const wrapped = (message: unknown, sender: ChromeMessageSender) =>
@@ -51,12 +61,44 @@ startBackgroundRuntime({
     browser.tabs.onAttached.addListener(wrapped);
     return () => browser.tabs.onAttached.removeListener(wrapped);
   },
+  subscribeTabActivated(listener) {
+    const wrapped = (info: TabActivationInfo): void => {
+      listener(info.tabId, info.windowId);
+    };
+    browser.tabs.onActivated.addListener(wrapped);
+    return () => browser.tabs.onActivated.removeListener(wrapped);
+  },
+  subscribeTabRemoved(listener) {
+    const wrapped = (tabId: number): void => listener(tabId);
+    browser.tabs.onRemoved.addListener(wrapped);
+    return () => browser.tabs.onRemoved.removeListener(wrapped);
+  },
+  subscribeTabUpdated(listener) {
+    const wrapped = (
+      tabId: number,
+      change: TabChangeInfo,
+      tab: BrowserTab,
+    ): void => {
+      listener(tabId, {
+        ...(change.status === "loading" || change.status === "complete"
+          ? { status: change.status }
+          : {}),
+        ...(typeof (change.url ?? tab.url) === "string"
+          ? { url: change.url ?? tab.url }
+          : {}),
+        ...(isBrowserId(tab.windowId) ? { windowId: tab.windowId } : {}),
+      });
+    };
+    browser.tabs.onUpdated.addListener(wrapped);
+    return () => browser.tabs.onUpdated.removeListener(wrapped);
+  },
   onError: (error) =>
     console.error("Pin-op background:", sanitizeErrorMessage(error)),
 });
 
 interface ChromeMessageSender {
   readonly url?: string;
+  readonly frameId?: number;
   readonly tab?: {
     readonly id?: number;
     readonly windowId?: number;
@@ -76,11 +118,31 @@ interface TabAttachInfo {
   readonly newWindowId: number;
 }
 
+interface TabActivationInfo {
+  readonly tabId: number;
+  readonly windowId: number;
+}
+
+interface TabChangeInfo {
+  readonly status?: string;
+  readonly url?: string;
+}
+
+interface BrowserTab {
+  readonly windowId?: number;
+  readonly url?: string;
+}
+
 function adaptSender(sender: ChromeMessageSender): BackgroundMessageSender {
   return {
     url: sender.url,
+    frameId: sender.frameId,
     tab: sender.tab
       ? { id: sender.tab.id, windowId: sender.tab.windowId }
       : undefined,
   };
+}
+
+function isBrowserId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }

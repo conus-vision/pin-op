@@ -40,6 +40,17 @@ export interface ContentRefreshBinding {
   readonly contentRuntimeId: string;
 }
 
+export interface ContentRefreshBootstrapRequest {
+  readonly type: "pin-op.refresh.content.bootstrap";
+  readonly pageUrl: string;
+  readonly contentRuntimeId: string;
+}
+
+export interface ContentRefreshBootstrapResult extends ContentRefreshBinding {
+  readonly type: "pin-op.refresh.content.bootstrap.result";
+  readonly accepted: boolean;
+}
+
 export interface ContentRefreshReadyRequest extends ContentRefreshBinding {
   readonly type: "pin-op.refresh.content.ready";
 }
@@ -219,6 +230,50 @@ export function parseContentRefreshReadyRequest(
   const binding = parseContentBinding(record);
   return record?.type === "pin-op.refresh.content.ready" && binding
     ? Object.freeze({ type: record.type, ...binding })
+    : undefined;
+}
+
+export function parseContentRefreshBootstrapRequest(
+  value: unknown,
+): ContentRefreshBootstrapRequest | undefined {
+  const record = snapshotExactRecord(value, [
+    "type",
+    "pageUrl",
+    "contentRuntimeId",
+  ]);
+  const pageUrl = normalizedPageUrl(record?.pageUrl);
+  return record?.type === "pin-op.refresh.content.bootstrap" &&
+      pageUrl !== undefined &&
+      pageUrl === record.pageUrl &&
+      isContentRuntimeId(record.contentRuntimeId)
+    ? Object.freeze({
+        type: record.type,
+        pageUrl,
+        contentRuntimeId: record.contentRuntimeId,
+      })
+    : undefined;
+}
+
+export function parseContentRefreshBootstrapResult(
+  value: unknown,
+): ContentRefreshBootstrapResult | undefined {
+  const record = snapshotExactRecord(value, [
+    "type",
+    "accepted",
+    "tabId",
+    "frameId",
+    "pageUrl",
+    "contentRuntimeId",
+  ]);
+  const binding = parseContentBinding(record);
+  return record?.type === "pin-op.refresh.content.bootstrap.result" &&
+      typeof record.accepted === "boolean" &&
+      binding
+    ? Object.freeze({
+        type: record.type,
+        accepted: record.accepted,
+        ...binding,
+      })
     : undefined;
 }
 

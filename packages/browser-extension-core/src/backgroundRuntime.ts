@@ -3,10 +3,15 @@ import {
   type BackgroundInspectApi,
 } from "./backgroundInspectSession.js";
 import {
+  BackgroundContentRefreshCoordinator,
+  SessionTopScrollSnapshotStorage,
+} from "./backgroundContentRefresh.js";
+import {
   createBackgroundRouter,
   type BackgroundRouterSubscriptions,
   type BackgroundRuntimePort,
   type BackgroundTabRefreshCoordinator,
+  type BackgroundContentRefreshRuntime,
   type BackgroundTab,
   type BackgroundWindowCoordinator,
 } from "./backgroundRouter.js";
@@ -24,6 +29,11 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly storage: SessionStorage;
   readonly getTab: (tabId: number) => Promise<BackgroundTab | undefined>;
   readonly getActiveTabId?: (windowId: number) => Promise<number | undefined>;
+  readonly sendTopFrameMessage?: (
+    tabId: number,
+    message: unknown,
+  ) => Promise<unknown>;
+  readonly reloadTab?: (tabId: number) => Promise<unknown>;
   readonly subscribeRuntimeMessages: BackgroundRouterSubscriptions["subscribeRuntimeMessages"];
   readonly subscribeRuntimePorts: BackgroundRouterSubscriptions["subscribeRuntimePorts"];
   readonly subscribeWindowRemoved: BackgroundRouterSubscriptions["subscribeWindowRemoved"];
@@ -34,6 +44,9 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   >;
   readonly subscribeTabRemoved?: NonNullable<
     BackgroundRouterSubscriptions["subscribeTabRemoved"]
+  >;
+  readonly subscribeTabUpdated?: NonNullable<
+    BackgroundRouterSubscriptions["subscribeTabUpdated"]
   >;
   readonly createWindowConnectionCoordinator?: (
     store: BrowserWindowLinkStore,
@@ -51,6 +64,9 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
     store: TabRefreshStateStore,
     coordinator: BackgroundWindowCoordinator,
   ) => BackgroundTabRefreshCoordinator & { initialize?(): Promise<void> };
+  readonly createContentRefreshCoordinator?: (
+    storage: SessionTopScrollSnapshotStorage,
+  ) => BackgroundContentRefreshRuntime;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -69,6 +85,21 @@ export function startBackgroundRuntime(
   const coordinator = options.createWindowConnectionCoordinator?.(store) ??
     new WindowConnectionCoordinator({ store });
   const tabRefreshStore = new TabRefreshStateStore(options.storage);
+  const snapshotStorage = new SessionTopScrollSnapshotStorage(options.storage);
+  const contentRefreshCoordinator = options.createContentRefreshCoordinator?.(
+    snapshotStorage,
+  ) ?? new BackgroundContentRefreshCoordinator({
+    snapshotStorage,
+    executeContentScript: (tabId) => options.executeScript({
+      target: { tabId },
+      files: ["dist/contentScript.js"],
+    }),
+    sendTopFrameMessage: options.sendTopFrameMessage ?? options.sendTabMessage,
+    reloadTab: options.reloadTab ?? (async () => {
+      throw new Error("Browser tab reload is unavailable");
+    }),
+    onError: options.onError,
+  });
   const tabRefreshCoordinator = options.createTabRefreshCoordinator?.(
     tabRefreshStore,
     coordinator,
@@ -76,7 +107,7 @@ export function startBackgroundRuntime(
     store: tabRefreshStore,
     getActiveTabId: options.getActiveTabId ?? (async () => undefined),
     dispatchRefresh: async (tabId, command) => {
-      await options.sendTabMessage(tabId, command);
+      await contentRefreshCoordinator.dispatch(tabId, command);
     },
     setRefreshParticipant: (windowId, tabId, participant) =>
       coordinator.setRefreshParticipant(windowId, tabId, participant),
@@ -91,6 +122,7 @@ export function startBackgroundRuntime(
     getTab: options.getTab,
     coordinator,
     tabRefreshCoordinator,
+    contentRefreshCoordinator,
     inspectCoordinator,
     subscribeResolutions: (listener) => {
       const subscription = coordinator.onResolution((_windowId, message) =>
@@ -130,6 +162,7 @@ export function startBackgroundRuntime(
       subscribeTabAttached: options.subscribeTabAttached,
       subscribeTabActivated: options.subscribeTabActivated,
       subscribeTabRemoved: options.subscribeTabRemoved,
+      subscribeTabUpdated: options.subscribeTabUpdated,
     },
     onError: options.onError,
   });
