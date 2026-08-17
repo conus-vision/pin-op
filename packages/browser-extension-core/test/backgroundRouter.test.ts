@@ -295,6 +295,226 @@ describe("BackgroundRouter", () => {
     }]);
   });
 
+  it("posts offline without waiting for a delayed linked snapshot", async () => {
+    const harness = createHarness();
+    const delayed = deferred<TabRefreshState>();
+    harness.tabRefresh.stateBehavior = () => delayed.promise;
+    const port = await harness.registerAndConnect(
+      "channel-offline-snapshot",
+      17,
+      "source-offline-snapshot",
+    );
+    await flushMicrotasks();
+    const snapshotBaseline = port.sent.filter(isPanelTabStateMessage).length;
+
+    harness.coordinator.emitState(10, "offline");
+    await flushMicrotasks();
+
+    expect(windowStates(port).at(-1)).toBe("offline");
+    delayed.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(
+      snapshotBaseline,
+    );
+  });
+
+  it("posts incompatibility without waiting for a delayed linked snapshot", async () => {
+    const harness = createHarness();
+    const delayed = deferred<TabRefreshState>();
+    harness.tabRefresh.stateBehavior = () => delayed.promise;
+    const port = await harness.registerAndConnect(
+      "channel-mismatch-snapshot",
+      17,
+      "source-mismatch-snapshot",
+    );
+    await flushMicrotasks();
+    const snapshotBaseline = port.sent.filter(isPanelTabStateMessage).length;
+
+    harness.coordinator.emitState(10, "incompatible", {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushMicrotasks();
+
+    expect(windowStates(port).at(-1)).toBe("incompatible");
+    expect(messagesOfType(port, "pin-op.protocol.compatibility").at(-1))
+      .toMatchObject({
+        compatible: false,
+        browserProtocolVersion: PROTOCOL_VERSION,
+        peerProtocolVersion: 5,
+      });
+    delayed.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(
+      snapshotBaseline,
+    );
+  });
+
+  it("disposes inspection while a linked snapshot never resolves", async () => {
+    const harness = createHarness();
+    const never = deferred<TabRefreshState>();
+    harness.tabRefresh.stateBehavior = () => never.promise;
+    const port = await harness.registerAndConnect(
+      "channel-hung-snapshot",
+      17,
+      "source-hung-snapshot",
+    );
+    await harness.attachContentSession(17, "content-hung-snapshot");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    harness.coordinator.emitState(10, "incompatible", {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(windowStates(port).at(-1)).toBe("incompatible");
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "pin-op.inspect.disposeSession" },
+    ]);
+  });
+
+  it("retries failed panel initialization on a later linked transition", async () => {
+    const harness = createHarness();
+    let initializationAttempt = 0;
+    harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) => {
+      initializationAttempt += 1;
+      if (initializationAttempt === 1) {
+        throw new Error("transient panel initialization failure");
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        participant: true,
+      };
+    };
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => ({
+      ...defaultTabState(tabId, windowId),
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-init-retry",
+      17,
+      "source-init-retry",
+    );
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+    expect(harness.tabRefresh.stateCalls).toEqual([]);
+    expect(harness.reportedErrors).toHaveLength(1);
+    const marker = port.sent.length;
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([
+      [17, 10],
+      [17, 10],
+    ]);
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+    const retryMessages = port.sent.slice(marker);
+    const compatibilityIndex = retryMessages.findIndex(isCompatibleMessage);
+    const snapshotIndex = retryMessages.findIndex(isPanelTabStateMessage);
+    expect(snapshotIndex).toBeGreaterThan(compatibilityIndex);
+    expect(retryMessages[snapshotIndex]).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+    });
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+    expect(harness.tabRefresh.panelOpenCalls).toHaveLength(2);
+    expect(harness.tabRefresh.stateCalls).toHaveLength(2);
+  });
+
+  it("retries a transient linked state read on the next transition", async () => {
+    const harness = createHarness({ initialPanelState: "notLinked" });
+    let stateRead = 0;
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => {
+      stateRead += 1;
+      if (stateRead === 1) {
+        throw new Error("transient tab state failure");
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        autoRefreshEnabled: false,
+        ideHighlightEnabled: true,
+      };
+    };
+    const port = await harness.registerAndConnect(
+      "channel-state-retry",
+      17,
+      "source-state-retry",
+    );
+    await flushMicrotasks();
+    const snapshotBaseline = port.sent.filter(isPanelTabStateMessage).length;
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([[17, 10]]);
+    expect(harness.reportedErrors).toHaveLength(1);
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(
+      snapshotBaseline,
+    );
+
+    harness.coordinator.emitState(10, "linked");
+    await flushMicrotasks();
+    expect(harness.tabRefresh.stateCalls).toEqual([
+      [17, 10],
+      [17, 10],
+    ]);
+    expect(port.sent.filter(isPanelTabStateMessage).at(-1)).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: true,
+      participant: false,
+    });
+    expect(harness.tabRefresh.panelOpenCalls).toEqual([[17, 10]]);
+  });
+
+  it("invalidates a linked snapshot when a newer state is only queued", async () => {
+    const blockedLookup = deferred<
+      { id: number; windowId: number } | undefined
+    >();
+    const delayed = deferred<TabRefreshState>();
+    let blockNextLookup = false;
+    let blockedCalls = 0;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        if (blockNextLookup && ++blockedCalls === 1) {
+          return blockedLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+    });
+    harness.tabRefresh.stateBehavior = () => delayed.promise;
+    const port = await harness.registerAndConnect(
+      "channel-revision",
+      17,
+      "source-revision",
+    );
+    await flushMicrotasks();
+    const snapshotBaseline = port.sent.filter(isPanelTabStateMessage).length;
+    blockNextLookup = true;
+
+    harness.coordinator.emitState(10, "offline");
+    await Promise.resolve();
+    delayed.resolve(defaultTabState(17, 10));
+    await flushMicrotasks();
+
+    expect(blockedCalls).toBe(1);
+    expect(port.sent.filter(isPanelTabStateMessage)).toHaveLength(
+      snapshotBaseline,
+    );
+    blockedLookup.resolve({ id: 17, windowId: 10 });
+    await flushMicrotasks();
+    expect(windowStates(port).at(-1)).toBe("offline");
+  });
+
   it("keeps eligibility independent of panel state and revokes explicit window authority", async () => {
     const harness = createHarness();
     await harness.registerAndConnect("channel-revoke", 17, "source-revoke");
