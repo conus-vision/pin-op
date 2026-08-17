@@ -7,9 +7,12 @@ import {
 
 export const TAB_REFRESH_STATE_STORAGE_KEY = "pin-op.tabRefreshStates";
 export const MAX_PERSISTED_TAB_REFRESH_STATES = 4_096;
+const TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY =
+  "pin-op.tabRefreshStateRecovery";
 
 export class TabRefreshStateStore {
   private tail = Promise.resolve();
+  private recoveryKnownClear = false;
 
   public constructor(private readonly storage: SessionStorage) {}
 
@@ -52,6 +55,25 @@ export class TabRefreshStateStore {
       current: TabRefreshState | undefined,
     ) => TabRefreshState | undefined,
   ): Promise<TabRefreshState | undefined> {
+    return this.updateTabWithPersistence(tabId, update, false);
+  }
+
+  public updateTabDurably(
+    tabId: number,
+    update: (
+      current: TabRefreshState | undefined,
+    ) => TabRefreshState | undefined,
+  ): Promise<TabRefreshState | undefined> {
+    return this.updateTabWithPersistence(tabId, update, true);
+  }
+
+  private updateTabWithPersistence(
+    tabId: number,
+    update: (
+      current: TabRefreshState | undefined,
+    ) => TabRefreshState | undefined,
+    durable: boolean,
+  ): Promise<TabRefreshState | undefined> {
     createDefaultTabRefreshState(tabId, 0);
     if (typeof update !== "function") {
       return Promise.reject(new TypeError("Invalid tab refresh state updater"));
@@ -73,9 +95,13 @@ export class TabRefreshStateStore {
       if (next.length > MAX_PERSISTED_TAB_REFRESH_STATES) {
         throw new RangeError("Too many browser tab refresh states");
       }
-      await this.storage.set({
-        [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
-      });
+      if (durable) {
+        await this.writeForward(next);
+      } else {
+        await this.storage.set({
+          [TAB_REFRESH_STATE_STORAGE_KEY]: next.map(snapshotState),
+        });
+      }
       return parsed;
     });
   }
@@ -94,12 +120,12 @@ export class TabRefreshStateStore {
       if (!current || !canRemove(current)) {
         return;
       }
-      await this.writeStates(
+      await this.commitGuardedRemoval(
+        states,
+        current,
         states.filter((state) => state.tabId !== tabId),
+        canRemove,
       );
-      if (!canRemove(current)) {
-        await this.writeStates(states);
-      }
     });
   }
 
@@ -118,14 +144,13 @@ export class TabRefreshStateStore {
       if (current?.windowId !== windowId || !canRemove(current)) {
         return undefined;
       }
-      await this.writeStates(
+      const removed = await this.commitGuardedRemoval(
+        states,
+        current,
         states.filter((state) => state.tabId !== tabId),
+        canRemove,
       );
-      if (!canRemove(current)) {
-        await this.writeStates(states);
-        return undefined;
-      }
-      return current;
+      return removed ? current : undefined;
     });
   }
 
@@ -135,7 +160,10 @@ export class TabRefreshStateStore {
   }
 
   public clear(): Promise<void> {
-    return this.enqueue(() => this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY));
+    return this.enqueue(async () => {
+      await this.clearRecovery();
+      await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+    });
   }
 
   private removeMatching(
@@ -163,7 +191,91 @@ export class TabRefreshStateStore {
     });
   }
 
+  private async commitGuardedRemoval(
+    states: readonly TabRefreshState[],
+    current: TabRefreshState,
+    committed: readonly TabRefreshState[],
+    canRemove: (current: TabRefreshState) => boolean,
+  ): Promise<boolean> {
+    const fallback = states.map((state) =>
+      state.tabId === current.tabId ? failClosedState(state) : state);
+    await this.writeRecovery(fallback);
+    await this.writeStates(committed);
+
+    let removalStillCurrent: boolean;
+    try {
+      removalStillCurrent = canRemove(current);
+    } catch (error) {
+      await this.restoreRecovery(fallback);
+      throw error;
+    }
+    if (!removalStillCurrent) {
+      await this.restoreRecovery(fallback);
+      return false;
+    }
+
+    await this.writeRecovery(committed);
+    await this.clearRecovery();
+    return true;
+  }
+
+  private async restoreRecovery(
+    states: readonly TabRefreshState[],
+  ): Promise<void> {
+    await this.writeStates(states);
+    await this.clearRecovery();
+  }
+
+  private async writeRecovery(
+    states: readonly TabRefreshState[],
+  ): Promise<void> {
+    this.recoveryKnownClear = false;
+    await this.storage.set({
+      [TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY]: states.map(snapshotState),
+    });
+  }
+
+  private async writeForward(
+    states: readonly TabRefreshState[],
+  ): Promise<void> {
+    await this.writeRecovery(states);
+    await this.writeStates(states);
+    await this.clearRecovery();
+  }
+
+  private async recoverPendingWriteUnlocked(): Promise<void> {
+    if (this.recoveryKnownClear) {
+      return;
+    }
+    const stored = await this.storage.get(
+      TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY,
+    );
+    const value = ownDataValue(
+      stored,
+      TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY,
+    );
+    if (value === absentValue) {
+      this.recoveryKnownClear = true;
+      return;
+    }
+    const states = parseStoredStates(value);
+    if (!states) {
+      await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
+      await this.clearRecovery();
+      return;
+    }
+    await this.writeStates(states);
+    await this.clearRecovery();
+  }
+
+  private async clearRecovery(): Promise<void> {
+    this.recoveryKnownClear = false;
+    await this.storage.remove(TAB_REFRESH_STATE_RECOVERY_STORAGE_KEY);
+    this.recoveryKnownClear = true;
+  }
+
   private async loadAllUnlocked(): Promise<readonly TabRefreshState[]> {
+    await this.recoverPendingWriteUnlocked();
     let stored: Record<string, unknown>;
     try {
       stored = await this.storage.get(TAB_REFRESH_STATE_STORAGE_KEY);
@@ -174,26 +286,12 @@ export class TabRefreshStateStore {
     if (value === absentValue) {
       return Object.freeze([]);
     }
-    if (
-      !Array.isArray(value) ||
-      value.length > MAX_PERSISTED_TAB_REFRESH_STATES
-    ) {
+    const states = parseStoredStates(value);
+    if (!states) {
       await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
       return Object.freeze([]);
     }
-    const states: TabRefreshState[] = [];
-    const tabIds = new Set<number>();
-    for (const candidate of value) {
-      const parsed = parseTabRefreshState(candidate);
-      if (!parsed || tabIds.has(parsed.tabId)) {
-        await this.storage.remove(TAB_REFRESH_STATE_STORAGE_KEY);
-        return Object.freeze([]);
-      }
-      tabIds.add(parsed.tabId);
-      states.push(parsed);
-    }
-    states.sort(compareStates);
-    return Object.freeze(states);
+    return states;
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -246,6 +344,40 @@ function snapshotState(state: TabRefreshState): Record<string, unknown> {
         }
       : {}),
   };
+}
+
+function failClosedState(state: TabRefreshState): TabRefreshState {
+  return Object.freeze({
+    tabId: state.tabId,
+    windowId: state.windowId,
+    autoRefreshEnabled: state.autoRefreshEnabled,
+    ideHighlightEnabled: state.ideHighlightEnabled,
+    participant: false,
+    lastAcceptedGeneration: state.lastAcceptedGeneration,
+  });
+}
+
+function parseStoredStates(
+  value: unknown,
+): readonly TabRefreshState[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_PERSISTED_TAB_REFRESH_STATES
+  ) {
+    return undefined;
+  }
+  const states: TabRefreshState[] = [];
+  const tabIds = new Set<number>();
+  for (const candidate of value) {
+    const parsed = parseTabRefreshState(candidate);
+    if (!parsed || tabIds.has(parsed.tabId)) {
+      return undefined;
+    }
+    tabIds.add(parsed.tabId);
+    states.push(parsed);
+  }
+  states.sort(compareStates);
+  return Object.freeze(states);
 }
 
 function compareStates(left: TabRefreshState, right: TabRefreshState): number {

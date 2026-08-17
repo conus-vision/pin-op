@@ -143,7 +143,7 @@ export class TabRefreshCoordinator {
       this.setParticipant(windowId, tabId, false);
     }
     await this.ensureInitialized();
-    const updated = await this.store.updateTab(tabId, (existing) => {
+    const updated = await this.store.updateTabDurably(tabId, (existing) => {
       if (!this.isCurrentLifecycle(tabId, revision)) {
         return existing;
       }

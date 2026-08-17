@@ -10,7 +10,7 @@ import {
   type SourceNavigationStateMessage,
   type SourceOpenMessage,
 } from "@pin-op/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BrowserProtocolError,
   BrowserWindowLinkStore,
@@ -238,6 +238,90 @@ describe("WindowConnectionCoordinator", () => {
     router.dispose();
   });
 
+  it("lets terminal tab removal cancel pending registration before a late disconnect", async () => {
+    const storage = new DeferredRemoveSessionStorage();
+    const harness = coordinatorHarness(storage);
+    const tabStore = new TabRefreshStateStore(storage);
+    await tabStore.save({
+      tabId: 101,
+      windowId: 10,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 4,
+    });
+    const tabs = new TabRefreshCoordinator({
+      store: tabStore,
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: () => undefined,
+    });
+    await tabs.initialize();
+
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    let removeTab: ((tabId: number) => void) | undefined;
+    const router = createBackgroundRouter({
+      expectedDevtoolsUrl: DEVTOOLS_URL,
+      expectedPanelUrl: PANEL_URL,
+      getTab: async () => tabLookup.promise,
+      coordinator: harness.coordinator,
+      tabRefreshCoordinator: tabs,
+      inspectCoordinator: new BackgroundInspectCoordinator({
+        executeScript: async () => undefined,
+        sendTabMessage: async () => undefined,
+      }),
+      subscriptions: {
+        subscribeRuntimeMessages() { return () => undefined; },
+        subscribeRuntimePorts() { return () => undefined; },
+        subscribeWindowRemoved() { return () => undefined; },
+        subscribeTabDetached() { return () => undefined; },
+        subscribeTabAttached() { return () => undefined; },
+        subscribeTabRemoved(listener) {
+          removeTab = listener;
+          return () => undefined;
+        },
+      },
+    });
+    const channels = [
+      "terminal-pending-registration-a",
+      "terminal-pending-registration-b",
+    ];
+    const registrations = channels.map((channel, index) =>
+      router.routeMessage({
+        type: "pin-op.registerDevtools",
+        channel,
+        tabId: 101,
+        sourceId: `terminal-pending-source-${index}`,
+      }, { url: DEVTOOLS_URL }));
+    const ports = channels.map((channel) => new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      { url: `${PANEL_URL}?channel=${channel}` },
+    ));
+    for (const port of ports) {
+      router.connectPort(port);
+    }
+    await flushMicrotasks();
+
+    removeTab?.(101);
+    await storage.waitForRemove();
+    expect(ports.every((port) => port.disconnected)).toBe(true);
+
+    for (const port of ports) {
+      port.disconnect();
+    }
+    storage.resolveRemove();
+    tabLookup.resolve({ id: 101, windowId: 10 });
+    await expect(Promise.all(registrations)).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    await flushMicrotasks();
+
+    expect(await tabStore.loadAll()).toEqual([]);
+    expect(lifecycleRevisionCount(tabs)).toBe(0);
+    router.dispose();
+  });
+
   it.each(["absent", "rejected"] as const)(
     "revokes a restored reconnect when panel tab lookup is %s",
     async (lookupFailure) => {
@@ -333,6 +417,135 @@ describe("WindowConnectionCoordinator", () => {
       router.dispose();
     },
   );
+
+  it("retries failed invalid-binding close and recovers it after background restart", async () => {
+    const storage = new FailNextTabStateSetStorage();
+    const harness = coordinatorHarness(storage);
+    const saved = windowLink();
+    await harness.store.save(10, saved);
+    const tabStore = new TabRefreshStateStore(storage);
+    await tabStore.save({
+      tabId: 101,
+      windowId: 10,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: true,
+      lastAcceptedGeneration: 3,
+    });
+    const tabs = new TabRefreshCoordinator({
+      store: tabStore,
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: (windowId, tabId, participant) =>
+        harness.coordinator.setRefreshParticipant(
+          windowId,
+          tabId,
+          participant,
+        ),
+    });
+    await tabs.initialize();
+    await harness.flush();
+    const panelClosed = vi.spyOn(tabs, "panelClosed");
+
+    let lookupCount = 0;
+    let tabExists = true;
+    const errors: unknown[] = [];
+    const router = createBackgroundRouter({
+      expectedDevtoolsUrl: DEVTOOLS_URL,
+      expectedPanelUrl: PANEL_URL,
+      getTab: async (tabId) => {
+        lookupCount += 1;
+        return tabExists ? { id: tabId, windowId: 10 } : undefined;
+      },
+      coordinator: harness.coordinator,
+      tabRefreshCoordinator: tabs,
+      inspectCoordinator: new BackgroundInspectCoordinator({
+        executeScript: async () => undefined,
+        sendTabMessage: async () => undefined,
+      }),
+      onError: (error) => errors.push(error),
+    });
+    const channel = "failed-invalid-binding-close";
+    await router.routeMessage({
+      type: "pin-op.registerDevtools",
+      channel,
+      tabId: 101,
+      sourceId: "failed-invalid-binding-source",
+    }, { url: DEVTOOLS_URL });
+    const port = new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      { url: `${PANEL_URL}?channel=${channel}` },
+    );
+    router.connectPort(port);
+    await flushMicrotasks();
+    expect(await tabStore.loadAll()).toEqual([
+      expect.objectContaining({
+        tabId: 101,
+        windowId: 10,
+        participant: true,
+      }),
+    ]);
+
+    const lookupCountBeforeClose = lookupCount;
+    tabExists = false;
+    const setCountBeforeClose = storage.setKeys.length;
+    storage.failNextTabStateSet();
+    await expect(router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel,
+    }, { url: `${PANEL_URL}?channel=${channel}` })).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    expect(lookupCount).toBe(lookupCountBeforeClose + 1);
+    expect(panelClosed).toHaveBeenCalledWith(101, 10);
+    const firstClose = panelClosed.mock.results[0]?.value;
+    await expect(firstClose).rejects.toThrow(
+      "transient tab state write failure",
+    );
+    expect(storage.setKeys.slice(setCountBeforeClose)).toContainEqual([
+      "pin-op.tabRefreshStates",
+    ]);
+    expect(storage.failedTabStateSets).toBe(1);
+    await vi.waitFor(() => expect(errors).toContainEqual(
+      new Error("transient tab state write failure"),
+    ));
+
+    const replacementHarness = coordinatorHarness(storage);
+    const replacementStore = new TabRefreshStateStore(storage);
+    const replacementTabs = new TabRefreshCoordinator({
+      store: replacementStore,
+      getActiveTabId: async () => undefined,
+      dispatchRefresh: async () => undefined,
+      setRefreshParticipant: (windowId, tabId, participant) =>
+        replacementHarness.coordinator.setRefreshParticipant(
+          windowId,
+          tabId,
+          participant,
+        ),
+    });
+    await replacementTabs.initialize();
+    await replacementHarness.flush();
+
+    expect(await replacementTabs.state(101, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 3,
+    });
+    expect(replacementHarness.createdClients).toHaveLength(0);
+
+    await expect(router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel,
+    }, { url: `${PANEL_URL}?channel=${channel}` })).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+    expect(lookupCount).toBe(lookupCountBeforeClose + 2);
+    router.dispose();
+  });
 
   it("restores a retained participant connection and publishes state without a panel", async () => {
     const harness = coordinatorHarness();
@@ -1886,7 +2099,7 @@ class FakeWindowClient {
 class TestRuntimePort implements BackgroundRuntimePort {
   public readonly onMessage = new TestRuntimeEvent<(message: unknown) => void>();
   public readonly onDisconnect = new TestRuntimeEvent<() => void>();
-  private disconnected = false;
+  public disconnected = false;
 
   public constructor(
     public readonly name: string,
@@ -1947,6 +2160,29 @@ class MemorySessionStorage implements SessionStorage {
   public async remove(key: string): Promise<void> {
     this.removals.push(key);
     delete this.values[key];
+  }
+}
+
+class FailNextTabStateSetStorage extends MemorySessionStorage {
+  public failedTabStateSets = 0;
+  public readonly setKeys: string[][] = [];
+  private failTabStateSet = false;
+
+  public failNextTabStateSet(): void {
+    this.failTabStateSet = true;
+  }
+
+  public override async set(values: Record<string, unknown>): Promise<void> {
+    this.setKeys.push(Object.keys(values));
+    if (
+      this.failTabStateSet &&
+      Object.hasOwn(values, "pin-op.tabRefreshStates")
+    ) {
+      this.failTabStateSet = false;
+      this.failedTabStateSets += 1;
+      throw new Error("transient tab state write failure");
+    }
+    await super.set(values);
   }
 }
 
@@ -2178,6 +2414,12 @@ async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 12; index += 1) {
     await Promise.resolve();
   }
+}
+
+function lifecycleRevisionCount(coordinator: TabRefreshCoordinator): number {
+  return (coordinator as unknown as {
+    readonly lifecycleRevisions: ReadonlyMap<number, number>;
+  }).lifecycleRevisions.size;
 }
 
 function deferred<T>() {

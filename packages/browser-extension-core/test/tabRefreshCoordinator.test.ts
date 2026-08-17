@@ -116,7 +116,7 @@ describe("TabRefreshCoordinator", () => {
       closed = true;
       return state;
     });
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(closed).toBe(true));
     const closedBeforeDispatch = closed;
     const replacement = setup(context.storage);
     if (closedBeforeDispatch) {
@@ -559,6 +559,47 @@ describe("TabRefreshCoordinator", () => {
     });
     expect(await context.store.loadAll()).toEqual([moved]);
     expect(lifecycleRevisionCount(context.coordinator)).toBe(1);
+  });
+
+  it("recovers disabled preferences after rollback failure and background restart", async () => {
+    const storage = gateableStorage();
+    const context = setup(storage);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.updateSettings(11, 7, {
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    await context.coordinator.acceptPageRefresh(7, refresh(4, "reload"));
+
+    const removalWrite = storage.gateNextRemove();
+    const removing = context.coordinator.removeTab(11);
+    await removalWrite.started;
+    const opening = context.coordinator.panelOpened(11, 8);
+    storage.failNextStateSets(2);
+    removalWrite.release();
+
+    await expect(removing).rejects.toThrow("transient state write failure");
+    await expect(opening).rejects.toThrow("transient state write failure");
+
+    const replacement = setup(storage);
+    await replacement.coordinator.initialize();
+    expect(await replacement.store.loadAll()).toEqual([{
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 4,
+    }]);
+    const reopened = await replacement.coordinator.panelOpened(11, 8);
+    expect(reopened).toMatchObject({
+      windowId: 8,
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 0,
+    });
+    expect(await replacement.store.loadAll()).toEqual([reopened]);
   });
 
   it("retains a terminal lifecycle fence until failed storage teardown retries", async () => {
@@ -1011,10 +1052,12 @@ function gateableStorage(): SessionStorage & {
     readonly started: Promise<void>;
     readonly release: () => void;
   };
+  failNextStateSets(count?: number): void;
   failNextGet(): void;
 } {
   const values = new Map<string, unknown>();
   let failNextGet = false;
+  let failedStateSetsRemaining = 0;
   let nextGate:
     | {
         readonly started: ReturnType<typeof deferred<void>>;
@@ -1055,6 +1098,9 @@ function gateableStorage(): SessionStorage & {
     failNextGet() {
       failNextGet = true;
     },
+    failNextStateSets(count = 1) {
+      failedStateSetsRemaining = count;
+    },
     async get(key: string) {
       if (failNextGet) {
         failNextGet = false;
@@ -1069,6 +1115,13 @@ function gateableStorage(): SessionStorage & {
       return values.has(key) ? { [key]: values.get(key) } : {};
     },
     async set(records: Record<string, unknown>) {
+      if (
+        Object.hasOwn(records, "pin-op.tabRefreshStates") &&
+        failedStateSetsRemaining > 0
+      ) {
+        failedStateSetsRemaining -= 1;
+        throw new Error("transient state write failure");
+      }
       for (const [key, value] of Object.entries(records)) {
         values.set(key, structuredClone(value));
       }

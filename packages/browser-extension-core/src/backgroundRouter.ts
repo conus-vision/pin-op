@@ -360,6 +360,10 @@ export class BackgroundRouter {
   >();
   private readonly panelPorts = new Map<string, PanelPortRecord>();
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
+  private readonly panelTeardowns = new Map<
+    string,
+    { readonly binding: ChannelBinding; readonly promise: Promise<void> }
+  >();
   private readonly removedWindows = new Set<number>();
   private readonly peerBlockedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
@@ -594,6 +598,7 @@ export class BackgroundRouter {
     }
     this.pendingRegistrations.clear();
     this.panelCommands.clear();
+    this.panelTeardowns.clear();
     this.bindings.clear();
     this.channelByTab.clear();
     this.channelBySource.clear();
@@ -660,6 +665,7 @@ export class BackgroundRouter {
     }
     this.contentRefreshCoordinator.revokeTab(tabId);
     this.correlations.disposeTab(tabId);
+    this.cancelPendingRegistrationsForTab(tabId);
     const channel = this.channelByTab.get(tabId);
     const binding = channel ? this.bindings.get(channel) : undefined;
     const port = channel ? this.panelPorts.get(channel) : undefined;
@@ -675,6 +681,24 @@ export class BackgroundRouter {
     void this.contentRefreshCoordinator
       .removeTab(tabId)
       .catch((error) => this.reportError(error));
+  }
+
+  private cancelPendingRegistrationsForTab(tabId: number): void {
+    const channels: string[] = [];
+    for (const [channel, pending] of this.pendingRegistrations) {
+      if (pending.tabId !== tabId || !this.isCurrentPending(pending)) {
+        continue;
+      }
+      pending.panelClosed = true;
+      this.pendingRegistrations.delete(channel);
+      channels.push(channel);
+    }
+    for (const channel of channels) {
+      const port = this.panelPorts.get(channel);
+      if (port) {
+        this.closePanelPort(port, true);
+      }
+    }
   }
 
   private suspendDetachedTab(tabId: number, oldWindowId: number): void {
@@ -2000,7 +2024,7 @@ export class BackgroundRouter {
 
     const resolved = resolvedTab(tab, binding.tabId);
     if (!resolved || this.removedWindows.has(resolved.windowId)) {
-      this.invalidatePanelBinding(binding, record);
+      await this.invalidatePanelBinding(binding, record);
       return undefined;
     }
     if (binding.windowId === resolved.windowId) {
@@ -2025,10 +2049,30 @@ export class BackgroundRouter {
       : undefined;
   }
 
-  private invalidatePanelBinding(
+  private async invalidatePanelBinding(
     binding: ChannelBinding,
     record: PanelPortRecord,
-  ): void {
+  ): Promise<void> {
+    const existing = this.panelTeardowns.get(binding.channel);
+    if (existing?.binding === binding) {
+      return existing.promise;
+    }
+    const promise = this.performPanelBindingInvalidation(
+      binding,
+      record,
+    ).finally(() => {
+      if (this.panelTeardowns.get(binding.channel)?.promise === promise) {
+        this.panelTeardowns.delete(binding.channel);
+      }
+    });
+    this.panelTeardowns.set(binding.channel, { binding, promise });
+    return promise;
+  }
+
+  private async performPanelBindingInvalidation(
+    binding: ChannelBinding,
+    record: PanelPortRecord,
+  ): Promise<void> {
     if (
       this.bindings.get(binding.channel) !== binding ||
       this.panelPorts.get(record.channel) !== record
@@ -2036,9 +2080,21 @@ export class BackgroundRouter {
       return;
     }
     this.contentRefreshCoordinator.revokeTab(binding.tabId);
-    void this.tabRefreshCoordinator
-      .panelClosed(binding.tabId, binding.windowId)
-      .catch((error) => this.reportError(error));
+    try {
+      await this.tabRefreshCoordinator.panelClosed(
+        binding.tabId,
+        binding.windowId,
+      );
+    } catch (error) {
+      this.reportError(error);
+      return;
+    }
+    if (
+      this.bindings.get(binding.channel) !== binding ||
+      this.panelPorts.get(record.channel) !== record
+    ) {
+      return;
+    }
     this.removeBinding(binding);
     record.port.onMessage.removeListener(record.onMessage);
     this.clearPanelActivation(record, true);
