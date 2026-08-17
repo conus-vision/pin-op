@@ -37,16 +37,13 @@ const mappingsWasm = await readFile(
 const vscodeIcon = await readFile(
   resolve(repositoryRoot, "extensions/vscode/resources/pin-op.png"),
 );
-const extensionBundleFixture = [
-  'const vscode = require("vscode");',
-  'const capabilities = ["resolution", "source-navigation", "auto-refresh", "source-presentation", "presentation-settings"];',
-  'const sourceMatchesType = "source.matches";',
-  'const sourceOpenType = "source.open";',
-  'const sourceNavigateType = "source.navigate";',
-  'const sourceNavigationStateType = "source.navigationState";',
-  'const opaqueMatchIdentity = "matchId";',
-  "",
-].join("\n");
+const extensionBundleFixture = await readFile(
+  resolve(repositoryRoot, "extensions/vscode/dist/extension.cjs"),
+);
+const staleExtensionBundleFixture = Buffer.concat([
+  extensionBundleFixture,
+  Buffer.from("\n/* stale VSIX bundle fixture */\n"),
+]);
 const legacyDisplayName = ["Pin", "Op"].join("");
 const legacyAssetStem = ["pin", "op"].join("");
 const readmeWithoutProductDescription = Buffer.from([
@@ -288,8 +285,8 @@ test("validated VSIX payload installs under its canonical artifact identity", as
       JSON.parse(await readFile(join(expectedDirectory, "package.json"), "utf8")),
       expectedManifest(),
     );
-    assert.equal(
-      await readFile(join(expectedDirectory, "dist/extension.cjs"), "utf8"),
+    assert.deepEqual(
+      await readFile(join(expectedDirectory, "dist/extension.cjs")),
       extensionBundleFixture,
     );
     await assert.rejects(
@@ -299,7 +296,7 @@ test("validated VSIX payload installs under its canonical artifact identity", as
   });
 });
 
-test("VSIX installation rejects a bundle without current navigation capabilities", async () => {
+test("VSIX installation rejects a navigation-incomplete bundle as stale", async () => {
   const installVerifiedVsix = await loadInstaller();
   await withTemporaryDirectory("pin-op-vsix-capabilities-", async (directory) => {
     const artifactPath = join(directory, "capabilities.vsix");
@@ -311,13 +308,13 @@ test("VSIX installation rejects a bundle without current navigation capabilities
 
     await assert.rejects(
       installVerifiedVsix(artifactPath, extensionsDirectory),
-      /VSIX bundle is missing current source-navigation capability/i,
+      /extension\/dist\/extension\.cjs differs from local build output/i,
     );
     assert.deepEqual(await readdir(extensionsDirectory), []);
   });
 });
 
-test("VSIX installation rejects a bundle without current source presentation", async () => {
+test("VSIX installation rejects a presentation-incomplete bundle as stale", async () => {
   const installVerifiedVsix = await loadInstaller();
   await withTemporaryDirectory("pin-op-vsix-presentation-", async (directory) => {
     const artifactPath = join(directory, "presentation.vsix");
@@ -334,9 +331,49 @@ test("VSIX installation rejects a bundle without current source presentation", a
 
     await assert.rejects(
       installVerifiedVsix(artifactPath, extensionsDirectory),
-      /VSIX bundle is missing current source-presentation capability/i,
+      /extension\/dist\/extension\.cjs differs from local build output/i,
     );
     assert.deepEqual(await readdir(extensionsDirectory), []);
+  });
+});
+
+test("packaged VSIX verifiers reject a stale extension bundle", async (t) => {
+  const expectedError =
+    /extension\/dist\/extension\.cjs differs from local build output.*extensions[\\/]vscode[\\/]dist[\\/]extension\.cjs/i;
+
+  await t.test("aggregate verifier", async () => {
+    const installVerifiedVsix = await loadInstaller();
+    await withTemporaryDirectory("pin-op-vsix-stale-", async (directory) => {
+      const artifactPath = join(directory, "stale.vsix");
+      const extensionsDirectory = join(directory, "extensions");
+      await mkdir(extensionsDirectory);
+      writeVsix(artifactPath, {}, { bundle: staleExtensionBundleFixture });
+
+      await assert.rejects(
+        installVerifiedVsix(artifactPath, extensionsDirectory),
+        expectedError,
+      );
+      assert.deepEqual(await readdir(extensionsDirectory), []);
+    });
+  });
+
+  await t.test("direct verifier", async () => {
+    await withTemporaryDirectory("pin-op-direct-vsix-stale-", async (directory) => {
+      const artifactPath = join(directory, "stale.vsix");
+      writeVsix(artifactPath, {}, { bundle: staleExtensionBundleFixture });
+
+      const result = spawnSync(
+        process.execPath,
+        [directVerifierPath, artifactPath],
+        { cwd: repositoryRoot, encoding: "utf8" },
+      );
+      assert.notEqual(
+        result.status,
+        0,
+        `stale bundle was accepted:\n${result.stdout}${result.stderr}`,
+      );
+      assert.match(`${result.stdout}\n${result.stderr}`, expectedError);
+    });
   });
 });
 

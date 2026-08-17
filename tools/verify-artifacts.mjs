@@ -15,6 +15,9 @@ import {
   assertVsCodeReadme,
 } from "./vscode-extension-identity.mjs";
 import {
+  assertVsixBundleMatchesLocalBuild,
+} from "./vsix-bundle-parity.mjs";
+import {
   assertTextEqual,
   assertVersion,
   compareAscii,
@@ -589,7 +592,9 @@ export function validateVsixArchive(archive, filename) {
     },
   );
 
-  const bundle = archive.files.get("extension/dist/extension.cjs").toString("utf8");
+  const bundleBytes = archive.files.get("extension/dist/extension.cjs");
+  assertVsixBundleMatchesLocalBuild(bundleBytes, filename);
+  const bundle = bundleBytes.toString("utf8");
   for (const capability of ["source-navigation", "source-presentation"]) {
     if (!bundle.includes(capability)) {
       throw new Error(

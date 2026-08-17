@@ -4,6 +4,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRuntimeMetadata } from "../../tools/runtime-metadata.mjs";
 import {
+  assertVsixBundleMatchesLocalBuild,
+} from "../../tools/vsix-bundle-parity.mjs";
+import {
   assertVsCodeExtensionIdentity,
   assertVsCodeReadme,
 } from "../../tools/vscode-extension-identity.mjs";
@@ -68,7 +71,9 @@ parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
   label: "VSIX runtime metadata",
 });
 
-const bundle = entries.get("extension/dist/extension.cjs").toString("utf8");
+const bundleBytes = entries.get("extension/dist/extension.cjs");
+assertVsixBundleMatchesLocalBuild(bundleBytes, "VSIX");
+const bundle = bundleBytes.toString("utf8");
 for (const capability of ["source-navigation", "source-presentation"]) {
   if (!bundle.includes(capability)) {
     throw new Error(`VSIX bundle is missing current ${capability} capability`);
