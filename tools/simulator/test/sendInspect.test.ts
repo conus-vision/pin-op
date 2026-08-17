@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
   PinOpMessageSchema,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
   PROTOCOL_VERSION,
+  protocolMismatchReason,
 } from "@pin-op/protocol";
 import inspectCardFixture from "../fixtures/inspect-card.json";
 import {
   buildInspectMessage,
+  describeBridgeClose,
   parseLinkCode,
   parseSendArgs,
   sendInspect,
@@ -34,6 +37,7 @@ describe("inspect-card fixture", () => {
       type: "inspect",
       sessionId: SESSION_ID,
       source: { role: "simulator", id: "simulator-test", metadata: {} },
+      ideHighlightEnabled: true,
       targets: [
         {
           role: "selected",
@@ -326,6 +330,62 @@ describe("sendInspect", () => {
       await bridge.close();
     }
   });
+
+  it("reports protocol mismatch versions and does not retry a legacy handshake", async () => {
+    const bridge = await createBridgeHarness();
+    try {
+      const sending = sendInspect({
+        url: bridge.url,
+        sessionId: SESSION_ID,
+        bridgeInstanceId: INSTANCE_ID,
+        authToken: AUTH_TOKEN,
+        fixture: "inspect-card",
+      });
+
+      expect(await bridge.nextMessage()).toMatchObject({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "hello",
+      });
+      await bridge.closeClient(
+        PROTOCOL_MISMATCH_CLOSE_CODE,
+        protocolMismatchReason(5),
+      );
+
+      await expect(sending).rejects.toThrow(
+        "Protocol mismatch: expected version 6, received version 5",
+      );
+      await delay(25);
+      expect(bridge.connectionCount()).toBe(1);
+      expect(bridge.pendingMessages()).toEqual([]);
+    } finally {
+      await bridge.close();
+    }
+  });
+});
+
+describe("describeBridgeClose", () => {
+  it("strictly decodes a protocol mismatch close reason", () => {
+    expect(
+      describeBridgeClose(
+        PROTOCOL_MISMATCH_CLOSE_CODE,
+        protocolMismatchReason(5),
+      ),
+    ).toBe("Protocol mismatch: expected version 6, received version 5");
+    expect(
+      describeBridgeClose(
+        PROTOCOL_MISMATCH_CLOSE_CODE,
+        protocolMismatchReason(),
+      ),
+    ).toBe("Protocol mismatch: expected version 6, received version unknown");
+  });
+
+  it("does not interpret malformed or non-1002 closes as a mismatch", () => {
+    expect(describeBridgeClose(1000, protocolMismatchReason(5))).toBe(
+      "Bridge closed before sending a response (code 1000)",
+    );
+    expect(describeBridgeClose(PROTOCOL_MISMATCH_CLOSE_CODE, "expected=6"))
+      .toBe("Bridge closed before sending a response (code 1002)");
+  });
 });
 
 interface BridgeHarness {
@@ -333,7 +393,9 @@ interface BridgeHarness {
   linkCode(pin: string): string;
   nextMessage(): Promise<Record<string, unknown>>;
   pendingMessages(): readonly Record<string, unknown>[];
+  connectionCount(): number;
   send(message: Record<string, unknown>): Promise<void>;
+  closeClient(code: number, reason: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -351,7 +413,9 @@ async function createBridgeHarness(): Promise<BridgeHarness> {
   const connected = new Promise<WebSocket>((resolve) => {
     resolveSocket = resolve;
   });
+  let connections = 0;
   server.on("connection", (socket) => {
+    connections += 1;
     socket.on("message", (data: RawData) => {
       const message = JSON.parse(data.toString()) as Record<string, unknown>;
       const waiter = waiters.shift();
@@ -375,6 +439,7 @@ async function createBridgeHarness(): Promise<BridgeHarness> {
       return new Promise((resolve) => waiters.push(resolve));
     },
     pendingMessages: () => [...queued],
+    connectionCount: () => connections,
     send: async (message) => {
       const socket = await connected;
       await new Promise<void>((resolve, reject) => {
@@ -386,6 +451,12 @@ async function createBridgeHarness(): Promise<BridgeHarness> {
           resolve();
         });
       });
+    },
+    closeClient: async (code, reason) => {
+      const socket = await connected;
+      const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+      socket.close(code, reason);
+      await closed;
     },
     close: () => closeServer(server),
   };

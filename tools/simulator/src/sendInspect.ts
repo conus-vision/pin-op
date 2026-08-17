@@ -6,7 +6,9 @@ import WebSocket, { type RawData } from "ws";
 import {
   PinOpMessageSchema,
   InspectMessageSchema,
+  PROTOCOL_MISMATCH_CLOSE_CODE,
   PROTOCOL_VERSION,
+  parseProtocolMismatchReason,
   type AuthenticatedMessage,
   type PinOpMessage,
   type InspectMessage,
@@ -16,9 +18,10 @@ import {
 const DEFAULT_SOURCE_ID = "pin-op-simulator";
 const DEFAULT_TIMEOUT_MS = 2_000;
 
-interface BuildInspectOptions {
+export interface BuildInspectOptions {
   readonly sessionId: string;
   readonly sourceId: string;
+  readonly ideHighlightEnabled?: boolean;
 }
 
 interface BaseSendInspectOptions {
@@ -89,6 +92,7 @@ export function buildInspectMessage(
       id: options.sourceId,
       metadata: {},
     },
+    ideHighlightEnabled: options.ideHighlightEnabled ?? true,
     targets: fixture.targets,
     context: fixture.context,
     metadata: fixture.metadata ?? {},
@@ -445,9 +449,9 @@ function waitForMessage<T extends PinOpMessage>(
       cleanup();
       reject(error);
     };
-    const onClose = () => {
+    const onClose = (code: number, reason: Buffer) => {
       cleanup();
-      reject(new Error("Bridge closed before sending a response"));
+      reject(new Error(describeBridgeClose(code, reason.toString())));
     };
     const cleanup = () => {
       clearTimeout(timeout);
@@ -460,6 +464,17 @@ function waitForMessage<T extends PinOpMessage>(
     socket.once("error", onError);
     socket.once("close", onClose);
   });
+}
+
+export function describeBridgeClose(code: number, reason: string): string {
+  if (code === PROTOCOL_MISMATCH_CLOSE_CODE) {
+    const mismatch = parseProtocolMismatchReason(reason);
+    if (mismatch) {
+      return `Protocol mismatch: expected version ${mismatch.expectedVersion}, received version ${mismatch.receivedVersion ?? "unknown"}`;
+    }
+  }
+
+  return `Bridge closed before sending a response (code ${code})`;
 }
 
 function sanitizedBridgeError(code: string): string {
