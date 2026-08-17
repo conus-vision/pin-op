@@ -235,6 +235,51 @@ describe("DomTreeView", () => {
     expect(harness.sourceCommands).toEqual([]);
   });
 
+  it("keeps divergent row authority while source navigation controls receive focus", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-1");
+    harness.sourceNavigation.acceptResolution(resolution());
+    harness.sourceNavigation.acceptState(navigationState({ activeMatchIndex: 0 }));
+    harness.controller.focus("root");
+    const tree = harness.dom.element("dom-tree");
+    const selected = harness.dom.row("selected");
+    const previous = selected.findByData("action", "source-previous");
+    const next = selected.findByData("action", "source-next");
+    if (!previous || !next) {
+      throw new Error("Missing selected-row source navigation controls");
+    }
+
+    previous.focus();
+    tree.dispatch("focusin", { target: previous });
+
+    expect(harness.controller.focusedRef).toBe("root");
+    expect(harness.dom.activeElement).toBe(previous);
+    expect(harness.dom.row("selected").findByData(
+      "action",
+      "source-previous",
+    )).toBe(previous);
+
+    next.focus();
+    tree.dispatch("focusin", { target: next });
+
+    expect(harness.controller.focusedRef).toBe("root");
+    expect(harness.dom.activeElement).toBe(next);
+    expect(harness.dom.row("selected").findByData(
+      "action",
+      "source-next",
+    )).toBe(next);
+
+    selected.focus();
+    tree.dispatch("focusin", { target: selected });
+
+    expect(harness.controller.focusedRef).toBe("selected");
+    expect(harness.dom.activeElement).toBe(harness.dom.row("selected"));
+  });
+
   it("creates row source icons with the supplied tree document", () => {
     const globalCreateElementNS = vi.fn(() => {
       throw new Error("global document must not create row icons");

@@ -86,6 +86,9 @@ export class DomTreeView {
     this.run(() => this.controller.handleKey(keyboardEvent.key as DomTreeKey));
   };
   private readonly onFocusIn = (event: Event): void => {
+    if (isSourceNavigationTarget(event.target, this.tree)) {
+      return;
+    }
     this.focusControllerRow(event.target);
   };
   private readonly onClick = (event: Event): void => {
