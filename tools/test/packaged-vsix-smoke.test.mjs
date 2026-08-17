@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import { assertVsCodeReadme } from "../vscode-extension-identity.mjs";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -18,7 +19,12 @@ const directVerifierPath = resolve(
   repositoryRoot,
   "extensions/vscode/verify-vsix.mjs",
 );
+const productDescription =
+  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const vscodeReadme = await readFile(
+  resolve(repositoryRoot, "extensions/vscode/README.md"),
+);
 const vscodeNotices = await readFile(
   resolve(repositoryRoot, "extensions/vscode/THIRD_PARTY_NOTICES"),
 );
@@ -43,6 +49,24 @@ const extensionBundleFixture = [
 ].join("\n");
 const legacyDisplayName = ["Pin", "Op"].join("");
 const legacyAssetStem = ["pin", "op"].join("");
+const readmeWithoutProductDescription = Buffer.from([
+  "# Pin-op",
+  "",
+  "Pin-op highlights source code in VS Code for a DOM element selected in Firefox or Chrome/Chromium DevTools.",
+  "",
+  "## Install From VSIX",
+  "",
+  "Install the packaged extension and reload VS Code if prompted.",
+  "",
+].join("\n"));
+const readmeWithPackagedDrift = Buffer.from([
+  "# Pin-op",
+  "",
+  productDescription,
+  "",
+  "This packaged-only paragraph is not present in the source README.",
+  "",
+].join("\n"));
 const invalidContributionMutations = [
   {
     name: "activity bar icon",
@@ -149,6 +173,23 @@ test("installed VSIX smoke pins protocol 6 and current source capabilities", asy
   assert.match(source, /"matchId"/);
   assert.match(source, /INSTALLED_VSIX_PROTOCOL_V6_OK/);
   assert.doesNotMatch(source, /protocol[- _]?v?5/i);
+});
+
+test("VS Code README uses the exact product description", () => {
+  assert.ok(vscodeReadme.toString("utf8").includes(productDescription));
+});
+
+test("VSIX README parity allows packaging line-ending normalization", () => {
+  const sourceReadme = Buffer.from(
+    `# Pin-op\r\n\r\n${productDescription}\r\n`,
+  );
+  const packagedReadme = Buffer.from(
+    `# Pin-op\n\n${productDescription}\n`,
+  );
+
+  assert.doesNotThrow(() =>
+    assertVsCodeReadme(packagedReadme, sourceReadme, "fixture VSIX"),
+  );
 });
 
 test("VSIX smoke defaults to stable in the repository runtime cache", async () => {
@@ -315,6 +356,59 @@ test("VSIX installation rejects protocol v5 runtime metadata", async () => {
     );
     assert.deepEqual(await readdir(extensionsDirectory), []);
   });
+});
+
+test("packaged VSIX verifiers reject README wording and parity failures", async (t) => {
+  for (const [name, readme, expectedError] of [
+    [
+      "missing product description",
+      readmeWithoutProductDescription,
+      /readme.*product description/i,
+    ],
+    [
+      "source drift",
+      readmeWithPackagedDrift,
+      /readme.*differs from.*extensions[\\/]vscode[\\/]README\.md/i,
+    ],
+  ]) {
+    await t.test(`common verifier rejects ${name}`, async () => {
+      const installVerifiedVsix = await loadInstaller();
+      await withTemporaryDirectory("pin-op-vsix-readme-", async (directory) => {
+        const artifactPath = join(directory, "readme.vsix");
+        const extensionsDirectory = join(directory, "extensions");
+        await mkdir(extensionsDirectory);
+        writeVsix(artifactPath, {}, { readme });
+
+        await assert.rejects(
+          installVerifiedVsix(artifactPath, extensionsDirectory),
+          expectedError,
+        );
+        assert.deepEqual(await readdir(extensionsDirectory), []);
+      });
+    });
+
+    await t.test(`direct verifier rejects ${name}`, async () => {
+      await withTemporaryDirectory(
+        "pin-op-direct-vsix-readme-",
+        async (directory) => {
+          const artifactPath = join(directory, "readme.vsix");
+          writeVsix(artifactPath, {}, { readme });
+
+          const result = spawnSync(
+            process.execPath,
+            [directVerifierPath, artifactPath],
+            { cwd: repositoryRoot, encoding: "utf8" },
+          );
+          assert.notEqual(
+            result.status,
+            0,
+            `mutated README was accepted:\n${result.stdout}${result.stderr}`,
+          );
+          assert.match(`${result.stdout}\n${result.stderr}`, expectedError);
+        },
+      );
+    });
+  }
 });
 
 test("VSIX installation rejects unsafe archive entries before extraction", async (t) => {
@@ -685,7 +779,7 @@ function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
         '{"schemaVersion":1,"protocolVersion":6}\n',
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
-    ["extension/readme.md", "readme"],
+    ["extension/readme.md", archiveOverrides.readme ?? vscodeReadme],
     ["extension/resources/pin-op.svg", "<svg></svg>"],
     ["extension/resources/pin-op.png", archiveOverrides.icon ?? vscodeIcon],
   ]) {

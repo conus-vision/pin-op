@@ -3,7 +3,10 @@ import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRuntimeMetadata } from "../../tools/runtime-metadata.mjs";
-import { assertVsCodeExtensionIdentity } from "../../tools/vscode-extension-identity.mjs";
+import {
+  assertVsCodeExtensionIdentity,
+  assertVsCodeReadme,
+} from "../../tools/vscode-extension-identity.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const artifactPath = process.argv[2]
@@ -42,6 +45,11 @@ for (const path of paths) {
     throw new Error(`VSIX contains forbidden path ${path}`);
   }
 }
+assertVsCodeReadme(
+  entries.get("extension/readme.md"),
+  await readFile(resolve(extensionRoot, "README.md")),
+  "VSIX",
+);
 
 const manifest = JSON.parse(
   entries.get("extension/package.json").toString("utf8"),

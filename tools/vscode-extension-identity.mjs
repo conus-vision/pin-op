@@ -1,9 +1,11 @@
+export const VSCODE_PRODUCT_DESCRIPTION =
+  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
+
 const EXPECTED_FIELDS = Object.freeze({
   publisher: "conus-vision",
   name: "pin-op",
   displayName: "Pin-op",
-  description:
-    "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+  description: VSCODE_PRODUCT_DESCRIPTION,
   repository: "https://github.com/conus-vision/pin-op",
   bugs: "https://github.com/conus-vision/pin-op/issues",
   homepage: "https://pin-op.conus.vision",
@@ -92,4 +94,33 @@ export function assertVsCodeExtensionIdentity(manifest, label) {
   if (manifest.contributes?.configuration?.title !== "Pin-op") {
     throw new Error(`${label} has unexpected configuration title`);
   }
+}
+
+export function assertVsCodeReadme(readme, sourceReadme, label) {
+  const path = "extension/readme.md";
+  if (!Buffer.isBuffer(readme)) {
+    throw new Error(`${label} is missing ${path}`);
+  }
+  const readmeText = readme.toString("utf8");
+  if (!readmeText.includes(VSCODE_PRODUCT_DESCRIPTION)) {
+    throw new Error(
+      `${label} ${path} is missing the product description: ` +
+        VSCODE_PRODUCT_DESCRIPTION,
+    );
+  }
+  if (!Buffer.isBuffer(sourceReadme)) {
+    throw new Error(`${label} source README is unavailable`);
+  }
+  const sourceReadmeText = sourceReadme.toString("utf8");
+  if (
+    normalizeLineEndings(readmeText) !== normalizeLineEndings(sourceReadmeText)
+  ) {
+    throw new Error(
+      `${label} ${path} differs from extensions/vscode/README.md`,
+    );
+  }
+}
+
+function normalizeLineEndings(text) {
+  return text.replace(/\r\n?/g, "\n");
 }

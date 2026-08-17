@@ -210,13 +210,31 @@ test("requires exactly one packaged toolbar", () => {
   const panel = archive.files.get("dist/panel.html").toString("utf8");
   archive.files.set(
     "dist/panel.html",
-    Buffer.from(`${panel}\n<header class="panel-toolbar"></header>\n`),
+    Buffer.from(
+      `${panel}\n<header class="panel-toolbar secondary"></header>\n`,
+    ),
   );
 
   assert.throws(
     () => validatePackagedChromeArchive(archive),
     /toolbar.*exactly one/i,
   );
+});
+
+test("accepts the packaged toolbar class token with additional classes", () => {
+  const archive = createArchive();
+  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  archive.files.set(
+    "dist/panel.html",
+    Buffer.from(
+      panel.replace(
+        'class="panel-toolbar"',
+        'class="primary panel-toolbar secondary"',
+      ),
+    ),
+  );
+
+  assert.doesNotThrow(() => validatePackagedChromeArchive(archive));
 });
 
 test("verifies fixture CSSOM access and multiline geometry through CDP", async () => {

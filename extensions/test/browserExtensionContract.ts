@@ -650,6 +650,8 @@ export function describeBrowserAdapterContract(
           ),
         ).toBe(true);
         expect(source).not.toContain("dom.resolveLocator");
+        expect(source).not.toContain("source.navigate");
+        expect(source).not.toContain("source.navigationState");
         expect(source).not.toContain("DomStableLocator");
         expect(source).not.toContain("SourceNavigationController");
       }

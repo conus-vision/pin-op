@@ -158,6 +158,25 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
+  test(`common ${browser} artifact verifier accepts toolbar class tokens in any order`, () => {
+    const archive = browserArchive(browser);
+    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const reordered = panel.replace(
+      'class="panel-toolbar"',
+      "class='secondary panel-toolbar primary'",
+    );
+    assert.notEqual(reordered, panel);
+    archive.files.set("dist/panel.html", Buffer.from(reordered));
+
+    assert.doesNotThrow(() =>
+      validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+    );
+  });
+
   test(`common ${browser} artifact verifier rejects protocol v5 metadata`, () => {
     const archive = browserArchive(browser);
     archive.files.set(
@@ -302,7 +321,9 @@ for (const browser of ["firefox", "chrome"]) {
     const panel = archive.files.get("dist/panel.html").toString("utf8");
     archive.files.set(
       "dist/panel.html",
-      Buffer.from(`${panel}\n<header class="panel-toolbar"></header>\n`),
+      Buffer.from(
+        `${panel}\n<header class="secondary panel-toolbar"></header>\n`,
+      ),
     );
 
     assert.throws(
@@ -312,6 +333,65 @@ for (const browser of ["firefox", "chrome"]) {
         browser,
       ),
       /toolbar.*exactly one/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier rejects hidden connection controls`, () => {
+    for (const [name, source, replacement] of [
+      [
+        "hidden link code",
+        '<input id="link-code"',
+        '<input hidden id="link-code"',
+      ],
+      [
+        "aria-hidden link controls",
+        '<section id="link-controls"',
+        '<section aria-hidden="true" id="link-controls"',
+      ],
+      [
+        "display-none paste control",
+        '<button id="paste-button"',
+        '<button style="DISPLAY : none !important" id="paste-button"',
+      ],
+      [
+        "visibility-hidden link control",
+        '<button id="link-button"',
+        '<button style="visibility:hidden" id="link-button"',
+      ],
+    ]) {
+      const archive = browserArchive(browser);
+      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      const hidden = panel.replace(source, replacement);
+      assert.notEqual(hidden, panel, name);
+      archive.files.set("dist/panel.html", Buffer.from(hidden));
+
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /connection controls.*visible/i,
+        name,
+      );
+    }
+  });
+
+  test(`common ${browser} artifact verifier rejects controls outside the toolbar`, () => {
+    const archive = browserArchive(browser);
+    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    archive.files.set(
+      "dist/panel.html",
+      Buffer.from(moveElementAfterToolbar(panel, "paste-button")),
+    );
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /connection controls.*paste-button.*connection-summary/i,
     );
   });
 }
@@ -360,4 +440,13 @@ function browserArchive(browser) {
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function moveElementAfterToolbar(panel, id) {
+  const start = panel.indexOf(`<button id="${id}"`);
+  const end = panel.indexOf("</button>", start) + "</button>".length;
+  assert.ok(start >= 0 && end >= "</button>".length);
+  const element = panel.slice(start, end);
+  const withoutElement = panel.slice(0, start) + panel.slice(end);
+  return withoutElement.replace("</header>", `</header>\n${element}`);
 }

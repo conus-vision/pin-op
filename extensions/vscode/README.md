@@ -1,7 +1,6 @@
 # Pin-op
 
-Pin-op highlights source code in VS Code for a DOM element selected in
-Firefox or Chrome/Chromium DevTools.
+Highlights styles and source code in your IDE for the DOM element selected in the browser.
 
 ## Install From VSIX
 

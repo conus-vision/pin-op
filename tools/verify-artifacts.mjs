@@ -10,7 +10,10 @@ import {
   assertBrowserPackageRuntimeContract,
 } from "./browser-package-contract.mjs";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
-import { assertVsCodeExtensionIdentity } from "./vscode-extension-identity.mjs";
+import {
+  assertVsCodeExtensionIdentity,
+  assertVsCodeReadme,
+} from "./vscode-extension-identity.mjs";
 import {
   assertTextEqual,
   assertVersion,
@@ -73,6 +76,9 @@ const EOCD_MIN_BYTES = 22;
 const MAX_ZIP_COMMENT_BYTES = 0xffff;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const vscodeReadme = await readFile(
+  resolve(repositoryRoot, "extensions/vscode/README.md"),
+);
 const extensionRequire = createRequire(
   resolve(repositoryRoot, "extensions/vscode/package.json"),
 );
@@ -557,6 +563,11 @@ async function verifyVsix(archive, filename) {
 export function validateVsixArchive(archive, filename) {
   assertExactArchivePaths(archive, filename, VSIX_ARCHIVE_FILES);
   assertProjectLicense(archive, filename, "extension/LICENSE.txt");
+  assertVsCodeReadme(
+    archive.files.get("extension/readme.md"),
+    vscodeReadme,
+    filename,
+  );
 
   const manifest = parseJsonFile(archive, filename, "extension/package.json");
   assertVsCodeExtensionIdentity(manifest, filename);
