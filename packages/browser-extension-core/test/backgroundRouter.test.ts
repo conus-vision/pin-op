@@ -898,6 +898,45 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("marks a removed tab terminal before closing its active panel", async () => {
+    const events = createRouterSubscriptionHarness();
+    const harness = createHarness({ subscriptions: events.subscriptions });
+    const port = await harness.registerAndConnect(
+      "channel-terminal-order",
+      17,
+      "source-terminal-order",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.lifecycleCalls.length = 0;
+
+    events.removeTab(17);
+
+    expect(port.disconnected).toBe(true);
+    expect(harness.tabRefresh.lifecycleCalls.slice(0, 2)).toEqual([
+      "removeTab:17",
+      "panelClosed:17:10",
+    ]);
+  });
+
+  it("fences a removed window before closing its active panels", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-window-order",
+      17,
+      "source-window-order",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.lifecycleCalls.length = 0;
+
+    await harness.router.removeWindow(10);
+
+    expect(port.disconnected).toBe(true);
+    expect(harness.tabRefresh.lifecycleCalls.slice(0, 2)).toEqual([
+      "removeWindow:10",
+      "panelClosed:17:10",
+    ]);
+  });
+
   it("does not let a delayed old-window close overwrite the new panel owner", async () => {
     const tabs = new Map([[17, 10]]);
     const harness = createHarness({ tabs });
@@ -917,24 +956,22 @@ describe("BackgroundRouter", () => {
     tabs.set(17, 20);
     const newPort = harness.panelPort("channel-new-window");
     harness.router.connectPort(newPort);
-    await harness.router.routeMessage(
+    const registration = harness.router.routeMessage(
       registerMessage("channel-new-window", 17, "source-new-window"),
       devtoolsSender(),
     );
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(delayedCloseCalls).toBe(1));
 
-    expect(delayedCloseCalls).toBe(1);
     expect(oldPort.disconnected).toBe(true);
     expect(newPort.disconnected).toBe(false);
     expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, 10]);
-    expect(harness.tabRefresh.panelOpenCalls.at(-1)).toEqual([17, 20]);
-    expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
-      windowId: 20,
-      participant: true,
-    });
+    expect(harness.coordinator.activeSources()).toEqual([]);
 
     closeGate.resolve();
-    await flushMicrotasks();
+    await expect(registration).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelOpenCalls.at(-1)).toEqual([17, 20]);
+    });
     expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
       windowId: 20,
       participant: true,
@@ -1224,6 +1261,7 @@ describe("BackgroundRouter", () => {
     const recovered = harness.panelPort("channel-1");
     harness.router.connectPort(recovered);
     delayedDisconnect();
+    await flushMicrotasks();
 
     expect(harness.coordinator.activeSources()).toEqual([
       "source-17",
@@ -3646,6 +3684,123 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("waits for panel-close teardown before activating a reconnect", async () => {
+    const closeGate = deferred<void>();
+    const harness = createHarness();
+    const oldPort = await harness.registerAndConnect(
+      "channel-reconnect-barrier",
+      17,
+      "source-reconnect-barrier",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelClosedBehavior = async () => closeGate.promise;
+
+    oldPort.disconnect();
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, 10]);
+    });
+    const reconnect = harness.panelPort("channel-reconnect-barrier");
+    harness.router.connectPort(reconnect);
+    await flushMicrotasks();
+
+    expect(harness.coordinator.activeSources()).toEqual([]);
+    expect(reconnect.sent).toEqual([]);
+
+    closeGate.resolve();
+    await vi.waitFor(() => {
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-reconnect-barrier",
+      ]);
+    });
+  });
+
+  it("waits for superseded panel teardown before committing a replacement", async () => {
+    const closeGate = deferred<void>();
+    const harness = createHarness();
+    const oldPort = await harness.registerAndConnect(
+      "channel-replacement-old",
+      17,
+      "source-replacement-old",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelClosedBehavior = async () => closeGate.promise;
+    oldPort.disconnect();
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, 10]);
+    });
+
+    const replacementPort = harness.panelPort("channel-replacement-new");
+    harness.router.connectPort(replacementPort);
+    let registrationSettled = false;
+    const registration = harness.router.routeMessage(
+      registerMessage(
+        "channel-replacement-new",
+        17,
+        "source-replacement-new",
+      ),
+      devtoolsSender(),
+    ).then((result) => {
+      registrationSettled = true;
+      return result;
+    });
+    await flushMicrotasks();
+
+    expect(registrationSettled).toBe(false);
+    expect(harness.coordinator.activeSources()).toEqual([]);
+
+    closeGate.resolve();
+    await expect(registration).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => {
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-replacement-new",
+      ]);
+    });
+  });
+
+  it("keeps replacement unavailable until a failed old teardown retries", async () => {
+    const firstClose = deferred<void>();
+    let closeAttempt = 0;
+    const harness = createHarness();
+    const oldPort = await harness.registerAndConnect(
+      "channel-retry-old",
+      17,
+      "source-retry-old",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.panelClosedBehavior = async () => {
+      closeAttempt += 1;
+      if (closeAttempt === 1) {
+        await firstClose.promise;
+        throw new Error("transient replacement close failure");
+      }
+    };
+    oldPort.disconnect();
+    await vi.waitFor(() => expect(closeAttempt).toBe(1));
+
+    const replacementPort = harness.panelPort("channel-retry-new");
+    harness.router.connectPort(replacementPort);
+    const failedRegistration = harness.router.routeMessage(
+      registerMessage("channel-retry-new", 17, "source-retry-new"),
+      devtoolsSender(),
+    );
+    firstClose.resolve();
+
+    await expect(failedRegistration).resolves.toBeUndefined();
+    expect(harness.coordinator.activeSources()).toEqual([]);
+    expect(replacementPort.sent).toEqual([]);
+
+    await expect(harness.router.routeMessage(
+      registerMessage("channel-retry-new", 17, "source-retry-new"),
+      devtoolsSender(),
+    )).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => {
+      expect(closeAttempt).toBe(2);
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-retry-new",
+      ]);
+    });
+  });
+
   it("does not dispatch a command after its tab lookup loses the panel", async () => {
     const movedTab = deferred<{ id: number; windowId: number }>();
     let lookupCount = 0;
@@ -4904,6 +5059,7 @@ describe("BackgroundRouter", () => {
 
     const recoveredPort = harness.panelPort("channel-1");
     harness.router.connectPort(recoveredPort);
+    await flushMicrotasks();
     await expect(
       harness.router.routeMessage(
         {
@@ -5432,6 +5588,7 @@ class FakeContentRefreshCoordinator {
 }
 
 class FakeTabRefreshCoordinator {
+  public readonly lifecycleCalls: string[] = [];
   public readonly panelOpenCalls: Array<[number, number]> = [];
   public readonly panelCloseCalls: Array<[number, number | undefined]> = [];
   public readonly stateCalls: Array<[number, number]> = [];
@@ -5471,7 +5628,9 @@ class FakeTabRefreshCoordinator {
     windowId: number,
   ): Promise<TabRefreshState> {
     this.panelOpenCalls.push([tabId, windowId]);
-    this.terminalTabs.delete(tabId);
+    if (this.terminalTabs.has(tabId)) {
+      throw new Error("Tab refresh lifecycle is terminal");
+    }
     this.panelWindows.set(tabId, windowId);
     const revision = this.advanceLifecycle(tabId);
     try {
@@ -5503,6 +5662,7 @@ class FakeTabRefreshCoordinator {
     tabId: number,
     windowId?: number,
   ): Promise<TabRefreshState | undefined> {
+    this.lifecycleCalls.push(`panelClosed:${tabId}:${windowId ?? "unknown"}`);
     this.panelCloseCalls.push([tabId, windowId]);
     if (this.terminalTabs.has(tabId)) {
       return undefined;
@@ -5639,6 +5799,7 @@ class FakeTabRefreshCoordinator {
   }
 
   public async removeTab(tabId: number): Promise<void> {
+    this.lifecycleCalls.push(`removeTab:${tabId}`);
     this.removedTabs.push(tabId);
     this.terminalTabs.delete(tabId);
     this.terminalTabs.add(tabId);
@@ -5653,11 +5814,19 @@ class FakeTabRefreshCoordinator {
   }
 
   public async removeWindow(windowId: number): Promise<void> {
+    this.lifecycleCalls.push(`removeWindow:${windowId}`);
     this.removedWindows.push(windowId);
     for (const [tabId, state] of this.states) {
       if (state.windowId === windowId) {
         this.panelWindows.delete(tabId);
-        this.states.delete(tabId);
+        this.states.set(tabId, {
+          tabId: state.tabId,
+          windowId: state.windowId,
+          autoRefreshEnabled: state.autoRefreshEnabled,
+          ideHighlightEnabled: state.ideHighlightEnabled,
+          participant: false,
+          lastAcceptedGeneration: state.lastAcceptedGeneration,
+        });
         this.lifecycleRevisions.delete(tabId);
       }
     }
@@ -5875,9 +6044,11 @@ function createRouterSubscriptionHarness(): {
   readonly subscriptions: BackgroundRouterSubscriptions;
   detach(tabId: number, oldWindowId: number): void;
   attach(tabId: number, newWindowId: number): void;
+  removeTab(tabId: number): void;
 } {
   let detached: ((tabId: number, oldWindowId: number) => void) | undefined;
   let attached: ((tabId: number, newWindowId: number) => void) | undefined;
+  let removed: ((tabId: number) => void) | undefined;
   return {
     subscriptions: {
       subscribeRuntimeMessages() {
@@ -5905,6 +6076,14 @@ function createRouterSubscriptionHarness(): {
           }
         };
       },
+      subscribeTabRemoved(listener) {
+        removed = listener;
+        return () => {
+          if (removed === listener) {
+            removed = undefined;
+          }
+        };
+      },
     },
     detach(tabId, oldWindowId) {
       if (!detached) {
@@ -5917,6 +6096,12 @@ function createRouterSubscriptionHarness(): {
         throw new Error("Missing tab attach listener");
       }
       attached(tabId, newWindowId);
+    },
+    removeTab(tabId) {
+      if (!removed) {
+        throw new Error("Missing tab remove listener");
+      }
+      removed(tabId);
     },
   };
 }

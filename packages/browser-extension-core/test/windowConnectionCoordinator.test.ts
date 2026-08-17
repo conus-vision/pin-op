@@ -322,6 +322,92 @@ describe("WindowConnectionCoordinator", () => {
     router.dispose();
   });
 
+  it.each(["remove-first", "close-first"] as const)(
+    "keeps an active panel terminal and crash-safe when teardown is %s",
+    async (order) => {
+      const storage = new RecordingSessionStorage();
+      const harness = coordinatorHarness(storage);
+      const tabStore = new TabRefreshStateStore(storage);
+      const tabs = new TabRefreshCoordinator({
+        store: tabStore,
+        getActiveTabId: async () => undefined,
+        dispatchRefresh: async () => undefined,
+        setRefreshParticipant: (windowId, tabId, participant) =>
+          harness.coordinator.setRefreshParticipant(
+            windowId,
+            tabId,
+            participant,
+          ),
+      });
+      let removeTab: ((tabId: number) => void) | undefined;
+      const router = createBackgroundRouter({
+        expectedDevtoolsUrl: DEVTOOLS_URL,
+        expectedPanelUrl: PANEL_URL,
+        getTab: async (tabId) => ({ id: tabId, windowId: 10 }),
+        coordinator: harness.coordinator,
+        tabRefreshCoordinator: tabs,
+        inspectCoordinator: new BackgroundInspectCoordinator({
+          executeScript: async () => undefined,
+          sendTabMessage: async () => undefined,
+        }),
+        subscriptions: {
+          subscribeRuntimeMessages() { return () => undefined; },
+          subscribeRuntimePorts() { return () => undefined; },
+          subscribeWindowRemoved() { return () => undefined; },
+          subscribeTabDetached() { return () => undefined; },
+          subscribeTabAttached() { return () => undefined; },
+          subscribeTabRemoved(listener) {
+            removeTab = listener;
+            return () => undefined;
+          },
+        },
+      });
+      const channel = `active-terminal-${order}`;
+      await router.routeMessage({
+        type: "pin-op.registerDevtools",
+        channel,
+        tabId: 101,
+        sourceId: `active-terminal-source-${order}`,
+      }, { url: DEVTOOLS_URL });
+      const port = new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        { url: `${PANEL_URL}?channel=${channel}` },
+      );
+      router.connectPort(port);
+      await flushMicrotasks();
+      expect(await tabStore.loadAll()).toEqual([
+        expect.objectContaining({ tabId: 101, participant: true }),
+      ]);
+      storage.operations.length = 0;
+
+      if (order === "close-first") {
+        port.disconnect();
+      }
+      removeTab?.(101);
+      await vi.waitFor(async () => {
+        expect(await tabStore.loadAll()).toEqual([]);
+      });
+
+      expect(port.disconnected).toBe(true);
+      expect(storage.operations.slice(-3)).toEqual([
+        "set:pin-op.tabRefreshStateRecovery",
+        "remove:pin-op.tabRefreshStates",
+        "remove:pin-op.tabRefreshStateRecovery",
+      ]);
+      const restoredParticipation = vi.fn();
+      const replacement = new TabRefreshCoordinator({
+        store: new TabRefreshStateStore(storage),
+        getActiveTabId: async () => undefined,
+        dispatchRefresh: async () => undefined,
+        setRefreshParticipant: restoredParticipation,
+      });
+      await replacement.initialize();
+      expect(restoredParticipation).not.toHaveBeenCalled();
+      expect(lifecycleRevisionCount(tabs)).toBe(0);
+      router.dispose();
+    },
+  );
+
   it.each(["absent", "rejected"] as const)(
     "revokes a restored reconnect when panel tab lookup is %s",
     async (lookupFailure) => {
@@ -2161,6 +2247,22 @@ class MemorySessionStorage implements SessionStorage {
   public async remove(key: string): Promise<void> {
     this.removals.push(key);
     delete this.values[key];
+  }
+}
+
+class RecordingSessionStorage extends MemorySessionStorage {
+  public readonly operations: string[] = [];
+
+  public override async set(values: Record<string, unknown>): Promise<void> {
+    for (const key of Object.keys(values)) {
+      this.operations.push(`set:${key}`);
+    }
+    await super.set(values);
+  }
+
+  public override async remove(key: string): Promise<void> {
+    this.operations.push(`remove:${key}`);
+    await super.remove(key);
   }
 }
 

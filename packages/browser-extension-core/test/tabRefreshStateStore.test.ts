@@ -125,7 +125,7 @@ describe("TabRefreshStateStore", () => {
     expect(await store.load(11, 7)).toEqual(updated);
   });
 
-  it("removes a tab, a window, and finally the storage key", async () => {
+  it("removes terminal tabs and finally the storage key", async () => {
     const storage = memoryStorage();
     const store = new TabRefreshStateStore(storage);
     await store.save(state(11, 7));
@@ -134,28 +134,43 @@ describe("TabRefreshStateStore", () => {
 
     await store.removeTab(11);
     expect((await store.loadAll()).map(({ tabId }) => tabId)).toEqual([12, 21]);
-    await store.removeWindow(7);
+    await store.removeTab(12);
     expect((await store.loadAll()).map(({ tabId }) => tabId)).toEqual([21]);
-    await store.removeWindow(8);
+    await store.removeTab(21);
     expect(await store.loadAll()).toEqual([]);
-    expect(storage.remove).toHaveBeenLastCalledWith("pin-op.tabRefreshStates");
+    expect(storage.remove).toHaveBeenCalledWith("pin-op.tabRefreshStates");
+    expect(storage.remove).toHaveBeenLastCalledWith(
+      "pin-op.tabRefreshStateRecovery",
+    );
   });
 
-  it("removes a tab only while it still belongs to the expected window", async () => {
+  it("recovers a fail-closed snapshot when terminal deletion fails", async () => {
     const storage = memoryStorage();
     const store = new TabRefreshStateStore(storage);
     const current = {
       ...state(11, 8),
-      autoRefreshEnabled: false,
-      participant: false,
+      ideHighlightEnabled: false,
+      lastAcceptedGeneration: 6,
+      pending: { generation: 6, mode: "reload" as const },
     } as const;
     await store.save(current);
+    storage.failNextRemoveFor("pin-op.tabRefreshStates");
 
-    await expect(store.removeTabFromWindow(11, 7)).resolves.toBeUndefined();
-    expect(await store.loadAll()).toEqual([current]);
+    await expect(store.removeTab(11)).rejects.toThrow(
+      "transient storage remove failure",
+    );
 
-    await expect(store.removeTabFromWindow(11, 8)).resolves.toEqual(current);
-    expect(await store.loadAll()).toEqual([]);
+    const replacement = new TabRefreshStateStore(storage);
+    expect(await replacement.loadAll()).toEqual([{
+      tabId: 11,
+      windowId: 8,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 6,
+    }]);
+    await replacement.removeTab(11);
+    expect(await replacement.loadAll()).toEqual([]);
   });
 
   it("rejects invalid state before writing", async () => {
@@ -280,10 +295,12 @@ function memoryStorage(initial: Record<string, unknown> = {}): SessionStorage & 
   readonly remove: ReturnType<typeof vi.fn>;
   readonly set: ReturnType<typeof vi.fn>;
   failNextSetFor(key: string): void;
+  failNextRemoveFor(key: string): void;
   value(key: string): unknown;
 } {
   const values = new Map(Object.entries(initial));
   let failedSetKey: string | undefined;
+  let failedRemoveKey: string | undefined;
   return {
     async get(key: string) {
       return values.has(key) ? { [key]: values.get(key) } : {};
@@ -298,10 +315,17 @@ function memoryStorage(initial: Record<string, unknown> = {}): SessionStorage & 
       }
     }),
     remove: vi.fn(async (key: string) => {
+      if (failedRemoveKey === key) {
+        failedRemoveKey = undefined;
+        throw new Error("transient storage remove failure");
+      }
       values.delete(key);
     }),
     failNextSetFor(key: string) {
       failedSetKey = key;
+    },
+    failNextRemoveFor(key: string) {
+      failedRemoveKey = key;
     },
     value(key: string) {
       const value = values.get(key);

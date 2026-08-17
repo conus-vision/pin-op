@@ -312,6 +312,11 @@ interface PanelCommandRecord {
   readonly abortController?: AbortController;
 }
 
+interface PanelTeardownRequirement {
+  readonly binding: ChannelBinding;
+  invalidateBinding: boolean;
+}
+
 type PanelWindowCommand =
   | {
       readonly type: "pin-op.linkWindow";
@@ -364,7 +369,10 @@ export class BackgroundRouter {
     string,
     { readonly binding: ChannelBinding; readonly promise: Promise<boolean> }
   >();
-  private readonly requiredPanelTeardowns = new Map<string, ChannelBinding>();
+  private readonly requiredPanelTeardowns = new Map<
+    string,
+    PanelTeardownRequirement
+  >();
   private readonly removedWindows = new Set<number>();
   private readonly peerBlockedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
@@ -559,6 +567,9 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
+    const tabRefreshRemoval = this.tabRefreshCoordinator.removeWindow(
+      windowId,
+    );
     this.contentRefreshCoordinator.revokeWindow(windowId);
     this.correlations.disposeWindow(windowId);
     this.removedWindows.add(windowId);
@@ -575,7 +586,7 @@ export class BackgroundRouter {
       this.removeBinding(binding);
     }
     await Promise.all([
-      this.tabRefreshCoordinator.removeWindow(windowId),
+      tabRefreshRemoval,
       this.coordinator.removeWindow(windowId),
     ]);
   }
@@ -665,6 +676,7 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(tabId)) {
       return;
     }
+    const tabRefreshRemoval = this.tabRefreshCoordinator.removeTab(tabId);
     this.contentRefreshCoordinator.revokeTab(tabId);
     this.correlations.disposeTab(tabId);
     this.cancelPendingRegistrationsForTab(tabId);
@@ -677,9 +689,7 @@ export class BackgroundRouter {
     if (binding) {
       this.removeBinding(binding);
     }
-    void this.tabRefreshCoordinator
-      .removeTab(tabId)
-      .catch((error) => this.reportError(error));
+    void tabRefreshRemoval.catch((error) => this.reportError(error));
     void this.contentRefreshCoordinator
       .removeTab(tabId)
       .catch((error) => this.reportError(error));
@@ -762,6 +772,10 @@ export class BackgroundRouter {
       if (binding.tabId !== tabId || !binding.suspended) {
         return;
       }
+      if (this.hasRequiredPanelTeardown(binding)) {
+        void this.attachMovedBindingAfterTeardown(binding, newWindowId);
+        return;
+      }
       const replacement = this.replaceBindingWindow(binding, newWindowId);
       const record = this.panelPorts.get(replacement.channel);
       if (record) {
@@ -783,6 +797,15 @@ export class BackgroundRouter {
       (this.channelBySource.has(pending.sourceId) &&
         this.channelBySource.get(pending.sourceId) !== pending.channel)
     ) {
+      return;
+    }
+    const required = this.requiredPanelTeardowns.get(pending.channel);
+    if (required) {
+      void this.attachPendingAfterTeardown(
+        pending,
+        required.binding,
+        newWindowId,
+      );
       return;
     }
     const replacement: ChannelBinding = {
@@ -816,6 +839,16 @@ export class BackgroundRouter {
     };
     this.bindings.set(replacement.channel, replacement);
     return replacement;
+  }
+
+  private sourceRemainsAvailable(
+    pending: PendingRegistration,
+    supersededBinding: ChannelBinding,
+  ): boolean {
+    const channel = this.channelBySource.get(pending.sourceId);
+    return channel === undefined ||
+      channel === pending.channel ||
+      channel === supersededBinding.channel;
   }
 
   private registerDevtools(
@@ -859,6 +892,16 @@ export class BackgroundRouter {
         return undefined;
       }
       if (pending.panelClosed) {
+        return undefined;
+      }
+      const required = this.requiredPanelTeardowns.get(pending.channel);
+      if (
+        required &&
+        !await this.awaitPanelTeardownForActivation(required.binding)
+      ) {
+        return undefined;
+      }
+      if (!this.isCurrentPending(pending) || pending.panelClosed) {
         return undefined;
       }
       const currentBinding = this.bindings.get(pending.channel);
@@ -965,6 +1008,21 @@ export class BackgroundRouter {
         if (supersededPort) {
           this.closePanelPort(supersededPort, true);
         }
+        if (
+          this.hasRequiredPanelTeardown(supersededBinding) &&
+          !await this.awaitPanelTeardownForActivation(supersededBinding)
+        ) {
+          return undefined;
+        }
+        if (
+          !this.isCurrentPending(pending) ||
+          pending.panelClosed ||
+          this.bindings.get(supersededBinding.channel) !== supersededBinding ||
+          this.channelByTab.get(pending.tabId) !== supersededBinding.channel ||
+          !this.sourceRemainsAvailable(pending, supersededBinding)
+        ) {
+          return undefined;
+        }
         this.removeBinding(supersededBinding);
       }
       this.bindings.set(binding.channel, binding);
@@ -986,12 +1044,116 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     binding: ChannelBinding,
   ): void {
+    if (!this.canActivatePanelPort(record, binding)) {
+      return;
+    }
+    if (!this.hasRequiredPanelTeardown(binding)) {
+      this.activatePanelPortNow(record, binding);
+      return;
+    }
+    void this.activatePanelPortAfterTeardown(record, binding);
+  }
+
+  private async activatePanelPortAfterTeardown(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+  ): Promise<void> {
+    if (!await this.awaitPanelTeardownForActivation(binding)) {
+      return;
+    }
+    if (this.canActivatePanelPort(record, binding)) {
+      this.activatePanelPortNow(record, binding);
+    }
+  }
+
+  private async attachMovedBindingAfterTeardown(
+    binding: ChannelBinding,
+    newWindowId: number,
+  ): Promise<void> {
+    if (!await this.awaitPanelTeardownForActivation(binding)) {
+      return;
+    }
     if (
-      this.panelPorts.get(record.channel) !== record ||
+      this.disposed ||
       this.bindings.get(binding.channel) !== binding ||
-      binding.suspended ||
-      (record.bindingGeneration === binding.generation &&
-        record.registration !== undefined)
+      !binding.suspended
+    ) {
+      return;
+    }
+    const replacement = this.replaceBindingWindow(binding, newWindowId);
+    const record = this.panelPorts.get(replacement.channel);
+    if (record) {
+      this.activatePanelPort(record, replacement);
+    }
+  }
+
+  private async attachPendingAfterTeardown(
+    pending: PendingRegistration,
+    binding: ChannelBinding,
+    newWindowId: number,
+  ): Promise<void> {
+    if (!await this.awaitPanelTeardownForActivation(binding)) {
+      return;
+    }
+    if (
+      !this.isCurrentPending(pending) ||
+      pending.panelClosed
+    ) {
+      return;
+    }
+    const sourceChannel = this.channelBySource.get(pending.sourceId);
+    const tabChannel = this.channelByTab.get(pending.tabId);
+    if (
+      (sourceChannel && sourceChannel !== pending.channel) ||
+      (tabChannel && tabChannel !== pending.channel)
+    ) {
+      return;
+    }
+    const current = this.bindings.get(pending.channel);
+    if (current && (!sameIdentity(current, pending) || !current.suspended)) {
+      return;
+    }
+    const replacement = current
+      ? this.replaceBindingWindow(current, newWindowId)
+      : {
+          channel: pending.channel,
+          tabId: pending.tabId,
+          sourceId: pending.sourceId,
+          windowId: newWindowId,
+          generation: this.allocateGeneration(),
+          suspended: false,
+        };
+    this.bindings.set(replacement.channel, replacement);
+    this.channelByTab.set(replacement.tabId, replacement.channel);
+    this.channelBySource.set(replacement.sourceId, replacement.channel);
+    const record = this.panelPorts.get(replacement.channel);
+    if (record) {
+      this.activatePanelPort(record, replacement);
+    }
+  }
+
+  private canActivatePanelPort(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+  ): boolean {
+    return (
+      this.panelPorts.get(record.channel) === record &&
+      this.bindings.get(binding.channel) === binding &&
+      !binding.suspended &&
+      !(
+        record.bindingGeneration === binding.generation &&
+        record.registration !== undefined
+      )
+    );
+  }
+
+  private activatePanelPortNow(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+  ): void {
+    if (
+      !this.canActivatePanelPort(record, binding) ||
+      this.hasRequiredPanelTeardown(binding)
     ) {
       return;
     }
@@ -1324,9 +1486,13 @@ export class BackgroundRouter {
     this.clearPanelActivation(record);
     if (closedTabId !== undefined) {
       this.contentRefreshCoordinator.revokeTab(closedTabId);
-      void this.tabRefreshCoordinator
-        .panelClosed(closedTabId, closedWindowId)
-        .catch((error) => this.reportError(error));
+      if (activeBinding) {
+        void this.requestPanelTeardown(activeBinding, false);
+      } else {
+        void this.tabRefreshCoordinator
+          .panelClosed(closedTabId, closedWindowId)
+          .catch((error) => this.reportError(error));
+      }
     }
     if (disconnect) {
       safeDisconnect(record.port);
@@ -2013,10 +2179,8 @@ export class BackgroundRouter {
     if (!this.isCurrentActivation(record, activationToken, binding)) {
       return undefined;
     }
-    if (
-      this.hasRequiredPanelTeardown(binding) &&
-      await this.settleRequiredPanelTeardown(binding, record)
-    ) {
+    if (this.hasRequiredPanelTeardown(binding)) {
+      await this.settleRequiredPanelTeardown(binding);
       return undefined;
     }
 
@@ -2029,16 +2193,14 @@ export class BackgroundRouter {
     if (!this.isCurrentActivation(record, activationToken, binding)) {
       return undefined;
     }
-    if (
-      this.hasRequiredPanelTeardown(binding) &&
-      await this.settleRequiredPanelTeardown(binding, record)
-    ) {
+    if (this.hasRequiredPanelTeardown(binding)) {
+      await this.settleRequiredPanelTeardown(binding);
       return undefined;
     }
 
     const resolved = resolvedTab(tab, binding.tabId);
     if (!resolved || this.removedWindows.has(resolved.windowId)) {
-      await this.invalidatePanelBinding(binding, record);
+      await this.invalidatePanelBinding(binding);
       return undefined;
     }
     if (binding.windowId === resolved.windowId) {
@@ -2063,19 +2225,34 @@ export class BackgroundRouter {
       : undefined;
   }
 
-  private async invalidatePanelBinding(
+  private invalidatePanelBinding(
     binding: ChannelBinding,
-    record: PanelPortRecord,
   ): Promise<boolean> {
-    this.requiredPanelTeardowns.set(binding.channel, binding);
+    this.contentRefreshCoordinator.revokeTab(binding.tabId);
+    return this.requestPanelTeardown(binding, true);
+  }
+
+  private requestPanelTeardown(
+    binding: ChannelBinding,
+    invalidateBinding: boolean,
+  ): Promise<boolean> {
+    const required = this.requiredPanelTeardowns.get(binding.channel);
+    if (required && required.binding !== binding) {
+      return Promise.resolve(false);
+    }
+    if (required) {
+      required.invalidateBinding ||= invalidateBinding;
+    } else {
+      this.requiredPanelTeardowns.set(binding.channel, {
+        binding,
+        invalidateBinding,
+      });
+    }
     const existing = this.panelTeardowns.get(binding.channel);
     if (existing?.binding === binding) {
       return existing.promise;
     }
-    const promise = this.performPanelBindingInvalidation(
-      binding,
-      record,
-    ).finally(() => {
+    const promise = this.performPanelBindingTeardown(binding).finally(() => {
       if (this.panelTeardowns.get(binding.channel)?.promise === promise) {
         this.panelTeardowns.delete(binding.channel);
       }
@@ -2084,46 +2261,50 @@ export class BackgroundRouter {
     return promise;
   }
 
-  private async settleRequiredPanelTeardown(
+  private async awaitPanelTeardownForActivation(
     binding: ChannelBinding,
-    record: PanelPortRecord,
   ): Promise<boolean> {
     const pending = this.panelTeardowns.get(binding.channel);
     const required = this.requiredPanelTeardowns.get(binding.channel);
-    if (pending?.binding !== binding && required !== binding) {
-      return false;
+    if (pending?.binding !== binding && required?.binding !== binding) {
+      return true;
     }
-    const completed = pending?.binding === binding
+    return pending?.binding === binding
       ? await pending.promise
-      : false;
+      : await this.requestPanelTeardown(
+          binding,
+          required?.invalidateBinding ?? false,
+        );
+  }
+
+  private async settleRequiredPanelTeardown(
+    binding: ChannelBinding,
+  ): Promise<void> {
+    const completed = await this.awaitPanelTeardownForActivation(binding);
+    const required = this.requiredPanelTeardowns.get(binding.channel);
     if (
       !completed &&
-      this.requiredPanelTeardowns.get(binding.channel) === binding
+      required?.binding === binding
     ) {
-      await this.invalidatePanelBinding(binding, record);
+      await this.requestPanelTeardown(
+        binding,
+        required.invalidateBinding,
+      );
     }
-    return true;
   }
 
   private hasRequiredPanelTeardown(binding: ChannelBinding): boolean {
     return this.panelTeardowns.get(binding.channel)?.binding === binding ||
-      this.requiredPanelTeardowns.get(binding.channel) === binding;
+      this.requiredPanelTeardowns.get(binding.channel)?.binding === binding;
   }
 
-  private async performPanelBindingInvalidation(
+  private async performPanelBindingTeardown(
     binding: ChannelBinding,
-    record: PanelPortRecord,
   ): Promise<boolean> {
-    if (
-      this.bindings.get(binding.channel) !== binding ||
-      this.panelPorts.get(record.channel) !== record
-    ) {
-      if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
-        this.requiredPanelTeardowns.delete(binding.channel);
-      }
+    const required = this.requiredPanelTeardowns.get(binding.channel);
+    if (required?.binding !== binding) {
       return true;
     }
-    this.contentRefreshCoordinator.revokeTab(binding.tabId);
     try {
       await this.tabRefreshCoordinator.panelClosed(
         binding.tabId,
@@ -2133,20 +2314,24 @@ export class BackgroundRouter {
       this.reportError(error);
       return false;
     }
-    if (
-      this.bindings.get(binding.channel) !== binding ||
-      this.panelPorts.get(record.channel) !== record
-    ) {
-      if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
-        this.requiredPanelTeardowns.delete(binding.channel);
-      }
+    const completed = this.requiredPanelTeardowns.get(binding.channel);
+    if (completed?.binding !== binding) {
       return true;
     }
-    this.removeBinding(binding);
-    record.port.onMessage.removeListener(record.onMessage);
-    this.clearPanelActivation(record, true);
-    record.onMessage = (message) => this.rejectPendingInspect(record, message);
-    record.port.onMessage.addListener(record.onMessage);
+    if (completed.invalidateBinding) {
+      const record = this.panelPorts.get(binding.channel);
+      if (record?.bindingGeneration === binding.generation) {
+        record.port.onMessage.removeListener(record.onMessage);
+        this.clearPanelActivation(record, true);
+        record.onMessage = (message) =>
+          this.rejectPendingInspect(record, message);
+        record.port.onMessage.addListener(record.onMessage);
+      }
+      this.removeBinding(binding, true);
+    }
+    if (this.requiredPanelTeardowns.get(binding.channel) === completed) {
+      this.requiredPanelTeardowns.delete(binding.channel);
+    }
     return true;
   }
 
@@ -2863,12 +3048,18 @@ export class BackgroundRouter {
     }
   }
 
-  private removeBinding(binding: ChannelBinding): void {
+  private removeBinding(
+    binding: ChannelBinding,
+    preserveRequiredTeardown = false,
+  ): void {
     if (this.bindings.get(binding.channel) !== binding) {
       return;
     }
     this.bindings.delete(binding.channel);
-    if (this.requiredPanelTeardowns.get(binding.channel) === binding) {
+    if (
+      !preserveRequiredTeardown &&
+      this.requiredPanelTeardowns.get(binding.channel)?.binding === binding
+    ) {
       this.requiredPanelTeardowns.delete(binding.channel);
     }
     if (this.channelByTab.get(binding.tabId) === binding.channel) {
