@@ -1,4 +1,5 @@
 import {
+  PageRefreshMessageSchema,
   PROTOCOL_VERSION,
   SourceNavigationStateMessageSchema,
   type SourceNavigateMessage,
@@ -6,6 +7,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeClient,
+  PageRefreshClientRouter,
   ResolutionClientRouter,
   SourceNavigationClientRouter,
 } from "../src/bridgeClient.js";
@@ -67,6 +69,27 @@ describe("BridgeClient", () => {
     expect(second.sendResolution).toHaveBeenCalledTimes(1);
   });
 
+  it("routes page refresh only to the current bridge client", () => {
+    const router = new PageRefreshClientRouter();
+    const first = { sendPageRefresh: vi.fn() };
+    const second = { sendPageRefresh: vi.fn() };
+    const input = { mode: "styles" as const };
+
+    router.sendPageRefresh(input);
+    router.bind(first);
+    router.sendPageRefresh(input);
+    router.bind(second);
+    router.unbind(first);
+    router.sendPageRefresh(input);
+    router.unbind(second);
+    router.sendPageRefresh(input);
+
+    expect(first.sendPageRefresh).toHaveBeenCalledTimes(1);
+    expect(second.sendPageRefresh).toHaveBeenCalledTimes(1);
+    expect(first.sendPageRefresh).toHaveBeenCalledWith(input);
+    expect(second.sendPageRefresh).toHaveBeenCalledWith(input);
+  });
+
   it("routes source navigation state only to the current bridge client", () => {
     const router = new SourceNavigationClientRouter();
     const first = { sendSourceNavigationState: vi.fn() };
@@ -110,6 +133,127 @@ describe("BridgeClient", () => {
       diagnosticCodes: [],
       metadata: {},
     });
+  });
+
+  it("sends a strict private-data-free page refresh after authentication", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    const hello = JSON.parse(harness.sockets[0].sent[0] ?? "{}");
+    authenticate(harness.sockets[0]);
+
+    harness.client.sendPageRefresh({
+      mode: "styles",
+      refreshGeneration: 99,
+      messageId: "caller-message",
+      sessionId: "caller-session",
+      source: { role: "browser", id: "caller-source" },
+      metadata: { caller: true },
+      uri: "file:///private/customer/app.scss",
+      path: "C:/private/customer/app.scss",
+      text: "private source text",
+      tabId: 42,
+    } as never);
+
+    const wirePayload = harness.sockets[0].sent.at(-1) ?? "{}";
+    const message = JSON.parse(wirePayload);
+    expect(PageRefreshMessageSchema.parse(message)).toEqual(message);
+    expect(message).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "page.refresh",
+      messageId: expect.any(String),
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: hello.source.id },
+      refreshGeneration: 1,
+      mode: "styles",
+      metadata: {},
+    });
+    expect(wirePayload).not.toContain("private");
+    expect(wirePayload).not.toContain("caller-");
+    expect(Object.keys(message).sort()).toEqual([
+      "messageId",
+      "metadata",
+      "mode",
+      "protocolVersion",
+      "refreshGeneration",
+      "sessionId",
+      "source",
+      "type",
+    ]);
+  });
+
+  it("drops unauthenticated refresh candidates without consuming generation", () => {
+    const harness = createHarness();
+
+    harness.client.sendPageRefresh({ mode: "styles" });
+    harness.client.connect();
+    harness.client.sendPageRefresh({ mode: "reload" });
+    harness.sockets[0].open();
+    harness.client.sendPageRefresh({ mode: "styles" });
+    authenticate(harness.sockets[0]);
+    harness.client.sendPageRefresh({ mode: "reload" });
+
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+      expect.objectContaining({ mode: "reload", refreshGeneration: 1 }),
+    ]);
+  });
+
+  it("keeps refresh generation monotonic across reconnects", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.client.sendPageRefresh({ mode: "styles" });
+
+    harness.sockets[0].serverClose();
+    harness.client.sendPageRefresh({ mode: "reload" });
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    harness.client.sendPageRefresh({ mode: "styles" });
+    authenticate(harness.sockets[1]);
+    harness.client.sendPageRefresh({ mode: "reload" });
+
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+      expect.objectContaining({ mode: "styles", refreshGeneration: 1 }),
+    ]);
+    expect(pageRefreshMessages(harness.sockets[1])).toEqual([
+      expect.objectContaining({ mode: "reload", refreshGeneration: 2 }),
+    ]);
+  });
+
+  it("does not consume generation when the authenticated send throws", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].sendError = new Error("socket send failed");
+
+    expect(() =>
+      harness.client.sendPageRefresh({ mode: "styles" })
+    ).toThrow("socket send failed");
+
+    harness.sockets[0].sendError = undefined;
+    harness.client.sendPageRefresh({ mode: "reload" });
+
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+      expect.objectContaining({ mode: "reload", refreshGeneration: 1 }),
+    ]);
+  });
+
+  it("rejects malformed authenticated refresh input without consuming generation", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    expect(() =>
+      harness.client.sendPageRefresh({ mode: "invalid" } as never)
+    ).toThrow();
+    harness.client.sendPageRefresh({ mode: "styles" });
+
+    expect(pageRefreshMessages(harness.sockets[0])).toEqual([
+      expect.objectContaining({ mode: "styles", refreshGeneration: 1 }),
+    ]);
   });
 
   it("does not send resolutions before authentication", () => {
@@ -250,7 +394,13 @@ describe("BridgeClient", () => {
       authToken: "ide-token",
       source: { role: "ide" },
     });
-    expect(hello.capabilities).toEqual(["resolution", "source-navigation"]);
+    expect(hello.capabilities).toEqual([
+      "resolution",
+      "source-navigation",
+      "auto-refresh",
+      "source-presentation",
+      "presentation-settings",
+    ]);
     expect(harness.states).toEqual(["connecting"]);
 
     authenticate(harness.sockets[0]);
@@ -568,6 +718,12 @@ function authenticate(
     bridgeInstanceId,
     metadata: {},
   });
+}
+
+function pageRefreshMessages(socket: FakeSocket): Array<Record<string, unknown>> {
+  return socket.sent
+    .map((payload) => JSON.parse(payload) as Record<string, unknown>)
+    .filter((message) => message.type === "page.refresh");
 }
 
 function inspectMessage() {

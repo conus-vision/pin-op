@@ -73,12 +73,13 @@ describe("VS Code package build", () => {
     );
   });
 
-  it("packages the current source-navigation capability and messages", () => {
+  it("packages the current IDE capabilities and messages", () => {
     const bundle = readFileSync(bundleUrl, "utf8");
 
-    expect(bundle).toContain(
-      'capabilities: ["resolution", "source-navigation"]',
+    expect(bundle).toMatch(
+      /capabilities:\s*\[\s*"resolution",\s*"source-navigation",\s*"auto-refresh",\s*"source-presentation",\s*"presentation-settings"\s*\]/,
     );
+    expect(bundle).toContain("page.refresh");
     expect(bundle).toContain("source.navigate");
     expect(bundle).toContain("source.navigationState");
   });

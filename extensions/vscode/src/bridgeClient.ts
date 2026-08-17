@@ -2,15 +2,39 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import {
   PinOpMessageSchema,
+  PageRefreshMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
   SourceNavigationStateMessageSchema,
   type ErrorMessage,
   type InspectMessage,
+  type PageRefreshMessage,
   type ResolutionMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
+
+export type PageRefreshInput = Pick<PageRefreshMessage, "mode">;
+
+export interface PageRefreshSender {
+  sendPageRefresh(refresh: PageRefreshInput): void;
+}
+
+export class PageRefreshClientRouter implements PageRefreshSender {
+  private client: PageRefreshSender | undefined;
+
+  public bind(client: PageRefreshSender): void {
+    this.client = client;
+  }
+
+  public unbind(client: PageRefreshSender): void {
+    if (this.client === client) this.client = undefined;
+  }
+
+  public sendPageRefresh(refresh: PageRefreshInput): void {
+    this.client?.sendPageRefresh(refresh);
+  }
+}
 
 export type ResolutionInput = Pick<
   ResolutionMessage,
@@ -119,6 +143,7 @@ export class BridgeClient {
   private reconnectEnabled = false;
   private terminalFailure = false;
   private state: ConnectionState = "disconnected";
+  private refreshGeneration = 0;
 
   constructor(private readonly options: BridgeClientOptions) {
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
@@ -194,6 +219,25 @@ export class BridgeClient {
     this.socket.send(JSON.stringify(message));
   }
 
+  sendPageRefresh(refresh: PageRefreshInput): void {
+    const socket = this.socket;
+    if (!socket || this.state !== "connected") return;
+
+    const refreshGeneration = this.refreshGeneration + 1;
+    const message = PageRefreshMessageSchema.parse({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "page.refresh",
+      messageId: randomUUID(),
+      sessionId: this.options.sessionId,
+      source: { role: "ide", id: this.sourceId },
+      refreshGeneration,
+      mode: refresh.mode,
+      metadata: {},
+    });
+    socket.send(JSON.stringify(message));
+    this.refreshGeneration = refreshGeneration;
+  }
+
   sendSourceNavigationState(state: SourceNavigationStateInput): void {
     const message = SourceNavigationStateMessageSchema.parse({
       ...state,
@@ -225,7 +269,13 @@ export class BridgeClient {
           authToken: this.options.authToken,
           bridgeInstanceId: this.options.bridgeInstanceId,
           source: { role: "ide", id: this.sourceId, metadata: {} },
-          capabilities: ["resolution", "source-navigation"],
+          capabilities: [
+            "resolution",
+            "source-navigation",
+            "auto-refresh",
+            "source-presentation",
+            "presentation-settings",
+          ],
           metadata: {},
         }),
       );

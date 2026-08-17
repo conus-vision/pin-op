@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { PinOpApi } from "@pin-op/plugin-api";
 import {
   BridgeClient,
+  PageRefreshClientRouter,
   ResolutionClientRouter,
   SourceNavigationClientRouter,
   type ConnectionState,
@@ -20,6 +21,10 @@ import {
 } from "./presenter/runtime.js";
 import { replacePrimarySelection } from "./presenter/sourceNavigator.js";
 import { RefreshClassifierRegistry } from "./refresh/refreshClassifierRegistry.js";
+import {
+  SaveObserver,
+  bindSaveObserverEvents,
+} from "./refresh/saveObserver.js";
 import {
   ExtensionRuntimeController,
   registerRuntimeCommands,
@@ -40,7 +45,18 @@ export async function activate(
   diagnostics = new DiagnosticsTracker();
   const resolutionClients = new ResolutionClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
+  const pageRefreshClients = new PageRefreshClientRouter();
   const refreshClassifierRegistry = new RefreshClassifierRegistry();
+  const saveObserver = new SaveObserver({
+    classifierRegistry: refreshClassifierRegistry,
+    sink: {
+      publish: (mode) => pageRefreshClients.sendPageRefresh({ mode }),
+    },
+  });
+  const saveObserverSubscriptions = bindSaveObserverEvents(
+    vscode.workspace,
+    saveObserver,
+  );
 
   const runtime = createPresenterRuntime({
     host: createPresenterHost(),
@@ -97,12 +113,14 @@ export async function activate(
       );
       resolutionClients.bind(nextClient);
       sourceNavigationClients.bind(nextClient);
+      pageRefreshClients.bind(nextClient);
       return {
         connect: () => nextClient.connect(),
         dispose() {
           unsubscribeSourceNavigate();
           resolutionClients.unbind(nextClient);
           sourceNavigationClients.unbind(nextClient);
+          pageRefreshClients.unbind(nextClient);
           runtime.clear();
           nextClient.dispose();
         },
@@ -125,6 +143,7 @@ export async function activate(
   );
 
   context.subscriptions.push(
+    ...saveObserverSubscriptions,
     output,
     runtime,
     runtimeCommands,
