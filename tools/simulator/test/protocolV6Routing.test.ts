@@ -25,9 +25,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import {
   BackgroundInspectCoordinator,
+  createDevtoolsPanelPortName,
   createBackgroundRouter,
+  TAB_REFRESH_STATE_STORAGE_KEY,
   TabRefreshCoordinator,
   TabRefreshStateStore,
+  type BackgroundMessageSender,
+  type BackgroundRuntimePort,
   type BackgroundWindowCoordinator,
   type SessionStorage,
 } from "../../../packages/browser-extension-core/src/index.js";
@@ -49,6 +53,8 @@ const INSPECT_ID = "inspect-v6";
 const BRIDGE_INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const AUTH_TOKEN = "a".repeat(64);
 const WINDOW_ID = 10;
+const DEVTOOLS_URL = "moz-extension://simulator/dist/devtools.html";
+const PANEL_URL = "moz-extension://simulator/dist/panel.html";
 
 interface TestClient extends ClientRegistration {
   readonly sent: unknown[];
@@ -194,6 +200,40 @@ describe("simulator protocol v6 production routing", () => {
 });
 
 describe("simulator tab refresh workflow", () => {
+  it("requires a live routed panel before persisted ownership can refresh", async () => {
+    const harness = await createProductionRefreshHarness({
+      livePanelTabIds: [],
+      persistedStates: [{
+        tabId: 1,
+        windowId: WINDOW_ID,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: true,
+        participant: true,
+        lastAcceptedGeneration: 0,
+      }],
+    });
+    try {
+      expect(await harness.state(1)).toMatchObject({ participant: false });
+
+      harness.changeAndSave("file:///project/app.css", "css");
+      harness.advance(150);
+      await harness.settle();
+      expect(harness.dispatched).toEqual([]);
+
+      await harness.openPanel(1);
+      expect(await harness.state(1)).toMatchObject({ participant: true });
+
+      harness.changeAndSave("file:///project/app.css", "css");
+      harness.advance(150);
+      await harness.settle();
+      expect(harness.dispatched).toEqual([
+        { tabId: 1, generation: 2, mode: "styles" },
+      ]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
   it("delivers bridge refreshes to active tabs and queues inactive participants", async () => {
     const harness = await createProductionRefreshHarness();
     try {
@@ -347,10 +387,23 @@ function sourceOpen(
   };
 }
 
-async function createProductionRefreshHarness() {
+interface ProductionRefreshHarnessOptions {
+  readonly livePanelTabIds?: readonly number[];
+  readonly persistedStates?: readonly unknown[];
+}
+
+async function createProductionRefreshHarness(
+  options: ProductionRefreshHarnessOptions = {},
+) {
   let now = 0;
   let nextTimerId = 0;
   let activeTabId = 1;
+  const livePanelTabIds = options.livePanelTabIds ?? [1, 2];
+  const knownTabIds = new Set(livePanelTabIds);
+  for (const state of options.persistedStates ?? []) {
+    const tabId = storedTabId(state);
+    if (tabId !== undefined) knownTabIds.add(tabId);
+  }
   const timers = new Map<
     number,
     { readonly callback: () => void; readonly dueAt: number }
@@ -366,8 +419,11 @@ async function createProductionRefreshHarness() {
   >();
   const registry = new ClientRegistry();
   const routes = new ReplyRouteRegistry();
+  const storage = memoryStorage(options.persistedStates
+    ? { [TAB_REFRESH_STATE_STORAGE_KEY]: options.persistedStates }
+    : undefined);
   const tabRefreshCoordinator = new TabRefreshCoordinator({
-    store: new TabRefreshStateStore(memoryStorage()),
+    store: new TabRefreshStateStore(storage),
     getActiveTabId: async () => activeTabId,
     dispatchRefresh: (tabId, command) => {
       dispatched.push({
@@ -378,12 +434,12 @@ async function createProductionRefreshHarness() {
     },
     setRefreshParticipant() {},
   });
-  await tabRefreshCoordinator.panelOpened(1, WINDOW_ID);
-  await tabRefreshCoordinator.panelOpened(2, WINDOW_ID);
 
   const backgroundRouter = createBackgroundRouter({
-    getTab: async () => undefined,
-    coordinator: unusedWindowCoordinator(),
+    expectedDevtoolsUrl: DEVTOOLS_URL,
+    expectedPanelUrl: PANEL_URL,
+    getTab: async (tabId) => ({ id: tabId, windowId: WINDOW_ID }),
+    coordinator: simulatorWindowCoordinator(),
     tabRefreshCoordinator,
     inspectCoordinator: new BackgroundInspectCoordinator({
       executeScript: async () => undefined,
@@ -394,6 +450,31 @@ async function createProductionRefreshHarness() {
       return () => pageRefreshListeners.delete(listener);
     },
   });
+  const panelPorts = new Map<number, SimulatorPanelPort>();
+  const openPanel = async (tabId: number): Promise<void> => {
+    if (panelPorts.has(tabId)) return;
+    const channel = `simulator-refresh-${tabId}`;
+    const registration = await backgroundRouter.routeMessage({
+      type: "pin-op.registerDevtools",
+      channel,
+      tabId,
+      sourceId: `simulator-panel-${tabId}`,
+    }, { url: DEVTOOLS_URL });
+    if ((registration as { ok?: unknown } | undefined)?.ok !== true) {
+      throw new Error(`Failed to register simulator panel for tab ${tabId}`);
+    }
+    const panel = new SimulatorPanelPort(
+      createDevtoolsPanelPortName(channel),
+      { url: panelUrl(channel) },
+    );
+    panelPorts.set(tabId, panel);
+    knownTabIds.add(tabId);
+    backgroundRouter.connectPort(panel);
+    await waitForParticipant(tabRefreshCoordinator, tabId, true);
+  };
+  for (const tabId of livePanelTabIds) {
+    await openPanel(tabId);
+  }
 
   registry.add({
     connection: {
@@ -486,7 +567,23 @@ async function createProductionRefreshHarness() {
   });
 
   const settle = async (): Promise<void> => {
-    await tabRefreshCoordinator.state(1, WINDOW_ID);
+    const generation = bridgeRefreshes.at(-1)?.refreshGeneration;
+    if (generation === undefined) {
+      await Promise.resolve();
+      return;
+    }
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const states = await Promise.all(
+        [...knownTabIds].map((tabId) =>
+          tabRefreshCoordinator.state(tabId, WINDOW_ID)
+        ),
+      );
+      if (states.every((state) => state.lastAcceptedGeneration >= generation)) {
+        return;
+      }
+      await Promise.resolve();
+    }
+    throw new Error(`Refresh generation ${generation} did not settle`);
   };
 
   return {
@@ -519,6 +616,7 @@ async function createProductionRefreshHarness() {
       now = target;
     },
     settle,
+    openPanel,
     async activate(tabId: number): Promise<void> {
       activeTabId = tabId;
       await tabRefreshCoordinator.activateTab(tabId, WINDOW_ID);
@@ -545,18 +643,29 @@ async function createProductionRefreshHarness() {
   };
 }
 
-function unusedWindowCoordinator(): BackgroundWindowCoordinator {
-  return new Proxy({}, {
-    get() {
-      return () => {
-        throw new Error("Unexpected window coordinator call");
-      };
+function simulatorWindowCoordinator(): BackgroundWindowCoordinator {
+  const unexpected = (): never => {
+    throw new Error("Unexpected window coordinator call");
+  };
+  return {
+    linkWindow: unexpected,
+    unlinkWindow: unexpected,
+    registerPanel() {
+      return { dispose() {} };
     },
-  }) as BackgroundWindowCoordinator;
+    publishInspect: unexpected,
+    publishSourceNavigation: unexpected,
+    publishSourceOpen: unexpected,
+    publishPresentationSettings: unexpected,
+    setRefreshParticipant: unexpected,
+    removeWindow: unexpected,
+  };
 }
 
-function memoryStorage(): SessionStorage {
-  const values: Record<string, unknown> = {};
+function memoryStorage(
+  initial: Record<string, unknown> = {},
+): SessionStorage {
+  const values: Record<string, unknown> = { ...initial };
   return {
     async get(key) {
       return Object.hasOwn(values, key) ? { [key]: values[key] } : {};
@@ -568,6 +677,75 @@ function memoryStorage(): SessionStorage {
       delete values[key];
     },
   };
+}
+
+class SimulatorPanelPort implements BackgroundRuntimePort {
+  public readonly sent: unknown[] = [];
+  public readonly onMessage = new SimulatorEvent<(message: unknown) => void>();
+  public readonly onDisconnect = new SimulatorEvent<() => void>();
+  private disconnected = false;
+
+  public constructor(
+    public readonly name: string,
+    public readonly sender: BackgroundMessageSender,
+  ) {}
+
+  public postMessage(message: unknown): void {
+    if (this.disconnected) throw new Error("Simulator panel is disconnected");
+    this.sent.push(message);
+  }
+
+  public disconnect(): void {
+    if (this.disconnected) return;
+    this.disconnected = true;
+    this.onDisconnect.emit();
+  }
+}
+
+class SimulatorEvent<T extends (...args: never[]) => void> {
+  private readonly listeners = new Set<T>();
+
+  public addListener(listener: T): void {
+    this.listeners.add(listener);
+  }
+
+  public removeListener(listener: T): void {
+    this.listeners.delete(listener);
+  }
+
+  public emit(...args: Parameters<T>): void {
+    for (const listener of [...this.listeners]) listener(...args);
+  }
+}
+
+async function waitForParticipant(
+  coordinator: TabRefreshCoordinator,
+  tabId: number,
+  participant: boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await coordinator.state(tabId, WINDOW_ID)).participant === participant) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error(`Simulator panel participation did not become ${participant}`);
+}
+
+function panelUrl(channel: string): string {
+  const url = new URL(PANEL_URL);
+  url.searchParams.set("channel", channel);
+  return url.href;
+}
+
+function storedTabId(value: unknown): number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const tabId = (value as { tabId?: unknown }).tabId;
+  return Number.isSafeInteger(tabId) && Number(tabId) >= 0
+    ? Number(tabId)
+    : undefined;
 }
 
 function routeMessage(
