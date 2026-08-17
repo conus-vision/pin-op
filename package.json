@@ -2,7 +2,7 @@
   "name": "@pin-op/workspace",
   "private": true,
   "version": "0.3.0",
-  "description": "Connect browser DevTools to your source code.",
+  "description": "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
   "license": "MIT",
   "repository": {
     "type": "git",

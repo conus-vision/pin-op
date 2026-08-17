@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,36 +22,28 @@ import {
   validatePackagedChromeArchive,
 } from "../smoke-packaged-chrome.mjs";
 
-const panelHtmlFixture = [
-  '<output id="linked-code"></output>',
-  '<button id="disconnect-button">Disconnect</button>',
-  '<button id="inspect-mode" aria-label="Select an element"></button>',
-  '<div id="dom-tree" role="tree">',
-  '<div id="dom-tree-spacer"></div>',
-  '<div id="dom-tree-empty">No document</div>',
-  "</div>",
-  '<footer class="panel-footer">',
-  '<output id="resolution-status" role="status"></output>',
-  '<div id="source-navigation-footer">',
-  '<output id="source-navigation-counter"></output>',
-  "</div>",
-  "</footer>",
-].join("\n");
-
-const panelCssFixture = [
-  ".dom-tree-row {}",
-  ".dom-tree-row.is-shadow-root {}",
-  ".dom-tree-row.is-frame-document {}",
-  ".dom-tree-row.is-inaccessible {}",
-  ".panel-footer {}",
-  ".source-navigation-controls {}",
-  '.resolution-status[data-tone="success"] {}',
-  '.resolution-status[data-tone="warning"] {}',
-  '.resolution-status[data-tone="error"] {}',
-].join("\n");
+const panelHtmlFixture = readFileSync(
+  new URL(
+    "../../packages/browser-extension-core/assets/panel.html",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const panelCssFixture = readFileSync(
+  new URL(
+    "../../packages/browser-extension-core/assets/panel.css",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 const panelBundleFixture = [
+  'const sourcePresentationCapability = "source-presentation";',
+  'const sourceMatchesType = "source.matches";',
+  'const sourceOpenType = "source.open";',
+  'const sourceNavigateType = "source.navigate";',
   'const navigationStateType = "source.navigationState";',
+  'const opaqueMatchIdentity = "matchId";',
   'const resolveLocatorType = "dom.resolveLocator";',
 ].join("\n");
 
@@ -75,7 +68,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   files.set("dist/devtools.js", Buffer.from("packaged DevTools runtime"));
   files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":6}\n'),
   );
   return { files, paths: [...paths] };
 }
@@ -94,16 +87,16 @@ test("accepts only the exact validated Chrome runtime archive", () => {
   );
 });
 
-test("rejects a packaged runtime downgraded to protocol version 4", () => {
+test("rejects a packaged runtime downgraded to protocol version 5", () => {
   const archive = createArchive();
   archive.files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":4}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
   );
 
   assert.throws(
     () => validatePackagedChromeArchive(archive),
-    /runtime metadata protocolVersion expected 5 but found 4/i,
+    /runtime metadata protocolVersion expected 6 but found 5/i,
   );
 });
 
@@ -111,7 +104,7 @@ test("rejects malformed or extended packaged runtime metadata", () => {
   for (const [metadata, expectedError] of [
     ["not-json", /runtime metadata is not valid JSON/i],
     [
-      '{"schemaVersion":1,"protocolVersion":5,"marker":"test"}',
+      '{"schemaVersion":1,"protocolVersion":6,"marker":"test"}',
       /runtime metadata has unexpected keys: marker/i,
     ],
   ]) {
@@ -123,17 +116,49 @@ test("rejects malformed or extended packaged runtime metadata", () => {
 
 test("requires packaged inspector assets and semantic static markers", () => {
   const cases = [
-    ["dist/panel.html", 'id="dom-tree"', /DOM tree asset.*dom-tree/i],
-    ["dist/panel.html", "Disconnect", /panel asset.*Disconnect/i],
-    ["dist/panel.html", 'id="linked-code"', /linked code/i],
+    ["dist/panel.html", 'class="panel-toolbar"', /toolbar/i],
     ["dist/panel.html", 'id="inspect-mode"', /picker/i],
-    ["dist/panel.html", 'class="panel-footer"', /resolution footer/i],
+    ["dist/panel.html", "Auto Refresh", /Auto Refresh/i],
+    ["dist/panel.html", "IDE Highlight", /IDE Highlight/i],
+    ["dist/panel.html", 'id="link-code"', /connection controls/i],
+    ["dist/panel.html", 'id="disconnect-button"', /connection controls/i],
+    ["dist/panel.html", 'id="panel-workspace"', /workspace/i],
+    ["dist/panel.html", 'id="dom-pane"', /DOM workspace/i],
+    ["dist/panel.html", 'id="source-pane"', /Source workspace/i],
+    ["dist/panel.html", 'id="source-pane-root"', /source pane/i],
+    [
+      "dist/panel.html",
+      "Extensions are incompatible",
+      /incompatibility copy/i,
+    ],
+    [
+      "dist/panel.html",
+      "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
+      /incompatibility copy/i,
+    ],
+    ["dist/panel.html", 'id="panel-branding"', /branded footer/i],
+    [
+      "dist/panel.html",
+      'href="mailto:info@conus.vision"',
+      /branded footer/i,
+    ],
+    [
+      "dist/panel.html",
+      'href="https://conus.vision"',
+      /branded footer/i,
+    ],
     [
       "dist/panel.html",
       "source-navigation-footer",
       /source navigation footer/i,
     ],
-    ["dist/panel.css", ".dom-tree-row", /DOM tree style.*dom-tree-row/i],
+    ["dist/panel.css", ".panel-toolbar-scroll", /responsive toolbar/i],
+    ["dist/panel.css", '[data-layout="split"]', /responsive split layout/i],
+    ["dist/panel.css", '[data-layout="stack"]', /responsive stack layout/i],
+    ["dist/panel.css", '[data-layout="tabs"]', /responsive tab layout/i],
+    ["dist/panel.css", ".workspace-pane", /workspace style/i],
+    ["dist/panel.css", ".source-pane-excerpt", /source excerpt style/i],
+    ["dist/panel.css", ".panel-branding", /branded footer style/i],
     [
       "dist/panel.css",
       ".source-navigation-controls",
@@ -141,9 +166,25 @@ test("requires packaged inspector assets and semantic static markers", () => {
     ],
     [
       "dist/panel.js",
+      "source.matches",
+      /source matches/i,
+    ],
+    [
+      "dist/panel.js",
+      "source.open",
+      /source open/i,
+    ],
+    [
+      "dist/panel.js",
+      "source.navigate",
+      /source navigation intent/i,
+    ],
+    [
+      "dist/panel.js",
       "source.navigationState",
       /source navigation state/i,
     ],
+    ["dist/panel.js", "matchId", /opaque match identity/i],
     [
       "dist/panel.js",
       "dom.resolveLocator",
@@ -162,6 +203,20 @@ test("requires packaged inspector assets and semantic static markers", () => {
       `${path} must retain ${marker}`,
     );
   }
+});
+
+test("requires exactly one packaged toolbar", () => {
+  const archive = createArchive();
+  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  archive.files.set(
+    "dist/panel.html",
+    Buffer.from(`${panel}\n<header class="panel-toolbar"></header>\n`),
+  );
+
+  assert.throws(
+    () => validatePackagedChromeArchive(archive),
+    /toolbar.*exactly one/i,
+  );
 });
 
 test("verifies fixture CSSOM access and multiline geometry through CDP", async () => {

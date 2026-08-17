@@ -91,7 +91,7 @@ try {
         '    join(extension.extensionPath, "dist", "extension.cjs"),',
         '    "utf8",',
         "  );",
-        '  for (const marker of ["source-navigation", "source.navigate", "source.navigationState"]) {',
+        '  for (const marker of ["source-navigation", "source-presentation", "source.matches", "source.open", "source.navigate", "source.navigationState", "matchId"]) {',
         "    if (!bundleText.includes(marker)) {",
         '      throw new Error(`Installed Pin-op bundle is missing ${marker}`);',
         "    }",

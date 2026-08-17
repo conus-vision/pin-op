@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pin-op",
-  "description": "Connect browser DevTools to your source code.",
+  "description": "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
   "version": "0.3.0",
   "icons": {
     "16": "dist/icons/pin-op-16.png",

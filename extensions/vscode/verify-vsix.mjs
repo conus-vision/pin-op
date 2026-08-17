@@ -56,17 +56,25 @@ assertPngDimensions(
   128,
 );
 parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
-  expectedProtocolVersion: 5,
+  expectedProtocolVersion: 6,
   label: "VSIX runtime metadata",
 });
 
 const bundle = entries.get("extension/dist/extension.cjs").toString("utf8");
-if (!bundle.includes("source-navigation")) {
-  throw new Error("VSIX bundle is missing current source-navigation capability");
+for (const capability of ["source-navigation", "source-presentation"]) {
+  if (!bundle.includes(capability)) {
+    throw new Error(`VSIX bundle is missing current ${capability} capability`);
+  }
 }
-for (const type of ["source.navigate", "source.navigationState"]) {
-  if (!bundle.includes(type)) {
-    throw new Error(`VSIX bundle is missing current ${type} message`);
+for (const marker of [
+  "source.matches",
+  "source.open",
+  "source.navigate",
+  "source.navigationState",
+  "matchId",
+]) {
+  if (!bundle.includes(marker)) {
+    throw new Error(`VSIX bundle is missing current ${marker} marker`);
   }
 }
 const runtimeRequires = [

@@ -10,7 +10,8 @@ describe("Firefox extension manifest", () => {
     expect(manifest).toMatchObject({
       manifest_version: 3,
       name: "Pin-op",
-      description: "Connect browser DevTools to your source code.",
+      description:
+        "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
       devtools_page: "dist/devtools.html",
       background: { scripts: ["dist/background.js"] },
       browser_specific_settings: {

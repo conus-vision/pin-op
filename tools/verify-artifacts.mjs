@@ -20,6 +20,8 @@ import {
 } from "./release-policy.mjs";
 
 const VERSION = "0.3.0";
+const PRODUCT_DESCRIPTION =
+  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
 const EXPECTED_ARTIFACTS = new Map([
   [`pin-op-vscode-${VERSION}.vsix`, "vscode"],
   [`pin-op-chrome-${VERSION}.zip`, "chrome"],
@@ -478,8 +480,16 @@ function verifyBrowserPanelIdentity(panelBuffer, filename) {
   if (!panel.includes('src="./pin-op.svg"')) {
     throw new Error(`${filename} panel must reference ./pin-op.svg`);
   }
-  if (!panel.includes("<title>Pin-op</title>") || !panel.includes("<h1>Pin-op</h1>")) {
-    throw new Error(`${filename} panel must present Pin-op in its title and heading`);
+  if (
+    !panel.includes("<title>Pin-op</title>") ||
+    !panel.includes('id="panel-branding"') ||
+    !/<span\b[^>]*class="product-name"[^>]*>[\s\S]*?\bPin-op<\/span>/.test(
+      panel,
+    )
+  ) {
+    throw new Error(
+      `${filename} panel must present Pin-op in its title and branded footer`,
+    );
   }
 }
 
@@ -489,6 +499,9 @@ function verifyBrowserManifest(manifest, filename, browser) {
   }
   if (manifest.name !== "Pin-op") {
     throw new Error(`${filename} has unexpected manifest name`);
+  }
+  if (manifest.description !== PRODUCT_DESCRIPTION) {
+    throw new Error(`${filename} has unexpected manifest description`);
   }
   if (!hasExactStringEntries(manifest.icons, BROWSER_ICONS)) {
     throw new Error(`${filename} has unexpected manifest icons`);
@@ -560,20 +573,28 @@ export function validateVsixArchive(archive, filename) {
   parseRuntimeMetadata(
     archive.files.get("extension/dist/runtime-metadata.json"),
     {
-      expectedProtocolVersion: 5,
+      expectedProtocolVersion: 6,
       label: `${filename} runtime metadata`,
     },
   );
 
   const bundle = archive.files.get("extension/dist/extension.cjs").toString("utf8");
-  if (!bundle.includes("source-navigation")) {
-    throw new Error(
-      `${filename} VSIX bundle is missing current source-navigation capability`,
-    );
+  for (const capability of ["source-navigation", "source-presentation"]) {
+    if (!bundle.includes(capability)) {
+      throw new Error(
+        `${filename} VSIX bundle is missing current ${capability} capability`,
+      );
+    }
   }
-  for (const type of ["source.navigate", "source.navigationState"]) {
-    if (!bundle.includes(type)) {
-      throw new Error(`${filename} VSIX bundle is missing current ${type} message`);
+  for (const marker of [
+    "source.matches",
+    "source.open",
+    "source.navigate",
+    "source.navigationState",
+    "matchId",
+  ]) {
+    if (!bundle.includes(marker)) {
+      throw new Error(`${filename} VSIX bundle is missing current ${marker} marker`);
     }
   }
   const runtimeRequires = [

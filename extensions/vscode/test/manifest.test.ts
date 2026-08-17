@@ -42,7 +42,8 @@ describe("VS Code extension manifest", () => {
     expect(manifest).toMatchObject({
       name: "pin-op",
       displayName: "Pin-op",
-      description: "Connect browser DevTools to your source code.",
+      description:
+        "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
       publisher: "conus-vision",
       version: "0.3.0",
       license: "MIT",

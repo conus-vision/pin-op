@@ -22,6 +22,7 @@ const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
 const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
 const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
+const verifyScriptUrl = new URL("../verify-vsix.mjs", import.meta.url);
 const extensionSourceUrl = new URL("../src/extension.ts", import.meta.url);
 const installedSmokeUrl = new URL(
   "../smoke-installed-vsix.mjs",
@@ -73,6 +74,9 @@ describe("VS Code package build", () => {
     expect(buildScript).toContain(
       "serializeRuntimeMetadata(PROTOCOL_VERSION)",
     );
+    const verifyScript = readFileSync(verifyScriptUrl, "utf8");
+    expect(verifyScript).toContain("expectedProtocolVersion: 6");
+    expect(verifyScript).not.toContain("expectedProtocolVersion: 5");
   });
 
   it("packages the current IDE capabilities and messages", () => {
@@ -168,7 +172,7 @@ describe("VS Code package build", () => {
     expect(subscriptionOwnership).toBeGreaterThan(observerBinding);
   });
 
-  it("pins protocol 6 and current capabilities in the installed smoke", () => {
+  it("pins protocol 6 and current source contracts in the installed smoke", () => {
     const smoke = readFileSync(installedSmokeUrl, "utf8");
 
     expect(smoke).toContain('"runtime-metadata.json"');
@@ -176,7 +180,11 @@ describe("VS Code package build", () => {
     expect(smoke).toContain("schema 1/protocol 6");
     expect(smoke).toContain("INSTALLED_VSIX_PROTOCOL_V6_OK");
     expect(smoke).toContain('"source-navigation"');
+    expect(smoke).toContain('"source-presentation"');
+    expect(smoke).toContain('"source.matches"');
+    expect(smoke).toContain('"source.open"');
     expect(smoke).toContain('"source.navigationState"');
+    expect(smoke).toContain('"matchId"');
     expect(smoke).not.toContain("requiredRuntimeMarkers");
     expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
     expect(smoke).not.toMatch(/protocol[- _]?v?5/i);

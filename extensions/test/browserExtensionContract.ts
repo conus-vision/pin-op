@@ -650,8 +650,6 @@ export function describeBrowserAdapterContract(
           ),
         ).toBe(true);
         expect(source).not.toContain("dom.resolveLocator");
-        expect(source).not.toContain("source.navigate");
-        expect(source).not.toContain("source.navigationState");
         expect(source).not.toContain("DomStableLocator");
         expect(source).not.toContain("SourceNavigationController");
       }
@@ -710,6 +708,7 @@ export function describeBrowserPackageContract(
           sharedAssetBytes(`icons/pin-op-${size}.png`),
         );
       }
+      expect(panel.match(/class="panel-toolbar"/g)).toHaveLength(1);
       expect(openingTag(panel, "dom-tree")).toMatch(/role="tree"/);
       expect(openingTag(panel, "linked-code")).toMatch(/^<output\b/);
       expect(panel).toMatch(
@@ -719,14 +718,79 @@ export function describeBrowserPackageContract(
         /aria-label="Select an element"/,
       );
       expect(panel).toContain('data-lucide="mouse-pointer-2"');
+      expect(openingTag(panel, "auto-refresh-enabled")).toMatch(
+        /type="checkbox"/,
+      );
+      expect(openingTag(panel, "ide-highlight-enabled")).toMatch(
+        /type="checkbox"/,
+      );
+      expect(panel).toMatch(
+        /id="auto-refresh-enabled"[^>]*>[\s\S]*?Auto Refresh\s*<\/label>/,
+      );
+      expect(panel).toMatch(
+        /id="ide-highlight-enabled"[^>]*>[\s\S]*?IDE Highlight\s*<\/label>/,
+      );
+      for (const id of [
+        "connection-status",
+        "linked-code",
+        "link-controls",
+        "link-code",
+        "paste-button",
+        "link-button",
+        "disconnect-button",
+      ]) {
+        expect(panel.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      }
+      for (const id of [
+        "panel-workspace",
+        "workspace-tabs",
+        "dom-tab",
+        "source-tab",
+        "dom-pane",
+        "pane-separator",
+        "source-pane",
+        "source-pane-root",
+      ]) {
+        expect(panel.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      }
+      expect(openingTag(panel, "workspace-tabs")).toMatch(/role="tablist"/);
+      expect(openingTag(panel, "dom-tab")).toMatch(/role="tab"/);
+      expect(openingTag(panel, "source-tab")).toMatch(/role="tab"/);
+      expect(openingTag(panel, "pane-separator")).toMatch(/role="separator"/);
+      expect(openingTag(panel, "source-pane-root")).toMatch(
+        /aria-label="Source matches"/,
+      );
+      expect(panel).toContain("Extensions are incompatible");
+      expect(panel).toContain(
+        "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
+      );
       expect(openingTag(panel, "resolution-status")).toMatch(/role="status"/);
       expect(panel).toMatch(
         /<footer\b[^>]*class="panel-footer"[^>]*>[\s\S]*id="resolution-status"[\s\S]*<\/footer>/,
       );
       expect(panel).toContain("source-navigation-footer");
+      expect(panel).toContain('id="panel-branding"');
+      expect(panel).toContain('href="mailto:info@conus.vision"');
+      expect(panel).toContain('href="https://conus.vision"');
+      expect(panelCss).toContain(".panel-toolbar-scroll");
+      expect(panelCss).toContain('[data-layout="split"]');
+      expect(panelCss).toContain('[data-layout="stack"]');
+      expect(panelCss).toContain('[data-layout="tabs"]');
+      expect(panelCss).toContain(".workspace-pane");
+      expect(panelCss).toContain(".source-pane-excerpt");
+      expect(panelCss).toContain(".panel-branding");
       expect(panelCss).toContain(".source-navigation-controls");
-      expect(panelBundle).toContain("source.navigationState");
-      expect(panelBundle).toContain("dom.resolveLocator");
+      for (const marker of [
+        "source-presentation",
+        "source.matches",
+        "source.open",
+        "source.navigate",
+        "source.navigationState",
+        "matchId",
+        "dom.resolveLocator",
+      ]) {
+        expect(panelBundle).toContain(marker);
+      }
     });
 
     it("emits exact structured protocol metadata without live marker logic", () => {

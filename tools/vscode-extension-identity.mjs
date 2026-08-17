@@ -2,6 +2,8 @@ const EXPECTED_FIELDS = Object.freeze({
   publisher: "conus-vision",
   name: "pin-op",
   displayName: "Pin-op",
+  description:
+    "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
   repository: "https://github.com/conus-vision/pin-op",
   bugs: "https://github.com/conus-vision/pin-op/issues",
   homepage: "https://pin-op.conus.vision",

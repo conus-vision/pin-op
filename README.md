@@ -3,7 +3,7 @@
 [![CI](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml)
 
 Highlights styles and source code in your IDE for the DOM element selected in
-browser DevTools.
+the browser.
 
 [pin-op.conus.vision](https://pin-op.conus.vision) ·
 [Repository](https://github.com/conus-vision/pin-op)

@@ -18,16 +18,97 @@ const panelCss = readFileSync(
   "utf8",
 );
 const panelBundle = [
+  'const sourcePresentationCapability = "source-presentation";',
+  'const sourceMatchesType = "source.matches";',
+  'const sourceOpenType = "source.open";',
+  'const sourceNavigateType = "source.navigate";',
   'const navigationStateType = "source.navigationState";',
+  'const opaqueMatchIdentity = "matchId";',
   'const resolveLocatorType = "dom.resolveLocator";',
   "",
 ].join("\n");
 
 const requiredMarkers = [
   {
+    label: "toolbar",
+    path: "dist/panel.html",
+    marker: 'class="panel-toolbar"',
+  },
+  {
+    label: "picker",
+    path: "dist/panel.html",
+    marker: 'id="inspect-mode"',
+  },
+  {
+    label: "Auto Refresh",
+    path: "dist/panel.html",
+    marker: "Auto Refresh",
+  },
+  {
+    label: "IDE Highlight",
+    path: "dist/panel.html",
+    marker: "IDE Highlight",
+  },
+  {
+    label: "connection controls",
+    path: "dist/panel.html",
+    marker: 'id="link-code"',
+  },
+  {
+    label: "DOM workspace",
+    path: "dist/panel.html",
+    marker: 'id="dom-pane"',
+  },
+  {
+    label: "Source workspace",
+    path: "dist/panel.html",
+    marker: 'id="source-pane"',
+  },
+  {
+    label: "source pane",
+    path: "dist/panel.html",
+    marker: 'id="source-pane-root"',
+  },
+  {
+    label: "incompatibility copy",
+    path: "dist/panel.html",
+    marker:
+      "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
+  },
+  {
+    label: "branded footer",
+    path: "dist/panel.html",
+    marker: 'href="mailto:info@conus.vision"',
+  },
+  {
     label: "source navigation footer",
     path: "dist/panel.html",
     marker: "source-navigation-footer",
+  },
+  {
+    label: "responsive toolbar",
+    path: "dist/panel.css",
+    marker: ".panel-toolbar-scroll",
+  },
+  {
+    label: "responsive split layout",
+    path: "dist/panel.css",
+    marker: '[data-layout="split"]',
+  },
+  {
+    label: "responsive stack layout",
+    path: "dist/panel.css",
+    marker: '[data-layout="stack"]',
+  },
+  {
+    label: "responsive tab layout",
+    path: "dist/panel.css",
+    marker: '[data-layout="tabs"]',
+  },
+  {
+    label: "source excerpt style",
+    path: "dist/panel.css",
+    marker: ".source-pane-excerpt",
   },
   {
     label: "source navigation controls",
@@ -35,9 +116,29 @@ const requiredMarkers = [
     marker: ".source-navigation-controls",
   },
   {
+    label: "source matches",
+    path: "dist/panel.js",
+    marker: "source.matches",
+  },
+  {
+    label: "source open",
+    path: "dist/panel.js",
+    marker: "source.open",
+  },
+  {
+    label: "source navigation intent",
+    path: "dist/panel.js",
+    marker: "source.navigate",
+  },
+  {
     label: "source navigation state",
     path: "dist/panel.js",
     marker: "source.navigationState",
+  },
+  {
+    label: "opaque match identity",
+    path: "dist/panel.js",
+    marker: "matchId",
   },
   {
     label: "locator recovery",
@@ -47,6 +148,33 @@ const requiredMarkers = [
 ];
 
 for (const browser of ["firefox", "chrome"]) {
+  test(`common ${browser} artifact verifier accepts protocol v6 and the current panel`, () => {
+    assert.doesNotThrow(() =>
+      validateBrowserArchive(
+        browserArchive(browser),
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+    );
+  });
+
+  test(`common ${browser} artifact verifier rejects protocol v5 metadata`, () => {
+    const archive = browserArchive(browser);
+    archive.files.set(
+      "dist/runtime-metadata.json",
+      Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
+    );
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /runtime metadata protocolVersion expected 6 but found 5/i,
+    );
+  });
+
   for (const { label, path, marker } of requiredMarkers) {
     test(`common ${browser} artifact verifier requires ${label}`, () => {
       const archive = browserArchive(browser);
@@ -116,6 +244,22 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
+  test(`common ${browser} artifact verifier requires the product description`, () => {
+    const archive = browserArchive(browser);
+    const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
+    manifest.description = "Connect browser DevTools to your source code.";
+    archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /unexpected manifest description/i,
+    );
+  });
+
   test(`common ${browser} artifact verifier requires the renamed panel image`, () => {
     const archive = browserArchive(browser);
     const panel = archive.files.get("dist/panel.html").toString("utf8");
@@ -149,7 +293,25 @@ for (const browser of ["firefox", "chrome"]) {
         `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
-      /panel must present Pin-op in its title and heading/i,
+      /panel must present Pin-op in its title and branded footer/i,
+    );
+  });
+
+  test(`common ${browser} artifact verifier requires exactly one toolbar`, () => {
+    const archive = browserArchive(browser);
+    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    archive.files.set(
+      "dist/panel.html",
+      Buffer.from(`${panel}\n<header class="panel-toolbar"></header>\n`),
+    );
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /toolbar.*exactly one/i,
     );
   });
 }
@@ -180,7 +342,7 @@ function browserArchive(browser) {
   files.set("dist/panel.js", Buffer.from(panelBundle));
   files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":5}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":6}\n'),
   );
   for (const size of [16, 32, 48, 96, 128]) {
     files.set(

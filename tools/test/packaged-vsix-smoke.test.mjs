@@ -33,9 +33,12 @@ const vscodeIcon = await readFile(
 );
 const extensionBundleFixture = [
   'const vscode = require("vscode");',
-  'const capabilities = ["resolution", "source-navigation"];',
+  'const capabilities = ["resolution", "source-navigation", "auto-refresh", "source-presentation", "presentation-settings"];',
+  'const sourceMatchesType = "source.matches";',
+  'const sourceOpenType = "source.open";',
   'const sourceNavigateType = "source.navigate";',
   'const sourceNavigationStateType = "source.navigationState";',
+  'const opaqueMatchIdentity = "matchId";',
   "",
 ].join("\n");
 const legacyDisplayName = ["Pin", "Op"].join("");
@@ -133,13 +136,17 @@ test("installed VSIX smoke has no implicit machine runtime fallback", async () =
   assert.doesNotMatch(source, /LOCALAPPDATA|defaultVSCodeExecutablePath/);
 });
 
-test("installed VSIX smoke pins protocol 6 and current navigation capabilities", async () => {
+test("installed VSIX smoke pins protocol 6 and current source capabilities", async () => {
   const source = await readFile(installedSmokePath, "utf8");
 
   assert.match(source, /metadata\.protocolVersion !== 6/);
   assert.match(source, /protocol 6/);
   assert.match(source, /"source-navigation"/);
+  assert.match(source, /"source-presentation"/);
+  assert.match(source, /"source\.matches"/);
+  assert.match(source, /"source\.open"/);
   assert.match(source, /"source\.navigationState"/);
+  assert.match(source, /"matchId"/);
   assert.match(source, /INSTALLED_VSIX_PROTOCOL_V6_OK/);
   assert.doesNotMatch(source, /protocol[- _]?v?5/i);
 });
@@ -269,6 +276,47 @@ test("VSIX installation rejects a bundle without current navigation capabilities
   });
 });
 
+test("VSIX installation rejects a bundle without current source presentation", async () => {
+  const installVerifiedVsix = await loadInstaller();
+  await withTemporaryDirectory("pin-op-vsix-presentation-", async (directory) => {
+    const artifactPath = join(directory, "presentation.vsix");
+    const extensionsDirectory = join(directory, "extensions");
+    await mkdir(extensionsDirectory);
+    writeVsix(artifactPath, {}, {
+      bundle: [
+        'const vscode = require("vscode");',
+        'const capabilities = ["source-navigation"];',
+        'const sourceNavigateType = "source.navigate";',
+        'const sourceNavigationStateType = "source.navigationState";',
+      ].join("\n"),
+    });
+
+    await assert.rejects(
+      installVerifiedVsix(artifactPath, extensionsDirectory),
+      /VSIX bundle is missing current source-presentation capability/i,
+    );
+    assert.deepEqual(await readdir(extensionsDirectory), []);
+  });
+});
+
+test("VSIX installation rejects protocol v5 runtime metadata", async () => {
+  const installVerifiedVsix = await loadInstaller();
+  await withTemporaryDirectory("pin-op-vsix-protocol-", async (directory) => {
+    const artifactPath = join(directory, "protocol.vsix");
+    const extensionsDirectory = join(directory, "extensions");
+    await mkdir(extensionsDirectory);
+    writeVsix(artifactPath, {}, {
+      runtimeMetadata: '{"schemaVersion":1,"protocolVersion":5}\n',
+    });
+
+    await assert.rejects(
+      installVerifiedVsix(artifactPath, extensionsDirectory),
+      /runtime metadata protocolVersion expected 6 but found 5/i,
+    );
+    assert.deepEqual(await readdir(extensionsDirectory), []);
+  });
+});
+
 test("VSIX installation rejects unsafe archive entries before extraction", async (t) => {
   const installVerifiedVsix = await loadInstaller();
   for (const [name, writeArchive, expectedError] of [
@@ -304,6 +352,11 @@ test("VSIX installation validates identity before deriving its directory", async
     ["publisher", "../outside", /unexpected extension publisher/],
     ["name", "../../outside", /unexpected extension name/],
     ["displayName", ["Pin", "Op"].join(""), /unexpected extension display name/],
+    [
+      "description",
+      "Connect browser DevTools to your source code.",
+      /unexpected extension description/,
+    ],
     ["repository", "https://example.test/repository", /unexpected extension repository/],
     ["bugs", "https://example.test/issues", /unexpected extension bugs URL/],
     ["homepage", "https://example.test", /unexpected extension homepage/],
@@ -565,6 +618,8 @@ function expectedManifest(overrides = {}) {
   return {
     name: "pin-op",
     displayName: "Pin-op",
+    description:
+      "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
     publisher: "conus-vision",
     repository: "https://github.com/conus-vision/pin-op",
     bugs: "https://github.com/conus-vision/pin-op/issues",
@@ -626,7 +681,8 @@ function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
     ["extension/dist/mappings.wasm", mappingsWasm],
     [
       "extension/dist/runtime-metadata.json",
-      '{"schemaVersion":1,"protocolVersion":5}\n',
+      archiveOverrides.runtimeMetadata ??
+        '{"schemaVersion":1,"protocolVersion":6}\n',
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
     ["extension/readme.md", "readme"],

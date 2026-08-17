@@ -63,6 +63,12 @@ const [, sourceNavigationAndLater] = protocolGuide.split("## Source Navigation")
 const [sourceNavigationSection] = (sourceNavigationAndLater ?? "").split(
   "## Peer State",
 );
+const [, sourcePresentationAndLater] = protocolGuide.split(
+  "## Source Presentation And Settings",
+);
+const [sourcePresentationSection] = (sourcePresentationAndLater ?? "").split(
+  "## Source Navigation",
+);
 const [, readOnlySecuritySection] = protocolGuide.split(
   "## Read-Only Security Model",
 );
@@ -111,22 +117,15 @@ const securityDisclosureContracts = [
     negation: [/disposal (?:removes|cleans up)/i, "disposal does not remove"],
   },
   {
-    name: "page and source immutability",
-    message: "page-owned state and source immutability disclosure is required",
+    name: "arbitrary page writes and source immutability",
+    message: "arbitrary page write and source immutability disclosure is required",
     pattern: completeClause(
-      String.raw`(?:Outside|Apart from) (?:that|the) isolated `,
-      String.raw`(?:Pin-op )?overlay(?: DOM)?, Pin-op `,
-      String.raw`(?:does not|never) modify page-owned content or application state, `,
-      String.raw`and (?:it )?(?:does not|never) (?:modify|edit|write) source code`,
+      String.raw`Pin-op exposes no arbitrary page-owned DOM write `,
+      String.raw`and does not modify source code`,
     ),
     negation: [
-      new RegExp(
-        String.raw`(?:does not|never) modify page-owned content or application state, ` +
-          String.raw`and (?:it )?(?:does not|never) ` +
-          String.raw`(?:modify|edit|write) source code`,
-        "i",
-      ),
-      "may modify page-owned content or application state and source code",
+      /no arbitrary page-owned DOM write and does not modify source code/i,
+      "may arbitrarily modify page-owned DOM and source code",
     ],
   },
 ];
@@ -262,29 +261,30 @@ test("source-resolution materials name fallback and fail-closed outcomes", () =>
   assert.match(materials, /SCSS source map invalid/);
 });
 
-test("protocol materials pin exact version 5 and capability negotiation", () => {
+test("protocol materials pin exact version 6 and terminal v5 rejection", () => {
   const publicMaterials = `${readme}\n${changelog}\n${architectureGuide}\n${protocolGuide}`;
-  assert.match(protocolGuide, /current protocol version is `5`/i);
-  assert.match(protocolGuide, /`protocolVersion: 5`/);
+  assert.match(protocolGuide, /current protocol version is `6`/i);
+  assert.match(protocolGuide, /`protocolVersion: 6`/);
   assert.match(protocolGuide, /source-navigation/);
+  assert.match(protocolGuide, /source-presentation/);
   assert.match(protocolGuide, /capabilit(?:y|ies)[\s\S]*hello/i);
   assert.match(protocolGuide, /exact version[\s\S]*no downgrade/i);
+  assert.match(protocolGuide, /v5 peer[\s\S]*1002[\s\S]*no[\s\S]*fallback/i);
   assert.match(protocolGuide, /targeted resolution repl(?:y|ies)/i);
   assert.match(protocolGuide, /peer state/i);
   assert.match(protocolGuide, /browser-local node refs/i);
   assert.match(protocolGuide, /channel/i);
   assert.match(protocolGuide, /document epoch/i);
   assert.match(protocolGuide, /branch revision/i);
-  assert.match(protocolGuide, /no protocol v4 compatibility/i);
   assert.doesNotMatch(
     publicMaterials,
-    /current protocol version is `4`|protocolVersion: 4|protocol v4 router/i,
+    /current protocol version is `[45]`|`protocolVersion: [45]`|protocol v[45] router/i,
   );
 });
 
 test("protocol guide contains strict source navigation examples", () => {
   assert.deepEqual(jsonExample("source.navigate"), {
-    protocolVersion: 5,
+    protocolVersion: 6,
     type: "source.navigate",
     messageId: "navigate-19",
     sessionId: "default",
@@ -294,7 +294,7 @@ test("protocol guide contains strict source navigation examples", () => {
     metadata: {},
   });
   assert.deepEqual(jsonExample("source.navigationState"), {
-    protocolVersion: 5,
+    protocolVersion: 6,
     type: "source.navigationState",
     messageId: "navigation-state-20",
     sessionId: "default",
@@ -305,6 +305,60 @@ test("protocol guide contains strict source navigation examples", () => {
     activeMatchIndex: 0,
     metadata: {},
   });
+});
+
+test("protocol guide exposes only bounded excerpts and opaque source-open authority", () => {
+  assert.ok(sourcePresentationSection, "Source Presentation section is required");
+  const matches = jsonExample("source.matches");
+  assert.equal(matches.protocolVersion, 6);
+  assert.equal(matches.type, "source.matches");
+  assert.deepEqual(Object.keys(matches).sort(), [
+    "document",
+    "inspectMessageId",
+    "matches",
+    "messageId",
+    "metadata",
+    "omittedMatchCount",
+    "protocolVersion",
+    "resolutionGeneration",
+    "sessionId",
+    "source",
+    "type",
+  ]);
+  assert.equal(matches.matches.length, 1);
+  assert.deepEqual(Object.keys(matches.matches[0]).sort(), [
+    "confidence",
+    "endLine",
+    "kind",
+    "label",
+    "matchId",
+    "relation",
+    "startLine",
+    "targetRole",
+    "text",
+    "truncated",
+  ]);
+  assert.equal(matches.matches[0].matchId, "opaque-match-1");
+  assert.match(sourcePresentationSection, /at most 32 excerpts/i);
+  assert.match(sourcePresentationSection, /at most 256 KiB/i);
+  assert.match(sourcePresentationSection, /at most 80 logical lines and 8 KiB/i);
+  assert.match(
+    sourcePresentationSection,
+    /no workspace path, source URI, browser tab ID, editor range, or full source\s+document/i,
+  );
+
+  const [, sourceOpenAndLater = ""] = sourcePresentationSection.split(
+    "Clicking an excerpt sends `source.open`",
+  );
+  const [sourceOpenWireContract = ""] = sourceOpenAndLater.split(".");
+  assert.match(
+    sourceOpenWireContract,
+    /only `inspectMessageId`,\s*`resolutionGeneration`, and the opaque `matchId`/i,
+  );
+  assert.doesNotMatch(
+    sourceOpenWireContract,
+    /\b(?:command|file|line|path|range|source map|uri)\b/i,
+  );
 });
 
 test("protocol guide documents targeted repeated selected-only navigation state", () => {
@@ -367,13 +421,24 @@ test("protocol guide states the read-only browser and IDE execution boundary", (
   assert.match(readOnlySecuritySection, /browser[\s\S]*read[\s\S]*(?:DOM|CSS)/i);
   assert.match(readOnlySecuritySection, /does\s+not\s+execute page commands/i);
   assert.match(readOnlySecuritySection, /IDE[\s\S]*read[\s\S]*workspace/i);
-  assert.match(readOnlySecuritySection, /IDE[\s\S]*move[\s\S]*cursor[\s\S]*reveal/i);
+  assert.match(
+    readOnlySecuritySection,
+    /IDE extension[\s\S]*move[\s\S]*cursor[\s\S]*(?:Previous\/Next|source\.open)/i,
+  );
   assert.match(readOnlySecuritySection, /cannot[\s\S]*edit or write source files/i);
   assert.match(readOnlySecuritySection, /cannot[\s\S]*shell[\s\S]*workspace command/i);
   assert.match(readOnlySecuritySection, /cannot[\s\S]*execute page scripts/i);
   assert.match(
     readOnlySecuritySection,
-    /source (?:contents|ranges)[\s\S]*never cross[\s\S]*WebSocket/i,
+    /bounded active-document excerpts[\s\S]*cross[\s\S]*WebSocket/i,
+  );
+  assert.match(
+    readOnlySecuritySection,
+    /Browser-local locators and node refs never[\s\S]*cross/i,
+  );
+  assert.match(
+    readOnlySecuritySection,
+    /Full source documents[\s\S]*local file paths and URIs[\s\S]*source maps[\s\S]*never cross/i,
   );
   assert.doesNotMatch(
     readOnlySecuritySection,
@@ -435,7 +500,10 @@ test("0.3.0 record marks unperformed external evidence pending", () => {
 
 test("README points to the canonical Pin-op product and repository", () => {
   assert.match(readme, /^# Pin-op\r?\n/);
-  assert.match(readme, /Connect browser DevTools to your source code\./);
+  assert.match(
+    readme,
+    /Highlights styles and source code in your IDE for the DOM element selected in\s+the browser\./,
+  );
   assert.match(readme, /https:\/\/pin-op\.conus\.vision/);
   assert.match(
     readme,
