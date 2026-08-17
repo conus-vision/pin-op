@@ -6,6 +6,8 @@ import type {
 import type { PanelSourceNavigateCommand } from "./inspectPortProtocol.js";
 
 export interface SourceNavigationViewModel {
+  readonly inspectMessageId?: string;
+  readonly resolutionGeneration?: number;
   readonly visible: boolean;
   readonly reserveRowSpace: boolean;
   readonly disabled: boolean;
@@ -42,6 +44,7 @@ export class SourceNavigationController {
     this.inspectMessageId = inspectMessageId;
     this.resolutionGeneration = undefined;
     this.update({
+      inspectMessageId,
       visible: false,
       reserveRowSpace: true,
       disabled: true,
@@ -64,6 +67,8 @@ export class SourceNavigationController {
     this.resolutionGeneration = message.resolutionGeneration;
     const visible = message.selectedMatchCount > 0;
     this.update({
+      inspectMessageId: message.inspectMessageId,
+      resolutionGeneration: message.resolutionGeneration,
       visible,
       reserveRowSpace: visible,
       disabled: true,
@@ -87,6 +92,8 @@ export class SourceNavigationController {
 
     const visible = message.selectedMatchCount > 0;
     this.update({
+      inspectMessageId: message.inspectMessageId,
+      resolutionGeneration: message.resolutionGeneration,
       visible,
       reserveRowSpace: visible,
       disabled: !visible,

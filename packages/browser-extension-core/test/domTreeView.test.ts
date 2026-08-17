@@ -366,6 +366,63 @@ describe("DomTreeView", () => {
     expect(harness.sourceCommands).toEqual([]);
   });
 
+  it("does not transfer suspended focus into a new source authority", () => {
+    const harness = createHarness();
+    harness.controller.handleEvent(selectionChanged(1, [
+      node("root", "html", true),
+      node("selected", "button.save"),
+    ]));
+    harness.sourceNavigation.beginInspect("inspect-old");
+    harness.sourceNavigation.acceptResolution(resolution({
+      inspectMessageId: "inspect-old",
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+    }));
+    harness.sourceNavigation.acceptState(navigationState({
+      inspectMessageId: "inspect-old",
+      resolutionGeneration: 3,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+    harness.controller.focus("root");
+    const tree = harness.dom.element("dom-tree");
+    const original = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    if (!original) {
+      throw new Error("Missing original next source navigation control");
+    }
+    original.focus();
+    tree.dispatch("focusin", { target: original });
+    tree.clientHeight = 0;
+    harness.resize.trigger();
+
+    harness.sourceNavigation.beginInspect("inspect-new");
+    harness.sourceNavigation.acceptResolution(resolution({
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 7,
+      selectedMatchCount: 2,
+    }));
+    harness.sourceNavigation.acceptState(navigationState({
+      inspectMessageId: "inspect-new",
+      resolutionGeneration: 7,
+      selectedMatchCount: 2,
+      activeMatchIndex: 0,
+    }));
+
+    expect(harness.dom.activeElement).toBe(original);
+    tree.clientHeight = 120;
+    harness.resize.trigger();
+
+    const replacement = harness.dom.row("selected")
+      .findByData("action", "source-next");
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(original);
+    expect(harness.dom.activeElement).toBe(harness.dom.row("root"));
+    expect(harness.dom.activeElement).not.toBe(replacement);
+    expect(harness.controller.focusedRef).toBe("root");
+    expect(harness.sourceCommands).toEqual([]);
+  });
+
   it("falls back safely when a replacement source control cannot receive focus", () => {
     const harness = createHarness();
     harness.controller.handleEvent(selectionChanged(1, [

@@ -12,6 +12,7 @@ describe("SourceNavigationController", () => {
 
     controller.beginInspect("inspect-1");
     expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-1",
       visible: false,
       reserveRowSpace: true,
       disabled: true,
@@ -39,6 +40,8 @@ describe("SourceNavigationController", () => {
       activeMatchIndex: 1,
     }));
     expect(controller.snapshot()).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 3,
       visible: true,
       reserveRowSpace: true,
       disabled: false,
@@ -47,6 +50,58 @@ describe("SourceNavigationController", () => {
       counter: "2 / 4",
     });
     expect(Object.isFrozen(controller.snapshot())).toBe(true);
+  });
+
+  it("exposes frozen authority tokens across accepted transitions", () => {
+    const controller = new SourceNavigationController(vi.fn());
+
+    expect(controller.snapshot()).not.toHaveProperty("inspectMessageId");
+    expect(controller.snapshot()).not.toHaveProperty("resolutionGeneration");
+
+    controller.beginInspect("inspect-a");
+    expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-a",
+    });
+    expect(controller.snapshot()).not.toHaveProperty("resolutionGeneration");
+
+    controller.acceptResolution(resolution({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 3,
+    }));
+    expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 3,
+    });
+
+    controller.acceptState(state({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 3,
+      activeMatchIndex: 1,
+    }));
+    expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 3,
+    });
+
+    controller.acceptResolution(resolution({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 4,
+    }));
+    expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 4,
+    });
+
+    controller.beginInspect("inspect-b");
+    expect(controller.snapshot()).toMatchObject({
+      inspectMessageId: "inspect-b",
+    });
+    expect(controller.snapshot()).not.toHaveProperty("resolutionGeneration");
+    expect(Object.isFrozen(controller.snapshot())).toBe(true);
+
+    controller.invalidate();
+    expect(controller.snapshot()).not.toHaveProperty("inspectMessageId");
+    expect(controller.snapshot()).not.toHaveProperty("resolutionGeneration");
   });
 
   it("accepts repeated cursor states for the same resolution generation", () => {
@@ -106,6 +161,8 @@ describe("SourceNavigationController", () => {
     }));
 
     expect(controller.snapshot()).toEqual({
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 3,
       visible: false,
       reserveRowSpace: false,
       disabled: true,

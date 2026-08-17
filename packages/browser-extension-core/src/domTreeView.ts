@@ -56,6 +56,8 @@ interface SourceNavigationRenderContext {
   readonly documentEpoch: number | undefined;
   readonly selectedRef: string | undefined;
   readonly selectedMatchCount: number;
+  readonly inspectMessageId: string | undefined;
+  readonly resolutionGeneration: number | undefined;
 }
 
 interface SourceNavigationFocusTarget extends SourceNavigationRenderContext {
@@ -342,6 +344,8 @@ export class DomTreeView {
       documentEpoch: snapshot.documentEpoch,
       selectedRef: snapshot.selectedRef,
       selectedMatchCount: sourceNavigation.selectedMatchCount,
+      inspectMessageId: sourceNavigation.inspectMessageId,
+      resolutionGeneration: sourceNavigation.resolutionGeneration,
     };
 
     const restoredSourceNavigationFocus = sourceNavigationFocus !== undefined &&
@@ -534,7 +538,9 @@ export class DomTreeView {
       target.documentEpoch !== snapshot.documentEpoch ||
       target.selectedRef !== snapshot.selectedRef ||
       target.rowRef !== snapshot.selectedRef ||
-      target.selectedMatchCount !== sourceNavigation.selectedMatchCount
+      target.selectedMatchCount !== sourceNavigation.selectedMatchCount ||
+      target.inspectMessageId !== sourceNavigation.inspectMessageId ||
+      target.resolutionGeneration !== sourceNavigation.resolutionGeneration
     ) {
       return false;
     }
