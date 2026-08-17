@@ -9,13 +9,9 @@ import {
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
+import type { PanelSourceOpenCommand } from "./inspectPortProtocol.js";
 
-export interface PanelSourceOpenCommand {
-  readonly type: "pin-op.source.open";
-  readonly inspectMessageId: string;
-  readonly resolutionGeneration: number;
-  readonly matchId: string;
-}
+export type { PanelSourceOpenCommand } from "./inspectPortProtocol.js";
 
 export type SourcePaneDispatch = (message: PanelSourceOpenCommand) => void;
 

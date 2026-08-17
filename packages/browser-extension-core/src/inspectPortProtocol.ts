@@ -1,5 +1,6 @@
 import {
   RESOLUTION_LIMITS,
+  type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import type {
@@ -13,6 +14,7 @@ import type {
   ProtocolCompatibilityMessage,
   RefreshExecutionCommand,
 } from "./refreshRuntimeProtocol.js";
+import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
 
 export {
   parsePanelTabSettingsCommand,
@@ -66,10 +68,25 @@ export interface PanelSourceNavigateCommand {
   readonly direction: "previous" | "next";
 }
 
+export interface PanelSourceOpenCommand {
+  readonly type: "pin-op.source.open";
+  readonly inspectMessageId: string;
+  readonly resolutionGeneration: number;
+  readonly matchId: string;
+}
+
+export interface PanelPresentationSettingsCommand {
+  readonly type: "pin-op.presentation.settings";
+  readonly inspectMessageId: string;
+  readonly ideHighlightEnabled: boolean;
+}
+
 /** Messages sent from the DevTools panel to its trusted background port. */
 export type PanelToBackgroundInspectPortMessage =
   | InspectPortRequest
   | PanelSourceNavigateCommand
+  | PanelSourceOpenCommand
+  | PanelPresentationSettingsCommand
   | PanelTabSettingsCommand
   | DomRequest;
 
@@ -79,6 +96,7 @@ export type BackgroundToPanelInspectPortMessage =
   | InspectPortInvalidated
   | PanelTabStateMessage
   | ProtocolCompatibilityMessage
+  | SourceMatchesMessage
   | SourceNavigationStateMessage
   | DomResponse
   | DomEvent;
@@ -282,6 +300,55 @@ export function parsePanelSourceNavigateCommand(
   };
 }
 
+export function parsePanelSourceOpenCommand(
+  value: unknown,
+): PanelSourceOpenCommand | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "inspectMessageId",
+    "resolutionGeneration",
+    "matchId",
+  ]);
+  if (
+    !record ||
+    record.type !== "pin-op.source.open" ||
+    !isProtocolOpaqueId(record.inspectMessageId) ||
+    !isResolutionGeneration(record.resolutionGeneration) ||
+    !isProtocolOpaqueId(record.matchId)
+  ) {
+    return undefined;
+  }
+  return {
+    type: record.type,
+    inspectMessageId: record.inspectMessageId,
+    resolutionGeneration: record.resolutionGeneration,
+    matchId: record.matchId,
+  };
+}
+
+export function parsePanelPresentationSettingsCommand(
+  value: unknown,
+): PanelPresentationSettingsCommand | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "inspectMessageId",
+    "ideHighlightEnabled",
+  ]);
+  if (
+    !record ||
+    record.type !== "pin-op.presentation.settings" ||
+    !isProtocolOpaqueId(record.inspectMessageId) ||
+    typeof record.ideHighlightEnabled !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    type: record.type,
+    inspectMessageId: record.inspectMessageId,
+    ideHighlightEnabled: record.ideHighlightEnabled,
+  };
+}
+
 export function parseInspectControllerCommand(value: unknown):
   | {
       readonly type: "enableInspectMode" | "disableInspectMode";
@@ -305,37 +372,17 @@ function hasOnlyKeys(
     actual.every((key) => keys.includes(key));
 }
 
-function snapshotExactDataRecord(
-  value: unknown,
-  expectedKeys: readonly string[],
-): Record<string, unknown> | undefined {
-  try {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return undefined;
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const keys = Reflect.ownKeys(descriptors);
-    if (
-      keys.length !== expectedKeys.length ||
-      keys.some((key) =>
-        typeof key !== "string" || !expectedKeys.includes(key)
-      )
-    ) {
-      return undefined;
-    }
-    const snapshot = Object.create(null) as Record<string, unknown>;
-    for (const key of expectedKeys) {
-      const holder = Reflect.getOwnPropertyDescriptor(descriptors, key);
-      const descriptor = holder?.value as PropertyDescriptor | undefined;
-      if (!descriptor || !Object.hasOwn(descriptor, "value")) {
-        return undefined;
-      }
-      snapshot[key] = descriptor.value;
-    }
-    return snapshot;
-  } catch {
-    return undefined;
-  }
+function isProtocolOpaqueId(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= RESOLUTION_LIMITS.opaqueIdLength;
+}
+
+function isResolutionGeneration(value: unknown): value is number {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= RESOLUTION_LIMITS.generation;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

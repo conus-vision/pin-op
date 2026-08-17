@@ -344,6 +344,8 @@ export {
   parseInspectPortInvalidated,
   parseInspectPortRequest,
   parseInspectPortResult,
+  parsePanelPresentationSettingsCommand,
+  parsePanelSourceOpenCommand,
 } from "./inspectPortProtocol.js";
 export type {
   BackgroundToContentInspectPortMessage,
@@ -356,7 +358,9 @@ export type {
   InspectPortInvalidated,
   InspectPortRequest,
   InspectPortResult,
+  PanelPresentationSettingsCommand,
   PanelInspectPort,
+  PanelSourceOpenCommand,
   PanelToBackgroundInspectPortMessage,
 } from "./inspectPortProtocol.js";
 export { parseLinkCode } from "./linkCode.js";
@@ -406,7 +410,6 @@ export type {
 } from "./sourceNavigationController.js";
 export { SourcePaneController } from "./sourcePaneController.js";
 export type {
-  PanelSourceOpenCommand,
   SourcePaneDispatch,
   SourcePaneGroup,
   SourcePaneViewModel,
@@ -414,7 +417,6 @@ export type {
 export { PanelSettingsController } from "./panelSettingsController.js";
 export type {
   PanelSettingsBindingToken,
-  PanelPresentationSettingsCommand,
   PanelSettingsCommand,
   PanelSettingsDispatch,
   PanelSettingsViewModel,

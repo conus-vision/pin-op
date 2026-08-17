@@ -3,6 +3,7 @@ import type {
   PeerStateMessage,
   PageRefreshMessage,
   ResolutionMessage,
+  SourceMatchesMessage,
   SourceNavigateMessage,
   SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -21,7 +22,10 @@ import {
 } from "../src/index.js";
 import type {
   InspectSendOutcome,
+  PresentationSettingsInput,
+  SourceOpenInput,
   SourceNavigationSendOutcome,
+  SourcePresentationSendOutcome,
   TrustedIdeMessageListener,
 } from "../src/bridgeClient.js";
 
@@ -370,6 +374,16 @@ class FakeWindowClient implements WindowConnectionClient {
     return this.active ? "sent" : "not-connected";
   }
 
+  public sendSourceOpen(_input: SourceOpenInput): SourcePresentationSendOutcome {
+    return this.active ? "sent" : "not-connected";
+  }
+
+  public sendPresentationSettings(
+    _input: PresentationSettingsInput,
+  ): SourcePresentationSendOutcome {
+    return this.active ? "sent" : "not-connected";
+  }
+
   public onResolution(
     _listener: TrustedIdeMessageListener<ResolutionMessage>,
   ) {
@@ -382,6 +396,12 @@ class FakeWindowClient implements WindowConnectionClient {
 
   public onSourceNavigationState(
     _listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
+  ) {
+    return { dispose(): void {} };
+  }
+
+  public onSourceMatches(
+    _listener: TrustedIdeMessageListener<SourceMatchesMessage>,
   ) {
     return { dispose(): void {} };
   }

@@ -1,19 +1,31 @@
 import {
   PinOpMessageSchema,
   ClientSourceSchema,
+  PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
   PROTOCOL_MISMATCH_CLOSE_CODE,
+  SourceOpenMessageSchema,
   SourceNavigateMessageSchema,
   parseProtocolMismatchReason,
   type ClientSource,
   type InspectMessage,
   type PageRefreshMessage,
   type PeerStateMessage,
+  type PresentationSettingsMessage,
   type ProtocolErrorCode,
   type ResolutionMessage,
+  type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
+import {
+  parsePanelPresentationSettingsCommand,
+  parsePanelSourceOpenCommand,
+  type PanelPresentationSettingsCommand,
+  type PanelSourceOpenCommand,
+} from "./inspectPortProtocol.js";
+import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
 import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
@@ -95,6 +107,12 @@ export type InspectSendOutcome =
   | "transport-error";
 
 export type SourceNavigationSendOutcome = InspectSendOutcome;
+export type SourcePresentationSendOutcome = InspectSendOutcome;
+export type SourceOpenInput = Omit<PanelSourceOpenCommand, "type">;
+export type PresentationSettingsInput = Omit<
+  PanelPresentationSettingsCommand,
+  "type"
+>;
 
 export interface BrowserBridgeSubscription {
   dispose(): void;
@@ -147,6 +165,9 @@ export class BrowserBridgeClient {
   >();
   private readonly sourceNavigationStateListeners = new Set<
     TrustedIdeMessageListener<SourceNavigationStateMessage>
+  >();
+  private readonly sourceMatchesListeners = new Set<
+    TrustedIdeMessageListener<SourceMatchesMessage>
   >();
   private readonly pageRefreshListeners = new Set<
     (message: PageRefreshMessage) => void
@@ -277,6 +298,69 @@ export class BrowserBridgeClient {
     }
   }
 
+  public sendSourceOpen(
+    input: SourceOpenInput,
+  ): SourcePresentationSendOutcome {
+    if (!this.isConnectedTransport()) {
+      return "not-connected";
+    }
+    const safeInput = snapshotSourceOpenInput(input);
+    if (!safeInput) {
+      return this.rejectSourcePresentation("Source open message");
+    }
+
+    let message: SourceOpenMessage | undefined;
+    try {
+      const parsed = SourceOpenMessageSchema.safeParse({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "source.open",
+        messageId: this.messageId(),
+        sessionId: this.credentials?.sessionId,
+        inspectMessageId: safeInput.inspectMessageId,
+        resolutionGeneration: safeInput.resolutionGeneration,
+        matchId: safeInput.matchId,
+        metadata: {},
+      });
+      message = parsed.success ? parsed.data : undefined;
+    } catch {
+      message = undefined;
+    }
+    return message
+      ? this.sendSourcePresentation(message, "source open")
+      : this.rejectSourcePresentation("Source open message");
+  }
+
+  public sendPresentationSettings(
+    input: PresentationSettingsInput,
+  ): SourcePresentationSendOutcome {
+    if (!this.isConnectedTransport()) {
+      return "not-connected";
+    }
+    const safeInput = snapshotPresentationSettingsInput(input);
+    if (!safeInput) {
+      return this.rejectSourcePresentation("Presentation settings message");
+    }
+
+    let message: PresentationSettingsMessage | undefined;
+    try {
+      const parsed = PresentationSettingsMessageSchema.safeParse({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "presentation.settings",
+        messageId: this.messageId(),
+        sessionId: this.credentials?.sessionId,
+        inspectMessageId: safeInput.inspectMessageId,
+        ideHighlightEnabled: safeInput.ideHighlightEnabled,
+        metadata: {},
+      });
+      message = parsed.success ? parsed.data : undefined;
+    } catch {
+      message = undefined;
+    }
+    return message
+      ? this.sendSourcePresentation(message, "presentation settings")
+      : this.rejectSourcePresentation("Presentation settings message");
+  }
+
   public onResolution(
     listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription {
@@ -293,6 +377,12 @@ export class BrowserBridgeClient {
     listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
   ): BrowserBridgeSubscription {
     return subscribeTrusted(this.sourceNavigationStateListeners, listener);
+  }
+
+  public onSourceMatches(
+    listener: TrustedIdeMessageListener<SourceMatchesMessage>,
+  ): BrowserBridgeSubscription {
+    return subscribeTrusted(this.sourceMatchesListeners, listener);
   }
 
   public onPageRefresh(
@@ -349,6 +439,44 @@ export class BrowserBridgeClient {
       return "sent";
     } catch {
       this.report(new Error("WebSocket inspect send failed"));
+      return "transport-error";
+    }
+  }
+
+  private isConnectedTransport(): boolean {
+    return Boolean(
+      this.socket &&
+        this.credentials &&
+        this.authenticated &&
+        this.state === "connected",
+    );
+  }
+
+  private rejectSourcePresentation(
+    label: string,
+  ): SourcePresentationSendOutcome {
+    this.report(
+      new BrowserProtocolError(
+        "protocol.invalidMessage",
+        `${label} exceeds protocol limits`,
+      ),
+    );
+    return "invalid-message";
+  }
+
+  private sendSourcePresentation(
+    message: SourceOpenMessage | PresentationSettingsMessage,
+    label: string,
+  ): SourcePresentationSendOutcome {
+    const socket = this.socket;
+    if (!socket || !this.isConnectedTransport()) {
+      return "not-connected";
+    }
+    try {
+      socket.send(JSON.stringify(message));
+      return "sent";
+    } catch {
+      this.report(new Error(`WebSocket ${label} send failed`));
       return "transport-error";
     }
   }
@@ -500,6 +628,21 @@ export class BrowserBridgeClient {
       );
       return;
     }
+    if (message.type === "source.matches") {
+      if (
+        !this.authenticated ||
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId
+      ) {
+        return;
+      }
+      this.notifyTrustedIdeListeners(
+        this.sourceMatchesListeners,
+        this.trustedIdePeerContext(message.source.id),
+        message,
+      );
+      return;
+    }
     if (message.type === "page.refresh") {
       if (
         !this.authenticated ||
@@ -582,6 +725,8 @@ export class BrowserBridgeClient {
       capabilities: [
         "inspect",
         "link",
+        "source-presentation",
+        "presentation-settings",
         "source-navigation",
         "auto-refresh",
       ],
@@ -738,6 +883,53 @@ export class BrowserBridgeClient {
     socket.onclose = null;
     socket.onerror = null;
   }
+}
+
+function snapshotSourceOpenInput(value: unknown): SourceOpenInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "resolutionGeneration",
+    "matchId",
+  ]);
+  if (!record) {
+    return undefined;
+  }
+  const parsed = parsePanelSourceOpenCommand({
+    type: "pin-op.source.open",
+    inspectMessageId: record.inspectMessageId,
+    resolutionGeneration: record.resolutionGeneration,
+    matchId: record.matchId,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        resolutionGeneration: parsed.resolutionGeneration,
+        matchId: parsed.matchId,
+      }
+    : undefined;
+}
+
+function snapshotPresentationSettingsInput(
+  value: unknown,
+): PresentationSettingsInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "ideHighlightEnabled",
+  ]);
+  if (!record) {
+    return undefined;
+  }
+  const parsed = parsePanelPresentationSettingsCommand({
+    type: "pin-op.presentation.settings",
+    inspectMessageId: record.inspectMessageId,
+    ideHighlightEnabled: record.ideHighlightEnabled,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        ideHighlightEnabled: parsed.ideHighlightEnabled,
+      }
+    : undefined;
 }
 
 function subscribe<T>(

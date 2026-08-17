@@ -4,6 +4,7 @@ import {
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -18,7 +19,10 @@ import {
   type BrowserProtocolMismatch,
   type InspectPayload,
   type InspectSendOutcome,
+  type PresentationSettingsInput,
+  type SourceOpenInput,
   type SourceNavigationSendOutcome,
+  type SourcePresentationSendOutcome,
   type TrustedIdeMessageListener,
 } from "./bridgeClient.js";
 import {
@@ -27,6 +31,12 @@ import {
 } from "./browserWindowLinkStore.js";
 import { parseLinkCode } from "./linkCode.js";
 import {
+  parsePanelPresentationSettingsCommand,
+  parsePanelSourceOpenCommand,
+} from "./inspectPortProtocol.js";
+import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
+import {
+  isTrustedIdePeerContext,
   trustedIdePeerMatchesPayload,
   type TrustedIdePeerContext,
 } from "./trustedIdePeerContext.js";
@@ -68,6 +78,10 @@ export interface WindowConnectionClient {
       "inspectMessageId" | "resolutionGeneration" | "direction"
     >,
   ): SourceNavigationSendOutcome;
+  sendSourceOpen(input: SourceOpenInput): SourcePresentationSendOutcome;
+  sendPresentationSettings(
+    input: PresentationSettingsInput,
+  ): SourcePresentationSendOutcome;
   onResolution(
     listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription;
@@ -76,6 +90,9 @@ export interface WindowConnectionClient {
   ): BrowserBridgeSubscription;
   onSourceNavigationState(
     listener: TrustedIdeMessageListener<SourceNavigationStateMessage>,
+  ): BrowserBridgeSubscription;
+  onSourceMatches(
+    listener: TrustedIdeMessageListener<SourceMatchesMessage>,
   ): BrowserBridgeSubscription;
   onPageRefresh(
     listener: (message: PageRefreshMessage) => void,
@@ -129,6 +146,7 @@ interface WindowRecord {
   client?: WindowConnectionClient;
   clientToken?: object;
   clientSubscriptions?: readonly BrowserBridgeSubscription[];
+  clientAuthority?: ClientAuthorityEpoch;
   clientConnected: boolean;
   connectionSource?: ClientSource;
   link?: BrowserWindowLink;
@@ -137,6 +155,21 @@ interface WindowRecord {
   reconnectTimer?: ReturnType<typeof setTimeout>;
   reconnectAttempts: number;
   protocolMismatch?: BrowserProtocolMismatch;
+}
+
+interface ClientAuthorityEpoch {
+  readonly generation: number;
+  readonly clientToken: object;
+  readonly contexts: WeakSet<object>;
+  revoked: boolean;
+}
+
+interface AuthorizedClient {
+  readonly record: WindowRecord;
+  readonly generation: number;
+  readonly clientToken: object;
+  readonly authority: ClientAuthorityEpoch;
+  readonly client: WindowConnectionClient;
 }
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -169,11 +202,18 @@ export class WindowConnectionCoordinator {
   private readonly sourceNavigationStateListeners = new Set<
     TrustedIdeMessageListener<SourceNavigationStateMessage>
   >();
+  private readonly sourceMatchesListeners = new Set<
+    TrustedIdeMessageListener<SourceMatchesMessage>
+  >();
   private readonly pageRefreshListeners = new Set<
     (windowId: number, message: PageRefreshMessage) => void
   >();
   private readonly protocolMismatchListeners = new Set<
     (windowId: number, details: BrowserProtocolMismatch) => void
+  >();
+  private readonly ideContextAuthorities = new WeakMap<
+    object,
+    ClientAuthorityEpoch
   >();
   private disposed = false;
 
@@ -427,6 +467,56 @@ export class WindowConnectionCoordinator {
     }
   }
 
+  public publishSourceOpen(
+    context: TrustedIdePeerContext,
+    input: SourceOpenInput,
+  ): SourcePresentationSendOutcome {
+    const authorized = this.authorizedClient(context);
+    if (!authorized) {
+      return "not-connected";
+    }
+    const safeInput = snapshotSourceOpenInput(input);
+    if (!safeInput) {
+      return "invalid-message";
+    }
+    if (!this.isCurrentAuthority(authorized, context)) {
+      return "not-connected";
+    }
+    try {
+      const outcome = authorized.client.sendSourceOpen(safeInput);
+      this.handleSourcePresentationOutcome(authorized, context, outcome);
+      return outcome;
+    } catch {
+      this.failAuthorizedTransport(authorized, context);
+      return "transport-error";
+    }
+  }
+
+  public publishPresentationSettings(
+    context: TrustedIdePeerContext,
+    input: PresentationSettingsInput,
+  ): SourcePresentationSendOutcome {
+    const authorized = this.authorizedClient(context);
+    if (!authorized) {
+      return "not-connected";
+    }
+    const safeInput = snapshotPresentationSettingsInput(input);
+    if (!safeInput) {
+      return "invalid-message";
+    }
+    if (!this.isCurrentAuthority(authorized, context)) {
+      return "not-connected";
+    }
+    try {
+      const outcome = authorized.client.sendPresentationSettings(safeInput);
+      this.handleSourcePresentationOutcome(authorized, context, outcome);
+      return outcome;
+    } catch {
+      this.failAuthorizedTransport(authorized, context);
+      return "transport-error";
+    }
+  }
+
   public onResolution(
     listener: TrustedIdeMessageListener<ResolutionMessage>,
   ): BrowserBridgeSubscription {
@@ -455,6 +545,12 @@ export class WindowConnectionCoordinator {
       this.sourceNavigationStateListeners,
       listener,
     );
+  }
+
+  public onSourceMatches(
+    listener: TrustedIdeMessageListener<SourceMatchesMessage>,
+  ): BrowserBridgeSubscription {
+    return subscribeTrustedIdeEvent(this.sourceMatchesListeners, listener);
   }
 
   public onPageRefresh(
@@ -518,6 +614,7 @@ export class WindowConnectionCoordinator {
     this.peerStateListeners.clear();
     this.stateListeners.clear();
     this.sourceNavigationStateListeners.clear();
+    this.sourceMatchesListeners.clear();
     this.pageRefreshListeners.clear();
     this.protocolMismatchListeners.clear();
   }
@@ -652,6 +749,7 @@ export class WindowConnectionCoordinator {
       return;
     }
 
+    this.revokeClientAuthority(record);
     const token = {};
     record.clientToken = token;
     record.clientConnected = false;
@@ -689,6 +787,9 @@ export class WindowConnectionCoordinator {
     try {
       subscriptions.push(client.onResolution((context, message) =>
         this.forwardResolution(record, generation, token, context, message),
+      ));
+      subscriptions.push(client.onSourceMatches((context, message) =>
+        this.forwardSourceMatches(record, generation, token, context, message),
       ));
       subscriptions.push(client.onPeerState((message) =>
         this.forwardPeerState(record, generation, token, message),
@@ -800,15 +901,23 @@ export class WindowConnectionCoordinator {
     switch (state) {
       case "connecting":
       case "linking":
+        record.clientConnected = false;
+        this.revokeClientAuthority(record);
         if (record.state !== "reconnecting") {
           this.setState(record, "linking");
         }
         return;
       case "reconnecting":
+        record.clientConnected = false;
+        this.revokeClientAuthority(record);
         this.setState(record, "reconnecting");
         return;
-      case "connected":
+      case "connected": {
+        const wasConnected = record.clientConnected;
         record.clientConnected = true;
+        if (!wasConnected || !record.clientAuthority) {
+          this.beginClientAuthority(record, generation, token);
+        }
         record.protocolMismatch = undefined;
         record.reconnectAttempts = 0;
         this.cancelReconnect(record);
@@ -816,8 +925,10 @@ export class WindowConnectionCoordinator {
           this.setState(record, "linked");
         }
         return;
+      }
       case "disconnected":
         record.clientConnected = false;
+        this.revokeClientAuthority(record);
         if (record.pendingLink?.kind === "code") {
           this.stopTerminalAttempt(record, "error");
           return;
@@ -837,10 +948,12 @@ export class WindowConnectionCoordinator {
         return;
       case "error":
         record.clientConnected = false;
+        this.revokeClientAuthority(record);
         this.setState(record, "error");
         return;
       case "incompatible":
         record.clientConnected = false;
+        this.revokeClientAuthority(record);
         this.setState(record, "incompatible");
     }
   }
@@ -1025,6 +1138,7 @@ export class WindowConnectionCoordinator {
   }
 
   private invalidate(record: WindowRecord): number {
+    this.revokeClientAuthority(record);
     record.generation += 1;
     this.cancelReconnect(record);
     return record.generation;
@@ -1032,6 +1146,7 @@ export class WindowConnectionCoordinator {
 
   private revokeClient(record: WindowRecord): void {
     const client = record.client;
+    this.revokeClientAuthority(record);
     this.disposeClientSubscriptions(record);
     record.client = undefined;
     record.clientToken = undefined;
@@ -1048,6 +1163,7 @@ export class WindowConnectionCoordinator {
 
   private disconnectClient(record: WindowRecord): void {
     const client = record.client;
+    this.revokeClientAuthority(record);
     this.disposeClientSubscriptions(record);
     record.client = undefined;
     record.clientToken = undefined;
@@ -1129,6 +1245,141 @@ export class WindowConnectionCoordinator {
     );
   }
 
+  private beginClientAuthority(
+    record: WindowRecord,
+    generation: number,
+    clientToken: object,
+  ): void {
+    this.revokeClientAuthority(record);
+    if (!this.isCurrentToken(record, generation, clientToken)) {
+      return;
+    }
+    record.clientAuthority = {
+      generation,
+      clientToken,
+      contexts: new WeakSet(),
+      revoked: false,
+    };
+  }
+
+  private revokeClientAuthority(record: WindowRecord): void {
+    const authority = record.clientAuthority;
+    record.clientAuthority = undefined;
+    if (!authority) {
+      return;
+    }
+    authority.revoked = true;
+  }
+
+  private acceptTrustedIdeContext(
+    record: WindowRecord,
+    generation: number,
+    clientToken: object,
+    context: TrustedIdePeerContext,
+    message: {
+      readonly sessionId: string;
+      readonly source: { readonly role: "ide"; readonly id: string };
+    },
+  ): boolean {
+    try {
+      const authority = record.clientAuthority;
+      const assignedAuthority = this.ideContextAuthorities.get(context);
+      if (
+        !this.isCurrentToken(record, generation, clientToken) ||
+        record.state !== "linked" ||
+        !record.clientConnected ||
+        !authority ||
+        authority.revoked ||
+        authority.generation !== generation ||
+        authority.clientToken !== clientToken ||
+        (assignedAuthority !== undefined && assignedAuthority !== authority) ||
+        !trustedIdePeerMatchesPayload(context, message) ||
+        context.windowId !== record.windowId
+      ) {
+        return false;
+      }
+      if (!assignedAuthority) {
+        this.ideContextAuthorities.set(context, authority);
+      }
+      authority.contexts.add(context);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private authorizedClient(
+    context: TrustedIdePeerContext,
+  ): AuthorizedClient | undefined {
+    if (!isTrustedIdePeerContext(context)) {
+      return undefined;
+    }
+    const record = this.records.get(context.windowId);
+    const client = record?.client;
+    const clientToken = record?.clientToken;
+    const authority = record?.clientAuthority;
+    const assignedAuthority = this.ideContextAuthorities.get(context);
+    if (
+      !record ||
+      record.state !== "linked" ||
+      !record.clientConnected ||
+      !client ||
+      !clientToken ||
+      !authority ||
+      authority.revoked ||
+      assignedAuthority !== authority ||
+      authority.generation !== record.generation ||
+      authority.clientToken !== clientToken ||
+      !authority.contexts.has(context)
+    ) {
+      return undefined;
+    }
+    return {
+      record,
+      generation: record.generation,
+      clientToken,
+      authority,
+      client,
+    };
+  }
+
+  private isCurrentAuthority(
+    authorized: AuthorizedClient,
+    context: TrustedIdePeerContext,
+  ): boolean {
+    const { record, generation, clientToken, authority, client } = authorized;
+    return this.isCurrentToken(record, generation, clientToken) &&
+      record.state === "linked" &&
+      record.clientConnected &&
+      record.client === client &&
+      record.clientAuthority === authority &&
+      !authority.revoked &&
+      this.ideContextAuthorities.get(context) === authority &&
+      authority.contexts.has(context);
+  }
+
+  private handleSourcePresentationOutcome(
+    authorized: AuthorizedClient,
+    context: TrustedIdePeerContext,
+    outcome: SourcePresentationSendOutcome,
+  ): void {
+    if (outcome === "transport-error") {
+      this.failAuthorizedTransport(authorized, context);
+    }
+  }
+
+  private failAuthorizedTransport(
+    authorized: AuthorizedClient,
+    context: TrustedIdePeerContext,
+  ): void {
+    if (!this.isCurrentAuthority(authorized, context)) {
+      return;
+    }
+    authorized.record.clientConnected = false;
+    this.revokeClientAuthority(authorized.record);
+    this.setState(authorized.record, "error");
+  }
+
   private forwardResolution(
     record: WindowRecord,
     generation: number,
@@ -1136,14 +1387,35 @@ export class WindowConnectionCoordinator {
     context: TrustedIdePeerContext,
     message: ResolutionMessage,
   ): void {
-    if (
-      !this.isCurrentToken(record, generation, token) ||
-      !trustedIdePeerMatchesPayload(context, message) ||
-      context.windowId !== record.windowId
-    ) {
+    if (!this.acceptTrustedIdeContext(
+      record,
+      generation,
+      token,
+      context,
+      message,
+    )) {
       return;
     }
     notifyTrustedIdeEvent(this.resolutionListeners, context, message);
+  }
+
+  private forwardSourceMatches(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    context: TrustedIdePeerContext,
+    message: SourceMatchesMessage,
+  ): void {
+    if (!this.acceptTrustedIdeContext(
+      record,
+      generation,
+      token,
+      context,
+      message,
+    )) {
+      return;
+    }
+    notifyTrustedIdeEvent(this.sourceMatchesListeners, context, message);
   }
 
   private forwardPeerState(
@@ -1165,11 +1437,13 @@ export class WindowConnectionCoordinator {
     context: TrustedIdePeerContext,
     message: SourceNavigationStateMessage,
   ): void {
-    if (
-      !this.isCurrentToken(record, generation, token) ||
-      !trustedIdePeerMatchesPayload(context, message) ||
-      context.windowId !== record.windowId
-    ) {
+    if (!this.acceptTrustedIdeContext(
+      record,
+      generation,
+      token,
+      context,
+      message,
+    )) {
       return;
     }
     notifyTrustedIdeEvent(
@@ -1246,6 +1520,9 @@ export class WindowConnectionCoordinator {
     record: WindowRecord,
     state: BrowserWindowConnectionState,
   ): void {
+    if (state !== "linked") {
+      this.revokeClientAuthority(record);
+    }
     if (record.state === state) {
       return;
     }
@@ -1286,6 +1563,53 @@ export class WindowConnectionCoordinator {
       throw new Error("Window connection coordinator is disposed");
     }
   }
+}
+
+function snapshotSourceOpenInput(value: unknown): SourceOpenInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "resolutionGeneration",
+    "matchId",
+  ]);
+  if (!record) {
+    return undefined;
+  }
+  const parsed = parsePanelSourceOpenCommand({
+    type: "pin-op.source.open",
+    inspectMessageId: record.inspectMessageId,
+    resolutionGeneration: record.resolutionGeneration,
+    matchId: record.matchId,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        resolutionGeneration: parsed.resolutionGeneration,
+        matchId: parsed.matchId,
+      }
+    : undefined;
+}
+
+function snapshotPresentationSettingsInput(
+  value: unknown,
+): PresentationSettingsInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "ideHighlightEnabled",
+  ]);
+  if (!record) {
+    return undefined;
+  }
+  const parsed = parsePanelPresentationSettingsCommand({
+    type: "pin-op.presentation.settings",
+    inspectMessageId: record.inspectMessageId,
+    ideHighlightEnabled: record.ideHighlightEnabled,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        ideHighlightEnabled: parsed.ideHighlightEnabled,
+      }
+    : undefined;
 }
 
 function credentialsFor(link: BrowserWindowLink): BrowserCredentials {

@@ -3,9 +3,12 @@ import {
   type ClientSource,
   type PageRefreshMessage,
   type PeerStateMessage,
+  type PresentationSettingsMessage,
   type ResolutionMessage,
+  type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
+  type SourceOpenMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -831,6 +834,218 @@ describe("WindowConnectionCoordinator", () => {
     expect(received).toEqual([]);
   });
 
+  it("forwards source matches only from the current trusted window client", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const received: Array<[TrustedIdePeerContext, SourceMatchesMessage]> = [];
+    harness.coordinator.onSourceMatches((context, message) =>
+      received.push([context, message]),
+    );
+    const first = await harness.link(10, "4873507");
+    await harness.authenticate(first, windowLink());
+    const currentContext = trustedIdePeer();
+    const currentMessage = sourceMatches("inspect-current", 1);
+    const staleCallback = first.captureSourceMatchesListener();
+
+    first.emitSourceMatches(
+      createTransportTrustedIdePeerContext(20, "session-a", "vscode-a"),
+      currentMessage,
+    );
+    first.emitSourceMatches(currentContext, {
+      ...currentMessage,
+      source: { role: "ide", id: "vscode-b" },
+    } as SourceMatchesMessage);
+    first.emitSourceMatches({
+      windowId: 10,
+      sessionId: "session-a",
+      source: { role: "ide", id: "vscode-a" },
+    } as TrustedIdePeerContext, currentMessage);
+    expect(received).toEqual([]);
+
+    first.emitSourceMatches(currentContext, currentMessage);
+    expect(received).toEqual([[currentContext, currentMessage]]);
+
+    const replacement = await harness.link(10, "4873508");
+    await harness.authenticate(replacement, windowLink());
+    staleCallback(currentContext, sourceMatches("inspect-stale", 2));
+    expect(received).toEqual([[currentContext, currentMessage]]);
+
+    const replacementContext = trustedIdePeer();
+    const replacementMessage = sourceMatches("inspect-replacement", 3);
+    replacement.emitSourceMatches(replacementContext, replacementMessage);
+    expect(received).toEqual([
+      [currentContext, currentMessage],
+      [replacementContext, replacementMessage],
+    ]);
+  });
+
+  it("publishes exact source presentation commands only for current IDE authority", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const context = trustedIdePeer();
+    client.emitSourceMatches(context, sourceMatches("inspect-current", 1));
+    const sourceOpen = {
+      inspectMessageId: "inspect-current",
+      resolutionGeneration: 1,
+      matchId: "match-current",
+    };
+    const settings = {
+      inspectMessageId: "inspect-current",
+      ideHighlightEnabled: false,
+    };
+
+    expect(harness.coordinator.publishSourceOpen(context, sourceOpen)).toBe(
+      "sent",
+    );
+    expect(
+      harness.coordinator.publishPresentationSettings(context, settings),
+    ).toBe("sent");
+    expect(client.sourceOpenCalls).toEqual([sourceOpen]);
+    expect(client.presentationSettingsCalls).toEqual([settings]);
+
+    for (const rejectedContext of [
+      trustedIdePeer(),
+      createTransportTrustedIdePeerContext(20, "session-a", "vscode-a"),
+      createTransportTrustedIdePeerContext(10, "other-session", "vscode-a"),
+      createTransportTrustedIdePeerContext(10, "session-a", "vscode-b"),
+    ]) {
+      expect(
+        harness.coordinator.publishSourceOpen(rejectedContext, sourceOpen),
+      ).toBe("not-connected");
+      expect(
+        harness.coordinator.publishPresentationSettings(
+          rejectedContext,
+          settings,
+        ),
+      ).toBe("not-connected");
+    }
+
+    expect(harness.coordinator.publishSourceOpen(context, {
+      ...sourceOpen,
+      sessionId: "panel-session",
+    } as never)).toBe("invalid-message");
+    expect(harness.coordinator.publishPresentationSettings(context, {
+      ...settings,
+      source: { role: "ide", id: "panel-source" },
+    } as never)).toBe("invalid-message");
+    const hostile = { ...settings } as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(hostile, "ideHighlightEnabled", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+    expect(() =>
+      harness.coordinator.publishPresentationSettings(
+        context,
+        hostile as never,
+      )
+    ).not.toThrow();
+    expect(
+      harness.coordinator.publishPresentationSettings(context, hostile as never),
+    ).toBe("invalid-message");
+    expect(getterCalls).toBe(0);
+    expect(client.sourceOpenCalls).toEqual([sourceOpen]);
+    expect(client.presentationSettingsCalls).toEqual([settings]);
+  });
+
+  it("revokes source authority across same-client reconnects with identical identity", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const received: TrustedIdePeerContext[] = [];
+    harness.coordinator.onSourceMatches((context) => received.push(context));
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const oldContext = trustedIdePeer();
+    const currentMessage = sourceMatches("inspect-current", 1);
+    client.emitSourceMatches(oldContext, currentMessage);
+    const staleCallback = client.captureSourceMatchesListener();
+    const settings = {
+      inspectMessageId: "inspect-current",
+      ideHighlightEnabled: true,
+    };
+    expect(
+      harness.coordinator.publishPresentationSettings(oldContext, settings),
+    ).toBe("sent");
+
+    client.emitState("disconnected");
+    expect(
+      harness.coordinator.publishPresentationSettings(oldContext, settings),
+    ).toBe("not-connected");
+    harness.timers.runNext();
+    client.emitState("connected");
+    expect(
+      harness.coordinator.publishPresentationSettings(oldContext, settings),
+    ).toBe("not-connected");
+
+    staleCallback(oldContext, currentMessage);
+    expect(received).toEqual([oldContext]);
+    expect(
+      harness.coordinator.publishPresentationSettings(oldContext, settings),
+    ).toBe("not-connected");
+
+    const newContext = trustedIdePeer();
+    client.emitSourceMatches(newContext, sourceMatches("inspect-current", 2));
+    expect(received).toEqual([oldContext, newContext]);
+    expect(
+      harness.coordinator.publishPresentationSettings(newContext, settings),
+    ).toBe("sent");
+    expect(client.presentationSettingsCalls).toEqual([settings, settings]);
+  });
+
+  it.each(["unlink", "dispose"] as const)(
+    "revokes source presentation callbacks and sends after %s",
+    async (operation) => {
+      const harness = coordinatorHarness();
+      harness.coordinator.registerPanel({
+        windowId: 10,
+        tabId: 101,
+        sourceId: "panel-101",
+      });
+      const received: SourceMatchesMessage[] = [];
+      harness.coordinator.onSourceMatches((_context, message) =>
+        received.push(message),
+      );
+      const client = await harness.link(10, "4873507");
+      await harness.authenticate(client, windowLink());
+      const context = trustedIdePeer();
+      const current = sourceMatches("inspect-current", 1);
+      client.emitSourceMatches(context, current);
+      const staleCallback = client.captureSourceMatchesListener();
+
+      if (operation === "unlink") {
+        await harness.coordinator.unlinkWindow(10);
+      } else {
+        harness.coordinator.dispose();
+      }
+      staleCallback(context, sourceMatches("inspect-stale", 2));
+
+      expect(received).toEqual([current]);
+      expect(harness.coordinator.publishSourceOpen(context, {
+        inspectMessageId: "inspect-current",
+        resolutionGeneration: 1,
+        matchId: "match-current",
+      })).toBe("not-connected");
+      expect(client.sourceOpenCalls).toEqual([]);
+    },
+  );
+
   it("snapshots registration identity, metadata, callback, and disposal", async () => {
     const harness = coordinatorHarness();
     const originalStates: string[] = [];
@@ -1038,6 +1253,18 @@ class FakeWindowClient {
       "inspectMessageId" | "resolutionGeneration" | "direction"
     >
   > = [];
+  public readonly sourceOpenCalls: Array<
+    Pick<
+      SourceOpenMessage,
+      "inspectMessageId" | "resolutionGeneration" | "matchId"
+    >
+  > = [];
+  public readonly presentationSettingsCalls: Array<
+    Pick<
+      PresentationSettingsMessage,
+      "inspectMessageId" | "ideHighlightEnabled"
+    >
+  > = [];
   public disconnectCalls = 0;
   public unlinkCalls = 0;
   public inspectResult: InspectSendOutcome = "sent";
@@ -1054,6 +1281,12 @@ class FakeWindowClient {
     (
       context: TrustedIdePeerContext,
       message: SourceNavigationStateMessage,
+    ) => void
+  >();
+  private readonly sourceMatchesListeners = new Set<
+    (
+      context: TrustedIdePeerContext,
+      message: SourceMatchesMessage,
     ) => void
   >();
   private readonly pageRefreshListeners = new Set<
@@ -1107,6 +1340,26 @@ class FakeWindowClient {
     return this.sourceNavigationResult;
   }
 
+  public sendSourceOpen(
+    input: Pick<
+      SourceOpenMessage,
+      "inspectMessageId" | "resolutionGeneration" | "matchId"
+    >,
+  ): InspectSendOutcome {
+    this.sourceOpenCalls.push({ ...input });
+    return "sent";
+  }
+
+  public sendPresentationSettings(
+    input: Pick<
+      PresentationSettingsMessage,
+      "inspectMessageId" | "ideHighlightEnabled"
+    >,
+  ): InspectSendOutcome {
+    this.presentationSettingsCalls.push({ ...input });
+    return "sent";
+  }
+
   public onResolution(
     listener: (
       context: TrustedIdePeerContext,
@@ -1145,6 +1398,18 @@ class FakeWindowClient {
     this.pageRefreshListeners.add(listener);
     return {
       dispose: () => this.pageRefreshListeners.delete(listener),
+    };
+  }
+
+  public onSourceMatches(
+    listener: (
+      context: TrustedIdePeerContext,
+      message: SourceMatchesMessage,
+    ) => void,
+  ) {
+    this.sourceMatchesListeners.add(listener);
+    return {
+      dispose: () => this.sourceMatchesListeners.delete(listener),
     };
   }
 
@@ -1189,6 +1454,31 @@ class FakeWindowClient {
     for (const listener of this.pageRefreshListeners) {
       listener(message);
     }
+  }
+
+  public emitSourceMatches(
+    context: TrustedIdePeerContext,
+    message: SourceMatchesMessage,
+  ): void {
+    for (const listener of this.sourceMatchesListeners) {
+      listener(context, message);
+    }
+  }
+
+  public captureSourceMatchesListener(): (
+    context: TrustedIdePeerContext,
+    message: SourceMatchesMessage,
+  ) => void {
+    const listener = this.sourceMatchesListeners.values().next().value as
+      | ((
+        context: TrustedIdePeerContext,
+        message: SourceMatchesMessage,
+      ) => void)
+      | undefined;
+    if (!listener) {
+      throw new Error("Expected a source matches listener");
+    }
+    return listener;
   }
 
   public emitProtocolMismatch(details: BrowserProtocolMismatch): void {
@@ -1503,6 +1793,36 @@ function selection(selector: string): InspectPayload {
     ],
     context: { url: "http://localhost:3000", metadata: {} },
     ideHighlightEnabled: true,
+    metadata: {},
+  };
+}
+
+function sourceMatches(
+  inspectMessageId: string,
+  resolutionGeneration: number,
+): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: `source-matches-${inspectMessageId}-${resolutionGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    resolutionGeneration,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [{
+      matchId: "match-current",
+      targetRole: "selected",
+      label: "card.scss:1",
+      kind: "rule",
+      relation: "selected",
+      confidence: "exact",
+      startLine: 1,
+      endLine: 3,
+      text: ".card {\n  color: red;\n}",
+      truncated: false,
+    }],
+    omittedMatchCount: 0,
     metadata: {},
   };
 }

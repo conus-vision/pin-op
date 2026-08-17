@@ -4,6 +4,8 @@ import {
   createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectContentLeasePortName,
+  parsePanelPresentationSettingsCommand,
+  parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
   parsePanelTabStateMessage,
@@ -122,6 +124,102 @@ describe("panel inspect transport", () => {
     expect(parsePanelSourceNavigateCommand(withSymbol)).toBeUndefined();
     expect(() => parsePanelSourceNavigateCommand(proxy)).not.toThrow();
     expect(parsePanelSourceNavigateCommand(proxy)).toBeUndefined();
+  });
+
+  it("parses only exact bounded source open and presentation settings commands", () => {
+    const sourceOpen = {
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 3,
+      matchId: "match-1",
+    } as const;
+    const presentationSettings = {
+      type: "pin-op.presentation.settings",
+      inspectMessageId: "inspect-1",
+      ideHighlightEnabled: false,
+    } as const;
+
+    expect(parsePanelSourceOpenCommand(sourceOpen)).toEqual(sourceOpen);
+    expect(parsePanelPresentationSettingsCommand(presentationSettings)).toEqual(
+      presentationSettings,
+    );
+
+    for (const candidate of [
+      { ...sourceOpen, sessionId: "session-a" },
+      { ...sourceOpen, source: { role: "ide", id: "vscode-a" } },
+      { ...sourceOpen, uri: "file:///secret.scss" },
+      { ...sourceOpen, path: "/secret.scss" },
+      { ...sourceOpen, range: { start: 1, end: 2 } },
+      { ...sourceOpen, command: "workbench.action.files.openFile" },
+      { ...sourceOpen, inspectMessageId: "" },
+      { ...sourceOpen, resolutionGeneration: -1 },
+      { ...sourceOpen, resolutionGeneration: 1.5 },
+      { ...sourceOpen, matchId: "x".repeat(129) },
+      { type: sourceOpen.type, inspectMessageId: sourceOpen.inspectMessageId },
+    ]) {
+      expect(parsePanelSourceOpenCommand(candidate)).toBeUndefined();
+    }
+
+    for (const candidate of [
+      { ...presentationSettings, sessionId: "session-a" },
+      { ...presentationSettings, source: { role: "ide", id: "vscode-a" } },
+      { ...presentationSettings, command: "pin-op.highlight" },
+      { ...presentationSettings, inspectMessageId: "" },
+      { ...presentationSettings, ideHighlightEnabled: "false" },
+      { type: presentationSettings.type, inspectMessageId: "inspect-1" },
+    ]) {
+      expect(parsePanelPresentationSettingsCommand(candidate)).toBeUndefined();
+    }
+  });
+
+  it("snapshots source commands without inherited fields or accessor execution", () => {
+    const sourceOpen = {
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-1",
+      resolutionGeneration: 3,
+      matchId: "match-1",
+    } as const;
+    const presentationSettings = {
+      type: "pin-op.presentation.settings",
+      inspectMessageId: "inspect-1",
+      ideHighlightEnabled: true,
+    } as const;
+    const inheritedOpen = Object.create(sourceOpen) as unknown;
+    const inheritedSettings = Object.create(presentationSettings) as unknown;
+    const accessorOpen = { ...sourceOpen } as Record<string, unknown>;
+    const accessorSettings = {
+      ...presentationSettings,
+    } as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(accessorOpen, "matchId", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+    Object.defineProperty(accessorSettings, "ideHighlightEnabled", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+
+    expect(parsePanelSourceOpenCommand(inheritedOpen)).toBeUndefined();
+    expect(parsePanelPresentationSettingsCommand(inheritedSettings))
+      .toBeUndefined();
+    expect(() => parsePanelSourceOpenCommand(accessorOpen)).not.toThrow();
+    expect(() => parsePanelPresentationSettingsCommand(accessorSettings))
+      .not.toThrow();
+    expect(parsePanelSourceOpenCommand(accessorOpen)).toBeUndefined();
+    expect(parsePanelPresentationSettingsCommand(accessorSettings))
+      .toBeUndefined();
+    expect(parsePanelSourceOpenCommand({
+      ...sourceOpen,
+      [Symbol("hidden")]: true,
+    })).toBeUndefined();
+    expect(getterCalls).toBe(0);
   });
 
   it("parses only exact settings, state, compatibility, and execution envelopes", () => {

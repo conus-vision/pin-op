@@ -1,15 +1,12 @@
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
+import type { PanelPresentationSettingsCommand } from "./inspectPortProtocol.js";
 import {
   parsePanelTabStateMessage,
   parseProtocolCompatibilityMessage,
   type PanelTabSettingsCommand,
 } from "./refreshRuntimeProtocol.js";
 
-export interface PanelPresentationSettingsCommand {
-  readonly type: "pin-op.presentation.settings";
-  readonly inspectMessageId: string;
-  readonly ideHighlightEnabled: boolean;
-}
+export type { PanelPresentationSettingsCommand } from "./inspectPortProtocol.js";
 
 export type PanelSettingsCommand =
   | PanelTabSettingsCommand

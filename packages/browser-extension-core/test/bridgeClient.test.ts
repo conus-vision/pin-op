@@ -1,11 +1,15 @@
 import {
   PinOpMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
+  PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
+  SourceMatchesMessageSchema,
   SourceNavigateMessageSchema,
+  SourceOpenMessageSchema,
   protocolMismatchReason,
   type PageRefreshMessage,
   type PeerStateMessage,
+  type SourceMatchesMessage,
   type ResolutionMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -98,7 +102,14 @@ describe("BrowserBridgeClient", () => {
       bridgeInstanceId: INSTANCE_ID,
       authToken: AUTH_TOKEN,
       source: { role: "browser", id: "firefox-test" },
-      capabilities: ["inspect", "link", "source-navigation", "auto-refresh"],
+      capabilities: [
+        "inspect",
+        "link",
+        "source-presentation",
+        "presentation-settings",
+        "source-navigation",
+        "auto-refresh",
+      ],
     });
     expect(harness.states).not.toContain("connected");
 
@@ -312,6 +323,111 @@ describe("BrowserBridgeClient", () => {
       "transport-error",
     );
     expect(harness.errors.at(-1)?.message).toMatch(/source navigation send/i);
+  });
+
+  it("sends strict source open and presentation settings from authenticated credentials", () => {
+    const harness = createHarness();
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    expect(harness.client.sendSourceOpen({
+      inspectMessageId: "inspect-card",
+      resolutionGeneration: 3,
+      matchId: "match-card",
+      sessionId: "panel-session",
+    } as never)).toBe("invalid-message");
+    expect(harness.client.sendPresentationSettings({
+      inspectMessageId: "inspect-card",
+      ideHighlightEnabled: false,
+      source: { role: "ide", id: "panel-source" },
+    } as never)).toBe("invalid-message");
+    expect(harness.sockets[0].sent).toHaveLength(1);
+
+    expect(harness.client.sendSourceOpen({
+      inspectMessageId: "inspect-card",
+      resolutionGeneration: 3,
+      matchId: "match-card",
+    })).toBe("sent");
+    expect(harness.client.sendPresentationSettings({
+      inspectMessageId: "inspect-card",
+      ideHighlightEnabled: false,
+    })).toBe("sent");
+
+    const sourceOpen = JSON.parse(harness.sockets[0].sent[1] ?? "{}");
+    const presentationSettings = JSON.parse(
+      harness.sockets[0].sent[2] ?? "{}",
+    );
+    expect(SourceOpenMessageSchema.parse(sourceOpen)).toEqual(sourceOpen);
+    expect(PresentationSettingsMessageSchema.parse(presentationSettings))
+      .toEqual(presentationSettings);
+    expect(sourceOpen).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.open",
+      messageId: "message-2",
+      sessionId: SESSION_ID,
+      inspectMessageId: "inspect-card",
+      resolutionGeneration: 3,
+      matchId: "match-card",
+      metadata: {},
+    });
+    expect(presentationSettings).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "presentation.settings",
+      messageId: "message-3",
+      sessionId: SESSION_ID,
+      inspectMessageId: "inspect-card",
+      ideHighlightEnabled: false,
+      metadata: {},
+    });
+  });
+
+  it("fails closed for unavailable, invalid, accessor-backed, and failed source presentation sends", () => {
+    const harness = createHarness();
+    const sourceOpen = {
+      inspectMessageId: "inspect-card",
+      resolutionGeneration: 3,
+      matchId: "match-card",
+    };
+    const settings = {
+      inspectMessageId: "inspect-card",
+      ideHighlightEnabled: true,
+    };
+
+    expect(harness.client.sendSourceOpen(sourceOpen)).toBe("not-connected");
+    expect(harness.client.sendPresentationSettings(settings)).toBe(
+      "not-connected",
+    );
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    expect(harness.client.sendSourceOpen({
+      ...sourceOpen,
+      matchId: "x".repeat(129),
+    })).toBe("invalid-message");
+    const hostile = { ...settings } as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(hostile, "ideHighlightEnabled", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+    expect(() => harness.client.sendPresentationSettings(hostile as never))
+      .not.toThrow();
+    expect(harness.client.sendPresentationSettings(hostile as never)).toBe(
+      "invalid-message",
+    );
+    expect(getterCalls).toBe(0);
+    expect(harness.sockets[0].sent).toHaveLength(1);
+
+    harness.sockets[0].throwOnSend = true;
+    expect(harness.client.sendSourceOpen(sourceOpen)).toBe("transport-error");
+    expect(harness.client.sendPresentationSettings(settings)).toBe(
+      "transport-error",
+    );
   });
 
   it("preserves an extensible plugin fact byte-for-byte at the WebSocket boundary", () => {
@@ -711,6 +827,40 @@ describe("BrowserBridgeClient", () => {
     expect(received).toEqual([current]);
   });
 
+  it("delivers only strict authenticated same-session source matches with trusted context", () => {
+    const harness = createHarness();
+    const received: Array<readonly [unknown, SourceMatchesMessage]> = [];
+    const subscription = harness.client.onSourceMatches((context, message) => {
+      received.push([context, message]);
+    });
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const current = sourceMatchesMessage(SESSION_ID, 3);
+
+    harness.sockets[0].message(sourceMatchesMessage("other-session", 3));
+    harness.sockets[0].message({ ...current, uri: "file:///secret.scss" });
+    expect(received).toEqual([]);
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
+    });
+
+    harness.sockets[0].message(current);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.[0]).toMatchObject({
+      windowId: 10,
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: "vscode-test" },
+    });
+    expect(received[0]?.[1]).toEqual(
+      SourceMatchesMessageSchema.parse(current),
+    );
+
+    subscription.dispose();
+    harness.sockets[0].message(sourceMatchesMessage(SESSION_ID, 4));
+    expect(received).toHaveLength(1);
+  });
+
   it("delivers authenticated same-session page refresh messages to disposable listeners", () => {
     const harness = createHarness();
     const received: PageRefreshMessage[] = [];
@@ -1004,6 +1154,36 @@ function sourceNavigationState(
     resolutionGeneration,
     selectedMatchCount: activeMatchIndex === undefined ? 0 : 2,
     ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
+    metadata: {},
+  };
+}
+
+function sourceMatchesMessage(
+  sessionId: string,
+  resolutionGeneration: number,
+): SourceMatchesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "source.matches",
+    messageId: `source-matches-${resolutionGeneration}`,
+    sessionId,
+    source: { role: "ide", id: "vscode-test" },
+    inspectMessageId: "inspect-card",
+    resolutionGeneration,
+    document: { label: "card.scss", languageId: "scss" },
+    matches: [{
+      matchId: "match-card",
+      targetRole: "selected",
+      label: "card.scss:1",
+      kind: "rule",
+      relation: "selected",
+      confidence: "exact",
+      startLine: 1,
+      endLine: 3,
+      text: ".card {\n  color: red;\n}",
+      truncated: false,
+    }],
+    omittedMatchCount: 0,
     metadata: {},
   };
 }
