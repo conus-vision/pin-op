@@ -177,15 +177,19 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 5. Resize DevTools to 680 px or wider. When the measured usable workspace width
    fits two 160 px panes plus the measured separator, confirm the side-by-side
    split remains active.
-6. Resize below 680 px while keeping the viewport at least 520 px tall. When
+6. Keep the viewport at least 680 px wide and 520 px tall, then constrain the
+   measured workspace width below the horizontal fit threshold while its height
+   still fits two 160 px panes plus the measured separator. Confirm both panes
+   are visible, tabs are hidden, and the separator is visible and horizontal.
+7. Resize below 680 px while keeping the viewport at least 520 px tall. When
    the measured usable workspace height fits two 160 px panes plus the measured
    separator (currently at least 325 px total), confirm the panes stack.
-7. Keep that narrow, tall viewport and reduce the usable workspace below the
+8. Keep that narrow, tall viewport and reduce the usable workspace below the
    fit threshold, for example with the mismatch banner or window constraints.
    Confirm tabs appear with no clipping, then restore enough workspace and
    confirm stack re-entry.
-8. Below 680 px and below 520 px, confirm tabs remain active.
-9. Confirm the compact centered footer shows the Pin-op logo/name, Volodymyr
+9. Below 680 px and below 520 px, confirm tabs remain active.
+10. Confirm the compact centered footer shows the Pin-op logo/name, Volodymyr
    Moskvin email link, and `(c) 2026 Conus Vision` website link.
 
 ## Auto Refresh

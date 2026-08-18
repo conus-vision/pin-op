@@ -21,12 +21,13 @@ browser core. The panel owns:
   source navigation controls.
 
 Layout selection combines viewport breakpoints with the measured usable
-workspace. At a viewport width of at least 680 px, DOM and Source use split only
-when the workspace width fits two 160 px panes plus the measured separator;
-otherwise they use tabs. Below 680 px, stack requires a viewport height of at
-least 520 px and the same fit along the workspace height (currently at least
-325 px total); otherwise the panel uses tabs. The footer carries the compact
-Pin-op product identity without replacing operational status.
+workspace. DOM and Source use split when the viewport is at least 680 px wide
+and the workspace width fits two 160 px panes plus the measured separator. If
+split does not fit, stack is available at any viewport width when the viewport
+is at least 520 px tall and the workspace height fits two 160 px panes plus the
+measured separator (currently at least 325 px total). The panel uses tabs only
+when neither two-pane arrangement fits. The footer carries the compact Pin-op
+product identity without replacing operational status.
 
 Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
