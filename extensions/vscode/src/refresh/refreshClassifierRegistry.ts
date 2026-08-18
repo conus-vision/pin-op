@@ -15,7 +15,9 @@ const RELOAD_SUFFIXES = [
   ".jsx",
   ".ts",
   ".tsx",
+  ".vue",
   ".php",
+  ".html",
 ] as const;
 
 export interface RefreshClassifierErrorReport {

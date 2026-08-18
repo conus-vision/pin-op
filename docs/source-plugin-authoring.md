@@ -166,10 +166,12 @@ workspace service, or asynchronous boundary. Keep classification deterministic
 and do not perform file reads, network requests, parsing, or other I/O.
 
 Core classifies `.css`, `.scss`, `.sass`, and `.less` path suffixes as
-`styles`. It classifies `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, and
-`.php` as `reload`. Suffix matching is case-insensitive and uses the parsed URI
-pathname, so query strings and fragments do not affect the result. Invalid URIs
-and other suffixes have no built-in classification.
+`styles`. It classifies `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.vue`,
+`.php`, and `.html` as `reload`. Suffix matching is case-insensitive and uses
+the parsed URI pathname, so query strings and fragments do not affect the
+result. Invalid URIs and other suffixes have no built-in classification. These
+refresh classifications do not add built-in Vue or HTML source resolvers;
+source resolution still requires a compatible source plugin.
 
 All built-in and registered results are combined. Any `reload` result wins;
 otherwise any `styles` result wins; otherwise the result is `undefined`.

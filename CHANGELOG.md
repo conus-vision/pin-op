@@ -25,8 +25,9 @@ All notable changes to Pin-op will be documented in this file.
   with centered VS Code cursor navigation and live cursor-state counts.
 - Browser-local stable-locator recovery for expanded branches and selections
   across safe reloads and invalidations.
-- Tab-local Auto Refresh for changed CSS/preprocessor, script, TypeScript, and
-  PHP saves, including soft stylesheet replacement and reload scroll restore.
+- Tab-local Auto Refresh for changed CSS/preprocessor, JavaScript, TypeScript,
+  Vue, PHP, and HTML saves, including soft stylesheet replacement and reload
+  scroll restore.
 - A responsive DevTools Source pane with bounded active-document excerpts for
   Selected and immediate Parent matches and exact opaque-ID opening in VS Code.
 - A tab-local IDE Highlight setting that controls decorations without removing

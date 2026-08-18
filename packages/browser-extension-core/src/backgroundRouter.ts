@@ -287,6 +287,7 @@ interface PanelPortRecord {
   windowStateRevision: number;
   tabStateInitialization?: Promise<boolean>;
   tabStateInitialized: boolean;
+  tabStateInvalidatedByUnlink: boolean;
   lastWindowState?: BrowserWindowConnectionState;
   republishWindowId?: number;
   republishedAvailabilityEpoch: number;
@@ -545,6 +546,7 @@ export class BackgroundRouter {
       inspectCommandTail: Promise.resolve(),
       windowStateRevision: 0,
       tabStateInitialized: false,
+      tabStateInvalidatedByUnlink: false,
       republishedAvailabilityEpoch: 0,
       contentRecoveryAvailable: false,
       inspectionFailedClosed: false,
@@ -1287,6 +1289,60 @@ export class BackgroundRouter {
     return initialization;
   }
 
+  private async restorePanelTabStateAfterLink(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+    command: PanelCommandRecord,
+  ): Promise<boolean> {
+    if (!this.isCurrentPanelCommand(record, binding, command)) {
+      return false;
+    }
+    const initialized = await this.ensurePanelTabStateInitialized(
+      record,
+      command.activationToken,
+      binding,
+    );
+    if (!this.isCurrentPanelCommand(record, binding, command)) {
+      return false;
+    }
+
+    let state: TabRefreshState | undefined;
+    if (initialized) {
+      try {
+        state = await this.tabRefreshCoordinator.state(
+          binding.tabId,
+          binding.windowId,
+        );
+      } catch (error) {
+        this.reportError(error);
+      }
+      if (!this.isCurrentPanelCommand(record, binding, command)) {
+        return false;
+      }
+    }
+
+    const postflight = await this.refreshPanelBinding(
+      binding,
+      record,
+      command.activationToken,
+    );
+    if (
+      postflight !== binding ||
+      !this.isCurrentPanelCommand(record, binding, command)
+    ) {
+      return false;
+    }
+    if (state) {
+      this.postToCurrentPort(
+        record,
+        command.activationToken,
+        createPanelTabStateMessage(state),
+      );
+    }
+    record.tabStateInvalidatedByUnlink = false;
+    return true;
+  }
+
   private async initializePanelTabState(
     record: PanelPortRecord,
     token: object,
@@ -1303,7 +1359,8 @@ export class BackgroundRouter {
       }
       if (
         record.windowStateRevision === revision &&
-        record.lastWindowState !== "linked"
+        record.lastWindowState !== "linked" &&
+        !record.tabStateInvalidatedByUnlink
       ) {
         this.postToCurrentPort(
           record,
@@ -1338,6 +1395,7 @@ export class BackgroundRouter {
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
     record.tabStateInitialized = false;
+    record.tabStateInvalidatedByUnlink = false;
     record.lastWindowState = undefined;
     record.republishWindowId = undefined;
     record.republishInFlightEpoch = undefined;
@@ -1617,6 +1675,11 @@ export class BackgroundRouter {
           abortController.signal,
         );
         await this.tabRefreshCoordinator.removeWindow(refreshed.windowId);
+        if (this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
+          record.tabStateInitialization = undefined;
+          record.tabStateInitialized = false;
+          record.tabStateInvalidatedByUnlink = true;
+        }
       }
       if (!this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
         return { ok: false, error: "stalePanel" };
@@ -1631,6 +1694,17 @@ export class BackgroundRouter {
       if (
         postflight !== refreshed ||
         !this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)
+      ) {
+        return { ok: false, error: "stalePanel" };
+      }
+      if (
+        command.type === "pin-op.linkWindow" &&
+        record.tabStateInvalidatedByUnlink &&
+        !await this.restorePanelTabStateAfterLink(
+          record,
+          refreshed,
+          dispatchedRecord,
+        )
       ) {
         return { ok: false, error: "stalePanel" };
       }
@@ -2610,7 +2684,10 @@ export class BackgroundRouter {
     binding: ChannelBinding,
     revision: number,
   ): Promise<void> {
-    if (!this.isCurrentLinkedSnapshot(record, token, binding, revision)) {
+    if (
+      !this.isCurrentLinkedSnapshot(record, token, binding, revision) ||
+      record.tabStateInvalidatedByUnlink
+    ) {
       return;
     }
     const initialized = await this.ensurePanelTabStateInitialized(

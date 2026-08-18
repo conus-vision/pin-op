@@ -34,10 +34,10 @@ edit files, execute commands, or switch the active editor.
 
 **Auto Refresh** and **IDE Highlight** are tab-local and default on after a
 compatible protocol-v6 handshake and fresh tab state. Changed CSS/SCSS/Sass/Less
-saves refresh eligible stylesheets; changed JavaScript, TypeScript, and PHP
-saves reload the current participating tab with scroll restoration. Unchanged
-saves do nothing. Turning IDE Highlight off clears decorations only; resolution,
-Source presentation, and navigation remain available.
+saves refresh eligible stylesheets; changed JavaScript, TypeScript, Vue, PHP,
+and HTML saves reload the current participating tab with scroll restoration.
+Unchanged saves do nothing. Turning IDE Highlight off clears decorations only;
+resolution, Source presentation, and navigation remain available.
 
 The browser and IDE extensions must use the same protocol generation. Protocol
 v5 is rejected with WebSocket close code `1002`, with no fallback. When the

@@ -105,8 +105,9 @@ before revealing the exact range in the active document.
 
 The presenter also observes changed saves. Direct CSS settles for 150 ms.
 SCSS, Sass, and Less wait for a 750 ms quiet period within a two-second build
-window; generated CSS resets settlement to 150 ms. JavaScript, TypeScript, and
-PHP reload candidates settle for 150 ms, and reload wins a mixed burst.
+window; generated CSS resets settlement to 150 ms. JavaScript, TypeScript, Vue,
+PHP, and HTML reload candidates settle for 150 ms, and reload wins a mixed
+burst.
 Unchanged saves do not publish refreshes.
 
 ### Source Plugins

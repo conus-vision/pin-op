@@ -178,7 +178,7 @@ unchanged Save does nothing.
 - SCSS, Sass, and Less use `styles` after a 750 ms quiet period within a
   two-second generated-CSS window; a generated CSS event resets settlement to
   150 ms.
-- JS, MJS, CJS, JSX, TS, TSX, and PHP use `reload` after 150 ms.
+- JS, MJS, CJS, JSX, TS, TSX, Vue, PHP, and HTML use `reload` after 150 ms.
 - `reload` wins when a save burst contains both modes.
 
 `styles` replaces eligible external top-document HTTP(S) stylesheet links

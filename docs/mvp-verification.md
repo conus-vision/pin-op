@@ -103,8 +103,8 @@ here. This document does not claim these checks were performed or passed.
     active editor.
 11. Turn **IDE Highlight** off. Confirm decorations clear while Source excerpts
     and Selected-only navigation continue to work; turn it back on.
-12. With **Auto Refresh** on, change and save CSS, SCSS, JavaScript, and PHP as
-    described below. Confirm unchanged saves do nothing.
+12. With **Auto Refresh** on, change and save CSS, SCSS, JavaScript, TypeScript,
+    Vue, PHP, and HTML as described below. Confirm unchanged saves do nothing.
 
 Repeat the scenario with the supported installed Firefox path and with the
 installed Chrome package. Also verify picker/DOM-tree parity, open shadow roots,
@@ -367,8 +367,9 @@ Open the Pin-op panel in two fixture tabs and leave Auto Refresh enabled.
 2. Force one replacement to fail and confirm its old stylesheet remains.
 3. Change and save SCSS. Confirm Pin-op waits for generated CSS using the 750 ms
    quiet/two-second maximum window and refreshes styles after generation.
-4. Change and save JS, TS, or PHP. Confirm the active tab reloads after the
-   150 ms settle and restores its bounded top-level scroll position.
+4. Change and save JS, MJS, CJS, JSX, TS, TSX, Vue, PHP, or HTML. Confirm the
+   active tab reloads after the 150 ms settle and restores its bounded top-level
+   scroll position.
 5. Save an unchanged supported file and confirm no refresh occurs.
 6. Put the second participating tab in the background, save again, then
    activate it. Confirm it refreshes once on activation and does not replay old

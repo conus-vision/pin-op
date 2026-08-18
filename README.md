@@ -68,8 +68,8 @@ Firefox Stable and current Chrome/Chromium share the same Inspector workflow:
 - the Source pane shows bounded excerpts from the active IDE document for the
   Selected element and its immediate Parent;
 - **Auto Refresh** updates changed styles without a page reload and reloads the
-  current tab after changed script or PHP saves; **IDE Highlight** controls
-  decorations without disabling resolution or source navigation;
+  current tab after changed script, Vue, PHP, or HTML saves; **IDE Highlight**
+  controls decorations without disabling resolution or source navigation;
 - CSS uses exact source evidence first and a conservative unique CSS fingerprint
   fallback when needed;
 - source-mapped SCSS fails closed when generated CSS, mappings, or the active
@@ -91,7 +91,7 @@ commands, or switch the active editor.
 | Source-mapped SCSS | Supported with a usable inline or external source map |
 | Separately installed source plugins | Supported through the versioned plugin API |
 | Remote SSH and WSL extension hosts | Not supported |
-| Auto Refresh | Supported for changed CSS/preprocessor, script, and PHP saves |
+| Auto Refresh | Supported for changed CSS/preprocessor, script, Vue, PHP, and HTML saves |
 | Source editing and reverse sync | Not supported |
 
 ## Architecture

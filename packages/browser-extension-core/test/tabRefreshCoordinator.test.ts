@@ -559,6 +559,34 @@ describe("TabRefreshCoordinator", () => {
     ]);
   });
 
+  it("dispatches refresh after removed window participation is reopened", async () => {
+    let activeTabId = 99;
+    const context = setup(undefined, () => activeTabId);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.removeWindow(7);
+
+    const reopened = await context.coordinator.panelOpened(11, 7);
+    expect(reopened).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "reload"));
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 1, mode: "reload" },
+    );
+
+    activeTabId = 11;
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "reload",
+    });
+  });
+
   it("preserves a fail-closed window snapshot for a later panel move", async () => {
     const context = setup(undefined, () => 99);
     await context.coordinator.panelOpened(11, 7);

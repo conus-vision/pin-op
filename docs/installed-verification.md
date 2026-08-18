@@ -203,8 +203,8 @@ tab state, and applies only while that tab's panel participates.
 2. Change then save SCSS, Sass, or Less. Confirm the 750 ms quiet period and
    generated-CSS events settle within two seconds, with generation resetting
    settlement to 150 ms.
-3. Change then save JS, MJS, CJS, JSX, TS, TSX, or PHP. Confirm the current tab
-   reloads after 150 ms and restores bounded top-level scroll.
+3. Change then save JS, MJS, CJS, JSX, TS, TSX, Vue, PHP, or HTML. Confirm the
+   current tab reloads after 150 ms and restores bounded top-level scroll.
 4. Save an unchanged supported file and confirm nothing refreshes.
 5. Leave another participating tab inactive during a changed save. Confirm it
    becomes stale and refreshes once when activated.

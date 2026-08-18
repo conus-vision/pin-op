@@ -21,7 +21,17 @@ describe("refresh classifier registry", () => {
     },
   );
 
-  it.each(["js", "mjs", "cjs", "jsx", "ts", "tsx", "php"])(
+  it.each([
+    "js",
+    "mjs",
+    "cjs",
+    "jsx",
+    "ts",
+    "tsx",
+    "vue",
+    "php",
+    "html",
+  ])(
     "classifies .%s as reload",
     (extension) => {
       const registry = new RefreshClassifierRegistry();
@@ -47,7 +57,6 @@ describe("refresh classifier registry", () => {
 
   it.each([
     "not a canonical uri.css",
-    "file:///workspace/app.vue",
     "file:///workspace/app.css.txt",
     "file:///workspace/no-extension",
   ])("ignores %s", (uri) => {
