@@ -1974,6 +1974,16 @@ export class BackgroundRouter {
       if (command.type === "pin-op.linkWindow") {
         this.peerBlockedWindows.delete(refreshed.windowId);
         await this.tabRefreshCoordinator.beginWindowEpoch(refreshed.windowId);
+        if (
+          !this.isCurrentWindowPanelCommand(
+            refreshed.windowId,
+            record,
+            refreshed,
+            dispatchedRecord,
+          )
+        ) {
+          return { ok: false, error: "stalePanel" };
+        }
         this.beginWindowRefreshEpoch(refreshed.windowId);
         await this.coordinator.linkWindow(
           refreshed.windowId,

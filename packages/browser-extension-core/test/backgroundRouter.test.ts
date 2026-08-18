@@ -396,6 +396,43 @@ describe("BackgroundRouter", () => {
     expect(harness.tabRefresh.refreshCalls).toEqual([[10, currentRefresh]]);
   });
 
+  it("keeps the prior refresh epoch when relink is cancelled during reset", async () => {
+    const epochResetStarted = deferred<void>();
+    const releaseEpochReset = deferred<void>();
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-refresh-cancelled-relink",
+      17,
+      "source-refresh-cancelled-relink",
+    );
+    await flushMicrotasks();
+    harness.tabRefresh.beginWindowEpochBehavior = async () => {
+      epochResetStarted.resolve();
+      await releaseEpochReset.promise;
+    };
+
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-refresh-cancelled-relink",
+      code: "4873507",
+    }, panelSender("channel-refresh-cancelled-relink"));
+    await epochResetStarted.promise;
+
+    const refresh = pageRefresh(50);
+    harness.pageRefreshes.emit(10, refresh);
+    port.disconnect();
+    releaseEpochReset.resolve();
+
+    await expect(linking).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+
+    expect(harness.coordinator.links).toEqual([]);
+    expect(harness.tabRefresh.refreshCalls).toEqual([[10, refresh]]);
+  });
+
   it("holds a window command lease through stale-link compensation", async () => {
     const tabs = new Map([
       [17, 10],
