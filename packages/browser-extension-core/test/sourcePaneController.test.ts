@@ -15,24 +15,32 @@ describe("SourcePaneController", () => {
     controller.setCompatible(true);
     controller.beginInspect("inspect-a");
 
-    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(false);
+    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(
+      "rejected",
+    );
     expect(controller.snapshot().groups.selected.matches).toEqual([]);
     expect(controller.open("selected-1")).toBe(false);
 
     expect(controller.acceptResolution(resolution("inspect-a", 1))).toBe(true);
-    expect(controller.acceptMatches(sourceMatches("inspect-a", 2))).toBe(false);
-    expect(controller.acceptMatches(sourceMatches("inspect-b", 1))).toBe(false);
+    expect(controller.acceptMatches(sourceMatches("inspect-a", 2))).toBe(
+      "rejected",
+    );
+    expect(controller.acceptMatches(sourceMatches("inspect-b", 1))).toBe(
+      "rejected",
+    );
     expect(controller.acceptMatches(sourceMatches("inspect-a", 1, {
       sourceId: "other-ide",
-    }))).toBe(false);
+    }))).toBe("rejected");
     expect(controller.acceptMatches(sourceMatches("inspect-a", 1, {
       sessionId: "other-session",
-    }))).toBe(false);
+    }))).toBe("rejected");
     expect(controller.acceptMatches(sourceMatches("inspect-a", 1, {
       documentLabel: "other.scss",
-    }))).toBe(false);
+    }))).toBe("rejected");
 
-    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(true);
+    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(
+      "published",
+    );
     expect(controller.snapshot().groups.selected.matches).toHaveLength(2);
   });
 
@@ -45,10 +53,28 @@ describe("SourcePaneController", () => {
     expect(controller.acceptMatches(sourceMatches("inspect-a", 9, {
       matches: [],
       omittedMatchCount: 0,
-    }))).toBe(true);
+    }))).toBe("invalidated");
     expect(controller.snapshot().groups.selected.matches).toEqual([]);
     expect(controller.open("selected-1")).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("publishes authoritative empty matches with document metadata", () => {
+    const controller = readyController();
+
+    expect(controller.acceptMatches(sourceMatches("inspect-a", 1, {
+      matches: [],
+      omittedMatchCount: 2,
+    }))).toBe("published");
+    expect(controller.snapshot()).toMatchObject({
+      document: { label: "card.scss", languageId: "scss" },
+      groups: {
+        selected: { matches: [] },
+        parent: { matches: [] },
+      },
+      omittedMatchCount: 2,
+    });
+    expect(controller.open("selected-1")).toBe(false);
   });
 
   it("preserves IDE order in immutable Selected and Parent groups", () => {
@@ -57,7 +83,9 @@ describe("SourcePaneController", () => {
     controller.beginInspect("inspect-a");
     controller.acceptResolution(resolution("inspect-a", 1));
 
-    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(true);
+    expect(controller.acceptMatches(sourceMatches("inspect-a", 1))).toBe(
+      "published",
+    );
     const snapshot = controller.snapshot();
     expect(snapshot.groups.selected.matches.map((match) => match.matchId)).toEqual([
       "selected-1",
@@ -92,11 +120,11 @@ describe("SourcePaneController", () => {
     });
 
     expect(() => controller.acceptMatches(hostile)).not.toThrow();
-    expect(controller.acceptMatches(hostile)).toBe(false);
+    expect(controller.acceptMatches(hostile)).toBe("rejected");
     expect(getter).not.toHaveBeenCalled();
 
     const accepted = sourceMatches("inspect-a", 1);
-    expect(controller.acceptMatches(accepted)).toBe(true);
+    expect(controller.acceptMatches(accepted)).toBe("published");
     (accepted.matches[0] as { label: string }).label = "mutated";
     expect(controller.snapshot().groups.selected.matches[0]?.label).toBe(
       "selected-1.scss:1",
@@ -173,7 +201,7 @@ describe("SourcePaneController", () => {
 
     expect(controller.acceptMatches(sourceMatches("inspect-a", 1, {
       matches: [excerpt("selected-1", "selected"), duplicate],
-    }))).toBe(false);
+    }))).toBe("rejected");
     expect(controller.snapshot().groups.selected.matches).toHaveLength(2);
     expect(controller.snapshot().groups.parent.matches).toHaveLength(1);
   });

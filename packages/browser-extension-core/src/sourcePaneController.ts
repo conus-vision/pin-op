@@ -15,6 +15,11 @@ export type { PanelSourceOpenCommand } from "./inspectPortProtocol.js";
 
 export type SourcePaneDispatch = (message: PanelSourceOpenCommand) => void;
 
+export type SourceMatchesAcceptance =
+  | "rejected"
+  | "invalidated"
+  | "published";
+
 export interface SourcePaneGroup {
   readonly label: "Selected" | "Parent";
   readonly collapsed: boolean;
@@ -108,32 +113,29 @@ export class SourcePaneController {
     return true;
   }
 
-  public acceptMatches(message: unknown): boolean {
+  public acceptMatches(message: unknown): SourceMatchesAcceptance {
     const parsed = parseProtocolData(message, SourceMatchesMessageSchema);
     if (
       !parsed ||
       !this.compatible ||
       parsed.inspectMessageId !== this.inspectMessageId
     ) {
-      return false;
+      return "rejected";
     }
 
-    if (parsed.matches.length === 0) {
-      if (this.authority && !matchesAuthority(parsed, this.authority)) {
-        return false;
-      }
+    if (parsed.matches.length === 0 && !this.authority) {
       this.clearMatches();
-      return true;
+      return "invalidated";
     }
 
     if (!this.authority || !matchesAuthority(parsed, this.authority)) {
-      return false;
+      return "rejected";
     }
 
     const matchIds = new Set<string>();
     for (const match of parsed.matches) {
       if (matchIds.has(match.matchId)) {
-        return false;
+        return "rejected";
       }
       matchIds.add(match.matchId);
     }
@@ -161,7 +163,7 @@ export class SourcePaneController {
       }),
       omittedMatchCount: parsed.omittedMatchCount,
     }));
-    return true;
+    return "published";
   }
 
   public acceptNavigationState(message: unknown): boolean {

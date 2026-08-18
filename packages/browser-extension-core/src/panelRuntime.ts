@@ -305,6 +305,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         view.renderResolution(model);
       }
     } else if (domEvent) {
+      let beginsSelection = false;
       if (domEvent.type === "dom.selectionChanged") {
         if (
           acceptedSelectionRevision !== undefined &&
@@ -323,6 +324,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
           sourceNavigationController.invalidate();
           sourcePaneController.invalidate();
           settingsController.invalidateInspect();
+          beginsSelection = true;
         } else if (
           activeInspectSelectionRevision !== domEvent.selectionRevision
         ) {
@@ -334,11 +336,16 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       treeController.handleEvent(domEvent);
       if (domEvent.type === "dom.selectionChanged") {
         const selected = domEvent.ancestorPath.at(-1);
+        if (beginsSelection) {
+          diagnostics.clearResolution();
+        }
         if (selected) {
-          const model = resolutionPresenter.updateSelectedElement(
-            selected.label,
-          );
+          const model = beginsSelection
+            ? resolutionPresenter.beginSelection(selected.label)
+            : resolutionPresenter.updateSelectedElement(selected.label);
           view.renderResolution(model);
+        } else if (beginsSelection) {
+          view.renderResolution(resolutionPresenter.reset());
         }
       }
     } else if (validatedResolution(message)) {
@@ -357,7 +364,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         }
       }
     } else if (sourceMatches) {
-      if (sourcePaneController.acceptMatches(sourceMatches)) {
+      if (sourcePaneController.acceptMatches(sourceMatches) === "published") {
         sourcePaneView.setState({ kind: "ready" });
       }
     } else if (validatedSourceNavigationState(message)) {

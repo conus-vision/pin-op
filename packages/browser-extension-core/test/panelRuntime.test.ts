@@ -151,6 +151,13 @@ describe("startPanelRuntime", () => {
     port.emitMessage(inspectStarted("inspect-source-view", 1));
     expect(dom.element("source-pane-root").text()).toContain("Resolving source matches");
 
+    port.emitMessage(sourceMatches("inspect-source-view", 3, {
+      matches: [],
+    }));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolving source matches",
+    );
+
     port.emitMessage(resolutionMessage({
       inspectMessageId: "inspect-source-view",
       resolutionGeneration: 3,
@@ -2296,6 +2303,9 @@ describe("startPanelRuntime", () => {
 
     showReadySourceNavigation(port, "selected-a", "inspect-a");
     expect(dom.element("source-navigation-footer").hidden).toBe(false);
+    expect(dom.element("resolution-status").value).toBe(
+      "2 rules highlighted · Selected 2 · Parent 0",
+    );
 
     port.emitMessage(selectionChangedWithRevision(
       "selected-b",
@@ -2308,6 +2318,9 @@ describe("startPanelRuntime", () => {
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
     expect(dom.element("selected-element-summary").value).toBe(
       "Selected: button#new.primary",
+    );
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
     );
     expect(port.sent.filter(isSourceNavigationCommand)).toEqual([]);
     runtime.dispose();
@@ -3444,6 +3457,7 @@ function tabState(autoRefreshEnabled: boolean, ideHighlightEnabled: boolean) {
 function sourceMatches(
   inspectMessageId: string,
   resolutionGeneration: number,
+  overrides: Partial<SourceMatchesMessage> = {},
 ): SourceMatchesMessage {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -3457,6 +3471,7 @@ function sourceMatches(
     matches: [sourceExcerpt()],
     omittedMatchCount: 0,
     metadata: {},
+    ...overrides,
   };
 }
 

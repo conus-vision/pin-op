@@ -115,6 +115,11 @@ export class ResolutionPresenter {
     return this.current;
   }
 
+  public beginSelection(selectedElement: string): ResolutionViewModel {
+    this.reset();
+    return this.updateSelectedElement(selectedElement);
+  }
+
   public beginCorrelatedInspect(
     inspectMessageId: string,
   ): ResolutionViewModel | undefined {
