@@ -285,7 +285,8 @@ interface PanelPortRecord {
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
   windowStateRevision: number;
-  tabStateInitialization?: Promise<PanelTabStateInitializationResult>;
+  tabStateInitialization?: Promise<boolean>;
+  tabStateInitialized: boolean;
   tabStateInvalidatedByUnlink: boolean;
   lastWindowState?: BrowserWindowConnectionState;
   republishWindowId?: number;
@@ -294,15 +295,6 @@ interface PanelPortRecord {
   contentRecoveryAvailable: boolean;
   inspectionFailedClosed: boolean;
 }
-
-type PanelTabStateInitializationResult =
-  | {
-      readonly initialized: true;
-      readonly state: TabRefreshState;
-    }
-  | {
-      readonly initialized: false;
-    };
 
 interface PanelTabStateActivation {
   readonly record: PanelPortRecord;
@@ -380,6 +372,7 @@ export class BackgroundRouter {
   >();
   private readonly panelPorts = new Map<string, PanelPortRecord>();
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
+  private readonly windowCommands = new Map<number, object>();
   private readonly panelTeardowns = new Map<
     string,
     { readonly binding: ChannelBinding; readonly promise: Promise<boolean> }
@@ -559,6 +552,7 @@ export class BackgroundRouter {
       onMessage: (message) => this.rejectPendingInspect(record, message),
       inspectCommandTail: Promise.resolve(),
       windowStateRevision: 0,
+      tabStateInitialized: false,
       tabStateInvalidatedByUnlink: false,
       republishedAvailabilityEpoch: 0,
       contentRecoveryAvailable: false,
@@ -625,6 +619,7 @@ export class BackgroundRouter {
     }
     this.pendingRegistrations.clear();
     this.panelCommands.clear();
+    this.windowCommands.clear();
     this.panelTeardowns.clear();
     this.requiredPanelTeardowns.clear();
     this.bindings.clear();
@@ -1268,9 +1263,12 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     token: object,
     binding: ChannelBinding,
-  ): Promise<PanelTabStateInitializationResult> {
+  ): Promise<boolean> {
     if (!this.isCurrentActivation(record, token, binding)) {
-      return Promise.resolve({ initialized: false });
+      return Promise.resolve(false);
+    }
+    if (record.tabStateInitialized) {
+      return Promise.resolve(true);
     }
     const pending = record.tabStateInitialization;
     if (pending) {
@@ -1284,14 +1282,15 @@ export class BackgroundRouter {
     );
     record.tabStateInitialization = initialization;
     void initialization.then((initialized) => {
-      if (
-        record.tabStateInitialization !== initialization ||
-        !this.isCurrentActivation(record, token, binding)
-      ) {
+      if (record.tabStateInitialization !== initialization) {
         return;
       }
-      if (!initialized.initialized) {
-        record.tabStateInitialization = undefined;
+      record.tabStateInitialization = undefined;
+      if (
+        initialized &&
+        this.isCurrentActivation(record, token, binding)
+      ) {
+        record.tabStateInitialized = true;
       }
     });
     return initialization;
@@ -1303,17 +1302,29 @@ export class BackgroundRouter {
     commandBinding: ChannelBinding,
     command: PanelCommandRecord,
   ): Promise<BackgroundCommandError | undefined> {
-    if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+    if (
+      !this.isCurrentWindowPanelCommand(
+        windowId,
+        commandRecord,
+        commandBinding,
+        command,
+      )
+    ) {
       return "stalePanel";
     }
     const activations = this.windowPanelTabStateActivations(windowId)
       .filter(({ record }) => record.tabStateInvalidatedByUnlink);
-    const restored: Array<
-      PanelTabStateActivation & { readonly state: TabRefreshState }
-    > = [];
+    const restored: PanelTabStateActivation[] = [];
 
     for (const activation of activations) {
-      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
         return "stalePanel";
       }
       if (
@@ -1321,7 +1332,8 @@ export class BackgroundRouter {
           activation.record,
           activation.token,
           activation.binding,
-        )
+        ) ||
+        !activation.record.tabStateInvalidatedByUnlink
       ) {
         return "error";
       }
@@ -1330,24 +1342,39 @@ export class BackgroundRouter {
         activation.token,
         activation.binding,
       );
-      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
         return "stalePanel";
       }
       if (
-        !initialization.initialized ||
+        !initialization ||
         !this.isCurrentActivation(
           activation.record,
           activation.token,
           activation.binding,
-        )
+        ) ||
+        !activation.record.tabStateInvalidatedByUnlink
       ) {
         return "error";
       }
-      restored.push({ ...activation, state: initialization.state });
+      restored.push(activation);
     }
 
     for (const activation of restored) {
-      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
         return "stalePanel";
       }
       const postflight = await this.refreshPanelBinding(
@@ -1355,7 +1382,14 @@ export class BackgroundRouter {
         activation.record,
         activation.token,
       );
-      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
         return "stalePanel";
       }
       if (
@@ -1364,21 +1398,112 @@ export class BackgroundRouter {
           activation.record,
           activation.token,
           activation.binding,
-        )
+        ) ||
+        !activation.record.tabStateInvalidatedByUnlink
       ) {
         return "error";
       }
     }
 
     for (const activation of restored) {
-      this.postToCurrentPort(
-        activation.record,
-        activation.token,
-        createPanelTabStateMessage(activation.state),
+      const restoreError = await this.commitRestoredPanelTabState(
+        activation,
+        windowId,
+        commandRecord,
+        commandBinding,
+        command,
       );
-      activation.record.tabStateInvalidatedByUnlink = false;
+      if (restoreError) {
+        return restoreError;
+      }
+    }
+    if (
+      !this.isCurrentWindowPanelCommand(
+        windowId,
+        commandRecord,
+        commandBinding,
+        command,
+      )
+    ) {
+      return "stalePanel";
     }
     return undefined;
+  }
+
+  private commitRestoredPanelTabState(
+    activation: PanelTabStateActivation,
+    windowId: number,
+    commandRecord: PanelPortRecord,
+    commandBinding: ChannelBinding,
+    command: PanelCommandRecord,
+  ): Promise<BackgroundCommandError | undefined> {
+    const operation: Promise<BackgroundCommandError | undefined> =
+      activation.record.inspectCommandTail.then(async () => {
+        if (
+          !this.isCurrentWindowPanelCommand(
+            windowId,
+            commandRecord,
+            commandBinding,
+            command,
+          )
+        ) {
+          return "stalePanel";
+        }
+        if (
+          !this.isCurrentActivation(
+            activation.record,
+            activation.token,
+            activation.binding,
+          ) ||
+          !activation.record.tabStateInvalidatedByUnlink
+        ) {
+          return "error";
+        }
+
+        let state: TabRefreshState;
+        try {
+          state = await this.tabRefreshCoordinator.state(
+            activation.binding.tabId,
+            activation.binding.windowId,
+          );
+        } catch (error) {
+          this.reportError(error);
+          return "error";
+        }
+
+        if (
+          !this.isCurrentWindowPanelCommand(
+            windowId,
+            commandRecord,
+            commandBinding,
+            command,
+          )
+        ) {
+          return "stalePanel";
+        }
+        if (
+          !this.isCurrentActivation(
+            activation.record,
+            activation.token,
+            activation.binding,
+          ) ||
+          !activation.record.tabStateInvalidatedByUnlink
+        ) {
+          return "error";
+        }
+        this.postToCurrentPort(
+          activation.record,
+          activation.token,
+          createPanelTabStateMessage(state),
+        );
+        activation.record.tabStateInvalidatedByUnlink = false;
+        return undefined;
+      }).catch((error) => {
+        this.reportError(error);
+        return "error";
+      });
+    activation.record.inspectCommandTail = operation.then(() => undefined);
+    return operation;
   }
 
   private windowPanelTabStateActivations(
@@ -1403,13 +1528,18 @@ export class BackgroundRouter {
   private invalidateWindowPanelTabStates(windowId: number): void {
     for (const { record } of this.windowPanelTabStateActivations(windowId)) {
       record.tabStateInitialization = undefined;
+      record.tabStateInitialized = false;
       record.tabStateInvalidatedByUnlink = true;
     }
   }
 
   private async compensateFailedWindowRefreshRestore(
     windowId: number,
-  ): Promise<void> {
+    commandToken: object,
+  ): Promise<boolean> {
+    if (!this.isCurrentWindowCommand(windowId, commandToken)) {
+      return false;
+    }
     this.peerBlockedWindows.add(windowId);
     this.contentRefreshCoordinator.revokeWindow(windowId);
     this.correlations.disposeWindow(windowId);
@@ -1419,12 +1549,19 @@ export class BackgroundRouter {
     } catch (error) {
       this.reportError(error);
     }
+    if (!this.isCurrentWindowCommand(windowId, commandToken)) {
+      return false;
+    }
     try {
       await this.tabRefreshCoordinator.removeWindow(windowId);
     } catch (error) {
       this.reportError(error);
     }
+    if (!this.isCurrentWindowCommand(windowId, commandToken)) {
+      return false;
+    }
     this.invalidateWindowPanelTabStates(windowId);
+    return true;
   }
 
   private async initializePanelTabState(
@@ -1432,14 +1569,14 @@ export class BackgroundRouter {
     token: object,
     binding: ChannelBinding,
     revision: number,
-  ): Promise<PanelTabStateInitializationResult> {
+  ): Promise<boolean> {
     try {
       const state = await this.tabRefreshCoordinator.panelOpened(
         binding.tabId,
         binding.windowId,
       );
       if (!this.isCurrentActivation(record, token, binding)) {
-        return { initialized: false };
+        return false;
       }
       if (
         record.windowStateRevision === revision &&
@@ -1452,10 +1589,10 @@ export class BackgroundRouter {
           createPanelTabStateMessage(state),
         );
       }
-      return { initialized: true, state };
+      return true;
     } catch (error) {
       this.reportError(error);
-      return { initialized: false };
+      return false;
     }
   }
 
@@ -1478,6 +1615,7 @@ export class BackgroundRouter {
     record.windowStateQueue = undefined;
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
+    record.tabStateInitialized = false;
     record.tabStateInvalidatedByUnlink = false;
     record.lastWindowState = undefined;
     record.republishWindowId = undefined;
@@ -1687,20 +1825,25 @@ export class BackgroundRouter {
       }
     }
 
-    if (command.type === "pin-op.unlinkWindow") {
-      this.contentRefreshCoordinator.revokeWindow(binding.windowId);
-      this.correlations.disposeChannel(command.channel);
-    }
-
     const commandToken = {};
-    const pendingRecord: PanelCommandRecord = {
-      commandToken,
-      activationToken,
-    };
-    this.panelCommands.set(command.channel, pendingRecord);
+    let leasedWindowId = binding.windowId;
+    if (this.windowCommands.has(leasedWindowId)) {
+      return { ok: false, error: "busy" };
+    }
+    this.windowCommands.set(leasedWindowId, commandToken);
     let dispatchedBinding: ChannelBinding | undefined;
     let dispatchedCommand: PanelCommandRecord | undefined;
     try {
+      if (command.type === "pin-op.unlinkWindow") {
+        this.contentRefreshCoordinator.revokeWindow(binding.windowId);
+        this.correlations.disposeChannel(command.channel);
+      }
+
+      const pendingRecord: PanelCommandRecord = {
+        commandToken,
+        activationToken,
+      };
+      this.panelCommands.set(command.channel, pendingRecord);
       const refreshed = await this.refreshPanelBinding(
         binding,
         record,
@@ -1712,6 +1855,7 @@ export class BackgroundRouter {
         !currentActivationToken ||
         !record.registration ||
         this.panelCommands.get(command.channel)?.commandToken !== commandToken ||
+        !this.isCurrentWindowCommand(leasedWindowId, commandToken) ||
         !this.isCurrentActivation(
           record,
           currentActivationToken,
@@ -1729,6 +1873,17 @@ export class BackgroundRouter {
         });
       } catch {
         return { ok: false, error: "stalePanel" };
+      }
+      if (refreshed.windowId !== leasedWindowId) {
+        if (!this.isCurrentWindowCommand(leasedWindowId, commandToken)) {
+          return { ok: false, error: "stalePanel" };
+        }
+        if (this.windowCommands.has(refreshed.windowId)) {
+          return { ok: false, error: "busy" };
+        }
+        this.windowCommands.delete(leasedWindowId);
+        leasedWindowId = refreshed.windowId;
+        this.windowCommands.set(leasedWindowId, commandToken);
       }
 
       const abortController = new AbortController();
@@ -1761,7 +1916,14 @@ export class BackgroundRouter {
         await this.tabRefreshCoordinator.removeWindow(refreshed.windowId);
         this.invalidateWindowPanelTabStates(refreshed.windowId);
       }
-      if (!this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
+      if (
+        !this.isCurrentWindowPanelCommand(
+          refreshed.windowId,
+          record,
+          refreshed,
+          dispatchedRecord,
+        )
+      ) {
         return { ok: false, error: "stalePanel" };
       }
       // A completed coordinator side effect cannot always be rolled back. The
@@ -1773,7 +1935,12 @@ export class BackgroundRouter {
       );
       if (
         postflight !== refreshed ||
-        !this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)
+        !this.isCurrentWindowPanelCommand(
+          refreshed.windowId,
+          record,
+          refreshed,
+          dispatchedRecord,
+        )
       ) {
         return { ok: false, error: "stalePanel" };
       }
@@ -1791,11 +1958,25 @@ export class BackgroundRouter {
           dispatchedRecord,
         );
         if (restoreError) {
-          await this.compensateFailedWindowRefreshRestore(
+          const compensated = await this.compensateFailedWindowRefreshRestore(
             refreshed.windowId,
+            commandToken,
           );
+          if (!compensated) {
+            return { ok: false, error: "stalePanel" };
+          }
           return { ok: false, error: restoreError };
         }
+      }
+      if (
+        !this.isCurrentWindowPanelCommand(
+          refreshed.windowId,
+          record,
+          refreshed,
+          dispatchedRecord,
+        )
+      ) {
+        return { ok: false, error: "stalePanel" };
       }
       return okResult;
     } catch (error) {
@@ -1809,7 +1990,8 @@ export class BackgroundRouter {
       );
       if (
         postflight !== dispatchedBinding ||
-        !this.isCurrentPanelCommand(
+        !this.isCurrentWindowPanelCommand(
+          dispatchedBinding.windowId,
           record,
           dispatchedBinding,
           dispatchedCommand,
@@ -1827,6 +2009,9 @@ export class BackgroundRouter {
         this.panelCommands.get(command.channel)?.commandToken === commandToken
       ) {
         this.panelCommands.delete(command.channel);
+      }
+      if (this.windowCommands.get(leasedWindowId) === commandToken) {
+        this.windowCommands.delete(leasedWindowId);
       }
     }
   }
@@ -2785,7 +2970,7 @@ export class BackgroundRouter {
       binding,
     );
     if (
-      !initialization.initialized ||
+      !initialization ||
       !this.isCurrentLinkedSnapshot(record, token, binding, revision)
     ) {
       return;
@@ -3201,16 +3386,51 @@ export class BackgroundRouter {
     );
   }
 
+  private isCurrentWindowCommand(
+    windowId: number,
+    commandToken: object,
+  ): boolean {
+    return (
+      !this.disposed &&
+      this.windowCommands.get(windowId) === commandToken
+    );
+  }
+
+  private isCurrentWindowPanelCommand(
+    windowId: number,
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+    command: PanelCommandRecord,
+  ): boolean {
+    return (
+      binding.windowId === windowId &&
+      this.isCurrentWindowCommand(windowId, command.commandToken) &&
+      this.isCurrentPanelCommand(record, binding, command)
+    );
+  }
+
+  private releaseWindowCommand(commandToken: object): void {
+    for (const [windowId, currentToken] of this.windowCommands) {
+      if (currentToken === commandToken) {
+        this.windowCommands.delete(windowId);
+        return;
+      }
+    }
+  }
+
   private abortPanelCommand(
     record: PanelPortRecord,
     activationToken: object,
   ): void {
     const command = this.panelCommands.get(record.channel);
     if (
-      command?.activationToken === activationToken &&
-      command.abortController
+      command?.activationToken === activationToken
     ) {
-      command.abortController.abort();
+      if (command.abortController) {
+        command.abortController.abort();
+      } else if (this.panelPorts.get(record.channel) !== record) {
+        this.releaseWindowCommand(command.commandToken);
+      }
     }
   }
 

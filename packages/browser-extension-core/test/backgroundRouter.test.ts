@@ -216,6 +216,151 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("holds a window command lease through stale-link compensation", async () => {
+    const tabs = new Map([
+      [17, 10],
+      [18, 10],
+    ]);
+    const staleRestore = deferred<TabRefreshState>();
+    const compensationStarted = deferred<void>();
+    const releaseCompensation = deferred<void>();
+    let unlinkAttempt = 0;
+    const harness = createHarness({
+      tabs,
+      unlinkWindow: async () => {
+        unlinkAttempt += 1;
+        if (unlinkAttempt === 2) {
+          compensationStarted.resolve();
+          await releaseCompensation.promise;
+        }
+      },
+    });
+    const stalePort = await harness.registerAndConnect(
+      "channel-window-lease-stale",
+      17,
+      "source-window-lease-stale",
+    );
+    await harness.registerAndConnect(
+      "channel-window-lease-current",
+      18,
+      "source-window-lease-current",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-window-lease-stale",
+    }, panelSender("channel-window-lease-stale"))).resolves.toEqual({
+      ok: true,
+    });
+    harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) =>
+      tabId === 17
+        ? await staleRestore.promise
+        : {
+            ...defaultTabState(tabId, windowId),
+            participant: true,
+          };
+    const panelOpenBaseline = harness.tabRefresh.panelOpenCalls.length;
+
+    const staleLink = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-window-lease-stale",
+      code: "4873507",
+    }, panelSender("channel-window-lease-stale"));
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelOpenCalls).toHaveLength(
+        panelOpenBaseline + 1,
+      );
+    });
+    stalePort.disconnect();
+    staleRestore.resolve({
+      ...defaultTabState(17, 10),
+      participant: true,
+    });
+    await compensationStarted.promise;
+
+    const overlappingResult = await harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-window-lease-current",
+      code: "4873507",
+    }, panelSender("channel-window-lease-current"));
+
+    releaseCompensation.resolve();
+    await expect(staleLink).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    expect(overlappingResult).toEqual({
+      ok: false,
+      error: "busy",
+    });
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-window-lease-current",
+      code: "4873507",
+    }, panelSender("channel-window-lease-current"))).resolves.toEqual({
+      ok: true,
+    });
+    await flushMicrotasks();
+
+    expect(harness.coordinator.unlinks).toEqual([10, 10]);
+    const refresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, refresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedParticipantRefreshCalls).toEqual([
+      [10, 18, refresh],
+    ]);
+  });
+
+  it("allows window commands in different windows to overlap", async () => {
+    const tabs = new Map([
+      [17, 10],
+      [27, 20],
+    ]);
+    const firstLinkStarted = deferred<void>();
+    const releaseFirstLink = deferred<void>();
+    const harness = createHarness({
+      tabs,
+      linkWindow: async (windowId) => {
+        if (windowId === 10) {
+          firstLinkStarted.resolve();
+          await releaseFirstLink.promise;
+        }
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-window-lease-first",
+      17,
+      "source-window-lease-first",
+    );
+    await harness.registerAndConnect(
+      "channel-window-lease-other",
+      27,
+      "source-window-lease-other",
+    );
+    await flushMicrotasks();
+
+    const firstLink = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-window-lease-first",
+      code: "4873507",
+    }, panelSender("channel-window-lease-first"));
+    await firstLinkStarted.promise;
+
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-window-lease-other",
+      code: "4873507",
+    }, panelSender("channel-window-lease-other"))).resolves.toEqual({
+      ok: true,
+    });
+    releaseFirstLink.resolve();
+    await expect(firstLink).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.links.map(({ windowId }) => windowId)).toEqual([
+      10,
+      20,
+    ]);
+  });
+
   it("compensates a partial window restore and retries every participant", async () => {
     const tabs = new Map([
       [17, 10],
@@ -358,7 +503,7 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
-  it("publishes the authoritative relink snapshot without a second state read", async () => {
+  it("compensates a failed current-state read and retries restoration", async () => {
     const harness = createHarness();
     const port = await harness.registerAndConnect(
       "channel-relink-snapshot",
@@ -370,12 +515,40 @@ describe("BackgroundRouter", () => {
       type: "pin-op.unlinkWindow",
       channel: "channel-relink-snapshot",
     }, panelSender("channel-relink-snapshot"))).resolves.toEqual({ ok: true });
-    const stateCallBaseline = harness.tabRefresh.stateCalls.length;
-    harness.tabRefresh.stateBehavior = async () => {
-      throw new Error("redundant state read failed");
+    let stateReadAttempt = 0;
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => {
+      stateReadAttempt += 1;
+      if (stateReadAttempt === 1) {
+        throw new Error("transient current-state read failure");
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        participant: true,
+      };
     };
-    const messageStart = port.sent.length;
+    const failedMessageStart = port.sent.length;
 
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-snapshot",
+      code: "4873507",
+    }, panelSender("channel-relink-snapshot"))).resolves.toEqual({
+      ok: false,
+      error: "error",
+    });
+    await flushMicrotasks();
+
+    expect(stateReadAttempt).toBe(1);
+    expect(harness.coordinator.unlinks).toEqual([10, 10]);
+    expect(
+      port.sent.slice(failedMessageStart).filter(isPanelTabStateMessage),
+    ).not.toContainEqual(expect.objectContaining({ participant: true }));
+    const rejectedRefresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, rejectedRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
+
+    const retryMessageStart = port.sent.length;
     await expect(harness.router.routeMessage({
       type: "pin-op.linkWindow",
       channel: "channel-relink-snapshot",
@@ -383,13 +556,184 @@ describe("BackgroundRouter", () => {
     }, panelSender("channel-relink-snapshot"))).resolves.toEqual({ ok: true });
     await flushMicrotasks();
 
-    expect(harness.tabRefresh.stateCalls).toHaveLength(stateCallBaseline);
+    expect(stateReadAttempt).toBe(2);
     expect(
-      port.sent.slice(messageStart).filter(isPanelTabStateMessage).at(-1),
+      port.sent.slice(retryMessageStart).filter(isPanelTabStateMessage).at(-1),
     ).toMatchObject({
       autoRefreshEnabled: true,
       participant: true,
     });
+  });
+
+  it("does not overwrite settings queued during relink restoration", async () => {
+    const tabs = new Map([[17, 10]]);
+    const restorePostflightStarted = deferred<void>();
+    const releaseRestorePostflight = deferred<void>();
+    let gateRestorePostflight = false;
+    let linkLookup = 0;
+    const harness = createHarness({
+      tabs,
+      getTab: async (tabId) => {
+        if (gateRestorePostflight && tabId === 17) {
+          linkLookup += 1;
+          if (linkLookup === 3) {
+            restorePostflightStarted.resolve();
+            await releaseRestorePostflight.promise;
+          }
+        }
+        const windowId = tabs.get(tabId);
+        return windowId === undefined ? undefined : { id: tabId, windowId };
+      },
+    });
+    const port = await harness.registerAndConnect(
+      "channel-relink-settings",
+      17,
+      "source-relink-settings",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-settings",
+    }, panelSender("channel-relink-settings"))).resolves.toEqual({ ok: true });
+    const settingsBaseline = harness.tabRefresh.settingCalls.length;
+    gateRestorePostflight = true;
+
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-settings",
+      code: "4873507",
+    }, panelSender("channel-relink-settings"));
+    await restorePostflightStarted.promise;
+
+    port.emitMessage({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+    });
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.settingCalls).toHaveLength(
+        settingsBaseline + 1,
+      );
+    });
+    expect(port.sent.filter(isPanelTabStateMessage).at(-1)).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+
+    releaseRestorePostflight.resolve();
+    await expect(linking).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+
+    expect(port.sent.filter(isPanelTabStateMessage).at(-1)).toMatchObject({
+      autoRefreshEnabled: false,
+      ideHighlightEnabled: false,
+      participant: false,
+    });
+    const refresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, refresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
+  });
+
+  it("preserves invalidation when a captured panel moves before restore commit", async () => {
+    const tabs = new Map([
+      [17, 10],
+      [18, 10],
+    ]);
+    const siblingPostflightStarted = deferred<void>();
+    const releaseSiblingPostflight = deferred<void>();
+    let gateSiblingPostflight = false;
+    let siblingLinkLookup = 0;
+    const harness = createHarness({
+      tabs,
+      getTab: async (tabId) => {
+        if (gateSiblingPostflight && tabId === 18) {
+          siblingLinkLookup += 1;
+          if (siblingLinkLookup === 3) {
+            siblingPostflightStarted.resolve();
+            await releaseSiblingPostflight.promise;
+          }
+        }
+        const windowId = tabs.get(tabId);
+        return windowId === undefined ? undefined : { id: tabId, windowId };
+      },
+    });
+    const movedPort = await harness.registerAndConnect(
+      "channel-relink-reused-record",
+      17,
+      "source-relink-reused-record",
+    );
+    await harness.registerAndConnect(
+      "channel-relink-reused-sibling",
+      18,
+      "source-relink-reused-sibling",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-reused-record",
+    }, panelSender("channel-relink-reused-record"))).resolves.toEqual({
+      ok: true,
+    });
+    gateSiblingPostflight = true;
+
+    const oldWindowLink = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-reused-sibling",
+      code: "4873507",
+    }, panelSender("channel-relink-reused-sibling"));
+    await siblingPostflightStarted.promise;
+
+    tabs.set(17, 20);
+    movedPort.emitMessage({
+      type: "pin-op.tab.settings",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+    });
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelOpenCalls).toContainEqual([17, 20]);
+      expect(harness.tabRefresh.settingCalls).toContainEqual([
+        17,
+        20,
+        { autoRefreshEnabled: true, ideHighlightEnabled: true },
+      ]);
+    });
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-reused-record",
+    }, panelSender("channel-relink-reused-record"))).resolves.toEqual({
+      ok: true,
+    });
+    const movedPanelOpenBaseline = harness.tabRefresh.panelOpenCalls.filter(
+      ([tabId, windowId]) => tabId === 17 && windowId === 20,
+    ).length;
+
+    releaseSiblingPostflight.resolve();
+    const oldWindowResult = await oldWindowLink;
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-reused-record",
+      code: "4873507",
+    }, panelSender("channel-relink-reused-record"))).resolves.toEqual({
+      ok: true,
+    });
+    await flushMicrotasks();
+
+    expect(oldWindowResult).toEqual({ ok: false, error: "error" });
+    expect(
+      harness.tabRefresh.panelOpenCalls.filter(
+        ([tabId, windowId]) => tabId === 17 && windowId === 20,
+      ),
+    ).toHaveLength(movedPanelOpenBaseline + 1);
+    const refresh = pageRefresh(1);
+    harness.pageRefreshes.emit(20, refresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedParticipantRefreshCalls).toContainEqual([
+      20,
+      17,
+      refresh,
+    ]);
   });
 
   it("compensates when another panel closes during window restoration", async () => {
@@ -5522,7 +5866,60 @@ describe("BackgroundRouter", () => {
     });
   });
 
-  it("does not let a stale command block a recovered port on the same channel", async () => {
+  it("releases a stale window lease before command dispatch", async () => {
+    const preflightStarted = deferred<void>();
+    const releasePreflight = deferred<void>();
+    let gatePreflight = false;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        if (gatePreflight) {
+          gatePreflight = false;
+          preflightStarted.resolve();
+          await releasePreflight.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+    });
+    const firstPort = await harness.registerAndConnect(
+      "channel-preflight-lease",
+      17,
+      "source-preflight-lease",
+    );
+    await flushMicrotasks();
+    gatePreflight = true;
+
+    const staleLink = harness.router.routeMessage(
+      {
+        type: "pin-op.linkWindow",
+        channel: "channel-preflight-lease",
+        code: "4873507",
+      },
+      panelSender("channel-preflight-lease"),
+    );
+    await preflightStarted.promise;
+    firstPort.disconnect();
+    const recoveredPort = harness.panelPort("channel-preflight-lease");
+    harness.router.connectPort(recoveredPort);
+    await flushMicrotasks();
+
+    await expect(harness.router.routeMessage(
+      {
+        type: "pin-op.unlinkWindow",
+        channel: "channel-preflight-lease",
+      },
+      panelSender("channel-preflight-lease"),
+    )).resolves.toEqual({ ok: true });
+
+    releasePreflight.resolve();
+    await expect(staleLink).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    expect(harness.coordinator.links).toEqual([]);
+    expect(harness.coordinator.unlinks).toEqual([10]);
+  });
+
+  it("serializes a recovered port behind a stale same-window command", async () => {
     const linkResult = deferred<void>();
     const harness = createHarness({
       linkWindow: async () => linkResult.promise,
@@ -5554,13 +5951,23 @@ describe("BackgroundRouter", () => {
         },
         panelSender("channel-1"),
       ),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toEqual({ ok: false, error: "busy" });
+    expect(harness.coordinator.unlinks).toEqual([]);
 
     linkResult.resolve();
     await expect(staleLink).resolves.toEqual({
       ok: false,
       error: "stalePanel",
     });
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "pin-op.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
     expect(harness.coordinator.unlinks).toEqual([10]);
   });
 
