@@ -277,6 +277,65 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("releases deferred refreshes when a window command lease migrates", async () => {
+    const tabs = new Map([[17, 10]]);
+    const earlierRefresh: PageRefreshMessage = {
+      ...pageRefresh(1),
+      mode: "reload",
+    };
+    const movedLinkStarted = deferred<void>();
+    const releaseMovedLink = deferred<void>();
+    let moveDuringCommand = false;
+    let harness: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      tabs,
+      getTab: async (tabId) => {
+        if (moveDuringCommand) {
+          moveDuringCommand = false;
+          harness.pageRefreshes.emit(10, earlierRefresh);
+          tabs.set(tabId, 20);
+        }
+        const windowId = tabs.get(tabId);
+        return windowId === undefined ? undefined : { id: tabId, windowId };
+      },
+      linkWindow: async (windowId) => {
+        if (windowId === 20) {
+          movedLinkStarted.resolve();
+          await releaseMovedLink.promise;
+        }
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-refresh-lease-migration",
+      17,
+      "source-refresh-lease-migration",
+    );
+    await flushMicrotasks();
+
+    moveDuringCommand = true;
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-refresh-lease-migration",
+      code: "4873507",
+    }, panelSender("channel-refresh-lease-migration"));
+    await movedLinkStarted.promise;
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.refreshCalls).toEqual([[10, earlierRefresh]]);
+
+    const laterRefresh = pageRefresh(2);
+    harness.pageRefreshes.emit(10, laterRefresh);
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.refreshCalls).toEqual([
+      [10, earlierRefresh],
+      [10, laterRefresh],
+    ]);
+
+    releaseMovedLink.resolve();
+    await expect(linking).resolves.toEqual({ ok: true });
+  });
+
   it("holds a window command lease through stale-link compensation", async () => {
     const tabs = new Map([
       [17, 10],

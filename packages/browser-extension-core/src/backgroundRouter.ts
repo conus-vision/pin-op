@@ -378,8 +378,8 @@ export class BackgroundRouter {
   private readonly panelPorts = new Map<string, PanelPortRecord>();
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly windowCommands = new Map<number, object>();
-  private readonly windowCommandCompletions = new WeakMap<
-    object,
+  private readonly windowCommandCompletions = new Map<
+    number,
     WindowCommandCompletion
   >();
   private readonly panelTeardowns = new Map<
@@ -629,6 +629,7 @@ export class BackgroundRouter {
     for (const commandToken of new Set(this.windowCommands.values())) {
       this.releaseWindowCommand(commandToken);
     }
+    this.windowCommandCompletions.clear();
     this.panelTeardowns.clear();
     this.requiredPanelTeardowns.clear();
     this.bindings.clear();
@@ -1903,8 +1904,8 @@ export class BackgroundRouter {
     if (this.windowCommands.has(leasedWindowId)) {
       return { ok: false, error: "busy" };
     }
-    const commandToken = this.createWindowCommandToken();
-    this.windowCommands.set(leasedWindowId, commandToken);
+    const commandToken = {};
+    this.acquireWindowCommand(leasedWindowId, commandToken);
     let dispatchedBinding: ChannelBinding | undefined;
     let dispatchedCommand: PanelCommandRecord | undefined;
     try {
@@ -1950,9 +1951,9 @@ export class BackgroundRouter {
         if (this.windowCommands.has(refreshed.windowId)) {
           return { ok: false, error: "busy" };
         }
-        this.windowCommands.delete(leasedWindowId);
+        this.releaseWindowCommandForWindow(leasedWindowId, commandToken);
         leasedWindowId = refreshed.windowId;
-        this.windowCommands.set(leasedWindowId, commandToken);
+        this.acquireWindowCommand(leasedWindowId, commandToken);
       }
 
       const abortController = new AbortController();
@@ -3487,9 +3488,13 @@ export class BackgroundRouter {
     }
     const commandToken = this.windowCommands.get(windowId);
     const completion = commandToken
-      ? this.windowCommandCompletions.get(commandToken)
+      ? this.windowCommandCompletions.get(windowId)
       : undefined;
-    if (completion) {
+    if (commandToken) {
+      if (!completion) {
+        this.reportError(new Error("Missing window command completion gate"));
+        return;
+      }
       void completion.promise.then(() =>
         this.acceptPageRefreshAfterWindowCommand(windowId, message)
       );
@@ -3500,14 +3505,13 @@ export class BackgroundRouter {
       .catch((error) => this.reportError(error));
   }
 
-  private createWindowCommandToken(): object {
-    const commandToken = {};
+  private createWindowCommandCompletion(): WindowCommandCompletion {
     let resolveCompletion: () => void = () => undefined;
     const promise = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
     let released = false;
-    this.windowCommandCompletions.set(commandToken, {
+    return {
       promise,
       release: () => {
         if (released) {
@@ -3516,19 +3520,37 @@ export class BackgroundRouter {
         released = true;
         resolveCompletion();
       },
-    });
-    return commandToken;
+    };
+  }
+
+  private acquireWindowCommand(windowId: number, commandToken: object): void {
+    this.windowCommands.set(windowId, commandToken);
+    this.windowCommandCompletions.set(
+      windowId,
+      this.createWindowCommandCompletion(),
+    );
+  }
+
+  private releaseWindowCommandForWindow(
+    windowId: number,
+    commandToken: object,
+  ): boolean {
+    if (this.windowCommands.get(windowId) !== commandToken) {
+      return false;
+    }
+    this.windowCommands.delete(windowId);
+    const completion = this.windowCommandCompletions.get(windowId);
+    this.windowCommandCompletions.delete(windowId);
+    completion?.release();
+    return true;
   }
 
   private releaseWindowCommand(commandToken: object): void {
     for (const [windowId, currentToken] of this.windowCommands) {
       if (currentToken === commandToken) {
-        this.windowCommands.delete(windowId);
+        this.releaseWindowCommandForWindow(windowId, commandToken);
       }
     }
-    const completion = this.windowCommandCompletions.get(commandToken);
-    this.windowCommandCompletions.delete(commandToken);
-    completion?.release();
   }
 
   private abortPanelCommand(
