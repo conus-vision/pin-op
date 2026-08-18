@@ -341,15 +341,21 @@ fixture after the checks.
 8. Resize DevTools to 680 px or wider. When the measured usable workspace width
    fits two 160 px panes plus the measured separator, confirm side-by-side
    DOM/Source remains split.
-9. Resize below 680 px while keeping the viewport at least 520 px tall. When
+9. Keep the viewport at least 680 px wide and 520 px tall, then constrain the
+   measured workspace width below that horizontal fit threshold while its
+   height still fits two 160 px panes plus the measured separator. Confirm DOM
+   stacks above Source, both panes remain visible, tabs are hidden, and the
+   visible separator is horizontal.
+10. Resize below 680 px while keeping the viewport at least 520 px tall. When
    the measured usable workspace height fits two 160 px panes plus the measured
    separator (currently at least 325 px total), confirm DOM/Source stacks.
-10. Keep that narrow, tall viewport and reduce the usable workspace below the
-    fit threshold, for example with the mismatch banner or window constraints.
-    Confirm tabs appear with no clipping, then restore enough workspace and
-    confirm stack re-entry.
-11. Below 680 px and below 520 px, confirm tabs remain active. In every mode,
-    confirm the toolbar code and controls do not overlap.
+11. Keep split unavailable in a tall viewport and reduce the usable workspace
+    height below the vertical fit threshold, for example with the mismatch
+    banner or window constraints. Confirm tabs appear with no clipping, then
+    restore enough workspace and confirm stack re-entry.
+12. When split is unavailable, reduce the viewport below 520 px tall and
+    confirm tabs remain active because neither two-pane arrangement fits. In
+    every mode, confirm the toolbar code and controls do not overlap.
 
 ### Auto Refresh
 

@@ -31,6 +31,9 @@ describe("PanelLayoutController", () => {
     ["stack", 679, 520, 679, 325, 5],
     ["tabs", 680, 519, 324, 519, 5],
     ["split", 680, 519, 325, 519, 5],
+    ["tabs", 680, 519, 324, 325, 5],
+    ["stack", 680, 520, 324, 325, 5],
+    ["split", 680, 520, 325, 325, 5],
   ] as const)(
     "selects %s for a %dx%d viewport with a %dx%d workspace and %dpx separator",
     (
@@ -60,6 +63,13 @@ describe("PanelLayoutController", () => {
         workspaceWidth,
         workspaceHeight,
         mode,
+        separator: {
+          orientation: mode === "split"
+            ? "vertical"
+            : mode === "stack"
+              ? "horizontal"
+              : null,
+        },
       });
     },
   );

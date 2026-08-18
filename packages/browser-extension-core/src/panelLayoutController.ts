@@ -658,8 +658,8 @@ function selectMode(
   workspaceHeight: number,
   separatorThickness: number,
 ): PanelLayoutMode {
-  if (width >= SPLIT_WIDTH) {
-    return panesFit(workspaceWidth, separatorThickness) ? "split" : "tabs";
+  if (width >= SPLIT_WIDTH && panesFit(workspaceWidth, separatorThickness)) {
+    return "split";
   }
   return height >= STACK_HEIGHT && panesFit(workspaceHeight, separatorThickness)
     ? "stack"

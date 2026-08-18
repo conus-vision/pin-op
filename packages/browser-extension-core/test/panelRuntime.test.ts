@@ -303,6 +303,24 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("stacks both panes when a wide workspace fits only vertically", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const observer = resizeObservers[0]!;
+
+    emitPanelResize(observer, dom, 680, 520, 324, 325);
+    await flushAsync();
+
+    expect(dom.element("panel-workspace").dataset.layout).toBe("stack");
+    expect(dom.element("dom-pane").hidden).toBe(false);
+    expect(dom.element("source-pane").hidden).toBe(false);
+    expect(dom.element("workspace-tabs").hidden).toBe(true);
+    expect(dom.element("pane-separator").hidden).toBe(false);
+    expect(dom.element("pane-separator").getAttribute("aria-orientation"))
+      .toBe("horizontal");
+    runtime.dispose();
+  });
+
   it("uses tabpanels only in tabs mode and labelled regions otherwise", async () => {
     const runtime = createRuntime();
     await runtime.ready;
