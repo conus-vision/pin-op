@@ -204,6 +204,35 @@ describe("presenter runtime", () => {
     });
   });
 
+  it("publishes SCSS excerpts when raw TextDocument requires Position instances", async () => {
+    const harness = runtimeHarness({
+      activeLanguageId: "scss",
+      activeText: "$gap: 8px;\r\n.card {\r\n  gap: $gap;\r\n}",
+      strictDocumentPositions: true,
+    });
+    harness.runtime.api.registerSourcePlugin(scssFixturePlugin());
+
+    harness.runtime.select(inspectMessageWithCustomFact());
+    await harness.flush();
+
+    expect(harness.resolutions.at(-1)).toMatchObject({
+      status: "matched",
+      selectedMatchCount: 1,
+      parentMatchCount: 0,
+      document: { label: "layout.scss", languageId: "scss" },
+    });
+    expect(harness.sourceMatches.at(-1)).toMatchObject({
+      document: { label: "layout.scss", languageId: "scss" },
+      matches: [{
+        targetRole: "selected",
+        label: ".card",
+        startLine: 2,
+        endLine: 4,
+        text: ".card {\r\n  gap: $gap;\r\n}",
+      }],
+    });
+  });
+
   it("discards source IDs when the transport does not enqueue them", async () => {
     const harness = runtimeHarness({
       activeLanguageId: "fixture",
@@ -656,6 +685,8 @@ describe("presenter runtime", () => {
 
 function runtimeHarness(options: {
   readonly activeLanguageId: string;
+  readonly activeText?: string;
+  readonly strictDocumentPositions?: boolean;
   readonly refreshClassifierRegistry?: RefreshClassifierRegistry;
   readonly sendError?: Error;
   readonly navigationSendError?: Error;
@@ -676,9 +707,9 @@ function runtimeHarness(options: {
   const uri = options.activeLanguageId === "scss"
     ? "file:///workspace/src/layout.scss"
     : `file:///workspace/src/app.${options.activeLanguageId}`;
-  const text = options.activeLanguageId === "fixture"
+  const text = options.activeText ?? (options.activeLanguageId === "fixture"
     ? "fixture block"
-    : ".layout {}";
+    : ".layout {}");
   const activeEditorListeners = new Set<
     (editor: ReturnType<typeof createEditor> | undefined) => void
   >();
@@ -704,6 +735,7 @@ function runtimeHarness(options: {
     text,
     1,
     (role, ranges) => decorationCalls.push({ role, ranges }),
+    options.strictDocumentPositions,
   );
   if (options.excerptReadError) {
     const getText = editor.document.getText.bind(editor.document);
@@ -845,6 +877,7 @@ function runtimeHarness(options: {
         ".card {}",
         1,
         (role, ranges) => decorationCalls.push({ role, ranges }),
+        options.strictDocumentPositions,
       );
       for (const listener of activeEditorListeners) listener(editor);
     },
@@ -855,6 +888,7 @@ function runtimeHarness(options: {
         nextText,
         editor.document.version + 1,
         (role, ranges) => decorationCalls.push({ role, ranges }),
+        options.strictDocumentPositions,
       );
       for (const listener of documentListeners) listener(editor.document);
     },
@@ -937,6 +971,31 @@ function fixturePlugin(localPathOrParent?: string | boolean): SourcePlugin {
   };
 }
 
+function scssFixturePlugin(): SourcePlugin {
+  return {
+    id: "fixture.scss-source",
+    displayName: "SCSS Fixture Source",
+    apiVersion: SOURCE_PLUGIN_API_VERSION,
+    documentSelectors: [{ languageId: "scss", scheme: "file" }],
+    supportedFactKinds: ["fixture.source"],
+    async resolve() {
+      return {
+        matches: [{
+          targetRole: "selected",
+          range: {
+            start: { line: 1, character: 0 },
+            end: { line: 3, character: 1 },
+          },
+          label: ".card",
+          kind: "style-rule",
+          relation: "styles",
+          confidence: "sourcemap",
+        }],
+      };
+    },
+  };
+}
+
 function createEditor(
   uri: string,
   languageId: string,
@@ -946,10 +1005,17 @@ function createEditor(
     role: DecorationRole,
     ranges: readonly unknown[],
   ) => void = () => undefined,
+  strictDocumentPositions = false,
 ) {
   return {
     documentUri: uri,
-    document: textDocument(uri, languageId, text, version),
+    document: textDocument(
+      uri,
+      languageId,
+      text,
+      version,
+      strictDocumentPositions,
+    ),
     setDecorations(
       type: { readonly role?: DecorationRole },
       ranges: readonly unknown[],
@@ -1085,16 +1151,52 @@ function textDocument(
   languageId: string,
   text: string,
   version = 1,
+  strictPositions = false,
 ) {
+  class StrictPosition {
+    public constructor(
+      public readonly line: number,
+      public readonly character: number,
+    ) {}
+  }
+  const lineStarts = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\n") lineStarts.push(index + 1);
+  }
   return {
     uri: { toString: () => uri },
     languageId,
     version,
     getText: () => text,
-    positionAt: (offset: number) => ({ line: 0, character: offset }),
-    offsetAt: (position: { line: number; character: number }) =>
-      position.character,
+    positionAt(offset: number) {
+      const bounded = Math.max(0, Math.min(Math.floor(offset), text.length));
+      let line = 0;
+      while (line + 1 < lineStarts.length && lineStarts[line + 1]! <= bounded) {
+        line += 1;
+      }
+      const character = Math.min(bounded, lineEnd(line)) - lineStarts[line]!;
+      return strictPositions
+        ? new StrictPosition(line, character)
+        : { line, character };
+    },
+    offsetAt(position: { line: number; character: number }) {
+      if (strictPositions && !(position instanceof StrictPosition)) {
+        throw new TypeError("Invalid argument: position must be a Position");
+      }
+      const line = Math.max(0, Math.min(position.line, lineStarts.length - 1));
+      return Math.max(
+        lineStarts[line]!,
+        Math.min(lineStarts[line]! + position.character, lineEnd(line)),
+      );
+    },
   };
+
+  function lineEnd(line: number): number {
+    const next = lineStarts[line + 1];
+    if (next === undefined) return text.length;
+    const lineFeed = next - 1;
+    return text[lineFeed - 1] === "\r" ? lineFeed - 1 : lineFeed;
+  }
 }
 
 function workspace(): SourceWorkspace {

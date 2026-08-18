@@ -328,11 +328,16 @@ function createSourcePublication(
   registry: SourceExcerptRegistry,
   publication: CoordinatorPublication,
 ): SourceExcerptPublication {
-  if (publication.editor && publication.resolution) {
+  if (
+    publication.editor &&
+    publication.sourceDocument &&
+    publication.resolution
+  ) {
     return registry.publish({
       inspectMessageId: publication.inspectMessageId,
       resolutionGeneration: publication.resolutionGeneration,
       editor: publication.editor as PresenterEditorLike,
+      sourceDocument: publication.sourceDocument,
       resolution: publication.resolution,
     });
   }

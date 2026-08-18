@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import type { SourcePosition, SourceRange } from "@pin-op/plugin-api";
+import type {
+  SourceDocument,
+  SourcePosition,
+  SourceRange,
+} from "@pin-op/plugin-api";
 import {
   PROTOCOL_VERSION,
   RESOLUTION_LIMITS,
@@ -16,7 +20,10 @@ import {
   normalizeSourceRelation,
   sourceDocumentLabel,
 } from "../sourcePresentationMetadata.js";
-import type { TextDocumentLike } from "../sourcePlugins/sourceDocument.js";
+import {
+  adaptSourceDocument,
+  type TextDocumentLike,
+} from "../sourcePlugins/sourceDocument.js";
 import type {
   ResolvedSourceMatch,
   SourceResolution,
@@ -51,6 +58,7 @@ export interface SourceExcerptPublicationInput {
   readonly inspectMessageId: string;
   readonly resolutionGeneration: number;
   readonly editor: SourceExcerptEditor;
+  readonly sourceDocument?: SourceDocument;
   readonly resolution: SourceResolution;
 }
 
@@ -109,13 +117,13 @@ export class SourceExcerptRegistry {
   }
 
   public publish(input: SourceExcerptPublicationInput): SourceExcerptPublication {
-    const { document } = input.editor;
+    const activeDocument = input.editor.document;
     this.authorities.clear();
     try {
       this.current = sourceState(
         input.inspectMessageId,
         input.resolutionGeneration,
-        document,
+        input.sourceDocument ?? activeDocument,
       );
     } catch {
       this.current = Object.freeze({
@@ -126,10 +134,27 @@ export class SourceExcerptRegistry {
       return this.emptyPublication();
     }
 
+    try {
+      if (!matchesActiveDocumentIdentity(input)) {
+        return this.emptyPublication();
+      }
+    } catch {
+      return this.emptyPublication();
+    }
+
+    let sourceDocument: SourceDocument;
+    try {
+      sourceDocument = input.sourceDocument ?? adaptSourceDocument(activeDocument);
+    } catch {
+      return this.emptyPublication(true);
+    }
+
     let valid: ValidMatch[];
     try {
-      if (!matchesActiveDocument(input)) return this.emptyPublication();
-      valid = validMatches(input.resolution.matches, document);
+      if (!matchesSourceDocument(input.resolution, sourceDocument)) {
+        return this.emptyPublication();
+      }
+      valid = validMatches(input.resolution.matches, sourceDocument);
     } catch {
       return this.emptyPublication();
     }
@@ -137,7 +162,9 @@ export class SourceExcerptRegistry {
 
     let text: string;
     try {
-      text = document.getText();
+      text = input.sourceDocument
+        ? activeDocument.getText()
+        : sourceDocument.getText();
     } catch {
       return this.emptyPublication(true);
     }
@@ -252,8 +279,8 @@ export class SourceExcerptRegistry {
       matchId,
       inspectMessageId: input.inspectMessageId,
       resolutionGeneration: input.resolutionGeneration,
-      documentUri: input.editor.document.uri.toString(),
-      documentVersion: input.editor.document.version,
+      documentUri: input.resolution.documentUri,
+      documentVersion: input.resolution.documentVersion,
       range: authorityRange,
     });
     const kind = normalizeSourceKind(entry.match.kind);
@@ -351,17 +378,27 @@ export class SourceExcerptRegistry {
   }
 }
 
-function matchesActiveDocument(input: SourceExcerptPublicationInput): boolean {
-  const document = input.editor.document;
+function matchesActiveDocumentIdentity(
+  input: SourceExcerptPublicationInput,
+): boolean {
+  const activeDocument = input.editor.document;
   return input.resolution.selectionMessageId === input.inspectMessageId &&
-    input.resolution.documentUri === document.uri.toString() &&
-    input.resolution.documentVersion === document.version;
+    input.resolution.documentUri === activeDocument.uri.toString() &&
+    input.resolution.documentVersion === activeDocument.version;
+}
+
+function matchesSourceDocument(
+  resolution: SourceResolution,
+  sourceDocument: SourceDocument,
+): boolean {
+  return resolution.documentUri === sourceDocument.uri &&
+    resolution.documentVersion === sourceDocument.version;
 }
 
 function sourceState(
   inspectMessageId: string,
   resolutionGeneration: number,
-  document: TextDocumentLike,
+  document: TextDocumentLike | SourceDocument,
 ): CurrentSourceState {
   return Object.freeze({
     inspectMessageId,
@@ -371,12 +408,18 @@ function sourceState(
 }
 
 function publicDocument(
-  document: TextDocumentLike,
+  document: TextDocumentLike | SourceDocument,
 ): SourceMatchesInput["document"] {
   return frozenDocument({
-    label: sourceDocumentLabel(document.uri.toString()),
+    label: sourceDocumentLabel(documentUri(document)),
     languageId: normalizeLanguageId(document.languageId),
   });
+}
+
+function documentUri(document: TextDocumentLike | SourceDocument): string {
+  return typeof document.uri === "string"
+    ? document.uri
+    : document.uri.toString();
 }
 
 function unknownDocument(): SourceMatchesInput["document"] {
@@ -385,7 +428,7 @@ function unknownDocument(): SourceMatchesInput["document"] {
 
 function validMatches(
   matches: readonly ResolvedSourceMatch[],
-  document: TextDocumentLike,
+  document: SourceDocument,
 ): ValidMatch[] {
   const valid: ValidMatch[] = [];
   for (const match of matches) {
@@ -397,7 +440,7 @@ function validMatches(
 
 function validOffsets(
   range: SourceRange,
-  document: TextDocumentLike,
+  document: SourceDocument,
 ): { readonly startOffset: number; readonly endOffset: number } | undefined {
   if (!validPosition(range.start) || !validPosition(range.end)) return undefined;
   try {

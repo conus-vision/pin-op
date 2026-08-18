@@ -80,10 +80,16 @@ input:disabled { cursor: default; opacity: 0.55; }
   height: 100%;
   min-width: 0;
   min-height: 0;
+  grid-template-areas:
+    "toolbar"
+    "protocol"
+    "workspace"
+    "footer";
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .panel-toolbar-scroll {
+  grid-area: toolbar;
   min-width: 0;
   overflow-x: auto;
   border-bottom: 1px solid var(--hairline);
@@ -160,6 +166,7 @@ input[type="text"] {
 
 .protocol-mismatch {
   display: grid;
+  grid-area: protocol;
   min-width: 0;
   padding: 8px 10px;
   gap: 2px;
@@ -171,6 +178,7 @@ input[type="text"] {
 
 .panel-workspace {
   display: grid;
+  grid-area: workspace;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -384,6 +392,7 @@ input[type="text"] {
 
 .panel-footer {
   display: grid;
+  grid-area: footer;
   min-width: 0;
   min-height: 70px;
   padding: 6px 9px;

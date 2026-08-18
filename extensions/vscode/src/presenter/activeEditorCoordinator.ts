@@ -54,6 +54,7 @@ export interface CoordinatorPublication {
   readonly inspectMessageId: string;
   readonly resolutionGeneration: number;
   readonly editor?: ActiveEditorLike;
+  readonly sourceDocument?: SourceDocument;
   readonly outcome: PresenterOutcome;
   readonly resolution?: SourceResolution;
 }
@@ -230,6 +231,7 @@ export class ActiveEditorCoordinator implements Disposable {
           workGeneration,
           {
             editor,
+            sourceDocument: document,
             resolution,
             outcome: reduceResolutionOutcome(
               [failureCandidate("unsupported-document")],
@@ -248,6 +250,7 @@ export class ActiveEditorCoordinator implements Disposable {
           workGeneration,
           {
             editor,
+            sourceDocument: document,
             resolution,
             outcome: reduceResolutionOutcome(
               [failureCandidate("no-facts")],
@@ -286,7 +289,7 @@ export class ActiveEditorCoordinator implements Disposable {
         selection,
         resolutionGeneration,
         workGeneration,
-        { editor, resolution, outcome },
+        { editor, sourceDocument: document, resolution, outcome },
       );
     } catch (error) {
       if (!this.isCurrent(selection, workGeneration, abort.signal)) return;
@@ -307,6 +310,7 @@ export class ActiveEditorCoordinator implements Disposable {
         workGeneration,
         {
           editor,
+          sourceDocument: document,
           resolution,
           outcome: reduceResolutionOutcome(
             [{ ...failureCandidate("error"), diagnostics: [diagnostic] }],

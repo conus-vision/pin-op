@@ -95,6 +95,22 @@ describe("DevTools panel assets", () => {
     expect(css).toMatch(/\.panel-branding\s*\{[^}]*line-height:\s*16px;/s);
   });
 
+  it("keeps the workspace in the flexible shell row when the protocol banner is hidden", () => {
+    expect(css).toMatch(
+      /\.panel-layout\s*\{[^}]*grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"footer";/s,
+    );
+    expect(css).toMatch(
+      /\.panel-toolbar-scroll\s*\{[^}]*grid-area:\s*toolbar;/s,
+    );
+    expect(css).toMatch(
+      /\.protocol-mismatch\s*\{[^}]*grid-area:\s*protocol;/s,
+    );
+    expect(css).toMatch(
+      /\.panel-workspace\s*\{[^}]*grid-area:\s*workspace;/s,
+    );
+    expect(css).toMatch(/\.panel-footer\s*\{[^}]*grid-area:\s*footer;/s);
+  });
+
   it("keeps semantic status text above WCAG AA contrast in both palettes", () => {
     const palettes = [
       {
