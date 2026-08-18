@@ -57,6 +57,11 @@ describe("SourcePaneController", () => {
     expect(controller.snapshot().groups.selected.matches).toEqual([]);
     expect(controller.open("selected-1")).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
+
+    const matches = sourceMatches("inspect-a", 9);
+    expect(controller.acceptMatches(matches)).toBe("rejected");
+    expect(controller.acceptResolution(resolution("inspect-a", 9))).toBe(true);
+    expect(controller.acceptMatches(matches)).toBe("published");
   });
 
   it("publishes authoritative empty matches with document metadata", () => {

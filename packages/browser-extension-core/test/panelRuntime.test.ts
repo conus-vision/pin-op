@@ -196,6 +196,82 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("shows pending Source state when a newer DOM-first selection replaces prior output", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+
+    port.emitMessage(inspectStarted("inspect-source-ready", 1));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-source-ready",
+      resolutionGeneration: 3,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-source-ready", 3));
+    expect(dom.element("source-pane-root").text()).toContain(".card");
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-error",
+      "button#error",
+      2,
+    ));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolving source matches",
+    );
+    expect(dom.element("source-pane-root").text()).not.toContain(".card");
+
+    port.emitMessage(inspectStarted("inspect-source-error", 2));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-source-error",
+      resolutionGeneration: 4,
+      status: "error",
+      diagnosticCodes: ["resolver.invalid-result"],
+    }));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolution failed",
+    );
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-empty",
+      "button#empty",
+      3,
+    ));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolving source matches",
+    );
+    expect(dom.element("source-pane-root").text()).not.toContain(
+      "Resolution failed",
+    );
+
+    port.emitMessage(inspectStarted("inspect-source-empty", 3));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-source-empty",
+      resolutionGeneration: 5,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-source-empty", 5, {
+      matches: [],
+    }));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "No source matches",
+    );
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-pending",
+      "button#pending",
+      4,
+    ));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolving source matches",
+    );
+    expect(dom.element("source-pane-root").text()).not.toContain(
+      "No source matches",
+    );
+    runtime.dispose();
+  });
+
   it.each([
     [679, 519, "tabs"],
     [679, 520, "stack"],
@@ -699,6 +775,15 @@ describe("startPanelRuntime", () => {
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
     expect(dom.element("disconnect-button").hidden).toBe(false);
     expect(dom.element("disconnect-button").disabled).toBe(false);
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-after-mismatch",
+      "button#after-mismatch",
+      1,
+    ));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Extensions are incompatible",
+    );
     runtime.dispose();
   });
 
@@ -2291,6 +2376,111 @@ describe("startPanelRuntime", () => {
       selectedMatchCount: 2,
       parentMatchCount: 1,
     });
+    runtime.dispose();
+  });
+
+  it("rejects a delayed old-epoch selection even when its revision is higher", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-current",
+      "button#current",
+      3,
+      2,
+    ));
+    port.emitMessage(inspectStarted("inspect-current", 3));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-current",
+      resolutionGeneration: 4,
+      selectedMatchCount: 2,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-current", 4));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-delayed",
+      "button#delayed",
+      99,
+      1,
+    ));
+
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#current",
+    );
+    expect(dom.element("resolution-status").value).toBe(
+      "2 rules highlighted · Selected 2 · Parent 0",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-current",
+    )).toBeDefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-delayed",
+    )).toBeUndefined();
+    expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+    runtime.dispose();
+  });
+
+  it("accepts a newer document epoch when its selection revision restarts", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-old-document",
+      "button#old-document",
+      8,
+      4,
+    ));
+    port.emitMessage(inspectStarted("inspect-old-document", 8));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-old-document",
+      resolutionGeneration: 2,
+      selectedMatchCount: 2,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-old-document", 2));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-new-document",
+      "button#new-document",
+      1,
+      5,
+    ));
+
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#new-document",
+    );
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Resolving source matches",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-old-document",
+    )).toBeUndefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-new-document",
+    )).toBeDefined();
+
+    port.emitMessage(inspectStarted("inspect-new-document", 1));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-new-document",
+      resolutionGeneration: 3,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-new-document", 3));
+    expect(runtime.sourcePaneController.open("match-1")).toBe(true);
     runtime.dispose();
   });
 

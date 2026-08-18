@@ -99,6 +99,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   let treeController: DomTreeController;
   let treeSessionActive = false;
   let domRecoveryStatusGeneration = 0;
+  let acceptedSelectionDocumentEpoch: number | undefined;
   let acceptedSelectionRevision: number | undefined;
   let activeInspectSelectionRevision: number | undefined;
   let settingsBinding: PanelSettingsBindingToken | undefined;
@@ -282,13 +283,14 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       if (compatibility === "incompatible") {
         return;
       }
-      if (
-        acceptedSelectionRevision !== undefined &&
-        inspectStarted.selectionRevision < acceptedSelectionRevision
-      ) {
+      const ownership = acceptSelectionOwnership(
+        inspectStarted.selectionRevision,
+        treeController.documentEpoch ?? acceptedSelectionDocumentEpoch,
+        treeController.documentEpoch,
+      );
+      if (ownership === "stale") {
         return;
       }
-      acceptedSelectionRevision = inspectStarted.selectionRevision;
       activeInspectSelectionRevision = inspectStarted.selectionRevision;
       sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
       sourcePaneController.beginInspect(inspectStarted.inspectMessageId);
@@ -307,21 +309,25 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     } else if (domEvent) {
       let beginsSelection = false;
       if (domEvent.type === "dom.selectionChanged") {
-        if (
-          acceptedSelectionRevision !== undefined &&
-          domEvent.selectionRevision < acceptedSelectionRevision
-        ) {
+        const ownership = acceptSelectionOwnership(
+          domEvent.selectionRevision,
+          domEvent.documentEpoch,
+          treeController.documentEpoch,
+        );
+        if (ownership === "stale") {
           return;
         }
         domRecoveryStatusGeneration += 1;
         recoveryCoordinator.handleManualSelection(domEvent);
-        if (
-          acceptedSelectionRevision === undefined ||
-          domEvent.selectionRevision > acceptedSelectionRevision
-        ) {
-          acceptedSelectionRevision = domEvent.selectionRevision;
+        if (ownership === "advanced") {
           activeInspectSelectionRevision = undefined;
           sourceNavigationController.invalidate();
+          if (!mismatchBlocked) {
+            sourcePaneView.setState({
+              kind: "loading",
+              statusText: "Resolving source matches",
+            });
+          }
           sourcePaneController.invalidate();
           settingsController.invalidateInspect();
           beginsSelection = true;
@@ -631,8 +637,52 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   }
 
   function resetSelectionOwnership(): void {
+    acceptedSelectionDocumentEpoch = undefined;
     acceptedSelectionRevision = undefined;
     activeInspectSelectionRevision = undefined;
+  }
+
+  function acceptSelectionOwnership(
+    selectionRevision: number,
+    documentEpoch: number | undefined,
+    minimumDocumentEpoch: number | undefined,
+  ): "stale" | "current" | "advanced" {
+    if (
+      documentEpoch !== undefined &&
+      minimumDocumentEpoch !== undefined &&
+      documentEpoch < minimumDocumentEpoch
+    ) {
+      return "stale";
+    }
+
+    if (
+      documentEpoch !== undefined &&
+      acceptedSelectionDocumentEpoch !== undefined &&
+      documentEpoch < acceptedSelectionDocumentEpoch
+    ) {
+      return "stale";
+    }
+
+    const epochAdvanced =
+      documentEpoch !== undefined &&
+      acceptedSelectionDocumentEpoch !== undefined &&
+      documentEpoch > acceptedSelectionDocumentEpoch;
+    if (
+      !epochAdvanced &&
+      acceptedSelectionRevision !== undefined &&
+      selectionRevision < acceptedSelectionRevision
+    ) {
+      return "stale";
+    }
+
+    const revisionAdvanced =
+      acceptedSelectionRevision === undefined ||
+      selectionRevision > acceptedSelectionRevision;
+    if (documentEpoch !== undefined) {
+      acceptedSelectionDocumentEpoch = documentEpoch;
+    }
+    acceptedSelectionRevision = selectionRevision;
+    return epochAdvanced || revisionAdvanced ? "advanced" : "current";
   }
 
   function dispose(): void {
