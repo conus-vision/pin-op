@@ -1405,17 +1405,15 @@ export class BackgroundRouter {
       }
     }
 
-    for (const activation of restored) {
-      const restoreError = await this.commitRestoredPanelTabState(
-        activation,
-        windowId,
-        commandRecord,
-        commandBinding,
-        command,
-      );
-      if (restoreError) {
-        return restoreError;
-      }
+    const restoreError = await this.commitRestoredPanelTabStates(
+      restored,
+      windowId,
+      commandRecord,
+      commandBinding,
+      command,
+    );
+    if (restoreError) {
+      return restoreError;
     }
     if (
       !this.isCurrentWindowPanelCommand(
@@ -1430,15 +1428,34 @@ export class BackgroundRouter {
     return undefined;
   }
 
-  private commitRestoredPanelTabState(
-    activation: PanelTabStateActivation,
+  private async commitRestoredPanelTabStates(
+    activations: readonly PanelTabStateActivation[],
     windowId: number,
     commandRecord: PanelPortRecord,
     commandBinding: ChannelBinding,
     command: PanelCommandRecord,
   ): Promise<BackgroundCommandError | undefined> {
-    const operation: Promise<BackgroundCommandError | undefined> =
-      activation.record.inspectCommandTail.then(async () => {
+    const barriers = activations.map(({ record }) =>
+      this.createPanelTabStateBarrier(record)
+    );
+    try {
+      await Promise.all(barriers.map(({ ready }) => ready));
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
+        return "stalePanel";
+      }
+
+      const snapshots: Array<{
+        readonly activation: PanelTabStateActivation;
+        readonly state: TabRefreshState;
+      }> = [];
+      for (const activation of activations) {
         if (
           !this.isCurrentWindowPanelCommand(
             windowId,
@@ -1491,19 +1508,67 @@ export class BackgroundRouter {
         ) {
           return "error";
         }
+        snapshots.push({ activation, state });
+      }
+
+      if (
+        !this.isCurrentWindowPanelCommand(
+          windowId,
+          commandRecord,
+          commandBinding,
+          command,
+        )
+      ) {
+        return "stalePanel";
+      }
+      if (snapshots.some(({ activation }) =>
+        !this.isCurrentActivation(
+          activation.record,
+          activation.token,
+          activation.binding,
+        ) ||
+        !activation.record.tabStateInvalidatedByUnlink
+      )) {
+        return "error";
+      }
+
+      for (const { activation, state } of snapshots) {
         this.postToCurrentPort(
           activation.record,
           activation.token,
           createPanelTabStateMessage(state),
         );
         activation.record.tabStateInvalidatedByUnlink = false;
-        return undefined;
-      }).catch((error) => {
-        this.reportError(error);
-        return "error";
+      }
+      return undefined;
+    } finally {
+      for (const { release } of barriers) {
+        release();
+      }
+    }
+  }
+
+  private createPanelTabStateBarrier(
+    record: PanelPortRecord,
+  ): { readonly ready: Promise<void>; release(): void } {
+    let signalReady: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => {
+      signalReady = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const barrier = record.inspectCommandTail
+      .catch((error) => this.reportError(error))
+      .then(() => {
+        signalReady();
+        return released;
       });
-    activation.record.inspectCommandTail = operation.then(() => undefined);
-    return operation;
+    record.inspectCommandTail = barrier.catch((error) =>
+      this.reportError(error)
+    );
+    return { ready, release };
   }
 
   private windowPanelTabStateActivations(
@@ -1834,11 +1899,6 @@ export class BackgroundRouter {
     let dispatchedBinding: ChannelBinding | undefined;
     let dispatchedCommand: PanelCommandRecord | undefined;
     try {
-      if (command.type === "pin-op.unlinkWindow") {
-        this.contentRefreshCoordinator.revokeWindow(binding.windowId);
-        this.correlations.disposeChannel(command.channel);
-      }
-
       const pendingRecord: PanelCommandRecord = {
         commandToken,
         activationToken,
@@ -1907,6 +1967,8 @@ export class BackgroundRouter {
           abortController.signal,
         );
       } else {
+        this.contentRefreshCoordinator.revokeWindow(refreshed.windowId);
+        this.correlations.disposeChannel(command.channel);
         this.peerBlockedWindows.add(refreshed.windowId);
         await this.coordinator.unlinkWindow(
           refreshed.windowId,
