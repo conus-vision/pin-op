@@ -121,16 +121,22 @@ describe("BackgroundRouter", () => {
     });
   });
 
-  it("restores exact refresh participation after unlink and relink from the same open panel", async () => {
+  it("restores every exact window participant when another open panel relinks", async () => {
     const tabs = new Map([
       [17, 10],
+      [18, 10],
       [27, 20],
     ]);
     const harness = createHarness({ tabs });
-    const port = await harness.registerAndConnect(
+    const firstPort = await harness.registerAndConnect(
       "channel-relink",
       17,
       "source-relink",
+    );
+    const secondPort = await harness.registerAndConnect(
+      "channel-relink-sibling",
+      18,
+      "source-relink-sibling",
     );
     const otherPort = await harness.registerAndConnect(
       "channel-other-window",
@@ -147,30 +153,53 @@ describe("BackgroundRouter", () => {
       autoRefreshEnabled: true,
       participant: false,
     });
+    expect(await harness.tabRefresh.state(18, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
     expect(await harness.tabRefresh.state(27, 20)).toMatchObject({
       participant: true,
     });
-    const relinkMessageStart = port.sent.length;
+    const firstMessageStart = firstPort.sent.length;
+    const secondMessageStart = secondPort.sent.length;
     const otherMessageStart = otherPort.sent.length;
 
     await expect(harness.router.routeMessage({
       type: "pin-op.linkWindow",
-      channel: "channel-relink",
+      channel: "channel-relink-sibling",
       code: "4873507",
-    }, panelSender("channel-relink"))).resolves.toEqual({ ok: true });
+    }, panelSender("channel-relink-sibling"))).resolves.toEqual({ ok: true });
     await flushMicrotasks();
 
     expect(harness.tabRefresh.panelOpenCalls).toEqual([
       [17, 10],
+      [18, 10],
       [27, 20],
       [17, 10],
+      [18, 10],
     ]);
     expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
       autoRefreshEnabled: true,
       participant: true,
     });
+    expect(await harness.tabRefresh.state(18, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
     expect(
-      port.sent.slice(relinkMessageStart).filter(isPanelTabStateMessage).at(-1),
+      firstPort.sent
+        .slice(firstMessageStart)
+        .filter(isPanelTabStateMessage)
+        .at(-1),
+    ).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    expect(
+      secondPort.sent
+        .slice(secondMessageStart)
+        .filter(isPanelTabStateMessage)
+        .at(-1),
     ).toMatchObject({
       autoRefreshEnabled: true,
       participant: true,
@@ -181,14 +210,36 @@ describe("BackgroundRouter", () => {
     harness.pageRefreshes.emit(10, refresh);
     await flushMicrotasks();
     expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([[10, refresh]]);
+    expect(harness.tabRefresh.acceptedParticipantRefreshCalls).toEqual([
+      [10, 17, refresh],
+      [10, 18, refresh],
+    ]);
   });
 
-  it("fails closed and retries refresh participation when relink initialization fails", async () => {
-    const harness = createHarness();
-    const port = await harness.registerAndConnect(
+  it("compensates a partial window restore and retries every participant", async () => {
+    const tabs = new Map([
+      [17, 10],
+      [18, 10],
+    ]);
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      tabs,
+      linkWindow: async (windowId) => {
+        harness.coordinator.emitState(windowId, "linked");
+      },
+      unlinkWindow: async (windowId) => {
+        harness.coordinator.emitState(windowId, "notLinked");
+      },
+    });
+    const firstPort = await harness.registerAndConnect(
       "channel-relink-retry",
       17,
       "source-relink-retry",
+    );
+    const secondPort = await harness.registerAndConnect(
+      "channel-relink-retry-sibling",
+      18,
+      "source-relink-retry-sibling",
     );
     await flushMicrotasks();
     await expect(harness.router.routeMessage({
@@ -196,18 +247,22 @@ describe("BackgroundRouter", () => {
       channel: "channel-relink-retry",
     }, panelSender("channel-relink-retry"))).resolves.toEqual({ ok: true });
 
-    let restoreAttempt = 0;
+    const restoreCalls: number[] = [];
+    let siblingFailures = 0;
     harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) => {
-      restoreAttempt += 1;
-      if (restoreAttempt === 1) {
-        throw new Error("transient relink initialization failure");
+      restoreCalls.push(tabId);
+      if (tabId === 18 && siblingFailures++ === 0) {
+        throw new Error("transient sibling snapshot failure");
       }
       return {
         ...defaultTabState(tabId, windowId),
         participant: true,
       };
     };
-    const failedMessageStart = port.sent.length;
+    const firstFailedMessageStart = firstPort.sent.length;
+    const secondFailedMessageStart = secondPort.sent.length;
+    const firstWindowStateStart = windowStates(firstPort).length;
+    const secondWindowStateStart = windowStates(secondPort).length;
 
     await expect(harness.router.routeMessage({
       type: "pin-op.linkWindow",
@@ -219,34 +274,74 @@ describe("BackgroundRouter", () => {
     });
     await flushMicrotasks();
 
-    expect(restoreAttempt).toBe(1);
+    expect(restoreCalls).toEqual([17, 18]);
+    expect(harness.coordinator.unlinks).toEqual([10, 10]);
+    expect(harness.tabRefresh.removedWindows).toEqual([10, 10]);
+    expect(windowStates(firstPort).slice(firstWindowStateStart)).toContain(
+      "linked",
+    );
+    expect(windowStates(secondPort).slice(secondWindowStateStart)).toContain(
+      "linked",
+    );
+    expect(windowStates(firstPort).at(-1)).toBe("notLinked");
+    expect(windowStates(secondPort).at(-1)).toBe("notLinked");
     expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
       autoRefreshEnabled: true,
       participant: false,
     });
+    expect(await harness.tabRefresh.state(18, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
     expect(
-      port.sent.slice(failedMessageStart).filter(isPanelTabStateMessage),
+      firstPort.sent
+        .slice(firstFailedMessageStart)
+        .filter(isPanelTabStateMessage),
+    ).not.toContainEqual(expect.objectContaining({ participant: true }));
+    expect(
+      secondPort.sent
+        .slice(secondFailedMessageStart)
+        .filter(isPanelTabStateMessage),
     ).not.toContainEqual(expect.objectContaining({ participant: true }));
     const rejectedRefresh = pageRefresh(1);
     harness.pageRefreshes.emit(10, rejectedRefresh);
     await flushMicrotasks();
     expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
 
-    const retryMessageStart = port.sent.length;
+    const firstRetryMessageStart = firstPort.sent.length;
+    const secondRetryMessageStart = secondPort.sent.length;
     await expect(harness.router.routeMessage({
       type: "pin-op.linkWindow",
-      channel: "channel-relink-retry",
+      channel: "channel-relink-retry-sibling",
       code: "4873507",
-    }, panelSender("channel-relink-retry"))).resolves.toEqual({ ok: true });
+    }, panelSender("channel-relink-retry-sibling"))).resolves.toEqual({
+      ok: true,
+    });
     await flushMicrotasks();
 
-    expect(restoreAttempt).toBe(2);
+    expect(restoreCalls).toEqual([17, 18, 17, 18]);
     expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
       autoRefreshEnabled: true,
       participant: true,
     });
+    expect(await harness.tabRefresh.state(18, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
     expect(
-      port.sent.slice(retryMessageStart).filter(isPanelTabStateMessage).at(-1),
+      firstPort.sent
+        .slice(firstRetryMessageStart)
+        .filter(isPanelTabStateMessage)
+        .at(-1),
+    ).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    expect(
+      secondPort.sent
+        .slice(secondRetryMessageStart)
+        .filter(isPanelTabStateMessage)
+        .at(-1),
     ).toMatchObject({
       autoRefreshEnabled: true,
       participant: true,
@@ -257,6 +352,114 @@ describe("BackgroundRouter", () => {
     expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([
       [10, acceptedRefresh],
     ]);
+    expect(harness.tabRefresh.acceptedParticipantRefreshCalls).toEqual([
+      [10, 17, acceptedRefresh],
+      [10, 18, acceptedRefresh],
+    ]);
+  });
+
+  it("publishes the authoritative relink snapshot without a second state read", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-relink-snapshot",
+      17,
+      "source-relink-snapshot",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-snapshot",
+    }, panelSender("channel-relink-snapshot"))).resolves.toEqual({ ok: true });
+    const stateCallBaseline = harness.tabRefresh.stateCalls.length;
+    harness.tabRefresh.stateBehavior = async () => {
+      throw new Error("redundant state read failed");
+    };
+    const messageStart = port.sent.length;
+
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-snapshot",
+      code: "4873507",
+    }, panelSender("channel-relink-snapshot"))).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.stateCalls).toHaveLength(stateCallBaseline);
+    expect(
+      port.sent.slice(messageStart).filter(isPanelTabStateMessage).at(-1),
+    ).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+  });
+
+  it("compensates when another panel closes during window restoration", async () => {
+    const tabs = new Map([
+      [17, 10],
+      [18, 10],
+    ]);
+    const siblingRestore = deferred<TabRefreshState>();
+    const harness = createHarness({ tabs });
+    await harness.registerAndConnect(
+      "channel-relink-close-owner",
+      17,
+      "source-relink-close-owner",
+    );
+    const siblingPort = await harness.registerAndConnect(
+      "channel-relink-close-sibling",
+      18,
+      "source-relink-close-sibling",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-close-owner",
+    }, panelSender("channel-relink-close-owner"))).resolves.toEqual({ ok: true });
+    harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) =>
+      tabId === 18
+        ? await siblingRestore.promise
+        : {
+            ...defaultTabState(tabId, windowId),
+            participant: true,
+          };
+    const panelOpenBaseline = harness.tabRefresh.panelOpenCalls.length;
+
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-close-owner",
+      code: "4873507",
+    }, panelSender("channel-relink-close-owner"));
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelOpenCalls).toHaveLength(
+        panelOpenBaseline + 2,
+      );
+      expect(harness.tabRefresh.panelOpenCalls.slice(-2)).toEqual([
+        [17, 10],
+        [18, 10],
+      ]);
+    });
+
+    siblingPort.disconnect();
+    siblingRestore.resolve({
+      ...defaultTabState(18, 10),
+      participant: true,
+    });
+    await expect(linking).resolves.toEqual({
+      ok: false,
+      error: "error",
+    });
+    await flushMicrotasks();
+
+    expect(harness.coordinator.unlinks).toEqual([10, 10]);
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      participant: false,
+    });
+    expect(await harness.tabRefresh.state(18, 10)).toMatchObject({
+      participant: false,
+    });
+    const refresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, refresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
   });
 
   it("does not restore refresh authority when the panel closes during relink initialization", async () => {
@@ -5884,6 +6087,9 @@ class FakeTabRefreshCoordinator {
   public readonly acceptedRefreshCalls: Array<
     [number, PageRefreshMessage]
   > = [];
+  public readonly acceptedParticipantRefreshCalls: Array<
+    [number, number, PageRefreshMessage]
+  > = [];
   public readonly activatedTabs: Array<[number, number]> = [];
   public readonly removedTabs: number[] = [];
   public readonly removedWindows: number[] = [];
@@ -6036,13 +6242,20 @@ class FakeTabRefreshCoordinator {
     message: PageRefreshMessage,
   ): Promise<void> {
     this.refreshCalls.push([windowId, message]);
-    const acceptsRefresh = [...this.states.values()].some((state) =>
+    const participants = [...this.states.values()].filter((state) =>
       state.windowId === windowId &&
       state.autoRefreshEnabled &&
       state.participant
     );
-    if (acceptsRefresh) {
+    if (participants.length > 0) {
       this.acceptedRefreshCalls.push([windowId, message]);
+      for (const participant of participants) {
+        this.acceptedParticipantRefreshCalls.push([
+          windowId,
+          participant.tabId,
+          message,
+        ]);
+      }
     }
   }
 

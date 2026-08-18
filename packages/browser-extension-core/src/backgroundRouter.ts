@@ -285,8 +285,7 @@ interface PanelPortRecord {
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
   windowStateRevision: number;
-  tabStateInitialization?: Promise<boolean>;
-  tabStateInitialized: boolean;
+  tabStateInitialization?: Promise<PanelTabStateInitializationResult>;
   tabStateInvalidatedByUnlink: boolean;
   lastWindowState?: BrowserWindowConnectionState;
   republishWindowId?: number;
@@ -294,6 +293,21 @@ interface PanelPortRecord {
   republishInFlightEpoch?: number;
   contentRecoveryAvailable: boolean;
   inspectionFailedClosed: boolean;
+}
+
+type PanelTabStateInitializationResult =
+  | {
+      readonly initialized: true;
+      readonly state: TabRefreshState;
+    }
+  | {
+      readonly initialized: false;
+    };
+
+interface PanelTabStateActivation {
+  readonly record: PanelPortRecord;
+  readonly binding: ChannelBinding;
+  readonly token: object;
 }
 
 interface WindowStateQueue {
@@ -545,7 +559,6 @@ export class BackgroundRouter {
       onMessage: (message) => this.rejectPendingInspect(record, message),
       inspectCommandTail: Promise.resolve(),
       windowStateRevision: 0,
-      tabStateInitialized: false,
       tabStateInvalidatedByUnlink: false,
       republishedAvailabilityEpoch: 0,
       contentRecoveryAvailable: false,
@@ -1255,12 +1268,9 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     token: object,
     binding: ChannelBinding,
-  ): Promise<boolean> {
+  ): Promise<PanelTabStateInitializationResult> {
     if (!this.isCurrentActivation(record, token, binding)) {
-      return Promise.resolve(false);
-    }
-    if (record.tabStateInitialized) {
-      return Promise.resolve(true);
+      return Promise.resolve({ initialized: false });
     }
     const pending = record.tabStateInitialization;
     if (pending) {
@@ -1280,70 +1290,141 @@ export class BackgroundRouter {
       ) {
         return;
       }
-      if (initialized) {
-        record.tabStateInitialized = true;
-      } else {
+      if (!initialized.initialized) {
         record.tabStateInitialization = undefined;
       }
     });
     return initialization;
   }
 
-  private async restorePanelTabStateAfterLink(
-    record: PanelPortRecord,
-    binding: ChannelBinding,
+  private async restoreWindowPanelTabStatesAfterLink(
+    windowId: number,
+    commandRecord: PanelPortRecord,
+    commandBinding: ChannelBinding,
     command: PanelCommandRecord,
   ): Promise<BackgroundCommandError | undefined> {
-    if (!this.isCurrentPanelCommand(record, binding, command)) {
+    if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
       return "stalePanel";
     }
-    const initialized = await this.ensurePanelTabStateInitialized(
-      record,
-      command.activationToken,
-      binding,
-    );
-    if (!this.isCurrentPanelCommand(record, binding, command)) {
-      return "stalePanel";
-    }
+    const activations = this.windowPanelTabStateActivations(windowId)
+      .filter(({ record }) => record.tabStateInvalidatedByUnlink);
+    const restored: Array<
+      PanelTabStateActivation & { readonly state: TabRefreshState }
+    > = [];
 
-    let state: TabRefreshState | undefined;
-    if (initialized) {
-      try {
-        state = await this.tabRefreshCoordinator.state(
-          binding.tabId,
-          binding.windowId,
-        );
-      } catch (error) {
-        this.reportError(error);
-      }
-      if (!this.isCurrentPanelCommand(record, binding, command)) {
+    for (const activation of activations) {
+      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
         return "stalePanel";
       }
+      if (
+        !this.isCurrentActivation(
+          activation.record,
+          activation.token,
+          activation.binding,
+        )
+      ) {
+        return "error";
+      }
+      const initialization = await this.ensurePanelTabStateInitialized(
+        activation.record,
+        activation.token,
+        activation.binding,
+      );
+      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+        return "stalePanel";
+      }
+      if (
+        !initialization.initialized ||
+        !this.isCurrentActivation(
+          activation.record,
+          activation.token,
+          activation.binding,
+        )
+      ) {
+        return "error";
+      }
+      restored.push({ ...activation, state: initialization.state });
     }
 
-    const postflight = await this.refreshPanelBinding(
-      binding,
-      record,
-      command.activationToken,
-    );
-    if (
-      postflight !== binding ||
-      !this.isCurrentPanelCommand(record, binding, command)
-    ) {
-      return "stalePanel";
-    }
-    if (!initialized) {
-      return "error";
-    }
-    if (state) {
-      this.postToCurrentPort(
-        record,
-        command.activationToken,
-        createPanelTabStateMessage(state),
+    for (const activation of restored) {
+      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+        return "stalePanel";
+      }
+      const postflight = await this.refreshPanelBinding(
+        activation.binding,
+        activation.record,
+        activation.token,
       );
+      if (!this.isCurrentPanelCommand(commandRecord, commandBinding, command)) {
+        return "stalePanel";
+      }
+      if (
+        postflight !== activation.binding ||
+        !this.isCurrentActivation(
+          activation.record,
+          activation.token,
+          activation.binding,
+        )
+      ) {
+        return "error";
+      }
     }
-    record.tabStateInvalidatedByUnlink = false;
+
+    for (const activation of restored) {
+      this.postToCurrentPort(
+        activation.record,
+        activation.token,
+        createPanelTabStateMessage(activation.state),
+      );
+      activation.record.tabStateInvalidatedByUnlink = false;
+    }
     return undefined;
+  }
+
+  private windowPanelTabStateActivations(
+    windowId: number,
+  ): PanelTabStateActivation[] {
+    const activations: PanelTabStateActivation[] = [];
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      const token = record.activationToken;
+      if (
+        binding?.windowId === windowId &&
+        token &&
+        record.registration &&
+        this.isCurrentActivation(record, token, binding)
+      ) {
+        activations.push({ record, binding, token });
+      }
+    }
+    return activations;
+  }
+
+  private invalidateWindowPanelTabStates(windowId: number): void {
+    for (const { record } of this.windowPanelTabStateActivations(windowId)) {
+      record.tabStateInitialization = undefined;
+      record.tabStateInvalidatedByUnlink = true;
+    }
+  }
+
+  private async compensateFailedWindowRefreshRestore(
+    windowId: number,
+  ): Promise<void> {
+    this.peerBlockedWindows.add(windowId);
+    this.contentRefreshCoordinator.revokeWindow(windowId);
+    this.correlations.disposeWindow(windowId);
+    this.invalidateWindowPanelTabStates(windowId);
+    try {
+      await this.coordinator.unlinkWindow(windowId);
+    } catch (error) {
+      this.reportError(error);
+    }
+    try {
+      await this.tabRefreshCoordinator.removeWindow(windowId);
+    } catch (error) {
+      this.reportError(error);
+    }
+    this.invalidateWindowPanelTabStates(windowId);
   }
 
   private async initializePanelTabState(
@@ -1351,14 +1432,14 @@ export class BackgroundRouter {
     token: object,
     binding: ChannelBinding,
     revision: number,
-  ): Promise<boolean> {
+  ): Promise<PanelTabStateInitializationResult> {
     try {
       const state = await this.tabRefreshCoordinator.panelOpened(
         binding.tabId,
         binding.windowId,
       );
       if (!this.isCurrentActivation(record, token, binding)) {
-        return false;
+        return { initialized: false };
       }
       if (
         record.windowStateRevision === revision &&
@@ -1371,10 +1452,10 @@ export class BackgroundRouter {
           createPanelTabStateMessage(state),
         );
       }
-      return true;
+      return { initialized: true, state };
     } catch (error) {
       this.reportError(error);
-      return false;
+      return { initialized: false };
     }
   }
 
@@ -1397,7 +1478,6 @@ export class BackgroundRouter {
     record.windowStateQueue = undefined;
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
-    record.tabStateInitialized = false;
     record.tabStateInvalidatedByUnlink = false;
     record.lastWindowState = undefined;
     record.republishWindowId = undefined;
@@ -1677,12 +1757,9 @@ export class BackgroundRouter {
           refreshed.windowId,
           abortController.signal,
         );
+        this.invalidateWindowPanelTabStates(refreshed.windowId);
         await this.tabRefreshCoordinator.removeWindow(refreshed.windowId);
-        if (this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
-          record.tabStateInitialization = undefined;
-          record.tabStateInitialized = false;
-          record.tabStateInvalidatedByUnlink = true;
-        }
+        this.invalidateWindowPanelTabStates(refreshed.windowId);
       }
       if (!this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
         return { ok: false, error: "stalePanel" };
@@ -1702,14 +1779,21 @@ export class BackgroundRouter {
       }
       if (
         command.type === "pin-op.linkWindow" &&
-        record.tabStateInvalidatedByUnlink
+        this.windowPanelTabStateActivations(refreshed.windowId).some(
+          ({ record: candidate }) =>
+            candidate.tabStateInvalidatedByUnlink,
+        )
       ) {
-        const restoreError = await this.restorePanelTabStateAfterLink(
+        const restoreError = await this.restoreWindowPanelTabStatesAfterLink(
+          refreshed.windowId,
           record,
           refreshed,
           dispatchedRecord,
         );
         if (restoreError) {
+          await this.compensateFailedWindowRefreshRestore(
+            refreshed.windowId,
+          );
           return { ok: false, error: restoreError };
         }
       }
@@ -2695,13 +2779,13 @@ export class BackgroundRouter {
     ) {
       return;
     }
-    const initialized = await this.ensurePanelTabStateInitialized(
+    const initialization = await this.ensurePanelTabStateInitialized(
       record,
       token,
       binding,
     );
     if (
-      !initialized ||
+      !initialization.initialized ||
       !this.isCurrentLinkedSnapshot(record, token, binding, revision)
     ) {
       return;

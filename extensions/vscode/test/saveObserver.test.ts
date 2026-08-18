@@ -73,7 +73,17 @@ describe("SaveObserver", () => {
     expect(harness.publish).not.toHaveBeenCalled();
   });
 
-  it.each(["js", "mjs", "cjs", "jsx", "ts", "tsx", "php"])(
+  it.each([
+    "js",
+    "mjs",
+    "cjs",
+    "jsx",
+    "ts",
+    "tsx",
+    "vue",
+    "php",
+    "html",
+  ])(
     "publishes reload 150 ms after a changed .%s save",
     (extension) => {
       const harness = createHarness();
@@ -105,10 +115,14 @@ describe("SaveObserver", () => {
   it("settles non-preprocessor custom styles after 150 ms", () => {
     const harness = createHarness();
     harness.classifierRegistry.register({
-      id: "fixture.vue-styles",
-      classify: ({ uri }) => uri.endsWith(".vue") ? "styles" : undefined,
+      id: "fixture.custom-styles",
+      classify: ({ uri }) =>
+        uri.endsWith(".customstyle") ? "styles" : undefined,
     });
-    const component = document("file:///workspace/App.vue", "vue");
+    const component = document(
+      "file:///workspace/App.customstyle",
+      "customstyle",
+    );
 
     changeAndSave(harness.observer, component);
     harness.advance(149);
@@ -249,15 +263,18 @@ describe("SaveObserver", () => {
 
   it.each([
     ["direct CSS", document("file:///workspace/generated.css", "css")],
-    ["custom styles", document("file:///workspace/App.vue", "vue")],
+    [
+      "custom styles",
+      document("file:///workspace/App.customstyle", "customstyle"),
+    ],
   ])(
     "clamps a pending %s save to the initial preprocessor deadline",
     (kind, styleDocument) => {
       const harness = createHarness();
       if (kind === "custom styles") {
         harness.classifierRegistry.register({
-          id: "fixture.vue-styles-deadline",
-          classify: ({ uri }) => uri.endsWith(".vue")
+          id: "fixture.custom-styles-deadline",
+          classify: ({ uri }) => uri.endsWith(".customstyle")
             ? "styles"
             : undefined,
         });
@@ -364,7 +381,11 @@ describe("SaveObserver", () => {
 
   it.each([
     ["direct CSS", document("file:///workspace/unrelated.css", "css"), 150],
-    ["custom styles", document("file:///workspace/App.vue", "vue"), 150],
+    [
+      "custom styles",
+      document("file:///workspace/App.customstyle", "customstyle"),
+      150,
+    ],
     ["preprocessor", document("file:///workspace/other.less", "less"), 750],
   ])(
     "keeps a retained build window after an ordinary %s dispatch",
@@ -372,8 +393,8 @@ describe("SaveObserver", () => {
       const harness = createHarness();
       if (kind === "custom styles") {
         harness.classifierRegistry.register({
-          id: "fixture.vue-retained-window",
-          classify: ({ uri }) => uri.endsWith(".vue")
+          id: "fixture.custom-styles-retained-window",
+          classify: ({ uri }) => uri.endsWith(".customstyle")
             ? "styles"
             : undefined,
         });
