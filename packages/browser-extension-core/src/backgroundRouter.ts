@@ -392,6 +392,7 @@ export class BackgroundRouter {
   >();
   private readonly removedWindows = new Set<number>();
   private readonly peerBlockedWindows = new Set<number>();
+  private readonly windowRefreshEpochs = new Map<number, number>();
   private readonly removeSubscriptions: Array<() => void> = [];
   private readonly peerStates = new Map<
     number,
@@ -589,6 +590,7 @@ export class BackgroundRouter {
     this.contentRefreshCoordinator.revokeWindow(windowId);
     this.correlations.disposeWindow(windowId);
     this.removedWindows.add(windowId);
+    this.windowRefreshEpochs.delete(windowId);
     this.peerStates.delete(windowId);
     this.availabilityStates.delete(windowId);
     const removedBindings = [...this.bindings.values()].filter(
@@ -637,6 +639,7 @@ export class BackgroundRouter {
     this.channelBySource.clear();
     this.removedWindows.clear();
     this.peerBlockedWindows.clear();
+    this.windowRefreshEpochs.clear();
     this.peerStates.clear();
     this.availabilityStates.clear();
     this.contentRefreshCoordinator.dispose();
@@ -1615,6 +1618,7 @@ export class BackgroundRouter {
     if (!this.isCurrentWindowCommand(windowId, commandToken)) {
       return false;
     }
+    this.beginWindowRefreshEpoch(windowId);
     this.peerBlockedWindows.add(windowId);
     this.contentRefreshCoordinator.revokeWindow(windowId);
     this.correlations.disposeWindow(windowId);
@@ -1969,6 +1973,7 @@ export class BackgroundRouter {
 
       if (command.type === "pin-op.linkWindow") {
         this.peerBlockedWindows.delete(refreshed.windowId);
+        this.beginWindowRefreshEpoch(refreshed.windowId);
         await this.tabRefreshCoordinator.beginWindowEpoch(refreshed.windowId);
         await this.coordinator.linkWindow(
           refreshed.windowId,
@@ -1977,6 +1982,7 @@ export class BackgroundRouter {
           abortController.signal,
         );
       } else {
+        this.beginWindowRefreshEpoch(refreshed.windowId);
         this.contentRefreshCoordinator.revokeWindow(refreshed.windowId);
         this.correlations.disposeChannel(command.channel);
         this.peerBlockedWindows.add(refreshed.windowId);
@@ -3482,8 +3488,13 @@ export class BackgroundRouter {
   private acceptPageRefreshAfterWindowCommand(
     windowId: number,
     message: PageRefreshMessage,
+    refreshEpoch = this.windowRefreshEpoch(windowId),
   ): void {
-    if (this.disposed) {
+    if (
+      this.disposed ||
+      this.removedWindows.has(windowId) ||
+      this.windowRefreshEpoch(windowId) !== refreshEpoch
+    ) {
       return;
     }
     const commandToken = this.windowCommands.get(windowId);
@@ -3496,13 +3507,24 @@ export class BackgroundRouter {
         return;
       }
       void completion.promise.then(() =>
-        this.acceptPageRefreshAfterWindowCommand(windowId, message)
+        this.acceptPageRefreshAfterWindowCommand(windowId, message, refreshEpoch)
       );
       return;
     }
     void this.tabRefreshCoordinator
       .acceptPageRefresh(windowId, message)
       .catch((error) => this.reportError(error));
+  }
+
+  private windowRefreshEpoch(windowId: number): number {
+    return this.windowRefreshEpochs.get(windowId) ?? 0;
+  }
+
+  private beginWindowRefreshEpoch(windowId: number): void {
+    this.windowRefreshEpochs.set(
+      windowId,
+      this.windowRefreshEpoch(windowId) + 1,
+    );
   }
 
   private createWindowCommandCompletion(): WindowCommandCompletion {

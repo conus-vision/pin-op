@@ -336,6 +336,64 @@ describe("BackgroundRouter", () => {
     await expect(linking).resolves.toEqual({ ok: true });
   });
 
+  it("drops a deferred refresh from before the relink epoch", async () => {
+    const tabs = new Map([[17, 10]]);
+    const staleRefresh: PageRefreshMessage = {
+      ...pageRefresh(50),
+      messageId: "refresh-old-session-50",
+      sessionId: "old-session",
+      mode: "reload",
+    };
+    const currentRefresh: PageRefreshMessage = {
+      ...pageRefresh(1),
+      messageId: "refresh-new-session-1",
+      sessionId: "new-session",
+    };
+    const linkStarted = deferred<void>();
+    const releaseLink = deferred<void>();
+    let emitStaleDuringPreflight = false;
+    let harness: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      tabs,
+      getTab: async (tabId) => {
+        if (emitStaleDuringPreflight) {
+          emitStaleDuringPreflight = false;
+          harness.pageRefreshes.emit(10, staleRefresh);
+        }
+        const windowId = tabs.get(tabId);
+        return windowId === undefined ? undefined : { id: tabId, windowId };
+      },
+      linkWindow: async () => {
+        linkStarted.resolve();
+        await releaseLink.promise;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-refresh-relink-epoch",
+      17,
+      "source-refresh-relink-epoch",
+    );
+    await flushMicrotasks();
+
+    emitStaleDuringPreflight = true;
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-refresh-relink-epoch",
+      code: "4873507",
+    }, panelSender("channel-refresh-relink-epoch"));
+    await linkStarted.promise;
+
+    harness.pageRefreshes.emit(10, currentRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.refreshCalls).toEqual([]);
+
+    releaseLink.resolve();
+    await expect(linking).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+
+    expect(harness.tabRefresh.refreshCalls).toEqual([[10, currentRefresh]]);
+  });
+
   it("holds a window command lease through stale-link compensation", async () => {
     const tabs = new Map([
       [17, 10],
