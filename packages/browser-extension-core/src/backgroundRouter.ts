@@ -1973,8 +1973,8 @@ export class BackgroundRouter {
 
       if (command.type === "pin-op.linkWindow") {
         this.peerBlockedWindows.delete(refreshed.windowId);
-        this.beginWindowRefreshEpoch(refreshed.windowId);
         await this.tabRefreshCoordinator.beginWindowEpoch(refreshed.windowId);
+        this.beginWindowRefreshEpoch(refreshed.windowId);
         await this.coordinator.linkWindow(
           refreshed.windowId,
           command.code,

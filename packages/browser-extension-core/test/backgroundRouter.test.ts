@@ -336,7 +336,7 @@ describe("BackgroundRouter", () => {
     await expect(linking).resolves.toEqual({ ok: true });
   });
 
-  it("drops a deferred refresh from before the relink epoch", async () => {
+  it("drops a deferred refresh received while the relink epoch resets", async () => {
     const tabs = new Map([[17, 10]]);
     const staleRefresh: PageRefreshMessage = {
       ...pageRefresh(50),
@@ -349,20 +349,12 @@ describe("BackgroundRouter", () => {
       messageId: "refresh-new-session-1",
       sessionId: "new-session",
     };
+    const epochResetStarted = deferred<void>();
+    const releaseEpochReset = deferred<void>();
     const linkStarted = deferred<void>();
     const releaseLink = deferred<void>();
-    let emitStaleDuringPreflight = false;
-    let harness: ReturnType<typeof createHarness>;
-    harness = createHarness({
+    const harness = createHarness({
       tabs,
-      getTab: async (tabId) => {
-        if (emitStaleDuringPreflight) {
-          emitStaleDuringPreflight = false;
-          harness.pageRefreshes.emit(10, staleRefresh);
-        }
-        const windowId = tabs.get(tabId);
-        return windowId === undefined ? undefined : { id: tabId, windowId };
-      },
       linkWindow: async () => {
         linkStarted.resolve();
         await releaseLink.promise;
@@ -374,13 +366,23 @@ describe("BackgroundRouter", () => {
       "source-refresh-relink-epoch",
     );
     await flushMicrotasks();
+    harness.tabRefresh.beginWindowEpochBehavior = async () => {
+      epochResetStarted.resolve();
+      await releaseEpochReset.promise;
+    };
 
-    emitStaleDuringPreflight = true;
     const linking = harness.router.routeMessage({
       type: "pin-op.linkWindow",
       channel: "channel-refresh-relink-epoch",
       code: "4873507",
     }, panelSender("channel-refresh-relink-epoch"));
+    await epochResetStarted.promise;
+
+    harness.pageRefreshes.emit(10, staleRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.refreshCalls).toEqual([]);
+
+    releaseEpochReset.resolve();
     await linkStarted.promise;
 
     harness.pageRefreshes.emit(10, currentRefresh);
@@ -6901,6 +6903,7 @@ class FakeTabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ) => Promise<TabRefreshState>;
+  public beginWindowEpochBehavior?: (windowId: number) => Promise<void>;
   public panelClosedBehavior?: (
     tabId: number,
     windowId: number | undefined,
@@ -7062,6 +7065,7 @@ class FakeTabRefreshCoordinator {
 
   public async beginWindowEpoch(windowId: number): Promise<void> {
     this.epochCalls.push(windowId);
+    await this.beginWindowEpochBehavior?.(windowId);
   }
 
   public async clearWindowPending(windowId: number): Promise<void> {
