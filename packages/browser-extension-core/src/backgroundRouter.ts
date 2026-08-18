@@ -319,6 +319,11 @@ interface PanelCommandRecord {
   readonly abortController?: AbortController;
 }
 
+interface WindowCommandCompletion {
+  readonly promise: Promise<void>;
+  release(): void;
+}
+
 interface PanelTeardownRequirement {
   readonly binding: ChannelBinding;
   invalidateBinding: boolean;
@@ -373,6 +378,10 @@ export class BackgroundRouter {
   private readonly panelPorts = new Map<string, PanelPortRecord>();
   private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly windowCommands = new Map<number, object>();
+  private readonly windowCommandCompletions = new WeakMap<
+    object,
+    WindowCommandCompletion
+  >();
   private readonly panelTeardowns = new Map<
     string,
     { readonly binding: ChannelBinding; readonly promise: Promise<boolean> }
@@ -447,9 +456,7 @@ export class BackgroundRouter {
     if (options.subscribePageRefreshes) {
       this.removeSubscriptions.push(
         options.subscribePageRefreshes((windowId, message) => {
-          void this.tabRefreshCoordinator
-            .acceptPageRefresh(windowId, message)
-            .catch((error) => this.reportError(error));
+          this.acceptPageRefreshAfterWindowCommand(windowId, message);
         }),
       );
     }
@@ -619,7 +626,9 @@ export class BackgroundRouter {
     }
     this.pendingRegistrations.clear();
     this.panelCommands.clear();
-    this.windowCommands.clear();
+    for (const commandToken of new Set(this.windowCommands.values())) {
+      this.releaseWindowCommand(commandToken);
+    }
     this.panelTeardowns.clear();
     this.requiredPanelTeardowns.clear();
     this.bindings.clear();
@@ -1890,11 +1899,11 @@ export class BackgroundRouter {
       }
     }
 
-    const commandToken = {};
     let leasedWindowId = binding.windowId;
     if (this.windowCommands.has(leasedWindowId)) {
       return { ok: false, error: "busy" };
     }
+    const commandToken = this.createWindowCommandToken();
     this.windowCommands.set(leasedWindowId, commandToken);
     let dispatchedBinding: ChannelBinding | undefined;
     let dispatchedCommand: PanelCommandRecord | undefined;
@@ -2072,9 +2081,7 @@ export class BackgroundRouter {
       ) {
         this.panelCommands.delete(command.channel);
       }
-      if (this.windowCommands.get(leasedWindowId) === commandToken) {
-        this.windowCommands.delete(leasedWindowId);
-      }
+      this.releaseWindowCommand(commandToken);
     }
   }
 
@@ -3471,13 +3478,57 @@ export class BackgroundRouter {
     );
   }
 
+  private acceptPageRefreshAfterWindowCommand(
+    windowId: number,
+    message: PageRefreshMessage,
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    const commandToken = this.windowCommands.get(windowId);
+    const completion = commandToken
+      ? this.windowCommandCompletions.get(commandToken)
+      : undefined;
+    if (completion) {
+      void completion.promise.then(() =>
+        this.acceptPageRefreshAfterWindowCommand(windowId, message)
+      );
+      return;
+    }
+    void this.tabRefreshCoordinator
+      .acceptPageRefresh(windowId, message)
+      .catch((error) => this.reportError(error));
+  }
+
+  private createWindowCommandToken(): object {
+    const commandToken = {};
+    let resolveCompletion: () => void = () => undefined;
+    const promise = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    let released = false;
+    this.windowCommandCompletions.set(commandToken, {
+      promise,
+      release: () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        resolveCompletion();
+      },
+    });
+    return commandToken;
+  }
+
   private releaseWindowCommand(commandToken: object): void {
     for (const [windowId, currentToken] of this.windowCommands) {
       if (currentToken === commandToken) {
         this.windowCommands.delete(windowId);
-        return;
       }
     }
+    const completion = this.windowCommandCompletions.get(commandToken);
+    this.windowCommandCompletions.delete(commandToken);
+    completion?.release();
   }
 
   private abortPanelCommand(
