@@ -183,6 +183,181 @@ describe("BackgroundRouter", () => {
     expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([[10, refresh]]);
   });
 
+  it("fails closed and retries refresh participation when relink initialization fails", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-relink-retry",
+      17,
+      "source-relink-retry",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-retry",
+    }, panelSender("channel-relink-retry"))).resolves.toEqual({ ok: true });
+
+    let restoreAttempt = 0;
+    harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) => {
+      restoreAttempt += 1;
+      if (restoreAttempt === 1) {
+        throw new Error("transient relink initialization failure");
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        participant: true,
+      };
+    };
+    const failedMessageStart = port.sent.length;
+
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-retry",
+      code: "4873507",
+    }, panelSender("channel-relink-retry"))).resolves.toEqual({
+      ok: false,
+      error: "error",
+    });
+    await flushMicrotasks();
+
+    expect(restoreAttempt).toBe(1);
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+    expect(
+      port.sent.slice(failedMessageStart).filter(isPanelTabStateMessage),
+    ).not.toContainEqual(expect.objectContaining({ participant: true }));
+    const rejectedRefresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, rejectedRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
+
+    const retryMessageStart = port.sent.length;
+    await expect(harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-retry",
+      code: "4873507",
+    }, panelSender("channel-relink-retry"))).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+
+    expect(restoreAttempt).toBe(2);
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    expect(
+      port.sent.slice(retryMessageStart).filter(isPanelTabStateMessage).at(-1),
+    ).toMatchObject({
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const acceptedRefresh = pageRefresh(2);
+    harness.pageRefreshes.emit(10, acceptedRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([
+      [10, acceptedRefresh],
+    ]);
+  });
+
+  it("does not restore refresh authority when the panel closes during relink initialization", async () => {
+    const restore = deferred<TabRefreshState>();
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-relink-close",
+      17,
+      "source-relink-close",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-close",
+    }, panelSender("channel-relink-close"))).resolves.toEqual({ ok: true });
+    harness.tabRefresh.panelOpenedBehavior = () => restore.promise;
+
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-close",
+      code: "4873507",
+    }, panelSender("channel-relink-close"));
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelOpenCalls).toHaveLength(2);
+    });
+
+    port.disconnect();
+    restore.resolve({
+      ...defaultTabState(17, 10),
+      participant: true,
+    });
+    await expect(linking).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      participant: false,
+    });
+    const refresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, refresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
+  });
+
+  it("does not restore old-window authority when the panel moves during relink initialization", async () => {
+    const tabs = new Map([[17, 10]]);
+    const restore = deferred<TabRefreshState>();
+    let restoreAttempt = 0;
+    const harness = createHarness({ tabs });
+    await harness.registerAndConnect(
+      "channel-relink-move",
+      17,
+      "source-relink-move",
+    );
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-relink-move",
+    }, panelSender("channel-relink-move"))).resolves.toEqual({ ok: true });
+    harness.tabRefresh.panelOpenedBehavior = async (tabId, windowId) => {
+      restoreAttempt += 1;
+      return restoreAttempt === 1
+        ? await restore.promise
+        : {
+            ...defaultTabState(tabId, windowId),
+            participant: true,
+          };
+    };
+
+    const linking = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-relink-move",
+      code: "4873507",
+    }, panelSender("channel-relink-move"));
+    await vi.waitFor(() => expect(restoreAttempt).toBe(1));
+
+    tabs.set(17, 20);
+    restore.resolve({
+      ...defaultTabState(17, 10),
+      participant: true,
+    });
+    await expect(linking).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    await flushMicrotasks();
+
+    expect(await harness.tabRefresh.state(17, 10)).toMatchObject({
+      participant: false,
+    });
+    expect(await harness.tabRefresh.state(17, 20)).toMatchObject({
+      participant: true,
+    });
+    const staleWindowRefresh = pageRefresh(1);
+    harness.pageRefreshes.emit(10, staleWindowRefresh);
+    await flushMicrotasks();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
+  });
+
   it("does not reopen refresh participation from a linked callback for a stale link", async () => {
     const linkGate = deferred<void>();
     let harness!: ReturnType<typeof createHarness>;

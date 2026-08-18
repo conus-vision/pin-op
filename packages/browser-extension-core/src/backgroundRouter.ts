@@ -1293,9 +1293,9 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     binding: ChannelBinding,
     command: PanelCommandRecord,
-  ): Promise<boolean> {
+  ): Promise<BackgroundCommandError | undefined> {
     if (!this.isCurrentPanelCommand(record, binding, command)) {
-      return false;
+      return "stalePanel";
     }
     const initialized = await this.ensurePanelTabStateInitialized(
       record,
@@ -1303,7 +1303,7 @@ export class BackgroundRouter {
       binding,
     );
     if (!this.isCurrentPanelCommand(record, binding, command)) {
-      return false;
+      return "stalePanel";
     }
 
     let state: TabRefreshState | undefined;
@@ -1317,7 +1317,7 @@ export class BackgroundRouter {
         this.reportError(error);
       }
       if (!this.isCurrentPanelCommand(record, binding, command)) {
-        return false;
+        return "stalePanel";
       }
     }
 
@@ -1330,7 +1330,10 @@ export class BackgroundRouter {
       postflight !== binding ||
       !this.isCurrentPanelCommand(record, binding, command)
     ) {
-      return false;
+      return "stalePanel";
+    }
+    if (!initialized) {
+      return "error";
     }
     if (state) {
       this.postToCurrentPort(
@@ -1340,7 +1343,7 @@ export class BackgroundRouter {
       );
     }
     record.tabStateInvalidatedByUnlink = false;
-    return true;
+    return undefined;
   }
 
   private async initializePanelTabState(
@@ -1699,14 +1702,16 @@ export class BackgroundRouter {
       }
       if (
         command.type === "pin-op.linkWindow" &&
-        record.tabStateInvalidatedByUnlink &&
-        !await this.restorePanelTabStateAfterLink(
+        record.tabStateInvalidatedByUnlink
+      ) {
+        const restoreError = await this.restorePanelTabStateAfterLink(
           record,
           refreshed,
           dispatchedRecord,
-        )
-      ) {
-        return { ok: false, error: "stalePanel" };
+        );
+        if (restoreError) {
+          return { ok: false, error: restoreError };
+        }
       }
       return okResult;
     } catch (error) {
