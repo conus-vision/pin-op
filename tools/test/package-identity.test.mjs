@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const productDescription =
-  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
 const expectedNames = new Map([
   ["package.json", "@pin-op/workspace"],
   ["packages/protocol/package.json", "@pin-op/protocol"],
@@ -28,6 +28,8 @@ test("workspace manifests use the canonical pin-op technical identities", async 
 });
 
 test("public package metadata uses canonical pin-op URLs and IDs", async () => {
+  assert.ok(productDescription.length <= 132);
+
   const root = await readManifest("package.json");
   assert.equal(root.description, productDescription);
   assert.equal(root.repository?.url, "https://github.com/conus-vision/pin-op.git");

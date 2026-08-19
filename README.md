@@ -2,85 +2,71 @@
 
 [![CI](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/pin-op/actions/workflows/ci.yml)
 
-Highlights styles and source code in your IDE for the DOM element selected in
-the browser.
+Select a DOM element in Firefox or Chrome and see matching CSS or
+source-mapped SCSS ranges highlighted in the active VS Code file.
 
-[pin-op.conus.vision](https://pin-op.conus.vision) ·
-[Repository](https://github.com/conus-vision/pin-op)
+Browser DevTools can explain the rendered page, while your editor knows the
+source you can actually change. Pin-op keeps those two views synchronized so
+you can move from a live element to its source without searching across a
+stylesheet by hand.
+
+[Website](https://pin-op.conus.vision) ·
+[Documentation](docs/mvp-usage.md) ·
+[Issues](https://github.com/conus-vision/pin-op/issues)
 
 > Alpha: product and installation details may change before 1.0.
 
-## Install
+## See It Work
 
-The `0.3.0` release is being prepared. A complete GitHub Release will contain
-six public assets:
+```mermaid
+flowchart LR
+  Browser[Firefox or Chrome DevTools] -->|Explicit seven-digit window link| Bridge[Loopback WebSocket]
+  Bridge --> IDE[VS Code active file]
+  IDE -->|Bounded source matches| Browser
+```
 
-- `pin-op-vscode-0.3.0.vsix`;
-- `pin-op-chrome-0.3.0.zip`;
-- `pin-op-firefox-0.3.0.zip`, unsigned Mozilla-review input;
-- `pin-op-firefox-0.3.0.xpi`, signed by Mozilla;
-- `pin-op-firefox-source-0.3.0.zip`, the corresponding source archive;
-- `SHA256SUMS`, checksums for the five packaged artifacts.
+Pin-op carries bounded inspection facts and source excerpts. Bounded
+active-document excerpts cross the bridge and are not content-redacted, so they
+may contain sensitive code. Full documents, workspace paths or URIs, source
+maps, browser-local DOM references, and executable commands do not cross.
 
-Use `SHA256SUMS` to verify the downloaded release artifacts before installing
-them.
+## Quick Start
 
-No signed `0.3.0` XPI or public `0.3.0` release is claimed yet. The Firefox ZIP
-produced by the build is unsigned review input, not a Firefox Stable add-on.
-Follow the [installed artifact guide](docs/installed-verification.md) for
-candidate installation and evidence status.
+Once matching browser and VS Code extensions are installed, the normal workflow
+is terminal-free:
 
-The VS Code extension ID is `conus-vision.pin-op`. Workspace packages use the
-`@pin-op/*` scope.
+1. Open your local project in VS Code. Pin-op starts automatically.
+2. Click the Pin-op status item to copy that VS Code window's seven-digit link code.
+3. Open Pin-op in Firefox or Chrome DevTools, paste the code, and select **Link**.
+4. Keep the source document you want to inspect active in VS Code.
+5. Select an element with the page picker or the lazy DOM tree.
+6. Read the highlighted Selected and Parent ranges in VS Code, or open a bounded
+   match from the DevTools **Source** pane.
 
-## Use
+Each browser window links explicitly to one VS Code window. **Disconnect**
+unlinks only the current browser window.
 
-Normal installed use is terminal-free:
+## Who It Is For
 
-1. Open a local project in VS Code. Pin-op starts automatically.
-2. Click the Pin-op status item to copy its five-digit port and two-digit
-   PIN.
-3. Open the Pin-op DevTools panel in one Firefox or Chrome/Chromium window.
-4. Paste the code, select **Link**, and confirm the panel shows the same
-   displayed code as VS Code.
-5. Keep the intended source document active in VS Code.
-6. Select an element with the visual page picker or the lazy DOM tree.
-7. Use the highlighted ranges in VS Code or the bounded **Source** excerpts in
-   DevTools. A Source excerpt opens its exact range in the active IDE document.
+- Frontend developers tracing a live component through overlapping CSS rules.
+- Teams maintaining large or legacy SCSS codebases with usable source maps.
+- IDE and framework authors building additional source resolvers through the
+  versioned plugin API.
 
-**Disconnect** unlinks only the current browser window. Other browser windows
-keep their independent links. The full workflow is in the
-[usage guide](docs/mvp-usage.md).
+## What You Get
 
-## Inspector
+- An Inspector-like page picker with a box-model overlay and lazy DOM tree.
+- Multiple complete CSS or source-mapped SCSS ranges highlighted in the active file.
+- Separate Selected and immediate Parent source decorations.
+- Bounded Source excerpts with exact navigation back to the IDE.
+- Auto Refresh for changed styles and tab reloads with scroll restoration after
+  changed script, Vue, PHP, or HTML saves.
+- Explicit browser-window linking over a loopback-only WebSocket.
 
-Firefox Stable and current Chrome/Chromium share the same Inspector workflow:
+Pin-op is read-only. It does not edit source, execute IDE commands, or switch
+the active editor.
 
-- the page picker draws a noninteractive box-model overlay for margin, border,
-  padding, and content;
-- the virtualized DOM tree loads children lazily and traverses open shadow roots
-  and same-origin frames;
-- cross-origin frames are locked leaves, and closed shadow roots fail closed;
-- one selection sends bounded CSS and DOM facts for the selected element and
-  its immediate parent;
-- VS Code can highlight multiple complete ranges, with Selected and Parent
-  decorations kept distinct;
-- the Source pane shows bounded excerpts from the active IDE document for the
-  Selected element and its immediate Parent;
-- **Auto Refresh** updates changed styles without a page reload and reloads the
-  current tab after changed script, Vue, PHP, or HTML saves; **IDE Highlight**
-  controls decorations without disabling resolution or source navigation;
-- CSS uses exact source evidence first and a conservative unique CSS fingerprint
-  fallback when needed;
-- source-mapped SCSS fails closed when generated CSS, mappings, or the active
-  source document cannot be identified safely;
-- the DevTools footer reports the exact IDE resolution outcome, including
-  `No active editor` and source-map failures.
-
-The Inspector is read-only. It does not edit page or workspace source, execute
-commands, or switch the active editor.
-
-## Support
+## Compatibility
 
 | Capability | Status |
 | --- | --- |
@@ -91,31 +77,39 @@ commands, or switch the active editor.
 | Source-mapped SCSS | Supported with a usable inline or external source map |
 | Separately installed source plugins | Supported through the versioned plugin API |
 | Remote SSH and WSL extension hosts | Not supported |
-| Auto Refresh | Supported for changed CSS/preprocessor, script, Vue, PHP, and HTML saves |
 | Source editing and reverse sync | Not supported |
 
-## Architecture
+## Install Status
 
-Browser-local DOM node references never cross the product WebSocket. Bounded
-selection facts travel to the IDE; bounded active-document source excerpts can
-return to the linked browser. Protocol version `6` is a breaking, exact-match
-contract for inspection, refresh, source presentation, presentation settings,
-and navigation. Protocol v5 is rejected with WebSocket close code `1002`; no
-adapter or downgrade fallback exists. Product semver remains independent.
+The `0.3.0` release is being prepared. Its complete GitHub Release will contain:
 
-Read the [architecture overview](docs/architecture.md),
-[protocol contract](docs/protocol.md), and
-[source plugin authoring guide](docs/source-plugin-authoring.md).
+- `pin-op-vscode-0.3.0.vsix`;
+- `pin-op-chrome-0.3.0.zip`;
+- `pin-op-firefox-0.3.0.zip`;
+- `pin-op-firefox-0.3.0.xpi`;
+- `pin-op-firefox-source-0.3.0.zip`;
+- `SHA256SUMS`.
 
-## Security And Privacy
+`SHA256SUMS` verifies the five packaged artifacts. The Firefox ZIP is unsigned
+Mozilla-review/build input and cannot be installed persistently in Firefox
+Stable. No signed `0.3.0` XPI or public `0.3.0` release is claimed yet. Follow
+the [installed artifact guide](docs/installed-verification.md) for candidate
+installation and current evidence status.
 
-Pin-op has no analytics, product HTTP service, or remote Pin-op
-backend. Product traffic uses a loopback-only WebSocket after explicit
-browser-window linking. The two-digit PIN helps prevent accidental local
-cross-linking; it is not strong authentication.
+## How It Works
 
-Page URLs, identifiers, permitted attribute values, and CSS facts are bounded
-but not content-redacted. Review the [privacy policy](PRIVACY.md),
+Protocol version `6` is an exact-match WebSocket contract for inspection,
+refresh, source presentation, settings, and navigation. Pin-op prefers exact
+CSS evidence, uses a conservative unique fingerprint fallback, and fails closed
+when source-map or document identity cannot be established safely.
+
+The two-digit PIN prevents accidental local cross-linking; it is not strong
+authentication against a hostile same-user process.
+
+Pin-op has no analytics, product HTTP service, or remote backend. Page URLs,
+identifiers, permitted attribute values, and CSS facts are bounded but not
+content-redacted. Read the [architecture overview](docs/architecture.md),
+[protocol contract](docs/protocol.md), [privacy policy](PRIVACY.md),
 [security model](docs/security.md), and [security policy](SECURITY.md) before
 inspecting sensitive applications.
 
@@ -133,21 +127,15 @@ corepack pnpm typecheck
 corepack pnpm lint
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for all contributor gates and
-[development-host verification](docs/mvp-verification.md) for browser parity
-checks.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor gates and
+[development-host verification](docs/mvp-verification.md) for browser parity.
 
-Report product problems in the
-[Pin-op issue tracker](https://github.com/conus-vision/pin-op/issues).
+## Next Steps
 
-## Status
+Read the [usage guide](docs/mvp-usage.md), report problems in the
+[issue tracker](https://github.com/conus-vision/pin-op/issues), and star the
+repository if Pin-op shortens your browser-to-source debugging loop.
 
-Pin-op remains an alpha. Public browser-store distribution, remote VS Code
-hosts, closed-shadow traversal, cross-origin frame traversal, editing, and
-reverse synchronization are outside the current release. See the
-[changelog](CHANGELOG.md) for the `0.3.0` release scope.
+Pin-op is available under the [MIT License](LICENSE).
 
-## License
-
-Pin-op is available under the [MIT License](LICENSE). Copyright (c) 2026
-conus-vision.
+Pin-op by Volodymyr Moskvin (c) 2026 [Conus Vision](https://conus.vision)

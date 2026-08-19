@@ -49,6 +49,14 @@ const legacyTechnicalTitle = ["Pin", "op"].join("");
 const legacyTechnicalUpper = ["PIN", "OP"].join("");
 const legacyOriginalDisplay = ["Browser", "2", "IDE"].join("");
 const legacyOriginalSlug = ["browser", "2", "ide"].join("");
+const releaseArtifactNames = [
+  "pin-op-vscode-0.3.0.vsix",
+  "pin-op-chrome-0.3.0.zip",
+  "pin-op-firefox-0.3.0.zip",
+  "pin-op-firefox-0.3.0.xpi",
+  "pin-op-firefox-source-0.3.0.zip",
+  "SHA256SUMS",
+];
 const recordHeading = "## 0.3.0 Candidate Verification Record";
 const [primaryPath, verificationRecord] = installedGuide.split(recordHeading);
 const installedRunbookHeading = "## Installed Product Verification";
@@ -498,37 +506,52 @@ test("0.3.0 record marks unperformed external evidence pending", () => {
   assert.doesNotMatch(verificationRecord, /[0-9a-f]{64}/i);
 });
 
-test("README points to the canonical Pin-op product and repository", () => {
+test("README presents the canonical Pin-op workflow and release status", () => {
+  const normalizedReadme = readme.replace(/\s+/g, " ").trim();
+
   assert.match(readme, /^# Pin-op\r?\n/);
   assert.match(
     readme,
-    /Highlights styles and source code in your IDE for the DOM element selected in\s+the browser\./,
+    /Select a DOM element in Firefox or Chrome and see matching CSS or\s+source-mapped SCSS ranges highlighted in the active VS Code file\./,
   );
   assert.match(readme, /https:\/\/pin-op\.conus\.vision/);
-  assert.match(
-    readme,
-    /\[Repository\]\(https:\/\/github\.com\/conus-vision\/pin-op\)/,
-  );
   assert.match(readme, /https:\/\/github\.com\/conus-vision\/pin-op\/issues/);
-  assert.match(readme, /`conus-vision\.pin-op`/);
-  assert.match(readme, /`@pin-op\//);
-  assert.match(readme, /`pin-op-vscode-0\.3\.0\.vsix`/);
-  assert.match(readme, /`pin-op-chrome-0\.3\.0\.zip`/);
-  assert.match(readme, /`pin-op-firefox-0\.3\.0\.zip`/);
-  assert.match(readme, /`pin-op-firefox-0\.3\.0\.xpi`/);
-  assert.match(readme, /`pin-op-firefox-source-0\.3\.0\.zip`/);
-  assert.match(readme, /six public assets/i);
-  assert.match(readme, /`SHA256SUMS`/);
-  assert.match(
-    readme,
-    /`SHA256SUMS`[\s\S]*verify[\s\S]*(?:downloaded|release) artifacts/i,
+  assert.match(readme, /^## Quick Start$/m);
+  assert.match(readme, /^## Who It Is For$/m);
+  assert.match(readme, /```mermaid[\s\S]*?```/);
+  assert.match(readme, /normal workflow\s+is terminal-free/i);
+  assert.match(readme, /seven-digit link code/);
+  assert.match(readme, /Protocol version `6` is an exact-match WebSocket contract/);
+  for (const artifact of releaseArtifactNames) {
+    assert.ok(readme.includes(`\`${artifact}\``), artifact);
+  }
+  assert.ok(
+    normalizedReadme.includes(
+      "`SHA256SUMS` verifies the five packaged artifacts.",
+    ),
+  );
+  assert.ok(
+    normalizedReadme.includes(
+      "The Firefox ZIP is unsigned Mozilla-review/build input and cannot be installed persistently in Firefox Stable.",
+    ),
+  );
+  assert.ok(
+    normalizedReadme.includes(
+      "No signed `0.3.0` XPI or public `0.3.0` release is claimed yet.",
+    ),
+  );
+  assert.ok(
+    normalizedReadme.includes(
+      "The two-digit PIN prevents accidental local cross-linking; it is not strong authentication against a hostile same-user process.",
+    ),
   );
   assert.match(readme, /docs\/installed-verification\.md/);
   assert.match(readme, /docs\/mvp-usage\.md/);
   assert.match(readme, /docs\/architecture\.md/);
   assert.match(readme, /docs\/protocol\.md/);
   assert.match(readme, /CONTRIBUTING\.md/);
-  assert.match(readme, /SECURITY\.md/);
+  assert.match(readme, /docs\/security\.md/);
+  assert.match(readme, /\[security policy\]\(SECURITY\.md\)/);
   assert.match(readme, /MIT License/);
   assert.doesNotMatch(readme, /pin-op-(?:linking\.png|inspect\.gif)/);
   assert.match(

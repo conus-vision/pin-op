@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const productDescription =
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
+
 describe("Firefox extension manifest", () => {
   it("declares a Firefox-first MV3 DevTools adapter with inspected-page access", () => {
     const manifest = JSON.parse(
@@ -10,8 +13,7 @@ describe("Firefox extension manifest", () => {
     expect(manifest).toMatchObject({
       manifest_version: 3,
       name: "Pin-op",
-      description:
-        "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+      description: productDescription,
       devtools_page: "dist/devtools.html",
       background: { scripts: ["dist/background.js"] },
       browser_specific_settings: {

@@ -1,5 +1,8 @@
 export const VSCODE_PRODUCT_DESCRIPTION =
-  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
+
+const VSCODE_README_RESULT_STATEMENT =
+  "Select a DOM element in Firefox or Chrome and see matching CSS or source-mapped SCSS ranges highlighted in the active VS Code file.";
 
 const EXPECTED_FIELDS = Object.freeze({
   publisher: "conus-vision",
@@ -102,10 +105,13 @@ export function assertVsCodeReadme(readme, sourceReadme, label) {
     throw new Error(`${label} is missing ${path}`);
   }
   const readmeText = readme.toString("utf8");
-  if (!readmeText.includes(VSCODE_PRODUCT_DESCRIPTION)) {
+  const expectedOpening = collapseWhitespace(
+    `# Pin-op\n\n${VSCODE_README_RESULT_STATEMENT}`,
+  );
+  if (!collapseWhitespace(readmeText).startsWith(expectedOpening)) {
     throw new Error(
-      `${label} ${path} is missing the product description: ` +
-        VSCODE_PRODUCT_DESCRIPTION,
+      `${label} ${path} is missing the opening result statement: ` +
+        VSCODE_README_RESULT_STATEMENT,
     );
   }
   if (!Buffer.isBuffer(sourceReadme)) {
@@ -123,4 +129,8 @@ export function assertVsCodeReadme(readme, sourceReadme, label) {
 
 function normalizeLineEndings(text) {
   return text.replace(/\r\n?/g, "\n");
+}
+
+function collapseWhitespace(text) {
+  return normalizeLineEndings(text).replace(/\s+/g, " ").trim();
 }

@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const productDescription =
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
+
 describe("Chrome extension manifest", () => {
   it("uses a Chrome MV3 service worker and DevTools page", () => {
     const manifest = readManifest();
@@ -8,8 +11,7 @@ describe("Chrome extension manifest", () => {
     expect(manifest).toMatchObject({
       manifest_version: 3,
       name: "Pin-op",
-      description:
-        "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+      description: productDescription,
       version: "0.3.0",
       minimum_chrome_version: "116",
       devtools_page: "dist/devtools.html",

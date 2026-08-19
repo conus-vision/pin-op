@@ -27,7 +27,7 @@ import {
 
 const VERSION = "0.3.0";
 const PRODUCT_DESCRIPTION =
-  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
 const EXPECTED_ARTIFACTS = new Map([
   [`pin-op-vscode-${VERSION}.vsix`, "vscode"],
   [`pin-op-chrome-${VERSION}.zip`, "chrome"],

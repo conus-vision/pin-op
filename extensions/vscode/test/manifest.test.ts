@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const productDescription =
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
+
 describe("VS Code extension manifest", () => {
   it("declares the Pin-op commands and settings", () => {
     const manifest = JSON.parse(
@@ -42,8 +45,7 @@ describe("VS Code extension manifest", () => {
     expect(manifest).toMatchObject({
       name: "pin-op",
       displayName: "Pin-op",
-      description:
-        "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+      description: productDescription,
       publisher: "conus-vision",
       version: "0.3.0",
       license: "MIT",

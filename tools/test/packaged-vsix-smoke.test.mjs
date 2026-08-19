@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,19 @@ import { assertVsCodeReadme } from "../vscode-extension-identity.mjs";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const vscodePackagePath = resolve(
+  repositoryRoot,
+  "extensions/vscode/package.json",
+);
+const vscodeReadmePath = resolve(
+  repositoryRoot,
+  "extensions/vscode/README.md",
+);
+const requireFromVsCodeExtension = createRequire(vscodePackagePath);
+const { ReadmeProcessor } = requireFromVsCodeExtension(
+  "@vscode/vsce/out/package",
+);
+const vscodeManifest = JSON.parse(await readFile(vscodePackagePath, "utf8"));
 const installedSmokePath = resolve(
   repositoryRoot,
   "extensions/vscode/smoke-installed-vsix.mjs",
@@ -20,11 +34,11 @@ const directVerifierPath = resolve(
   "extensions/vscode/verify-vsix.mjs",
 );
 const productDescription =
-  "Highlights styles and source code in your IDE for the DOM element selected in the browser.";
+  "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
+const readmeResultStatement =
+  "Select a DOM element in Firefox or Chrome and see matching CSS or source-mapped SCSS ranges highlighted in the active VS Code file.";
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
-const vscodeReadme = await readFile(
-  resolve(repositoryRoot, "extensions/vscode/README.md"),
-);
+const vscodeReadme = await readFile(vscodeReadmePath);
 const vscodeNotices = await readFile(
   resolve(repositoryRoot, "extensions/vscode/THIRD_PARTY_NOTICES"),
 );
@@ -46,7 +60,7 @@ const staleExtensionBundleFixture = Buffer.concat([
 ]);
 const legacyDisplayName = ["Pin", "Op"].join("");
 const legacyAssetStem = ["pin", "op"].join("");
-const readmeWithoutProductDescription = Buffer.from([
+const readmeWithoutResultStatement = Buffer.from([
   "# Pin-op",
   "",
   "Pin-op highlights source code in VS Code for a DOM element selected in Firefox or Chrome/Chromium DevTools.",
@@ -59,7 +73,7 @@ const readmeWithoutProductDescription = Buffer.from([
 const readmeWithPackagedDrift = Buffer.from([
   "# Pin-op",
   "",
-  productDescription,
+  readmeResultStatement,
   "",
   "This packaged-only paragraph is not present in the source README.",
   "",
@@ -172,16 +186,33 @@ test("installed VSIX smoke pins protocol 6 and current source capabilities", asy
   assert.doesNotMatch(source, /protocol[- _]?v?5/i);
 });
 
-test("VS Code README uses the exact product description", () => {
-  assert.ok(vscodeReadme.toString("utf8").includes(productDescription));
+test("VS Code README uses the exact opening result statement", () => {
+  const normalizedReadme = vscodeReadme.toString("utf8").replace(/\s+/g, " ");
+  assert.ok(normalizedReadme.includes(readmeResultStatement));
+});
+
+test("VSCE leaves the Marketplace README bytes unchanged", async () => {
+  const processor = new ReadmeProcessor(vscodeManifest);
+  const processed = await processor.onFile({
+    path: "extension/readme.md",
+    localPath: vscodeReadmePath,
+  });
+  const processedText = processed.contents.toString("utf8");
+
+  assert.doesNotMatch(processedText, /\/\.\.\//);
+  assert.doesNotMatch(processedText, /\/blob\/HEAD\/\.\.\//);
+  assert.deepEqual(
+    normalizeLineEndingBytes(processed.contents),
+    normalizeLineEndingBytes(vscodeReadme),
+  );
 });
 
 test("VSIX README parity allows packaging line-ending normalization", () => {
   const sourceReadme = Buffer.from(
-    `# Pin-op\r\n\r\n${productDescription}\r\n`,
+    `# Pin-op\r\n\r\n${readmeResultStatement}\r\n`,
   );
   const packagedReadme = Buffer.from(
-    `# Pin-op\n\n${productDescription}\n`,
+    `# Pin-op\n\n${readmeResultStatement}\n`,
   );
 
   assert.doesNotThrow(() =>
@@ -398,9 +429,9 @@ test("VSIX installation rejects protocol v5 runtime metadata", async () => {
 test("packaged VSIX verifiers reject README wording and parity failures", async (t) => {
   for (const [name, readme, expectedError] of [
     [
-      "missing product description",
-      readmeWithoutProductDescription,
-      /readme.*product description/i,
+      "missing result statement",
+      readmeWithoutResultStatement,
+      /readme.*result statement/i,
     ],
     [
       "source drift",
@@ -749,8 +780,7 @@ function expectedManifest(overrides = {}) {
   return {
     name: "pin-op",
     displayName: "Pin-op",
-    description:
-      "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+    description: productDescription,
     publisher: "conus-vision",
     repository: "https://github.com/conus-vision/pin-op",
     bugs: "https://github.com/conus-vision/pin-op/issues",
@@ -790,6 +820,10 @@ function expectedManifest(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function normalizeLineEndingBytes(value) {
+  return Buffer.from(value.toString("utf8").replace(/\r\n?/g, "\n"), "utf8");
 }
 
 function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {

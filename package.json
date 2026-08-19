@@ -2,7 +2,7 @@
   "name": "@pin-op/workspace",
   "private": true,
   "version": "0.3.0",
-  "description": "Highlights styles and source code in your IDE for the DOM element selected in the browser.",
+  "description": "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.",
   "license": "MIT",
   "repository": {
     "type": "git",
