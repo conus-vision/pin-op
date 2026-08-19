@@ -501,7 +501,6 @@ export class PanelController {
       (this.state === "notLinked" ||
         this.state === "rateLimited" ||
         this.state === "error");
-    const validCode = validNormalizedCode(this.view.readLinkCode());
     const inspectDisabled =
       this.busy || this.state !== "connected";
     this.view.render({
@@ -512,7 +511,7 @@ export class PanelController {
       showLinkControls,
       showDisconnect: this.hasLinkIntent,
       linkInputDisabled: this.busy,
-      linkButtonDisabled: this.busy || !validCode,
+      linkButtonDisabled: this.busy,
       pasteButtonDisabled: this.busy,
       disconnectButtonDisabled: this.busy,
       inspectDisabled,
@@ -533,15 +532,6 @@ export class PanelController {
     this.hasLinkIntent = true;
     this.displayLinkCode = rollback.displayLinkCode;
     return true;
-  }
-}
-
-function validNormalizedCode(value: string): boolean {
-  try {
-    parseLinkCode(value.trim());
-    return true;
-  } catch {
-    return false;
   }
 }
 

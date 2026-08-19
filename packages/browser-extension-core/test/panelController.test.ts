@@ -118,6 +118,27 @@ describe("PanelController", () => {
     expect(harness.view.linkCode).toBe("48735 0x");
   });
 
+  it("keeps Link available before a code is entered", async () => {
+    const harness = createHarness();
+
+    await harness.controller.initialize();
+
+    expect(harness.view.current).toMatchObject({
+      state: "notLinked",
+      showLinkControls: true,
+      linkButtonDisabled: false,
+    });
+
+    await harness.view.actions.onLink();
+
+    expect(harness.sent).toEqual([]);
+    expect(harness.view.current).toMatchObject({
+      state: "error",
+      errorText: "Enter a valid seven-digit code",
+      linkButtonDisabled: false,
+    });
+  });
+
   it.each<readonly [PanelOperationalState, string, boolean]>([
     ["notLinked", "Not linked", true],
     ["linking", "Linking", true],
