@@ -10,7 +10,7 @@
     <main class="panel-layout">
       <div class="panel-toolbar-scroll">
         <header class="panel-toolbar" aria-label="Pin-op controls">
-          <div class="toolbar-features">
+          <div id="toolbar-features" class="toolbar-features">
             <button id="inspect-mode" class="icon-button picker-button" type="button" aria-label="Select an element" aria-pressed="false" title="Select an element" disabled>
               <i data-lucide="mouse-pointer-2" aria-hidden="true"></i>
             </button>
@@ -48,6 +48,14 @@
         <span id="protocol-mismatch-versions">Browser protocol: unknown - IDE protocol: unknown</span>
       </section>
 
+      <section id="link-onboarding" class="link-onboarding" aria-labelledby="link-onboarding-title" hidden>
+        <div class="link-onboarding-content">
+          <h1 id="link-onboarding-title">Connect Pin-op to VS Code</h1>
+          <p>Open your project in VS Code and click the Pin-op status item to copy its seven-digit link code. Paste it above and choose Link.</p>
+          <p>After linking, select a DOM element in the tree or on the page. Pin-op reveals the related ranges in the active IDE file.</p>
+        </div>
+      </section>
+
       <section id="panel-workspace" class="panel-workspace" data-layout="tabs" aria-label="Document and source workspace">
         <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Workspace view">
           <button id="dom-tab" class="workspace-tab" type="button" role="tab" aria-controls="dom-pane" aria-selected="true" tabindex="0">DOM</button>
@@ -71,13 +79,15 @@
       </section>
 
       <footer class="panel-footer">
-        <output id="selected-element-summary" class="selected-element-summary" hidden></output>
-        <div class="resolution-row">
-          <output id="resolution-status" class="resolution-status" role="status">Select an element to inspect</output>
-          <div id="source-navigation-footer" class="source-navigation-footer" hidden>
-            <output id="source-navigation-counter"></output>
-            <button id="source-previous" class="source-navigation-button" type="button" aria-label="Previous source match" title="Previous source match"></button>
-            <button id="source-next" class="source-navigation-button" type="button" aria-label="Next source match" title="Next source match"></button>
+        <div id="operational-footer" class="operational-footer">
+          <output id="selected-element-summary" class="selected-element-summary" hidden></output>
+          <div class="resolution-row">
+            <output id="resolution-status" class="resolution-status" role="status">Select an element to inspect</output>
+            <div id="source-navigation-footer" class="source-navigation-footer" hidden>
+              <output id="source-navigation-counter"></output>
+              <button id="source-previous" class="source-navigation-button" type="button" aria-label="Previous source match" title="Previous source match"></button>
+              <button id="source-next" class="source-navigation-button" type="button" aria-label="Next source match" title="Next source match"></button>
+            </div>
           </div>
         </div>
         <output id="panel-error" class="panel-error" role="status" hidden></output>

@@ -1,8 +1,10 @@
+import { load } from "cheerio";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const html = readFileSync(new URL("../assets/panel.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../assets/panel.css", import.meta.url), "utf8");
+const $ = load(html);
 const STATUS_TOKENS = [
   "--status-success",
   "--status-info",
@@ -19,6 +21,7 @@ describe("DevTools panel assets", () => {
     expect(html).toMatch(/<label[^>]*>\s*<input[^>]*id="auto-refresh-enabled"[^>]*>\s*Auto Refresh\s*<\/label>/);
     expect(html).toMatch(/<label[^>]*>\s*<input[^>]*id="ide-highlight-enabled"[^>]*>\s*IDE Highlight\s*<\/label>/);
     for (const id of [
+      "toolbar-features",
       "connection-status",
       "linked-code",
       "link-controls",
@@ -26,10 +29,38 @@ describe("DevTools panel assets", () => {
       "paste-button",
       "link-button",
       "disconnect-button",
+      "link-onboarding",
+      "operational-footer",
     ]) {
       expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
     }
     expect(html).toMatch(/id="disconnect-button"[^>]*>\s*Disconnect\s*<\/button>/);
+  });
+
+  it("ships a focused unlinked onboarding surface", () => {
+    const onboarding = $("#link-onboarding");
+    const titleId = onboarding.attr("aria-labelledby");
+    const footer = $("footer.panel-footer");
+
+    expect(onboarding.is("[hidden]")).toBe(true);
+    expect(titleId).toBe("link-onboarding-title");
+    expect($(`h1#${titleId}`)).toHaveLength(1);
+    expect(footer.children("#operational-footer")).toHaveLength(1);
+    expect(footer.children("#panel-error")).toHaveLength(1);
+    expect(footer.children("#panel-branding:not([hidden])")).toHaveLength(1);
+    expect(html).toContain("Connect Pin-op to VS Code");
+    expect(html).toContain(
+      "click the Pin-op status item to copy its seven-digit link code",
+    );
+    expect(html).toContain(
+      "Pin-op reveals the related ranges in the active IDE file",
+    );
+    expect(css).toMatch(
+      /\.primary-button\s*\{[^}]*color:\s*#fff;[^}]*background:\s*var\(--primary-action\);/s,
+    );
+    expect(css).toMatch(
+      /\.link-onboarding\s*\{[^}]*grid-area:\s*workspace;[^}]*place-items:\s*center;/s,
+    );
   });
 
   it("defines the responsive DOM and Source workspace without duplicate panes", () => {

@@ -34,6 +34,7 @@ export interface PanelDocument {
 }
 
 export class DomPanelView implements PanelView {
+  private readonly toolbarFeatures: PanelElement;
   private readonly linkControls: PanelElement;
   private readonly linkForm: PanelElement;
   private readonly linkCode: PanelElement;
@@ -47,6 +48,7 @@ export class DomPanelView implements PanelView {
   private readonly connectionStatus: PanelElement;
   private readonly protocolMismatch: PanelElement;
   private readonly protocolMismatchVersions: PanelElement;
+  private readonly linkOnboarding: PanelElement;
   private readonly layoutViewport: object;
   private readonly workspace: PanelElement;
   private readonly workspaceTabs: PanelElement;
@@ -62,12 +64,14 @@ export class DomPanelView implements PanelView {
   private readonly sourceNavigationCounter: PanelElement;
   private readonly sourcePrevious: PanelElement;
   private readonly sourceNext: PanelElement;
+  private readonly operationalFooter: PanelElement;
   private readonly panelError: PanelElement;
 
   public constructor(
     private readonly document: PanelDocument,
     private readonly onError: (error: unknown) => void,
   ) {
+    this.toolbarFeatures = required(document, "toolbar-features");
     this.linkControls = required(document, "link-controls");
     this.linkForm = required(document, "link-form");
     this.linkCode = required(document, "link-code");
@@ -84,6 +88,7 @@ export class DomPanelView implements PanelView {
       document,
       "protocol-mismatch-versions",
     );
+    this.linkOnboarding = required(document, "link-onboarding");
     this.workspace = required(document, "panel-workspace");
     this.layoutViewport = panelViewport(document, this.workspace);
     this.workspaceTabs = required(document, "workspace-tabs");
@@ -108,6 +113,7 @@ export class DomPanelView implements PanelView {
     );
     this.sourcePrevious = required(document, "source-previous");
     this.sourceNext = required(document, "source-next");
+    this.operationalFooter = required(document, "operational-footer");
     this.panelError = required(document, "panel-error");
 
     this.sourcePrevious.replaceChildren(
@@ -176,6 +182,12 @@ export class DomPanelView implements PanelView {
     this.inspectToggle.dataset.state = model.inspectChecked ? "active" : "idle";
     this.panelError.value = model.errorText ?? "";
     this.panelError.hidden = model.errorText === undefined;
+
+    const linkMode = model.showLinkControls;
+    this.toolbarFeatures.hidden = linkMode;
+    this.linkOnboarding.hidden = !linkMode;
+    this.workspace.hidden = linkMode;
+    this.operationalFooter.hidden = linkMode;
   }
 
   public renderResolution(model: ResolutionViewModel): void {

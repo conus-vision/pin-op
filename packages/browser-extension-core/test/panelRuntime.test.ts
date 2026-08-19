@@ -83,6 +83,48 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("shows only link onboarding before this browser window is linked", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+
+    expect(dom.element("toolbar-features").hidden).toBe(true);
+    expect(dom.element("link-onboarding").hidden).toBe(false);
+    expect(dom.element("panel-workspace").hidden).toBe(true);
+    expect(dom.element("operational-footer").hidden).toBe(true);
+    expect(dom.element("link-controls").hidden).toBe(false);
+    expect(dom.element("link-button").disabled).toBe(false);
+
+    runtime.dispose();
+  });
+
+  it("restores the Inspector shell only while link intent is retained", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    await flushAsync();
+
+    expect(dom.element("toolbar-features").hidden).toBe(false);
+    expect(dom.element("link-onboarding").hidden).toBe(true);
+    expect(dom.element("panel-workspace").hidden).toBe(false);
+    expect(dom.element("operational-footer").hidden).toBe(false);
+    expect(dom.element("disconnect-button").hidden).toBe(false);
+
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+    await flushAsync();
+
+    expect(dom.element("toolbar-features").hidden).toBe(true);
+    expect(dom.element("link-onboarding").hidden).toBe(false);
+    expect(dom.element("panel-workspace").hidden).toBe(true);
+
+    runtime.dispose();
+  });
+
   it("exposes default-on settings without enabling controls before a compatible fresh snapshot", async () => {
     const runtime = createRuntime();
     expect(dom.element("auto-refresh-enabled").checked).toBe(true);
@@ -3175,6 +3217,7 @@ describe("startPanelRuntime", () => {
 });
 
 const ELEMENT_IDS = [
+  "toolbar-features",
   "connection-status",
   "link-controls",
   "link-form",
@@ -3188,6 +3231,7 @@ const ELEMENT_IDS = [
   "ide-highlight-enabled",
   "protocol-mismatch",
   "protocol-mismatch-versions",
+  "link-onboarding",
   "panel-workspace",
   "workspace-tabs",
   "dom-tab",
@@ -3202,6 +3246,7 @@ const ELEMENT_IDS = [
   "source-navigation-counter",
   "source-previous",
   "source-next",
+  "operational-footer",
   "panel-error",
   "dom-tree",
   "dom-tree-spacer",
