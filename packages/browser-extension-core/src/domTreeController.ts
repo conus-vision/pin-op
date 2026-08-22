@@ -1035,14 +1035,15 @@ export class DomTreeController {
         if (useFocusAnchorOverride) {
           this.focusedNodeRef = undefined;
         }
-        if (!cursor) {
-          this.clearPageChildren(currentBranch);
-        }
-        for (const child of response.nodes) {
-          this.upsertNode(child, nodeRef);
-          if (!currentBranch.children.includes(child.nodeRef)) {
-            currentBranch.children.push(child.nodeRef);
+        if (cursor) {
+          for (const child of response.nodes) {
+            this.upsertNode(child, nodeRef);
+            if (!currentBranch.children.includes(child.nodeRef)) {
+              currentBranch.children.push(child.nodeRef);
+            }
           }
+        } else {
+          this.replacePageChildren(currentBranch, nodeRef, response.nodes);
         }
         currentBranch.loaded = true;
         currentBranch.nextCursor = response.nextCursor;
@@ -1116,7 +1117,6 @@ export class DomTreeController {
     const focusAnchor = this.focusAnchor(previousRows);
     const branch = this.branches.get(nodeRef);
     if (branch) {
-      this.clearPageChildren(branch);
       branch.revision = branchRevision;
       branch.loaded = false;
       branch.nextCursor = undefined;
@@ -1455,6 +1455,32 @@ export class DomTreeController {
       }
     }
     branch.children.length = 0;
+  }
+
+  private replacePageChildren(
+    branch: BranchState,
+    parentRef: string,
+    children: readonly DomNodeView[],
+  ): void {
+    const previousChildren = [...branch.children];
+    const nextChildren: string[] = [];
+    for (const child of children) {
+      this.upsertNode(child, parentRef);
+      if (!nextChildren.includes(child.nodeRef)) {
+        nextChildren.push(child.nodeRef);
+      }
+    }
+    branch.children.splice(0, branch.children.length, ...nextChildren);
+    const retained = new Set(nextChildren);
+    for (const childRef of previousChildren) {
+      if (
+        !retained.has(childRef) &&
+        childRef !== branch.revealChild &&
+        !branch.recoveredChildren.includes(childRef)
+      ) {
+        this.removeSubtree(childRef);
+      }
+    }
   }
 
   private commitRecoveredChildren(): void {

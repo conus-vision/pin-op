@@ -210,6 +210,175 @@ describe("DomTreeController", () => {
     expectSingleFocusedRow(controller, "selected");
   });
 
+  it.each(["target-first", "owner-first"] as const)(
+    "retains an expanded refreshed child for %s presentation invalidation",
+    async (order) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const child = locatedNode("child", locator(2), true, 1);
+      const grandchild = locatedNode("grandchild", locator(3));
+      const removedGrandchild = locatedNode(
+        "removed-grandchild",
+        locator(3, 1),
+      );
+      const omitted = locatedNode("omitted", locator(2, 1));
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [child, omitted],
+        "old-page",
+      ));
+      transport.enqueue(childrenResponse(
+        child.nodeRef,
+        1,
+        [grandchild, removedGrandchild],
+      ));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(child.nodeRef);
+      controller.handleEvent(selectionEvent(1, [root]));
+      controller.focus(grandchild.nodeRef);
+
+      const childRefresh = deferred<DomResponse>();
+      const refreshedRoot = locatedNode("root", locator(1), true, 2);
+      const refreshedChild = locatedNode("child", locator(2), true, 2);
+      if (order === "target-first") {
+        transport.enqueue(childRefresh.promise);
+        transport.enqueue(rootResponse(refreshedRoot));
+        transport.enqueue(childrenResponse(
+          root.nodeRef,
+          2,
+          [refreshedChild],
+          "fresh-page",
+        ));
+      } else {
+        transport.enqueue(rootResponse(refreshedRoot));
+        transport.enqueue(childrenResponse(
+          root.nodeRef,
+          2,
+          [refreshedChild],
+          "fresh-page",
+        ));
+        transport.enqueue(childRefresh.promise);
+      }
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: order === "target-first"
+          ? [
+              { nodeRef: child.nodeRef, branchRevision: 2 },
+              { nodeRef: root.nodeRef, branchRevision: 2 },
+            ]
+          : [
+              { nodeRef: root.nodeRef, branchRevision: 2 },
+              { nodeRef: child.nodeRef, branchRevision: 2 },
+            ],
+      });
+      await flushAsync();
+
+      expect(controller.expandedRefs()).toEqual([root.nodeRef, child.nodeRef]);
+      expect(nodeRefs(controller)).toContain(grandchild.nodeRef);
+      expectSingleFocusedRow(controller, grandchild.nodeRef);
+
+      const added = locatedNode("added", locator(3, 2));
+      childRefresh.resolve(childrenResponse(
+        child.nodeRef,
+        2,
+        [grandchild, added],
+      ));
+      await flushAsync();
+
+      expect(nodeRefs(controller)).not.toContain(omitted.nodeRef);
+      expect(nodeRefs(controller)).not.toContain(removedGrandchild.nodeRef);
+      expect(nodeRefs(controller)).toEqual([
+        root.nodeRef,
+        child.nodeRef,
+        grandchild.nodeRef,
+        added.nodeRef,
+      ]);
+      expect(controller.rows().find((row) => row.nodeRef === child.nodeRef))
+        .toMatchObject({ expanded: true, branchRevision: 2 });
+      expectSingleFocusedRow(controller, grandchild.nodeRef);
+      expect(controller.snapshot().selectedRef).toBe(root.nodeRef);
+
+      const paged = locatedNode("paged", locator(2, 2));
+      transport.enqueue(childrenResponse(root.nodeRef, 2, [paged]));
+      await controller.loadMore(root.nodeRef);
+
+      expect(transport.requests.at(-1)).toMatchObject({
+        type: "dom.getChildren",
+        nodeRef: root.nodeRef,
+        branchRevision: 2,
+        cursor: "fresh-page",
+      });
+      expect(nodeRefs(controller)).toEqual([
+        root.nodeRef,
+        child.nodeRef,
+        grandchild.nodeRef,
+        added.nodeRef,
+        paged.nodeRef,
+      ]);
+      expectSingleFocusedRow(controller, grandchild.nodeRef);
+
+      expect(controller.beginRecovery()).toEqual({
+        selectedLocator: locator(1),
+        selectedWasExpanded: true,
+        focusAnchor: { locator: locator(3), rowType: "node" },
+        expandedLocators: [locator(1), locator(2)],
+      });
+    },
+  );
+
+  it("discards a late stale child page while retaining its refreshed expansion", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const child = locatedNode("child", locator(2), true, 1);
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [child]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+
+    const stalePage = deferred<DomResponse>();
+    transport.enqueue(stalePage.promise);
+    const staleExpansion = controller.expand(child.nodeRef);
+    await flushAsync();
+
+    const refreshedRoot = locatedNode("root", locator(1), true, 2);
+    const refreshedChild = locatedNode("child", locator(2), true, 2);
+    const freshGrandchild = locatedNode("fresh-grandchild", locator(3));
+    transport.enqueue(childrenResponse(
+      child.nodeRef,
+      2,
+      [freshGrandchild],
+    ));
+    transport.enqueue(rootResponse(refreshedRoot));
+    transport.enqueue(childrenResponse(root.nodeRef, 2, [refreshedChild]));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [
+        { nodeRef: child.nodeRef, branchRevision: 2 },
+        { nodeRef: root.nodeRef, branchRevision: 2 },
+      ],
+    });
+    await flushAsync();
+
+    stalePage.resolve(childrenResponse(child.nodeRef, 1, [
+      locatedNode("stale-grandchild", locator(3, 1)),
+    ]));
+    await staleExpansion;
+    await flushAsync();
+
+    expect(controller.expandedRefs()).toEqual([root.nodeRef, child.nodeRef]);
+    expect(nodeRefs(controller)).toContain(freshGrandchild.nodeRef);
+    expect(nodeRefs(controller)).not.toContain("stale-grandchild");
+    expect(controller.rows().find((row) => row.nodeRef === child.nodeRef))
+      .toMatchObject({ expanded: true, branchRevision: 2 });
+  });
+
   it("notifies subscribers when the initial root finishes loading", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root")));
@@ -878,6 +1047,7 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual(["new-root", "recovered-child"]);
     expect(controller.isExpanded(recoveredChild.nodeRef)).toBe(true);
 
+    transport.enqueue(rootResponse(locatedNode("new-root", locator(1), true, 1)));
     transport.enqueue(childrenResponse(root.nodeRef, 1, []));
     controller.handleEvent({
       type: "dom.invalidated",
@@ -914,6 +1084,7 @@ describe("DomTreeController", () => {
     await controller.hydrateRecoveredBranches();
     controller.finishRecovery();
 
+    transport.enqueue(rootResponse(locatedNode("new-root", locator(1), true, 1)));
     transport.enqueue(childrenResponse(root.nodeRef, 1, []));
     controller.handleEvent({
       type: "dom.invalidated",
