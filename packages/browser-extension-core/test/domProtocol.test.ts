@@ -9,6 +9,7 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomProtocolError,
+  boundDomNodeViewPathForEnvelope,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -343,14 +344,6 @@ describe("DOM protocol", () => {
       branchRevision: 1,
       nodes: stableViews,
     })).toMatchObject({ nodes: stableViews });
-    expect(parseDomEvent({
-      type: "dom.selectionChanged",
-      documentEpoch: 1,
-      selectionRevision: 4,
-      nodeRef: "node-1",
-      ancestorPath: stableViews,
-    })).toMatchObject({ ancestorPath: stableViews });
-
     for (const kind of ["document-type", "text", "comment"] as const) {
       expect(() => parseDomResponse({
         type: "dom.children",
@@ -361,6 +354,139 @@ describe("DOM protocol", () => {
         nodes: [{ ...displayNodeView(kind), locator: stableLocator() }],
       })).toThrow(DomProtocolError);
     }
+  });
+
+  it.each(["document-type", "text", "comment"] as const)(
+    "rejects a valid %s display row inside a recoverable selection path",
+    (kind) => {
+      const target = nodeView({ nodeRef: "node-target" });
+
+      expect(() => parseDomEvent({
+        type: "dom.selectionChanged",
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: target.nodeRef,
+        ancestorPath: [
+          nodeView({ nodeRef: "node-root" }),
+          displayNodeView(kind),
+          target,
+        ],
+      })).toThrow(DomProtocolError);
+    },
+  );
+
+  it("requires a correlated selectable element target for selection paths", () => {
+    const target = nodeView({ nodeRef: "node-target" });
+    const { locator: _locator, ...targetWithoutLocator } = target;
+
+    for (const invalidEvent of [
+      {
+        type: "dom.selectionChanged" as const,
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: "different-target",
+        ancestorPath: [nodeView({ nodeRef: "node-root" }), target],
+      },
+      {
+        type: "dom.selectionChanged" as const,
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: target.nodeRef,
+        ancestorPath: [nodeView({ nodeRef: "node-root" }), targetWithoutLocator],
+      },
+      {
+        type: "dom.selectionChanged" as const,
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: target.nodeRef,
+        ancestorPath: [
+          nodeView({ nodeRef: "node-root" }),
+          nodeView({ ...target, selectable: false }),
+        ],
+      },
+      {
+        type: "dom.selectionChanged" as const,
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: "node-shadow",
+        ancestorPath: [
+          nodeView({ nodeRef: "node-root" }),
+          nodeView({ kind: "shadow-root", nodeRef: "node-shadow" }),
+        ],
+      },
+      {
+        type: "dom.selectionChanged" as const,
+        documentEpoch: 1,
+        selectionRevision: 4,
+        nodeRef: "node-frame",
+        ancestorPath: [
+          nodeView({ nodeRef: "node-root" }),
+          nodeView({ kind: "frame-document", nodeRef: "node-frame" }),
+        ],
+      },
+    ]) {
+      expect(() => parseDomEvent(invalidEvent)).toThrow(DomProtocolError);
+    }
+
+    const validPath = [
+      nodeView({ nodeRef: "node-root" }),
+      nodeView({ kind: "shadow-root", nodeRef: "node-shadow" }),
+      nodeView({ kind: "frame-document", nodeRef: "node-frame" }),
+      target,
+    ];
+    expect(parseDomEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 1,
+      selectionRevision: 4,
+      nodeRef: target.nodeRef,
+      ancestorPath: validPath,
+    })).toMatchObject({ ancestorPath: validPath });
+  });
+
+  it("requires a correlated recoverable target for locator paths", () => {
+    for (const kind of ["document-type", "text", "comment"] as const) {
+      const display = displayNodeView(kind);
+      const target = nodeView({ nodeRef: "node-target" });
+      expect(() => parseDomResponse({
+        type: "dom.locator",
+        requestId: "display-target",
+        documentEpoch: 1,
+        node: display,
+        ancestorPath: [display],
+      })).toThrow(DomProtocolError);
+      expect(() => parseDomResponse({
+        type: "dom.locator",
+        requestId: "display-ancestor",
+        documentEpoch: 1,
+        node: target,
+        ancestorPath: [
+          nodeView({ nodeRef: "node-root" }),
+          display,
+          target,
+        ],
+      })).toThrow(DomProtocolError);
+    }
+
+    const target = nodeView({ nodeRef: "node-target", label: "target" });
+    expect(() => parseDomResponse({
+      type: "dom.locator",
+      requestId: "mismatched-target",
+      documentEpoch: 1,
+      node: target,
+      ancestorPath: [
+        nodeView({ nodeRef: "node-root" }),
+        nodeView({ nodeRef: target.nodeRef, label: "different authority" }),
+      ],
+    })).toThrow(DomProtocolError);
+
+    const { locator: _locator, ...targetWithoutLocator } = target;
+    expect(() => parseDomResponse({
+      type: "dom.locator",
+      requestId: "missing-target-locator",
+      documentEpoch: 1,
+      node: targetWithoutLocator,
+      ancestorPath: [targetWithoutLocator],
+    })).toThrow(DomProtocolError);
   });
 
   it("requires each node locator target kind to match its DOM node kind", () => {
@@ -1271,6 +1397,37 @@ describe("DOM protocol", () => {
       DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
     );
     expect(() => parseDomResponse(input)).toThrow(DomProtocolError);
+  });
+
+  it("reduces presentation fields across the path before recovery locators", () => {
+    const root = nodeView({
+      nodeRef: "node-root",
+      attributes: Array.from({ length: 64 }, (_, index) => ({
+        name: `data-${index}`,
+        value: "\u0000".repeat(1_000),
+      })),
+    });
+    const boundary = nodeView({
+      kind: "shadow-root",
+      nodeRef: "node-shadow",
+    });
+    const target = nodeView({ nodeRef: "node-target" });
+    const bounded = boundDomNodeViewPathForEnvelope(
+      [root, boundary, target],
+      (ancestorPath) => ({
+        type: "dom.selectionChanged",
+        documentEpoch: 1,
+        selectionRevision: 1,
+        nodeRef: target.nodeRef,
+        ancestorPath,
+      }),
+      { requireTargetLocator: true },
+    );
+
+    expect(bounded).toBeDefined();
+    expect(bounded?.[0]?.attributes).toEqual([]);
+    expect(bounded?.[1]?.locator).toEqual(boundary.locator);
+    expect(bounded?.at(-1)?.locator).toEqual(target.locator);
   });
 
   it("enforces the 64 KiB budget on otherwise bounded locator messages", () => {

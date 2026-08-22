@@ -801,6 +801,7 @@ export class PageInspectionSession {
           nodeRef: confirmed.nodeRef,
           ancestorPath: boundedPath,
         }),
+        { requireTargetLocator: true },
       );
       if (!ancestorPath || ancestorPath.at(-1)?.nodeRef !== confirmed.nodeRef) {
         throw new DomTreeProviderError("node-unavailable");

@@ -597,10 +597,10 @@ describe("DomTreeProvider", () => {
     harness.observers[0]!.emit([mutationRecord(parent, [added])]);
     harness.flushTimers();
 
-    expect(invalidated).toEqual([{
-      nodeRef: parentView.nodeRef,
-      branchRevision: 2,
-    }]);
+    expect(invalidated).toEqual([
+      { nodeRef: parentView.nodeRef, branchRevision: 2 },
+      { nodeRef: root.node.nodeRef, branchRevision: 2 },
+    ]);
     expect(harness.provider.getChildren({
       type: "dom.getChildren",
       requestId: "revised-children",
@@ -686,6 +686,7 @@ describe("DomTreeProvider", () => {
     expect(reentryResult).toBe("stale-branch");
     expect(invalidated).toEqual([
       { nodeRef: firstRef, branchRevision: 2 },
+      { nodeRef: root.node.nodeRef, branchRevision: 2 },
       { nodeRef: secondRef, branchRevision: 2 },
     ]);
   });
@@ -1009,6 +1010,87 @@ describe("DomTreeProvider", () => {
     });
   });
 
+  it("refreshes structured state when the visible root mutates while collapsed", () => {
+    const document = createDocument();
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+
+    document.documentElement.setAttribute("data-state", "after");
+    harness.observers[0]!.emit([
+      attributeMutationRecord(document.documentElement, "data-state"),
+    ]);
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([{
+      nodeRef: root.node.nodeRef,
+      branchRevision: 2,
+    }]);
+    expect(harness.provider.getRoot().node).toMatchObject({
+      branchRevision: 2,
+      attributes: [{ name: "data-state", value: "after" }],
+    });
+  });
+
+  it.each(["add", "remove"] as const)(
+    "refreshes a collapsed visible child's structured count after a child %s",
+    (action) => {
+      const document = createDocument();
+      const child = createElement("article", document);
+      const firstGrandchild = createElement("span", document);
+      const secondGrandchild = createElement("span", document);
+      child.append(firstGrandchild);
+      child.append(secondGrandchild);
+      document.documentElement.append(child);
+      const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+      const harness = createProviderHarness(document, {
+        onInvalidated: (branch) => invalidated.push(branch),
+      });
+      const root = harness.provider.getRoot();
+      const initialChild = onlyChild(
+        harness.provider,
+        root.node,
+        root.documentEpoch,
+        "initial-visible-child",
+      );
+
+      const changedGrandchild = action === "add"
+        ? createElement("button", document)
+        : secondGrandchild;
+      if (action === "add") {
+        child.append(changedGrandchild);
+      } else {
+        child.remove(changedGrandchild);
+      }
+      harness.observers[0]!.emit([
+        action === "add"
+          ? mutationRecord(child, [changedGrandchild])
+          : mutationRecord(child, [], [changedGrandchild]),
+      ]);
+      harness.flushTimers();
+
+      expect(invalidated).toEqual(expect.arrayContaining([
+        { nodeRef: root.node.nodeRef, branchRevision: 2 },
+        { nodeRef: initialChild.nodeRef, branchRevision: 2 },
+      ]));
+      expect(new Set(invalidated.map(({ nodeRef }) => nodeRef)).size).toBe(2);
+      expect(invalidated).toHaveLength(2);
+      const refreshedChild = onlyChild(
+        harness.provider,
+        { ...root.node, branchRevision: 2 },
+        root.documentEpoch,
+        `refreshed-visible-child-${action}`,
+      );
+      expect(refreshedChild).toMatchObject({
+        branchRevision: 2,
+        childCount: action === "add" ? 3 : 1,
+        expandable: true,
+      });
+    },
+  );
+
   it("rejects a cursor from an older branch revision as stale-branch", () => {
     const document = createDocument();
     const parent = createElement("main", document);
@@ -1162,6 +1244,7 @@ describe("DomTreeProvider", () => {
       root.node.nodeRef,
       targetView.nodeRef,
     ]);
+    expect(ancestorPath.at(-1)?.locator).toEqual(targetView.locator);
     expect(utf8ByteLength(JSON.stringify(selectionEvent)))
       .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
     expect(() => parseDomEvent(selectionEvent)).not.toThrow();

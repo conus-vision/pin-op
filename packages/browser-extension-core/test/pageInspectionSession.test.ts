@@ -10,6 +10,7 @@ import {
   type InspectListenerOptions,
   type InspectModeOptions,
 } from "../src/inspectMode.js";
+import { DomTreeController } from "../src/domTreeController.js";
 import {
   PageInspectionSession,
   type PageInspectionSelection,
@@ -780,12 +781,50 @@ describe("PageInspectionSession", () => {
       nodeRef: "node-2",
       ancestorPath: [
         { nodeRef: "node-1" },
-        { nodeRef: "node-2" },
+        { nodeRef: "node-2", locator: stableLocator() },
       ],
     });
     expect(utf8ByteLength(JSON.stringify(event)))
       .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
     expect(() => parseDomEvent(event)).not.toThrow();
+
+    const recoveryController = new DomTreeController({
+      transport: {
+        request: async () => {
+          throw new Error("Unexpected recovery transport request");
+        },
+        dispatch: () => undefined,
+        cancelPending: () => undefined,
+      },
+      createRequestId: () => "selection-recovery",
+    });
+    recoveryController.handleEvent(parseDomEvent(event));
+    expect(recoveryController.beginRecovery().selectedLocator)
+      .toEqual(stableLocator());
+  });
+
+  it("fails selection closed when its required recovery locator cannot fit", async () => {
+    const harness = createSessionHarness();
+    const target = Object.freeze({
+      ...nodeView("node-2", "article#card"),
+      locator: unfitStableLocator(),
+    });
+    harness.provider.add(harness.card, target.nodeRef, Object.freeze([
+      nodeView("node-1", "html"),
+      target,
+    ]));
+
+    await expect(harness.session.handle({
+      type: "dom.select",
+      documentEpoch: 3,
+      nodeRef: target.nodeRef,
+    })).resolves.toEqual({
+      type: "dom.error",
+      documentEpoch: 3,
+      code: "node-unavailable",
+    });
+    expect(harness.selections).toEqual([]);
+    expect(harness.events).toEqual([]);
   });
 
   it.each([undefined, new Error("page-controlled locator evidence")])(
@@ -1895,6 +1934,15 @@ function largeStableLocator() {
       classes,
       attributes,
     }))),
+  });
+}
+
+function unfitStableLocator() {
+  const large = largeStableLocator();
+  const segment = large.path[0]!;
+  return Object.freeze({
+    ...large,
+    path: Object.freeze(Array.from({ length: 64 }, () => segment)),
   });
 }
 

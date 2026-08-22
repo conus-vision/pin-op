@@ -7333,22 +7333,46 @@ function selectionChangedWithRevision(
   nodeRef: string,
   selectionRevision: number,
 ) {
+  const node = domSelectionNode(nodeRef);
   return {
     type: "dom.selectionChanged" as const,
     documentEpoch: 1,
     selectionRevision,
     nodeRef,
-    ancestorPath: [],
+    ancestorPath: [node],
   };
 }
 
 function selectionChanged(nodeRef: string) {
+  const node = domSelectionNode(nodeRef);
   return {
     type: "dom.selectionChanged" as const,
     documentEpoch: 1,
     selectionRevision: 1,
     nodeRef,
-    ancestorPath: [],
+    ancestorPath: [node],
+  };
+}
+
+function domSelectionNode(nodeRef: string) {
+  return {
+    nodeRef,
+    kind: "element" as const,
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: 0,
+    relationship: "dom" as const,
+    selectable: true,
+    label: nodeRef,
+    expandable: false,
+    branchRevision: 0,
+    locator: {
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
   };
 }
 

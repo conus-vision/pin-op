@@ -220,14 +220,27 @@ export function boundDomNodeViewPathForEnvelope(
   while (!domProtocolEnvelopeWithinBudget(envelope(candidate))) {
     let changed = false;
     for (let index = bounded.length - 1; index >= 0; index -= 1) {
-      const reduced = reduceDomNodeViewOptionalSnapshot(
-        bounded[index]!,
-        options.requireTargetLocator === true && index === bounded.length - 1,
-      );
+      const reduced = reduceDomNodeViewPresentationSnapshot(bounded[index]!);
       if (reduced !== bounded[index]) {
         bounded[index] = reduced;
         changed = true;
         break;
+      }
+    }
+    if (!changed) {
+      for (let index = bounded.length - 1; index >= 0; index -= 1) {
+        if (
+          options.requireTargetLocator === true &&
+          index === bounded.length - 1
+        ) {
+          continue;
+        }
+        const reduced = removeDomNodeViewLocator(bounded[index]!);
+        if (reduced !== bounded[index]) {
+          bounded[index] = reduced;
+          changed = true;
+          break;
+        }
       }
     }
     if (!changed) return undefined;
@@ -479,13 +492,23 @@ export function parseDomResponse(value: unknown): DomResponse {
         "node",
         "ancestorPath",
       ]);
-      return freeze({
-        type: "dom.locator",
-        requestId: assertIdentifier(record.requestId),
-        documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
-        node: parseNodeView(record.node),
-        ancestorPath: parseAncestorPath(record.ancestorPath),
-      });
+      {
+        const node = parseNodeView(record.node);
+        const ancestorPath = parseRecoverableAncestorPath(
+          record.ancestorPath,
+          "locator",
+        );
+        if (!sameDomNodeView(node, ancestorPath.at(-1))) {
+          throw invalidMessage();
+        }
+        return freeze({
+          type: "dom.locator",
+          requestId: assertIdentifier(record.requestId),
+          documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
+          node,
+          ancestorPath,
+        });
+      }
     case "dom.error":
       assertKeys(record, ["type", "requestId", "documentEpoch", "code"], [
         "type",
@@ -544,15 +567,25 @@ export function parseDomEvent(value: unknown): DomEvent {
         "nodeRef",
         "ancestorPath",
       ]);
-      return freeze({
-        type: "dom.selectionChanged",
-        documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
-        selectionRevision: assertSafeNonnegativeInteger(
-          record.selectionRevision,
-        ),
-        nodeRef: assertIdentifier(record.nodeRef),
-        ancestorPath: parseAncestorPath(record.ancestorPath),
-      });
+      {
+        const nodeRef = assertIdentifier(record.nodeRef);
+        const ancestorPath = parseRecoverableAncestorPath(
+          record.ancestorPath,
+          "selection",
+        );
+        if (ancestorPath.at(-1)?.nodeRef !== nodeRef) {
+          throw invalidMessage();
+        }
+        return freeze({
+          type: "dom.selectionChanged",
+          documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
+          selectionRevision: assertSafeNonnegativeInteger(
+            record.selectionRevision,
+          ),
+          nodeRef,
+          ancestorPath,
+        });
+      }
     case "dom.invalidated":
       assertKeys(record, ["type", "documentEpoch", "branches"], [
         "type",
@@ -793,12 +826,41 @@ function parseNodeViews(value: unknown): readonly DomNodeView[] {
   );
 }
 
-function parseAncestorPath(value: unknown): readonly DomNodeView[] {
-  return parseBoundedArray(
+function parseRecoverableAncestorPath(
+  value: unknown,
+  context: "locator" | "selection",
+): readonly DomNodeView[] {
+  const path = parseBoundedArray(
     value,
     DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
     parseNodeView,
   );
+  const target = path.at(-1);
+  if (
+    !target ||
+    !target.locator ||
+    path.some((view) => !DOM_RECOVERABLE_NODE_KINDS.has(view.kind)) ||
+    (context === "selection" && (
+      target.kind !== "element" ||
+      !target.selectable ||
+      target.inaccessible === true
+    ))
+  ) {
+    throw invalidMessage();
+  }
+  return path;
+}
+
+function sameDomNodeView(
+  left: DomNodeView,
+  right: DomNodeView | undefined,
+): boolean {
+  if (!right) return false;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 function parseInvalidationBranches(
@@ -914,10 +976,7 @@ function snapshotDomNodeViewForEgress(node: DomNodeView): DomNodeView {
   });
 }
 
-function reduceDomNodeViewOptionalSnapshot(
-  node: DomNodeView,
-  preserveLocator = false,
-): DomNodeView {
+function reduceDomNodeViewPresentationSnapshot(node: DomNodeView): DomNodeView {
   if (node.attributes.length > 0) {
     return Object.freeze({ ...node, attributes: Object.freeze([]) });
   }
@@ -933,7 +992,11 @@ function reduceDomNodeViewOptionalSnapshot(
     const { publicId: _publicId, ...rest } = node;
     return Object.freeze(rest);
   }
-  if (!preserveLocator && hasOwn(node, "locator")) {
+  return node;
+}
+
+function removeDomNodeViewLocator(node: DomNodeView): DomNodeView {
+  if (hasOwn(node, "locator")) {
     const { locator: _locator, ...rest } = node;
     return Object.freeze(rest);
   }

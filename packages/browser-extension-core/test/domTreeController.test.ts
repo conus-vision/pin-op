@@ -41,7 +41,10 @@ describe("DomTreeController", () => {
     const transport = new TestTransport();
     const root = node("root", false, 1);
     transport.enqueue(rootResponse(root, 1, [displayNode("leading", "comment", "before")]));
-    transport.enqueue(rootResponse(node("root", false, 2), 1, [
+    transport.enqueue(rootResponse({
+      ...node("root", false, 2),
+      attributes: [{ name: "data-state", value: "after" }],
+    }, 1, [
       displayNode("leading", "comment", "after"),
     ]));
     const controller = createController(transport);
@@ -63,7 +66,43 @@ describe("DomTreeController", () => {
       node: { kind: "comment", nodeValue: "after" },
       label: "after",
     });
+    expect(controller.rows()[1]).toMatchObject({
+      branchRevision: 2,
+      node: {
+        branchRevision: 2,
+        attributes: [{ name: "data-state", value: "after" }],
+      },
+    });
     expect(controller.isExpanded("root")).toBe(false);
+  });
+
+  it("refreshes a collapsed visible child's structured count from its owner branch", async () => {
+    const transport = new TestTransport();
+    transport.enqueue(rootResponse(node("root", true, 1)));
+    transport.enqueue(childrenResponse("root", 1, [node("child", true, 1)]));
+    transport.enqueue(rootResponse(node("root", true, 2)));
+    transport.enqueue(childrenResponse("root", 2, [{
+      ...node("child", true, 2),
+      childCount: 2,
+    }]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand("root");
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: "root", branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(controller.rows().find((row) => row.nodeRef === "child"))
+      .toMatchObject({
+        branchRevision: 2,
+        expandable: true,
+        node: { childCount: 2, branchRevision: 2 },
+      });
+    expect(controller.isExpanded("child")).toBe(false);
   });
 
   it("keeps display-only children visible but ignores selection and hover", async () => {
@@ -264,6 +303,54 @@ describe("DomTreeController", () => {
       revealVersion: 1,
     });
     expect(changed).toHaveBeenCalled();
+  });
+
+  it.each(["document-type", "text", "comment"] as const)(
+    "ignores a valid %s display row in a live selection path",
+    (kind) => {
+      const controller = createController(new TestTransport());
+      const target = node("target");
+
+      controller.handleEvent({
+        type: "dom.selectionChanged",
+        documentEpoch: 1,
+        selectionRevision: 1,
+        nodeRef: target.nodeRef,
+        ancestorPath: [
+          node("root", true),
+          displayNode(`display-${kind}`, kind, kind),
+          target,
+        ],
+      });
+
+      expect(controller.rows()).toEqual([]);
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controller.expandedRefs()).toEqual([]);
+    },
+  );
+
+  it("accepts shadow and frame boundaries but rejects a non-element selection target", () => {
+    const controller = createController(new TestTransport());
+    const root = node("root", true);
+    const shadow = recoverableNode("shadow", "shadow-root");
+    const frame = recoverableNode("frame", "frame-document");
+    const target = node("target");
+
+    controller.handleEvent(selectionEvent(1, [root, shadow, frame, target]));
+
+    expect(nodeRefs(controller)).toEqual(["root", "shadow", "frame", "target"]);
+    expect(controller.expandedRefs()).toEqual(["root", "shadow", "frame"]);
+    expect(controller.snapshot().selectedRef).toBe("target");
+
+    controller.handleEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 1,
+      selectionRevision: 2,
+      nodeRef: frame.nodeRef,
+      ancestorPath: [root, shadow, frame],
+    });
+
+    expect(controller.snapshot().selectedRef).toBe("target");
   });
 
   it("keeps reveal versions monotonic across document epochs", () => {
@@ -488,11 +575,15 @@ describe("DomTreeController", () => {
 
   it("does not dispatch interaction for inaccessible rows", async () => {
     const transport = new TestTransport();
+    transport.enqueue(rootResponse(node("root", true)));
+    transport.enqueue(childrenResponse("root", 0, [{
+      ...node("locked-frame"),
+      selectable: false,
+      inaccessible: true,
+    }]));
     const controller = createController(transport);
-    controller.handleEvent(selectionEvent(1, [
-      node("root", true),
-      { ...node("locked-frame"), inaccessible: true },
-    ]));
+    await controller.loadRoot();
+    await controller.expand("root");
 
     await controller.select("locked-frame");
     controller.hover("locked-frame");
@@ -652,6 +743,36 @@ describe("DomTreeController", () => {
       focusedRef: "new-focus",
       recoveredFocusRef: "new-focus",
     });
+  });
+
+  it("rejects display anchors and mismatched target authority during recovery", () => {
+    const controller = createController(new TestTransport());
+    const root = locatedNode("new-root", locator(1), true);
+    const target = locatedNode("new-target", locator(2));
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(root, 2));
+    controller.installRecoveredPath(
+      locatorResponse(target, [
+        root,
+        displayNode("recovery-comment", "comment", "marker"),
+        target,
+      ], 2),
+      { selected: true, expanded: true },
+    );
+    controller.installRecoveredPath(
+      locatorResponse(
+        { ...target, label: "response authority" },
+        [root, { ...target, label: "path authority" }],
+        2,
+      ),
+      { selected: true, expanded: true },
+    );
+    controller.finishRecovery();
+
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.expandedRefs()).toEqual([]);
   });
 
   it("does not publish a recovered focus ref for root fallback", () => {
@@ -893,6 +1014,31 @@ function displayNode(
     expandable: false,
     branchRevision: 0,
     label: kind === "document-type" ? `<!DOCTYPE ${value}>` : value,
+  };
+}
+
+function recoverableNode(
+  nodeRef: string,
+  kind: "shadow-root" | "frame-document",
+): DomNodeView {
+  return {
+    nodeRef,
+    kind,
+    nodeType: kind === "shadow-root" ? 11 : 9,
+    nodeName: kind === "shadow-root" ? "#document-fragment" : "#document",
+    attributes: [],
+    childCount: 1,
+    relationship: kind,
+    selectable: false,
+    label: nodeRef,
+    expandable: true,
+    branchRevision: 0,
+    locator: {
+      version: 1,
+      targetKind: kind,
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
   };
 }
 

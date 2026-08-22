@@ -721,14 +721,20 @@ describe("DomTreeView", () => {
     expect(loadingTabIndex).toBe("0");
   });
 
-  it("renders shadow, frame, and inaccessible boundary states", () => {
+  it("renders shadow, frame, and inaccessible boundary states", async () => {
     const harness = createHarness();
-    harness.controller.handleEvent(selectionChanged(1, [
-      node("root", "html", true),
-      { ...node("shadow", "#shadow-root", true), kind: "shadow-root" },
-      { ...node("frame", "iframe document", true), kind: "frame-document" },
-      { ...node("locked", "iframe.external"), inaccessible: true },
+    const root = node("root", "html", true);
+    harness.transport.enqueue(childrenResponse(root.nodeRef, [
+      boundaryNode("shadow", "#shadow-root", "shadow-root", true),
+      boundaryNode("frame", "iframe document", "frame-document", true),
+      {
+        ...node("locked", "iframe.external"),
+        selectable: false,
+        inaccessible: true,
+      },
     ]));
+    harness.controller.handleEvent(selectionChanged(1, [root]));
+    await harness.controller.expand(root.nodeRef);
 
     expect(harness.dom.row("shadow").className).toContain("is-shadow-root");
     expect(harness.dom.row("frame").className).toContain("is-frame-document");
@@ -969,13 +975,19 @@ describe("DomTreeView", () => {
     expect(harness.transport.dispatched).toEqual([]);
   });
 
-  it("deduplicates hover clearing across blank and non-previewable rows", () => {
+  it("deduplicates hover clearing across blank and non-previewable rows", async () => {
     const harness = createHarness();
-    harness.controller.handleEvent(selectionChanged(1, [
-      node("root", "html", true),
+    const root = node("root", "html", true);
+    harness.transport.enqueue(childrenResponse(root.nodeRef, [
       node("preview", "main", true),
-      { ...node("locked", "iframe.external"), inaccessible: true },
+      {
+        ...node("locked", "iframe.external"),
+        selectable: false,
+        inaccessible: true,
+      },
     ]));
+    harness.controller.handleEvent(selectionChanged(1, [root]));
+    await harness.controller.expand(root.nodeRef);
     const tree = harness.dom.element("dom-tree");
     const loadMore = harness.dom.element("dom-tree-spacer")
       .findByData("rowType", "load-more");
@@ -998,19 +1010,21 @@ describe("DomTreeView", () => {
 
     expect(clearHoverRequests(harness.transport)).toHaveLength(2);
     expect(harness.controller.rows().find(({ nodeRef }) => nodeRef === "locked"))
-      .toMatchObject({ selected: true });
+      .toMatchObject({ selected: false });
     expect(harness.controller.rows().find(({ nodeRef }) => nodeRef === "root"))
       .toMatchObject({ expanded: true });
   });
 
-  it("clears element preview when entering shadow and frame rows", () => {
+  it("clears element preview when entering shadow and frame rows", async () => {
     const harness = createHarness();
-    harness.controller.handleEvent(selectionChanged(1, [
-      node("root", "html", true),
+    const root = node("root", "html", true);
+    harness.transport.enqueue(childrenResponse(root.nodeRef, [
       node("preview", "main", true),
-      { ...node("shadow", "#shadow-root", true), kind: "shadow-root" },
-      { ...node("frame", "iframe document"), kind: "frame-document" },
+      boundaryNode("shadow", "#shadow-root", "shadow-root", true),
+      boundaryNode("frame", "iframe document", "frame-document"),
     ]));
+    harness.controller.handleEvent(selectionChanged(1, [root]));
+    await harness.controller.expand(root.nodeRef);
     const tree = harness.dom.element("dom-tree");
 
     tree.dispatch("pointerover", { target: harness.dom.row("preview") });
@@ -1515,6 +1529,33 @@ function node(
     locator: {
       version: 1,
       targetKind: "element",
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
+  };
+}
+
+function boundaryNode(
+  nodeRef: string,
+  label: string,
+  kind: "shadow-root" | "frame-document",
+  expandable = false,
+): DomNodeView {
+  return {
+    nodeRef,
+    kind,
+    nodeType: kind === "shadow-root" ? 11 : 9,
+    nodeName: kind === "shadow-root" ? "#document-fragment" : "#document",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: kind,
+    selectable: false,
+    label,
+    expandable,
+    branchRevision: 0,
+    locator: {
+      version: 1,
+      targetKind: kind,
       boundaries: [],
       path: [{ tagName: "div", siblingIndex: 0 }],
     },

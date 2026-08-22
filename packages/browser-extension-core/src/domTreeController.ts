@@ -341,7 +341,8 @@ export class DomTreeController {
       response.documentEpoch !== this.currentDocumentEpoch ||
       response.ancestorPath.length === 0 ||
       response.ancestorPath[0]?.nodeRef !== this.rootRef ||
-      response.ancestorPath.at(-1)?.nodeRef !== response.node.nodeRef
+      !isRecoverableLocatorResponse(response) ||
+      (options.selected && !isSelectableElementView(response.node))
     ) {
       return;
     }
@@ -708,6 +709,12 @@ export class DomTreeController {
       return;
     }
     if (
+      event.type === "dom.selectionChanged" &&
+      !isRecoverableSelectionPath(event.nodeRef, event.ancestorPath)
+    ) {
+      return;
+    }
+    if (
       this.currentDocumentEpoch !== undefined &&
       event.documentEpoch < this.currentDocumentEpoch
     ) {
@@ -1071,7 +1078,7 @@ export class DomTreeController {
     nodeRef: string,
     ancestorPath: readonly DomNodeView[],
   ): void {
-    if (ancestorPath.length === 0 || ancestorPath.at(-1)?.nodeRef !== nodeRef) {
+    if (!isRecoverableSelectionPath(nodeRef, ancestorPath)) {
       return;
     }
     this.recoveredFocusRef = undefined;
@@ -1653,6 +1660,81 @@ export class DomTreeController {
         this.reportError(error);
       }
     }
+  }
+}
+
+function isRecoverableSelectionPath(
+  nodeRef: string,
+  ancestorPath: readonly DomNodeView[],
+): boolean {
+  const target = ancestorPath.at(-1);
+  return Boolean(
+    target &&
+    target.nodeRef === nodeRef &&
+    target.locator &&
+    isSelectableElementView(target) &&
+    ancestorPath.every(isRecoverablePathView),
+  );
+}
+
+function isRecoverableLocatorResponse(response: DomLocatorResponse): boolean {
+  const target = response.ancestorPath.at(-1);
+  return Boolean(
+    target &&
+    target.locator &&
+    response.ancestorPath.every(isRecoverablePathView) &&
+    sameDomNodeViewAuthority(response.node, target),
+  );
+}
+
+function isRecoverablePathView(view: DomNodeView): boolean {
+  return (
+    view.kind === "element" ||
+    view.kind === "shadow-root" ||
+    view.kind === "frame-document"
+  ) && (
+    view.locator === undefined || view.locator.targetKind === view.kind
+  );
+}
+
+function isSelectableElementView(view: DomNodeView): boolean {
+  return view.kind === "element" && view.selectable && !view.inaccessible;
+}
+
+function sameDomNodeViewAuthority(
+  left: DomNodeView,
+  right: DomNodeView,
+): boolean {
+  if (
+    left.nodeRef !== right.nodeRef ||
+    left.kind !== right.kind ||
+    left.nodeType !== right.nodeType ||
+    left.nodeName !== right.nodeName ||
+    left.nodeValue !== right.nodeValue ||
+    left.publicId !== right.publicId ||
+    left.systemId !== right.systemId ||
+    left.childCount !== right.childCount ||
+    left.relationship !== right.relationship ||
+    left.selectable !== right.selectable ||
+    left.label !== right.label ||
+    left.expandable !== right.expandable ||
+    left.inaccessible !== right.inaccessible ||
+    left.branchRevision !== right.branchRevision ||
+    left.attributes.length !== right.attributes.length ||
+    !left.attributes.every((attribute, index) => (
+      attribute.name === right.attributes[index]?.name &&
+      attribute.value === right.attributes[index]?.value
+    ))
+  ) {
+    return false;
+  }
+  if (!left.locator || !right.locator) {
+    return left.locator === right.locator;
+  }
+  try {
+    return locatorKey(left.locator) === locatorKey(right.locator);
+  } catch {
+    return false;
   }
 }
 

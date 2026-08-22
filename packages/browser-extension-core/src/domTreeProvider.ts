@@ -784,6 +784,7 @@ export class DomTreeProvider {
           nodeRef,
           ancestorPath,
         }),
+        { requireTargetLocator: true },
       );
       if (!result) throwDomTreeError("node-unavailable");
       const validate = () => this.validateLivePathViews(result, documentEpoch);
@@ -863,6 +864,7 @@ export class DomTreeProvider {
         nodeRef: target.nodeRef,
         ancestorPath: boundedPath,
       }),
+      { requireTargetLocator: true },
     );
     if (!ancestorPath) throwDomTreeError("node-unavailable");
     return Object.freeze({
@@ -1804,7 +1806,7 @@ export class DomTreeProvider {
   private processPendingMutationRecords(): void {
     const records = this.pendingMutations.splice(0);
     const affected = new Set<string>();
-    const auxiliaryAffected = new Set<string>();
+    const forcedAffected = new Set<string>();
     const addedRoots: PendingElementMutationRoot[] = [];
     const removedRoots: PendingElementMutationRoot[] = [];
     for (const pending of records) {
@@ -1828,7 +1830,7 @@ export class DomTreeProvider {
           parent === this.topDocument &&
           (targetType === 8 || targetType === 10)
         ) {
-          auxiliaryAffected.add(parentRef);
+          forcedAffected.add(parentRef);
         } else if (parentRef && this.expandedBranches.has(parentRef)) {
           affected.add(parentRef);
         }
@@ -1845,9 +1847,14 @@ export class DomTreeProvider {
         if (!targetRef || targetRecord?.kind !== "element") {
           continue;
         }
-        const visibleBranchRef = targetRecord.parentRef ?? targetRef;
-        if (this.expandedBranches.has(visibleBranchRef)) {
-          affected.add(visibleBranchRef);
+        const presentationOwnerRef = targetRecord.parentRef;
+        if (
+          presentationOwnerRef &&
+          this.expandedBranches.has(presentationOwnerRef)
+        ) {
+          affected.add(presentationOwnerRef);
+        } else if (!presentationOwnerRef) {
+          forcedAffected.add(targetRef);
         }
         continue;
       }
@@ -1911,30 +1918,21 @@ export class DomTreeProvider {
       if (!logicalTreeChanged) {
         continue;
       }
-      if (targetRef && this.expandedBranches.has(targetRef)) {
-        affected.add(targetRef);
-      }
-      if (targetRef && rootAuxiliaryChanged) {
-        auxiliaryAffected.add(targetRef);
-      }
       const parentRef = targetRef
         ? targetRecord?.parentRef
         : undefined;
-      const targetElement = mutation.target.nodeType === 1
-        ? mutation.target as Element
-        : undefined;
-      const visibleExpandableChanged = targetRecord?.kind === "element" &&
-        targetElement !== undefined &&
-        !isFrameElement(targetElement) &&
-        targetRecord.expandable !== (
-          getOpenShadowRoot(targetElement) !== undefined ||
-          hasLogicalChild(targetElement)
-        );
-      if (
-        visibleExpandableChanged &&
-        parentRef &&
-        this.expandedBranches.has(parentRef)
+      if (targetRef && this.expandedBranches.has(targetRef)) {
+        affected.add(targetRef);
+      } else if (
+        targetRef &&
+        (!parentRef || this.expandedBranches.has(parentRef))
       ) {
+        forcedAffected.add(targetRef);
+      }
+      if (targetRef && rootAuxiliaryChanged) {
+        forcedAffected.add(targetRef);
+      }
+      if (parentRef && this.expandedBranches.has(parentRef)) {
         affected.add(parentRef);
       }
     }
@@ -2000,7 +1998,7 @@ export class DomTreeProvider {
       const invalidated = this.nodeRegistry.invalidateSubtree(root.node);
       this.releaseInvalidatedRefs(invalidated);
     }
-    this.invalidateBranches(affected, auxiliaryAffected);
+    this.invalidateBranches(affected, forcedAffected);
   }
 
   private mutationTargetRef(target: Node): string | undefined {
