@@ -148,6 +148,7 @@ export class DomTreeController {
   private readonly nodes = new Map<string, NodeState>();
   private readonly branches = new Map<string, BranchState>();
   private readonly expanded = new Set<string>();
+  private readonly deferredPruneRefs = new Set<string>();
   private revealPathRefs: readonly string[] = Object.freeze([]);
   private rowsCache: readonly DomTreeRow[] | undefined;
   private rootRef: string | undefined;
@@ -583,7 +584,12 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
-    if (!state || !state.view.selectable || state.view.inaccessible) {
+    if (
+      !state ||
+      !state.view.selectable ||
+      state.view.inaccessible ||
+      this.isDeferredPruneNode(nodeRef)
+    ) {
       return;
     }
     try {
@@ -610,7 +616,12 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
-    if (!state || !state.view.selectable || state.view.inaccessible) {
+    if (
+      !state ||
+      !state.view.selectable ||
+      state.view.inaccessible ||
+      this.isDeferredPruneNode(nodeRef)
+    ) {
       return;
     }
     if (this.lastHoverRequest === nodeRef) {
@@ -749,6 +760,7 @@ export class DomTreeController {
             invalidation.branchRevision,
           );
         }
+        this.sweepDeferredSubtrees();
         this.notify();
     }
   }
@@ -776,6 +788,7 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
+    this.deferredPruneRefs.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
@@ -1013,6 +1026,9 @@ export class DomTreeController {
           return;
         }
         if (response.type === "dom.error") {
+          if (!cursor) {
+            this.failFirstPageRefresh(currentBranch, pendingFocusAnchor);
+          }
           this.applyError(response.code);
           return;
         }
@@ -1059,6 +1075,7 @@ export class DomTreeController {
         if (currentBranch?.pending?.token === token) {
           const focusAnchor = this.focusAnchor(this.rows());
           currentBranch.pending = undefined;
+          this.sweepDeferredSubtrees();
           this.invalidateRows();
           this.reconcileFocus(focusAnchor);
           this.notify();
@@ -1254,12 +1271,21 @@ export class DomTreeController {
   }
 
   private removeSubtree(nodeRef: string): void {
+    if (this.hasLiveOwner(nodeRef)) {
+      return;
+    }
+    this.deferredPruneRefs.delete(nodeRef);
     const branch = this.branches.get(nodeRef);
     if (branch) {
-      for (const childRef of [...branch.children]) {
+      const descendants = new Set([
+        ...branch.children,
+        ...branch.recoveredChildren,
+        ...(branch.revealChild ? [branch.revealChild] : []),
+      ]);
+      this.branches.delete(nodeRef);
+      for (const childRef of descendants) {
         this.removeSubtree(childRef);
       }
-      this.branches.delete(nodeRef);
     }
     this.expanded.delete(nodeRef);
     this.nodes.delete(nodeRef);
@@ -1446,15 +1472,16 @@ export class DomTreeController {
   }
 
   private clearPageChildren(branch: BranchState): void {
-    for (const childRef of branch.children) {
+    const previousChildren = [...branch.children];
+    branch.children.length = 0;
+    for (const childRef of previousChildren) {
       if (
         childRef !== branch.revealChild &&
         !branch.recoveredChildren.includes(childRef)
       ) {
-        this.removeSubtree(childRef);
+        this.pruneDetachedSubtree(childRef);
       }
     }
-    branch.children.length = 0;
   }
 
   private replacePageChildren(
@@ -1478,9 +1505,114 @@ export class DomTreeController {
         childRef !== branch.revealChild &&
         !branch.recoveredChildren.includes(childRef)
       ) {
-        this.removeSubtree(childRef);
+        this.pruneDetachedSubtree(childRef);
       }
     }
+    this.sweepDeferredSubtrees(branch);
+  }
+
+  private failFirstPageRefresh(
+    branch: BranchState,
+    focusAnchor: FocusAnchor,
+  ): void {
+    this.clearPageChildren(branch);
+    branch.loaded = false;
+    branch.nextCursor = undefined;
+    this.sweepDeferredSubtrees(branch);
+    this.invalidateRows();
+    this.reconcileFocus(focusAnchor);
+  }
+
+  private pruneDetachedSubtree(nodeRef: string): void {
+    if (this.hasLiveOwner(nodeRef)) {
+      this.deferredPruneRefs.delete(nodeRef);
+      return;
+    }
+    this.deferredPruneRefs.add(nodeRef);
+    this.sweepDeferredSubtrees();
+  }
+
+  private sweepDeferredSubtrees(settledBranch?: BranchState): void {
+    if (this.hasPendingFirstPageRefresh(settledBranch)) {
+      return;
+    }
+    for (const nodeRef of [...this.deferredPruneRefs]) {
+      this.deferredPruneRefs.delete(nodeRef);
+      this.removeSubtree(nodeRef);
+    }
+  }
+
+  private hasPendingFirstPageRefresh(
+    settledBranch?: BranchState,
+  ): boolean {
+    if (this.recovering) {
+      return false;
+    }
+    for (const branch of this.branches.values()) {
+      if (
+        branch !== settledBranch &&
+        branch.pending &&
+        branch.pending.cursor === undefined
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasLiveOwner(nodeRef: string): boolean {
+    if (
+      this.rootPrologue.some((node) => node.nodeRef === nodeRef) ||
+      this.rootEpilogue.some((node) => node.nodeRef === nodeRef)
+    ) {
+      return true;
+    }
+
+    const pending = this.rootRef ? [this.rootRef] : [];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const currentRef = pending.pop();
+      if (!currentRef || visited.has(currentRef)) {
+        continue;
+      }
+      if (currentRef === nodeRef) {
+        return true;
+      }
+      visited.add(currentRef);
+      const branch = this.branches.get(currentRef);
+      if (!branch) {
+        continue;
+      }
+      pending.push(...branch.children, ...branch.recoveredChildren);
+      if (branch.revealChild) {
+        pending.push(branch.revealChild);
+      }
+    }
+    return false;
+  }
+
+  private isDeferredPruneNode(nodeRef: string): boolean {
+    const pending = [...this.deferredPruneRefs];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const currentRef = pending.pop();
+      if (!currentRef || visited.has(currentRef)) {
+        continue;
+      }
+      if (currentRef === nodeRef) {
+        return true;
+      }
+      visited.add(currentRef);
+      const branch = this.branches.get(currentRef);
+      if (!branch) {
+        continue;
+      }
+      pending.push(...branch.children, ...branch.recoveredChildren);
+      if (branch.revealChild) {
+        pending.push(branch.revealChild);
+      }
+    }
+    return false;
   }
 
   private commitRecoveredChildren(): void {
@@ -1577,6 +1709,13 @@ export class DomTreeController {
     if (rows.some((row) => row.nodeRef === this.focusedNodeRef)) {
       return;
     }
+    if (
+      this.focusedNodeRef &&
+      this.deferredPruneRefs.has(this.focusedNodeRef) &&
+      this.hasPendingFirstPageRefresh()
+    ) {
+      return;
+    }
     const index = anchor.index < 0
       ? 0
       : Math.min(anchor.index, rows.length - 1);
@@ -1634,6 +1773,7 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
+    this.deferredPruneRefs.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
