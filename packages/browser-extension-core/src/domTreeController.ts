@@ -470,7 +470,10 @@ export class DomTreeController {
       requestId: this.createRequestId(),
       ...(expectedEpoch === undefined ? {} : { documentEpoch: expectedEpoch }),
     };
-    const promise = (async (): Promise<void> => {
+    const pendingTask = createPendingTask();
+    const promise = pendingTask.promise;
+    this.rootRequest = { token, promise };
+    const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
         if (!this.isCurrent(generation) || this.rootRequest?.token !== token) {
@@ -511,7 +514,7 @@ export class DomTreeController {
         }
       }
     })();
-    this.rootRequest = { token, promise };
+    void task.then(pendingTask.resolve, pendingTask.reject);
     this.notify();
     return promise;
   }
@@ -914,7 +917,10 @@ export class DomTreeController {
       nodeRef,
       branchRevision: revision,
     };
-    const promise = (async (): Promise<void> => {
+    const pendingTask = createPendingTask();
+    const promise = pendingTask.promise;
+    branch.pending = { token, revision, promise };
+    const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
         const currentNode = this.nodes.get(nodeRef);
@@ -977,7 +983,7 @@ export class DomTreeController {
         }
       }
     })();
-    branch.pending = { token, revision, promise };
+    void task.then(pendingTask.resolve, pendingTask.reject);
     return promise;
   }
 
@@ -1033,7 +1039,16 @@ export class DomTreeController {
       ...(cursor ? { cursor } : {}),
     };
     this.registerReconciliationToken(reconciliationBatchId, token);
-    const promise = (async (): Promise<void> => {
+    const pendingTask = createPendingTask();
+    const promise = pendingTask.promise;
+    branch.pending = {
+      token,
+      revision,
+      cursor,
+      reconciliationBatchId,
+      promise,
+    };
+    const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
         const currentBranch = this.branches.get(nodeRef);
@@ -1152,13 +1167,7 @@ export class DomTreeController {
         }
       }
     })();
-    branch.pending = {
-      token,
-      revision,
-      cursor,
-      reconciliationBatchId,
-      promise,
-    };
+    void task.then(pendingTask.resolve, pendingTask.reject);
     this.invalidateRows();
     if (moveFocusedServiceRow) {
       this.moveFocusToNearestFocusable(pendingFocusAnchor);
@@ -1289,7 +1298,10 @@ export class DomTreeController {
       requestId: this.createRequestId(),
       documentEpoch: expectedEpoch,
     };
-    const promise = (async (): Promise<void> => {
+    const pendingTask = createPendingTask();
+    const promise = pendingTask.promise;
+    this.rootRequest = { token, promise };
+    const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
         const current = this.nodes.get(nodeRef);
@@ -1358,7 +1370,7 @@ export class DomTreeController {
         }
       }
     })();
-    this.rootRequest = { token, promise };
+    void task.then(pendingTask.resolve, pendingTask.reject);
     this.notify();
     return promise;
   }
@@ -2286,6 +2298,20 @@ function emptyRecoverySnapshot(): DomTreeRecoverySnapshot {
     selectedWasExpanded: false,
     expandedLocators: Object.freeze([]),
   });
+}
+
+function createPendingTask(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function locatorKey(locator: DomStableLocator): string {

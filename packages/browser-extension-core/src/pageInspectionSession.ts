@@ -11,6 +11,7 @@ import {
 } from "./domTreeProvider.js";
 import {
   boundDomNodeViewPathForEnvelope,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
   parseDomRequest,
   type DomChildrenResponse,
   type DomErrorCode,
@@ -246,6 +247,13 @@ export class PageInspectionSession {
   private pickerActive = false;
   private resettingDocument = false;
   private disposed = false;
+  private readonly pendingInvalidationBranches = new Map<
+    string,
+    DomInvalidationBranch
+  >();
+  private pendingInvalidationDocumentEpoch: number | undefined;
+  private invalidationFlushGeneration = 0;
+  private invalidationFlushScheduled = false;
 
   public constructor(private readonly options: PageInspectionSessionOptions) {
     this.document = options.document;
@@ -351,6 +359,7 @@ export class PageInspectionSession {
     }
 
     this.resettingDocument = true;
+    this.clearPendingInvalidations();
     try {
       this.pickerActive = false;
       this.pickerRevision += 1;
@@ -616,6 +625,7 @@ export class PageInspectionSession {
       return;
     }
     this.disposed = true;
+    this.clearPendingInvalidations();
     this.pickerActive = false;
     this.pickerRevision += 1;
     this.hoverRevision += 1;
@@ -1473,15 +1483,39 @@ export class PageInspectionSession {
     if (this.disposed) {
       return;
     }
-    this.emitEvent(Object.freeze({
-      type: "dom.invalidated",
-      documentEpoch: this.provider?.currentDocumentEpoch ??
-        fallbackDocumentEpoch,
-      branches: Object.freeze([branch]),
-    }));
-    if (this.provider) {
-      this.reconcileRetainedAuthority();
+    const documentEpoch = this.provider?.currentDocumentEpoch ??
+      fallbackDocumentEpoch;
+    if (
+      this.pendingInvalidationDocumentEpoch !== undefined &&
+      this.pendingInvalidationDocumentEpoch !== documentEpoch
+    ) {
+      this.clearPendingInvalidations();
     }
+    this.pendingInvalidationDocumentEpoch ??= documentEpoch;
+    const existing = this.pendingInvalidationBranches.get(branch.nodeRef);
+    if (existing) {
+      if (branch.branchRevision > existing.branchRevision) {
+        this.pendingInvalidationBranches.set(
+          branch.nodeRef,
+          Object.freeze({
+            nodeRef: branch.nodeRef,
+            branchRevision: branch.branchRevision,
+          }),
+        );
+      }
+    } else if (
+      this.pendingInvalidationBranches.size <
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES
+    ) {
+      this.pendingInvalidationBranches.set(
+        branch.nodeRef,
+        Object.freeze({
+          nodeRef: branch.nodeRef,
+          branchRevision: branch.branchRevision,
+        }),
+      );
+    }
+    this.scheduleInvalidationFallback();
   }
 
   private handleFrameLifecycle(): void {
@@ -1496,7 +1530,61 @@ export class PageInspectionSession {
     if (this.disposed || this.resettingDocument) {
       return;
     }
+    this.flushPendingInvalidations();
+    if (this.disposed || this.resettingDocument) {
+      return;
+    }
     this.reconcileRetainedAuthority();
+  }
+
+  private scheduleInvalidationFallback(): void {
+    if (this.invalidationFlushScheduled) {
+      return;
+    }
+    this.invalidationFlushScheduled = true;
+    const generation = ++this.invalidationFlushGeneration;
+    globalThis.queueMicrotask(() => {
+      if (
+        this.disposed ||
+        this.resettingDocument ||
+        !this.invalidationFlushScheduled ||
+        generation !== this.invalidationFlushGeneration
+      ) {
+        return;
+      }
+      this.invalidationFlushScheduled = false;
+      this.flushPendingInvalidations();
+      if (!this.disposed && !this.resettingDocument) {
+        this.reconcileRetainedAuthority();
+      }
+    });
+  }
+
+  private flushPendingInvalidations(): void {
+    this.cancelInvalidationFallback();
+    const documentEpoch = this.pendingInvalidationDocumentEpoch;
+    const branches = Object.freeze([...this.pendingInvalidationBranches.values()]);
+    this.pendingInvalidationBranches.clear();
+    this.pendingInvalidationDocumentEpoch = undefined;
+    if (documentEpoch === undefined || branches.length === 0) {
+      return;
+    }
+    this.emitEvent(Object.freeze({
+      type: "dom.invalidated",
+      documentEpoch,
+      branches,
+    }));
+  }
+
+  private clearPendingInvalidations(): void {
+    this.cancelInvalidationFallback();
+    this.pendingInvalidationBranches.clear();
+    this.pendingInvalidationDocumentEpoch = undefined;
+  }
+
+  private cancelInvalidationFallback(): void {
+    this.invalidationFlushScheduled = false;
+    this.invalidationFlushGeneration += 1;
   }
 
   private reconcileRetainedAuthority(): void {

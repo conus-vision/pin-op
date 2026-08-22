@@ -24,6 +24,7 @@ import type {
   DomTreeSessionRetention,
 } from "../src/domTreeProvider.js";
 import {
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   parseDomEvent,
   parseDomResponse,
@@ -44,6 +45,162 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageInspectionSession", () => {
+  it("batches one mutation settlement into one bounded deterministic invalidation", async () => {
+    const harness = createSessionHarness();
+    for (
+      let index = 0;
+      index <= DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES;
+      index += 1
+    ) {
+      harness.provider.emitInvalidation(`branch-${index}`, index + 2);
+    }
+    harness.provider.emitInvalidation("branch-0", 999);
+    harness.provider.emitInvalidation("branch-0", 998);
+
+    expect(harness.events).toEqual([]);
+    harness.provider.emitMutationSettled();
+
+    const invalidations = harness.events.filter((event) => (
+      event.type === "dom.invalidated"
+    ));
+    expect(invalidations).toEqual([{
+      type: "dom.invalidated",
+      documentEpoch: 3,
+      branches: [
+        { nodeRef: "branch-0", branchRevision: 999 },
+        ...Array.from(
+          { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES - 1 },
+          (_, offset) => ({
+            nodeRef: `branch-${offset + 1}`,
+            branchRevision: offset + 3,
+          }),
+        ),
+      ],
+    }]);
+    expect(invalidations[0]?.branches).toHaveLength(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(() => parseDomEvent(invalidations[0])).not.toThrow();
+    expect(utf8ByteLength(JSON.stringify(invalidations[0])))
+      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+
+    await flushAsync();
+    expect(harness.events.filter((event) => event.type === "dom.invalidated"))
+      .toHaveLength(1);
+  });
+
+  it("flushes non-mutation invalidations once and cancels old batches on reset or dispose", async () => {
+    const fallback = createSessionHarness();
+    fallback.provider.emitInvalidation("fallback", 2);
+
+    await flushAsync();
+
+    expect(fallback.events).toContainEqual({
+      type: "dom.invalidated",
+      documentEpoch: 3,
+      branches: [{ nodeRef: "fallback", branchRevision: 2 }],
+    });
+
+    const reset = createSessionHarness();
+    reset.provider.emitInvalidation("old-document", 2);
+    reset.session.resetDocument(
+      new FakeSessionDocument() as unknown as Document & { readonly styleSheets: [] },
+      4,
+    );
+    await flushAsync();
+    expect(reset.events).toEqual([]);
+
+    const disposed = createSessionHarness();
+    disposed.provider.emitInvalidation("disposed", 2);
+    disposed.session.dispose();
+    await flushAsync();
+    expect(disposed.events).toEqual([]);
+  });
+
+  it("delivers source and destination invalidations as one move reconciliation batch", async () => {
+    let controller: DomTreeController | undefined;
+    const harness = createSessionHarness({
+      onEvent: (event) => controller?.handleEvent(event),
+    });
+    const responses: Array<DomResponse | Promise<DomResponse>> = [];
+    const requests: DomRequest[] = [];
+    const root = controllerNode("tree-root", 1, true, 1);
+    const source = controllerNode("source", 2, true, 1);
+    const destination = controllerNode("destination", 2, true, 1, 1);
+    const moved = controllerNode("moved", 3, true, 1);
+    const leaf = controllerNode("moved-leaf", 4, false, 1);
+    responses.push(
+      rootResponseForSession(root),
+      childrenResponseForSession(root.nodeRef, 1, [source, destination]),
+      childrenResponseForSession(source.nodeRef, 1, [moved]),
+      childrenResponseForSession(destination.nodeRef, 1, []),
+      childrenResponseForSession(moved.nodeRef, 1, [leaf]),
+    );
+    controller = new DomTreeController({
+      transport: {
+        request: async (request) => {
+          requests.push(request);
+          const response = await responses.shift();
+          if (!response) throw new Error("Missing queued controller response");
+          return "requestId" in response
+            ? { ...response, requestId: request.requestId }
+            : response;
+        },
+        dispatch: () => undefined,
+        cancelPending: () => undefined,
+      },
+      createRequestId: () => `session-tree-${requests.length + 1}`,
+    });
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(destination.nodeRef);
+    await controller.expand(moved.nodeRef);
+    controller.handleEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 3,
+      selectionRevision: 1,
+      nodeRef: moved.nodeRef,
+      ancestorPath: [root, source, moved],
+    });
+    controller.focus(leaf.nodeRef);
+    responses.push(
+      childrenResponseForSession(source.nodeRef, 2, []),
+      childrenResponseForSession(destination.nodeRef, 2, [moved]),
+    );
+
+    harness.provider.emitInvalidation(source.nodeRef, 2);
+    harness.provider.emitInvalidation(destination.nodeRef, 2);
+    harness.provider.emitMutationSettled();
+    await flushAsync();
+
+    expect(harness.events.filter((event) => event.type === "dom.invalidated"))
+      .toEqual([{
+        type: "dom.invalidated",
+        documentEpoch: 3,
+        branches: [
+          { nodeRef: source.nodeRef, branchRevision: 2 },
+          { nodeRef: destination.nodeRef, branchRevision: 2 },
+        ],
+      }]);
+    expect(controller.rows().filter((row) => row.nodeRef === moved.nodeRef))
+      .toEqual([expect.objectContaining({
+        parentRef: destination.nodeRef,
+        selected: true,
+      })]);
+    expect(controller.rows().find((row) => row.nodeRef === leaf.nodeRef))
+      .toMatchObject({ parentRef: moved.nodeRef, focused: true });
+    expect(controller.expandedRefs()).toEqual(expect.arrayContaining([
+      root.nodeRef,
+      destination.nodeRef,
+      moved.nodeRef,
+    ]));
+    expect(controller.beginRecovery()).toMatchObject({
+      selectedLocator: moved.locator,
+      focusAnchor: { locator: leaf.locator, rowType: "node" },
+    });
+  });
+
   it("uses one selection path for page clicks and tree commands", async () => {
     const harness = createSessionHarness();
     harness.session.enablePicker();
@@ -1630,8 +1787,8 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
     });
   }
 
-  public emitInvalidation(nodeRef: string): void {
-    this.callbacks.onInvalidated?.({ nodeRef, branchRevision: 2 });
+  public emitInvalidation(nodeRef: string, branchRevision = 2): void {
+    this.callbacks.onInvalidated?.({ nodeRef, branchRevision });
   }
 
   public emitMutationSettled(): void {
@@ -1888,6 +2045,63 @@ function nodeView(nodeRef: string, label: string): DomNodeView {
     expandable: false,
     branchRevision: 1,
     locator: stableLocator(),
+  });
+}
+
+function controllerNode(
+  nodeRef: string,
+  depth: number,
+  expandable: boolean,
+  branchRevision: number,
+  siblingIndex = 0,
+): DomNodeView {
+  return Object.freeze({
+    nodeRef,
+    kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: Object.freeze([]),
+    childCount: expandable ? 1 : 0,
+    relationship: "dom",
+    selectable: true,
+    label: nodeRef,
+    expandable,
+    branchRevision,
+    locator: Object.freeze({
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: Object.freeze([]),
+      path: Object.freeze(Array.from({ length: depth }, (_, index) => Object.freeze({
+        tagName: index === depth - 1 ? "div" : "section",
+        siblingIndex: index === depth - 1 ? siblingIndex : 0,
+      }))),
+    }),
+  });
+}
+
+function rootResponseForSession(node: DomNodeView): DomRootResponse {
+  return Object.freeze({
+    type: "dom.root",
+    requestId: "session-test",
+    documentEpoch: 3,
+    node,
+    prologue: Object.freeze([]),
+    epilogue: Object.freeze([]),
+  });
+}
+
+function childrenResponseForSession(
+  nodeRef: string,
+  branchRevision: number,
+  nodes: readonly DomNodeView[],
+): DomChildrenResponse {
+  return Object.freeze({
+    type: "dom.children",
+    requestId: "session-test",
+    documentEpoch: 3,
+    nodeRef,
+    branchRevision,
+    nodes: Object.freeze([...nodes]),
   });
 }
 

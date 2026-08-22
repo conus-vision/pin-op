@@ -1381,6 +1381,167 @@ describe("DomTreeController", () => {
     expect(controller.rows()).toHaveLength(1);
   });
 
+  it("releases initial-root ownership when transport throws synchronously", async () => {
+    const transport = new TestTransport();
+    const failure = new Error("synchronous root failure");
+    const onError = vi.fn();
+    transport.enqueueSynchronousThrow(failure);
+    const controller = createController(transport, () => undefined, onError);
+
+    await controller.loadRoot();
+
+    expect(onError).toHaveBeenCalledWith(failure);
+    expect(controller.rows()).toEqual([]);
+    transport.enqueue(rootResponse(node("root")));
+
+    await controller.loadRoot();
+
+    expect(transport.requests.map(({ type }) => type)).toEqual([
+      "dom.getRoot",
+      "dom.getRoot",
+    ]);
+    expect(nodeRefs(controller)).toEqual(["root"]);
+  });
+
+  it("quarantines an ordinary first page after a synchronous transport throw and retries", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const parent = locatedNode("parent", locator(2), true, 1);
+    const stale = locatedNode("stale", locator(3));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [parent]));
+    transport.enqueue(childrenResponse(parent.nodeRef, 1, [stale]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(parent.nodeRef);
+    controller.focus(stale.nodeRef);
+    transport.enqueueSynchronousThrow(new Error("synchronous children failure"));
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: parent.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(nodeRefs(controller)).not.toContain(stale.nodeRef);
+    expect(controller.snapshot().errorCode).toBe("internal-error");
+    expect(controller.rows().find((row) => row.type === "load-more"))
+      .toMatchObject({
+        parentRef: parent.nodeRef,
+        label: "Load children",
+        loading: false,
+        focused: true,
+      });
+
+    const fresh = locatedNode("fresh", locator(3, 1));
+    transport.enqueue(childrenResponse(parent.nodeRef, 2, [fresh]));
+    await controller.loadMore(parent.nodeRef);
+
+    expect(nodeRefs(controller)).toContain(fresh.nodeRef);
+    expect(controller.snapshot().errorCode).toBeUndefined();
+  });
+
+  it("clears a load-more request that throws synchronously and permits retry", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const first = locatedNode("first", locator(2));
+    const second = locatedNode("second", locator(2, 1));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [first], "next"));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    transport.enqueueSynchronousThrow(new Error("synchronous page failure"));
+
+    await controller.loadMore(root.nodeRef);
+
+    expect(controller.snapshot().errorCode).toBe("internal-error");
+    expect(controller.rows().find((row) => row.type === "load-more"))
+      .toMatchObject({ parentRef: root.nodeRef, loading: false });
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [second]));
+
+    await controller.loadMore(root.nodeRef);
+
+    expect(nodeRefs(controller)).toEqual([root.nodeRef, first.nodeRef, second.nodeRef]);
+    expect(controller.snapshot().errorCode).toBeUndefined();
+  });
+
+  it("propagates a synchronous recovery failure without retaining pending ownership", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    const root = locatedNode("recovery-root", locator(1), true, 1);
+    controller.handleEvent(selectionEvent(1, [locatedNode("old-root", locator(1))]));
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(root, 2));
+    controller.installRecoveredPath(locatorResponse(root, [root], 2), {
+      selected: false,
+      expanded: true,
+    });
+    const failure = new Error("synchronous recovery failure");
+    transport.enqueueSynchronousThrow(failure);
+
+    await expect(controller.hydrateRecoveredBranches()).rejects.toBe(failure);
+
+    transport.enqueue({
+      ...childrenResponse(root.nodeRef, 1, []),
+      documentEpoch: 2,
+    });
+    await expect(controller.hydrateRecoveredBranches()).resolves.toBeUndefined();
+    expect(transport.requests).toHaveLength(2);
+  });
+
+  it("records and retries a root snapshot refresh that throws synchronously", async () => {
+    const transport = new TestTransport();
+    const root = {
+      ...locatedNode("root", locator(1), false, 1),
+      attributes: [{ name: "data-state", value: "old" }],
+    };
+    transport.enqueue(rootResponse(root));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    transport.enqueueSynchronousThrow(new Error("synchronous snapshot failure"));
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(controller.snapshot().errorCode).toBe("internal-error");
+    expect(controller.rows().find((row) => row.nodeRef === root.nodeRef))
+      .toMatchObject({
+        branchRevision: 1,
+        node: { attributes: [{ name: "data-state", value: "old" }] },
+      });
+
+    const freshRoot = {
+      ...locatedNode("root", locator(1), false, 3),
+      attributes: [{ name: "data-state", value: "fresh" }],
+    };
+    transport.enqueue(rootResponse(freshRoot));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 3 }],
+    });
+    await flushAsync();
+
+    expect(transport.requests.map(({ type }) => type)).toEqual([
+      "dom.getRoot",
+      "dom.getRoot",
+      "dom.getRoot",
+    ]);
+    expect(controller.snapshot().errorCode).toBeUndefined();
+    expect(controller.rows().find((row) => row.nodeRef === root.nodeRef))
+      .toMatchObject({
+        branchRevision: 3,
+        node: { attributes: [{ name: "data-state", value: "fresh" }] },
+      });
+  });
+
   it("discards stale branch pages after invalidation", async () => {
     const transport = new TestTransport();
     const oldPage = deferred<DomResponse>();
@@ -2121,11 +2282,13 @@ describe("DomTreeController", () => {
 function createController(
   transport: DomTreeTransport,
   onChange: () => void = () => undefined,
+  onError: (error: unknown) => void = () => undefined,
 ): DomTreeController {
   let requestId = 0;
   return new DomTreeController({
     transport,
     onChange,
+    onError,
     createRequestId: () => `tree-${++requestId}`,
   });
 }
@@ -2329,6 +2492,8 @@ class TestTransport implements DomTreeTransport {
   private readonly responses: Array<{
     readonly response: DomResponse | Promise<DomResponse>;
     readonly preserveRequestId: boolean;
+  } | {
+    readonly synchronousFailure: unknown;
   }> = [];
 
   public enqueue(response: DomResponse | Promise<DomResponse>): void {
@@ -2339,16 +2504,27 @@ class TestTransport implements DomTreeTransport {
     this.responses.push({ response, preserveRequestId: true });
   }
 
-  public async request(request: DomRequest): Promise<DomResponse> {
+  public enqueueSynchronousThrow(error: unknown): void {
+    this.responses.push({ synchronousFailure: error });
+  }
+
+  public request(request: DomRequest): Promise<DomResponse> {
     this.requests.push(request);
     const queued = this.responses.shift();
     if (!queued) {
-      throw new Error("Missing queued DOM response");
+      return Promise.reject(new Error("Missing queued DOM response"));
     }
-    const resolved = await queued.response;
-    return !queued.preserveRequestId && "requestId" in resolved
-      ? { ...resolved, requestId: "requestId" in request ? request.requestId : resolved.requestId }
-      : resolved;
+    if ("synchronousFailure" in queued) {
+      throw queued.synchronousFailure;
+    }
+    return Promise.resolve(queued.response).then((resolved) => (
+      !queued.preserveRequestId && "requestId" in resolved
+        ? {
+          ...resolved,
+          requestId: "requestId" in request ? request.requestId : resolved.requestId,
+        }
+        : resolved
+    ));
   }
 
   public dispatch(request: DomRequest): void {
