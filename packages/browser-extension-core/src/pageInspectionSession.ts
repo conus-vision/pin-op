@@ -10,6 +10,7 @@ import {
   type DomTreeSessionRetention,
 } from "./domTreeProvider.js";
 import {
+  boundDomNodeViewPathForEnvelope,
   parseDomRequest,
   type DomChildrenResponse,
   type DomErrorCode,
@@ -534,13 +535,30 @@ export class PageInspectionSession {
       if (parsed.type === "dom.resolveLocator") {
         try {
           const resolved = this.provider.resolveLocator(parsed.locator);
-          return resolved
+          const documentEpoch = this.provider.currentDocumentEpoch;
+          const ancestorPath = resolved
+            ? boundDomNodeViewPathForEnvelope(
+              resolved.ancestorPath,
+              (boundedPath) => ({
+                type: "dom.locator",
+                requestId: parsed.requestId,
+                documentEpoch,
+                node: boundedPath.at(-1),
+                ancestorPath: boundedPath,
+              }),
+            )
+            : undefined;
+          const node = ancestorPath?.at(-1);
+          return resolved && ancestorPath && node &&
+              node.nodeRef === resolved.node.nodeRef &&
+              node.kind === resolved.node.kind &&
+              this.provider.currentDocumentEpoch === documentEpoch
             ? Object.freeze({
               type: "dom.locator" as const,
               requestId: parsed.requestId,
-              documentEpoch: this.provider.currentDocumentEpoch,
-              node: resolved.node,
-              ancestorPath: resolved.ancestorPath,
+              documentEpoch,
+              node,
+              ancestorPath,
             })
             : errorResponse(
               "node-unavailable",
@@ -773,7 +791,23 @@ export class PageInspectionSession {
       ) {
         throw new DomTreeProviderError("node-unavailable");
       }
-      revealed = confirmed;
+      const ancestorPath = boundDomNodeViewPathForEnvelope(
+        confirmed.ancestorPath,
+        (boundedPath) => ({
+          type: "dom.selectionChanged",
+          documentEpoch: confirmed.documentEpoch,
+          selectionRevision: operation,
+          nodeRef: confirmed.nodeRef,
+          ancestorPath: boundedPath,
+        }),
+      );
+      if (!ancestorPath || ancestorPath.at(-1)?.nodeRef !== confirmed.nodeRef) {
+        throw new DomTreeProviderError("node-unavailable");
+      }
+      revealed = Object.freeze({
+        ...confirmed,
+        ancestorPath,
+      });
       if (!this.isSelectionPreparationCurrent(preparationToken)) {
         return undefined;
       }

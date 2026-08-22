@@ -176,6 +176,61 @@ export type DomEvent =
   | DomSelectionChangedEvent
   | DomInvalidatedEvent;
 
+export function truncateDomProtocolUtf16(
+  value: string,
+  maximumLength: number,
+): string {
+  if (value.length <= maximumLength) return value;
+  let result = value.slice(0, maximumLength);
+  const final = result.charCodeAt(result.length - 1);
+  if (final >= 0xd800 && final <= 0xdbff) result = result.slice(0, -1);
+  return result;
+}
+
+export function domProtocolEnvelopeWithinBudget(
+  value: unknown,
+  maximumBytes = DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+): boolean {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" &&
+      utf8ByteLength(serialized) <= maximumBytes;
+  } catch {
+    return false;
+  }
+}
+
+export function boundDomNodeViewPathForEnvelope(
+  views: readonly DomNodeView[],
+  envelope: (boundedViews: readonly DomNodeView[]) => unknown,
+): readonly DomNodeView[] | undefined {
+  let bounded: DomNodeView[];
+  try {
+    bounded = Array.from(views, snapshotDomNodeViewForEgress);
+  } catch {
+    return undefined;
+  }
+  if (
+    bounded.length === 0 ||
+    bounded.length > DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH
+  ) return undefined;
+  let candidate = Object.freeze([...bounded]);
+  while (!domProtocolEnvelopeWithinBudget(envelope(candidate))) {
+    let changed = false;
+    for (let index = bounded.length - 1; index >= 0; index -= 1) {
+      const reduced = reduceDomNodeViewOptionalSnapshot(bounded[index]!);
+      if (reduced !== bounded[index]) {
+        bounded[index] = reduced;
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return undefined;
+    candidate = Object.freeze([...bounded]);
+  }
+  return candidate;
+}
+
 export class DomProtocolError extends Error {
   public readonly code = "invalid-dom-protocol";
 
@@ -596,8 +651,10 @@ function parseNodeView(value: unknown): DomNodeView {
     throw invalidMessage();
   }
   const recoverable = DOM_RECOVERABLE_NODE_KINDS.has(kind);
-  if (recoverable !== hasOwn(record, "locator")) throw invalidMessage();
-  const locator = recoverable ? parseStableLocator(record.locator) : undefined;
+  if (!recoverable && hasOwn(record, "locator")) throw invalidMessage();
+  const locator = hasOwn(record, "locator")
+    ? parseStableLocator(record.locator)
+    : undefined;
   if (locator && locator.targetKind !== kind) throw invalidMessage();
   if (kind !== "document-type" && (hasOwn(record, "publicId") || hasOwn(record, "systemId"))) {
     throw invalidMessage();
@@ -813,19 +870,66 @@ function isCanonicalArrayIndex(key: string, length: number): boolean {
 }
 
 function assertSerializedMessageBudget(value: unknown): void {
-  let serialized: string | undefined;
-  try {
-    const result = JSON.stringify(value);
-    serialized = typeof result === "string" ? result : undefined;
-  } catch {
+  if (!domProtocolEnvelopeWithinBudget(value)) {
     throw invalidMessage();
   }
-  if (
-    serialized === undefined ||
-    utf8ByteLength(serialized) > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES
-  ) {
-    throw invalidMessage();
+}
+
+function snapshotDomNodeViewForEgress(node: DomNodeView): DomNodeView {
+  const attributes = Object.freeze(Array.from(node.attributes, (attribute) => (
+    Object.freeze({ name: attribute.name, value: attribute.value })
+  )));
+  const nodeValue = node.nodeValue;
+  const publicId = node.publicId;
+  const systemId = node.systemId;
+  const inaccessible = node.inaccessible;
+  const rawLocator = node.locator;
+  const locator = rawLocator
+    ? parseDomStableLocator(rawLocator)
+    : undefined;
+  return Object.freeze({
+    nodeRef: node.nodeRef,
+    kind: node.kind,
+    nodeType: node.nodeType,
+    nodeName: node.nodeName,
+    ...(nodeValue !== undefined ? { nodeValue } : {}),
+    ...(publicId !== undefined ? { publicId } : {}),
+    ...(systemId !== undefined ? { systemId } : {}),
+    attributes,
+    childCount: node.childCount,
+    relationship: node.relationship,
+    selectable: node.selectable,
+    label: node.label,
+    expandable: node.expandable,
+    ...(inaccessible !== undefined
+      ? { inaccessible }
+      : {}),
+    branchRevision: node.branchRevision,
+    ...(locator ? { locator } : {}),
+  });
+}
+
+function reduceDomNodeViewOptionalSnapshot(node: DomNodeView): DomNodeView {
+  if (node.attributes.length > 0) {
+    return Object.freeze({ ...node, attributes: Object.freeze([]) });
   }
+  if (hasOwn(node, "nodeValue")) {
+    const { nodeValue: _nodeValue, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (hasOwn(node, "systemId")) {
+    const { systemId: _systemId, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (hasOwn(node, "publicId")) {
+    const { publicId: _publicId, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (hasOwn(node, "locator")) {
+    const { locator: _locator, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  return node;
 }
 
 interface OwnDataProperty {

@@ -4,6 +4,12 @@ import {
   DomTreeProvider,
   DomTreeProviderError,
 } from "../src/domTreeProvider.js";
+import {
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  parseDomEvent,
+  parseDomResponse,
+  type DomNodeView,
+} from "../src/domProtocol.js";
 import type { DomStableLocator } from "../src/domStableLocator.js";
 import type { FrameLifecycleEvent } from "../src/frameRegistry.js";
 
@@ -130,6 +136,139 @@ describe("DomTreeProvider", () => {
       cursor: first.nextCursor,
     });
     expect(second.nodes).toHaveLength(1);
+  });
+
+  it("keeps a hostile root attribute surface displayable without selection authority", () => {
+    const document = createDocument();
+    Object.defineProperty(document.documentElement, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile root attributes");
+      },
+    });
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    expect(root.node).toMatchObject({ attributes: [], selectable: true });
+    expect(root.node).not.toHaveProperty("locator");
+    expect(() => provider.resolveElement(root.node.nodeRef, root.documentEpoch))
+      .toThrowError("node-unavailable");
+  });
+
+  it("keeps hostile child attribute proxies displayable without selection authority", () => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    child.setAttribute("title", "secret");
+    const attributes = child.attributes;
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      get: () => new Proxy(attributes, {
+        get(target, property, receiver) {
+          if (property === "0") throw new Error("hostile attribute row");
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    document.documentElement.append(child);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const childView = onlyChild(provider, root.node, root.documentEpoch, "hostile-child");
+
+    expect(childView).toMatchObject({ attributes: [], selectable: true });
+    expect(childView).not.toHaveProperty("locator");
+    expect(() => provider.resolveElement(childView.nodeRef, root.documentEpoch))
+      .toThrowError("node-unavailable");
+  });
+
+  it("distinguishes known non-element refs from unknown and stale element refs", () => {
+    const document = createDocument();
+    const doctype = createDocumentType();
+    const text = createText("text");
+    const comment = createComment("comment");
+    const host = createElement("article", document);
+    host.attachShadow().append(createElement("span", document));
+    const frame = createFrameElement(document, createDocument());
+    document.prepend(doctype);
+    document.documentElement.append(text);
+    document.documentElement.append(comment);
+    document.documentElement.append(host);
+    document.documentElement.append(frame);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const children = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "known-non-elements",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const shadow = onlyChild(
+      provider,
+      children.find((node) => node.nodeName === "ARTICLE")!,
+      root.documentEpoch,
+      "known-shadow",
+    );
+    const frameDocument = onlyChild(
+      provider,
+      children.find((node) => node.nodeName === "IFRAME")!,
+      root.documentEpoch,
+      "known-frame-document",
+    );
+    const known = [
+      root.prologue.find((node) => node.kind === "document-type")!,
+      children.find((node) => node.kind === "text")!,
+      children.find((node) => node.kind === "comment")!,
+      shadow,
+      frameDocument,
+    ];
+
+    for (const view of known) {
+      try {
+        provider.resolveElement(view.nodeRef, root.documentEpoch);
+        throw new Error(`expected ${view.kind} to be unavailable`);
+      } catch (error) {
+        expect(error).toMatchObject({ code: "node-unavailable" });
+      }
+    }
+    expect(provider.resolveElement("missing-ref", root.documentEpoch)).toBeUndefined();
+    expect(() => provider.resolveElement(root.node.nodeRef, root.documentEpoch - 1))
+      .toThrowError("stale-document");
+  });
+
+  it("never splits astral characters at element label token boundaries", () => {
+    const document = createDocument();
+    const tag = createElement("section", document);
+    Object.defineProperty(tag, "tagName", {
+      configurable: true,
+      value: `${"t".repeat(63)}😀`,
+    });
+    const identified = createElement("article", document);
+    identified.id = `${"i".repeat(63)}😀`;
+    const classified = createElement("aside", document);
+    classified.className = `${"c".repeat(63)}😀`;
+    for (const element of [tag, identified, classified]) {
+      Object.defineProperty(element, "attributes", {
+        configurable: true,
+        get: () => {
+          throw new Error("label-only hostile attributes");
+        },
+      });
+    }
+    document.documentElement.append(tag);
+    document.documentElement.append(identified);
+    document.documentElement.append(classified);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const labels = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "astral-labels",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.map(({ label }) => label);
+
+    expect(labels).toHaveLength(3);
+    expect(labels.every((label) => !containsUnpairedSurrogate(label))).toBe(true);
   });
 
   it.each([
@@ -502,6 +641,95 @@ describe("DomTreeProvider", () => {
     );
   });
 
+  it.each(["leading", "trailing"] as const)(
+    "invalidates the root branch when a %s auxiliary comment changes",
+    (position) => {
+      const document = createDocument();
+      const comment = createComment("before");
+      position === "leading" ? document.prepend(comment) : document.append(comment);
+      const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+      const harness = createProviderHarness(document, {
+        onInvalidated: (branch) => invalidated.push(branch),
+      });
+      const root = harness.provider.getRoot();
+      harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `materialize-${position}-root`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+
+      comment.nodeValue = "after";
+      harness.observers[0]!.emit([characterDataMutationRecord(comment)]);
+      harness.flushTimers();
+
+      expect(invalidated).toEqual([{
+        nodeRef: root.node.nodeRef,
+        branchRevision: 2,
+      }]);
+      const refreshed = harness.provider.getRoot();
+      const auxiliary = position === "leading" ? refreshed.prologue : refreshed.epilogue;
+      expect(auxiliary).toEqual([
+        expect.objectContaining({
+          kind: "comment",
+          nodeValue: "after",
+          selectable: false,
+          expandable: false,
+        }),
+      ]);
+      expect(auxiliary[0]).not.toHaveProperty("locator");
+    },
+  );
+
+  it.each([
+    ["comment", "add"],
+    ["comment", "remove"],
+    ["document-type", "add"],
+    ["document-type", "remove"],
+  ] as const)("invalidates root auxiliaries for a top-level %s %s operation", (
+    kind,
+    action,
+  ) => {
+    const document = createDocument();
+    const auxiliary = kind === "comment"
+      ? createComment("marker")
+      : createDocumentType();
+    if (action === "remove") document.prepend(auxiliary);
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const root = harness.provider.getRoot();
+    harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: `${kind}-${action}-root`,
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    if (action === "add") {
+      document.prepend(auxiliary);
+      harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
+    } else {
+      document.remove(auxiliary);
+      harness.observers[0]!.emit([mutationRecord(document, [], [auxiliary])]);
+    }
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([{
+      nodeRef: root.node.nodeRef,
+      branchRevision: 2,
+    }]);
+    const refreshed = harness.provider.getRoot();
+    expect(refreshed.prologue.some((node) => node.kind === kind))
+      .toBe(action === "add");
+    expect(refreshed.prologue.every((node) => (
+      node.selectable === false && node.expandable === false && node.locator === undefined
+    ))).toBe(true);
+  });
+
   it("invalidates a parent page when a visible child becomes expandable", () => {
     const document = createDocument();
     const parent = createElement("main", document);
@@ -830,6 +1058,51 @@ describe("DomTreeProvider", () => {
       "element",
     ]);
     expect(Object.isFrozen(path)).toBe(true);
+  });
+
+  it("bounds ancestor-path and locator egress without dropping path identity", () => {
+    const document = createDocument();
+    const target = createElement("button", document);
+    for (let index = 0; index < 64; index += 1) {
+      target.setAttribute(`onclick-${index}`, "\u0000".repeat(1_000));
+    }
+    document.documentElement.append(target);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const targetView = onlyChild(provider, root.node, root.documentEpoch, "egress-target");
+    const ancestorPath = provider.ancestorPath(targetView.nodeRef, root.documentEpoch);
+    const selectionEvent = {
+      type: "dom.selectionChanged" as const,
+      documentEpoch: root.documentEpoch,
+      selectionRevision: Number.MAX_SAFE_INTEGER,
+      nodeRef: targetView.nodeRef,
+      ancestorPath,
+    };
+
+    expect(ancestorPath.map(({ nodeRef }) => nodeRef)).toEqual([
+      root.node.nodeRef,
+      targetView.nodeRef,
+    ]);
+    expect(utf8ByteLength(JSON.stringify(selectionEvent)))
+      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    expect(() => parseDomEvent(selectionEvent)).not.toThrow();
+
+    const resolved = provider.resolveLocator(targetView.locator!);
+    expect(resolved).toBeDefined();
+    const locatorResponse = {
+      type: "dom.locator" as const,
+      requestId: "\u0000".repeat(128),
+      documentEpoch: root.documentEpoch,
+      node: resolved!.node,
+      ancestorPath: resolved!.ancestorPath,
+    };
+    expect(resolved!.ancestorPath.map(({ nodeRef }) => nodeRef)).toEqual([
+      root.node.nodeRef,
+      targetView.nodeRef,
+    ]);
+    expect(utf8ByteLength(JSON.stringify(locatorResponse)))
+      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    expect(() => parseDomResponse(locatorResponse)).not.toThrow();
   });
 
   it("discovers an open shadow root created after host expansion", () => {
@@ -6589,11 +6862,11 @@ describe("DomTreeProvider", () => {
     };
     const recordCount = providerState.records.size;
     const referenceCount = providerState.nodeRegistry.size;
-    const originalAttributes = second.attributes;
-    Object.defineProperty(second, "attributes", {
+    const originalTagName = second.tagName;
+    Object.defineProperty(second, "tagName", {
       configurable: true,
       get: () => {
-        throw new Error("late hostile child locator");
+        throw new Error("late hostile child tag");
       },
     });
 
@@ -6609,9 +6882,9 @@ describe("DomTreeProvider", () => {
     expect(harness.observers).toHaveLength(1);
     expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
 
-    Object.defineProperty(second, "attributes", {
+    Object.defineProperty(second, "tagName", {
       configurable: true,
-      value: originalAttributes,
+      value: originalTagName,
     });
     expect(harness.provider.getChildren({
       type: "dom.getChildren",
@@ -6632,11 +6905,11 @@ describe("DomTreeProvider", () => {
       readonly expandedBranches: ReadonlyMap<string, unknown>;
       readonly nodeRegistry: { retentionReasons(nodeRef: string): readonly string[] };
     };
-    const originalAttributes = child.attributes;
-    Object.defineProperty(child, "attributes", {
+    const originalTagName = child.tagName;
+    Object.defineProperty(child, "tagName", {
       configurable: true,
       get: () => {
-        throw new Error("hostile first expansion locator");
+        throw new Error("hostile first expansion tag");
       },
     });
 
@@ -6651,9 +6924,9 @@ describe("DomTreeProvider", () => {
     expect(provider.nodeRegistry.retentionReasons(root.node.nodeRef)).toEqual([]);
     expect(harness.observers).toHaveLength(1);
 
-    Object.defineProperty(child, "attributes", {
+    Object.defineProperty(child, "tagName", {
       configurable: true,
-      value: originalAttributes,
+      value: originalTagName,
     });
     expect(onlyChild(harness.provider, root.node, root.documentEpoch, "retried-first-expansion").label)
       .toBe("article");
@@ -6962,7 +7235,7 @@ describe("DomTreeProvider", () => {
       .toBeDefined();
   });
 
-  it("does not materialize references, observers, or frame ownership before capture succeeds", () => {
+  it("materializes a safe frame display row when locator capture is hostile", () => {
     const document = createDocument();
     const frame = createFrameElement(document, createDocument());
     document.documentElement.append(frame);
@@ -6976,12 +7249,25 @@ describe("DomTreeProvider", () => {
       },
     });
 
-    expect(() => onlyChild(harness.provider, root.node, root.documentEpoch, "hostile-frame"))
+    const frameView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "hostile-frame",
+    );
+    expect(frameView).toMatchObject({
+      kind: "element",
+      nodeName: "IFRAME",
+      attributes: [],
+      selectable: true,
+    });
+    expect(frameView).not.toHaveProperty("locator");
+    expect(() => harness.provider.resolveElement(frameView.nodeRef, root.documentEpoch))
       .toThrowError("node-unavailable");
     expect((harness.provider as unknown as { records: Map<string, unknown> }).records.size)
-      .toBe(1);
-    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
-    expect(frame.loadListenerCount).toBe(0);
+      .toBeGreaterThan(1);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(2);
+    expect(frame.loadListenerCount).toBe(1);
 
     Object.defineProperty(frame, "attributes", {
       configurable: true,
@@ -7929,4 +8215,19 @@ function endsWithUnpairedSurrogate(value: string): boolean {
   if (value.length === 0) return false;
   const final = value.charCodeAt(value.length - 1);
   return final >= 0xd800 && final <= 0xdbff;
+}
+
+function containsUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value.charCodeAt(index);
+    if (current >= 0xd800 && current <= 0xdbff) {
+      if (index + 1 >= value.length) return true;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (current >= 0xdc00 && current <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }

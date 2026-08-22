@@ -320,24 +320,47 @@ describe("DOM protocol", () => {
     });
   });
 
-  it("requires locators on recoverable views while display views omit them", () => {
-    const { locator: _locator, ...nodeWithoutLocator } = nodeView();
+  it("accepts optional locators on stable views while display views reject them", () => {
+    const stableViews = (["element", "shadow-root", "frame-document"] as const)
+      .map((kind) => {
+        const { locator: _locator, ...view } = nodeView({ kind });
+        return view;
+      });
 
-    expect(() => parseDomResponse({
+    expect(parseDomResponse({
       type: "dom.root",
       requestId: "request-1",
       documentEpoch: 1,
-      node: nodeWithoutLocator,
+      node: stableViews[0],
       prologue: [],
       epilogue: [],
-    })).toThrow(DomProtocolError);
-    expect(() => parseDomEvent({
+    })).toMatchObject({ node: stableViews[0] });
+    expect(parseDomResponse({
+      type: "dom.children",
+      requestId: "request-2",
+      documentEpoch: 1,
+      nodeRef: "parent",
+      branchRevision: 1,
+      nodes: stableViews,
+    })).toMatchObject({ nodes: stableViews });
+    expect(parseDomEvent({
       type: "dom.selectionChanged",
       documentEpoch: 1,
       selectionRevision: 4,
       nodeRef: "node-1",
-      ancestorPath: [nodeWithoutLocator],
-    })).toThrow(DomProtocolError);
+      ancestorPath: stableViews,
+    })).toMatchObject({ ancestorPath: stableViews });
+
+    for (const kind of ["document-type", "text", "comment"] as const) {
+      expect(() => parseDomResponse({
+        type: "dom.children",
+        requestId: "display-locator",
+        documentEpoch: 1,
+        nodeRef: "parent",
+        branchRevision: 1,
+        nodes: [{ ...displayNodeView(kind), locator: stableLocator() }],
+      })).toThrow(DomProtocolError);
+    }
   });
 
   it("requires each node locator target kind to match its DOM node kind", () => {

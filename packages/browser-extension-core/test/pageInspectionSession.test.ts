@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { utf8ByteLength } from "@pin-op/protocol";
 import type { CssDocumentSource } from "../src/collectCssFacts.js";
 import type { InspectPayloadWithDiagnostics } from "../src/inspectPayload.js";
 import type { LocationSource } from "../src/inspectPayload.js";
@@ -21,13 +22,17 @@ import type {
   DomTreeResolvedElement,
   DomTreeSessionRetention,
 } from "../src/domTreeProvider.js";
-import type {
-  DomChildrenResponse,
-  DomEvent,
-  DomGetChildrenRequest,
-  DomNodeView,
-  DomRequest,
-  DomRootResponse,
+import {
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+  parseDomEvent,
+  parseDomResponse,
+  type DomResponse,
+  type DomChildrenResponse,
+  type DomEvent,
+  type DomGetChildrenRequest,
+  type DomNodeView,
+  type DomRequest,
+  type DomRootResponse,
 } from "../src/domProtocol.js";
 import type {
   FrameContext,
@@ -699,6 +704,64 @@ describe("PageInspectionSession", () => {
     expect(harness.events).toEqual([]);
   });
 
+  it("bounds locator responses with worst-case correlation and structured fields", async () => {
+    const harness = createSessionHarness();
+    const ancestorPath = Object.freeze([
+      oversizedNodeView("node-1"),
+      oversizedNodeView("node-3"),
+    ]);
+    harness.provider.locatorResolution = Object.freeze({
+      node: ancestorPath[1]!,
+      ancestorPath,
+    });
+
+    const response = await harness.session.handle({
+      type: "dom.resolveLocator",
+      requestId: "\u0000".repeat(128),
+      locator: stableLocator(),
+    });
+
+    expect(response).toMatchObject({
+      type: "dom.locator",
+      node: { nodeRef: "node-3" },
+      ancestorPath: [
+        { nodeRef: "node-1" },
+        { nodeRef: "node-3" },
+      ],
+    });
+    expect(utf8ByteLength(JSON.stringify(response)))
+      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    expect(() => parseDomResponse(response as DomResponse)).not.toThrow();
+  });
+
+  it("bounds selection events without losing the selected path identity", async () => {
+    const harness = createSessionHarness();
+    const ancestorPath = Object.freeze([
+      oversizedNodeView("node-1"),
+      oversizedNodeView("node-2"),
+    ]);
+    harness.provider.add(harness.card, "node-2", ancestorPath);
+
+    const response = await harness.session.handle({
+      type: "dom.select",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+    });
+    const event = Array.isArray(response) ? response[0] : undefined;
+
+    expect(event).toMatchObject({
+      type: "dom.selectionChanged",
+      nodeRef: "node-2",
+      ancestorPath: [
+        { nodeRef: "node-1" },
+        { nodeRef: "node-2" },
+      ],
+    });
+    expect(utf8ByteLength(JSON.stringify(event)))
+      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    expect(() => parseDomEvent(event)).not.toThrow();
+  });
+
   it.each([undefined, new Error("page-controlled locator evidence")])(
     "returns a bounded node-unavailable error for locator resolution failure",
     async (failure) => {
@@ -978,6 +1041,39 @@ describe("PageInspectionSession", () => {
       code: "internal-error",
     });
     expect(JSON.stringify(reduced)).not.toContain("private page details");
+  });
+
+  it.each([
+    "document-type",
+    "text",
+    "comment",
+    "shadow-root",
+    "frame-document",
+  ] as const)("returns node-unavailable for select and hover of a known %s ref", async (
+    kind,
+  ) => {
+    const harness = createSessionHarness();
+    const nodeRef = `known-${kind}`;
+    harness.provider.knownUnavailableRefs.add(nodeRef);
+
+    await expect(harness.session.handle({
+      type: "dom.select",
+      documentEpoch: 3,
+      nodeRef,
+    })).resolves.toEqual({
+      type: "dom.error",
+      documentEpoch: 3,
+      code: "node-unavailable",
+    });
+    await expect(harness.session.handle({
+      type: "dom.hover",
+      documentEpoch: 3,
+      nodeRef,
+    })).resolves.toEqual({
+      type: "dom.error",
+      documentEpoch: 3,
+      code: "node-unavailable",
+    });
   });
 
   it("clears frame-owned hover and selection when that frame is removed", async () => {
@@ -1361,6 +1457,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   public throwOnReveal = false;
   public onResolve: (() => void) | undefined;
   public readonly hiddenLookups = new Set<object>();
+  public readonly knownUnavailableRefs = new Set<string>();
   public readonly retentions: Array<{
     readonly action: "retain" | "release";
     readonly nodeRef: string;
@@ -1534,6 +1631,9 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   ): DomTreeResolvedElement | undefined {
     if (documentEpoch !== this.currentDocumentEpoch) {
       throw new DomTreeProviderError("stale-document");
+    }
+    if (this.knownUnavailableRefs.has(nodeRef)) {
+      throw new DomTreeProviderError("node-unavailable");
     }
     const resolved = this.entriesByRef.get(nodeRef);
     this.onResolve?.();
@@ -1723,6 +1823,19 @@ function nodeView(nodeRef: string, label: string): DomNodeView {
     expandable: false,
     branchRevision: 1,
     locator: stableLocator(),
+  });
+}
+
+function oversizedNodeView(nodeRef: string): DomNodeView {
+  return Object.freeze({
+    ...nodeView(nodeRef, nodeRef),
+    attributes: Object.freeze(Array.from(
+      { length: 64 },
+      (_, index) => Object.freeze({
+        name: `onclick-${index}`,
+        value: "\u0000".repeat(1_000),
+      }),
+    )),
   });
 }
 

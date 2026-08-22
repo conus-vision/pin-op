@@ -14,6 +14,8 @@ import {
   type ViewportRect,
 } from "./frameRegistry.js";
 import {
+  boundDomNodeViewPathForEnvelope,
+  domProtocolEnvelopeWithinBudget,
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
   DOM_PROTOCOL_MAX_ATTRIBUTES,
   DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
@@ -26,6 +28,7 @@ import {
   DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED,
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   parseDomRequest,
+  truncateDomProtocolUtf16,
 } from "./domProtocol.js";
 import type {
   DomChildrenResponse,
@@ -41,7 +44,6 @@ import {
   type DomStableLocator,
   type StableLocatorResolution,
 } from "./domStableLocator.js";
-import { utf8ByteLength } from "@pin-op/protocol";
 
 const CHILD_PAGE_SIZE = 50;
 const CHILD_PAGE_PHYSICAL_SCAN_LIMIT = 256;
@@ -445,6 +447,38 @@ export class DomTreeProvider {
     }
   }
 
+  private captureDisplayLocator(
+    node: Node,
+    kind: DomStableLocator["targetKind"],
+  ): DomStableLocator | undefined {
+    try {
+      return this.locatorService.capture(node, kind);
+    } catch {
+      if (this.hasHostileLocatorAttributeSurface(node, kind)) return undefined;
+      throwDomTreeError("node-unavailable");
+    }
+  }
+
+  private hasHostileLocatorAttributeSurface(
+    node: Node,
+    kind: DomStableLocator["targetKind"],
+  ): boolean {
+    let target: Element | undefined;
+    if (kind === "element" && isElementNode(node)) {
+      target = node;
+    } else if (kind === "shadow-root" && isOpenShadowRoot(node)) {
+      try {
+        target = node.host;
+      } catch {
+        return false;
+      }
+    } else if (kind === "frame-document") {
+      target = this.frameRegistry.getContextForDocument(node as Document)
+        ?.frameElement;
+    }
+    return target ? hasHostileInspectorAttributeSurface(target) : false;
+  }
+
   private isNodeExcluded(node: Node): boolean {
     try {
       return this.isExcludedNodePredicate?.(node) === true;
@@ -486,7 +520,12 @@ export class DomTreeProvider {
         throwDomTreeError("node-unavailable");
       }
       const node = this.viewElement(element, context);
-      const auxiliary = this.rootAuxiliaryViews(this.topDocument!, element, context);
+      const auxiliary = this.rootAuxiliaryViews(
+        this.topDocument!,
+        element,
+        context,
+        node.nodeRef,
+      );
       const response = this.boundRootResponse({
         type: "dom.root" as const,
         requestId: "root",
@@ -625,7 +664,7 @@ export class DomTreeProvider {
     );
     const locators = page.children.map((child) => (
       isRecoverableKind(child.kind)
-        ? this.captureLocator(child.node, child.kind)
+        ? this.captureDisplayLocator(child.node, child.kind)
         : undefined
     ));
     const materializedRefs: string[] = [];
@@ -755,7 +794,17 @@ export class DomTreeProvider {
             : this.viewElement(node as Element, record.scope, record.parentRef));
         currentRef = record.parentRef;
       }
-      const result = Object.freeze(reversed.reverse());
+      const result = boundDomNodeViewPathForEnvelope(
+        reversed.reverse(),
+        (ancestorPath) => ({
+          type: "dom.selectionChanged",
+          documentEpoch,
+          selectionRevision: Number.MAX_SAFE_INTEGER,
+          nodeRef,
+          ancestorPath,
+        }),
+      );
+      if (!result) throwDomTreeError("node-unavailable");
       const validate = () => this.validateLivePathViews(result, documentEpoch);
       committed = authorityOperation.publish(validate) && authorityOperation.finalize(validate);
       if (!committed) throwDomTreeError("node-unavailable");
@@ -818,12 +867,23 @@ export class DomTreeProvider {
     if (path.length > DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH) {
       throwDomTreeError("node-unavailable");
     }
-    const ancestorPath = this.materializeLogicalPath(path);
-    const target = ancestorPath?.at(-1);
+    const materializedPath = this.materializeLogicalPath(path);
+    const target = materializedPath?.at(-1);
     const context = this.frameRegistry.getContext(scope.frameRef);
-    if (!ancestorPath || !target || !context || !sameNodeScope(context, scope)) {
+    if (!materializedPath || !target || !context || !sameNodeScope(context, scope)) {
       throwDomTreeError("node-unavailable");
     }
+    const ancestorPath = boundDomNodeViewPathForEnvelope(
+      materializedPath,
+      (boundedPath) => ({
+        type: "dom.selectionChanged",
+        documentEpoch: context.documentEpoch,
+        selectionRevision: Number.MAX_SAFE_INTEGER,
+        nodeRef: target.nodeRef,
+        ancestorPath: boundedPath,
+      }),
+    );
+    if (!ancestorPath) throwDomTreeError("node-unavailable");
     return Object.freeze({
       nodeRef: target.nodeRef,
       frameRef: context.frameRef,
@@ -846,9 +906,10 @@ export class DomTreeProvider {
     }
     this.flushMutationBarrier();
     const record = this.records.get(nodeRef);
-    if (record?.kind !== "element") {
+    if (!record) {
       return undefined;
     }
+    if (record.kind !== "element") throwDomTreeError("node-unavailable");
     const element = this.resolveNode(nodeRef, record.scope);
     const context = this.frameRegistry.getContext(record.scope.frameRef);
     const attachedScope = isElementNode(element)
@@ -862,6 +923,14 @@ export class DomTreeProvider {
       !sameNodeScope(attachedScope, record.scope)
     ) {
       return undefined;
+    }
+    const locator = this.captureLocator(element, "element");
+    const locatorResolution = this.resolveLocatorForLiveValidation(locator);
+    if (
+      locatorResolution?.kind !== "element" ||
+      locatorResolution.node !== element
+    ) {
+      throwDomTreeError("node-unavailable");
     }
     return Object.freeze({
       element,
@@ -886,7 +955,23 @@ export class DomTreeProvider {
       const resolved = transaction.resolution;
       if (this.isNodeExcluded(resolved.node)) return undefined;
       const path = this.logicalPathForResolvedLocator(resolved.kind, resolved.node);
-      const ancestorPath = path ? this.materializeLogicalPath(path) : undefined;
+      const materializedPath = path ? this.materializeLogicalPath(path) : undefined;
+      const materializedNode = materializedPath?.at(-1);
+      if (
+        !materializedPath ||
+        !materializedNode ||
+        materializedNode.kind !== resolved.kind
+      ) return undefined;
+      const ancestorPath = boundDomNodeViewPathForEnvelope(
+        materializedPath,
+        (boundedPath) => ({
+          type: "dom.locator",
+          requestId: "\u0000".repeat(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH),
+          documentEpoch: this.documentEpoch,
+          node: boundedPath.at(-1),
+          ancestorPath: boundedPath,
+        }),
+      );
       const node = ancestorPath?.at(-1);
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
       const resolvedPath = path;
@@ -896,8 +981,8 @@ export class DomTreeProvider {
         resolved.kind,
         resolved.node,
         resolvedPath,
-        ancestorPath,
-        node,
+        materializedPath,
+        materializedNode,
       );
       committed = authorityOperation.publish(validate) && authorityOperation.finalize(
         validate,
@@ -1125,7 +1210,7 @@ export class DomTreeProvider {
     element: Element,
     scope: NodeScope,
     parentRef?: string,
-    locator = this.captureLocator(element, "element"),
+    locator = this.captureDisplayLocator(element, "element"),
     newlyRegisteredFrames?: Set<HTMLIFrameElement>,
   ): DomNodeView {
     const nodeRef = this.referenceNode(element, scope);
@@ -1172,7 +1257,7 @@ export class DomTreeProvider {
       expandable,
       ...(inaccessible ? { inaccessible: true } : {}),
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator,
+      ...(locator ? { locator } : {}),
     });
   }
 
@@ -1180,7 +1265,7 @@ export class DomTreeProvider {
     shadowRoot: ShadowRoot,
     scope: NodeScope,
     parentRef?: string,
-    locator = this.captureLocator(shadowRoot, "shadow-root"),
+    locator = this.captureDisplayLocator(shadowRoot, "shadow-root"),
   ): DomNodeView {
     const nodeRef = this.referenceNode(shadowRoot, scope);
     const existing = this.records.get(nodeRef);
@@ -1203,7 +1288,7 @@ export class DomTreeProvider {
       label: "#shadow-root (open)",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator,
+      ...(locator ? { locator } : {}),
     });
   }
 
@@ -1211,7 +1296,7 @@ export class DomTreeProvider {
     document: Document,
     scope: FrameContext,
     parentRef?: string,
-    locator = this.captureLocator(document, "frame-document"),
+    locator = this.captureDisplayLocator(document, "frame-document"),
   ): DomNodeView {
     const nodeRef = this.referenceNode(document, scope);
     this.frameDocumentsByRef.set(scope.frameRef, document);
@@ -1236,7 +1321,7 @@ export class DomTreeProvider {
       label: "#document",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
-      locator,
+      ...(locator ? { locator } : {}),
     });
   }
 
@@ -1311,6 +1396,7 @@ export class DomTreeProvider {
     document: Document,
     documentElement: Element,
     scope: NodeScope,
+    rootRef: string,
   ): {
     readonly prologue: readonly DomNodeView[];
     readonly epilogue: readonly DomNodeView[];
@@ -1342,9 +1428,13 @@ export class DomTreeProvider {
       }
       const nodeType = readNodeType(child);
       if (!afterDocumentElement && nodeType === 10) {
-        prologue.push(this.viewDocumentType(child as DocumentType, scope));
+        prologue.push(this.viewDocumentType(
+          child as DocumentType,
+          scope,
+          rootRef,
+        ));
       } else if (nodeType === 8) {
-        const view = this.viewCharacterData(child, "comment", scope);
+        const view = this.viewCharacterData(child, "comment", scope, rootRef);
         (afterDocumentElement ? epilogue : prologue).push(view);
       }
     }
@@ -1774,7 +1864,7 @@ export class DomTreeProvider {
       if (mutation.type !== "childList") {
         continue;
       }
-      const targetRef = this.refsByNode.get(mutation.target);
+      const targetRef = this.mutationTargetRef(mutation.target);
       const targetRecord = targetRef
         ? this.records.get(targetRef)
         : undefined;
@@ -1913,6 +2003,19 @@ export class DomTreeProvider {
       this.releaseInvalidatedRefs(invalidated);
     }
     this.invalidateBranches(affected);
+  }
+
+  private mutationTargetRef(target: Node): string | undefined {
+    const direct = this.refsByNode.get(target);
+    if (direct || target !== this.topDocument) return direct;
+    try {
+      const documentElement = this.topDocument.documentElement;
+      return documentElement
+        ? this.refsByNode.get(documentElement)
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private flushMutationBarrier(): void {
@@ -3209,7 +3312,7 @@ export class DomTreeProvider {
       ? this.nodeRegistry.resolve(view.nodeRef, record.scope)
       : undefined;
     if (!view.locator) {
-      return !!record && !!node && !isRecoverableKind(view.kind);
+      return !!record && !!node && record.kind === view.kind;
     }
     const resolved = this.resolveLocatorForLiveValidation(view.locator);
     return !!record &&
@@ -4148,7 +4251,10 @@ function readNodeName(node: Node, fallback: string): string {
   try {
     const nodeName = (node as { readonly nodeName?: unknown }).nodeName;
     if (typeof nodeName === "string" && nodeName.length > 0) {
-      return truncateUtf16(nodeName, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH);
+      return truncateDomProtocolUtf16(
+        nodeName,
+        DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+      );
     }
   } catch {
     // Use the bounded kind-specific fallback.
@@ -4160,7 +4266,7 @@ function readNodeValue(node: Node): string | undefined {
   try {
     const value = (node as { readonly nodeValue?: unknown }).nodeValue;
     return typeof value === "string"
-      ? truncateUtf16(value, DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH)
+      ? truncateDomProtocolUtf16(value, DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH)
       : undefined;
   } catch {
     return undefined;
@@ -4171,7 +4277,10 @@ function readDocumentTypeName(node: DocumentType): string {
   try {
     const name = (node as { readonly name?: unknown }).name;
     if (typeof name === "string" && name.length > 0) {
-      return truncateUtf16(name, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH);
+      return truncateDomProtocolUtf16(
+        name,
+        DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+      );
     }
   } catch {
     // Fall back to nodeName below.
@@ -4186,7 +4295,7 @@ function readDocumentTypeId(
   try {
     const value = (node as unknown as Record<string, unknown>)[key];
     return typeof value === "string"
-      ? truncateUtf16(value, DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH)
+      ? truncateDomProtocolUtf16(value, DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH)
       : undefined;
   } catch {
     return undefined;
@@ -4211,14 +4320,49 @@ function readInspectorAttributes(element: Element): readonly InspectorAttribute[
         continue;
       }
       result.push(Object.freeze({
-        name: truncateUtf16(name, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH),
-        value: truncateUtf16(value, DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH),
+        name: truncateDomProtocolUtf16(
+          name,
+          DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+        ),
+        value: truncateDomProtocolUtf16(
+          value,
+          DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH,
+        ),
       }));
     } catch {
-      // Skip only the unreadable page-controlled attribute row.
+      return Object.freeze([]);
     }
   }
   return Object.freeze(result);
+}
+
+function hasHostileInspectorAttributeSurface(element: Element): boolean {
+  let attributes: ArrayLike<{ readonly name?: unknown; readonly value?: unknown }>;
+  try {
+    attributes = element.attributes;
+  } catch {
+    return true;
+  }
+  let length: number;
+  try {
+    length = attributes.length;
+  } catch {
+    return true;
+  }
+  if (!Number.isSafeInteger(length) || length < 0) return false;
+  const count = Math.min(length, DOM_PROTOCOL_MAX_ATTRIBUTES);
+  for (let index = 0; index < count; index += 1) {
+    try {
+      const attribute = attributes[index];
+      if (attribute && typeof attribute === "object") {
+        void attribute.name;
+        void attribute.value;
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 function safeChildCount(node: Node, syntheticCount = 0): number {
@@ -4248,19 +4392,17 @@ function safeArrayLikeItem<T>(value: ArrayLike<T>, index: number): T | undefined
   }
 }
 
-function truncateUtf16(value: string, maximumLength: number): string {
-  if (value.length <= maximumLength) return value;
-  let result = value.slice(0, maximumLength);
-  const final = result.charCodeAt(result.length - 1);
-  if (final >= 0xd800 && final <= 0xdbff) result = result.slice(0, -1);
-  return result;
-}
-
 function characterDataLabel(kind: "text" | "comment", value?: string): string {
-  const bounded = truncateUtf16(value ?? (kind === "text" ? "#text" : "#comment"), 500);
+  const bounded = truncateDomProtocolUtf16(
+    value ?? (kind === "text" ? "#text" : "#comment"),
+    500,
+  );
   return kind === "text"
     ? bounded || "#text"
-    : truncateUtf16(`<!--${bounded}-->`, DOM_PROTOCOL_MAX_LABEL_LENGTH);
+    : truncateDomProtocolUtf16(
+      `<!--${bounded}-->`,
+      DOM_PROTOCOL_MAX_LABEL_LENGTH,
+    );
 }
 
 function documentTypeLabel(
@@ -4275,7 +4417,10 @@ function documentTypeLabel(
   } else if (systemId !== undefined && systemId.length > 0) {
     label += ` SYSTEM "${systemId}"`;
   }
-  return truncateUtf16(`${label}>`, DOM_PROTOCOL_MAX_LABEL_LENGTH);
+  return truncateDomProtocolUtf16(
+    `${label}>`,
+    DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  );
 }
 
 function isRecoverableKind(
@@ -4301,6 +4446,10 @@ function reduceOptionalNodeSnapshot(node: DomNodeView): DomNodeView {
   }
   if (Object.prototype.hasOwnProperty.call(node, "publicId")) {
     const { publicId: _publicId, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (Object.prototype.hasOwnProperty.call(node, "locator")) {
+    const { locator: _locator, ...rest } = node;
     return Object.freeze(rest);
   }
   return node;
@@ -4341,11 +4490,7 @@ function serializedWithinBudget(
   value: unknown,
   maximumBytes = DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
 ): boolean {
-  try {
-    return utf8ByteLength(JSON.stringify(value)) <= maximumBytes;
-  } catch {
-    return false;
-  }
+  return domProtocolEnvelopeWithinBudget(value, maximumBytes);
 }
 
 function requirePositiveSafeInteger(value: unknown, name: string): number {
@@ -4422,9 +4567,10 @@ function appendLabelSegment(label: string, segment: string): string {
 }
 
 function boundedDisplayToken(value: string): string {
-  return value
-    .replace(/[\s.#\[\]<>&"'`=\\/\u0000-\u001f\u007f]/g, "_")
-    .slice(0, ELEMENT_LABEL_MAX_TOKEN_LENGTH);
+  return truncateDomProtocolUtf16(
+    value.replace(/[\s.#\[\]<>&"'`=\\/\u0000-\u001f\u007f]/g, "_"),
+    ELEMENT_LABEL_MAX_TOKEN_LENGTH,
+  );
 }
 
 function readElementClassNames(element: Element): readonly string[] {
@@ -4474,7 +4620,10 @@ function readApprovedAttributeNames(element: Element): readonly string[] {
         isApprovedDisplayAttribute(normalized) &&
         !names.includes(normalized)
       ) {
-        names.push(normalized.slice(0, ELEMENT_LABEL_MAX_TOKEN_LENGTH));
+        names.push(truncateDomProtocolUtf16(
+          normalized,
+          ELEMENT_LABEL_MAX_TOKEN_LENGTH,
+        ));
       }
     } catch {
       // Skip unreadable page-controlled attribute names.
