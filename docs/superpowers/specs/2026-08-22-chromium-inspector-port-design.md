@@ -1,7 +1,7 @@
 # Pin-op Chromium-Derived Inspector Port Design
 
 **Date:** 2026-08-22
-**Status:** Approved design, pending implementation plans
+**Status:** Approved design and implementation plans
 
 ## Summary
 
@@ -13,9 +13,10 @@ IDE bridge. It will reuse and adapt the Chromium DevTools DOM-tree and Rules
 presentation instead of embedding either browser's complete native Inspector.
 
 The first release is read-only. It displays a lazy DOM tree and the styles that
-actually apply to the selected element, including inline, inherited, active,
-and overridden author declarations. It does not edit DOM, CSS, SCSS, or IDE
-documents. The `:hov` control retains reversible runtime previews for `:hover`
+actually apply to the selected element, including inline, inherited,
+winning-known-author, and overridden-known-author declarations. It exposes no
+DOM, CSS, SCSS, or IDE editing operation. The `:hov` control retains
+reversible runtime previews for `:hover`
 and `:focus` without writing source files.
 
 Rules shows the generated selectors and declarations consumed by the browser.
@@ -85,8 +86,8 @@ content-script runtime.
   browser-local.
 - Keep the DOM tree lazy, virtualized, mutation-aware, frame-aware, and safe
   against stale node references.
-- Show inline, matched, inherited, inactive, and overridden author
-  declarations in Rules.
+- Show inline, matched, inherited, inactive, winning-known-author, and
+  overridden-known-author declarations in Rules.
 - Use one matched-style authority for Rules rendering and IDE CSS/SCSS facts.
 - Display generated CSS while opening exact original SCSS through source maps.
 - Open a validated workspace source file and reveal its exact rule range from
@@ -213,7 +214,7 @@ contains no local path.
 
 Clicking an enabled origin:
 
-1. sends the current inspect ID, resolution generation, and IDE-issued opaque
+1. sends the current inspect ID, Rules generation, and IDE-issued opaque
    open authority;
 2. causes the IDE to revalidate the current connection, generation, authority,
    workspace ownership, document identity, version, and exact range;
@@ -234,21 +235,33 @@ Native DevTools forces pseudo states through privileged browser backends that
 are unavailable to a shared WebExtension. Pin-op therefore uses a reversible
 author-style emulation:
 
-1. identify available author rules whose selectors contain the requested
-   pseudo class and can affect the selected element;
-2. create bounded mirror selectors in the selected element's document by
+1. identify available author rules whose selectors contain a supported
+   positive requested pseudo class on the selected subject compound;
+2. create bounded mirror selectors in the selected element's scope by
    replacing the requested pseudo class with a Pin-op-owned marker of equal
-   class/attribute specificity;
+   class/attribute specificity and appending a zero-specificity selection guard;
 3. install the mirror rules in a Pin-op-owned temporary stylesheet;
 4. place the marker only on the current selected element;
-5. remove every marker and temporary rule when the state, selection, document,
-   panel lease, connection, or refresh generation changes.
+5. remove every marker and temporary rule synchronously on controlled
+   in-context state/selection/document/connection/refresh transitions and make
+   a best-effort teardown request before a content context is lost.
 
-The emulation must not call `focus()`, dispatch pointer/focus events, or run
-application handlers. It covers only author rules Pin-op can read and rewrite.
+The emulation must not call page functions directly, call `focus()`, or dispatch
+pointer/focus/keyboard events. Page MutationObservers and handlers caused by
+CSS transitions, animations, or resource loads may still run because preview
+artifacts and style effects are observable. Negated target pseudos such as
+`:not(:hover)` are unsupported because additive mirror CSS cannot suppress the
+still-matching native rule. It covers only author rules Pin-op can read and rewrite.
 It does not claim UA, inaccessible cross-origin, closed-shadow, or JavaScript
 state parity. The UI labels this behavior as a preview when that distinction is
 material.
+
+Mirror rules are emitted only for the selected element and supported
+media/supports contexts. Layer, scope, container, starting-style, and unknown
+grouping contexts fail closed. Because a temporary mount cannot always occupy
+the original rule's exact cross-sheet cascade position, the response and UI
+report a bounded approximation count whenever precedence equivalence is not
+proven.
 
 ## Runtime Architecture
 
@@ -320,7 +333,11 @@ Pin-op pins one Chromium DevTools frontend commit. It vendors only the files
 and assets needed for the selected DOM-tree and Rules renderers, plus their
 transitive license-compatible UI dependencies. A machine-readable upstream
 manifest records the commit, original paths, licenses, local patches, and the
-command used to reproduce the vendored snapshot.
+command used to reproduce the vendored snapshot. Each upstream source maps to
+structured derived-target entries containing the repository-relative target,
+its current local SHA-256, and a stable `PIN_OP_CHANGES.md` anchor. A temporary
+`pending` digest is allowed only before that target exists; release verification
+requires every derived target to exist and match its recorded digest.
 
 The long-term product does not instantiate unmodified `ElementsPanel`,
 `SDK.DOMModel`, `SDK.CSSModel`, `SDK.OverlayModel`, Target discovery, Workspace,
@@ -351,16 +368,19 @@ interface InspectorNode {
   readonly nodeType: number;
   readonly nodeName: string;
   readonly nodeValue?: string;
+  readonly publicId?: string;
+  readonly systemId?: string;
   readonly attributes: readonly InspectorAttribute[];
   readonly childCount: number;
   readonly relationship: "dom" | "shadow-root" | "frame-document";
   readonly inaccessible: boolean;
-  readonly locator: DomStableLocator;
+  readonly locator?: DomStableLocator;
 }
 
 interface MatchedStyles {
   readonly documentEpoch: number;
   readonly selectionRevision: number;
+  readonly stylesRevision: number;
   readonly stylesheetRevision: number;
   readonly nodeRef: string;
   readonly inline?: MatchedRule;
@@ -374,19 +394,48 @@ interface MatchedRule {
   readonly selectorText: string;
   readonly matchingSelectorIndices: readonly number[];
   readonly declarations: readonly MatchedDeclaration[];
-  readonly media: readonly string[];
+  readonly contexts: readonly RuleContext[];
   readonly source?: GeneratedRuleSource;
 }
 
+interface RuleContext {
+  readonly kind:
+    | "media"
+    | "supports"
+    | "layer"
+    | "scope"
+    | "container"
+    | "starting-style"
+    | "unknown";
+  readonly text: string;
+}
+
 interface GeneratedRuleSource {
-  readonly sourceUrl: string;
-  readonly startLine: number;
-  readonly startColumn: number;
+  readonly sourceUrl: PublicStylesheetUrl;
+  readonly startLine?: number;
+  readonly startColumn?: number;
   readonly endLine?: number;
   readonly endColumn?: number;
-  readonly rulePath: string;
+  readonly rulePath?: string;
 }
 ```
+
+Generated positions are 1-based/end-exclusive when present. A source record
+must carry a complete start pair or a numeric rule path; external CSS commonly
+uses only the path until the IDE verifies its workspace AST.
+
+`PublicStylesheetUrl` is a bounded, canonical, credential-free absolute
+`http:`/`https:` URL with no fragment or control/bidi characters. HTTP(S)
+localhost and private-network hosts are allowed for local development. Relative
+stylesheet URLs are resolved in the inspected page first. Filesystem/UNC/drive
+paths and `file:`, `blob:`, `data:`, extension, resource, and other schemes never
+enter inspect evidence; such a rule remains visible but has no generated-source
+navigation evidence.
+
+The root response keeps `documentElement` as the selectable/recoverable root and
+adds bounded non-selectable `prologue`/`epilogue` rows for document type and
+top-level comments. Document types retain bounded name/public/system IDs; text,
+comment, and document-type rows never receive stable locators.
 
 The protocol remains bounded and strict. Page-controlled strings are copied
 and validated at every content/panel boundary. `nodeRef` and `ruleRef` are
@@ -404,23 +453,33 @@ style authority.
 The registry:
 
 - inventories inline, external, imported, and available adopted author
-  stylesheets per accessible document;
+  stylesheets per accessible document or open shadow-root scope;
 - assigns epoch-scoped stylesheet and rule references;
 - reads CSSOM when permitted;
-- obtains bounded stylesheet text through the extension backend only when the
-  extension already has the required host authority;
-- parses text to index generated rule ranges and declaration ranges;
+- parses bounded inline owner text only when it can prove one-to-one CSSOM rule
+  correspondence; external ranges remain IDE-owned;
 - tracks media/group ancestry, stylesheet order, imports, and revision;
-- invalidates on stylesheet DOM changes, supported CSSOM changes, soft style
-  refresh, frame lifecycle, and document navigation;
+- invalidates on stylesheet DOM changes, soft style refresh, frame lifecycle,
+  and document navigation, and detects otherwise eventless CSSOM/adopted-sheet
+  changes through a bounded active-session fingerprint rescan;
 - reports inaccessible sheets without retry loops or authority escalation.
+
+Fingerprint budgets are session-global, not multiplied independently by every
+root. One bounded structural digest is cached per `CSSStyleSheet` object and is
+combined with each root's adoption/order/owner-state digest. The digest includes
+sheet disabled/media applicability and bounded owner link/style media, disabled,
+rel, href, title/alternate state, not only rule `cssText`. Rule, byte, scope, and
+elapsed-time ceilings make a truncated scan explicitly partial. Browser timer
+throttling means the polling interval is a target cadence, not a wall-clock
+freshness guarantee.
 
 The matched-style model queries only the selected node and its inheritance
 chain. It combines selector matches, stylesheet/group applicability, inline
-declarations, importance, origin/order information available to Pin-op, and
-computed values needed to classify active versus overridden declarations.
-Unsupported cascade features remain explicitly unknown instead of being
-misclassified.
+declarations, importance, and origin/order information available to Pin-op.
+It marks a declaration `overridden-known-author` only when another known author
+declaration proves that result; the highest known author candidate is not a
+claim about unavailable origins, animations, or transitions. Unsupported
+cascade features remain explicitly unknown instead of being misclassified.
 
 The IDE fact collector becomes a projection of `MatchedStyles`. All
 declarations from one rule share its `ruleRef` and generated source evidence.
@@ -431,29 +490,39 @@ IDE, and the rule mapped to SCSS have the same browser-side identity.
 
 SCSS mapping stays IDE-owned because workspace paths, documents, ASTs, and
 source-map contents are IDE authority. The browser sends only bounded generated
-rule evidence already needed for inspection: public source URL, generated
-range, selector, media ancestry, rule path/reference, and declaration
-fingerprints.
+rule evidence already needed for inspection: a strict HTTP(S) stylesheet URL,
+generated range, selector, ordered typed media/supports ancestry,
+unsupported/truncation flags, rule path/reference, and declaration fingerprints.
 
 The IDE resolves a rule in this order:
 
 1. resolve the generated stylesheet URL to exactly one workspace-owned CSS
    document using the existing workspace-bound strategy;
-2. verify or locate the generated rule in that document from the generated
-   range and declaration fingerprint;
-3. load a bounded inline or external source map through the existing
+2. reject truncated or unsupported grouping ancestry, then verify the generated
+   rule from its optional generated position or numeric rule path plus complete
+   selector/declaration and ordered typed media/supports evidence; a unique
+   fingerprint relocation can prove CSS only;
+3. retain the generated AST's exact half-open selector-prelude range and load a
+   bounded inline or external source map through the existing
    workspace/source-map boundary;
-4. map the generated rule start into an original source URL;
+4. require a mapping segment at the exact generated selector start and require
+   every usable mapping in the selector prelude to agree on one canonical
+   original source and smallest containing block;
 5. resolve that original URL to exactly one workspace-owned SCSS document;
-6. parse the SCSS document and choose the smallest containing rule/block at the
-   mapped position;
-7. create an opaque open authority bound to inspect ID, resolution generation,
-   rule reference, document URI, document version, and exact range.
+6. parse that SCSS document and verify the full expanded selector,
+   declarations, importance, and media/supports context evidence against the
+   exact generated rule;
+7. create an opaque open authority bound to inspect ID, Rules generation,
+   rule reference, exact range, workspace generation, and hashes/versions of
+   the generated CSS, external map when present, and original source.
 
-Nested selectors, nested media/group rules, mixin-generated declarations, and
-multiple original SCSS files are supported when the source map supplies an
-unambiguous position. Rules continues to show generated selectors and values;
-the origin label and open authority use the original SCSS block.
+Nested selectors, nested media/supports rules, and multiple original SCSS files
+are supported only when that complete verification succeeds; truncated or other
+group ancestry receives no source authority. A declaration
+mapping into a mixin cannot replace the selector-start rule origin; mixin output
+that cannot be proven inside one original rule falls back to generated CSS.
+Rules continues to show generated selectors and values; the origin label and
+open authority use the verified original SCSS block.
 
 If any exactness check fails, the IDE returns a bounded reason and no SCSS open
 authority. A verified generated CSS document may still receive its own exact
@@ -472,24 +541,27 @@ limits are fixed in the protocol implementation plan, but the semantic
 contract is:
 
 ```ts
-interface RuleSourceLocationsMessage {
+interface RulesSourcesMessage {
   readonly protocolVersion: 7;
   readonly type: "rules.sources";
   readonly messageId: string;
   readonly sessionId: string;
   readonly source: { readonly role: "ide"; readonly id: string };
   readonly inspectMessageId: string;
-  readonly resolutionGeneration: number;
-  readonly locations: readonly RuleSourceLocation[];
-  readonly omittedLocationCount: number;
+  readonly rulesGeneration: number;
+  readonly sources: readonly RulesSource[];
+  readonly unresolvedRuleCount: number;
   readonly metadata: Readonly<Record<string, never>>;
 }
 
-interface RuleSourceLocation {
+interface RulesSource {
   readonly ruleRef: string;
-  readonly label: string;
+  readonly document: {
+    readonly label: string;
+    readonly languageId: "css" | "scss";
+  };
   readonly startLine: number;
-  readonly languageId: "css" | "scss";
+  readonly startColumn: number;
   readonly confidence: "exact" | "sourcemap";
   readonly openAuthorityId: string;
 }
@@ -500,20 +572,45 @@ interface RuleSourceOpenMessage {
   readonly messageId: string;
   readonly sessionId: string;
   readonly inspectMessageId: string;
-  readonly resolutionGeneration: number;
+  readonly rulesGeneration: number;
   readonly openAuthorityId: string;
   readonly metadata: Readonly<Record<string, never>>;
 }
 ```
 
 `rules.sources` follows only the exact originating inspect reply route. The
-bridge records the current bounded set of issued open authorities for that
-route and generation. `rules.open` is accepted only from that originating
-browser and forwarded only to the authoritative IDE connection. Disconnect,
-new inspection, editor/workspace changes, document edits, refresh, navigation,
-protocol mismatch, or a replacement publication revokes old authorities.
+bridge stores the immutable expected rule-reference set from that inspect and
+accepts only a complete publication where unique published sources are a subset
+and `sources.length + unresolvedRuleCount === expectedRuleRefs.size`. It uses a
+prepare/send/commit transition so a delivery failure leaves the previous
+generation and allowlist intact. The bridge records the current bounded set of
+issued open authorities for that route and generation. `rules.open` is accepted
+only from that originating browser and forwarded only to the authoritative IDE
+connection. A current authority may be clicked repeatedly; it is revoked by
+disconnect, new inspection, workspace/dependency changes, stylesheet or page
+refresh, document/frame navigation, protocol mismatch, or replacement.
 
-The browser displays only `label`, `startLine`, `languageId`, and confidence.
+The IDE registry holds one complete current generation with capacity for all
+256 publishable sources. It prepares the final envelope/registry together and
+activates the candidate immediately before local transport submission so a
+newly delivered browser authority is already recognizable. A local
+serialization/socket failure restores the prior same-inspect registry (or empty
+state for a new inspect). Local acceptance does not prove bridge-to-browser
+delivery; without a third acknowledgement, downstream failure may temporarily
+leave endpoints on different generations. This remains fail-closed because a
+click not present in the receiver's current allowlist is rejected, and a fresh
+inspect or disconnect clears/re-resolves the route. Open-buffer contents/version
+take precedence over disk, while bounded workspace file watchers eagerly
+invalidate closed CSS/SCSS/map dependencies. On click, the IDE re-authorizes and
+re-hashes every dependency both before and after `showTextDocument`, then
+verifies the returned editor's host-owned document identity before moving the
+cursor or revealing.
+Staleness known before `showTextDocument` prevents any editor switch. If owning
+state changes only while that awaited host call is already executing, VS Code
+may have switched the tab; post-show failure still prevents cursor/reveal,
+revokes the generation, and never executes a wire-supplied command.
+
+The browser displays only `label`, `startLine`, `startColumn`, `languageId`, and confidence.
 Messages never include local URIs, absolute paths, workspace names, document
 text, or end-user commands. Labels pass the existing path/URI rejection and
 Unicode-control normalization boundary.
@@ -531,19 +628,37 @@ and pseudo-state preview form one correlated generation.
 - Page selection advances `selectionRevision`, reveals the tree path, clears
   previous Rules/source authority, and requests matched styles.
 - Stylesheet change advances `stylesheetRevision`, clears Rules/source
-  authority, and recomputes only for the current selected node.
-- IDE resolution advances `resolutionGeneration`; only matching inspect and
-  rule references update origins.
-- DOM mutations invalidate known branches. Attribute/class/style changes on
-  the selection or its ancestor chain also invalidate matched styles.
+  authority, also advances aggregate `stylesRevision`, and recomputes only for
+  the current selected node.
+- Applicability or pseudo-preview change advances `stylesRevision` (and the
+  dedicated pseudo revision when applicable) without resetting stylesheet
+  identity. A changed fact/evidence projection renews the current-selection
+  inspect ID while retaining `selectionRevision` and active preview state.
+- IDE Rules resolution advances its independent `rulesGeneration`; only a
+  strictly newer complete publication with matching inspect and rule
+  references updates origins. Active-editor Source re-resolution does not
+  revoke Rules locations.
+- DOM mutations invalidate known branches. A bounded, coalesced selected-scope
+  requery also follows relevant document/shadow mutations, slot changes,
+  viewport/media-query changes, and observed pointer/focus state changes so
+  selector and group applicability can change without CSS text changing.
+  The same rotating poll hashes actual matching selector indices/group
+  applicability for the selected element and bounded composed ancestors, which
+  catches eventless form validity/checked/placeholder/custom-state changes when
+  exposed through `Element.matches`; truncated scans remain partial and manual
+  refresh is the deterministic fallback.
 - Auto Refresh clears pseudo state before stylesheet replacement or reload.
-- Panel disconnect, lost lease, incompatible protocol, or disposal clears all
-  browser runtime artifacts.
+- Controlled panel disconnect, cooperative lease replacement, incompatible
+  protocol, or disposal clears browser runtime artifacts while the content
+  context can still run. Abrupt extension termination can leave preview
+  artifacts until page navigation/reload.
 
 Matched styles cache by document epoch, node reference, selection revision,
-and stylesheet revision. Parsed stylesheet text caches by canonical public URL
-plus content/revision identity and stays bounded. Work is coalesced and
-cancelable; an old parse or IDE response cannot replace a newer selection.
+aggregate styles revision, stylesheet revision, and pseudo-state revision.
+Browser-side parsed text is limited to bounded inline-owner ASTs keyed by scope,
+owner/sheet identity, and content revision; external stylesheet parsing remains
+IDE-owned and caches by workspace URI/version. Work is coalesced and cancelable;
+an old parse or IDE response cannot replace a newer selection.
 
 ## Security And Privacy
 
@@ -557,10 +672,16 @@ cancelable; an old parse or IDE response cannot replace a newer selection.
 - The IDE opens only a current, exact, workspace-owned authority it created.
 - Page-controlled URLs, selectors, labels, source maps, and CSS text are
   untrusted inputs and cannot become direct file paths or HTML.
-- Cross-origin stylesheet retrieval occurs only through existing extension
-  host authority. Failure does not request broader permission automatically.
+- The browser runtime performs no background stylesheet URL fetch; inaccessible
+  external CSS remains partial and exact external ranges are resolved only
+  against workspace-owned IDE documents.
 - Temporary pseudo-state styles and markers have random session-scoped names,
-  cannot receive pointer events, and are always removed by fail-safe disposal.
+  cannot receive pointer events, and are synchronously removed on controlled
+  in-context exits; teardown also attempts cleanup before losing the content
+  context.
+- Page scripts can observe temporary marker/style mutations while an explicit
+  preview is enabled; Pin-op filters its own artifacts but does not claim they
+  are invisible to application MutationObservers.
 - No remote code, remote UI bundle, dynamic executable download, or browser
   branding is included.
 
@@ -579,6 +700,12 @@ fidelity for:
 - all disabled declarations not represented by the live CSSOM;
 - every modern cascade feature before Pin-op's parser/model supports it;
 - browser-engine pseudo-state behavior outside readable author rules;
+- application code that reacts to observing the temporary preview artifacts;
+- CSS transitions, animations, or resource loads caused by applying supported
+  mirror styles, even though Pin-op dispatches no input/focus event;
+- abrupt extension termination, which can leave preview artifacts until the
+  inspected page navigates or reloads because no content context remains to
+  perform object-identity cleanup;
 - out-of-process or cross-origin frame internals without existing authority.
 
 These limits are surfaced as unavailable or unknown states. They are not
@@ -631,8 +758,8 @@ pseudo-state/rollout hardening.
 
 ### Rules
 
-- inline, author, inherited, media/group, important, active, and overridden
-  declarations;
+- inline, author, inherited, typed media/supports/group, important, winning-known-author, and
+  overridden-known-author declarations;
 - duplicate selectors, nested CSS, imports, adopted styles where available,
   and stylesheet ordering;
 - safe failure for inaccessible and malformed stylesheets;
@@ -644,7 +771,8 @@ pseudo-state/rollout hardening.
 
 - exact generated CSS ranges;
 - inline and external source maps;
-- nested selectors, nested media, mixins, multiple source files, query strings,
+- nested selectors, ordered nested media/supports, duplicate rules under
+  different supports conditions, mixins, multiple source files, query strings,
   and changed generated artifacts;
 - missing, invalid, unmapped, ambiguous, stale, and outside-workspace maps;
 - generated CSS fallback without heuristic SCSS claims;
@@ -652,17 +780,20 @@ pseudo-state/rollout hardening.
   ownership, replacement, and disconnect cleanup;
 - explicit click opens the exact document, places the cursor, and reveals the
   exact full block;
+- pre-show stale rejection plus post-show cursor/reveal suppression for the
+  documented in-flight editor-host race;
 - browser-supplied path/URI/range and stale authority attacks fail closed.
 
 ### Pseudo-State Preview
 
-- `:hover` and `:focus` selector rewriting with equivalent specificity for the
-  supported subset;
+- selected-element-anchored `:hover` and `:focus` selector rewriting with
+  equivalent specificity for the supported positive subset;
 - no application focus, mouse, pointer, or keyboard events;
 - same-origin frames and open shadow-root documents where available;
 - partial/inaccessible rule reporting;
-- complete cleanup on toggle, selection, refresh, navigation, disconnect,
-  lease loss, protocol mismatch, and disposal;
+- synchronous cleanup on controlled in-context exits, best-effort cleanup on
+  teardown/lease loss, and page navigation/reload as the final abrupt-loss
+  cleanup boundary;
 - no marker/style leakage into inspect payloads or the DOM tree.
 
 ### Regression
@@ -680,18 +811,21 @@ pseudo-state/rollout hardening.
 - Existing Link, Refresh, IDE Highlight, selection, and overlay workflows still
   pass installed verification.
 - DOM and Rules expose no editing operation.
-- Rules displays available inline, matched, inherited, and overridden author
-  declarations for the selected node.
+- Rules displays available inline, matched, inherited, winning-known-author,
+  overridden-known-author, inactive, and unknown declarations for the selected
+  node.
 - Rules and IDE facts use one matched-rule identity and do not disagree about
   the source rule.
 - A valid source map displays an original SCSS origin and an explicit click
   opens the exact SCSS block in the IDE.
 - Missing or invalid source maps visibly fall back to generated CSS without an
   approximate SCSS link.
-- `:hover` and `:focus` previews work for supported author rules and leave no
-  runtime artifacts after every exit path.
-- Old node, rule, source, and open-authority IDs cannot act after their owning
-  generation changes.
+- `:hover` and `:focus` previews work for supported author rules, leave no
+  runtime artifacts after every controlled in-context exit, and document the
+  abrupt-termination-until-page-reload limit.
+- Old node, rule, source, and open-authority IDs cannot begin a new action after
+  their owning generation changes; the bounded in-flight editor-host race above
+  never receives cursor/reveal authority after post-show revalidation fails.
 - Inaccessible data produces bounded partial diagnostics instead of false
   completeness or a broken panel.
 - Vendored code, patches, licenses, package contents, and Firefox source
