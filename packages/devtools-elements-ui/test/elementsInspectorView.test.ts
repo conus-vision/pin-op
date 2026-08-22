@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
+import type { TreePresentationSnapshot } from "../src/contracts.js";
 import { ElementsInspectorView } from "../src/elementsInspectorView.js";
 import { elementsSession, withTextValue } from "./fixtures/elementsSession.js";
 import { FakeDocument, type FakeElement } from "./support/fakeDocument.js";
@@ -33,6 +34,54 @@ describe("ElementsInspectorView", () => {
     expect(extensionMount.hidden).toBe(true);
     expect(extensionMount.getAttribute("aria-hidden")).toBe("true");
     expect(tabs.some((tab) => tab.textContent === "Source")).toBe(false);
+  });
+
+  it("keeps every ARIA ID reference unique to its inspector instance", () => {
+    const document = new FakeDocument();
+    const occupiedIds = [
+      "pin-op-elements-dom-title",
+      "pin-op-elements-rules-tab",
+      "pin-op-elements-rules-panel",
+    ];
+    for (const id of occupiedIds) {
+      const occupied = document.createElement("div") as unknown as FakeElement;
+      occupied.setAttribute("data-existing", "true");
+      occupied.setAttribute("id", id);
+      document.body.append(occupied);
+    }
+
+    const firstMount = document.createElement("main") as unknown as FakeElement;
+    const secondMount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(firstMount, secondMount);
+    const firstView = new ElementsInspectorView(
+      document.document,
+      firstMount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+    const secondView = new ElementsInspectorView(
+      document.document,
+      secondMount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+
+    const roots = [firstView.element, secondView.element] as unknown as FakeElement[];
+    const documentIds = document.querySelectorAll("[id]").map((element) => element.id);
+    expect(new Set(documentIds).size).toBe(documentIds.length);
+    for (const root of roots) {
+      const domPane = required(root.querySelector('[data-pane="dom"]'));
+      const domTitle = required(root.querySelector('[data-part="pane-title"]'));
+      const rulesTab = required(root.querySelector('[role="tab"]'));
+      const rulesPanel = required(root.querySelector('[data-pane="rules"]'));
+      expectOwnedIdReference(document, root, domPane, "aria-labelledby", domTitle);
+      expectOwnedIdReference(document, root, rulesTab, "aria-controls", rulesPanel);
+      expectOwnedIdReference(document, root, rulesPanel, "aria-labelledby", rulesTab);
+    }
+    for (const id of occupiedIds) {
+      expect(document.document.getElementById(id)?.getAttribute("data-existing")).toBe("true");
+    }
+
+    firstView.dispose();
+    secondView.dispose();
   });
 
   it("renders and refreshes page-controlled text only as text", () => {
@@ -93,6 +142,61 @@ describe("ElementsInspectorView", () => {
     expect(harness.document.totalListeners()).toBe(0);
     expect(harness.mount.children).toHaveLength(0);
     expect(renderedRows.textContent).toBe(beforeDispose);
+  });
+
+  it("does not commit rows when snapshot reentrancy disposes the view", () => {
+    const backend = new SnapshotHookBackend(elementsSession.tree);
+    const harness = createHarness(backend);
+    const retainedRows = required(
+      harness.mount.querySelector('[data-part="dom-rows"]'),
+    );
+    const beforeText = retainedRows.textContent;
+    const beforeChildren = [...retainedRows.children];
+    backend.beforeSnapshot = () => harness.view.dispose();
+
+    backend.publish(withTextValue("must not commit after dispose"));
+
+    expect(harness.mount.children).toHaveLength(0);
+    expect(retainedRows.textContent).toBe(beforeText);
+    expect(retainedRows.children).toHaveLength(beforeChildren.length);
+    beforeChildren.forEach((child, index) => {
+      expect(retainedRows.children[index]).toBe(child);
+    });
+  });
+
+  it("does not let an outer render overwrite a newer nested render", () => {
+    const backend = new SnapshotHookBackend(elementsSession.tree);
+    const harness = createHarness(backend);
+    const rows = required(harness.mount.querySelector('[data-part="dom-rows"]'));
+    backend.beforeSnapshot = () => {
+      backend.publish(withTextValue("newer nested render"));
+    };
+
+    backend.publish(withTextValue("stale outer render"));
+
+    expect(
+      required(rows.querySelector('[data-node-ref="intro-text"]')).textContent,
+    ).toBe("newer nested render");
+  });
+
+  it("removes owned DOM when unsubscribe throws and never retries cleanup", () => {
+    const backend = new ThrowingUnsubscribeBackend(elementsSession.tree);
+    const harness = createHarness(backend);
+    let disposeError: unknown;
+
+    try {
+      harness.view.dispose();
+    } catch (error) {
+      disposeError = error;
+    }
+
+    expect(disposeError).toBe(backend.unsubscribeError);
+    expect(backend.unsubscribeAttempts).toBe(1);
+    expect(backend.listenerCount()).toBe(0);
+    expect(harness.mount.children).toHaveLength(0);
+    expect(harness.document.totalListeners()).toBe(0);
+    expect(() => harness.view.dispose()).not.toThrow();
+    expect(backend.unsubscribeAttempts).toBe(1);
   });
 
   it("keeps every stylesheet selector below the inspector root", () => {
@@ -211,17 +315,58 @@ describe("FakeDocument safety guards", () => {
   });
 });
 
-function createHarness() {
+function createHarness(
+  backend: FakeElementsBackend = new FakeElementsBackend(elementsSession.tree),
+) {
   const document = new FakeDocument();
   const mount = document.createElement("main") as unknown as FakeElement;
   document.body.append(mount);
-  const backend = new FakeElementsBackend(elementsSession.tree);
   const view = new ElementsInspectorView(
     document.document,
     mount as unknown as HTMLElement,
     backend,
   );
   return { document, mount, backend, view };
+}
+
+class SnapshotHookBackend extends FakeElementsBackend {
+  public beforeSnapshot: (() => void) | undefined;
+
+  public override snapshot(): TreePresentationSnapshot {
+    const snapshot = super.snapshot();
+    const beforeSnapshot = this.beforeSnapshot;
+    this.beforeSnapshot = undefined;
+    beforeSnapshot?.();
+    return snapshot;
+  }
+}
+
+class ThrowingUnsubscribeBackend extends FakeElementsBackend {
+  public readonly unsubscribeError = new Error("unsubscribe failed");
+  public unsubscribeAttempts = 0;
+
+  public override subscribe(listener: () => void): () => void {
+    const unsubscribe = super.subscribe(listener);
+    return () => {
+      this.unsubscribeAttempts += 1;
+      unsubscribe();
+      throw this.unsubscribeError;
+    };
+  }
+}
+
+function expectOwnedIdReference(
+  document: FakeDocument,
+  root: FakeElement,
+  source: FakeElement,
+  attribute: "aria-controls" | "aria-labelledby",
+  target: FakeElement,
+): void {
+  const id = required(source.getAttribute(attribute));
+  expect(target.id).toBe(id);
+  expect(document.document.getElementById(id)).toBe(target);
+  expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+  expect(root.contains(target)).toBe(true);
 }
 
 function required<T>(value: T | null | undefined): T {

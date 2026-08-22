@@ -1,7 +1,6 @@
 import type { TreeDataSource, TreeRowSnapshot } from "./contracts.js";
 
-const RULES_TAB_ID = "pin-op-elements-rules-tab";
-const RULES_PANEL_ID = "pin-op-elements-rules-panel";
+const nextAriaIdSequence = new WeakMap<Document, number>();
 
 export class ElementsInspectorView {
   public readonly element: HTMLElement;
@@ -11,12 +10,14 @@ export class ElementsInspectorView {
   private readonly rowsRoot: HTMLElement;
   private unsubscribe: (() => void) | undefined;
   private disposed = false;
+  private renderGeneration = 0;
 
   public constructor(
     private readonly document: Document,
     mount: HTMLElement,
     private readonly treeDataSource: TreeDataSource,
   ) {
+    const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
       className: "pin-op-elements-inspector",
       attributes: {
@@ -28,7 +29,7 @@ export class ElementsInspectorView {
     this.domRoot = this.createElement("section", {
       className: "pin-op-elements-inspector__dom-pane",
       attributes: {
-        "aria-labelledby": "pin-op-elements-dom-title",
+        "aria-labelledby": ariaIds.domTitle,
         "data-pane": "dom",
       },
     });
@@ -37,7 +38,7 @@ export class ElementsInspectorView {
       text: "DOM",
       attributes: {
         "data-part": "pane-title",
-        id: "pin-op-elements-dom-title",
+        id: ariaIds.domTitle,
       },
     });
     this.rowsRoot = this.createElement("div", {
@@ -68,9 +69,9 @@ export class ElementsInspectorView {
       className: "pin-op-elements-inspector__tab",
       text: "Rules",
       attributes: {
-        "aria-controls": RULES_PANEL_ID,
+        "aria-controls": ariaIds.rulesPanel,
         "aria-selected": "true",
-        id: RULES_TAB_ID,
+        id: ariaIds.rulesTab,
         role: "tab",
         type: "button",
       },
@@ -80,9 +81,9 @@ export class ElementsInspectorView {
     this.rulesRoot = this.createElement("section", {
       className: "pin-op-elements-inspector__rules",
       attributes: {
-        "aria-labelledby": RULES_TAB_ID,
+        "aria-labelledby": ariaIds.rulesTab,
         "data-pane": "rules",
-        id: RULES_PANEL_ID,
+        id: ariaIds.rulesPanel,
         role: "tabpanel",
       },
     });
@@ -111,16 +112,23 @@ export class ElementsInspectorView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.unsubscribe?.();
+    this.renderGeneration += 1;
+    const unsubscribe = this.unsubscribe;
     this.unsubscribe = undefined;
-    this.element.remove();
+    try {
+      unsubscribe?.();
+    } finally {
+      this.element.remove();
+    }
   }
 
   private renderRows(): void {
     if (this.disposed) return;
+    const generation = ++this.renderGeneration;
     const rows = this.treeDataSource.snapshot().rows.map((row) => (
       this.renderRow(row)
     ));
+    if (this.disposed || generation !== this.renderGeneration) return;
     this.rowsRoot.replaceChildren(...rows);
   }
 
@@ -165,5 +173,28 @@ export class ElementsInspectorView {
     }
     if (options.text !== undefined) element.textContent = options.text;
     return element;
+  }
+}
+
+interface InspectorAriaIds {
+  readonly domTitle: string;
+  readonly rulesTab: string;
+  readonly rulesPanel: string;
+}
+
+function allocateAriaIds(document: Document): InspectorAriaIds {
+  let sequence = nextAriaIdSequence.get(document) ?? 1;
+  while (true) {
+    const suffix = sequence === 1 ? "" : `-${sequence}`;
+    const ids = {
+      domTitle: `pin-op-elements-dom-title${suffix}`,
+      rulesTab: `pin-op-elements-rules-tab${suffix}`,
+      rulesPanel: `pin-op-elements-rules-panel${suffix}`,
+    };
+    if (Object.values(ids).every((id) => document.getElementById(id) === null)) {
+      nextAriaIdSequence.set(document, sequence + 1);
+      return ids;
+    }
+    sequence += 1;
   }
 }
