@@ -137,7 +137,13 @@ describe("ElementsInspectorView", () => {
       ? readFileSync(attributesPath, "utf8")
       : "";
 
-    expect(attributes).toBe("assets/devtools-elements.css text eol=lf\n");
+    expect(hasStylesheetLfAttribute(attributes)).toBe(true);
+  });
+
+  it("recognizes the stylesheet LF rule in CRLF attributes content", () => {
+    const attributes = "assets/devtools-elements.css text eol=lf\r\n";
+
+    expect(hasStylesheetLfAttribute(attributes)).toBe(true);
   });
 
   it("mechanically rejects Chromium SDK, host, legacy UI, and panel imports", () => {
@@ -237,6 +243,12 @@ function unscopedSelectors(css: string): string[] {
   return stylesheetSelectors(css).filter((selector) => (
     !/^\.pin-op-elements-inspector(?![-_a-zA-Z0-9\u0080-\uFFFF\\])/.test(selector)
   ));
+}
+
+function hasStylesheetLfAttribute(attributes: string): boolean {
+  return attributes
+    .split(/\r?\n/)
+    .includes("assets/devtools-elements.css text eol=lf");
 }
 
 function sourceFiles(root: string): string[] {
