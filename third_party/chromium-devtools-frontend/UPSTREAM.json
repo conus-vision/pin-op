@@ -153,7 +153,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "pending"
+          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
         }
       ]
     },
@@ -170,7 +170,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "pending"
+          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
         }
       ]
     },
@@ -187,7 +187,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "pending"
+          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
         }
       ]
     }
