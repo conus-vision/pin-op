@@ -1,0 +1,195 @@
+{
+  "repository": "https://github.com/ChromeDevTools/devtools-frontend.git",
+  "revision": "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280",
+  "importedAt": "2026-08-22",
+  "license": "LICENSE",
+  "licenseSha256": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
+  "files": [
+    {
+      "upstreamPath": "front_end/panels/elements/ElementsTreeOutline.ts",
+      "sha256": "36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2021 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "0341a16b53a79d5e32172c89db96057ee8358305eef0aaaa556681c83667338e"
+        },
+        {
+          "text": "Copyright (C) 2007, 2008 Apple Inc.  All rights reserved.\nCopyright (C) 2008 Matt Lilek <webkit@mattlilek.com>\nCopyright (C) 2009 Joseph Pecoraro\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n1.  Redistributions of source code must retain the above copyright\n    notice, this list of conditions and the following disclaimer.\n2.  Redistributions in binary form must reproduce the above copyright\n    notice, this list of conditions and the following disclaimer in the\n    documentation and/or other materials provided with the distribution.\n3.  Neither the name of Apple Computer, Inc. (\"Apple\") nor the names of\n    its contributors may be used to endorse or promote products derived\n    from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY\nEXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF\nTHIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+          "sha256": "5faa528cc315b32fd8d47131934c4b5efe04f5bef5ee9f759c5f7ced60a31739"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#dom-tree",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/ElementsTreeElement.ts",
+      "sha256": "40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2021 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "0341a16b53a79d5e32172c89db96057ee8358305eef0aaaa556681c83667338e"
+        },
+        {
+          "text": "Copyright (C) 2007, 2008 Apple Inc.  All rights reserved.\nCopyright (C) 2008 Matt Lilek <webkit@mattlilek.com>\nCopyright (C) 2009 Joseph Pecoraro\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n1.  Redistributions of source code must retain the above copyright\n    notice, this list of conditions and the following disclaimer.\n2.  Redistributions in binary form must reproduce the above copyright\n    notice, this list of conditions and the following disclaimer in the\n    documentation and/or other materials provided with the distribution.\n3.  Neither the name of Apple Computer, Inc. (\"Apple\") nor the names of\n    its contributors may be used to endorse or promote products derived\n    from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY\nEXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF\nTHIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+          "sha256": "5faa528cc315b32fd8d47131934c4b5efe04f5bef5ee9f759c5f7ced60a31739"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#dom-tree",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/StylesSidebarPane.ts",
+      "sha256": "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2021 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "0341a16b53a79d5e32172c89db96057ee8358305eef0aaaa556681c83667338e"
+        },
+        {
+          "text": "Copyright (C) 2007 Apple Inc.  All rights reserved.\nCopyright (C) 2009 Joseph Pecoraro\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n1.  Redistributions of source code must retain the above copyright\n    notice, this list of conditions and the following disclaimer.\n2.  Redistributions in binary form must reproduce the above copyright\n    notice, this list of conditions and the following disclaimer in the\n    documentation and/or other materials provided with the distribution.\n3.  Neither the name of Apple Computer, Inc. (\"Apple\") nor the names of\n    its contributors may be used to endorse or promote products derived\n    from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY\nEXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF\nTHIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+          "sha256": "a440e634c6fb90d085c874f96fd50705b609b91c648f4f75c1edb60999aa5ad3"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#rules",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/StylePropertiesSection.ts",
+      "sha256": "bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2022 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "4c27ba6729a100d4fc512203eaec26c3fff044751c4852909a3166ef152d9c0a"
+        },
+        {
+          "text": "Copyright (C) 2007 Apple Inc.  All rights reserved.\nCopyright (C) 2009 Joseph Pecoraro\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n1.  Redistributions of source code must retain the above copyright\n    notice, this list of conditions and the following disclaimer.\n2.  Redistributions in binary form must reproduce the above copyright\n    notice, this list of conditions and the following disclaimer in the\n    documentation and/or other materials provided with the distribution.\n3.  Neither the name of Apple Computer, Inc. (\"Apple\") nor the names of\n    its contributors may be used to endorse or promote products derived\n    from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS \"AS IS\" AND ANY\nEXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF\nTHIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+          "sha256": "a440e634c6fb90d085c874f96fd50705b609b91c648f4f75c1edb60999aa5ad3"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#rules",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/StylePropertyTreeElement.ts",
+      "sha256": "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2018 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "050f83ce2b9b631be983c4ef44f0957b238a1643813e53a40387d672daf1f343"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#rules",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/PropertyRenderer.ts",
+      "sha256": "b13d5d5edede2f5dc0b8cb7e7d974f3b5cf69afd41e81c320f78466aa9e7464e",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2024 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "131804219ff999f3413b2f96f4a83a6bcce31958295d4b9386ae8908b1feeb58"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#rules",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/StylePropertyUtils.ts",
+      "sha256": "f4fc4e139fe9fac7ef2632f0ae0042de18e01ec00d3b60159d6827edc0e0ee4b",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2021 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "0341a16b53a79d5e32172c89db96057ee8358305eef0aaaa556681c83667338e"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
+          "changeRecord": "PIN_OP_CHANGES.md#rules",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/elementsTreeOutline.css",
+      "sha256": "86b768a436167e97ca7c2e5cee622c122ba095d2fb6853a15aedf18b892f0c6d",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2014 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "de0c092c55e5a9bd3da8e050472082eb98379a3aeafcdf8c060b71b751bde822"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
+          "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/stylesSidebarPane.css",
+      "sha256": "01d5198e52f4b1a2dea4b3d20631f756ecf7db5bedab093539e87b4569ede5aa",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2017 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "3d7a44c2f58a44d1fc5b62cc6e0b9368f9be300f60d3772e77a0be8f9f91c8e0"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
+          "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
+          "localSha256": "pending"
+        }
+      ]
+    },
+    {
+      "upstreamPath": "front_end/panels/elements/stylePropertiesTreeOutline.css",
+      "sha256": "87bfbaeb3ddf0d33dd001c023d0ca64e6926fe27724af828074e8b2b7e432860",
+      "embeddedNotices": [
+        {
+          "text": "Copyright 2016 The Chromium Authors\nUse of this source code is governed by a BSD-style license that can be\nfound in the LICENSE file.",
+          "sha256": "3125b574da3d3e661c007a698a0ad1a606c9ac1d9d85a4a10fc108acbd0de9de"
+        }
+      ],
+      "derivedTargets": [
+        {
+          "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
+          "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
+          "localSha256": "pending"
+        }
+      ]
+    }
+  ]
+}

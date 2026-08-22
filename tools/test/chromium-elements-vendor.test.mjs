@@ -1,0 +1,576 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+import { verifyVendor } from "../verify-chromium-elements-vendor.mjs";
+import { updateChromiumDerivations } from "../update-chromium-derivations.mjs";
+import {
+  assertCompleteRootBsdLicense,
+  fetchWithPinnedRedirects,
+  rawUrlFor,
+  validateRevision,
+  vendorChromiumElements,
+} from "../vendor-chromium-elements.mjs";
+
+const PINNED_REVISION = "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280";
+const REPOSITORY_URL = "https://github.com/ChromeDevTools/devtools-frontend.git";
+const EXPECTED_UPSTREAM_PATHS = [
+  "front_end/panels/elements/ElementsTreeElement.ts",
+  "front_end/panels/elements/ElementsTreeOutline.ts",
+  "front_end/panels/elements/PropertyRenderer.ts",
+  "front_end/panels/elements/StylePropertiesSection.ts",
+  "front_end/panels/elements/StylePropertyTreeElement.ts",
+  "front_end/panels/elements/StylePropertyUtils.ts",
+  "front_end/panels/elements/StylesSidebarPane.ts",
+  "front_end/panels/elements/elementsTreeOutline.css",
+  "front_end/panels/elements/stylePropertiesTreeOutline.css",
+  "front_end/panels/elements/stylesSidebarPane.css",
+].sort();
+
+const EXPECTED_DERIVED_TARGETS = new Map([
+  [
+    "front_end/panels/elements/ElementsTreeOutline.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
+      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
+    }],
+  ],
+  [
+    "front_end/panels/elements/ElementsTreeElement.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
+      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
+    }],
+  ],
+  [
+    "front_end/panels/elements/StylesSidebarPane.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+    }],
+  ],
+  [
+    "front_end/panels/elements/StylePropertiesSection.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+    }],
+  ],
+  [
+    "front_end/panels/elements/StylePropertyTreeElement.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+    }],
+  ],
+  [
+    "front_end/panels/elements/PropertyRenderer.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+    }],
+  ],
+  [
+    "front_end/panels/elements/StylePropertyUtils.ts",
+    [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+    }],
+  ],
+  ...[
+    "front_end/panels/elements/elementsTreeOutline.css",
+    "front_end/panels/elements/stylesSidebarPane.css",
+    "front_end/panels/elements/stylePropertiesTreeOutline.css",
+  ].map((upstreamPath) => [
+    upstreamPath,
+    [{
+      path: "packages/devtools-elements-ui/assets/devtools-elements.css",
+      changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
+    }],
+  ]),
+]);
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const VENDOR_RELATIVE = path.join("third_party", "chromium-devtools-frontend");
+const VENDOR_ROOT = path.join(REPO_ROOT, VENDOR_RELATIVE);
+const MANIFEST_RELATIVE = path.join(VENDOR_RELATIVE, "UPSTREAM.json");
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+test("root BSD completeness accepts the pinned line-wrapped comment format", () => {
+  const pinnedLicenseFormat = `// Copyright 2014 The Chromium Authors
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+// Neither the name of Google Inc. nor the names of its contributors may be used.
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS".
+// IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE.`;
+
+  assert.doesNotThrow(() => assertCompleteRootBsdLicense(pinnedLicenseFormat));
+});
+
+async function exists(targetPath) {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readManifest(root = REPO_ROOT) {
+  return JSON.parse(await readFile(path.join(root, MANIFEST_RELATIVE), "utf8"));
+}
+
+async function writeManifest(root, manifest) {
+  await writeFile(
+    path.join(root, MANIFEST_RELATIVE),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function mutateManifest(root, mutate) {
+  const manifest = await readManifest(root);
+  await mutate(manifest);
+  await writeManifest(root, manifest);
+  return manifest;
+}
+
+async function makeTemporaryRepository(t) {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-vendor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.dirname(path.join(root, VENDOR_RELATIVE)), { recursive: true });
+  await cp(VENDOR_ROOT, path.join(root, VENDOR_RELATIVE), { recursive: true });
+  const manifest = await readManifest(root);
+  const derivedPaths = new Set(
+    manifest.files.flatMap(({ derivedTargets }) => (
+      derivedTargets.map(({ path: targetPath }) => targetPath)
+    )),
+  );
+  for (const targetPath of derivedPaths) {
+    const checkedInTarget = path.join(REPO_ROOT, ...targetPath.split("/"));
+    if (await exists(checkedInTarget)) {
+      const temporaryTarget = path.join(root, ...targetPath.split("/"));
+      await mkdir(path.dirname(temporaryTarget), { recursive: true });
+      await cp(checkedInTarget, temporaryTarget);
+    }
+  }
+  return root;
+}
+
+function upstreamFilePath(root, upstreamPath) {
+  return path.join(root, VENDOR_RELATIVE, "upstream", ...upstreamPath.split("/"));
+}
+
+async function createDerivedTarget(root, target, contents) {
+  const targetPath = path.join(root, ...target.split("/"));
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, contents);
+  return targetPath;
+}
+
+test("checked-in Chromium Elements provenance is exact and verifies offline", async () => {
+  const manifest = await readManifest();
+
+  assert.equal(manifest.repository, REPOSITORY_URL);
+  assert.equal(
+    manifest.revision,
+    "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280",
+  );
+  assert.match(manifest.importedAt, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(manifest.license, "LICENSE");
+  assert.equal(
+    manifest.licenseSha256,
+    "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
+  );
+  assert.deepEqual(
+    manifest.files.map(({ upstreamPath }) => upstreamPath).sort(),
+    EXPECTED_UPSTREAM_PATHS,
+  );
+
+  for (const source of manifest.files) {
+    assert.match(source.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(source.embeddedNotices.length > 0, `${source.upstreamPath} has a notice`);
+    for (const notice of source.embeddedNotices) {
+      assert.equal(notice.text, notice.text.replace(/\r\n?/g, "\n").trim());
+      assert.equal(notice.sha256, sha256(notice.text));
+    }
+
+    assert.deepEqual(
+      source.derivedTargets.map(({ path: targetPath, changeRecord }) => ({
+        path: targetPath,
+        changeRecord,
+      })),
+      EXPECTED_DERIVED_TARGETS.get(source.upstreamPath),
+    );
+    for (const target of source.derivedTargets) {
+      assert.ok(
+        target.localSha256 === "pending" || /^[0-9a-f]{64}$/.test(target.localSha256),
+      );
+    }
+  }
+
+  const distinctNotices = [
+    ...new Map(
+      manifest.files
+        .flatMap(({ embeddedNotices }) => embeddedNotices)
+        .map((notice) => [notice.sha256, notice]),
+    ).values(),
+  ];
+  assert.ok(
+    distinctNotices.some(({ text }) => /Apple[\s\S]*Joseph Pecoraro/.test(text)),
+    "the Apple/Joseph Pecoraro BSD notice is inventoried separately",
+  );
+  const rootLicense = await readFile(path.join(VENDOR_ROOT, "LICENSE"), "utf8");
+  assert.ok(!distinctNotices.some(({ text }) => text === rootLicense.trim()));
+
+  await verifyVendor(REPO_ROOT);
+  const hasIncompleteTarget = manifest.files
+    .flatMap(({ derivedTargets }) => derivedTargets)
+    .some(({ localSha256 }) => localSha256 === "pending");
+  if (hasIncompleteTarget) {
+    await assert.rejects(
+      () => verifyVendor(REPO_ROOT, { requireComplete: true }),
+      /incomplete derived target/,
+    );
+  } else {
+    await verifyVendor(REPO_ROOT, { requireComplete: true });
+  }
+
+  const packageJson = JSON.parse(await readFile(path.join(REPO_ROOT, "package.json"), "utf8"));
+  assert.deepEqual(
+    {
+      vendor: packageJson.scripts["vendor:chromium-elements"],
+      record: packageJson.scripts["vendor:chromium-elements:record-derived"],
+      check: packageJson.scripts["vendor:chromium-elements:check"],
+      complete: packageJson.scripts["vendor:chromium-elements:check-complete"],
+    },
+    {
+      vendor: `node tools/vendor-chromium-elements.mjs --revision ${PINNED_REVISION}`,
+      record: "node tools/update-chromium-derivations.mjs",
+      check: "node tools/verify-chromium-elements-vendor.mjs",
+      complete: "node tools/verify-chromium-elements-vendor.mjs --require-complete",
+    },
+  );
+});
+
+test("only the exact full Chromium revision is accepted before network access", async (t) => {
+  const invalidRevisions = [
+    "main",
+    "refs/tags/123.0.0",
+    PINNED_REVISION.slice(0, 12),
+    "b092f2943b68ef9aa7c1d2c2a8b7e71aa4087280",
+  ];
+
+  for (const revision of invalidRevisions) {
+    assert.throws(() => validateRevision(revision), /exact pinned Chromium revision/);
+    await t.test(`manifest revision ${revision}`, async (t) => {
+      const root = await makeTemporaryRepository(t);
+      await mutateManifest(root, (manifest) => {
+        manifest.revision = revision;
+      });
+      await assert.rejects(() => verifyVendor(root), /exact pinned Chromium revision/);
+    });
+  }
+});
+
+test("raw downloads are limited to the allowlist and pinned origin", async () => {
+  assert.equal(
+    rawUrlFor(PINNED_REVISION, "front_end/panels/elements/ElementsTreeOutline.ts"),
+    `https://raw.githubusercontent.com/ChromeDevTools/devtools-frontend/${PINNED_REVISION}/front_end/panels/elements/ElementsTreeOutline.ts`,
+  );
+  assert.throws(
+    () => rawUrlFor(PINNED_REVISION, "front_end/panels/elements/ElementsPanel.ts"),
+    /allowlisted/,
+  );
+
+  let requests = 0;
+  const redirectingFetch = async () => {
+    requests += 1;
+    return new Response(null, {
+      status: 302,
+      headers: { location: "https://example.invalid/stolen-source.ts" },
+    });
+  };
+  await assert.rejects(
+    () => fetchWithPinnedRedirects(
+      rawUrlFor(PINNED_REVISION, "front_end/panels/elements/ElementsTreeOutline.ts"),
+      redirectingFetch,
+    ),
+    /redirect outside pinned raw GitHub origin/,
+  );
+  assert.equal(requests, 1);
+});
+
+test("unexpected, missing, or changed upstream files fail verification", async (t) => {
+  await t.test("extra source", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      manifest.files.push({
+        upstreamPath: "front_end/panels/elements/ElementsPanel.ts",
+        sha256: "0".repeat(64),
+        embeddedNotices: [],
+        derivedTargets: [],
+      });
+    });
+    await assert.rejects(() => verifyVendor(root), /allowlisted upstream paths/);
+  });
+
+  await t.test("missing source", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      manifest.files.pop();
+    });
+    await assert.rejects(() => verifyVendor(root), /allowlisted upstream paths/);
+  });
+
+  await t.test("changed source bytes", async (t) => {
+    const tamperedRoot = await makeTemporaryRepository(t);
+    const manifest = await readManifest(tamperedRoot);
+    await writeFile(
+      upstreamFilePath(tamperedRoot, manifest.files[0].upstreamPath),
+      "tampered upstream bytes\n",
+    );
+    await assert.rejects(() => verifyVendor(tamperedRoot), /SHA-256 mismatch/);
+  });
+});
+
+test("the complete root BSD license is mandatory", async (t) => {
+  await t.test("missing license", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await unlink(path.join(root, VENDOR_RELATIVE, "LICENSE"));
+    await assert.rejects(() => verifyVendor(root), /missing root BSD license/);
+  });
+
+  await t.test("truncated license", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await writeFile(path.join(root, VENDOR_RELATIVE, "LICENSE"), "BSD\n");
+    await assert.rejects(() => verifyVendor(root), /root BSD license SHA-256 mismatch/);
+  });
+
+  await t.test("self-consistent changed license", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    const licensePath = path.join(root, VENDOR_RELATIVE, "LICENSE");
+    const license = await readFile(licensePath, "utf8");
+    const changedLicense = license.replace(
+      "// notice, this list of conditions and the following disclaimer.\n",
+      "",
+    );
+    assert.notEqual(changedLicense, license);
+    await writeFile(licensePath, changedLicense);
+    await mutateManifest(root, (manifest) => {
+      manifest.licenseSha256 = sha256(changedLicense);
+    });
+    await assert.rejects(
+      () => verifyVendor(root),
+      /pinned root BSD license SHA-256 mismatch/,
+    );
+  });
+});
+
+test("every normalized embedded notice and its hash are mandatory", async (t) => {
+  await t.test("missing notice record", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      const source = manifest.files.find(({ embeddedNotices }) => embeddedNotices.length > 0);
+      source.embeddedNotices.shift();
+    });
+    await assert.rejects(() => verifyVendor(root), /embedded notice inventory mismatch/);
+  });
+
+  await t.test("changed notice hash", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      const source = manifest.files.find(({ embeddedNotices }) => embeddedNotices.length > 0);
+      source.embeddedNotices[0].sha256 = "0".repeat(64);
+    });
+    await assert.rejects(() => verifyVendor(root), /embedded notice SHA-256 mismatch/);
+  });
+});
+
+test("derived target state is exact, anchored, and byte-verified", async (t) => {
+  await t.test("an existing target cannot remain pending", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    const manifest = await readManifest(root);
+    const target = manifest.files[0].derivedTargets[0];
+    await createDerivedTarget(root, target.path, "derived\n");
+    await mutateManifest(root, (temporaryManifest) => {
+      temporaryManifest.files[0].derivedTargets[0].localSha256 = "pending";
+    });
+    await assert.rejects(() => verifyVendor(root), /existing derived target.*pending/);
+  });
+
+  await t.test("a missing target cannot retain a digest", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    const manifest = await mutateManifest(root, (temporaryManifest) => {
+      temporaryManifest.files[0].derivedTargets[0].localSha256 = "0".repeat(64);
+    });
+    const targetPath = path.join(
+      root,
+      ...manifest.files[0].derivedTargets[0].path.split("/"),
+    );
+    await unlink(targetPath).catch((error) => {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    });
+    await assert.rejects(() => verifyVendor(root), /missing derived target.*digest/);
+  });
+
+  await t.test("changed derived bytes fail", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    const manifest = await readManifest(root);
+    const target = manifest.files[0].derivedTargets[0];
+    const targetPath = await createDerivedTarget(root, target.path, "derived v1\n");
+    await updateChromiumDerivations(root);
+    await writeFile(targetPath, "derived v2\n");
+    await assert.rejects(() => verifyVendor(root), /derived target SHA-256 mismatch/);
+  });
+
+  await t.test("missing change-record anchor fails", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    const changesPath = path.join(root, VENDOR_RELATIVE, "PIN_OP_CHANGES.md");
+    const changes = await readFile(changesPath, "utf8");
+    await writeFile(changesPath, changes.replace('<a id="dom-tree"></a>', ""));
+    await assert.rejects(() => verifyVendor(root), /missing change-record anchor.*dom-tree/);
+  });
+
+  await t.test("unknown change-record anchor fails", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      manifest.files[0].derivedTargets[0].changeRecord = "PIN_OP_CHANGES.md#unknown";
+    });
+    await assert.rejects(() => verifyVendor(root), /unexpected derived target mapping/);
+  });
+
+  await t.test("an unrecorded target fails", async (t) => {
+    const root = await makeTemporaryRepository(t);
+    await mutateManifest(root, (manifest) => {
+      manifest.files[0].derivedTargets = [];
+    });
+    await assert.rejects(() => verifyVendor(root), /unexpected derived target mapping/);
+  });
+});
+
+test("derived hashes are recorded and refreshed deterministically", async (t) => {
+  const root = await makeTemporaryRepository(t);
+  const initialManifest = await readManifest(root);
+  const target = initialManifest.files[0].derivedTargets[0];
+  const originalMappings = initialManifest.files.map(({ upstreamPath, derivedTargets }) => ({
+    upstreamPath,
+    derivedTargets: derivedTargets.map(({ path: targetPath, changeRecord }) => ({
+      path: targetPath,
+      changeRecord,
+    })),
+  }));
+
+  const targetPath = await createDerivedTarget(root, target.path, "derived v1\n");
+  await updateChromiumDerivations(root);
+  let updated = await readManifest(root);
+  assert.equal(updated.files[0].derivedTargets[0].localSha256, sha256("derived v1\n"));
+
+  await writeFile(targetPath, "derived v2\n");
+  await updateChromiumDerivations(root);
+  updated = await readManifest(root);
+  assert.equal(updated.files[0].derivedTargets[0].localSha256, sha256("derived v2\n"));
+
+  await unlink(targetPath);
+  await updateChromiumDerivations(root);
+  updated = await readManifest(root);
+  assert.equal(updated.files[0].derivedTargets[0].localSha256, "pending");
+  assert.deepEqual(
+    updated.files.map(({ upstreamPath, derivedTargets }) => ({
+      upstreamPath,
+      derivedTargets: derivedTargets.map(({ path: targetPath, changeRecord }) => ({
+        path: targetPath,
+        changeRecord,
+      })),
+    })),
+    originalMappings,
+  );
+});
+
+test("a failed import writes no vendor files", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-import-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const checkedInManifest = await readManifest();
+  const responseBytes = new Map([
+    ["LICENSE", await readFile(path.join(VENDOR_ROOT, "LICENSE"))],
+    ...await Promise.all(checkedInManifest.files.map(async ({ upstreamPath }) => [
+      upstreamPath,
+      await readFile(upstreamFilePath(REPO_ROOT, upstreamPath)),
+    ])),
+  ]);
+  const failedPath = checkedInManifest.files.at(-1).upstreamPath;
+  const fetchImpl = async (url) => {
+    const marker = `/${PINNED_REVISION}/`;
+    const requestPath = decodeURIComponent(new URL(url).pathname.split(marker)[1]);
+    if (requestPath === failedPath) {
+      return new Response("upstream failure", { status: 503 });
+    }
+    return new Response(responseBytes.get(requestPath), { status: 200 });
+  };
+
+  await assert.rejects(
+    () => vendorChromiumElements({
+      repositoryRoot: root,
+      revision: PINNED_REVISION,
+      importDate: "2026-08-22",
+      fetchImpl,
+    }),
+    /download failed.*503/,
+  );
+  assert.equal(await exists(path.join(root, VENDOR_RELATIVE)), false);
+});
+
+test("the patch policy and refresh runbook retain stable commands and anchors", async () => {
+  const changes = await readFile(path.join(VENDOR_ROOT, "PIN_OP_CHANGES.md"), "utf8");
+  for (const anchor of ["dom-tree", "rules", "scoped-styles"]) {
+    assert.match(changes, new RegExp(`<a id=["']${anchor}["']></a>`));
+  }
+  for (const removedCapability of [
+    "editing",
+    "context menus",
+    "AI features",
+    "SDK/CDP objects",
+    "Linkifier",
+    "Metrics/Layout/Computed",
+    "DevTools Host",
+    "telemetry",
+    "browser branding",
+  ]) {
+    assert.ok(changes.includes(removedCapability), `records removal of ${removedCapability}`);
+  }
+
+  const readme = await readFile(path.join(VENDOR_ROOT, "README.pin-op.md"), "utf8");
+  for (const command of [
+    "corepack pnpm vendor:chromium-elements",
+    "corepack pnpm vendor:chromium-elements:record-derived",
+    "corepack pnpm vendor:chromium-elements:check",
+    "corepack pnpm vendor:chromium-elements:check-complete",
+  ]) {
+    assert.ok(readme.includes(command), `documents ${command}`);
+  }
+});
+
+test("Git attributes preserve exact LF bytes for the hashed vendor inputs", async () => {
+  const attributes = await readFile(path.join(VENDOR_ROOT, ".gitattributes"), "utf8");
+  assert.equal(attributes, "LICENSE text eol=lf\nupstream/** text eol=lf\n");
+});
