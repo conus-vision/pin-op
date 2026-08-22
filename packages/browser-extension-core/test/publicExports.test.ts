@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { InspectorAttribute } from "../src/index.js";
 import * as browserExtensionCore from "../src/index.js";
 import {
   BackgroundRouter,
@@ -13,10 +14,17 @@ import {
   createDefaultTabRefreshState,
   captureTopScrollSnapshot,
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_ATTRIBUTES,
+  DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+  DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH,
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH,
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
   DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH,
+  DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS,
+  DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED,
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
@@ -65,6 +73,7 @@ import {
 
 describe("browser extension core exports", () => {
   it("exports transport, inspection, and DevTools runtimes", () => {
+    const inspectorAttribute: InspectorAttribute = { name: "id", value: "main" };
     const publicExports = browserExtensionCore as unknown as Record<
       string,
       unknown
@@ -79,11 +88,19 @@ describe("browser extension core exports", () => {
     expect(createInspectPayload).toBeTypeOf("function");
     expect(createDefaultTabRefreshState).toBeTypeOf("function");
     expect(captureTopScrollSnapshot).toBeTypeOf("function");
+    expect(inspectorAttribute).toEqual({ name: "id", value: "main" });
     expect(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH).toBe(64);
+    expect(DOM_PROTOCOL_MAX_ATTRIBUTES).toBe(64);
+    expect(DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH).toBe(256);
+    expect(DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH).toBe(16_384);
     expect(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH).toBe(100);
+    expect(DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH).toBe(4_096);
     expect(DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH).toBe(128);
     expect(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES).toBe(128);
     expect(DOM_PROTOCOL_MAX_LABEL_LENGTH).toBe(512);
+    expect(DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH).toBe(16_384);
+    expect(DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS).toBe(32);
+    expect(DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED).toBe(128);
     expect(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES).toBe(64 * 1024);
     expect(DOM_PROTOCOL_MAX_SUMMARY_LENGTH).toBe(512);
     expect(publicExports.DOM_STABLE_LOCATOR_VERSION).toBe(1);

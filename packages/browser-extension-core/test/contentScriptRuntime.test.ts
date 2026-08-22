@@ -58,9 +58,16 @@ describe("startContentScriptRuntime", () => {
         {
           nodeRef: "node-layout",
           kind: "element",
+          nodeType: 1,
+          nodeName: "MAIN",
+          attributes: [],
+          childCount: 1,
+          relationship: "dom",
+          selectable: true,
           label: "main.layout",
           expandable: true,
           branchRevision: 0,
+          locator: elementLocator("main"),
         },
       ],
       payload: inspectPayload(),
@@ -74,9 +81,16 @@ describe("startContentScriptRuntime", () => {
         {
           nodeRef: "node-layout",
           kind: "element",
+          nodeType: 1,
+          nodeName: "MAIN",
+          attributes: [],
+          childCount: 1,
+          relationship: "dom",
+          selectable: true,
           label: "main.layout",
           expandable: true,
           branchRevision: 0,
+          locator: elementLocator("main"),
         },
       ],
     });
@@ -110,9 +124,16 @@ describe("startContentScriptRuntime", () => {
           {
             nodeRef: "node-layout",
             kind: "element",
+            nodeType: 1,
+            nodeName: "MAIN",
+            attributes: [],
+            childCount: 1,
+            relationship: "dom",
+            selectable: true,
             label: "main.layout",
             expandable: true,
             branchRevision: 0,
+            locator: elementLocator("main"),
           },
         ],
       },
@@ -1017,13 +1038,31 @@ function rootResponse(requestId: string) {
     type: "dom.root" as const,
     requestId,
     documentEpoch: 1,
+    prologue: [],
+    epilogue: [],
     node: {
       nodeRef: "node-root",
       kind: "element" as const,
+      nodeType: 1,
+      nodeName: "HTML",
+      attributes: [],
+      childCount: 1,
+      relationship: "dom" as const,
+      selectable: true,
       label: "html",
       expandable: true,
       branchRevision: 0,
+      locator: elementLocator("html"),
     },
+  };
+}
+
+function elementLocator(tagName: string) {
+  return {
+    version: 1 as const,
+    targetKind: "element" as const,
+    boundaries: [],
+    path: [{ tagName, siblingIndex: 0 }],
   };
 }
 

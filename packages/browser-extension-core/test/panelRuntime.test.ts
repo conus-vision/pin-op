@@ -1702,6 +1702,8 @@ describe("startPanelRuntime", () => {
       type: "dom.root",
       requestId: rootRequest.requestId,
       documentEpoch: 1,
+      prologue: [],
+      epilogue: [],
       node: domNode("late-root", "html"),
     });
     await flushAsync();
@@ -1763,6 +1765,8 @@ describe("startPanelRuntime", () => {
       type: "dom.root",
       requestId: recoveryRoot.requestId,
       documentEpoch: 1,
+      prologue: [],
+      epilogue: [],
       node: replacement,
     });
     await flushAsync();
@@ -1827,6 +1831,8 @@ describe("startPanelRuntime", () => {
       type: "dom.root",
       requestId: staleRoot.requestId,
       documentEpoch: 6,
+      prologue: [],
+      epilogue: [],
       node: domNode("late-root", "html"),
     });
     await flushAsync();
@@ -1861,6 +1867,8 @@ describe("startPanelRuntime", () => {
       type: "dom.root",
       requestId: initialRoot.requestId,
       documentEpoch: 1,
+      prologue: [],
+      epilogue: [],
       node: domNode("old-root", "html"),
     });
     await flushAsync();
@@ -1880,12 +1888,16 @@ describe("startPanelRuntime", () => {
       type: "dom.root",
       requestId: firstRoot.requestId,
       documentEpoch: 2,
+      prologue: [],
+      epilogue: [],
       node: domNode("stale-root", "html"),
     });
     port.emitMessage({
       type: "dom.root",
       requestId: secondRoot.requestId,
       documentEpoch: 2,
+      prologue: [],
+      epilogue: [],
       node: domNode("second-root", "html"),
     });
     await flushAsync();
@@ -3594,6 +3606,12 @@ function domNode(nodeRef: string, label: string, expandable = false) {
   return {
     nodeRef,
     kind: "element" as const,
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: "dom" as const,
+    selectable: true,
     label,
     expandable,
     branchRevision: 0,

@@ -141,13 +141,32 @@ describe("DOM protocol", () => {
 
   it("parses every response form", () => {
     const node = nodeView();
+    const prologue = [displayNodeView("document-type", {
+      nodeName: "html",
+      publicId: "-//W3C//DTD XHTML 1.0 Strict//EN",
+      systemId: "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd",
+      label: "<!DOCTYPE html>",
+    })];
+    const epilogue = [displayNodeView("comment", {
+      nodeValue: "after html",
+      label: "<!--after html-->",
+    })];
 
     expect(parseDomResponse({
       type: "dom.root",
       requestId: "request-1",
       documentEpoch: 1,
       node,
-    })).toEqual({ type: "dom.root", requestId: "request-1", documentEpoch: 1, node });
+      prologue,
+      epilogue,
+    })).toEqual({
+      type: "dom.root",
+      requestId: "request-1",
+      documentEpoch: 1,
+      node,
+      prologue,
+      epilogue,
+    });
     expect(parseDomResponse({
       type: "dom.children",
       requestId: "request-1",
@@ -176,6 +195,96 @@ describe("DOM protocol", () => {
       documentEpoch: 1,
       code: "unknown-node",
     });
+  });
+
+  it("parses structured element and display-only node snapshots", () => {
+    const element = nodeView({
+      nodeName: "BUTTON",
+      attributes: [
+        { name: "type", value: "button" },
+        { name: "aria-label", value: "Save" },
+      ],
+      childCount: 2,
+    });
+    const text = displayNodeView("text", { nodeValue: "Save", label: "Save" });
+    const comment = displayNodeView("comment", {
+      nodeValue: "marker",
+      label: "<!--marker-->",
+    });
+
+    const parsed = parseDomResponse({
+      type: "dom.children",
+      requestId: "structured",
+      documentEpoch: 1,
+      nodeRef: "parent",
+      branchRevision: 1,
+      nodes: [element, text, comment],
+    });
+
+    expect(parsed).toMatchObject({ nodes: [element, text, comment] });
+    if (parsed.type !== "dom.children") throw new Error("Expected children");
+    expect(Object.isFrozen(parsed.nodes[0]?.attributes)).toBe(true);
+    expect(Object.isFrozen(parsed.nodes[0]?.attributes[0])).toBe(true);
+  });
+
+  it("rejects unknown structured keys and kind-dependent fields", () => {
+    const invalidNodes = [
+      { ...nodeView(), unknownStructuredField: true },
+      { ...nodeView(), publicId: "not-a-doctype" },
+      { ...nodeView(), systemId: "not-a-doctype" },
+      { ...nodeView(), nodeValue: "not-character-data" },
+      { ...displayNodeView("text"), locator: stableLocator() },
+      { ...displayNodeView("comment"), attributes: [{ name: "x", value: "y" }] },
+      { ...displayNodeView("document-type"), selectable: true },
+      { ...displayNodeView("text"), expandable: true },
+      { ...displayNodeView("comment"), relationship: "shadow-root" },
+      { ...nodeView(), nodeType: 3 },
+    ];
+
+    for (const node of invalidNodes) {
+      expect(() => parseDomResponse({
+        type: "dom.children",
+        requestId: "invalid-structured",
+        documentEpoch: 1,
+        nodeRef: "parent",
+        branchRevision: 1,
+        nodes: [node],
+      })).toThrow(DomProtocolError);
+    }
+  });
+
+  it("enforces structured attribute, value, count, and auxiliary-row limits", () => {
+    const invalidNodes = [
+      nodeView({ attributes: Array.from({ length: 65 }, (_, index) => ({
+        name: `data-${index}`,
+        value: "x",
+      })) }),
+      nodeView({ attributes: [{ name: "n".repeat(257), value: "x" }] }),
+      nodeView({ attributes: [{ name: "data-value", value: "x".repeat(16_385) }] }),
+      nodeView({ childCount: Number.MAX_SAFE_INTEGER + 1 }),
+      displayNodeView("text", { nodeValue: "x".repeat(16_385) }),
+      displayNodeView("document-type", { publicId: "x".repeat(4_097) }),
+      displayNodeView("document-type", { systemId: "x".repeat(4_097) }),
+    ];
+    for (const node of invalidNodes) {
+      expect(() => parseDomResponse({
+        type: "dom.children",
+        requestId: "bounded-structured",
+        documentEpoch: 1,
+        nodeRef: "parent",
+        branchRevision: 1,
+        nodes: [node],
+      })).toThrow(DomProtocolError);
+    }
+
+    expect(() => parseDomResponse({
+      type: "dom.root",
+      requestId: "too-many-auxiliary-rows",
+      documentEpoch: 1,
+      node: nodeView(),
+      prologue: Array.from({ length: 33 }, () => displayNodeView("comment")),
+      epilogue: [],
+    })).toThrow(DomProtocolError);
   });
 
   it("parses a correlated locator response with fresh ancestor views", () => {
@@ -211,7 +320,7 @@ describe("DOM protocol", () => {
     });
   });
 
-  it("requires a locator on every DOM node view", () => {
+  it("requires locators on recoverable views while display views omit them", () => {
     const { locator: _locator, ...nodeWithoutLocator } = nodeView();
 
     expect(() => parseDomResponse({
@@ -219,6 +328,8 @@ describe("DOM protocol", () => {
       requestId: "request-1",
       documentEpoch: 1,
       node: nodeWithoutLocator,
+      prologue: [],
+      epilogue: [],
     })).toThrow(DomProtocolError);
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
@@ -238,6 +349,8 @@ describe("DOM protocol", () => {
         kind: "shadow-root",
         locator: stableLocator({ targetKind: "element" }),
       }),
+      prologue: [],
+      epilogue: [],
     })).toThrow(DomProtocolError);
   });
 
@@ -521,12 +634,16 @@ describe("DOM protocol", () => {
       requestId: "request-1",
       documentEpoch: 1,
       node: nodeView({ label: "x".repeat(DOM_PROTOCOL_MAX_LABEL_LENGTH + 1) }),
+      prologue: [],
+      epilogue: [],
     })).toThrow(DomProtocolError);
     expect(() => parseDomResponse({
       type: "dom.root",
       requestId: "request-1",
       documentEpoch: 1,
       node: nodeView({ label: "" }),
+      prologue: [],
+      epilogue: [],
     })).toThrow(DomProtocolError);
     expect(() => parseDomEvent({
       type: "dom.hoverChanged",
@@ -729,6 +846,12 @@ describe("DOM protocol", () => {
   it("rejects nested node accessors without executing them", () => {
     for (const [field, fieldValue] of [
       ["kind", "element"],
+      ["nodeType", 1],
+      ["nodeName", "MAIN"],
+      ["attributes", []],
+      ["childCount", 1],
+      ["relationship", "dom"],
+      ["selectable", true],
       ["expandable", true],
       ["label", "main"],
       ["branchRevision", 1],
@@ -748,9 +871,53 @@ describe("DOM protocol", () => {
         requestId: "request-1",
         documentEpoch: 1,
         node,
+        prologue: [],
+        epilogue: [],
       })).toThrow(DomProtocolError);
       expect(calls).toBe(0);
     }
+  });
+
+  it("snapshots hostile structured arrays and attributes without invoking accessors", () => {
+    let getterCalls = 0;
+    let proxyGets = 0;
+    const attribute = { name: "data-safe", value: "captured" };
+    Object.defineProperty(attribute, "value", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        throw new Error("attribute getter must not run");
+      },
+    });
+    const proxiedAttributes = new Proxy([{ name: "role", value: "button" }], {
+      get() {
+        proxyGets += 1;
+        throw new Error("attribute array get trap must not run");
+      },
+    });
+
+    expect(() => parseDomResponse({
+      type: "dom.children",
+      requestId: "hostile-attribute",
+      documentEpoch: 1,
+      nodeRef: "parent",
+      branchRevision: 1,
+      nodes: [nodeView({ attributes: [attribute] })],
+    })).toThrow(DomProtocolError);
+    expect(parseDomResponse({
+      type: "dom.children",
+      requestId: "proxied-attributes",
+      documentEpoch: 1,
+      nodeRef: "parent",
+      branchRevision: 1,
+      nodes: [nodeView({ attributes: proxiedAttributes })],
+    })).toMatchObject({
+      nodes: [expect.objectContaining({
+        attributes: [{ name: "role", value: "button" }],
+      })],
+    });
+    expect(getterCalls).toBe(0);
+    expect(proxyGets).toBe(0);
   });
 
   it("rejects accessor descriptors without invoking getters or setters", () => {
@@ -858,6 +1025,8 @@ describe("DOM protocol", () => {
       requestId: "request-1",
       documentEpoch: 1,
       node: { ...nodeView(), kind: "text" },
+      prologue: [],
+      epilogue: [],
     })).toThrow(DomProtocolError);
     expect(() => parseDomEvent({
       type: "dom.selectionChanged",
@@ -1151,7 +1320,10 @@ describe("DOM protocol", () => {
       documentEpoch: 1,
       nodeRef: "node-1",
       branchRevision: 1,
-      nodes: [nodeView({ label: "<img src=x onerror=alert(1)>" })],
+      nodes: [nodeView({
+        label: "<img src=x onerror=alert(1)>",
+        attributes: [{ name: "title", value: "safe text" }],
+      })],
     };
     const parsed = parseDomResponse(input);
 
@@ -1159,11 +1331,16 @@ describe("DOM protocol", () => {
     input.nodes.push(nodeView());
 
     expect(parsed.nodes).toEqual([
-      nodeView({ label: "<img src=x onerror=alert(1)>" }),
+      nodeView({
+        label: "<img src=x onerror=alert(1)>",
+        attributes: [{ name: "title", value: "safe text" }],
+      }),
     ]);
     expect(Object.isFrozen(parsed)).toBe(true);
     expect(Object.isFrozen(parsed.nodes)).toBe(true);
     expect(Object.isFrozen(parsed.nodes[0])).toBe(true);
+    expect(Object.isFrozen(parsed.nodes[0]?.attributes)).toBe(true);
+    expect(Object.isFrozen(parsed.nodes[0]?.attributes[0])).toBe(true);
     expect(Object.isFrozen(parsed.nodes[0]?.locator)).toBe(true);
     expect(Object.isFrozen(parsed.nodes[0]?.locator.path)).toBe(true);
     expect(Object.isFrozen(parsed.nodes[0]?.locator.path[0])).toBe(true);
@@ -1186,6 +1363,8 @@ describe("DOM protocol", () => {
       requestId: "request-1",
       documentEpoch: 1,
       node: nodeView(),
+      prologue: [displayNodeView("document-type")],
+      epilogue: [displayNodeView("comment")],
     };
     const selectionInput = {
       type: "dom.selectionChanged" as const,
@@ -1206,6 +1385,8 @@ describe("DOM protocol", () => {
 
     requestInput.requestId = "changed";
     rootInput.node.label = "changed";
+    rootInput.prologue[0]!.label = "changed";
+    rootInput.epilogue.push(displayNodeView("comment", { nodeRef: "another" }));
     selectionInput.ancestorPath[0]!.label = "changed";
     selectionInput.ancestorPath.push(nodeView());
     invalidationInput.branches[0]!.branchRevision = 2;
@@ -1226,6 +1407,9 @@ describe("DOM protocol", () => {
     expect(Object.isFrozen(request)).toBe(true);
     expect(Object.isFrozen(root)).toBe(true);
     expect(Object.isFrozen(root.node)).toBe(true);
+    expect(Object.isFrozen(root.prologue)).toBe(true);
+    expect(Object.isFrozen(root.prologue[0])).toBe(true);
+    expect(Object.isFrozen(root.epilogue)).toBe(true);
     expect(Object.isFrozen(root.node.locator)).toBe(true);
     expect(Object.isFrozen(root.node.locator.boundaries)).toBe(true);
     expect(Object.isFrozen(root.node.locator.path)).toBe(true);
@@ -1277,6 +1461,12 @@ function collectionWithExtraKey<T>(values: T[], key: PropertyKey): T[] {
 function nodeView(overrides: Partial<{
   nodeRef: string;
   kind: "element" | "shadow-root" | "frame-document";
+  nodeType: number;
+  nodeName: string;
+  attributes: TestInspectorAttribute[];
+  childCount: number;
+  relationship: "dom" | "shadow-root" | "frame-document";
+  selectable: boolean;
   label: string;
   expandable: boolean;
   inaccessible: boolean;
@@ -1285,19 +1475,77 @@ function nodeView(overrides: Partial<{
 }> = {}): {
   nodeRef: string;
   kind: "element" | "shadow-root" | "frame-document";
+  nodeType: number;
+  nodeName: string;
+  attributes: TestInspectorAttribute[];
+  childCount: number;
+  relationship: "dom" | "shadow-root" | "frame-document";
+  selectable: boolean;
   label: string;
   expandable: boolean;
   inaccessible?: boolean;
   branchRevision: number;
   locator: TestDomStableLocator;
 } {
+  const kind = overrides.kind ?? "element";
   return {
     nodeRef: "node-1",
-    kind: "element",
+    kind,
+    nodeType: kind === "element" ? 1 : kind === "shadow-root" ? 11 : 9,
+    nodeName: kind === "element"
+      ? "MAIN"
+      : kind === "shadow-root" ? "#document-fragment" : "#document",
+    attributes: [],
+    childCount: 1,
+    relationship: kind === "element" ? "dom" : kind,
+    selectable: kind === "element",
     label: "main",
     expandable: true,
     branchRevision: 1,
-    locator: stableLocator(),
+    locator: stableLocator({ targetKind: kind }),
+    ...overrides,
+  };
+}
+
+interface TestInspectorAttribute {
+  name: string;
+  value: string;
+}
+
+function displayNodeView(
+  kind: "document-type" | "text" | "comment",
+  overrides: Partial<{
+    nodeRef: string;
+    nodeType: number;
+    nodeName: string;
+    nodeValue: string;
+    publicId: string;
+    systemId: string;
+    attributes: TestInspectorAttribute[];
+    childCount: number;
+    relationship: "dom" | "shadow-root" | "frame-document";
+    selectable: boolean;
+    expandable: boolean;
+    inaccessible: boolean;
+    branchRevision: number;
+    label: string;
+  }> = {},
+) {
+  return {
+    nodeRef: `node-${kind}`,
+    kind,
+    nodeType: kind === "document-type" ? 10 : kind === "text" ? 3 : 8,
+    nodeName: kind === "document-type" ? "html" : kind === "text" ? "#text" : "#comment",
+    ...(kind === "document-type"
+      ? { publicId: "", systemId: "" }
+      : { nodeValue: kind === "text" ? "text" : "comment" }),
+    attributes: [],
+    childCount: 0,
+    relationship: "dom" as const,
+    selectable: false,
+    expandable: false,
+    branchRevision: 0,
+    label: kind === "document-type" ? "<!DOCTYPE html>" : kind,
     ...overrides,
   };
 }

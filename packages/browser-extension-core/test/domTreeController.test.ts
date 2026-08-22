@@ -15,6 +15,47 @@ import type {
 import type { DomStableLocator } from "../src/domStableLocator.js";
 
 describe("DomTreeController", () => {
+  it("projects structured root auxiliaries around the recoverable element root", async () => {
+    const transport = new TestTransport();
+    const doctype = displayNode("doctype", "document-type", "html");
+    const leading = displayNode("leading", "comment", "leading");
+    const trailing = displayNode("trailing", "comment", "trailing");
+    const root = node("root", true);
+    transport.enqueue(rootResponse(root, 1, [doctype, leading], [trailing]));
+    const controller = createController(transport);
+
+    await controller.loadRoot();
+
+    expect(controller.rows().map((row) => row.nodeRef)).toEqual([
+      "doctype",
+      "leading",
+      "root",
+      "trailing",
+    ]);
+    expect(controller.rows().map((row) => row.type === "node" ? row.node : undefined))
+      .toEqual([doctype, leading, root, trailing]);
+    expect(controller.rows().map((row) => row.depth)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("keeps display-only children visible but ignores selection and hover", async () => {
+    const transport = new TestTransport();
+    transport.enqueue(rootResponse(node("root", true)));
+    const text = displayNode("text", "text", "hello");
+    const comment = displayNode("comment", "comment", "note");
+    transport.enqueue(childrenResponse("root", 0, [text, comment]));
+    const controller = createController(transport);
+
+    await controller.loadRoot();
+    await controller.expand("root");
+    await controller.select(text.nodeRef);
+    controller.hover(comment.nodeRef);
+
+    expect(nodeRefs(controller)).toEqual(["root", "text", "comment"]);
+    expect(transport.dispatched).toEqual([]);
+    expect(controller.rows().find((row) => row.nodeRef === text.nodeRef))
+      .toMatchObject({ node: text, selectable: false, expandable: false });
+  });
+
   it("loads children lazily and paginates only on demand", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true)));
@@ -773,6 +814,12 @@ function node(
   return {
     nodeRef,
     kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: "dom",
+    selectable: true,
     label: nodeRef,
     expandable,
     branchRevision,
@@ -782,6 +829,28 @@ function node(
       boundaries: [],
       path: [{ tagName: "div", siblingIndex: 0 }],
     },
+  };
+}
+
+function displayNode(
+  nodeRef: string,
+  kind: "document-type" | "text" | "comment",
+  value: string,
+): DomNodeView {
+  return {
+    nodeRef,
+    kind,
+    nodeType: kind === "document-type" ? 10 : kind === "text" ? 3 : 8,
+    nodeName: kind === "document-type" ? value : kind === "text" ? "#text" : "#comment",
+    ...(kind === "document-type" ? {} : { nodeValue: value }),
+    ...(kind === "document-type" ? { publicId: "", systemId: "" } : {}),
+    attributes: [],
+    childCount: 0,
+    relationship: "dom",
+    selectable: false,
+    expandable: false,
+    branchRevision: 0,
+    label: kind === "document-type" ? `<!DOCTYPE ${value}>` : value,
   };
 }
 
@@ -831,12 +900,16 @@ function locatorWithBoundaries(
 function rootResponse(
   root: DomNodeView,
   documentEpoch = 1,
+  prologue: readonly DomNodeView[] = [],
+  epilogue: readonly DomNodeView[] = [],
 ): DomRootResponse {
   return {
     type: "dom.root",
     requestId: "ignored-by-test-transport",
     documentEpoch,
     node: root,
+    prologue,
+    epilogue,
   };
 }
 

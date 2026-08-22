@@ -1483,6 +1483,8 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
       requestId: "root",
       documentEpoch: this.currentDocumentEpoch,
       node: nodeView("node-1", "html"),
+      prologue: Object.freeze([]),
+      epilogue: Object.freeze([]),
     });
   }
 
@@ -1711,6 +1713,12 @@ function nodeView(nodeRef: string, label: string): DomNodeView {
   return Object.freeze({
     nodeRef,
     kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: Object.freeze([]),
+    childCount: 0,
+    relationship: "dom",
+    selectable: true,
     label,
     expandable: false,
     branchRevision: 1,

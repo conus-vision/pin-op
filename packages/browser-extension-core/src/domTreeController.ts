@@ -60,12 +60,14 @@ export interface DomTreeRecoveryFocusAnchor {
 
 interface DomTreeNodeRow {
   readonly type: "node";
+  readonly node: DomNodeView;
   readonly nodeRef: string;
   readonly parentRef?: string;
   readonly label: string;
   readonly kind: DomNodeView["kind"];
   readonly depth: number;
   readonly expandable: boolean;
+  readonly selectable: boolean;
   readonly inaccessible: boolean;
   readonly branchRevision: number;
   readonly expanded: boolean;
@@ -83,6 +85,7 @@ interface DomTreeLoadMoreRow {
   readonly kind: "load-more";
   readonly depth: number;
   readonly expandable: false;
+  readonly selectable: false;
   readonly inaccessible: false;
   readonly branchRevision: number;
   readonly expanded: false;
@@ -148,6 +151,8 @@ export class DomTreeController {
   private revealPathRefs: readonly string[] = Object.freeze([]);
   private rowsCache: readonly DomTreeRow[] | undefined;
   private rootRef: string | undefined;
+  private rootPrologue: readonly DomNodeView[] = Object.freeze([]);
+  private rootEpilogue: readonly DomNodeView[] = Object.freeze([]);
   private selectedNodeRef: string | undefined;
   private focusedNodeRef: string | undefined;
   private hoveredNodeRef: string | undefined;
@@ -244,7 +249,13 @@ export class DomTreeController {
       return this.rowsCache;
     }
     const result: DomTreeRow[] = [];
+    for (const node of this.rootPrologue) {
+      this.appendAuxiliaryRow(node, result);
+    }
     this.appendRows(this.rootRef, undefined, 1, result, new Set());
+    for (const node of this.rootEpilogue) {
+      this.appendAuxiliaryRow(node, result);
+    }
     this.rowsCache = Object.freeze(result);
     return this.rowsCache;
   }
@@ -298,11 +309,14 @@ export class DomTreeController {
     this.currentDocumentEpoch = response.documentEpoch;
     this.currentError = undefined;
     this.rootRef = response.node.nodeRef;
+    this.rootPrologue = Object.freeze([...response.prologue]);
+    this.rootEpilogue = Object.freeze([...response.epilogue]);
     this.upsertNode(response.node, undefined);
     this.focusedNodeRef = response.node.nodeRef;
     const focusAnchor = this.recoverySnapshot?.focusAnchor;
     if (
       focusAnchor &&
+      response.node.locator &&
       locatorKey(focusAnchor.locator) === locatorKey(response.node.locator)
     ) {
       this.recoveryFocusRef = response.node.nodeRef;
@@ -457,6 +471,8 @@ export class DomTreeController {
         }
         this.currentError = undefined;
         this.rootRef = response.node.nodeRef;
+        this.rootPrologue = Object.freeze([...response.prologue]);
+        this.rootEpilogue = Object.freeze([...response.epilogue]);
         this.upsertNode(response.node, undefined);
         if (!this.focusedNodeRef) {
           this.focusedNodeRef = response.node.nodeRef;
@@ -563,7 +579,7 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
-    if (!state || state.view.inaccessible) {
+    if (!state || !state.view.selectable || state.view.inaccessible) {
       return;
     }
     try {
@@ -590,7 +606,7 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
-    if (!state || state.view.inaccessible) {
+    if (!state || !state.view.selectable || state.view.inaccessible) {
       return;
     }
     if (this.lastHoverRequest === nodeRef) {
@@ -752,6 +768,8 @@ export class DomTreeController {
     this.expanded.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
+    this.rootPrologue = Object.freeze([]);
+    this.rootEpilogue = Object.freeze([]);
     this.selectedNodeRef = undefined;
     this.focusedNodeRef = undefined;
     this.hoveredNodeRef = undefined;
@@ -1179,12 +1197,14 @@ export class DomTreeController {
     const isExpanded = this.expanded.has(nodeRef);
     result.push(Object.freeze({
       type: "node",
+      node: state.view,
       nodeRef,
       ...(parentRef ? { parentRef } : {}),
       label: state.view.label,
       kind: state.view.kind,
       depth,
       expandable: state.view.expandable,
+      selectable: state.view.selectable,
       inaccessible: state.view.inaccessible === true,
       branchRevision: state.view.branchRevision,
       expanded: isExpanded,
@@ -1239,6 +1259,7 @@ export class DomTreeController {
         kind: "load-more",
         depth: depth + 1,
         expandable: false,
+        selectable: false,
         inaccessible: false,
         branchRevision: branch.revision,
         expanded: false,
@@ -1248,6 +1269,26 @@ export class DomTreeController {
         hovered: false,
       }));
     }
+  }
+
+  private appendAuxiliaryRow(node: DomNodeView, result: DomTreeRow[]): void {
+    result.push(Object.freeze({
+      type: "node",
+      node,
+      nodeRef: node.nodeRef,
+      label: node.label,
+      kind: node.kind,
+      depth: 1,
+      expandable: false,
+      selectable: false,
+      inaccessible: node.inaccessible === true,
+      branchRevision: node.branchRevision,
+      expanded: false,
+      loading: false,
+      selected: false,
+      focused: this.focusedNodeRef === node.nodeRef,
+      hovered: false,
+    }));
   }
 
   private focusRow(row: DomTreeRow | undefined): void {
@@ -1476,6 +1517,8 @@ export class DomTreeController {
     this.expanded.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
+    this.rootPrologue = Object.freeze([]);
+    this.rootEpilogue = Object.freeze([]);
     this.selectedNodeRef = undefined;
     this.focusedNodeRef = undefined;
     this.hoveredNodeRef = undefined;

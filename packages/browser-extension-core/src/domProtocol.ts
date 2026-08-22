@@ -9,7 +9,14 @@ export const DOM_PROTOCOL_MAX_LABEL_LENGTH = 512;
 export const DOM_PROTOCOL_MAX_SUMMARY_LENGTH = 512;
 export const DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH = 100;
 export const DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH = 64;
+export const DOM_PROTOCOL_MAX_ATTRIBUTES = 64;
+export const DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH = 256;
+export const DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH = 16_384;
 export const DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES = 128;
+export const DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH = 16_384;
+export const DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH = 4_096;
+export const DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS = 32;
+export const DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED = 128;
 export const DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES = 64 * 1024;
 
 export type DomErrorCode =
@@ -22,14 +29,34 @@ export type DomErrorCode =
   | "node-unavailable"
   | "internal-error";
 
+export interface InspectorAttribute {
+  readonly name: string;
+  readonly value: string;
+}
+
 export interface DomNodeView {
   readonly nodeRef: string;
-  readonly kind: "element" | "shadow-root" | "frame-document";
+  readonly kind:
+    | "document-type"
+    | "element"
+    | "text"
+    | "comment"
+    | "shadow-root"
+    | "frame-document";
+  readonly nodeType: number;
+  readonly nodeName: string;
+  readonly nodeValue?: string;
+  readonly publicId?: string;
+  readonly systemId?: string;
+  readonly attributes: readonly InspectorAttribute[];
+  readonly childCount: number;
+  readonly relationship: "dom" | "shadow-root" | "frame-document";
+  readonly selectable: boolean;
   readonly label: string;
   readonly expandable: boolean;
   readonly inaccessible?: boolean;
   readonly branchRevision: number;
-  readonly locator: DomStableLocator;
+  readonly locator?: DomStableLocator;
 }
 
 export interface DomInvalidationBranch {
@@ -88,6 +115,8 @@ export interface DomRootResponse {
   readonly requestId: string;
   readonly documentEpoch: number;
   readonly node: DomNodeView;
+  readonly prologue: readonly DomNodeView[];
+  readonly epilogue: readonly DomNodeView[];
 }
 
 export interface DomChildrenResponse {
@@ -157,6 +186,15 @@ export class DomProtocolError extends Error {
 }
 
 const DOM_NODE_KINDS = new Set<DomNodeView["kind"]>([
+  "document-type",
+  "element",
+  "text",
+  "comment",
+  "shadow-root",
+  "frame-document",
+]);
+
+const DOM_RECOVERABLE_NODE_KINDS = new Set<DomNodeView["kind"]>([
   "element",
   "shadow-root",
   "frame-document",
@@ -194,6 +232,8 @@ const DOM_RESPONSE_KEYS = [
   "nextCursor",
   "ancestorPath",
   "code",
+  "prologue",
+  "epilogue",
 ] as const;
 
 const DOM_EVENT_KEYS = [
@@ -209,12 +249,23 @@ const DOM_EVENT_KEYS = [
 const DOM_NODE_VIEW_KEYS = [
   "nodeRef",
   "kind",
+  "nodeType",
+  "nodeName",
+  "nodeValue",
+  "publicId",
+  "systemId",
+  "attributes",
+  "childCount",
+  "relationship",
+  "selectable",
   "label",
   "expandable",
   "inaccessible",
   "branchRevision",
   "locator",
 ] as const;
+
+const DOM_INSPECTOR_ATTRIBUTE_KEYS = ["name", "value"] as const;
 
 const DOM_INVALIDATION_BRANCH_KEYS = [
   "nodeRef",
@@ -296,17 +347,35 @@ export function parseDomResponse(value: unknown): DomResponse {
   const record = snapshotRecord(value, DOM_RESPONSE_KEYS);
   switch (record.type) {
     case "dom.root":
-      assertKeys(record, ["type", "requestId", "documentEpoch", "node"], [
+      assertKeys(record, [
         "type",
         "requestId",
         "documentEpoch",
         "node",
+        "prologue",
+        "epilogue",
+      ], [
+        "type",
+        "requestId",
+        "documentEpoch",
+        "node",
+        "prologue",
+        "epilogue",
       ]);
+      const node = parseNodeView(record.node);
+      if (node.kind !== "element") throw invalidMessage();
+      const prologue = parseRootAuxiliaryViews(record.prologue, "prologue");
+      const epilogue = parseRootAuxiliaryViews(record.epilogue, "epilogue");
+      if (prologue.length + epilogue.length > DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS) {
+        throw invalidMessage();
+      }
       return freeze({
         type: "dom.root",
         requestId: assertIdentifier(record.requestId),
         documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
-        node: parseNodeView(record.node),
+        node,
+        prologue,
+        epilogue,
       });
     case "dom.children":
       assertKeys(record, [
@@ -478,6 +547,15 @@ function parseNodeView(value: unknown): DomNodeView {
   assertKeys(record, [
     "nodeRef",
     "kind",
+    "nodeType",
+    "nodeName",
+    "nodeValue",
+    "publicId",
+    "systemId",
+    "attributes",
+    "childCount",
+    "relationship",
+    "selectable",
     "label",
     "expandable",
     "inaccessible",
@@ -486,33 +564,155 @@ function parseNodeView(value: unknown): DomNodeView {
   ], [
     "nodeRef",
     "kind",
+    "nodeType",
+    "nodeName",
+    "attributes",
+    "childCount",
+    "relationship",
+    "selectable",
     "label",
     "expandable",
     "branchRevision",
-    "locator",
   ]);
   if (typeof record.kind !== "string" || !DOM_NODE_KINDS.has(record.kind as DomNodeView["kind"])) {
     throw invalidMessage();
   }
   const kind = record.kind as DomNodeView["kind"];
-  const locator = parseStableLocator(record.locator);
-  if (locator.targetKind !== kind) {
+  const expectedNodeType = nodeTypeForKind(kind);
+  const expectedRelationship = relationshipForKind(kind);
+  if (
+    record.nodeType !== expectedNodeType ||
+    record.relationship !== expectedRelationship ||
+    typeof record.selectable !== "boolean" ||
+    (kind !== "element" && record.selectable) ||
+    (hasOwn(record, "inaccessible") && kind !== "element") ||
+    (record.inaccessible === true && record.selectable) ||
+    ((kind === "document-type" || kind === "text" || kind === "comment") &&
+      record.expandable !== false)
+  ) {
     throw invalidMessage();
   }
   if (typeof record.expandable !== "boolean") {
     throw invalidMessage();
   }
+  const recoverable = DOM_RECOVERABLE_NODE_KINDS.has(kind);
+  if (recoverable !== hasOwn(record, "locator")) throw invalidMessage();
+  const locator = recoverable ? parseStableLocator(record.locator) : undefined;
+  if (locator && locator.targetKind !== kind) throw invalidMessage();
+  if (kind !== "document-type" && (hasOwn(record, "publicId") || hasOwn(record, "systemId"))) {
+    throw invalidMessage();
+  }
+  const characterData = kind === "text" || kind === "comment";
+  if (!characterData && hasOwn(record, "nodeValue")) throw invalidMessage();
+  const attributes = parseInspectorAttributes(record.attributes);
+  if (kind !== "element" && attributes.length > 0) throw invalidMessage();
   return freeze({
     nodeRef: assertIdentifier(record.nodeRef),
     kind,
+    nodeType: expectedNodeType,
+    nodeName: assertBoundedText(
+      record.nodeName,
+      DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+      true,
+    ),
+    ...(hasOwn(record, "nodeValue")
+      ? {
+          nodeValue: assertBoundedText(
+            record.nodeValue,
+            DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH,
+          ),
+        }
+      : {}),
+    ...(hasOwn(record, "publicId")
+      ? {
+          publicId: assertBoundedText(
+            record.publicId,
+            DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH,
+          ),
+        }
+      : {}),
+    ...(hasOwn(record, "systemId")
+      ? {
+          systemId: assertBoundedText(
+            record.systemId,
+            DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH,
+          ),
+        }
+      : {}),
+    attributes,
+    childCount: assertSafeNonnegativeInteger(record.childCount),
+    relationship: expectedRelationship,
+    selectable: record.selectable,
     label: assertBoundedText(record.label, DOM_PROTOCOL_MAX_LABEL_LENGTH, true),
     expandable: record.expandable,
     ...(hasOwn(record, "inaccessible")
       ? { inaccessible: assertBoolean(record.inaccessible) }
       : {}),
     branchRevision: assertSafeNonnegativeInteger(record.branchRevision),
-    locator,
+    ...(locator ? { locator } : {}),
   });
+}
+
+function nodeTypeForKind(kind: DomNodeView["kind"]): number {
+  switch (kind) {
+    case "element": return 1;
+    case "text": return 3;
+    case "comment": return 8;
+    case "frame-document": return 9;
+    case "document-type": return 10;
+    case "shadow-root": return 11;
+  }
+}
+
+function relationshipForKind(
+  kind: DomNodeView["kind"],
+): DomNodeView["relationship"] {
+  if (kind === "shadow-root") return "shadow-root";
+  if (kind === "frame-document") return "frame-document";
+  return "dom";
+}
+
+function parseInspectorAttributes(value: unknown): readonly InspectorAttribute[] {
+  return parseBoundedArray(
+    value,
+    DOM_PROTOCOL_MAX_ATTRIBUTES,
+    parseInspectorAttribute,
+  );
+}
+
+function parseInspectorAttribute(value: unknown): InspectorAttribute {
+  const record = snapshotRecord(value, DOM_INSPECTOR_ATTRIBUTE_KEYS);
+  assertKeys(record, ["name", "value"], ["name", "value"]);
+  return freeze({
+    name: assertBoundedText(
+      record.name,
+      DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+      true,
+    ),
+    value: assertBoundedText(
+      record.value,
+      DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH,
+    ),
+  });
+}
+
+function parseRootAuxiliaryViews(
+  value: unknown,
+  position: "prologue" | "epilogue",
+): readonly DomNodeView[] {
+  const views = parseBoundedArray(
+    value,
+    DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS,
+    parseNodeView,
+  );
+  if (views.some((view) => (
+    position === "prologue"
+      ? view.kind !== "document-type" && view.kind !== "comment"
+      : view.kind !== "comment"
+  ))) {
+    throw invalidMessage();
+  }
+  return views;
 }
 
 function parseStableLocator(value: unknown): DomStableLocator {

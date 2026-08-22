@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { utf8ByteLength } from "@pin-op/protocol";
 import {
   DomTreeProvider,
   DomTreeProviderError,
@@ -54,9 +55,9 @@ describe("DomTreeProvider", () => {
     }
   });
 
-  it("returns only element children in fixed-size pages", () => {
+  it("returns structured element, text, and comment children in fixed-size pages", () => {
     const document = createDocument();
-    for (let index = 0; index < 51; index += 1) {
+    for (let index = 0; index < 17; index += 1) {
       document.documentElement.append(createText(`before-${index}`));
       document.documentElement.append(createElement("section", document));
       document.documentElement.append(createComment(`after-${index}`));
@@ -83,7 +84,41 @@ describe("DomTreeProvider", () => {
     });
 
     expect(first.nodes).toHaveLength(50);
-    expect(first.nodes.every((node) => node.kind === "element")).toBe(true);
+    expect(first.nodes.slice(0, 6).map((node) => node.kind)).toEqual([
+      "text",
+      "element",
+      "comment",
+      "text",
+      "element",
+      "comment",
+    ]);
+    expect(first.nodes[0]).toMatchObject({
+      nodeType: 3,
+      nodeName: "#text",
+      nodeValue: "before-0",
+      attributes: [],
+      childCount: 0,
+      relationship: "dom",
+      selectable: false,
+      expandable: false,
+    });
+    expect(first.nodes[1]).toMatchObject({
+      nodeType: 1,
+      nodeName: "SECTION",
+      attributes: [],
+      childCount: 0,
+      relationship: "dom",
+      selectable: true,
+    });
+    expect(first.nodes[2]).toMatchObject({
+      nodeType: 8,
+      nodeName: "#comment",
+      nodeValue: "after-0",
+      selectable: false,
+    });
+    expect(first.nodes.filter((node) => node.kind !== "element")
+      .every((node) => node.locator === undefined)).toBe(true);
+    expect(Object.isFrozen(first.nodes[1]?.attributes)).toBe(true);
     expect(first.nextCursor).toBeDefined();
 
     const second = provider.getChildren({
@@ -95,6 +130,177 @@ describe("DomTreeProvider", () => {
       cursor: first.nextCursor,
     });
     expect(second.nodes).toHaveLength(1);
+  });
+
+  it.each([
+    ["simple", "", "", "<!DOCTYPE html>"],
+    ["PUBLIC", "-//W3C//DTD XHTML 1.0 Strict//EN", "xhtml1-strict.dtd", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"xhtml1-strict.dtd\">"],
+    ["SYSTEM", "", "about:legacy-compat", "<!DOCTYPE html SYSTEM \"about:legacy-compat\">"],
+  ])("preserves %s doctypes and top-level comment placement", (
+    _case,
+    publicId,
+    systemId,
+    expectedLabel,
+  ) => {
+    const document = createDocument();
+    const leading = createComment("leading");
+    const doctype = createDocumentType("html", publicId, systemId);
+    const trailing = createComment("trailing");
+    document.prepend(leading);
+    document.prepend(doctype);
+    document.append(trailing);
+    const root = createProvider(document).getRoot();
+
+    expect(root.node).toMatchObject({
+      kind: "element",
+      nodeType: 1,
+      nodeName: "HTML",
+      attributes: [],
+      childCount: 0,
+      relationship: "dom",
+      selectable: true,
+    });
+    expect(root.prologue).toEqual([
+      expect.objectContaining({
+        kind: "document-type",
+        nodeType: 10,
+        nodeName: "html",
+        publicId,
+        systemId,
+        attributes: [],
+        childCount: 0,
+        relationship: "dom",
+        selectable: false,
+        expandable: false,
+        label: expectedLabel,
+      }),
+      expect.objectContaining({
+        kind: "comment",
+        nodeValue: "leading",
+      }),
+    ]);
+    expect(root.epilogue).toEqual([
+      expect.objectContaining({ kind: "comment", nodeValue: "trailing" }),
+    ]);
+    expect([...root.prologue, ...root.epilogue]
+      .every((node) => node.locator === undefined)).toBe(true);
+    expect(Object.isFrozen(root.prologue)).toBe(true);
+    expect(Object.isFrozen(root.epilogue)).toBe(true);
+  });
+
+  it("bounds attributes, root scans, auxiliary rows, and UTF-16 values", () => {
+    const document = createDocument();
+    for (let index = 0; index < 140; index += 1) {
+      document.prepend(createComment(`leading-${index}`));
+    }
+    const element = createElement("article", document);
+    for (let index = 0; index < 70; index += 1) {
+      element.setAttribute(
+        `data-${index}-${"n".repeat(300)}`,
+        `${"v".repeat(16_383)}😀tail`,
+      );
+    }
+    const text = createText(`${"t".repeat(16_383)}😀tail`);
+    element.append(text);
+    document.documentElement.append(element);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const elementView = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "bounded-root-child",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.at(-1)!;
+    const textView = onlyChild(
+      provider,
+      elementView,
+      root.documentEpoch,
+      "bounded-text",
+    );
+
+    expect(root.prologue).toHaveLength(32);
+    expect(elementView.attributes.length).toBeLessThanOrEqual(64);
+    expect(elementView.attributes.every(({ name }) => name.length <= 256)).toBe(true);
+    expect(elementView.attributes.every(({ value }) => value.length <= 16_384)).toBe(true);
+    expect(elementView.attributes.every(({ value }) => !endsWithUnpairedSurrogate(value)))
+      .toBe(true);
+    expect(elementView.expandable).toBe(true);
+    expect(textView.nodeValue?.length).toBeLessThanOrEqual(16_384);
+    expect(endsWithUnpairedSurrogate(textView.nodeValue ?? "")).toBe(false);
+  });
+
+  it("keeps generated child responses within the UTF-8 envelope by omitting whole fields or rows", () => {
+    const document = createDocument();
+    const source = `${"😀".repeat(8_191)}x😀tail`;
+    for (let index = 0; index < 50; index += 1) {
+      document.documentElement.append(createText(source));
+    }
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const response = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "utf8-envelope",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    expect(utf8ByteLength(JSON.stringify(response))).toBeLessThanOrEqual(64 * 1024);
+    expect(response.nodes).not.toHaveLength(0);
+    expect(response.nodes.every((node) => (
+      node.nodeValue === undefined ||
+      (node.nodeValue.length <= 16_384 && !endsWithUnpairedSurrogate(node.nodeValue))
+    ))).toBe(true);
+    expect(response.nodes.length < 50 || response.nodes.some((node) => node.nodeValue === undefined))
+      .toBe(true);
+  });
+
+  it("reserves the root envelope for a maximally escaped request identifier", () => {
+    const document = createDocument();
+    for (let index = 0; index < 64; index += 1) {
+      document.documentElement.setAttribute(`data-${index}`, "v".repeat(1_000));
+    }
+    const provider = createProvider(document);
+    const routed = {
+      ...provider.getRoot(),
+      requestId: "\u0000".repeat(128),
+    };
+
+    expect(utf8ByteLength(JSON.stringify(routed))).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("bounds hostile character-data getters without losing safe siblings", () => {
+    const document = createDocument();
+    const safe = createElement("section", document);
+    safe.setAttribute("data-safe", "yes");
+    const hostile = createElement("article", document);
+    const hostileText = createText("secret text");
+    Object.defineProperty(hostileText, "nodeValue", {
+      get: () => {
+        throw new Error("hostile character data");
+      },
+    });
+    hostile.append(hostileText);
+    document.documentElement.append(safe);
+    document.documentElement.append(hostile);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const children = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "hostile-structured",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+    const hostileView = children.find((node) => node.nodeName === "ARTICLE")!;
+
+    expect(children.find((node) => node.nodeName === "SECTION")?.attributes)
+      .toEqual([{ name: "data-safe", value: "yes" }]);
+    expect(hostileView.attributes).toEqual([]);
+    expect(onlyChild(provider, hostileView, root.documentEpoch, "hostile-text"))
+      .not.toHaveProperty("nodeValue");
   });
 
   it("serializes an explicit expandable open-shadow-root container", () => {
@@ -124,6 +330,12 @@ describe("DomTreeProvider", () => {
     expect(hostView.expandable).toBe(true);
     expect(children.nodes).toContainEqual(expect.objectContaining({
       kind: "shadow-root",
+      nodeType: 11,
+      nodeName: "#document-fragment",
+      attributes: [],
+      childCount: 1,
+      relationship: "shadow-root",
+      selectable: false,
       expandable: true,
     }));
     expect(children.nodes.find((node) => node.kind === "shadow-root")?.locator)
@@ -253,10 +465,11 @@ describe("DomTreeProvider", () => {
     ]);
   });
 
-  it("ignores text-only mutations in an element-only branch", () => {
+  it("invalidates the owning materialized branch for character-data mutations", () => {
     const document = createDocument();
     const parent = createElement("main", document);
-    parent.append(createElement("p", document));
+    const text = createText("before");
+    parent.append(text);
     document.documentElement.append(parent);
     const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
     const harness = createProviderHarness(document, {
@@ -276,13 +489,17 @@ describe("DomTreeProvider", () => {
       nodeRef: parentView.nodeRef,
       branchRevision: parentView.branchRevision,
     });
-    const text = createText("changed");
-
-    parent.append(text);
-    harness.observers[0]!.emit([mutationRecord(parent, [text])]);
+    text.nodeValue = "after";
+    harness.observers[0]!.emit([characterDataMutationRecord(text)]);
     harness.flushTimers();
 
-    expect(invalidated).toEqual([]);
+    expect(invalidated).toEqual([{
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }]);
+    expect(harness.observers[0]!.observedOptions).toContainEqual(
+      expect.objectContaining({ characterData: true }),
+    );
   });
 
   it("invalidates a parent page when a visible child becomes expandable", () => {
@@ -440,7 +657,7 @@ describe("DomTreeProvider", () => {
     }).nodes[0]?.label).toBe("div [role]");
   });
 
-  it("does not invalidate when an attribute mutation leaves the label unchanged", () => {
+  it("invalidates when a structured attribute value changes without changing the label", () => {
     const document = createDocument();
     const parent = createElement("main", document);
     const child = createElement("div", document);
@@ -469,14 +686,20 @@ describe("DomTreeProvider", () => {
     harness.observers[0]!.emit([attributeMutationRecord(child, "title")]);
     harness.flushTimers();
 
-    expect(invalidated).toEqual([]);
+    expect(invalidated).toEqual([{
+      nodeRef: parentView.nodeRef,
+      branchRevision: 2,
+    }]);
     expect(harness.provider.getChildren({
       type: "dom.getChildren",
-      requestId: "unchanged-parent",
+      requestId: "structured-attribute-parent",
       documentEpoch: root.documentEpoch,
       nodeRef: parentView.nodeRef,
-      branchRevision: 1,
-    }).nodes[0]?.label).toBe("div");
+      branchRevision: 2,
+    }).nodes[0]).toMatchObject({
+      label: "div",
+      attributes: [{ name: "title", value: "private-after" }],
+    });
   });
 
   it("rejects a cursor from an older branch revision as stale-branch", () => {
@@ -851,6 +1074,12 @@ describe("DomTreeProvider", () => {
     expect(frameView).toMatchObject({ kind: "element", expandable: true });
     expect(frameDocumentView).toMatchObject({
       kind: "frame-document",
+      nodeType: 9,
+      nodeName: "#document",
+      attributes: [],
+      childCount: 1,
+      relationship: "frame-document",
+      selectable: false,
       expandable: true,
       locator: expect.objectContaining({
         version: 1,
@@ -887,6 +1116,11 @@ describe("DomTreeProvider", () => {
 
     expect(frameView).toMatchObject({
       kind: "element",
+      nodeType: 1,
+      nodeName: "IFRAME",
+      childCount: 0,
+      relationship: "dom",
+      selectable: false,
       expandable: false,
       inaccessible: true,
     });
@@ -2759,6 +2993,16 @@ describe("DomTreeProvider", () => {
     expect(child.label).not.toMatch(
       /region|secret-ready|Private account|private form|sendPrivateData|style|onclick|[<>]/,
     );
+    expect(child.attributes).toEqual([
+      { name: "id", value: "hero" },
+      { name: "class", value: "card featured" },
+      { name: "role", value: "region" },
+      { name: "data-state", value: "secret-ready" },
+      { name: "aria-label", value: "Private account name" },
+      { name: "value", value: "private form value" },
+      { name: "onclick", value: "sendPrivateData() <script>" },
+      { name: "style", value: "background:url(private)" },
+    ]);
   });
 
   it("rejects malformed child requests with a typed invalid-request error", () => {
@@ -2885,7 +3129,7 @@ describe("DomTreeProvider", () => {
     const root = provider.getRoot();
     indexedReads = 0;
     let cursor: string | undefined;
-    const found = [];
+    const found: DomNodeView[] = [];
 
     for (let pageIndex = 0; pageIndex < 5 && found.length === 0; pageIndex += 1) {
       const readsBeforePage = indexedReads;
@@ -2897,7 +3141,7 @@ describe("DomTreeProvider", () => {
         branchRevision: root.node.branchRevision,
         ...(cursor ? { cursor } : {}),
       });
-      found.push(...page.nodes);
+      found.push(...page.nodes.filter((node) => node.kind === "element"));
 
       expect(indexedReads - readsBeforePage).toBeLessThanOrEqual(12_000);
       if (found.length === 0) {
@@ -7352,6 +7596,7 @@ function createProviderHarness(
 class TestMutationObserver {
   private records: MutationRecord[] = [];
   public readonly observedTargets: FakeNode[] = [];
+  public readonly observedOptions: MutationObserverInit[] = [];
   public disconnectCount = 0;
   public emitCount = 0;
 
@@ -7359,8 +7604,9 @@ class TestMutationObserver {
     private readonly callback: (records: readonly MutationRecord[]) => void,
   ) {}
 
-  public observe(target: Node, _options: MutationObserverInit): void {
+  public observe(target: Node, options: MutationObserverInit): void {
     this.observedTargets.push(target as unknown as FakeNode);
+    this.observedOptions.push({ ...options });
   }
 
   public disconnect(): void {
@@ -7409,12 +7655,33 @@ function attributeMutationRecord(
   } as unknown as MutationRecord;
 }
 
+function characterDataMutationRecord(target: FakeNode): MutationRecord {
+  return {
+    type: "characterData",
+    target,
+  } as unknown as MutationRecord;
+}
+
 class FakeNode {
   public parentNode: FakeNode | null = null;
   public readonly childNodes: FakeNode[] = [];
   public previousElementSibling: FakeElement | null = null;
 
-  public constructor(public readonly nodeType: number) {}
+  public constructor(
+    public readonly nodeType: number,
+    public nodeName = "",
+    public nodeValue: string | null = null,
+  ) {}
+
+  public prepend(child: FakeNode): void {
+    child.parentNode = this;
+    child.previousElementSibling = null;
+    this.childNodes.unshift(child);
+    for (let childIndex = 1; childIndex < this.childNodes.length; childIndex += 1) {
+      const current = this.childNodes[childIndex]!;
+      current.previousElementSibling = this.lastElementBefore(childIndex);
+    }
+  }
 
   public append(child: FakeNode): void {
     child.parentNode = this;
@@ -7466,7 +7733,7 @@ class FakeElement extends FakeNode {
     public readonly tagName: string,
     public readonly ownerDocument: FakeDocument,
   ) {
-    super(1);
+    super(1, tagName);
   }
 
   public attachShadow(): FakeShadowRoot {
@@ -7598,7 +7865,7 @@ class FakeShadowRoot extends FakeNode {
   public readonly mode = "open";
 
   public constructor(public readonly host: FakeElement) {
-    super(11);
+    super(11, "#document-fragment");
   }
 
   public getRootNode(): FakeShadowRoot {
@@ -7610,9 +7877,19 @@ class FakeDocument extends FakeNode {
   public readonly documentElement: FakeElement;
 
   public constructor() {
-    super(9);
+    super(9, "#document");
     this.documentElement = new FakeElement("HTML", this);
     this.append(this.documentElement);
+  }
+}
+
+class FakeDocumentType extends FakeNode {
+  public constructor(
+    public readonly name: string,
+    public readonly publicId = "",
+    public readonly systemId = "",
+  ) {
+    super(10, name, null);
   }
 }
 
@@ -7632,10 +7909,24 @@ function createFrameElement(
   return new FakeFrameElement(document, frameDocument, accessError);
 }
 
-function createText(_text: string): FakeNode {
-  return new FakeNode(3);
+function createText(text: string): FakeNode {
+  return new FakeNode(3, "#text", text);
 }
 
-function createComment(_text: string): FakeNode {
-  return new FakeNode(8);
+function createComment(text: string): FakeNode {
+  return new FakeNode(8, "#comment", text);
+}
+
+function createDocumentType(
+  name = "html",
+  publicId = "",
+  systemId = "",
+): FakeDocumentType {
+  return new FakeDocumentType(name, publicId, systemId);
+}
+
+function endsWithUnpairedSurrogate(value: string): boolean {
+  if (value.length === 0) return false;
+  const final = value.charCodeAt(value.length - 1);
+  return final >= 0xd800 && final <= 0xdbff;
 }

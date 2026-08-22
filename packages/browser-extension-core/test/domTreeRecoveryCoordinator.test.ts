@@ -703,6 +703,12 @@ function node(
   return {
     nodeRef,
     kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: "dom",
+    selectable: true,
     label: nodeRef,
     expandable,
     branchRevision: 0,
@@ -764,6 +770,8 @@ function rootResponse(
     requestId: "test-response",
     documentEpoch,
     node: root,
+    prologue: [],
+    epilogue: [],
   };
 }
 

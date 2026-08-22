@@ -1503,6 +1503,12 @@ function node(
   return {
     nodeRef,
     kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: "dom",
+    selectable: true,
     label,
     expandable,
     branchRevision: 0,
@@ -1943,6 +1949,8 @@ function recoveryRoot(
     requestId: "recovery-root",
     documentEpoch,
     node: root,
+    prologue: [],
+    epilogue: [],
   };
 }
 

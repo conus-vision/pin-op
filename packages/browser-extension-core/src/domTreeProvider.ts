@@ -15,8 +15,16 @@ import {
 } from "./frameRegistry.js";
 import {
   DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH,
+  DOM_PROTOCOL_MAX_ATTRIBUTES,
+  DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH,
+  DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH,
+  DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH,
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   DOM_PROTOCOL_MAX_LABEL_LENGTH,
+  DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH,
+  DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS,
+  DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED,
+  DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   parseDomRequest,
 } from "./domProtocol.js";
 import type {
@@ -26,12 +34,14 @@ import type {
   DomInvalidationBranch,
   DomNodeView,
   DomRootResponse,
+  InspectorAttribute,
 } from "./domProtocol.js";
 import {
   DomStableLocatorService,
   type DomStableLocator,
   type StableLocatorResolution,
 } from "./domStableLocator.js";
+import { utf8ByteLength } from "@pin-op/protocol";
 
 const CHILD_PAGE_SIZE = 50;
 const CHILD_PAGE_PHYSICAL_SCAN_LIMIT = 256;
@@ -133,7 +143,10 @@ interface NodeRecord {
 }
 
 type LogicalChild =
+  | { readonly kind: "document-type"; readonly node: DocumentType }
   | { readonly kind: "element"; readonly node: Element }
+  | { readonly kind: "text"; readonly node: Node }
+  | { readonly kind: "comment"; readonly node: Node }
   | { readonly kind: "shadow-root"; readonly node: ShadowRoot }
   | {
       readonly kind: "frame-document";
@@ -152,6 +165,7 @@ interface CursorRecord {
 
 interface LogicalChildPage {
   readonly children: readonly LogicalChild[];
+  readonly childPhysicalOffsets: readonly number[];
   readonly hasMore: boolean;
   readonly nextPhysicalOffset: number;
 }
@@ -422,7 +436,7 @@ export class DomTreeProvider {
 
   private captureLocator(
     node: Node,
-    kind: DomNodeView["kind"],
+    kind: DomStableLocator["targetKind"],
   ): DomStableLocator {
     try {
       return this.locatorService.capture(node, kind);
@@ -471,14 +485,21 @@ export class DomTreeProvider {
       if (!context || !element) {
         throwDomTreeError("node-unavailable");
       }
-      const response = Object.freeze({
+      const node = this.viewElement(element, context);
+      const auxiliary = this.rootAuxiliaryViews(this.topDocument!, element, context);
+      const response = this.boundRootResponse({
         type: "dom.root" as const,
         requestId: "root",
         documentEpoch: this.documentEpoch,
-        node: this.viewElement(element, context),
+        node,
+        prologue: auxiliary.prologue,
+        epilogue: auxiliary.epilogue,
       });
       const validate = () => this.validateLivePathViews(
         [response.node],
+        response.documentEpoch,
+      ) && this.validatePublishedViews(
+        [...response.prologue, ...response.epilogue],
         response.documentEpoch,
       );
       if (!operation.publish(validate) || !operation.finalize(validate)) {
@@ -602,20 +623,25 @@ export class DomTreeProvider {
       record!.scope,
       physicalOffset,
     );
-    const locators = page.children.map((child) => this.captureLocator(
-      child.node,
-      child.kind,
+    const locators = page.children.map((child) => (
+      isRecoverableKind(child.kind)
+        ? this.captureLocator(child.node, child.kind)
+        : undefined
     ));
     const materializedRefs: string[] = [];
     let nodes: readonly DomNodeView[];
     try {
       nodes = Object.freeze(page.children.map((child, index) => {
-        const locator = locators[index]!;
+        const locator = locators[index];
         const view = child.kind === "element"
-          ? this.viewElement(child.node, record!.scope, request.nodeRef, locator)
+          ? this.viewElement(child.node, record!.scope, request.nodeRef, locator!)
           : child.kind === "shadow-root"
-            ? this.viewShadowRoot(child.node, record!.scope, request.nodeRef, locator)
-            : this.viewFrameDocument(child.node, child.scope, request.nodeRef, locator);
+            ? this.viewShadowRoot(child.node, record!.scope, request.nodeRef, locator!)
+            : child.kind === "frame-document"
+              ? this.viewFrameDocument(child.node, child.scope, request.nodeRef, locator!)
+              : child.kind === "document-type"
+                ? this.viewDocumentType(child.node, record!.scope, request.nodeRef)
+                : this.viewCharacterData(child.node, child.kind, record!.scope, request.nodeRef);
         this.retainTransientRecord(view.nodeRef);
         materializedRefs.push(view.nodeRef);
         return view;
@@ -625,17 +651,32 @@ export class DomTreeProvider {
         this.releaseTransientRecord(nodeRef);
       }
     }
+    const bounded = this.boundChildrenResponseNodes({
+      type: "dom.children",
+      requestId: request.requestId,
+      documentEpoch: this.documentEpoch,
+      nodeRef: request.nodeRef,
+      branchRevision: branch.revision,
+      nodes,
+    }, page.hasMore);
+    nodes = bounded.nodes;
     const nextOffset = offset + nodes.length;
-    const nextCursor = page.hasMore
+    const nextPhysicalOffset = nodes.length < page.children.length
+      ? page.childPhysicalOffsets[nodes.length - 1]
+      : page.nextPhysicalOffset;
+    if (bounded.needsCursor && nextPhysicalOffset === undefined) {
+      throwDomTreeError("node-unavailable");
+    }
+    const nextCursor = bounded.needsCursor
       ? this.createCursor({
           nodeRef: request.nodeRef,
           documentEpoch: request.documentEpoch,
           branchRevision: branch.revision,
           offset: nextOffset,
-          physicalOffset: page.nextPhysicalOffset,
+          physicalOffset: nextPhysicalOffset!,
         })
       : undefined;
-    const response = Object.freeze({
+    const response = freezeChildrenResponse({
       type: "dom.children",
       requestId: request.requestId,
       documentEpoch: this.documentEpoch,
@@ -643,7 +684,8 @@ export class DomTreeProvider {
       branchRevision: branch.revision,
       nodes,
       ...(nextCursor ? { nextCursor } : {}),
-    });
+    }, nodes);
+    if (!serializedWithinBudget(response)) throwDomTreeError("node-unavailable");
     const validate = () => this.validateLiveChildPage(
       node,
       request.nodeRef,
@@ -698,6 +740,9 @@ export class DomTreeProvider {
         const record = this.records.get(currentRef);
         if (!record) {
           throwDomTreeError("unknown-node");
+        }
+        if (!isRecoverableKind(record.kind)) {
+          throwDomTreeError("node-unavailable");
         }
         const node = this.resolveNode(currentRef, record.scope);
         if (!node) {
@@ -1097,10 +1142,14 @@ export class DomTreeProvider {
     const expandable = frame?.kind === "accessible" || (
       !frameElement && (
         getOpenShadowRoot(element) !== undefined ||
-        hasElementChild(element)
+        hasLogicalChild(element)
       )
     );
     const label = createElementLabel(element);
+    const inaccessible = frameElement && frame?.kind !== "accessible";
+    const childCount = frameElement
+      ? frame?.kind === "accessible" ? 1 : 0
+      : safeChildCount(element, getOpenShadowRoot(element) ? 1 : 0);
     this.storeReferencedRecord(nodeRef, {
       scope,
       kind: "element",
@@ -1113,9 +1162,15 @@ export class DomTreeProvider {
     return Object.freeze({
       nodeRef,
       kind: "element",
+      nodeType: 1,
+      nodeName: readNodeName(element, "ELEMENT"),
+      attributes: readInspectorAttributes(element),
+      childCount,
+      relationship: "dom",
+      selectable: !inaccessible,
       label,
       expandable,
-      ...(frameElement && frame?.kind !== "accessible" ? { inaccessible: true } : {}),
+      ...(inaccessible ? { inaccessible: true } : {}),
       branchRevision: this.branchRevisionFor(nodeRef),
       locator,
     });
@@ -1139,6 +1194,12 @@ export class DomTreeProvider {
     return Object.freeze({
       nodeRef,
       kind: "shadow-root",
+      nodeType: 11,
+      nodeName: readNodeName(shadowRoot, "#document-fragment"),
+      attributes: Object.freeze([]),
+      childCount: safeChildCount(shadowRoot),
+      relationship: "shadow-root",
+      selectable: false,
       label: "#shadow-root (open)",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
@@ -1166,11 +1227,207 @@ export class DomTreeProvider {
     return Object.freeze({
       nodeRef,
       kind: "frame-document",
+      nodeType: 9,
+      nodeName: readNodeName(document, "#document"),
+      attributes: Object.freeze([]),
+      childCount: safeChildCount(document),
+      relationship: "frame-document",
+      selectable: false,
       label: "#document",
       expandable: true,
       branchRevision: this.branchRevisionFor(nodeRef),
       locator,
     });
+  }
+
+  private viewCharacterData(
+    node: Node,
+    kind: "text" | "comment",
+    scope: NodeScope,
+    parentRef?: string,
+  ): DomNodeView {
+    const nodeRef = this.referenceNode(node, scope);
+    const existing = this.records.get(nodeRef);
+    this.storeReferencedRecord(nodeRef, {
+      scope,
+      kind,
+      ...(parentRef ?? existing?.parentRef
+        ? { parentRef: parentRef ?? existing?.parentRef }
+        : {}),
+    });
+    const nodeValue = readNodeValue(node);
+    const label = characterDataLabel(kind, nodeValue);
+    return Object.freeze({
+      nodeRef,
+      kind,
+      nodeType: kind === "text" ? 3 : 8,
+      nodeName: readNodeName(node, kind === "text" ? "#text" : "#comment"),
+      ...(nodeValue === undefined ? {} : { nodeValue }),
+      attributes: Object.freeze([]),
+      childCount: 0,
+      relationship: "dom",
+      selectable: false,
+      label,
+      expandable: false,
+      branchRevision: this.branchRevisionFor(nodeRef),
+    });
+  }
+
+  private viewDocumentType(
+    node: DocumentType,
+    scope: NodeScope,
+    parentRef?: string,
+  ): DomNodeView {
+    const nodeRef = this.referenceNode(node, scope);
+    const existing = this.records.get(nodeRef);
+    this.storeReferencedRecord(nodeRef, {
+      scope,
+      kind: "document-type",
+      ...(parentRef ?? existing?.parentRef
+        ? { parentRef: parentRef ?? existing?.parentRef }
+        : {}),
+    });
+    const name = readDocumentTypeName(node);
+    const publicId = readDocumentTypeId(node, "publicId");
+    const systemId = readDocumentTypeId(node, "systemId");
+    return Object.freeze({
+      nodeRef,
+      kind: "document-type",
+      nodeType: 10,
+      nodeName: name,
+      ...(publicId === undefined ? {} : { publicId }),
+      ...(systemId === undefined ? {} : { systemId }),
+      attributes: Object.freeze([]),
+      childCount: 0,
+      relationship: "dom",
+      selectable: false,
+      label: documentTypeLabel(name, publicId, systemId),
+      expandable: false,
+      branchRevision: this.branchRevisionFor(nodeRef),
+    });
+  }
+
+  private rootAuxiliaryViews(
+    document: Document,
+    documentElement: Element,
+    scope: NodeScope,
+  ): {
+    readonly prologue: readonly DomNodeView[];
+    readonly epilogue: readonly DomNodeView[];
+  } {
+    const prologue: DomNodeView[] = [];
+    const epilogue: DomNodeView[] = [];
+    const childNodes = readChildNodes(document);
+    if (!childNodes) {
+      return Object.freeze({
+        prologue: Object.freeze(prologue),
+        epilogue: Object.freeze(epilogue),
+      });
+    }
+    const scanCount = boundedArrayLikeLength(
+      childNodes,
+      DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED,
+    );
+    let afterDocumentElement = false;
+    for (
+      let index = 0;
+      index < scanCount && prologue.length + epilogue.length < DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS;
+      index += 1
+    ) {
+      const child = safeArrayLikeItem(childNodes, index);
+      if (!child || this.isNodeExcluded(child)) continue;
+      if (child === documentElement) {
+        afterDocumentElement = true;
+        continue;
+      }
+      const nodeType = readNodeType(child);
+      if (!afterDocumentElement && nodeType === 10) {
+        prologue.push(this.viewDocumentType(child as DocumentType, scope));
+      } else if (nodeType === 8) {
+        const view = this.viewCharacterData(child, "comment", scope);
+        (afterDocumentElement ? epilogue : prologue).push(view);
+      }
+    }
+    return Object.freeze({
+      prologue: Object.freeze(prologue),
+      epilogue: Object.freeze(epilogue),
+    });
+  }
+
+  private boundRootResponse(response: DomRootResponse): DomRootResponse {
+    let node = response.node;
+    let prologue = [...response.prologue];
+    let epilogue = [...response.epilogue];
+    const limit = DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES -
+      DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH * 6 - 64;
+    let candidate = freezeRootResponse(response, node, prologue, epilogue);
+    while (!serializedWithinBudget(candidate, limit)) {
+      let changed = false;
+      const all = [node, ...prologue, ...epilogue];
+      for (let index = all.length - 1; index >= 0; index -= 1) {
+        const reduced = reduceOptionalNodeSnapshot(all[index]!);
+        if (reduced !== all[index]) {
+          if (index === 0) {
+            node = reduced;
+          } else if (index <= prologue.length) {
+            prologue[index - 1] = reduced;
+          } else {
+            epilogue[index - prologue.length - 1] = reduced;
+          }
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
+        if (epilogue.length > 0) {
+          epilogue.pop();
+        } else if (prologue.length > 0) {
+          prologue.pop();
+        } else {
+          throwDomTreeError("node-unavailable");
+        }
+      }
+      candidate = freezeRootResponse(response, node, prologue, epilogue);
+    }
+    return candidate;
+  }
+
+  private boundChildrenResponseNodes(
+    response: DomChildrenResponse,
+    hasMore: boolean,
+  ): {
+    readonly nodes: readonly DomNodeView[];
+    readonly needsCursor: boolean;
+  } {
+    const nodes = [...response.nodes];
+    let needsCursor = hasMore;
+    const candidateResponse = (): DomChildrenResponse => freezeChildrenResponse({
+      ...response,
+      ...(needsCursor ? { nextCursor: "cursor-9007199254740991" } : {}),
+    }, nodes);
+    let candidate = candidateResponse();
+    while (!serializedWithinBudget(candidate)) {
+      let changed = false;
+      for (let index = nodes.length - 1; index >= 0; index -= 1) {
+        const reduced = reduceOptionalNodeSnapshot(nodes[index]!);
+        if (reduced !== nodes[index]) {
+          nodes[index] = reduced;
+          changed = true;
+          break;
+        }
+      }
+      if (!changed && !needsCursor) {
+        needsCursor = true;
+        changed = true;
+      }
+      if (!changed && nodes.length > 1) {
+        nodes.pop();
+        changed = true;
+      }
+      if (!changed) throwDomTreeError("node-unavailable");
+      candidate = candidateResponse();
+    }
+    return Object.freeze({ nodes: candidate.nodes, needsCursor });
   }
 
   private referenceNode(node: Node, scope: NodeScope): string {
@@ -1331,6 +1588,7 @@ export class DomTreeProvider {
     physicalOffset: number,
   ): LogicalChildPage {
     const children: LogicalChild[] = [];
+    const childPhysicalOffsets: number[] = [];
     if (node.nodeType === 1 && isFrameElement(node as Element)) {
       const description = this.frameDescriptions.get(nodeRef) ??
         this.describeFrame(node as HTMLIFrameElement, scope, nodeRef);
@@ -1344,8 +1602,9 @@ export class DomTreeProvider {
           node: description.document,
           scope: description,
         });
+        childPhysicalOffsets.push(1);
       }
-      return freezeLogicalChildPage(children, false, 1);
+      return freezeLogicalChildPage(children, childPhysicalOffsets, false, 1);
     }
     let syntheticChildCount = 0;
     if (node.nodeType === 1) {
@@ -1354,13 +1613,19 @@ export class DomTreeProvider {
         syntheticChildCount = 1;
         if (physicalOffset === 0) {
           children.push({ kind: "shadow-root", node: shadowRoot });
+          childPhysicalOffsets.push(1);
           physicalOffset = 1;
         }
       }
     }
     const childNodes = readChildNodes(node);
     if (!childNodes) {
-      return freezeLogicalChildPage(children, false, physicalOffset);
+      return freezeLogicalChildPage(
+        children,
+        childPhysicalOffsets,
+        false,
+        physicalOffset,
+      );
     }
     let childIndex = Math.max(0, physicalOffset - syntheticChildCount);
     let visitedNodes = 0;
@@ -1369,16 +1634,28 @@ export class DomTreeProvider {
       visitedNodes < CHILD_PAGE_PHYSICAL_SCAN_LIMIT &&
       children.length < CHILD_PAGE_SIZE
     ) {
-      const child = childNodes[childIndex];
+      const child = safeArrayLikeItem(childNodes, childIndex);
       childIndex += 1;
       visitedNodes += 1;
-      if (child?.nodeType === 1 && !this.isNodeExcluded(child)) {
+      if (!child || this.isNodeExcluded(child)) continue;
+      const childType = readNodeType(child);
+      if (childType === 1) {
         children.push({ kind: "element", node: child as Element });
+      } else if (childType === 3) {
+        children.push({ kind: "text", node: child });
+      } else if (childType === 8) {
+        children.push({ kind: "comment", node: child });
+      } else if (childType === 10) {
+        children.push({ kind: "document-type", node: child as DocumentType });
+      }
+      if (children.length > childPhysicalOffsets.length) {
+        childPhysicalOffsets.push(syntheticChildCount + childIndex);
       }
     }
     const nextPhysicalOffset = syntheticChildCount + childIndex;
     return freezeLogicalChildPage(
       children,
+      childPhysicalOffsets,
       childIndex < childNodes.length,
       nextPhysicalOffset,
     );
@@ -1465,6 +1742,18 @@ export class DomTreeProvider {
       if (this.isNodeExcluded(mutation.target)) {
         continue;
       }
+      if (mutation.type === "characterData") {
+        const targetRef = this.refsByNode.get(mutation.target);
+        const targetRecord = targetRef ? this.records.get(targetRef) : undefined;
+        const parent = readShadowIncludingParent(mutation.target);
+        const parentRef = targetRecord?.parentRef ?? (
+          parent ? this.refsByNode.get(parent) : undefined
+        );
+        if (parentRef && this.expandedBranches.has(parentRef)) {
+          affected.add(parentRef);
+        }
+        continue;
+      }
       if (mutation.type === "attributes") {
         if (mutation.target.nodeType !== 1) {
           continue;
@@ -1473,11 +1762,7 @@ export class DomTreeProvider {
         const targetRecord = targetRef
           ? this.records.get(targetRef)
           : undefined;
-        if (
-          !targetRef ||
-          targetRecord?.kind !== "element" ||
-          targetRecord.label === createElementLabel(mutation.target as Element)
-        ) {
+        if (!targetRef || targetRecord?.kind !== "element") {
           continue;
         }
         const visibleBranchRef = targetRecord.parentRef ?? targetRef;
@@ -1495,34 +1780,50 @@ export class DomTreeProvider {
         : undefined;
       const targetScope = targetRecord?.scope ??
         this.scopeForMutationTarget(mutation.target);
-      let elementTreeChanged = false;
+      let logicalTreeChanged = false;
       const removedNodes = mutation.removedNodes;
       for (let index = 0; index < removedNodes.length; index += 1) {
         const removed = removedNodes[index];
-        if (removed?.nodeType === 1) {
+        const removedType = removed ? readNodeType(removed) : undefined;
+        if (removedType === 1) {
           removedRoots.push({
             node: removed,
             ownerRoot: pending.observedRoot,
             ...(targetRef ? { parentRef: targetRef } : {}),
             ...(targetScope ? { scope: targetScope } : {}),
           });
-          elementTreeChanged ||= !this.isNodeExcluded(removed);
+          logicalTreeChanged ||= !this.isNodeExcluded(removed);
+        } else if (
+          removed &&
+          (removedType === 3 || removedType === 8 || removedType === 10) &&
+          !this.isNodeExcluded(removed)
+        ) {
+          logicalTreeChanged = true;
+          const invalidated = this.nodeRegistry.invalidateSubtree(removed);
+          this.releaseInvalidatedRefs(invalidated);
         }
       }
       const addedNodes = mutation.addedNodes;
       for (let index = 0; index < addedNodes.length; index += 1) {
         const added = addedNodes[index];
-        if (added?.nodeType === 1 && !this.isNodeExcluded(added)) {
+        const addedType = added ? readNodeType(added) : undefined;
+        if (addedType === 1 && added && !this.isNodeExcluded(added)) {
           addedRoots.push({
             node: added,
             ownerRoot: pending.observedRoot,
             ...(targetRef ? { parentRef: targetRef } : {}),
             ...(targetScope ? { scope: targetScope } : {}),
           });
-          elementTreeChanged = true;
+          logicalTreeChanged = true;
+        } else if (
+          added &&
+          (addedType === 3 || addedType === 8 || addedType === 10) &&
+          !this.isNodeExcluded(added)
+        ) {
+          logicalTreeChanged = true;
         }
       }
-      if (!elementTreeChanged) {
+      if (!logicalTreeChanged) {
         continue;
       }
       if (targetRef && this.expandedBranches.has(targetRef)) {
@@ -1539,7 +1840,7 @@ export class DomTreeProvider {
         !isFrameElement(targetElement) &&
         targetRecord.expandable !== (
           getOpenShadowRoot(targetElement) !== undefined ||
-          hasElementChild(targetElement)
+          hasLogicalChild(targetElement)
         );
       if (
         visibleExpandableChanged &&
@@ -2778,7 +3079,9 @@ export class DomTreeProvider {
       const finalNode = finalRecord
         ? this.nodeRegistry.resolve(finalView.nodeRef, finalRecord.scope)
         : undefined;
-      if (!finalRecord || !finalNode) return false;
+      if (!finalRecord || !finalNode || !isRecoverableKind(finalRecord.kind)) {
+        return false;
+      }
       const livePath = this.logicalPathForResolvedLocator(finalRecord.kind, finalNode);
       if (!livePath || livePath.length !== views.length) return false;
       for (let index = 0; index < views.length; index += 1) {
@@ -2843,6 +3146,7 @@ export class DomTreeProvider {
       ) {
         return false;
       }
+      if (!isRecoverableKind(parentRecord.kind)) return false;
       const liveParentPath = this.logicalPathForResolvedLocator(parentRecord.kind, parent);
       if (!liveParentPath || !this.validateMaterializedPath(liveParentPath, parentRef)) {
         return false;
@@ -2852,13 +3156,29 @@ export class DomTreeProvider {
         current.hasMore !== expected.hasMore ||
         current.nextPhysicalOffset !== expected.nextPhysicalOffset ||
         current.children.length !== expected.children.length ||
-        current.children.length !== views.length
+        current.childPhysicalOffsets.length !== expected.childPhysicalOffsets.length ||
+        views.length > current.children.length ||
+        !current.childPhysicalOffsets.every((value, index) => (
+          value === expected.childPhysicalOffsets[index]
+        ))
       ) {
         return false;
       }
-      return current.children.every((child, index) => {
+      const expectedNextPhysicalOffset = views.length < current.children.length
+        ? current.childPhysicalOffsets[views.length - 1]
+        : current.nextPhysicalOffset;
+      const liveNextCursor = nextCursor === undefined
+        ? undefined
+        : this.cursors.get(nextCursor);
+      if (nextCursor !== undefined && (
+        liveNextCursor?.offset !== (expectedCursor?.offset ?? 0) + views.length ||
+        liveNextCursor.physicalOffset !== expectedNextPhysicalOffset
+      )) {
+        return false;
+      }
+      return views.every((view, index) => {
+        const child = current.children[index]!;
         const expectedChild = expected.children[index]!;
-        const view = views[index]!;
         const record = this.records.get(view.nodeRef);
         return child.kind === expectedChild.kind &&
           child.node === expectedChild.node &&
@@ -2888,6 +3208,9 @@ export class DomTreeProvider {
     const node = record
       ? this.nodeRegistry.resolve(view.nodeRef, record.scope)
       : undefined;
+    if (!view.locator) {
+      return !!record && !!node && !isRecoverableKind(view.kind);
+    }
     const resolved = this.resolveLocatorForLiveValidation(view.locator);
     return !!record &&
       !!node &&
@@ -2942,6 +3265,7 @@ export class DomTreeProvider {
       this.observedRootByObserver.set(observer, root);
       observer.observe(root, {
         attributes: true,
+        characterData: true,
         childList: true,
         subtree: true,
       });
@@ -3711,11 +4035,13 @@ function createFrameTraversalEntry(node: Node): FrameTraversalEntry {
 
 function freezeLogicalChildPage(
   children: readonly LogicalChild[],
+  childPhysicalOffsets: readonly number[],
   hasMore: boolean,
   nextPhysicalOffset: number,
 ): LogicalChildPage {
   return Object.freeze({
     children: Object.freeze(children),
+    childPhysicalOffsets: Object.freeze(childPhysicalOffsets),
     hasMore,
     nextPhysicalOffset,
   });
@@ -3780,45 +4106,18 @@ function readShadowIncludingParent(node: Node): Node | undefined {
   }
 }
 
-function hasElementChild(node: Node): boolean {
-  const count = readChildElementCount(node);
-  const first = readFirstElementChild(node);
-  return count === false && first === false ? false : true;
-}
-
-function readChildElementCount(node: Node): boolean | undefined {
+function hasLogicalChild(node: Node): boolean {
+  const childNodes = readChildNodes(node);
+  if (!childNodes) return true;
   try {
-    const value = (node as unknown as { readonly childElementCount?: unknown })
-      .childElementCount;
-    return typeof value === "number" &&
-      Number.isSafeInteger(value) &&
-      value >= 0
-      ? value > 0
-      : undefined;
+    const length = childNodes.length;
+    return typeof length === "number" &&
+      Number.isSafeInteger(length) &&
+      length >= 0
+      ? length > 0
+      : true;
   } catch {
-    return undefined;
-  }
-}
-
-function readFirstElementChild(node: Node): boolean | undefined {
-  try {
-    const value = (node as unknown as { readonly firstElementChild?: unknown })
-      .firstElementChild;
-    if (value === null) {
-      return false;
-    }
-    if (
-      typeof value !== "object" ||
-      value === null ||
-      (value as Node).nodeType !== 1
-    ) {
-      return undefined;
-    }
-    return readShadowIncludingParent(value as Node) === node
-      ? true
-      : undefined;
-  } catch {
-    return undefined;
+    return true;
   }
 }
 
@@ -3831,6 +4130,221 @@ function readChildNodes(node: Node): ArrayLike<Node> | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function readNodeType(node: Node): number | undefined {
+  try {
+    const nodeType = (node as { readonly nodeType?: unknown }).nodeType;
+    return typeof nodeType === "number" && Number.isSafeInteger(nodeType)
+      ? nodeType
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readNodeName(node: Node, fallback: string): string {
+  try {
+    const nodeName = (node as { readonly nodeName?: unknown }).nodeName;
+    if (typeof nodeName === "string" && nodeName.length > 0) {
+      return truncateUtf16(nodeName, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH);
+    }
+  } catch {
+    // Use the bounded kind-specific fallback.
+  }
+  return fallback;
+}
+
+function readNodeValue(node: Node): string | undefined {
+  try {
+    const value = (node as { readonly nodeValue?: unknown }).nodeValue;
+    return typeof value === "string"
+      ? truncateUtf16(value, DOM_PROTOCOL_MAX_NODE_VALUE_LENGTH)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readDocumentTypeName(node: DocumentType): string {
+  try {
+    const name = (node as { readonly name?: unknown }).name;
+    if (typeof name === "string" && name.length > 0) {
+      return truncateUtf16(name, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH);
+    }
+  } catch {
+    // Fall back to nodeName below.
+  }
+  return readNodeName(node, "html");
+}
+
+function readDocumentTypeId(
+  node: DocumentType,
+  key: "publicId" | "systemId",
+): string | undefined {
+  try {
+    const value = (node as unknown as Record<string, unknown>)[key];
+    return typeof value === "string"
+      ? truncateUtf16(value, DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readInspectorAttributes(element: Element): readonly InspectorAttribute[] {
+  let attributes: ArrayLike<{ readonly name?: unknown; readonly value?: unknown }>;
+  try {
+    attributes = element.attributes;
+  } catch {
+    return Object.freeze([]);
+  }
+  const result: InspectorAttribute[] = [];
+  const count = boundedArrayLikeLength(attributes, DOM_PROTOCOL_MAX_ATTRIBUTES);
+  for (let index = 0; index < count; index += 1) {
+    try {
+      const attribute = attributes[index];
+      const name = attribute?.name;
+      const value = attribute?.value;
+      if (typeof name !== "string" || name.length === 0 || typeof value !== "string") {
+        continue;
+      }
+      result.push(Object.freeze({
+        name: truncateUtf16(name, DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH),
+        value: truncateUtf16(value, DOM_PROTOCOL_MAX_ATTRIBUTE_VALUE_LENGTH),
+      }));
+    } catch {
+      // Skip only the unreadable page-controlled attribute row.
+    }
+  }
+  return Object.freeze(result);
+}
+
+function safeChildCount(node: Node, syntheticCount = 0): number {
+  const childNodes = readChildNodes(node);
+  if (!childNodes) return syntheticCount;
+  try {
+    const length = childNodes.length;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > Number.MAX_SAFE_INTEGER - syntheticCount
+    ) {
+      return syntheticCount;
+    }
+    return length + syntheticCount;
+  } catch {
+    return syntheticCount;
+  }
+}
+
+function safeArrayLikeItem<T>(value: ArrayLike<T>, index: number): T | undefined {
+  try {
+    return value[index];
+  } catch {
+    return undefined;
+  }
+}
+
+function truncateUtf16(value: string, maximumLength: number): string {
+  if (value.length <= maximumLength) return value;
+  let result = value.slice(0, maximumLength);
+  const final = result.charCodeAt(result.length - 1);
+  if (final >= 0xd800 && final <= 0xdbff) result = result.slice(0, -1);
+  return result;
+}
+
+function characterDataLabel(kind: "text" | "comment", value?: string): string {
+  const bounded = truncateUtf16(value ?? (kind === "text" ? "#text" : "#comment"), 500);
+  return kind === "text"
+    ? bounded || "#text"
+    : truncateUtf16(`<!--${bounded}-->`, DOM_PROTOCOL_MAX_LABEL_LENGTH);
+}
+
+function documentTypeLabel(
+  name: string,
+  publicId?: string,
+  systemId?: string,
+): string {
+  let label = `<!DOCTYPE ${name}`;
+  if (publicId !== undefined && publicId.length > 0) {
+    label += ` PUBLIC "${publicId}"`;
+    if (systemId !== undefined && systemId.length > 0) label += ` "${systemId}"`;
+  } else if (systemId !== undefined && systemId.length > 0) {
+    label += ` SYSTEM "${systemId}"`;
+  }
+  return truncateUtf16(`${label}>`, DOM_PROTOCOL_MAX_LABEL_LENGTH);
+}
+
+function isRecoverableKind(
+  kind: DomNodeView["kind"],
+): kind is DomStableLocator["targetKind"] {
+  return kind === "element" || kind === "shadow-root" || kind === "frame-document";
+}
+
+function reduceOptionalNodeSnapshot(node: DomNodeView): DomNodeView {
+  if (node.attributes.length > 0) {
+    return Object.freeze({
+      ...node,
+      attributes: Object.freeze(node.attributes.slice(0, -1)),
+    });
+  }
+  if (Object.prototype.hasOwnProperty.call(node, "nodeValue")) {
+    const { nodeValue: _nodeValue, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (Object.prototype.hasOwnProperty.call(node, "systemId")) {
+    const { systemId: _systemId, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  if (Object.prototype.hasOwnProperty.call(node, "publicId")) {
+    const { publicId: _publicId, ...rest } = node;
+    return Object.freeze(rest);
+  }
+  return node;
+}
+
+function freezeRootResponse(
+  template: DomRootResponse,
+  node: DomNodeView,
+  prologue: readonly DomNodeView[],
+  epilogue: readonly DomNodeView[],
+): DomRootResponse {
+  return Object.freeze({
+    type: "dom.root",
+    requestId: template.requestId,
+    documentEpoch: template.documentEpoch,
+    node,
+    prologue: Object.freeze([...prologue]),
+    epilogue: Object.freeze([...epilogue]),
+  });
+}
+
+function freezeChildrenResponse(
+  template: DomChildrenResponse,
+  nodes: readonly DomNodeView[],
+): DomChildrenResponse {
+  return Object.freeze({
+    type: "dom.children",
+    requestId: template.requestId,
+    documentEpoch: template.documentEpoch,
+    nodeRef: template.nodeRef,
+    branchRevision: template.branchRevision,
+    nodes: Object.freeze([...nodes]),
+    ...(template.nextCursor ? { nextCursor: template.nextCursor } : {}),
+  });
+}
+
+function serializedWithinBudget(
+  value: unknown,
+  maximumBytes = DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+): boolean {
+  try {
+    return utf8ByteLength(JSON.stringify(value)) <= maximumBytes;
+  } catch {
+    return false;
   }
 }
 

@@ -79,7 +79,8 @@ export class DomTreeRecoveryCoordinator {
       const focusKey = focusAnchor
         ? locatorKey(focusAnchor.locator)
         : undefined;
-      let focusAttempted = focusKey === locatorKey(rootResponse.node.locator);
+      let focusAttempted = rootResponse.node.locator !== undefined &&
+        focusKey === locatorKey(rootResponse.node.locator);
       if (snapshot.selectedLocator) {
         const selected = await this.resolveLocator(
           snapshot.selectedLocator,
@@ -262,6 +263,7 @@ export class DomTreeRecoveryCoordinator {
       response.type !== "dom.locator" ||
       response.requestId !== request.requestId ||
       response.documentEpoch !== documentEpoch ||
+      !response.node.locator ||
       locatorKey(response.node.locator) !== locatorKey(stableLocator) ||
       response.ancestorPath.length === 0 ||
       response.ancestorPath[0]?.nodeRef !== rootRef ||
