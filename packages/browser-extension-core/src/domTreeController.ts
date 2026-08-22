@@ -1,4 +1,6 @@
 import {
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
   type DomErrorCode,
   type DomEvent,
   type DomGetChildrenRequest,
@@ -131,7 +133,15 @@ interface PendingBranchRequest {
   readonly token: object;
   readonly revision: number;
   readonly cursor?: string;
+  readonly reconciliationBatchId?: number;
   readonly promise: Promise<void>;
+}
+
+interface ReconciliationBatchState {
+  readonly pendingTokens: Set<object>;
+  readonly candidates: Set<string>;
+  readonly candidateLimit: number;
+  readonly focusAnchor: FocusAnchor;
 }
 
 interface FocusAnchor {
@@ -148,13 +158,17 @@ export class DomTreeController {
   private readonly nodes = new Map<string, NodeState>();
   private readonly branches = new Map<string, BranchState>();
   private readonly expanded = new Set<string>();
-  private readonly deferredPruneRefs = new Set<string>();
+  private readonly reconciliationBatches = new Map<
+    number,
+    ReconciliationBatchState
+  >();
   private revealPathRefs: readonly string[] = Object.freeze([]);
   private rowsCache: readonly DomTreeRow[] | undefined;
   private rootRef: string | undefined;
   private rootPrologue: readonly DomNodeView[] = Object.freeze([]);
   private rootEpilogue: readonly DomNodeView[] = Object.freeze([]);
   private rootSnapshotRevision: number | undefined;
+  private rootSnapshotError: DomErrorCode | undefined;
   private selectedNodeRef: string | undefined;
   private focusedNodeRef: string | undefined;
   private hoveredNodeRef: string | undefined;
@@ -172,6 +186,7 @@ export class DomTreeController {
   private recoveredFocusRef: string | undefined;
   private recovering = false;
   private generation = 0;
+  private reconciliationBatchSequence = 0;
   private requestSequence = 0;
   private disposed = false;
 
@@ -198,6 +213,7 @@ export class DomTreeController {
 
   public snapshot(): DomTreeSnapshot {
     const rows = this.rows();
+    const visibleError = this.rootSnapshotError ?? this.currentError;
     const visibleSelectedRef = this.recovering
       ? rows.find((row) => row.selected)?.nodeRef
       : this.selectedNodeRef;
@@ -232,9 +248,9 @@ export class DomTreeController {
       revealVersion: this.currentRevealVersion,
       loadingRoot: Boolean(this.rootRequest),
       recovering: this.recovering,
-      ...(this.currentError === undefined
+      ...(visibleError === undefined
         ? {}
-        : { errorCode: this.currentError }),
+        : { errorCode: visibleError }),
       totalRows: rows.length,
     });
   }
@@ -310,6 +326,7 @@ export class DomTreeController {
     }
     this.currentDocumentEpoch = response.documentEpoch;
     this.currentError = undefined;
+    this.rootSnapshotError = undefined;
     this.rootRef = response.node.nodeRef;
     this.rootPrologue = Object.freeze([...response.prologue]);
     this.rootEpilogue = Object.freeze([...response.epilogue]);
@@ -474,6 +491,7 @@ export class DomTreeController {
           this.currentDocumentEpoch = response.documentEpoch;
         }
         this.currentError = undefined;
+        this.rootSnapshotError = undefined;
         this.rootRef = response.node.nodeRef;
         this.rootPrologue = Object.freeze([...response.prologue]);
         this.rootEpilogue = Object.freeze([...response.epilogue]);
@@ -754,13 +772,17 @@ export class DomTreeController {
         this.notify();
         return;
       case "dom.invalidated":
+        const reconciliationBatchId = this.beginReconciliationBatch(
+          event.branches.length,
+        );
         for (const invalidation of event.branches) {
           this.invalidateBranch(
             invalidation.nodeRef,
             invalidation.branchRevision,
+            reconciliationBatchId,
           );
         }
-        this.sweepDeferredSubtrees();
+        this.finishReconciliationBatchIfIdle(reconciliationBatchId);
         this.notify();
     }
   }
@@ -788,11 +810,13 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
-    this.deferredPruneRefs.clear();
+    this.reconciliationBatches.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
     this.rootEpilogue = Object.freeze([]);
+    this.rootSnapshotRevision = undefined;
+    this.rootSnapshotError = undefined;
     this.selectedNodeRef = undefined;
     this.focusedNodeRef = undefined;
     this.hoveredNodeRef = undefined;
@@ -937,13 +961,7 @@ export class DomTreeController {
             "DOM recovery branch response lost session ownership",
           );
         }
-        this.clearPageChildren(currentBranch);
-        for (const child of response.nodes) {
-          this.upsertNode(child, nodeRef);
-          if (!currentBranch.children.includes(child.nodeRef)) {
-            currentBranch.children.push(child.nodeRef);
-          }
-        }
+        this.replacePageChildren(currentBranch, nodeRef, response.nodes);
         currentBranch.loaded = true;
         currentBranch.nextCursor = response.nextCursor;
         this.currentError = undefined;
@@ -979,6 +997,7 @@ export class DomTreeController {
     nodeRef: string,
     cursor: string | undefined,
     focusAnchorOverride?: FocusAnchor,
+    reconciliationBatchId?: number,
   ): Promise<void> {
     const state = this.nodes.get(nodeRef);
     if (
@@ -993,7 +1012,7 @@ export class DomTreeController {
     if (branch.pending) {
       return branch.pending.promise;
     }
-    const revision = state.view.branchRevision;
+    const revision = branch.revision;
     const epoch = this.currentDocumentEpoch;
     const generation = this.generation;
     const token = {};
@@ -1004,6 +1023,7 @@ export class DomTreeController {
     );
     const moveFocusedServiceRow = focusedRow?.type === "load-more";
     let provisionalFocusRef: string | undefined;
+    let firstPageFailed = false;
     const request: DomGetChildrenRequest = {
       type: "dom.getChildren",
       requestId: this.createRequestId(),
@@ -1012,24 +1032,36 @@ export class DomTreeController {
       branchRevision: revision,
       ...(cursor ? { cursor } : {}),
     };
+    this.registerReconciliationToken(reconciliationBatchId, token);
     const promise = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
-        const currentNode = this.nodes.get(nodeRef);
         const currentBranch = this.branches.get(nodeRef);
         if (
           !this.isCurrent(generation) ||
           currentBranch?.pending?.token !== token ||
           this.currentDocumentEpoch !== epoch ||
-          currentNode?.view.branchRevision !== revision
+          currentBranch.revision !== revision
         ) {
           return;
         }
         if (response.type === "dom.error") {
           if (!cursor) {
-            this.failFirstPageRefresh(currentBranch, pendingFocusAnchor);
+            firstPageFailed = true;
+            this.failFirstPageRefresh(
+              currentBranch,
+              nodeRef,
+              pendingFocusAnchor,
+              reconciliationBatchId,
+            );
           }
-          this.applyError(response.code);
+          const correlated = (
+            (response.requestId === undefined ||
+              response.requestId === request.requestId) &&
+            (response.documentEpoch === undefined ||
+              response.documentEpoch === epoch)
+          );
+          this.applyError(correlated ? response.code : "internal-error");
           return;
         }
         if (
@@ -1039,6 +1071,16 @@ export class DomTreeController {
           response.nodeRef !== nodeRef ||
           response.branchRevision !== revision
         ) {
+          if (!cursor) {
+            firstPageFailed = true;
+            this.failFirstPageRefresh(
+              currentBranch,
+              nodeRef,
+              pendingFocusAnchor,
+              reconciliationBatchId,
+            );
+          }
+          this.applyError("internal-error");
           return;
         }
         const previousRows = this.rows();
@@ -1053,13 +1095,21 @@ export class DomTreeController {
         }
         if (cursor) {
           for (const child of response.nodes) {
-            this.upsertNode(child, nodeRef);
-            if (!currentBranch.children.includes(child.nodeRef)) {
+            if (
+              this.adoptPageChild(child, nodeRef) &&
+              !currentBranch.children.includes(child.nodeRef)
+            ) {
               currentBranch.children.push(child.nodeRef);
             }
           }
+          this.rebuildRevealPathFromSelection();
         } else {
-          this.replacePageChildren(currentBranch, nodeRef, response.nodes);
+          this.replacePageChildren(
+            currentBranch,
+            nodeRef,
+            response.nodes,
+            reconciliationBatchId,
+          );
         }
         currentBranch.loaded = true;
         currentBranch.nextCursor = response.nextCursor;
@@ -1067,22 +1117,48 @@ export class DomTreeController {
         this.invalidateRows();
         this.reconcileFocus(focusAnchor);
       } catch (error) {
-        if (this.isCurrent(generation)) {
+        const currentBranch = this.branches.get(nodeRef);
+        if (
+          this.isCurrent(generation) &&
+          currentBranch?.pending?.token === token &&
+          currentBranch.revision === revision &&
+          this.currentDocumentEpoch === epoch
+        ) {
+          if (!cursor) {
+            firstPageFailed = true;
+            this.failFirstPageRefresh(
+              currentBranch,
+              nodeRef,
+              pendingFocusAnchor,
+              reconciliationBatchId,
+            );
+          }
+          this.applyError("internal-error");
           this.reportError(error);
         }
       } finally {
         const currentBranch = this.branches.get(nodeRef);
         if (currentBranch?.pending?.token === token) {
-          const focusAnchor = this.focusAnchor(this.rows());
+          const focusAnchor = firstPageFailed
+            ? pendingFocusAnchor
+            : this.focusAnchor(this.rows());
           currentBranch.pending = undefined;
-          this.sweepDeferredSubtrees();
+          this.settleReconciliationToken(reconciliationBatchId, token);
           this.invalidateRows();
           this.reconcileFocus(focusAnchor);
           this.notify();
+        } else {
+          this.settleReconciliationToken(reconciliationBatchId, token);
         }
       }
     })();
-    branch.pending = { token, revision, cursor, promise };
+    branch.pending = {
+      token,
+      revision,
+      cursor,
+      reconciliationBatchId,
+      promise,
+    };
     this.invalidateRows();
     if (moveFocusedServiceRow) {
       this.moveFocusToNearestFocusable(pendingFocusAnchor);
@@ -1103,6 +1179,10 @@ export class DomTreeController {
     this.replaceRevealPath(ancestorPath);
     let parentRef: string | undefined;
     for (const [index, view] of ancestorPath.entries()) {
+      if (parentRef) {
+        this.detachNodeFromOtherOwners(view.nodeRef, parentRef);
+        this.releaseDeferredCandidate(view.nodeRef);
+      }
       this.upsertNode(view, parentRef);
       if (parentRef) {
         const parent = this.nodes.get(parentRef);
@@ -1125,24 +1205,42 @@ export class DomTreeController {
     this.notify();
   }
 
-  private invalidateBranch(nodeRef: string, branchRevision: number): void {
+  private invalidateBranch(
+    nodeRef: string,
+    branchRevision: number,
+    reconciliationBatchId?: number,
+  ): void {
     const state = this.nodes.get(nodeRef);
-    if (!state || branchRevision <= state.view.branchRevision) {
+    if (!state) {
+      return;
+    }
+    const branch = state.view.expandable
+      ? this.branchFor(state.view)
+      : this.branches.get(nodeRef);
+    const currentRevision = branch?.revision ?? state.view.branchRevision;
+    if (branchRevision <= currentRevision) {
       return;
     }
     const previousRows = this.rows();
     const focusAnchor = this.focusAnchor(previousRows);
-    const branch = this.branches.get(nodeRef);
     if (branch) {
+      if (branch.pending) {
+        this.settleReconciliationToken(
+          branch.pending.reconciliationBatchId,
+          branch.pending.token,
+        );
+      }
       branch.revision = branchRevision;
       branch.loaded = false;
       branch.nextCursor = undefined;
       branch.pending = undefined;
     }
-    state.view = Object.freeze({
-      ...state.view,
-      branchRevision,
-    });
+    if (nodeRef !== this.rootRef) {
+      state.view = Object.freeze({
+        ...state.view,
+        branchRevision,
+      });
+    }
     this.invalidateRows();
     this.reconcileFocus(focusAnchor);
     if (
@@ -1152,7 +1250,12 @@ export class DomTreeController {
       void this.refreshRootSnapshot(nodeRef, branchRevision);
     }
     if (this.expanded.has(nodeRef)) {
-      void this.fetchChildren(nodeRef, undefined, focusAnchor);
+      void this.fetchChildren(
+        nodeRef,
+        undefined,
+        focusAnchor,
+        reconciliationBatchId,
+      );
     }
   }
 
@@ -1171,7 +1274,8 @@ export class DomTreeController {
     }
     if (this.rootRequest) {
       await this.rootRequest.promise;
-      const currentRevision = this.nodes.get(nodeRef)?.view.branchRevision;
+      const currentRevision = this.branches.get(nodeRef)?.revision ??
+        this.nodes.get(nodeRef)?.view.branchRevision;
       if (currentRevision !== undefined) {
         await this.refreshRootSnapshot(nodeRef, currentRevision);
       }
@@ -1197,30 +1301,56 @@ export class DomTreeController {
           !current
         ) return;
         if (response.type === "dom.error") {
-          this.applyError(response.code);
+          const correlated = (
+            (response.requestId === undefined ||
+              response.requestId === request.requestId) &&
+            (response.documentEpoch === undefined ||
+              response.documentEpoch === expectedEpoch)
+          );
+          this.applyRootSnapshotError(
+            correlated ? response.code : "internal-error",
+          );
           return;
         }
         if (
           response.type !== "dom.root" ||
           response.requestId !== request.requestId ||
           response.documentEpoch !== expectedEpoch ||
-          response.node.nodeRef !== nodeRef ||
-          response.node.branchRevision < requiredRevision ||
-          response.node.branchRevision < current.view.branchRevision
-        ) return;
-        this.currentError = undefined;
+          response.node.nodeRef !== nodeRef
+        ) {
+          this.applyRootSnapshotError("internal-error");
+          return;
+        }
+        const latestRevision = this.branches.get(nodeRef)?.revision ??
+          current.view.branchRevision;
+        if (response.node.branchRevision < latestRevision) {
+          if (latestRevision <= requiredRevision) {
+            this.applyRootSnapshotError("internal-error");
+          }
+          return;
+        }
+        this.rootSnapshotError = undefined;
         this.rootPrologue = Object.freeze([...response.prologue]);
         this.rootEpilogue = Object.freeze([...response.epilogue]);
         this.rootSnapshotRevision = response.node.branchRevision;
         this.upsertNode(response.node, undefined);
         this.invalidateRows();
       } catch (error) {
-        if (this.isCurrent(generation)) this.reportError(error);
+        if (
+          this.isCurrent(generation) &&
+          this.rootRequest?.token === token &&
+          this.currentDocumentEpoch === expectedEpoch &&
+          this.rootRef === nodeRef
+        ) {
+          this.applyRootSnapshotError("internal-error");
+          this.reportError(error);
+        }
       } finally {
         if (this.rootRequest?.token === token) {
           this.rootRequest = undefined;
           this.notify();
-          const latestRevision = this.nodes.get(nodeRef)?.view.branchRevision;
+          const latestRevision = this.branches.get(nodeRef)?.revision ??
+            this.nodes.get(nodeRef)?.view.branchRevision;
           if (
             latestRevision !== undefined &&
             latestRevision > requiredRevision
@@ -1235,26 +1365,34 @@ export class DomTreeController {
 
   private branchFor(view: DomNodeView): BranchState {
     let branch = this.branches.get(view.nodeRef);
-    if (!branch || branch.revision !== view.branchRevision) {
-      const revealChild = branch?.revealChild;
+    if (!branch) {
       branch = {
         children: [],
-        recoveredChildren: branch?.recoveredChildren ?? [],
-        ...(revealChild ? { revealChild } : {}),
+        recoveredChildren: [],
         revision: view.branchRevision,
         loaded: false,
       };
       this.branches.set(view.nodeRef, branch);
+    } else if (view.branchRevision > branch.revision) {
+      branch.revision = view.branchRevision;
+      branch.loaded = false;
+      branch.nextCursor = undefined;
     }
     return branch;
   }
 
   private upsertNode(view: DomNodeView, parentRef: string | undefined): void {
     const existing = this.nodes.get(view.nodeRef);
-    if (existing && view.branchRevision < existing.view.branchRevision) {
+    const desiredRevision = this.branches.get(view.nodeRef)?.revision ??
+      existing?.view.branchRevision;
+    if (
+      existing &&
+      desiredRevision !== undefined &&
+      view.branchRevision < desiredRevision
+    ) {
       this.nodes.set(view.nodeRef, {
         view: existing.view,
-        ...(parentRef ? { parentRef } : {}),
+        ...(parentRef === undefined ? {} : { parentRef }),
       });
       return;
     }
@@ -1263,7 +1401,7 @@ export class DomTreeController {
     }
     this.nodes.set(view.nodeRef, {
       view: Object.freeze({ ...view }),
-      ...(parentRef ? { parentRef } : {}),
+      ...(parentRef === undefined ? {} : { parentRef }),
     });
     if (view.expandable) {
       this.branchFor(view);
@@ -1274,7 +1412,9 @@ export class DomTreeController {
     if (this.hasLiveOwner(nodeRef)) {
       return;
     }
-    this.deferredPruneRefs.delete(nodeRef);
+    for (const batch of this.reconciliationBatches.values()) {
+      batch.candidates.delete(nodeRef);
+    }
     const branch = this.branches.get(nodeRef);
     if (branch) {
       const descendants = new Set([
@@ -1471,93 +1611,293 @@ export class DomTreeController {
     }
   }
 
-  private clearPageChildren(branch: BranchState): void {
+  private beginReconciliationBatch(branchCount: number): number {
+    while (
+      this.reconciliationBatches.size >=
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES
+    ) {
+      const oldestBatchId = this.reconciliationBatches.keys().next().value;
+      if (typeof oldestBatchId !== "number") {
+        break;
+      }
+      this.finishReconciliationBatch(oldestBatchId);
+    }
+    const id = ++this.reconciliationBatchSequence;
+    this.reconciliationBatches.set(id, {
+      pendingTokens: new Set(),
+      candidates: new Set(),
+      candidateLimit: Math.max(1, branchCount) *
+        DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+      focusAnchor: this.focusAnchor(this.rows()),
+    });
+    return id;
+  }
+
+  private registerReconciliationToken(
+    batchId: number | undefined,
+    token: object,
+  ): void {
+    if (batchId === undefined) {
+      return;
+    }
+    this.reconciliationBatches.get(batchId)?.pendingTokens.add(token);
+  }
+
+  private settleReconciliationToken(
+    batchId: number | undefined,
+    token: object,
+  ): void {
+    if (batchId === undefined) {
+      return;
+    }
+    const batch = this.reconciliationBatches.get(batchId);
+    if (!batch || !batch.pendingTokens.delete(token)) {
+      return;
+    }
+    this.finishReconciliationBatchIfIdle(batchId);
+  }
+
+  private finishReconciliationBatchIfIdle(batchId: number): void {
+    const batch = this.reconciliationBatches.get(batchId);
+    if (batch?.pendingTokens.size === 0) {
+      this.finishReconciliationBatch(batchId);
+    }
+  }
+
+  private finishReconciliationBatch(batchId: number): void {
+    const batch = this.reconciliationBatches.get(batchId);
+    if (!batch) {
+      return;
+    }
+    this.reconciliationBatches.delete(batchId);
+    for (const nodeRef of batch.candidates) {
+      if (this.hasDeferredCandidate(nodeRef) || this.hasLiveOwner(nodeRef)) {
+        continue;
+      }
+      this.removeSubtree(nodeRef);
+    }
+    this.invalidateRows();
+    this.reconcileFocus(batch.focusAnchor);
+  }
+
+  private clearPageChildren(
+    branch: BranchState,
+    parentRef: string,
+    reconciliationBatchId?: number,
+  ): void {
     const previousChildren = [...branch.children];
     branch.children.length = 0;
     for (const childRef of previousChildren) {
-      if (
-        childRef !== branch.revealChild &&
-        !branch.recoveredChildren.includes(childRef)
-      ) {
-        this.pruneDetachedSubtree(childRef);
-      }
+      this.detachPageChild(branch, parentRef, childRef);
+      this.deferDetachedSubtree(childRef, reconciliationBatchId);
     }
+    this.rebuildRevealPathFromSelection();
   }
 
   private replacePageChildren(
     branch: BranchState,
     parentRef: string,
     children: readonly DomNodeView[],
+    reconciliationBatchId?: number,
   ): void {
     const previousChildren = [...branch.children];
     const nextChildren: string[] = [];
     for (const child of children) {
-      this.upsertNode(child, parentRef);
-      if (!nextChildren.includes(child.nodeRef)) {
+      if (
+        this.adoptPageChild(child, parentRef) &&
+        !nextChildren.includes(child.nodeRef)
+      ) {
         nextChildren.push(child.nodeRef);
       }
     }
     branch.children.splice(0, branch.children.length, ...nextChildren);
     const retained = new Set(nextChildren);
     for (const childRef of previousChildren) {
-      if (
-        !retained.has(childRef) &&
-        childRef !== branch.revealChild &&
-        !branch.recoveredChildren.includes(childRef)
-      ) {
-        this.pruneDetachedSubtree(childRef);
+      if (!retained.has(childRef)) {
+        this.detachPageChild(branch, parentRef, childRef);
+        this.deferDetachedSubtree(childRef, reconciliationBatchId);
       }
     }
-    this.sweepDeferredSubtrees(branch);
+    this.rebuildRevealPathFromSelection();
   }
 
   private failFirstPageRefresh(
     branch: BranchState,
+    parentRef: string,
     focusAnchor: FocusAnchor,
+    reconciliationBatchId?: number,
   ): void {
-    this.clearPageChildren(branch);
+    this.clearPageChildren(branch, parentRef, reconciliationBatchId);
     branch.loaded = false;
     branch.nextCursor = undefined;
-    this.sweepDeferredSubtrees(branch);
     this.invalidateRows();
     this.reconcileFocus(focusAnchor);
   }
 
-  private pruneDetachedSubtree(nodeRef: string): void {
+  private deferDetachedSubtree(
+    nodeRef: string,
+    reconciliationBatchId?: number,
+  ): void {
     if (this.hasLiveOwner(nodeRef)) {
-      this.deferredPruneRefs.delete(nodeRef);
+      this.releaseDeferredCandidate(nodeRef);
       return;
     }
-    this.deferredPruneRefs.add(nodeRef);
-    this.sweepDeferredSubtrees();
-  }
-
-  private sweepDeferredSubtrees(settledBranch?: BranchState): void {
-    if (this.hasPendingFirstPageRefresh(settledBranch)) {
-      return;
-    }
-    for (const nodeRef of [...this.deferredPruneRefs]) {
-      this.deferredPruneRefs.delete(nodeRef);
+    const batch = reconciliationBatchId === undefined
+      ? undefined
+      : this.reconciliationBatches.get(reconciliationBatchId);
+    if (!batch) {
       this.removeSubtree(nodeRef);
+      return;
+    }
+    if (batch.candidates.has(nodeRef)) {
+      return;
+    }
+    while (batch.candidates.size >= batch.candidateLimit) {
+      const oldestCandidate = batch.candidates.values().next().value;
+      if (typeof oldestCandidate !== "string") {
+        break;
+      }
+      batch.candidates.delete(oldestCandidate);
+      if (
+        !this.hasDeferredCandidate(oldestCandidate) &&
+        !this.hasLiveOwner(oldestCandidate)
+      ) {
+        this.removeSubtree(oldestCandidate);
+      }
+    }
+    batch.candidates.add(nodeRef);
+  }
+
+  private releaseDeferredCandidate(nodeRef: string): void {
+    for (const batch of this.reconciliationBatches.values()) {
+      batch.candidates.delete(nodeRef);
     }
   }
 
-  private hasPendingFirstPageRefresh(
-    settledBranch?: BranchState,
-  ): boolean {
-    if (this.recovering) {
-      return false;
-    }
-    for (const branch of this.branches.values()) {
-      if (
-        branch !== settledBranch &&
-        branch.pending &&
-        branch.pending.cursor === undefined
-      ) {
+  private hasDeferredCandidate(nodeRef: string): boolean {
+    for (const batch of this.reconciliationBatches.values()) {
+      if (batch.candidates.has(nodeRef)) {
         return true;
       }
     }
     return false;
+  }
+
+  private adoptPageChild(view: DomNodeView, parentRef: string): boolean {
+    if (this.wouldCreateOwnershipCycle(parentRef, view.nodeRef)) {
+      return false;
+    }
+    this.detachNodeFromOtherOwners(view.nodeRef, parentRef);
+    this.upsertNode(view, parentRef);
+    this.releaseDeferredCandidate(view.nodeRef);
+    return true;
+  }
+
+  private detachPageChild(
+    branch: BranchState,
+    parentRef: string,
+    childRef: string,
+  ): void {
+    const preserveSelectedReveal = (
+      branch.revealChild === childRef &&
+      this.selectedNodeRef !== undefined &&
+      this.revealPathRefs.includes(childRef)
+    );
+    if (branch.revealChild === childRef && !preserveSelectedReveal) {
+      branch.revealChild = undefined;
+    }
+    removeAll(branch.recoveredChildren, childRef);
+    const child = this.nodes.get(childRef);
+    if (child?.parentRef === parentRef && !preserveSelectedReveal) {
+      this.nodes.set(childRef, { view: child.view });
+    }
+  }
+
+  private detachNodeFromOtherOwners(
+    nodeRef: string,
+    parentRef: string,
+  ): void {
+    for (const [ownerRef, branch] of this.branches) {
+      if (ownerRef === parentRef) {
+        continue;
+      }
+      removeAll(branch.children, nodeRef);
+      removeAll(branch.recoveredChildren, nodeRef);
+      if (branch.revealChild === nodeRef) {
+        branch.revealChild = undefined;
+      }
+    }
+  }
+
+  private wouldCreateOwnershipCycle(
+    parentRef: string,
+    childRef: string,
+  ): boolean {
+    if (childRef === this.rootRef || childRef === parentRef) {
+      return true;
+    }
+    let currentRef: string | undefined = parentRef;
+    const visited = new Set<string>();
+    while (currentRef && !visited.has(currentRef)) {
+      if (currentRef === childRef) {
+        return true;
+      }
+      visited.add(currentRef);
+      currentRef = this.nodes.get(currentRef)?.parentRef;
+    }
+    return false;
+  }
+
+  private rebuildRevealPathFromSelection(): void {
+    const selectedRef = this.selectedNodeRef;
+    if (!selectedRef || !this.rootRef || !this.nodes.has(selectedRef)) {
+      return;
+    }
+    const reversedPath: string[] = [];
+    const visited = new Set<string>();
+    let currentRef: string | undefined = selectedRef;
+    while (currentRef && !visited.has(currentRef)) {
+      visited.add(currentRef);
+      reversedPath.push(currentRef);
+      if (currentRef === this.rootRef) {
+        break;
+      }
+      currentRef = this.nodes.get(currentRef)?.parentRef;
+    }
+    this.clearRevealEdges();
+    if (reversedPath.at(-1) !== this.rootRef) {
+      this.revealPathRefs = Object.freeze([]);
+      return;
+    }
+    const nextPath = reversedPath.reverse();
+    for (let index = 0; index < nextPath.length - 1; index += 1) {
+      const parentRef = nextPath[index];
+      const childRef = nextPath[index + 1];
+      if (!parentRef || !childRef) {
+        continue;
+      }
+      const parent = this.nodes.get(parentRef);
+      if (!parent) {
+        continue;
+      }
+      this.branchFor(parent.view).revealChild = childRef;
+      this.expanded.add(parentRef);
+    }
+    this.revealPathRefs = Object.freeze(nextPath);
+  }
+
+  private clearRevealEdges(): void {
+    for (let index = 0; index < this.revealPathRefs.length - 1; index += 1) {
+      const parentRef = this.revealPathRefs[index];
+      const childRef = this.revealPathRefs[index + 1];
+      if (!parentRef || !childRef) {
+        continue;
+      }
+      const branch = this.branches.get(parentRef);
+      if (branch?.revealChild === childRef) {
+        branch.revealChild = undefined;
+      }
+    }
   }
 
   private hasLiveOwner(nodeRef: string): boolean {
@@ -1592,7 +1932,9 @@ export class DomTreeController {
   }
 
   private isDeferredPruneNode(nodeRef: string): boolean {
-    const pending = [...this.deferredPruneRefs];
+    const pending = [...this.reconciliationBatches.values()].flatMap(
+      (batch) => [...batch.candidates],
+    );
     const visited = new Set<string>();
     while (pending.length > 0) {
       const currentRef = pending.pop();
@@ -1711,8 +2053,7 @@ export class DomTreeController {
     }
     if (
       this.focusedNodeRef &&
-      this.deferredPruneRefs.has(this.focusedNodeRef) &&
-      this.hasPendingFirstPageRefresh()
+      this.isDeferredPruneNode(this.focusedNodeRef)
     ) {
       return;
     }
@@ -1753,6 +2094,15 @@ export class DomTreeController {
     }
   }
 
+  private applyRootSnapshotError(code: DomErrorCode): void {
+    if (code === "stale-document" || code === "session-disposed") {
+      this.applyError(code);
+      return;
+    }
+    this.rootSnapshotError = code;
+    this.invalidateRows();
+  }
+
   private resetState(
     documentEpoch: number | undefined,
     cancellationReason: string,
@@ -1773,12 +2123,13 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
-    this.deferredPruneRefs.clear();
+    this.reconciliationBatches.clear();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
     this.rootEpilogue = Object.freeze([]);
     this.rootSnapshotRevision = undefined;
+    this.rootSnapshotError = undefined;
     this.selectedNodeRef = undefined;
     this.focusedNodeRef = undefined;
     this.hoveredNodeRef = undefined;
@@ -1901,6 +2252,14 @@ function sameDomNodeViewAuthority(
     return locatorKey(left.locator) === locatorKey(right.locator);
   } catch {
     return false;
+  }
+}
+
+function removeAll(values: string[], value: string): void {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (values[index] === value) {
+      values.splice(index, 1);
+    }
   }
 }
 
