@@ -45,7 +45,7 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageInspectionSession", () => {
-  it("batches one mutation settlement into one bounded deterministic invalidation", async () => {
+  it("streams every unique branch through bounded settlement chunks", async () => {
     const harness = createSessionHarness();
     for (
       let index = 0;
@@ -54,39 +54,143 @@ describe("PageInspectionSession", () => {
     ) {
       harness.provider.emitInvalidation(`branch-${index}`, index + 2);
     }
+
+    expect(harness.events.filter((event) => event.type === "dom.invalidated"))
+      .toEqual([{
+        type: "dom.invalidated",
+        documentEpoch: 3,
+        branches: Array.from(
+          { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES },
+          (_, index) => ({
+            nodeRef: `branch-${index}`,
+            branchRevision: index + 2,
+          }),
+        ),
+      }]);
+
     harness.provider.emitInvalidation("branch-0", 999);
     harness.provider.emitInvalidation("branch-0", 998);
-
-    expect(harness.events).toEqual([]);
     harness.provider.emitMutationSettled();
 
     const invalidations = harness.events.filter((event) => (
       event.type === "dom.invalidated"
     ));
-    expect(invalidations).toEqual([{
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[1]).toEqual({
       type: "dom.invalidated",
       documentEpoch: 3,
       branches: [
+        { nodeRef: "branch-128", branchRevision: 130 },
         { nodeRef: "branch-0", branchRevision: 999 },
-        ...Array.from(
-          { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES - 1 },
-          (_, offset) => ({
-            nodeRef: `branch-${offset + 1}`,
-            branchRevision: offset + 3,
-          }),
-        ),
       ],
-    }]);
-    expect(invalidations[0]?.branches).toHaveLength(
-      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
-    );
-    expect(() => parseDomEvent(invalidations[0])).not.toThrow();
-    expect(utf8ByteLength(JSON.stringify(invalidations[0])))
-      .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    });
+    expect(new Set(invalidations.flatMap(({ branches }) => (
+      branches.map(({ nodeRef }) => nodeRef)
+    )))).toEqual(new Set(Array.from(
+      { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES + 1 },
+      (_, index) => `branch-${index}`,
+    )));
+    for (const event of invalidations) {
+      expect(event.branches.length).toBeLessThanOrEqual(
+        DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+      );
+      expect(() => parseDomEvent(event)).not.toThrow();
+      expect(utf8ByteLength(JSON.stringify(event)))
+        .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    }
 
     await flushAsync();
     expect(harness.events.filter((event) => event.type === "dom.invalidated"))
-      .toHaveLength(1);
+      .toHaveLength(2);
+  });
+
+  it("delivers 4096 unique invalidations without exceeding an event envelope", () => {
+    const harness = createSessionHarness();
+    const branchCount = 4_096;
+    for (let index = 0; index < branchCount; index += 1) {
+      harness.provider.emitInvalidation(`bulk-${index}`, index + 2);
+    }
+
+    harness.provider.emitMutationSettled();
+
+    const invalidations = harness.events.filter((event) => (
+      event.type === "dom.invalidated"
+    ));
+    expect(invalidations).toHaveLength(
+      branchCount / DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(invalidations.flatMap(({ branches }) => (
+      branches.map(({ nodeRef }) => nodeRef)
+    )))
+      .toEqual(Array.from({ length: branchCount }, (_, index) => `bulk-${index}`));
+    for (const event of invalidations) {
+      expect(event.branches).toHaveLength(DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES);
+      expect(() => parseDomEvent(event)).not.toThrow();
+      expect(utf8ByteLength(JSON.stringify(event)))
+        .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    }
+  });
+
+  it("streams escaped identifiers without overflowing an event envelope", () => {
+    const harness = createSessionHarness();
+    const nodeRefs = Array.from({ length: 256 }, (_, index) => (
+      `${index}-` + "\u0000".repeat(120)
+    ));
+    for (const [index, nodeRef] of nodeRefs.entries()) {
+      harness.provider.emitInvalidation(nodeRef, index + 2);
+    }
+
+    harness.provider.emitMutationSettled();
+
+    const invalidations = harness.events.filter((event) => (
+      event.type === "dom.invalidated"
+    ));
+    expect(invalidations.length).toBeGreaterThan(2);
+    expect(invalidations.flatMap(({ branches }) => (
+      branches.map(({ nodeRef }) => nodeRef)
+    ))).toEqual(nodeRefs);
+    for (const event of invalidations) {
+      expect(event.branches.length).toBeLessThanOrEqual(
+        DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+      );
+      expect(() => parseDomEvent(event)).not.toThrow();
+      expect(utf8ByteLength(JSON.stringify(event)))
+        .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
+    }
+  });
+
+  it("preserves reentrant invalidations while streaming a full chunk", async () => {
+    let harness!: ReturnType<typeof createSessionHarness>;
+    let reentered = false;
+    harness = createSessionHarness({
+      onEvent: (event) => {
+        if (event.type === "dom.invalidated" && !reentered) {
+          reentered = true;
+          harness.provider.emitInvalidation("reentrant", 700);
+        }
+      },
+    });
+    for (
+      let index = 0;
+      index <= DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES;
+      index += 1
+    ) {
+      harness.provider.emitInvalidation(`branch-${index}`, index + 2);
+    }
+
+    harness.provider.emitMutationSettled();
+    await flushAsync();
+
+    const invalidations = harness.events.filter((event) => (
+      event.type === "dom.invalidated"
+    ));
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[1]).toMatchObject({
+      branches: [
+        { nodeRef: "branch-128", branchRevision: 130 },
+        { nodeRef: "reentrant", branchRevision: 700 },
+      ],
+    });
   });
 
   it("flushes non-mutation invalidations once and cancels old batches on reset or dispose", async () => {
@@ -103,6 +207,9 @@ describe("PageInspectionSession", () => {
 
     const reset = createSessionHarness();
     reset.provider.emitInvalidation("old-document", 2);
+    reset.provider.onResetDocument = () => {
+      reset.provider.emitInvalidation("during-reset", 3);
+    };
     reset.session.resetDocument(
       new FakeSessionDocument() as unknown as Document & { readonly styleSheets: [] },
       4,
@@ -112,12 +219,15 @@ describe("PageInspectionSession", () => {
 
     const disposed = createSessionHarness();
     disposed.provider.emitInvalidation("disposed", 2);
+    disposed.provider.onDispose = () => {
+      disposed.provider.emitInvalidation("during-dispose", 3);
+    };
     disposed.session.dispose();
     await flushAsync();
     expect(disposed.events).toEqual([]);
   });
 
-  it("delivers source and destination invalidations as one move reconciliation batch", async () => {
+  it("delivers streamed source and destination chunks as one move reconciliation wave", async () => {
     let controller: DomTreeController | undefined;
     const harness = createSessionHarness({
       onEvent: (event) => controller?.handleEvent(event),
@@ -169,20 +279,34 @@ describe("PageInspectionSession", () => {
       childrenResponseForSession(destination.nodeRef, 2, [moved]),
     );
 
+    for (
+      let index = 0;
+      index < DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES - 1;
+      index += 1
+    ) {
+      harness.provider.emitInvalidation(`padding-${index}`, 2);
+    }
     harness.provider.emitInvalidation(source.nodeRef, 2);
     harness.provider.emitInvalidation(destination.nodeRef, 2);
     harness.provider.emitMutationSettled();
     await flushAsync();
 
-    expect(harness.events.filter((event) => event.type === "dom.invalidated"))
-      .toEqual([{
-        type: "dom.invalidated",
-        documentEpoch: 3,
-        branches: [
-          { nodeRef: source.nodeRef, branchRevision: 2 },
-          { nodeRef: destination.nodeRef, branchRevision: 2 },
-        ],
-      }]);
+    const invalidations = harness.events.filter((event) => (
+      event.type === "dom.invalidated"
+    ));
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[0]?.branches).toHaveLength(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(invalidations[0]?.branches.at(-1)).toEqual({
+      nodeRef: source.nodeRef,
+      branchRevision: 2,
+    });
+    expect(invalidations[1]).toEqual({
+      type: "dom.invalidated",
+      documentEpoch: 3,
+      branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+    });
     expect(controller.rows().filter((row) => row.nodeRef === moved.nodeRef))
       .toEqual([expect.objectContaining({
         parentRef: destination.nodeRef,
@@ -1678,6 +1802,8 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   public startFrameTrackingCount = 0;
   public throwOnReveal = false;
   public onResolve: (() => void) | undefined;
+  public onResetDocument: (() => void) | undefined;
+  public onDispose: (() => void) | undefined;
   public readonly hiddenLookups = new Set<object>();
   public readonly knownUnavailableRefs = new Set<string>();
   public readonly retentions: Array<{
@@ -1882,6 +2008,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
 
   public resetDocument(document: Document, documentEpoch: number): void {
     this.resetCount += 1;
+    this.onResetDocument?.();
     this.epoch = documentEpoch;
     this.entriesByElement.clear();
     this.entriesByRef.clear();
@@ -1896,6 +2023,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
 
   public dispose(): void {
     this.disposeCount += 1;
+    this.onDispose?.();
   }
 }
 

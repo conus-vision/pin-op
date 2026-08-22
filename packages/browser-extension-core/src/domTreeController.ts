@@ -140,8 +140,9 @@ interface PendingBranchRequest {
 interface ReconciliationBatchState {
   readonly pendingTokens: Set<object>;
   readonly candidates: Set<string>;
-  readonly candidateLimit: number;
+  candidateLimit: number;
   readonly focusAnchor: FocusAnchor;
+  acceptingInvalidations: boolean;
 }
 
 interface FocusAnchor {
@@ -187,6 +188,8 @@ export class DomTreeController {
   private recovering = false;
   private generation = 0;
   private reconciliationBatchSequence = 0;
+  private activeReconciliationWaveId: number | undefined;
+  private reconciliationWaveGeneration = 0;
   private requestSequence = 0;
   private disposed = false;
 
@@ -813,7 +816,7 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
-    this.reconciliationBatches.clear();
+    this.clearReconciliationState();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
@@ -1624,6 +1627,23 @@ export class DomTreeController {
   }
 
   private beginReconciliationBatch(branchCount: number): number {
+    // Synchronously streamed protocol chunks belong to one ownership wave.
+    // The microtask boundary closes it before unrelated later invalidations.
+    const activeBatchId = this.activeReconciliationWaveId;
+    const activeBatch = activeBatchId === undefined
+      ? undefined
+      : this.reconciliationBatches.get(activeBatchId);
+    const candidateLimitIncrease = Math.max(1, branchCount) *
+      DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH;
+    const maximumCandidateLimit = DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES *
+      DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH;
+    if (activeBatchId !== undefined && activeBatch) {
+      activeBatch.candidateLimit = Math.min(
+        maximumCandidateLimit,
+        activeBatch.candidateLimit + candidateLimitIncrease,
+      );
+      return activeBatchId;
+    }
     while (
       this.reconciliationBatches.size >=
       DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES
@@ -1638,9 +1658,32 @@ export class DomTreeController {
     this.reconciliationBatches.set(id, {
       pendingTokens: new Set(),
       candidates: new Set(),
-      candidateLimit: Math.max(1, branchCount) *
-        DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+      candidateLimit: Math.min(maximumCandidateLimit, candidateLimitIncrease),
       focusAnchor: this.focusAnchor(this.rows()),
+      acceptingInvalidations: true,
+    });
+    this.activeReconciliationWaveId = id;
+    const waveGeneration = ++this.reconciliationWaveGeneration;
+    const controllerGeneration = this.generation;
+    globalThis.queueMicrotask(() => {
+      if (
+        !this.isCurrent(controllerGeneration) ||
+        waveGeneration !== this.reconciliationWaveGeneration ||
+        this.activeReconciliationWaveId !== id
+      ) {
+        return;
+      }
+      this.activeReconciliationWaveId = undefined;
+      const batch = this.reconciliationBatches.get(id);
+      if (!batch) {
+        return;
+      }
+      batch.acceptingInvalidations = false;
+      const hasDeferredPresentation = batch.candidates.size > 0;
+      this.finishReconciliationBatchIfIdle(id);
+      if (hasDeferredPresentation && !this.reconciliationBatches.has(id)) {
+        this.notify();
+      }
     });
     return id;
   }
@@ -1671,7 +1714,11 @@ export class DomTreeController {
 
   private finishReconciliationBatchIfIdle(batchId: number): void {
     const batch = this.reconciliationBatches.get(batchId);
-    if (batch?.pendingTokens.size === 0) {
+    if (
+      batch &&
+      !batch.acceptingInvalidations &&
+      batch.pendingTokens.size === 0
+    ) {
       this.finishReconciliationBatch(batchId);
     }
   }
@@ -1680,6 +1727,10 @@ export class DomTreeController {
     const batch = this.reconciliationBatches.get(batchId);
     if (!batch) {
       return;
+    }
+    if (this.activeReconciliationWaveId === batchId) {
+      this.activeReconciliationWaveId = undefined;
+      this.reconciliationWaveGeneration += 1;
     }
     this.reconciliationBatches.delete(batchId);
     for (const nodeRef of batch.candidates) {
@@ -1690,6 +1741,7 @@ export class DomTreeController {
     }
     this.invalidateRows();
     this.reconcileFocus(batch.focusAnchor);
+    this.invalidateRows();
   }
 
   private clearPageChildren(
@@ -2135,7 +2187,7 @@ export class DomTreeController {
     this.nodes.clear();
     this.branches.clear();
     this.expanded.clear();
-    this.reconciliationBatches.clear();
+    this.clearReconciliationState();
     this.revealPathRefs = Object.freeze([]);
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
@@ -2151,6 +2203,12 @@ export class DomTreeController {
     this.currentError = undefined;
     this.currentDocumentEpoch = documentEpoch;
     this.invalidateRows();
+  }
+
+  private clearReconciliationState(): void {
+    this.reconciliationBatches.clear();
+    this.activeReconciliationWaveId = undefined;
+    this.reconciliationWaveGeneration += 1;
   }
 
   private cancelPending(reason: string): void {

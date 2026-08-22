@@ -895,6 +895,101 @@ describe("DomTreeController", () => {
     },
   );
 
+  it.each(["source-first", "destination-first"] as const)(
+    "reconciles a moved subtree across synchronous invalidation chunks when %s refresh resolves",
+    async (order) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const destination = locatedNode("destination", locator(2, 1), true, 1);
+      const moved = locatedNode("moved", locator(3), true, 1);
+      const movedLeaf = locatedNode("moved-leaf", locator(4));
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [source, destination],
+      ));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+      transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+      transport.enqueue(childrenResponse(moved.nodeRef, 1, [movedLeaf]));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      await controller.expand(destination.nodeRef);
+      await controller.expand(moved.nodeRef);
+      controller.handleEvent(selectionEvent(1, [root]));
+      controller.focus(movedLeaf.nodeRef);
+
+      const delayed = deferred<DomResponse>();
+      const movedAtDestination = locatedNode(
+        moved.nodeRef,
+        locator(3, 2),
+        true,
+        1,
+      );
+      if (order === "source-first") {
+        transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+        transport.enqueue(delayed.promise);
+      } else {
+        transport.enqueue(delayed.promise);
+        transport.enqueue(childrenResponse(
+          destination.nodeRef,
+          2,
+          [movedAtDestination],
+        ));
+      }
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [
+          ...Array.from(
+            { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES - 1 },
+            (_, index) => ({
+              nodeRef: `padding-${index}`,
+              branchRevision: 2,
+            }),
+          ),
+          { nodeRef: source.nodeRef, branchRevision: 2 },
+        ],
+      });
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+
+      delayed.resolve(order === "source-first"
+        ? childrenResponse(destination.nodeRef, 2, [movedAtDestination])
+        : childrenResponse(source.nodeRef, 2, []));
+      await flushAsync();
+
+      expect(controller.rows().filter((row) => row.nodeRef === moved.nodeRef))
+        .toEqual([
+          expect.objectContaining({
+            parentRef: destination.nodeRef,
+            expanded: true,
+          }),
+        ]);
+      expect(controller.rows().find((row) => row.nodeRef === movedLeaf.nodeRef))
+        .toMatchObject({ parentRef: moved.nodeRef, focused: true });
+      expect(controller.snapshot().selectedRef).toBe(root.nodeRef);
+      expect(controller.beginRecovery()).toEqual({
+        selectedLocator: root.locator,
+        selectedWasExpanded: true,
+        focusAnchor: { locator: movedLeaf.locator, rowType: "node" },
+        expandedLocators: [
+          root.locator,
+          source.locator,
+          destination.locator,
+          movedAtDestination.locator,
+        ],
+      });
+    },
+  );
+
   it.each([
     ["source-first", "moved-root"],
     ["destination-first", "moved-root"],
@@ -1427,6 +1522,7 @@ describe("DomTreeController", () => {
 
     expect(nodeRefs(controller)).not.toContain(stale.nodeRef);
     expect(controller.snapshot().errorCode).toBe("internal-error");
+    expect(controller.focusedRef).toBe(`pin-op:load-more:${parent.nodeRef}`);
     expect(controller.rows().find((row) => row.type === "load-more"))
       .toMatchObject({
         parentRef: parent.nodeRef,

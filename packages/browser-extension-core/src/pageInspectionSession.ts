@@ -11,6 +11,7 @@ import {
 } from "./domTreeProvider.js";
 import {
   boundDomNodeViewPathForEnvelope,
+  domProtocolEnvelopeWithinBudget,
   DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
   parseDomRequest,
   type DomChildrenResponse,
@@ -1480,7 +1481,7 @@ export class PageInspectionSession {
     branch: DomInvalidationBranch,
     fallbackDocumentEpoch: number,
   ): void {
-    if (this.disposed) {
+    if (this.disposed || this.resettingDocument) {
       return;
     }
     const documentEpoch = this.provider?.currentDocumentEpoch ??
@@ -1493,29 +1494,75 @@ export class PageInspectionSession {
     }
     this.pendingInvalidationDocumentEpoch ??= documentEpoch;
     const existing = this.pendingInvalidationBranches.get(branch.nodeRef);
+    const snapshot = Object.freeze({
+      nodeRef: branch.nodeRef,
+      branchRevision: branch.branchRevision,
+    });
     if (existing) {
       if (branch.branchRevision > existing.branchRevision) {
-        this.pendingInvalidationBranches.set(
-          branch.nodeRef,
-          Object.freeze({
-            nodeRef: branch.nodeRef,
-            branchRevision: branch.branchRevision,
-          }),
-        );
+        if (this.canBufferInvalidation(snapshot, documentEpoch)) {
+          this.pendingInvalidationBranches.set(branch.nodeRef, snapshot);
+        } else {
+          this.pendingInvalidationBranches.delete(branch.nodeRef);
+          this.rotateInvalidationChunk(snapshot, documentEpoch);
+        }
       }
-    } else if (
-      this.pendingInvalidationBranches.size <
-      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES
-    ) {
-      this.pendingInvalidationBranches.set(
-        branch.nodeRef,
-        Object.freeze({
-          nodeRef: branch.nodeRef,
-          branchRevision: branch.branchRevision,
-        }),
-      );
+    } else if (this.canBufferInvalidation(snapshot, documentEpoch)) {
+      this.pendingInvalidationBranches.set(branch.nodeRef, snapshot);
+    } else {
+      this.rotateInvalidationChunk(snapshot, documentEpoch);
     }
+    if (
+      !this.disposed &&
+      !this.resettingDocument &&
+      this.pendingInvalidationBranches.size > 0
+    ) {
+      this.scheduleInvalidationFallback();
+    }
+  }
+
+  private canBufferInvalidation(
+    branch: DomInvalidationBranch,
+    documentEpoch: number,
+  ): boolean {
+    const branches = [...this.pendingInvalidationBranches.values()];
+    const existingIndex = branches.findIndex(({ nodeRef }) => (
+      nodeRef === branch.nodeRef
+    ));
+    if (existingIndex >= 0) {
+      branches[existingIndex] = branch;
+    } else {
+      branches.push(branch);
+    }
+    return branches.length <= DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES &&
+      domProtocolEnvelopeWithinBudget({
+        type: "dom.invalidated",
+        documentEpoch,
+        branches,
+      });
+  }
+
+  private rotateInvalidationChunk(
+    nextBranch: DomInvalidationBranch,
+    documentEpoch: number,
+  ): void {
+    this.cancelInvalidationFallback();
+    const emittedDocumentEpoch = this.pendingInvalidationDocumentEpoch;
+    const emittedBranches = Object.freeze([
+      ...this.pendingInvalidationBranches.values(),
+    ]);
+    this.pendingInvalidationBranches.clear();
+    this.pendingInvalidationDocumentEpoch = documentEpoch;
+    this.pendingInvalidationBranches.set(nextBranch.nodeRef, nextBranch);
     this.scheduleInvalidationFallback();
+    if (emittedDocumentEpoch === undefined || emittedBranches.length === 0) {
+      return;
+    }
+    this.emitEvent(Object.freeze({
+      type: "dom.invalidated",
+      documentEpoch: emittedDocumentEpoch,
+      branches: emittedBranches,
+    }));
   }
 
   private handleFrameLifecycle(): void {
