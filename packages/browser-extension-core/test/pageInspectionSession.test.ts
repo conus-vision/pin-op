@@ -723,15 +723,41 @@ describe("PageInspectionSession", () => {
 
     expect(response).toMatchObject({
       type: "dom.locator",
-      node: { nodeRef: "node-3" },
+      node: { nodeRef: "node-3", locator: stableLocator() },
       ancestorPath: [
         { nodeRef: "node-1" },
-        { nodeRef: "node-3" },
+        { nodeRef: "node-3", locator: stableLocator() },
       ],
     });
     expect(utf8ByteLength(JSON.stringify(response)))
       .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
     expect(() => parseDomResponse(response as DomResponse)).not.toThrow();
+  });
+
+  it("fails closed when a required locator cannot fit twice in its response", async () => {
+    const harness = createSessionHarness();
+    const locator = largeStableLocator();
+    const target = Object.freeze({
+      ...nodeView("node-3", "target"),
+      locator,
+    });
+    harness.provider.locatorResolution = Object.freeze({
+      node: target,
+      ancestorPath: Object.freeze([target]),
+    });
+
+    const response = await harness.session.handle({
+      type: "dom.resolveLocator",
+      requestId: "large-locator",
+      locator,
+    });
+
+    expect(response).toEqual({
+      type: "dom.error",
+      requestId: "large-locator",
+      documentEpoch: 3,
+      code: "node-unavailable",
+    });
   });
 
   it("bounds selection events without losing the selected path identity", async () => {
@@ -1847,6 +1873,28 @@ function stableLocator() {
     path: Object.freeze([
       Object.freeze({ tagName: "div", siblingIndex: 0 }),
     ]),
+  });
+}
+
+function largeStableLocator() {
+  const classes = Object.freeze(Array.from({ length: 8 }, (_, index) => (
+    `class-${index}-${"c".repeat(118)}`
+  )));
+  const attributes = Object.freeze(Array.from({ length: 8 }, (_, index) => Object.freeze({
+    name: `data-${index}-${"n".repeat(110)}`,
+    value: "v".repeat(128),
+  })));
+  return Object.freeze({
+    version: 1 as const,
+    targetKind: "element" as const,
+    boundaries: Object.freeze([]),
+    path: Object.freeze(Array.from({ length: 10 }, () => Object.freeze({
+      tagName: "div",
+      siblingIndex: 0,
+      id: "i".repeat(128),
+      classes,
+      attributes,
+    }))),
   });
 }
 

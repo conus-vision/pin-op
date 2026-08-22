@@ -41,6 +41,7 @@ import type {
 } from "./domProtocol.js";
 import {
   DomStableLocatorService,
+  isDomStableLocatorAttributeCaptureError,
   type DomStableLocator,
   type StableLocatorResolution,
 } from "./domStableLocator.js";
@@ -453,30 +454,10 @@ export class DomTreeProvider {
   ): DomStableLocator | undefined {
     try {
       return this.locatorService.capture(node, kind);
-    } catch {
-      if (this.hasHostileLocatorAttributeSurface(node, kind)) return undefined;
+    } catch (error) {
+      if (isDomStableLocatorAttributeCaptureError(error)) return undefined;
       throwDomTreeError("node-unavailable");
     }
-  }
-
-  private hasHostileLocatorAttributeSurface(
-    node: Node,
-    kind: DomStableLocator["targetKind"],
-  ): boolean {
-    let target: Element | undefined;
-    if (kind === "element" && isElementNode(node)) {
-      target = node;
-    } else if (kind === "shadow-root" && isOpenShadowRoot(node)) {
-      try {
-        target = node.host;
-      } catch {
-        return false;
-      }
-    } else if (kind === "frame-document") {
-      target = this.frameRegistry.getContextForDocument(node as Document)
-        ?.frameElement;
-    }
-    return target ? hasHostileInspectorAttributeSurface(target) : false;
   }
 
   private isNodeExcluded(node: Node): boolean {
@@ -971,6 +952,7 @@ export class DomTreeProvider {
           node: boundedPath.at(-1),
           ancestorPath: boundedPath,
         }),
+        { requireTargetLocator: true },
       );
       const node = ancestorPath?.at(-1);
       if (!ancestorPath || !node || node.kind !== resolved.kind) return undefined;
@@ -1822,6 +1804,7 @@ export class DomTreeProvider {
   private processPendingMutationRecords(): void {
     const records = this.pendingMutations.splice(0);
     const affected = new Set<string>();
+    const auxiliaryAffected = new Set<string>();
     const addedRoots: PendingElementMutationRoot[] = [];
     const removedRoots: PendingElementMutationRoot[] = [];
     for (const pending of records) {
@@ -1839,7 +1822,14 @@ export class DomTreeProvider {
         const parentRef = targetRecord?.parentRef ?? (
           parent ? this.refsByNode.get(parent) : undefined
         );
-        if (parentRef && this.expandedBranches.has(parentRef)) {
+        const targetType = readNodeType(mutation.target);
+        if (
+          parentRef &&
+          parent === this.topDocument &&
+          (targetType === 8 || targetType === 10)
+        ) {
+          auxiliaryAffected.add(parentRef);
+        } else if (parentRef && this.expandedBranches.has(parentRef)) {
           affected.add(parentRef);
         }
         continue;
@@ -1871,6 +1861,7 @@ export class DomTreeProvider {
       const targetScope = targetRecord?.scope ??
         this.scopeForMutationTarget(mutation.target);
       let logicalTreeChanged = false;
+      let rootAuxiliaryChanged = false;
       const removedNodes = mutation.removedNodes;
       for (let index = 0; index < removedNodes.length; index += 1) {
         const removed = removedNodes[index];
@@ -1889,6 +1880,8 @@ export class DomTreeProvider {
           !this.isNodeExcluded(removed)
         ) {
           logicalTreeChanged = true;
+          rootAuxiliaryChanged ||= mutation.target === this.topDocument &&
+            (removedType === 8 || removedType === 10);
           const invalidated = this.nodeRegistry.invalidateSubtree(removed);
           this.releaseInvalidatedRefs(invalidated);
         }
@@ -1911,6 +1904,8 @@ export class DomTreeProvider {
           !this.isNodeExcluded(added)
         ) {
           logicalTreeChanged = true;
+          rootAuxiliaryChanged ||= mutation.target === this.topDocument &&
+            (addedType === 8 || addedType === 10);
         }
       }
       if (!logicalTreeChanged) {
@@ -1918,6 +1913,9 @@ export class DomTreeProvider {
       }
       if (targetRef && this.expandedBranches.has(targetRef)) {
         affected.add(targetRef);
+      }
+      if (targetRef && rootAuxiliaryChanged) {
+        auxiliaryAffected.add(targetRef);
       }
       const parentRef = targetRef
         ? targetRecord?.parentRef
@@ -2002,7 +2000,7 @@ export class DomTreeProvider {
       const invalidated = this.nodeRegistry.invalidateSubtree(root.node);
       this.releaseInvalidatedRefs(invalidated);
     }
-    this.invalidateBranches(affected);
+    this.invalidateBranches(affected, auxiliaryAffected);
   }
 
   private mutationTargetRef(target: Node): string | undefined {
@@ -2042,23 +2040,36 @@ export class DomTreeProvider {
     this.invalidateBranches([nodeRef]);
   }
 
-  private invalidateBranches(nodeRefs: Iterable<string>): boolean {
+  private invalidateBranches(
+    nodeRefs: Iterable<string>,
+    forcedNodeRefs: Iterable<string> = [],
+  ): boolean {
     const branches: Array<{
       readonly nodeRef: string;
-      readonly branch: ExpandedBranch;
+      readonly branch?: ExpandedBranch;
+      readonly revision: number;
     }> = [];
     const seen = new Set<string>();
-    for (const nodeRef of nodeRefs) {
+    const append = (nodeRef: string, forced: boolean): void => {
       if (seen.has(nodeRef)) {
-        continue;
+        return;
       }
-      seen.add(nodeRef);
       const branch = this.expandedBranches.get(nodeRef);
-      if (branch) {
-        branches.push({ nodeRef, branch });
-      }
+      if (!branch && !forced) return;
+      seen.add(nodeRef);
+      branches.push({
+        nodeRef,
+        ...(branch ? { branch } : {}),
+        revision: branch?.revision ?? this.branchGenerations.get(nodeRef) ?? 1,
+      });
+    };
+    for (const nodeRef of nodeRefs) {
+      append(nodeRef, false);
     }
-    if (branches.some(({ branch }) => branch.revision >= Number.MAX_SAFE_INTEGER)) {
+    for (const nodeRef of forcedNodeRefs) {
+      append(nodeRef, true);
+    }
+    if (branches.some(({ revision }) => revision >= Number.MAX_SAFE_INTEGER)) {
       const failedRefs = new Set(branches.map(({ nodeRef }) => nodeRef));
       for (const nodeRef of failedRefs) {
         this.exhaustedBranches.add(nodeRef);
@@ -2070,9 +2081,10 @@ export class DomTreeProvider {
       }
       throwDomTreeError("internal-error");
     }
-    for (const { nodeRef, branch } of branches) {
-      branch.revision += 1;
-      this.branchGenerations.set(nodeRef, branch.revision);
+    for (const entry of branches) {
+      const revision = entry.revision + 1;
+      if (entry.branch) entry.branch.revision = revision;
+      this.branchGenerations.set(entry.nodeRef, revision);
     }
     const invalidatedRefs = new Set(branches.map(({ nodeRef }) => nodeRef));
     for (const [cursor, record] of this.cursors) {
@@ -2080,10 +2092,12 @@ export class DomTreeProvider {
         this.cursors.set(cursor, Object.freeze({ ...record, active: false }));
       }
     }
-    for (const { nodeRef, branch } of branches) {
+    for (const { nodeRef } of branches) {
+      const revision = this.branchGenerations.get(nodeRef);
+      if (revision === undefined) throwDomTreeError("internal-error");
       if (!this.emitInvalidated(Object.freeze({
         nodeRef,
-        branchRevision: branch.revision,
+        branchRevision: revision,
       }))) {
         return false;
       }
@@ -4334,35 +4348,6 @@ function readInspectorAttributes(element: Element): readonly InspectorAttribute[
     }
   }
   return Object.freeze(result);
-}
-
-function hasHostileInspectorAttributeSurface(element: Element): boolean {
-  let attributes: ArrayLike<{ readonly name?: unknown; readonly value?: unknown }>;
-  try {
-    attributes = element.attributes;
-  } catch {
-    return true;
-  }
-  let length: number;
-  try {
-    length = attributes.length;
-  } catch {
-    return true;
-  }
-  if (!Number.isSafeInteger(length) || length < 0) return false;
-  const count = Math.min(length, DOM_PROTOCOL_MAX_ATTRIBUTES);
-  for (let index = 0; index < count; index += 1) {
-    try {
-      const attribute = attributes[index];
-      if (attribute && typeof attribute === "object") {
-        void attribute.name;
-        void attribute.value;
-      }
-    } catch {
-      return true;
-    }
-  }
-  return false;
 }
 
 function safeChildCount(node: Node, syntheticCount = 0): number {

@@ -263,11 +263,13 @@ export class DomTreeRecoveryCoordinator {
       response.type !== "dom.locator" ||
       response.requestId !== request.requestId ||
       response.documentEpoch !== documentEpoch ||
-      (response.node.locator !== undefined &&
-        locatorKey(response.node.locator) !== locatorKey(stableLocator)) ||
+      response.node.locator === undefined ||
+      locatorKey(response.node.locator) !== locatorKey(stableLocator) ||
       response.ancestorPath.length === 0 ||
       response.ancestorPath[0]?.nodeRef !== rootRef ||
-      response.ancestorPath.at(-1)?.nodeRef !== response.node.nodeRef
+      response.ancestorPath.at(-1)?.nodeRef !== response.node.nodeRef ||
+      response.ancestorPath.at(-1)?.locator === undefined ||
+      locatorKey(response.ancestorPath.at(-1)!.locator!) !== locatorKey(stableLocator)
     ) {
       throw new DomTreeRecoveryFatalError(
         "locator",

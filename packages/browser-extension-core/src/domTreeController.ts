@@ -153,6 +153,7 @@ export class DomTreeController {
   private rootRef: string | undefined;
   private rootPrologue: readonly DomNodeView[] = Object.freeze([]);
   private rootEpilogue: readonly DomNodeView[] = Object.freeze([]);
+  private rootSnapshotRevision: number | undefined;
   private selectedNodeRef: string | undefined;
   private focusedNodeRef: string | undefined;
   private hoveredNodeRef: string | undefined;
@@ -311,6 +312,7 @@ export class DomTreeController {
     this.rootRef = response.node.nodeRef;
     this.rootPrologue = Object.freeze([...response.prologue]);
     this.rootEpilogue = Object.freeze([...response.epilogue]);
+    this.rootSnapshotRevision = response.node.branchRevision;
     this.upsertNode(response.node, undefined);
     this.focusedNodeRef = response.node.nodeRef;
     const focusAnchor = this.recoverySnapshot?.focusAnchor;
@@ -473,6 +475,7 @@ export class DomTreeController {
         this.rootRef = response.node.nodeRef;
         this.rootPrologue = Object.freeze([...response.prologue]);
         this.rootEpilogue = Object.freeze([...response.epilogue]);
+        this.rootSnapshotRevision = response.node.branchRevision;
         this.upsertNode(response.node, undefined);
         if (!this.focusedNodeRef) {
           this.focusedNodeRef = response.node.nodeRef;
@@ -1118,9 +1121,92 @@ export class DomTreeController {
     });
     this.invalidateRows();
     this.reconcileFocus(focusAnchor);
+    if (
+      nodeRef === this.rootRef &&
+      branchRevision > (this.rootSnapshotRevision ?? -1)
+    ) {
+      void this.refreshRootSnapshot(nodeRef, branchRevision);
+    }
     if (this.expanded.has(nodeRef)) {
       void this.fetchChildren(nodeRef, undefined, focusAnchor);
     }
+  }
+
+  private async refreshRootSnapshot(
+    nodeRef: string,
+    requiredRevision: number,
+  ): Promise<void> {
+    if (
+      this.disposed ||
+      this.recovering ||
+      this.rootRef !== nodeRef ||
+      this.currentDocumentEpoch === undefined ||
+      (this.rootSnapshotRevision ?? -1) >= requiredRevision
+    ) {
+      return;
+    }
+    if (this.rootRequest) {
+      await this.rootRequest.promise;
+      const currentRevision = this.nodes.get(nodeRef)?.view.branchRevision;
+      if (currentRevision !== undefined) {
+        await this.refreshRootSnapshot(nodeRef, currentRevision);
+      }
+      return;
+    }
+    const generation = this.generation;
+    const expectedEpoch = this.currentDocumentEpoch;
+    const token = {};
+    const request: DomGetRootRequest = {
+      type: "dom.getRoot",
+      requestId: this.createRequestId(),
+      documentEpoch: expectedEpoch,
+    };
+    const promise = (async (): Promise<void> => {
+      try {
+        const response = await this.transport.request(request);
+        const current = this.nodes.get(nodeRef);
+        if (
+          !this.isCurrent(generation) ||
+          this.rootRequest?.token !== token ||
+          this.currentDocumentEpoch !== expectedEpoch ||
+          this.rootRef !== nodeRef ||
+          !current
+        ) return;
+        if (response.type === "dom.error") {
+          this.applyError(response.code);
+          return;
+        }
+        if (
+          response.type !== "dom.root" ||
+          response.requestId !== request.requestId ||
+          response.documentEpoch !== expectedEpoch ||
+          response.node.nodeRef !== nodeRef ||
+          response.node.branchRevision < requiredRevision ||
+          response.node.branchRevision < current.view.branchRevision
+        ) return;
+        this.currentError = undefined;
+        this.rootPrologue = Object.freeze([...response.prologue]);
+        this.rootEpilogue = Object.freeze([...response.epilogue]);
+        this.rootSnapshotRevision = response.node.branchRevision;
+        this.upsertNode(response.node, undefined);
+        this.invalidateRows();
+      } catch (error) {
+        if (this.isCurrent(generation)) this.reportError(error);
+      } finally {
+        if (this.rootRequest?.token === token) {
+          this.rootRequest = undefined;
+          this.notify();
+          const latestRevision = this.nodes.get(nodeRef)?.view.branchRevision;
+          if (
+            latestRevision !== undefined &&
+            latestRevision > requiredRevision
+          ) void this.refreshRootSnapshot(nodeRef, latestRevision);
+        }
+      }
+    })();
+    this.rootRequest = { token, promise };
+    this.notify();
+    return promise;
   }
 
   private branchFor(view: DomNodeView): BranchState {
@@ -1519,6 +1605,7 @@ export class DomTreeController {
     this.rootRef = undefined;
     this.rootPrologue = Object.freeze([]);
     this.rootEpilogue = Object.freeze([]);
+    this.rootSnapshotRevision = undefined;
     this.selectedNodeRef = undefined;
     this.focusedNodeRef = undefined;
     this.hoveredNodeRef = undefined;

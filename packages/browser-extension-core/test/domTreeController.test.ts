@@ -37,6 +37,35 @@ describe("DomTreeController", () => {
     expect(controller.rows().map((row) => row.depth)).toEqual([1, 1, 1, 1]);
   });
 
+  it("refreshes displayed root auxiliaries after a collapsed-root invalidation", async () => {
+    const transport = new TestTransport();
+    const root = node("root", false, 1);
+    transport.enqueue(rootResponse(root, 1, [displayNode("leading", "comment", "before")]));
+    transport.enqueue(rootResponse(node("root", false, 2), 1, [
+      displayNode("leading", "comment", "after"),
+    ]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: "root", branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(transport.requests.map(({ type }) => type)).toEqual([
+      "dom.getRoot",
+      "dom.getRoot",
+    ]);
+    expect(controller.rows().map((row) => row.nodeRef)).toEqual(["leading", "root"]);
+    expect(controller.rows()[0]).toMatchObject({
+      node: { kind: "comment", nodeValue: "after" },
+      label: "after",
+    });
+    expect(controller.isExpanded("root")).toBe(false);
+  });
+
   it("keeps display-only children visible but ignores selection and hover", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true)));
@@ -107,8 +136,13 @@ describe("DomTreeController", () => {
 
   it("keeps the selected reveal path through branch invalidation", async () => {
     const transport = new TestTransport();
-    transport.enqueue(rootResponse(node("root", true, 1)));
+    transport.enqueue(rootResponse(node("root", true, 1), 1, [
+      displayNode("leading", "comment", "before"),
+    ]));
     transport.enqueue(childrenResponse("root", 1, [node("old-sibling")]));
+    transport.enqueue(rootResponse(node("root", true, 2), 1, [
+      displayNode("leading", "comment", "after"),
+    ]));
     transport.enqueue(childrenResponse("root", 2, [node("fresh-sibling")]));
     const controller = createController(transport);
 
@@ -125,7 +159,13 @@ describe("DomTreeController", () => {
     });
     await flushAsync();
 
-    expect(nodeRefs(controller)).toEqual(["root", "fresh-sibling", "selected"]);
+    expect(nodeRefs(controller)).toEqual([
+      "leading",
+      "root",
+      "fresh-sibling",
+      "selected",
+    ]);
+    expect(controller.rows()[0]).toMatchObject({ node: { nodeValue: "after" } });
     expect(controller.rows().find((row) => row.nodeRef === "selected"))
       .toMatchObject({ selected: true });
     expectSingleFocusedRow(controller, "selected");
@@ -148,6 +188,7 @@ describe("DomTreeController", () => {
     const oldPage = deferred<DomResponse>();
     transport.enqueue(rootResponse(node("root", true, 1)));
     transport.enqueue(oldPage.promise);
+    transport.enqueue(rootResponse(node("root", true, 2)));
     transport.enqueue(childrenResponse("root", 2, []));
     const controller = createController(transport);
 
@@ -288,6 +329,7 @@ describe("DomTreeController", () => {
       node("focused"),
       node("after"),
     ]));
+    transport.enqueue(rootResponse(node("root", true, 2)));
     transport.enqueue(childrenResponse("root", 2, [
       node("before"),
       node("after"),

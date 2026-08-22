@@ -203,6 +203,7 @@ export function domProtocolEnvelopeWithinBudget(
 export function boundDomNodeViewPathForEnvelope(
   views: readonly DomNodeView[],
   envelope: (boundedViews: readonly DomNodeView[]) => unknown,
+  options: { readonly requireTargetLocator?: boolean } = {},
 ): readonly DomNodeView[] | undefined {
   let bounded: DomNodeView[];
   try {
@@ -212,13 +213,17 @@ export function boundDomNodeViewPathForEnvelope(
   }
   if (
     bounded.length === 0 ||
-    bounded.length > DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH
+    bounded.length > DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH ||
+    (options.requireTargetLocator === true && bounded.at(-1)?.locator === undefined)
   ) return undefined;
   let candidate = Object.freeze([...bounded]);
   while (!domProtocolEnvelopeWithinBudget(envelope(candidate))) {
     let changed = false;
     for (let index = bounded.length - 1; index >= 0; index -= 1) {
-      const reduced = reduceDomNodeViewOptionalSnapshot(bounded[index]!);
+      const reduced = reduceDomNodeViewOptionalSnapshot(
+        bounded[index]!,
+        options.requireTargetLocator === true && index === bounded.length - 1,
+      );
       if (reduced !== bounded[index]) {
         bounded[index] = reduced;
         changed = true;
@@ -909,7 +914,10 @@ function snapshotDomNodeViewForEgress(node: DomNodeView): DomNodeView {
   });
 }
 
-function reduceDomNodeViewOptionalSnapshot(node: DomNodeView): DomNodeView {
+function reduceDomNodeViewOptionalSnapshot(
+  node: DomNodeView,
+  preserveLocator = false,
+): DomNodeView {
   if (node.attributes.length > 0) {
     return Object.freeze({ ...node, attributes: Object.freeze([]) });
   }
@@ -925,7 +933,7 @@ function reduceDomNodeViewOptionalSnapshot(node: DomNodeView): DomNodeView {
     const { publicId: _publicId, ...rest } = node;
     return Object.freeze(rest);
   }
-  if (hasOwn(node, "locator")) {
+  if (!preserveLocator && hasOwn(node, "locator")) {
     const { locator: _locator, ...rest } = node;
     return Object.freeze(rest);
   }

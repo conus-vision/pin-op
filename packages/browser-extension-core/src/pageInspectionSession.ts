@@ -546,6 +546,7 @@ export class PageInspectionSession {
                 node: boundedPath.at(-1),
                 ancestorPath: boundedPath,
               }),
+              { requireTargetLocator: true },
             )
             : undefined;
           const node = ancestorPath?.at(-1);

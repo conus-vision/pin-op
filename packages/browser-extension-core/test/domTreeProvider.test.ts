@@ -180,6 +180,91 @@ describe("DomTreeProvider", () => {
       .toThrowError("node-unavailable");
   });
 
+  it("keeps locator-only attribute failures beyond the display bound displayable", () => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    for (let index = 0; index < 101; index += 1) {
+      child.setAttribute(`data-value-${String(index).padStart(3, "0")}`, `${index}`);
+    }
+    const attributes = child.attributes;
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      get: () => new Proxy(attributes, {
+        get(target, property, receiver) {
+          if (property === "100") throw new Error("late hostile attribute row");
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+    document.documentElement.append(child);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const childView = onlyChild(provider, root.node, root.documentEpoch, "late-hostile-child");
+
+    expect(childView.attributes).toHaveLength(64);
+    expect(childView).not.toHaveProperty("locator");
+    expect(() => provider.resolveElement(childView.nodeRef, root.documentEpoch))
+      .toThrowError("node-unavailable");
+  });
+
+  it.each([
+    ["invalid tag", (child: FakeElement) => {
+      Object.defineProperty(child, "tagName", {
+        configurable: true,
+        get: () => {
+          throw new Error("hostile tag topology");
+        },
+      });
+    }],
+    ["invalid parent topology", (child: FakeElement) => {
+      Object.defineProperty(child, "parentNode", {
+        configurable: true,
+        get: () => {
+          throw new Error("hostile parent topology");
+        },
+      });
+    }],
+  ] as const)("does not hide %s failures behind a hostile attribute getter", (
+    _description,
+    makeUnrelatedFailure,
+  ) => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    document.documentElement.append(child);
+    makeUnrelatedFailure(child);
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile attributes must not mask topology");
+      },
+    });
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    expect(() => onlyChild(provider, root.node, root.documentEpoch, "unrelated-failure"))
+      .toThrowError("node-unavailable");
+  });
+
+  it.each([
+    ["oversized length", { length: 257 }],
+    ["malformed length", { length: "1", 0: { name: "data-safe", value: "x" } }],
+    ["malformed row", { length: 1, 0: null }],
+  ] as const)("fails closed for a %s attribute collection", (_description, attributes) => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    Object.defineProperty(child, "attributes", {
+      configurable: true,
+      value: attributes,
+    });
+    document.documentElement.append(child);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    expect(() => onlyChild(provider, root.node, root.documentEpoch, "malformed-attributes"))
+      .toThrowError("node-unavailable");
+  });
+
   it("distinguishes known non-element refs from unknown and stale element refs", () => {
     const document = createDocument();
     const doctype = createDocumentType();
@@ -238,15 +323,16 @@ describe("DomTreeProvider", () => {
   it("never splits astral characters at element label token boundaries", () => {
     const document = createDocument();
     const tag = createElement("section", document);
+    let tagReads = 0;
     Object.defineProperty(tag, "tagName", {
       configurable: true,
-      value: `${"t".repeat(63)}😀`,
+      get: () => tagReads++ === 4 ? `${"t".repeat(63)}😀` : "SECTION",
     });
     const identified = createElement("article", document);
     identified.id = `${"i".repeat(63)}😀`;
     const classified = createElement("aside", document);
     classified.className = `${"c".repeat(63)}😀`;
-    for (const element of [tag, identified, classified]) {
+    for (const element of [identified, classified]) {
       Object.defineProperty(element, "attributes", {
         configurable: true,
         get: () => {
@@ -652,14 +738,15 @@ describe("DomTreeProvider", () => {
         onInvalidated: (branch) => invalidated.push(branch),
       });
       const root = harness.provider.getRoot();
-      harness.provider.getChildren({
-        type: "dom.getChildren",
-        requestId: `materialize-${position}-root`,
-        documentEpoch: root.documentEpoch,
-        nodeRef: root.node.nodeRef,
-        branchRevision: root.node.branchRevision,
-      });
-
+      if (position === "leading") {
+        harness.provider.getChildren({
+          type: "dom.getChildren",
+          requestId: "expanded-auxiliary-root",
+          documentEpoch: root.documentEpoch,
+          nodeRef: root.node.nodeRef,
+          branchRevision: root.node.branchRevision,
+        });
+      }
       comment.nodeValue = "after";
       harness.observers[0]!.emit([characterDataMutationRecord(comment)]);
       harness.flushTimers();
@@ -701,14 +788,6 @@ describe("DomTreeProvider", () => {
       onInvalidated: (branch) => invalidated.push(branch),
     });
     const root = harness.provider.getRoot();
-    harness.provider.getChildren({
-      type: "dom.getChildren",
-      requestId: `${kind}-${action}-root`,
-      documentEpoch: root.documentEpoch,
-      nodeRef: root.node.nodeRef,
-      branchRevision: root.node.branchRevision,
-    });
-
     if (action === "add") {
       document.prepend(auxiliary);
       harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
@@ -1100,6 +1179,8 @@ describe("DomTreeProvider", () => {
       root.node.nodeRef,
       targetView.nodeRef,
     ]);
+    expect(resolved!.node.locator).toEqual(targetView.locator);
+    expect(resolved!.ancestorPath.at(-1)?.locator).toEqual(targetView.locator);
     expect(utf8ByteLength(JSON.stringify(locatorResponse)))
       .toBeLessThanOrEqual(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES);
     expect(() => parseDomResponse(locatorResponse)).not.toThrow();

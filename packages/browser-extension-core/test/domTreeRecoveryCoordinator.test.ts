@@ -49,7 +49,7 @@ describe("DomTreeRecoveryCoordinator", () => {
     }]);
   });
 
-  it("accepts a bounded locator response whose recovered views omit locators", async () => {
+  it("rejects a bounded locator response whose target omits recovery ownership", async () => {
     const transport = new TestTransport();
     const rootLocator = locator(1, 0);
     const selectedLocator = locator(2, 1);
@@ -69,18 +69,10 @@ describe("DomTreeRecoveryCoordinator", () => {
       [boundedRoot, boundedSelected],
       2,
     ));
-    transport.enqueue(locatorResponse(newRoot, [newRoot], 2));
-    transport.enqueue(childrenResponse(newRoot, [boundedSelected], 2));
 
     await coordinator.begin();
 
-    expect(controller.snapshot().selectedRef).toBe("new-selected");
-    expect(nodeRefs(controller)).toEqual(["new-root", "new-selected"]);
-    expect(transport.dispatched).toEqual([{
-      type: "dom.select",
-      documentEpoch: 2,
-      nodeRef: "new-selected",
-    }]);
+    expectSafeRecoveryReset(controller, transport);
   });
 
   it("restores separate row focus without another locator resolution", async () => {

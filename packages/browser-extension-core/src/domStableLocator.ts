@@ -12,6 +12,19 @@ const MAX_CHILD_PHYSICAL_SCAN = 256;
 const MAX_LOCATOR_VISITED_NODES = 65_536;
 const READ_FAILED = Symbol("dom-stable-locator-read-failed");
 
+class DomStableLocatorAttributeCaptureError extends Error {
+  public constructor() {
+    super("DOM stable locator attribute capture failed");
+    this.name = "DomStableLocatorAttributeCaptureError";
+  }
+}
+
+export function isDomStableLocatorAttributeCaptureError(
+  error: unknown,
+): boolean {
+  return error instanceof DomStableLocatorAttributeCaptureError;
+}
+
 class LocatorVisitBudget {
   private remaining = MAX_LOCATOR_VISITED_NODES;
 
@@ -508,13 +521,22 @@ function captureSegment(
   budget: LocatorVisitBudget,
 ): DomPathSegment {
   const tagName = readTagName(element);
+  if (!tagName) throw invalidLocator();
   const siblingIndex = elementSiblingIndex(parent, element, budget);
   if (siblingIndex === undefined) throw invalidLocator();
-  const evidence = readCanonicalEvidence(element, parent, root, budget);
-  if (!tagName || !evidence) throw invalidLocator();
+  const evidence = readCanonicalEvidence(element, parent, root, budget, true);
+  if (!evidence) throw invalidLocator();
   // The final uniqueness traversal in stabilizeSegmentIdentity is the last
   // page-controlled read before an ID anchor is committed.
-  const id = stabilizeSegmentIdentity(element, parent, root, tagName, evidence, budget);
+  const id = stabilizeSegmentIdentity(
+    element,
+    parent,
+    root,
+    tagName,
+    evidence,
+    budget,
+    true,
+  );
   if (id === READ_FAILED) throw invalidLocator();
   return Object.freeze({
     tagName,
@@ -536,6 +558,7 @@ function readCanonicalEvidence(
   expectedParent: Node,
   expectedRoot: Node,
   budget: LocatorVisitBudget,
+  surfaceAttributeFailures = false,
 ): CanonicalEvidence | undefined {
   if (
     readParentNode(element) !== expectedParent ||
@@ -544,9 +567,13 @@ function readCanonicalEvidence(
   const rawId = readIdStrict(element);
   if (rawId === READ_FAILED) return undefined;
   const classes = readCanonicalClasses(element, budget);
-  const attributes = readCanonicalAttributes(element, budget);
+  if (!classes) return undefined;
+  const attributes = readCanonicalAttributes(
+    element,
+    budget,
+    surfaceAttributeFailures,
+  );
   if (
-    !classes ||
     !attributes ||
     readParentNode(element) !== expectedParent ||
     !hasExpectedRoot(element, expectedRoot, budget)
@@ -590,35 +617,72 @@ function readCanonicalClasses(
 function readCanonicalAttributes(
   element: Element,
   budget: LocatorVisitBudget,
+  surfaceFailures: boolean,
 ): readonly DomLocatorAttribute[] | undefined {
+  if (!budget.visit()) return undefined;
+  let attributes: unknown;
   try {
-    if (!budget.visit()) return undefined;
-    const attributes = element.attributes;
-    if (!budget.visit()) return undefined;
-    const length = readBoundedCollectionLength(attributes, MAX_EVIDENCE_PHYSICAL_SCAN);
-    const selected: DomLocatorAttribute[] = [];
-    for (let index = 0; index < length; index += 1) {
-      if (!budget.visit()) return undefined;
-      const attribute = readCollectionItem(attributes, index);
-      if (!attribute || attribute === READ_FAILED || typeof attribute !== "object") return undefined;
-      if (!budget.visit()) return undefined;
-      const name = readAttributeName(attribute);
-      if (!budget.visit()) return undefined;
-      const value = readAttributeValue(attribute);
-      if (name === READ_FAILED || value === READ_FAILED) return undefined;
-      if (isApprovedAttributeName(name) && boundedText(value) !== undefined) {
-        insertBoundedCanonical(
-          selected,
-          Object.freeze({ name, value }),
-          DOM_STABLE_LOCATOR_MAX_ATTRIBUTES,
-          ({ name: candidate }) => candidate,
-        );
-      }
-    }
-    return Object.freeze(selected);
+    attributes = element.attributes;
   } catch {
+    if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
     return undefined;
   }
+  if (!budget.visit() || !attributes || typeof attributes !== "object") {
+    return undefined;
+  }
+  let rawLength: unknown;
+  try {
+    rawLength = (attributes as { readonly length?: unknown }).length;
+  } catch {
+    if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
+    return undefined;
+  }
+  if (
+    typeof rawLength !== "number" ||
+    !Number.isSafeInteger(rawLength) ||
+    rawLength < 0 ||
+    rawLength > MAX_EVIDENCE_PHYSICAL_SCAN
+  ) return undefined;
+  const selected: DomLocatorAttribute[] = [];
+  for (let index = 0; index < rawLength; index += 1) {
+    if (!budget.visit()) return undefined;
+    let attribute: unknown;
+    try {
+      attribute = (attributes as { readonly [index: number]: unknown })[index];
+    } catch {
+      if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
+      return undefined;
+    }
+    if (!attribute || typeof attribute !== "object") return undefined;
+    if (!budget.visit()) return undefined;
+    let rawName: unknown;
+    try {
+      rawName = (attribute as { readonly name?: unknown }).name;
+    } catch {
+      if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
+      return undefined;
+    }
+    if (typeof rawName !== "string") return undefined;
+    const name = rawName.toLowerCase();
+    if (!budget.visit()) return undefined;
+    let value: unknown;
+    try {
+      value = (attribute as { readonly value?: unknown }).value;
+    } catch {
+      if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
+      return undefined;
+    }
+    if (typeof value !== "string") return undefined;
+    if (isApprovedAttributeName(name) && boundedText(value) !== undefined) {
+      insertBoundedCanonical(
+        selected,
+        Object.freeze({ name, value }),
+        DOM_STABLE_LOCATOR_MAX_ATTRIBUTES,
+        ({ name: candidate }) => candidate,
+      );
+    }
+  }
+  return Object.freeze(selected);
 }
 
 function readBoundedCollectionLength(collection: unknown, maximum: number): number {
@@ -850,12 +914,19 @@ function stabilizeSegmentIdentity(
   tagName: string,
   evidence: CanonicalEvidence,
   budget: LocatorVisitBudget,
+  surfaceAttributeFailures = false,
 ): string | undefined | typeof READ_FAILED {
   const firstUnique = evidence.id === undefined
     ? undefined
     : uniqueIdStatus(root, evidence.id, budget);
   if (firstUnique === READ_FAILED) return READ_FAILED;
-  const verifiedEvidence = readCanonicalEvidence(element, parent, root, budget);
+  const verifiedEvidence = readCanonicalEvidence(
+    element,
+    parent,
+    root,
+    budget,
+    surfaceAttributeFailures,
+  );
   if (
     readTagName(element) !== tagName ||
     !verifiedEvidence ||
@@ -865,7 +936,13 @@ function stabilizeSegmentIdentity(
     ? undefined
     : uniqueIdStatus(root, evidence.id, budget);
   if (secondUnique === READ_FAILED) return READ_FAILED;
-  const finalEvidence = readCanonicalEvidence(element, parent, root, budget);
+  const finalEvidence = readCanonicalEvidence(
+    element,
+    parent,
+    root,
+    budget,
+    surfaceAttributeFailures,
+  );
   if (
     readTagName(element) !== tagName ||
     !finalEvidence ||
@@ -949,24 +1026,6 @@ function readId(element: Element): string | undefined {
 function readIdStrict(element: Element): string | typeof READ_FAILED {
   try {
     return typeof element.id === "string" ? element.id : READ_FAILED;
-  } catch {
-    return READ_FAILED;
-  }
-}
-
-function readAttributeName(attribute: object): string | typeof READ_FAILED {
-  try {
-    const name = (attribute as { readonly name?: unknown }).name;
-    return typeof name === "string" ? name.toLowerCase() : READ_FAILED;
-  } catch {
-    return READ_FAILED;
-  }
-}
-
-function readAttributeValue(attribute: object): string | typeof READ_FAILED {
-  try {
-    const value = (attribute as { readonly value?: unknown }).value;
-    return typeof value === "string" ? value : READ_FAILED;
   } catch {
     return READ_FAILED;
   }
