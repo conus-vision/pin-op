@@ -3,7 +3,10 @@ import {
   DomTreeController,
   type DomTreeTransport,
 } from "../src/domTreeController.js";
-import { DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES } from "../src/domProtocol.js";
+import {
+  DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
+  DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+} from "../src/domProtocol.js";
 import type {
   DomChildrenResponse,
   DomEvent,
@@ -990,6 +993,239 @@ describe("DomTreeController", () => {
     },
   );
 
+  it.each(["source-first", "destination-first"] as const)(
+    "retains a moved subtree when %s chunks arrive in later tasks",
+    async (order) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const destination = locatedNode("destination", locator(2, 1), true, 1);
+      const moved = locatedNode("moved", locator(3), true, 1);
+      const movedLeaf = locatedNode("moved-leaf", locator(4));
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [source, destination],
+      ));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+      transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+      transport.enqueue(childrenResponse(moved.nodeRef, 1, [movedLeaf]));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      await controller.expand(destination.nodeRef);
+      await controller.expand(moved.nodeRef);
+      controller.handleEvent(selectionEvent(1, [root]));
+      controller.focus(movedLeaf.nodeRef);
+
+      const movedAtDestination = locatedNode(
+        moved.nodeRef,
+        locator(3, 2),
+        true,
+        1,
+      );
+      const chunks = order === "source-first"
+        ? [
+            {
+              branch: { nodeRef: source.nodeRef, branchRevision: 2 },
+              response: childrenResponse(source.nodeRef, 2, []),
+            },
+            ...Array.from({ length: 3 }, (_, index) => ({
+              branch: { nodeRef: `fallback-${index}`, branchRevision: 2 },
+              response: undefined,
+            })),
+            {
+              branch: { nodeRef: destination.nodeRef, branchRevision: 2 },
+              response: childrenResponse(
+                destination.nodeRef,
+                2,
+                [movedAtDestination],
+              ),
+            },
+          ]
+        : [
+            {
+              branch: { nodeRef: destination.nodeRef, branchRevision: 2 },
+              response: childrenResponse(
+                destination.nodeRef,
+                2,
+                [movedAtDestination],
+              ),
+            },
+            {
+              branch: { nodeRef: source.nodeRef, branchRevision: 2 },
+              response: childrenResponse(source.nodeRef, 2, []),
+            },
+          ];
+      for (const chunk of chunks) {
+        if (chunk.response) {
+          transport.enqueue(chunk.response);
+        }
+        controller.handleEvent({
+          type: "dom.invalidated",
+          documentEpoch: 1,
+          branches: [chunk.branch],
+        });
+        await flushAsync();
+      }
+
+      expect(controller.rows().filter((row) => row.nodeRef === moved.nodeRef))
+        .toEqual([expect.objectContaining({
+          parentRef: destination.nodeRef,
+          expanded: true,
+        })]);
+      expect(controller.rows().find((row) => row.nodeRef === movedLeaf.nodeRef))
+        .toMatchObject({ parentRef: moved.nodeRef, focused: true });
+      expect(controller.beginRecovery()).toEqual({
+        selectedLocator: root.locator,
+        selectedWasExpanded: true,
+        focusAnchor: { locator: movedLeaf.locator, rowType: "node" },
+        expandedLocators: [
+          root.locator,
+          source.locator,
+          destination.locator,
+          movedAtDestination.locator,
+        ],
+      });
+    },
+  );
+
+  it.each([
+    ["source-first", "moved-root"],
+    ["destination-first", "moved-root"],
+    ["source-first", "moved-descendant"],
+    ["destination-first", "moved-descendant"],
+  ] as const)(
+    "restores a %s selected %s after delayed move chunks",
+    async (order, selectedKind) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const destination = locatedNode("destination", locator(2, 1), true, 1);
+      const moved = locatedNode("moved", locator(3), true, 1);
+      const movedLeaf = locatedNode("moved-leaf", locator(4));
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [source, destination],
+      ));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+      transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+      transport.enqueue(childrenResponse(moved.nodeRef, 1, [movedLeaf]));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      await controller.expand(destination.nodeRef);
+      await controller.expand(moved.nodeRef);
+      const selected = selectedKind === "moved-root" ? moved : movedLeaf;
+      controller.handleEvent(selectionEvent(1, selectedKind === "moved-root"
+        ? [root, source, moved]
+        : [root, source, moved, movedLeaf]));
+      controller.focus(movedLeaf.nodeRef);
+
+      const movedAtDestination = locatedNode(
+        moved.nodeRef,
+        locator(3, 2),
+        true,
+        1,
+      );
+      const sourceChunk = {
+        type: "dom.invalidated" as const,
+        documentEpoch: 1,
+        branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+      };
+      const destinationChunk = {
+        type: "dom.invalidated" as const,
+        documentEpoch: 1,
+        branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+      };
+      if (order === "source-first") {
+        transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+        controller.handleEvent(sourceChunk);
+        await flushAsync();
+
+        expect(controller.rows().some((row) => (
+          row.nodeRef === moved.nodeRef || row.nodeRef === movedLeaf.nodeRef
+        ))).toBe(false);
+        expect(controller.snapshot().selectedRef).toBe(selected.nodeRef);
+        const state = controllerState(controller);
+        expect(state.branches.get(source.nodeRef)).toMatchObject({
+          children: [],
+          revealChild: undefined,
+        });
+        expect(state.nodes.get(moved.nodeRef)?.parentRef).toBeUndefined();
+        const visibleFallbackFocus = controller.rows().find((row) => row.focused)
+          ?.nodeRef;
+        expect(visibleFallbackFocus).toBeDefined();
+        expect(visibleFallbackFocus).not.toBe(movedLeaf.nodeRef);
+        expect(controller.focusedRef).toBe(visibleFallbackFocus);
+        controller.focus(moved.nodeRef);
+        controller.focus(movedLeaf.nodeRef);
+        expect(controller.focusedRef).toBe(visibleFallbackFocus);
+        controller.hover(moved.nodeRef);
+        await controller.select(moved.nodeRef);
+        controller.hover(movedLeaf.nodeRef);
+        await controller.select(movedLeaf.nodeRef);
+        expect(transport.dispatched).toEqual([]);
+
+        for (let index = 0; index < 2; index += 1) {
+          controller.handleEvent({
+            type: "dom.invalidated",
+            documentEpoch: 1,
+            branches: [{ nodeRef: `fallback-${index}`, branchRevision: 2 }],
+          });
+          await flushAsync();
+        }
+        transport.enqueue(childrenResponse(
+          destination.nodeRef,
+          2,
+          [movedAtDestination],
+        ));
+        controller.handleEvent(destinationChunk);
+      } else {
+        transport.enqueue(childrenResponse(
+          destination.nodeRef,
+          2,
+          [movedAtDestination],
+        ));
+        controller.handleEvent(destinationChunk);
+        await flushAsync();
+        transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+        controller.handleEvent(sourceChunk);
+      }
+      await flushAsync();
+
+      expect(controller.rows().filter((row) => row.nodeRef === moved.nodeRef))
+        .toEqual([expect.objectContaining({
+          parentRef: destination.nodeRef,
+          expanded: true,
+          selected: selectedKind === "moved-root",
+        })]);
+      expect(controller.rows().find((row) => row.nodeRef === movedLeaf.nodeRef))
+        .toMatchObject({
+          parentRef: moved.nodeRef,
+          focused: true,
+          selected: selectedKind === "moved-descendant",
+        });
+      expect(controller.snapshot().selectedRef).toBe(selected.nodeRef);
+      expect(controller.beginRecovery()).toMatchObject({
+        selectedLocator: selectedKind === "moved-root"
+          ? movedAtDestination.locator
+          : movedLeaf.locator,
+        focusAnchor: { locator: movedLeaf.locator, rowType: "node" },
+        expandedLocators: expect.arrayContaining([
+          root.locator,
+          destination.locator,
+          movedAtDestination.locator,
+        ]),
+      });
+    },
+  );
+
   it.each([
     ["source-first", "moved-root"],
     ["destination-first", "moved-root"],
@@ -1334,7 +1570,10 @@ describe("DomTreeController", () => {
     await flushAsync();
     expect(controller.rows().find((row) => row.nodeRef === movedA.nodeRef))
       .toMatchObject({ parentRef: destinationA.nodeRef });
-    expect(controller.isExpanded(movedB.nodeRef)).toBe(true);
+    expect(controller.isExpanded(movedB.nodeRef)).toBe(false);
+    expect(controllerState(controller).expanded.has(movedB.nodeRef)).toBe(true);
+    expect(controllerState(controller).quarantineRootByNodeRef.has(movedB.nodeRef))
+      .toBe(true);
     await controller.select(movedB.nodeRef);
     expect(transport.dispatched).toEqual([]);
 
@@ -1354,6 +1593,193 @@ describe("DomTreeController", () => {
       movedB.nodeRef,
     ]);
   });
+
+  it("evicts the oldest detached roots after the bounded quarantine fills", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const candidates = Array.from(
+      { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES + 1 },
+      (_, index) => locatedNode(
+        `candidate-${index}`,
+        locator(3, index),
+        true,
+        1,
+      ),
+    );
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
+    transport.enqueue(childrenResponse(
+      source.nodeRef,
+      1,
+      candidates.slice(0, DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH),
+      "candidate-page-2",
+    ));
+    transport.enqueue(childrenResponse(
+      source.nodeRef,
+      1,
+      candidates.slice(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH),
+    ));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.loadMore(source.nodeRef);
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const state = controllerState(controller);
+    expect(state.quarantinedSubtrees.size).toBe(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(state.quarantineRootByNodeRef.size).toBe(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(state.nodes.has(candidates[0]?.nodeRef ?? "missing")).toBe(false);
+    expect(state.branches.has(candidates[0]?.nodeRef ?? "missing")).toBe(false);
+    expect(state.nodes.has(candidates[1]?.nodeRef ?? "missing")).toBe(true);
+    expect(state.branches.has(candidates[1]?.nodeRef ?? "missing")).toBe(true);
+    expect(nodeRefs(controller)).toEqual([root.nodeRef, source.nodeRef]);
+    await controller.select(candidates[1]?.nodeRef ?? "missing");
+    expect(transport.dispatched).toEqual([]);
+  });
+
+  it("prunes one detached subtree that exceeds the total quarantine bound", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const oversized = locatedNode("oversized", locator(3), true, 1);
+    const quarantineNodeLimit = DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES *
+      DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH;
+    const leaves = Array.from({ length: quarantineNodeLimit }, (_, index) => (
+      locatedNode(`leaf-${index}`, locator(4, index))
+    ));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [oversized]));
+    for (
+      let offset = 0;
+      offset < leaves.length;
+      offset += DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH
+    ) {
+      const nextOffset = offset + DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH;
+      transport.enqueue(childrenResponse(
+        oversized.nodeRef,
+        1,
+        leaves.slice(offset, nextOffset),
+        nextOffset < leaves.length ? `leaf-page-${nextOffset}` : undefined,
+      ));
+    }
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(oversized.nodeRef);
+    while (controller.rows().some((row) => (
+      row.type === "load-more" && row.parentRef === oversized.nodeRef
+    ))) {
+      await controller.loadMore(oversized.nodeRef);
+    }
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const state = controllerState(controller);
+    expect(state.quarantinedSubtrees.size).toBe(0);
+    expect(state.quarantineRootByNodeRef.size).toBe(0);
+    expect(state.nodes.has(oversized.nodeRef)).toBe(false);
+    expect(state.branches.has(oversized.nodeRef)).toBe(false);
+    expect(state.nodes.has(leaves[0]?.nodeRef ?? "missing")).toBe(false);
+    expect(state.nodes.has(leaves.at(-1)?.nodeRef ?? "missing")).toBe(false);
+  });
+
+  it("counts duplicate and cyclic detached edges once", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const cycleA = locatedNode("cycle-a", locator(3), true, 1);
+    const cycleB = locatedNode("cycle-b", locator(4), true, 1);
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [cycleA]));
+    transport.enqueue(childrenResponse(cycleA.nodeRef, 1, [cycleB, cycleB]));
+    transport.enqueue(childrenResponse(cycleB.nodeRef, 1, [cycleA]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(cycleA.nodeRef);
+    await controller.expand(cycleB.nodeRef);
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const state = controllerState(controller);
+    expect(state.quarantinedSubtrees.get(cycleA.nodeRef)?.nodeRefs)
+      .toEqual(new Set([cycleA.nodeRef, cycleB.nodeRef]));
+    expect(state.quarantineRootByNodeRef.size).toBe(2);
+    expect(state.branches.get(cycleA.nodeRef)?.children).toEqual([cycleB.nodeRef]);
+    expect(state.branches.get(cycleB.nodeRef)?.children).toEqual([]);
+  });
+
+  it.each(["document", "reset", "recovery", "dispose"] as const)(
+    "clears detached subtree quarantine on %s lifecycle reset",
+    async (outcome) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const detached = locatedNode("detached", locator(3), true, 1);
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [detached]));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      expect(controllerState(controller).quarantinedSubtrees.size).toBe(1);
+
+      if (outcome === "document") {
+        controller.handleEvent(selectionEvent(2, [
+          locatedNode("new-root", locator(1), true, 1),
+        ]));
+      } else if (outcome === "reset") {
+        controller.reset();
+      } else if (outcome === "recovery") {
+        controller.beginRecovery();
+      } else {
+        controller.dispose();
+      }
+
+      const state = controllerState(controller);
+      expect(state.quarantinedSubtrees.size).toBe(0);
+      expect(state.quarantineRootByNodeRef.size).toBe(0);
+      expect(state.nodes.has(detached.nodeRef)).toBe(false);
+      expect(state.branches.has(detached.nodeRef)).toBe(false);
+    },
+  );
 
   it("fails the oldest reconciliation batch closed when the active cap overflows", async () => {
     const transport = new TestTransport();
@@ -1419,7 +1845,13 @@ describe("DomTreeController", () => {
     expect(controller.isExpanded(pairs[0]?.candidate.nodeRef ?? "missing"))
       .toBe(false);
     expect(controller.isExpanded(pairs.at(-1)?.candidate.nodeRef ?? "missing"))
-      .toBe(true);
+      .toBe(false);
+    expect(controllerState(controller).expanded.has(
+      pairs.at(-1)?.candidate.nodeRef ?? "missing",
+    )).toBe(true);
+    expect(controllerState(controller).quarantineRootByNodeRef.has(
+      pairs.at(-1)?.candidate.nodeRef ?? "missing",
+    )).toBe(true);
 
     controller.dispose();
     for (const [index, pending] of pendingDestinations.entries()) {
@@ -2340,7 +2772,7 @@ describe("DomTreeController", () => {
     });
     await flushAsync();
 
-    expect(nodeRefs(controller)).toEqual(["new-root", "recovered-selected"]);
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
     expect(controller.snapshot().selectedRef).toBe("recovered-selected");
 
     const replacement = locatedNode("replacement", locator(2, 2));
@@ -2570,6 +3002,27 @@ function nodeRefs(controller: DomTreeController): string[] {
   return controller.rows()
     .filter((row) => row.type === "node")
     .map((row) => row.nodeRef);
+}
+
+interface ControllerInternalState {
+  readonly nodes: Map<string, {
+    readonly view: DomNodeView;
+    readonly parentRef?: string;
+  }>;
+  readonly branches: Map<string, {
+    readonly children: string[];
+    readonly recoveredChildren: string[];
+    revealChild?: string;
+  }>;
+  readonly expanded: Set<string>;
+  readonly quarantinedSubtrees: Map<string, {
+    readonly nodeRefs: ReadonlySet<string>;
+  }>;
+  readonly quarantineRootByNodeRef: Map<string, string>;
+}
+
+function controllerState(controller: DomTreeController): ControllerInternalState {
+  return controller as unknown as ControllerInternalState;
 }
 
 function expectSingleFocusedRow(
