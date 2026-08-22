@@ -182,7 +182,11 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/devtools-elements-ui: {}
+  packages/devtools-elements-ui:
+    devDependencies:
+      postcss:
+        specifier: 8.5.16
+        version: 8.5.16
 
   packages/plugin-api:
     dependencies:

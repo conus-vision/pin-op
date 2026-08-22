@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import { ElementsInspectorView } from "../src/elementsInspectorView.js";
 import { elementsSession, withTextValue } from "./fixtures/elementsSession.js";
@@ -68,11 +69,12 @@ describe("ElementsInspectorView", () => {
     ).toBe(false);
     expect(harness.document.innerHTMLAssignments()).toBe(0);
 
-    const implementation = readFileSync(
-      path.join(packageRoot, "src", "elementsInspectorView.ts"),
-      "utf8",
+    const implementations = sourceFiles(path.join(packageRoot, "src"))
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+    expect(implementations).not.toMatch(
+      /\b(?:innerHTML|outerHTML)\b|contentEditable/,
     );
-    expect(implementation).not.toMatch(/\binnerHTML\b|contentEditable/);
   });
 
   it("removes subscriptions, DOM listeners, and owned elements on dispose", () => {
@@ -101,10 +103,41 @@ describe("ElementsInspectorView", () => {
     const selectors = stylesheetSelectors(css);
 
     expect(selectors.length).toBeGreaterThan(0);
-    for (const selector of selectors) {
-      expect(selector).toMatch(/^\.pin-op-elements-inspector(?:\b|[\s.:#[>+~])/);
-    }
+    expect(unscopedSelectors(css)).toEqual([]);
     expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(/);
+  });
+
+  it("rejects a selector whose first class only looks like the inspector root", () => {
+    const css = ".pin-op-elements-inspector-leak { color: red; }";
+
+    expect(unscopedSelectors(css)).toEqual([
+      ".pin-op-elements-inspector-leak",
+    ]);
+  });
+
+  it("finds every unscoped rule nested inside CSS at-rules", () => {
+    const css = `
+      @media (width > 320px) {
+        .leak-inside-media { color: red; }
+      }
+      @supports (display: grid) {
+        .leak-inside-supports { display: grid; }
+      }
+    `;
+
+    expect(unscopedSelectors(css)).toEqual([
+      ".leak-inside-media",
+      ".leak-inside-supports",
+    ]);
+  });
+
+  it("pins the derived stylesheet to LF bytes in a package-local attribute", () => {
+    const attributesPath = path.join(packageRoot, ".gitattributes");
+    const attributes = existsSync(attributesPath)
+      ? readFileSync(attributesPath, "utf8")
+      : "";
+
+    expect(attributes).toBe("assets/devtools-elements.css text eol=lf\n");
   });
 
   it("mechanically rejects Chromium SDK, host, legacy UI, and panel imports", () => {
@@ -141,6 +174,37 @@ describe("ElementsInspectorView", () => {
   });
 });
 
+describe("FakeDocument safety guards", () => {
+  it("keeps listeners observable after their element is detached", () => {
+    const document = new FakeDocument();
+    const detached = document.createElement("div") as unknown as FakeElement;
+    const listener = (): void => {};
+    detached.addEventListener("click", listener);
+    document.body.append(detached);
+
+    detached.remove();
+
+    expect(document.totalListeners()).toBe(1);
+    detached.removeEventListener("click", listener);
+    expect(document.totalListeners()).toBe(0);
+  });
+
+  it("fails fast on innerHTML and outerHTML assignments", () => {
+    const document = new FakeDocument();
+    const innerTarget = document.createElement("div");
+    const outerTarget = document.createElement("div");
+
+    expect(() => {
+      innerTarget.innerHTML = "<script>unsafe()</script>";
+    }).toThrow(/innerHTML/);
+    expect(() => {
+      outerTarget.outerHTML = "<script>unsafe()</script>";
+    }).toThrow(/outerHTML/);
+    expect(document.innerHTMLAssignments()).toBe(1);
+    expect(document.outerHTMLAssignments()).toBe(1);
+  });
+});
+
 function createHarness() {
   const document = new FakeDocument();
   const mount = document.createElement("main") as unknown as FakeElement;
@@ -162,14 +226,17 @@ function required<T>(value: T | null | undefined): T {
 }
 
 function stylesheetSelectors(css: string): string[] {
-  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const selectors: string[] = [];
-  for (const match of withoutComments.matchAll(/(?:^|})\s*([^@}{][^{]*)\{/g)) {
-    const group = match[1]?.trim();
-    if (!group) continue;
-    selectors.push(...group.split(",").map((selector) => selector.trim()));
-  }
+  postcss.parse(css, { from: undefined }).walkRules((rule) => {
+    selectors.push(...rule.selectors);
+  });
   return selectors;
+}
+
+function unscopedSelectors(css: string): string[] {
+  return stylesheetSelectors(css).filter((selector) => (
+    !/^\.pin-op-elements-inspector(?![-_a-zA-Z0-9\u0080-\uFFFF\\])/.test(selector)
+  ));
 }
 
 function sourceFiles(root: string): string[] {

@@ -55,6 +55,15 @@ export class FakeElement {
     throw new Error("Tests prohibit innerHTML assignment");
   }
 
+  public get outerHTML(): string {
+    return "";
+  }
+
+  public set outerHTML(_value: string) {
+    this.owner.recordOuterHtmlAssignment();
+    throw new Error("Tests prohibit outerHTML assignment");
+  }
+
   public append(...nodes: FakeElement[]): void {
     for (const node of nodes) {
       node.remove();
@@ -183,11 +192,14 @@ export class FakeElement {
 export class FakeDocument {
   public readonly body: FakeElement;
   public readonly document: Document;
+  private readonly elements = new Set<FakeElement>();
   private readonly tags: string[] = [];
   private innerHtmlWrites = 0;
+  private outerHtmlWrites = 0;
 
   public constructor() {
     this.body = new FakeElement(this, "BODY");
+    this.elements.add(this.body);
     this.document = {
       body: this.body,
       createElement: (tagName: string) => this.createElement(tagName),
@@ -202,7 +214,9 @@ export class FakeDocument {
   public createElement(tagName: string): HTMLElement {
     const normalizedTag = tagName.toLowerCase();
     this.tags.push(normalizedTag);
-    return new FakeElement(this, normalizedTag.toUpperCase()) as unknown as HTMLElement;
+    const element = new FakeElement(this, normalizedTag.toUpperCase());
+    this.elements.add(element);
+    return element as unknown as HTMLElement;
   }
 
   public querySelector(selector: string): FakeElement | null {
@@ -226,12 +240,23 @@ export class FakeDocument {
     return this.innerHtmlWrites;
   }
 
+  public outerHTMLAssignments(): number {
+    return this.outerHtmlWrites;
+  }
+
   public totalListeners(): number {
-    return this.body.listenerCount(true);
+    return [...this.elements].reduce(
+      (total, element) => total + element.listenerCount(),
+      0,
+    );
   }
 
   public recordInnerHtmlAssignment(): void {
     this.innerHtmlWrites += 1;
+  }
+
+  public recordOuterHtmlAssignment(): void {
+    this.outerHtmlWrites += 1;
   }
 }
 
