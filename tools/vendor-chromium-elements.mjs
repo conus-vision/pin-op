@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import {
-  mkdir,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  assertConfinedPath,
+  readConfinedFile,
+  removeConfinedDirectoryTree,
+  resolvePhysicalRepositoryRoot,
+  writeConfinedFileAtomically,
+} from "./chromium-vendor-paths.mjs";
 
 export const PINNED_REVISION = "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280";
 export const PINNED_LICENSE_SHA256 =
@@ -263,9 +265,19 @@ async function downloadPinnedFile(upstreamPath, fetchImpl) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function localTargetDigest(repositoryRoot, repositoryRelativePath) {
+async function localTargetDigest(physicalRoot, repositoryRelativePath) {
   try {
-    return sha256(await readFile(path.join(repositoryRoot, ...repositoryRelativePath.split("/"))));
+    const targetPath = await assertConfinedPath(
+      physicalRoot,
+      repositoryRelativePath,
+    );
+    const metadata = await lstat(targetPath);
+    if (!metadata.isFile()) {
+      throw new Error(
+        `derived target is not a regular file: ${repositoryRelativePath}`,
+      );
+    }
+    return sha256(await readConfinedFile(physicalRoot, repositoryRelativePath));
   } catch (error) {
     if (error?.code === "ENOENT") {
       return "pending";
@@ -285,17 +297,6 @@ function validateImportDate(importDate) {
   return importDate;
 }
 
-async function writeFileAtomically(targetPath, contents) {
-  const temporaryPath = `${targetPath}.tmp-${process.pid}`;
-  await writeFile(temporaryPath, contents, { flag: "wx" });
-  try {
-    await rename(temporaryPath, targetPath);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => {});
-    throw error;
-  }
-}
-
 export async function vendorChromiumElements({
   repositoryRoot,
   revision,
@@ -304,7 +305,29 @@ export async function vendorChromiumElements({
 } = {}) {
   validateRevision(revision);
   validateImportDate(importDate);
-  const resolvedRepositoryRoot = path.resolve(repositoryRoot ?? process.cwd());
+  const physicalRoot = await resolvePhysicalRepositoryRoot(
+    repositoryRoot ?? process.cwd(),
+  );
+
+  await assertConfinedPath(physicalRoot, VENDOR_RELATIVE_PATH);
+  await assertConfinedPath(physicalRoot, UPSTREAM_RELATIVE_PATH);
+  await assertConfinedPath(
+    physicalRoot,
+    path.join(VENDOR_RELATIVE_PATH, "LICENSE"),
+  );
+  await assertConfinedPath(
+    physicalRoot,
+    path.join(VENDOR_RELATIVE_PATH, "UPSTREAM.json"),
+  );
+  for (const upstreamPath of UPSTREAM_PATHS) {
+    await assertConfinedPath(
+      physicalRoot,
+      path.join(UPSTREAM_RELATIVE_PATH, ...upstreamPath.split("/")),
+    );
+    for (const target of expectedDerivedTargets(upstreamPath)) {
+      await assertConfinedPath(physicalRoot, target.path);
+    }
+  }
 
   const requestedPaths = [LICENSE_UPSTREAM_PATH, ...UPSTREAM_PATHS];
   const downloadedEntries = await Promise.all(
@@ -333,7 +356,7 @@ export async function vendorChromiumElements({
     const derivedTargets = await Promise.all(
       expectedDerivedTargets(upstreamPath).map(async (target) => ({
         ...target,
-        localSha256: await localTargetDigest(resolvedRepositoryRoot, target.path),
+        localSha256: await localTargetDigest(physicalRoot, target.path),
       })),
     );
     files.push({
@@ -362,17 +385,22 @@ export async function vendorChromiumElements({
     files,
   };
 
-  const vendorRoot = path.join(resolvedRepositoryRoot, VENDOR_RELATIVE_PATH);
-  const upstreamRoot = path.join(resolvedRepositoryRoot, UPSTREAM_RELATIVE_PATH);
-  await mkdir(upstreamRoot, { recursive: true });
+  await removeConfinedDirectoryTree(physicalRoot, UPSTREAM_RELATIVE_PATH);
   for (const upstreamPath of UPSTREAM_PATHS) {
-    const targetPath = path.join(upstreamRoot, ...upstreamPath.split("/"));
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    await writeFileAtomically(targetPath, downloads.get(upstreamPath));
+    await writeConfinedFileAtomically(
+      physicalRoot,
+      path.join(UPSTREAM_RELATIVE_PATH, ...upstreamPath.split("/")),
+      downloads.get(upstreamPath),
+    );
   }
-  await writeFileAtomically(path.join(vendorRoot, "LICENSE"), licenseBytes);
-  await writeFileAtomically(
-    path.join(vendorRoot, "UPSTREAM.json"),
+  await writeConfinedFileAtomically(
+    physicalRoot,
+    path.join(VENDOR_RELATIVE_PATH, "LICENSE"),
+    licenseBytes,
+  );
+  await writeConfinedFileAtomically(
+    physicalRoot,
+    path.join(VENDOR_RELATIVE_PATH, "UPSTREAM.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
   return manifest;

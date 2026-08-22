@@ -1,13 +1,15 @@
 import {
   lstat,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  assertConfinedPath,
+  readConfinedFile,
+  resolvePhysicalRepositoryRoot,
+  writeConfinedFileAtomically,
+} from "./chromium-vendor-paths.mjs";
 import { sha256 } from "./vendor-chromium-elements.mjs";
 import { validateManifestStructure } from "./verify-chromium-elements-vendor.mjs";
 
@@ -15,11 +17,14 @@ const VENDOR_RELATIVE_PATH = path.join("third_party", "chromium-devtools-fronten
 const MANIFEST_RELATIVE_PATH = path.join(VENDOR_RELATIVE_PATH, "UPSTREAM.json");
 const CHANGES_RELATIVE_PATH = path.join(VENDOR_RELATIVE_PATH, "PIN_OP_CHANGES.md");
 
-async function readManifest(repositoryRoot) {
-  const manifestPath = path.join(repositoryRoot, MANIFEST_RELATIVE_PATH);
+async function readManifest(physicalRoot) {
   let contents;
   try {
-    contents = await readFile(manifestPath, "utf8");
+    contents = await readConfinedFile(
+      physicalRoot,
+      MANIFEST_RELATIVE_PATH,
+      "utf8",
+    );
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw new Error("missing Chromium UPSTREAM.json manifest", { cause: error });
@@ -40,9 +45,10 @@ function anchorForChangeRecord(changeRecord) {
   return changeRecord.slice("PIN_OP_CHANGES.md#".length);
 }
 
-async function assertAnchorsExist(repositoryRoot, manifest) {
-  const changesText = await readFile(
-    path.join(repositoryRoot, CHANGES_RELATIVE_PATH),
+async function assertAnchorsExist(physicalRoot, manifest) {
+  const changesText = await readConfinedFile(
+    physicalRoot,
+    CHANGES_RELATIVE_PATH,
     "utf8",
   );
   for (const source of manifest.files) {
@@ -58,13 +64,19 @@ async function assertAnchorsExist(repositoryRoot, manifest) {
   }
 }
 
-async function digestOrPending(targetPath) {
+async function digestOrPending(physicalRoot, repositoryRelativePath) {
   try {
+    const targetPath = await assertConfinedPath(
+      physicalRoot,
+      repositoryRelativePath,
+    );
     const metadata = await lstat(targetPath);
     if (!metadata.isFile()) {
-      throw new Error(`derived target is not a regular file: ${targetPath}`);
+      throw new Error(
+        `derived target is not a regular file: ${repositoryRelativePath}`,
+      );
     }
-    return sha256(await readFile(targetPath));
+    return sha256(await readConfinedFile(physicalRoot, repositoryRelativePath));
   } catch (error) {
     if (error?.code === "ENOENT") {
       return "pending";
@@ -73,41 +85,26 @@ async function digestOrPending(targetPath) {
   }
 }
 
-async function writeManifestAtomically(manifestPath, manifest) {
-  const temporaryPath = `${manifestPath}.tmp-${process.pid}`;
-  await writeFile(
-    temporaryPath,
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    { flag: "wx" },
-  );
-  try {
-    await rename(temporaryPath, manifestPath);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => {});
-    throw error;
-  }
-}
-
 export async function updateChromiumDerivations(
   repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
 ) {
-  const resolvedRepositoryRoot = path.resolve(repositoryRoot);
-  const manifest = await readManifest(resolvedRepositoryRoot);
-  await assertAnchorsExist(resolvedRepositoryRoot, manifest);
+  const physicalRoot = await resolvePhysicalRepositoryRoot(repositoryRoot);
+  const manifest = await readManifest(physicalRoot);
+  await assertAnchorsExist(physicalRoot, manifest);
 
   for (const source of manifest.files) {
     for (const target of source.derivedTargets) {
-      const targetPath = path.join(
-        resolvedRepositoryRoot,
-        ...target.path.split("/"),
+      target.localSha256 = await digestOrPending(
+        physicalRoot,
+        target.path,
       );
-      target.localSha256 = await digestOrPending(targetPath);
     }
   }
 
-  await writeManifestAtomically(
-    path.join(resolvedRepositoryRoot, MANIFEST_RELATIVE_PATH),
-    manifest,
+  await writeConfinedFileAtomically(
+    physicalRoot,
+    MANIFEST_RELATIVE_PATH,
+    `${JSON.stringify(manifest, null, 2)}\n`,
   );
   return manifest;
 }

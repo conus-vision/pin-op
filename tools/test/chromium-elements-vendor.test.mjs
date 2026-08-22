@@ -6,7 +6,9 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -19,6 +21,7 @@ import { verifyVendor } from "../verify-chromium-elements-vendor.mjs";
 import { updateChromiumDerivations } from "../update-chromium-derivations.mjs";
 import {
   assertCompleteRootBsdLicense,
+  extractEmbeddedNotices,
   fetchWithPinnedRedirects,
   rawUrlFor,
   validateRevision,
@@ -27,18 +30,19 @@ import {
 
 const PINNED_REVISION = "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280";
 const REPOSITORY_URL = "https://github.com/ChromeDevTools/devtools-frontend.git";
-const EXPECTED_UPSTREAM_PATHS = [
-  "front_end/panels/elements/ElementsTreeElement.ts",
+const EXPECTED_IMPORT_PATHS = [
   "front_end/panels/elements/ElementsTreeOutline.ts",
-  "front_end/panels/elements/PropertyRenderer.ts",
+  "front_end/panels/elements/ElementsTreeElement.ts",
+  "front_end/panels/elements/StylesSidebarPane.ts",
   "front_end/panels/elements/StylePropertiesSection.ts",
   "front_end/panels/elements/StylePropertyTreeElement.ts",
+  "front_end/panels/elements/PropertyRenderer.ts",
   "front_end/panels/elements/StylePropertyUtils.ts",
-  "front_end/panels/elements/StylesSidebarPane.ts",
   "front_end/panels/elements/elementsTreeOutline.css",
-  "front_end/panels/elements/stylePropertiesTreeOutline.css",
   "front_end/panels/elements/stylesSidebarPane.css",
-].sort();
+  "front_end/panels/elements/stylePropertiesTreeOutline.css",
+];
+const EXPECTED_UPSTREAM_PATHS = [...EXPECTED_IMPORT_PATHS].sort();
 
 const EXPECTED_DERIVED_TARGETS = new Map([
   [
@@ -156,6 +160,11 @@ async function mutateManifest(root, mutate) {
 async function makeTemporaryRepository(t) {
   const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-vendor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await populateTemporaryRepository(root);
+  return root;
+}
+
+async function populateTemporaryRepository(root) {
   await mkdir(path.dirname(path.join(root, VENDOR_RELATIVE)), { recursive: true });
   await cp(VENDOR_ROOT, path.join(root, VENDOR_RELATIVE), { recursive: true });
   const manifest = await readManifest(root);
@@ -172,7 +181,6 @@ async function makeTemporaryRepository(t) {
       await cp(checkedInTarget, temporaryTarget);
     }
   }
-  return root;
 }
 
 function upstreamFilePath(root, upstreamPath) {
@@ -184,6 +192,46 @@ async function createDerivedTarget(root, target, contents) {
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, contents);
   return targetPath;
+}
+
+async function makePinnedResponses() {
+  return new Map([
+    ["LICENSE", await readFile(path.join(VENDOR_ROOT, "LICENSE"))],
+    ...await Promise.all(EXPECTED_IMPORT_PATHS.map(async (upstreamPath) => [
+      upstreamPath,
+      await readFile(upstreamFilePath(REPO_ROOT, upstreamPath)),
+    ])),
+  ]);
+}
+
+function makeSuccessfulFetch(responseBytes, requests = []) {
+  return async (url) => {
+    requests.push(String(url));
+    const marker = `/${PINNED_REVISION}/`;
+    const requestPath = decodeURIComponent(new URL(url).pathname.split(marker)[1]);
+    const bytes = responseBytes.get(requestPath);
+    assert.ok(bytes, `unexpected pinned request ${url}`);
+    return new Response(bytes, {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  };
+}
+
+async function createDirectoryLink(target, linkPath) {
+  await symlink(
+    path.resolve(target),
+    linkPath,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+
+async function removeDirectoryLink(linkPath) {
+  await unlink(linkPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
 }
 
 test("checked-in Chromium Elements provenance is exact and verifies offline", async () => {
@@ -281,6 +329,20 @@ test("only the exact full Chromium revision is accepted before network access", 
 
   for (const revision of invalidRevisions) {
     assert.throws(() => validateRevision(revision), /exact pinned Chromium revision/);
+    let fetchCalls = 0;
+    await assert.rejects(
+      () => vendorChromiumElements({
+        repositoryRoot: REPO_ROOT,
+        revision,
+        importDate: "2026-08-22",
+        fetchImpl: async () => {
+          fetchCalls += 1;
+          throw new Error("fetch must not run for an invalid revision");
+        },
+      }),
+      /exact pinned Chromium revision/,
+    );
+    assert.equal(fetchCalls, 0);
     await t.test(`manifest revision ${revision}`, async (t) => {
       const root = await makeTemporaryRepository(t);
       await mutateManifest(root, (manifest) => {
@@ -507,18 +569,165 @@ test("derived hashes are recorded and refreshed deterministically", async (t) =>
   );
 });
 
+test("verifyVendor rejects an upstream snapshot through a directory-link ancestor", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-verify-link-"));
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-outside-"));
+  const snapshotLink = path.join(root, VENDOR_RELATIVE, "upstream");
+  t.after(async () => {
+    await removeDirectoryLink(snapshotLink);
+    await rm(root, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  await populateTemporaryRepository(root);
+  const outsideSnapshot = path.join(outsideRoot, "upstream");
+  await cp(path.join(VENDOR_ROOT, "upstream"), outsideSnapshot, { recursive: true });
+  await rm(snapshotLink, { recursive: true, force: true });
+  await createDirectoryLink(outsideSnapshot, snapshotLink);
+
+  await assert.rejects(() => verifyVendor(root), /physical confinement/i);
+});
+
+test("derived updater rejects a target through a directory-link ancestor", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-update-link-"));
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-outside-"));
+  await populateTemporaryRepository(root);
+  const manifest = await readManifest(root);
+  const target = manifest.files[0].derivedTargets[0];
+  const targetPath = path.join(root, ...target.path.split("/"));
+  const targetLink = path.dirname(targetPath);
+  t.after(async () => {
+    await removeDirectoryLink(targetLink);
+    await rm(root, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  await rm(targetLink, { recursive: true, force: true });
+  await mkdir(path.dirname(targetLink), { recursive: true });
+  const outsideTargetDirectory = path.join(outsideRoot, "dom");
+  await mkdir(outsideTargetDirectory, { recursive: true });
+  await writeFile(
+    path.join(outsideTargetDirectory, path.basename(targetPath)),
+    "outside derived bytes\n",
+  );
+  await createDirectoryLink(outsideTargetDirectory, targetLink);
+  const manifestPath = path.join(root, MANIFEST_RELATIVE);
+  const before = await readFile(manifestPath, "utf8");
+
+  await assert.rejects(() => updateChromiumDerivations(root), /physical confinement/i);
+  assert.equal(await readFile(manifestPath, "utf8"), before);
+});
+
+test("importer rejects a vendor output path through a directory-link ancestor", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-import-link-"));
+  const outsideVendor = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-outside-"));
+  const vendorLink = path.join(root, VENDOR_RELATIVE);
+  t.after(async () => {
+    await removeDirectoryLink(vendorLink);
+    await rm(root, { recursive: true, force: true });
+    await rm(outsideVendor, { recursive: true, force: true });
+  });
+
+  await mkdir(path.dirname(vendorLink), { recursive: true });
+  await createDirectoryLink(outsideVendor, vendorLink);
+  const responseBytes = await makePinnedResponses();
+  const requests = [];
+
+  await assert.rejects(
+    () => vendorChromiumElements({
+      repositoryRoot: root,
+      revision: PINNED_REVISION,
+      importDate: "2026-08-22",
+      fetchImpl: makeSuccessfulFetch(responseBytes, requests),
+    }),
+    /physical confinement/i,
+  );
+  assert.deepEqual(requests, []);
+  assert.deepEqual(await readdir(outsideVendor), []);
+});
+
+test("hermetic successful import replaces the snapshot and verifies offline", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-import-success-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vendorRoot = path.join(root, VENDOR_RELATIVE);
+  const staleElementsRoot = path.join(
+    vendorRoot,
+    "upstream",
+    "front_end",
+    "panels",
+    "elements",
+  );
+  await mkdir(staleElementsRoot, { recursive: true });
+  const policyBytes = await readFile(path.join(VENDOR_ROOT, "PIN_OP_CHANGES.md"));
+  await writeFile(path.join(vendorRoot, "PIN_OP_CHANGES.md"), policyBytes);
+  await writeFile(path.join(vendorRoot, "LICENSE"), "stale license\n");
+  await writeFile(path.join(vendorRoot, "UPSTREAM.json"), "stale manifest\n");
+  await writeFile(path.join(staleElementsRoot, "ElementsTreeOutline.ts"), "stale source\n");
+  const extraPath = path.join(staleElementsRoot, "ElementsPanel.ts");
+  await writeFile(extraPath, "unallowlisted stale source\n");
+
+  const derivedBytes = Buffer.from("existing derived output\n");
+  const derivedPath = EXPECTED_DERIVED_TARGETS
+    .get("front_end/panels/elements/ElementsTreeOutline.ts")[0].path;
+  await createDerivedTarget(root, derivedPath, derivedBytes);
+
+  const responseBytes = await makePinnedResponses();
+  const requests = [];
+  const manifest = await vendorChromiumElements({
+    repositoryRoot: root,
+    revision: PINNED_REVISION,
+    importDate: "2026-08-22",
+    fetchImpl: makeSuccessfulFetch(responseBytes, requests),
+  });
+
+  assert.deepEqual(
+    requests,
+    ["LICENSE", ...EXPECTED_IMPORT_PATHS].map((upstreamPath) => (
+      rawUrlFor(PINNED_REVISION, upstreamPath)
+    )),
+  );
+  assert.equal(requests.length, 11);
+  const expectedManifest = {
+    repository: REPOSITORY_URL,
+    revision: PINNED_REVISION,
+    importedAt: "2026-08-22",
+    license: "LICENSE",
+    licenseSha256: sha256(responseBytes.get("LICENSE")),
+    files: EXPECTED_IMPORT_PATHS.map((upstreamPath) => {
+      const expectedBytes = responseBytes.get(upstreamPath);
+      return {
+        upstreamPath,
+        sha256: sha256(expectedBytes),
+        embeddedNotices: extractEmbeddedNotices(expectedBytes.toString("utf8")),
+        derivedTargets: EXPECTED_DERIVED_TARGETS.get(upstreamPath).map((target) => ({
+          ...target,
+          localSha256: target.path === derivedPath ? sha256(derivedBytes) : "pending",
+        })),
+      };
+    }),
+  };
+  assert.deepEqual(manifest, expectedManifest);
+  assert.deepEqual(await readManifest(root), expectedManifest);
+  assert.deepEqual(await readFile(path.join(vendorRoot, "LICENSE")), responseBytes.get("LICENSE"));
+  assert.deepEqual(await readFile(path.join(vendorRoot, "PIN_OP_CHANGES.md")), policyBytes);
+
+  for (const source of manifest.files) {
+    const expectedBytes = responseBytes.get(source.upstreamPath);
+    assert.deepEqual(
+      await readFile(upstreamFilePath(root, source.upstreamPath)),
+      expectedBytes,
+    );
+  }
+
+  assert.equal(await exists(extraPath), false);
+  await verifyVendor(root);
+});
+
 test("a failed import writes no vendor files", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-import-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const checkedInManifest = await readManifest();
-  const responseBytes = new Map([
-    ["LICENSE", await readFile(path.join(VENDOR_ROOT, "LICENSE"))],
-    ...await Promise.all(checkedInManifest.files.map(async ({ upstreamPath }) => [
-      upstreamPath,
-      await readFile(upstreamFilePath(REPO_ROOT, upstreamPath)),
-    ])),
-  ]);
-  const failedPath = checkedInManifest.files.at(-1).upstreamPath;
+  const responseBytes = await makePinnedResponses();
+  const failedPath = EXPECTED_IMPORT_PATHS.at(-1);
   const fetchImpl = async (url) => {
     const marker = `/${PINNED_REVISION}/`;
     const requestPath = decodeURIComponent(new URL(url).pathname.split(marker)[1]);

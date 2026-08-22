@@ -1,6 +1,5 @@
 import {
   lstat,
-  readFile,
   readdir,
 } from "node:fs/promises";
 import path from "node:path";
@@ -17,6 +16,11 @@ import {
   UPSTREAM_PATHS,
   validateRevision,
 } from "./vendor-chromium-elements.mjs";
+import {
+  assertConfinedPath,
+  readConfinedFile,
+  resolvePhysicalRepositoryRoot,
+} from "./chromium-vendor-paths.mjs";
 
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/;
 const VENDOR_RELATIVE_PATH = path.join("third_party", "chromium-devtools-frontend");
@@ -149,13 +153,14 @@ export function validateManifestStructure(manifest) {
   return manifest;
 }
 
-async function readRequiredFile(targetPath, missingMessage) {
+async function readRequiredFile(physicalRoot, repositoryRelativePath, missingMessage) {
   try {
+    const targetPath = await assertConfinedPath(physicalRoot, repositoryRelativePath);
     const metadata = await lstat(targetPath);
     if (!metadata.isFile()) {
       throw new Error(missingMessage);
     }
-    return await readFile(targetPath);
+    return await readConfinedFile(physicalRoot, repositoryRelativePath);
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw new Error(missingMessage, { cause: error });
@@ -164,11 +169,14 @@ async function readRequiredFile(targetPath, missingMessage) {
   }
 }
 
-async function readManifest(repositoryRoot) {
-  const manifestPath = path.join(repositoryRoot, MANIFEST_RELATIVE_PATH);
+async function readManifest(physicalRoot) {
   let contents;
   try {
-    contents = await readFile(manifestPath, "utf8");
+    contents = await readConfinedFile(
+      physicalRoot,
+      MANIFEST_RELATIVE_PATH,
+      "utf8",
+    );
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw new Error("missing Chromium UPSTREAM.json manifest", { cause: error });
@@ -190,10 +198,20 @@ function decodeUtf8(bytes, description) {
   }
 }
 
-async function listRelativeFiles(rootPath, relativePath = "") {
+async function listRelativeFiles(
+  physicalRoot,
+  rootRelativePath,
+  relativePath = "",
+) {
+  const directoryRelativePath = path.join(rootRelativePath, relativePath);
+  const directoryPath = await assertConfinedPath(
+    physicalRoot,
+    directoryRelativePath,
+  );
   let entries;
   try {
-    entries = await readdir(path.join(rootPath, relativePath), { withFileTypes: true });
+    entries = await readdir(directoryPath, { withFileTypes: true });
+    await assertConfinedPath(physicalRoot, directoryRelativePath);
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw new Error("missing Chromium upstream snapshot", { cause: error });
@@ -207,7 +225,11 @@ async function listRelativeFiles(rootPath, relativePath = "") {
       ? path.join(relativePath, entry.name)
       : entry.name;
     if (entry.isDirectory()) {
-      files.push(...await listRelativeFiles(rootPath, childRelativePath));
+      files.push(...await listRelativeFiles(
+        physicalRoot,
+        rootRelativePath,
+        childRelativePath,
+      ));
     } else if (entry.isFile()) {
       files.push(childRelativePath.split(path.sep).join("/"));
     } else {
@@ -234,13 +256,17 @@ function assertChangeRecordAnchor(changesText, changeRecord) {
   }
 }
 
-async function targetState(targetPath) {
+async function targetState(physicalRoot, repositoryRelativePath) {
   try {
+    const targetPath = await assertConfinedPath(physicalRoot, repositoryRelativePath);
     const metadata = await lstat(targetPath);
     if (!metadata.isFile()) {
-      throw new Error(`derived target is not a regular file: ${targetPath}`);
+      throw new Error(`derived target is not a regular file: ${repositoryRelativePath}`);
     }
-    return { exists: true, bytes: await readFile(targetPath) };
+    return {
+      exists: true,
+      bytes: await readConfinedFile(physicalRoot, repositoryRelativePath),
+    };
   } catch (error) {
     if (error?.code === "ENOENT") {
       return { exists: false };
@@ -253,12 +279,12 @@ export async function verifyVendor(
   repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   { requireComplete = false } = {},
 ) {
-  const resolvedRepositoryRoot = path.resolve(repositoryRoot);
-  const manifest = validateManifestStructure(await readManifest(resolvedRepositoryRoot));
-  const vendorRoot = path.join(resolvedRepositoryRoot, VENDOR_RELATIVE_PATH);
+  const physicalRoot = await resolvePhysicalRepositoryRoot(repositoryRoot);
+  const manifest = validateManifestStructure(await readManifest(physicalRoot));
 
   const licenseBytes = await readRequiredFile(
-    path.join(vendorRoot, manifest.license),
+    physicalRoot,
+    path.join(VENDOR_RELATIVE_PATH, manifest.license),
     "missing root BSD license",
   );
   if (sha256(licenseBytes) !== manifest.licenseSha256) {
@@ -267,21 +293,27 @@ export async function verifyVendor(
   const licenseText = decodeUtf8(licenseBytes, "Chromium root BSD license");
   assertCompleteRootBsdLicense(licenseText);
 
-  const snapshotRoot = path.join(resolvedRepositoryRoot, UPSTREAM_RELATIVE_PATH);
-  const actualSnapshotPaths = (await listRelativeFiles(snapshotRoot)).sort();
+  const actualSnapshotPaths = (
+    await listRelativeFiles(physicalRoot, UPSTREAM_RELATIVE_PATH)
+  ).sort();
   if (!sameStringSet(actualSnapshotPaths, UPSTREAM_PATHS)) {
     throw new Error("Chromium snapshot must contain exactly the allowlisted upstream paths");
   }
 
   const changesBytes = await readRequiredFile(
-    path.join(resolvedRepositoryRoot, CHANGES_RELATIVE_PATH),
+    physicalRoot,
+    CHANGES_RELATIVE_PATH,
     "missing PIN_OP_CHANGES.md",
   );
   const changesText = decodeUtf8(changesBytes, "PIN_OP_CHANGES.md");
 
   for (const source of manifest.files) {
-    const upstreamPath = path.join(snapshotRoot, ...source.upstreamPath.split("/"));
+    const upstreamPath = path.join(
+      UPSTREAM_RELATIVE_PATH,
+      ...source.upstreamPath.split("/"),
+    );
     const upstreamBytes = await readRequiredFile(
+      physicalRoot,
       upstreamPath,
       `missing upstream source ${source.upstreamPath}`,
     );
@@ -296,11 +328,7 @@ export async function verifyVendor(
 
     for (const target of source.derivedTargets) {
       assertChangeRecordAnchor(changesText, target.changeRecord);
-      const absoluteTargetPath = path.join(
-        resolvedRepositoryRoot,
-        ...target.path.split("/"),
-      );
-      const state = await targetState(absoluteTargetPath);
+      const state = await targetState(physicalRoot, target.path);
       if (state.exists && target.localSha256 === "pending") {
         throw new Error(`existing derived target ${target.path} cannot remain pending`);
       }
