@@ -1236,13 +1236,18 @@ export class DomTreeController {
     }
     this.recoveredFocusRef = undefined;
     this.replaceRevealPath(ancestorPath);
+    const expandedAdoptedRefs: string[] = [];
     let parentRef: string | undefined;
     for (const [index, view] of ancestorPath.entries()) {
+      const wasExpanded = this.expanded.has(view.nodeRef);
       if (parentRef) {
         this.detachNodeFromOtherOwners(view.nodeRef, parentRef);
         this.releaseDeferredCandidate(view.nodeRef);
       }
       this.upsertNode(view, parentRef);
+      if (wasExpanded) {
+        expandedAdoptedRefs.push(view.nodeRef);
+      }
       if (parentRef) {
         const parent = this.nodes.get(parentRef);
         if (parent) {
@@ -1262,6 +1267,7 @@ export class DomTreeController {
     this.currentRevealRef = nodeRef;
     this.currentRevealVersion += 1;
     this.currentError = undefined;
+    this.resumeOwnedExpandedBranches(expandedAdoptedRefs);
     this.notify();
   }
 
@@ -1274,26 +1280,10 @@ export class DomTreeController {
     if (!state) {
       return;
     }
-    const branch = state.view.expandable
-      ? this.branchFor(state.view)
-      : this.branches.get(nodeRef);
-    const currentRevision = branch?.revision ?? state.view.branchRevision;
-    if (branchRevision <= currentRevision) {
-      return;
-    }
     const previousRows = this.rows();
     const focusAnchor = this.focusAnchor(previousRows);
-    if (branch) {
-      if (branch.pending) {
-        this.settleReconciliationToken(
-          branch.pending.reconciliationBatchId,
-          branch.pending.token,
-        );
-      }
-      branch.revision = branchRevision;
-      branch.loaded = false;
-      branch.nextCursor = undefined;
-      branch.pending = undefined;
+    if (!this.advanceBranchRevisionState(state, branchRevision)) {
+      return;
     }
     if (nodeRef !== this.rootRef) {
       state.view = Object.freeze({
@@ -1317,6 +1307,32 @@ export class DomTreeController {
         reconciliationBatchId,
       );
     }
+  }
+
+  private advanceBranchRevisionState(
+    state: NodeState,
+    branchRevision: number,
+  ): boolean {
+    const branch = state.view.expandable
+      ? this.branchFor(state.view)
+      : this.branches.get(state.view.nodeRef);
+    const currentRevision = branch?.revision ?? state.view.branchRevision;
+    if (branchRevision <= currentRevision) {
+      return false;
+    }
+    if (branch) {
+      if (branch.pending) {
+        this.settleReconciliationToken(
+          branch.pending.reconciliationBatchId,
+          branch.pending.token,
+        );
+      }
+      branch.revision = branchRevision;
+      branch.loaded = false;
+      branch.nextCursor = undefined;
+      branch.pending = undefined;
+    }
+    return true;
   }
 
   private async refreshRootSnapshot(
@@ -1460,14 +1476,41 @@ export class DomTreeController {
       return;
     }
     if (existing && existing.view.branchRevision !== view.branchRevision) {
-      this.invalidateBranch(view.nodeRef, view.branchRevision);
+      this.advanceBranchRevisionState(existing, view.branchRevision);
     }
     this.nodes.set(view.nodeRef, {
       view: Object.freeze({ ...view }),
       ...(parentRef === undefined ? {} : { parentRef }),
     });
-    if (view.expandable) {
+    if (view.expandable && !view.inaccessible) {
       this.branchFor(view);
+    } else {
+      this.retireBranchPresentation(view.nodeRef);
+    }
+  }
+
+  private retireBranchPresentation(nodeRef: string): void {
+    this.expanded.delete(nodeRef);
+    const branch = this.branches.get(nodeRef);
+    if (!branch) {
+      return;
+    }
+    if (branch.pending) {
+      const pending = branch.pending;
+      branch.pending = undefined;
+      this.settleReconciliationToken(
+        pending.reconciliationBatchId,
+        pending.token,
+      );
+    }
+    const descendants = new Set([
+      ...branch.children,
+      ...branch.recoveredChildren,
+      ...(branch.revealChild ? [branch.revealChild] : []),
+    ]);
+    this.branches.delete(nodeRef);
+    for (const childRef of descendants) {
+      this.removeSubtree(childRef);
     }
   }
 
