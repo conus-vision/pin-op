@@ -1092,6 +1092,552 @@ describe("DomTreeController", () => {
     },
   );
 
+  it("cancels a quarantined descendant load-more before it can add authority", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const destination = locatedNode("destination", locator(2, 1), true, 1);
+    const moved = locatedNode("moved", locator(3), true, 1);
+    const existing = locatedNode("existing", locator(4));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(
+      root.nodeRef,
+      1,
+      [source, destination],
+    ));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+    transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+    transport.enqueue(childrenResponse(
+      moved.nodeRef,
+      1,
+      [existing],
+      "moved-page-2",
+    ));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(destination.nodeRef);
+    await controller.expand(moved.nodeRef);
+
+    const latePage = deferred<DomResponse>();
+    transport.enqueue(latePage.promise);
+    const loading = controller.loadMore(moved.nodeRef);
+    await flushAsync();
+    expect(controllerState(controller).branches.get(moved.nodeRef)?.pending)
+      .toBeDefined();
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(controllerState(controller).branches.get(moved.nodeRef))
+      .toMatchObject({
+        loaded: true,
+        nextCursor: "moved-page-2",
+        pending: undefined,
+      });
+    expect(controllerState(controller).reconciliationBatches.size).toBe(0);
+
+    const late = locatedNode("late", locator(4, 1));
+    latePage.resolve(childrenResponse(moved.nodeRef, 1, [late]));
+    await loading;
+    await flushAsync();
+
+    expect(controllerState(controller).nodes.has(late.nodeRef)).toBe(false);
+    const fallbackFocus = controller.focusedRef;
+    controller.focus(late.nodeRef);
+    controller.hover(late.nodeRef);
+    await controller.select(late.nodeRef);
+    expect(controller.focusedRef).toBe(fallbackFocus);
+    expect(transport.dispatched).toEqual([]);
+
+    const movedAtDestination = locatedNode(
+      moved.nodeRef,
+      locator(3, 2),
+      true,
+      1,
+    );
+    transport.enqueue(childrenResponse(
+      destination.nodeRef,
+      2,
+      [movedAtDestination],
+    ));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const fresh = locatedNode("fresh", locator(4, 2));
+    transport.enqueue(childrenResponse(moved.nodeRef, 1, [fresh]));
+    await controller.loadMore(moved.nodeRef);
+
+    expect(transport.requests.at(-1)).toMatchObject({
+      type: "dom.getChildren",
+      nodeRef: moved.nodeRef,
+      cursor: "moved-page-2",
+    });
+    expect(nodeRefs(controller)).toContain(fresh.nodeRef);
+    expect(nodeRefs(controller)).not.toContain(late.nodeRef);
+  });
+
+  it("rejects commands for a late unindexed child outside the live root", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const moved = locatedNode("moved", locator(3), true, 1);
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+    transport.enqueue(childrenResponse(
+      moved.nodeRef,
+      1,
+      [],
+      "moved-page-2",
+    ));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(moved.nodeRef);
+
+    const latePage = deferred<DomResponse>();
+    transport.enqueue(latePage.promise);
+    const loading = controller.loadMore(moved.nodeRef);
+    await flushAsync();
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const late = locatedNode("late", locator(4));
+    latePage.resolve(childrenResponse(moved.nodeRef, 1, [late]));
+    await loading;
+    await flushAsync();
+    expect(nodeRefs(controller)).not.toContain(late.nodeRef);
+
+    const fallbackFocus = controller.focusedRef;
+    controller.focus(late.nodeRef);
+    controller.hover(late.nodeRef);
+    await controller.select(late.nodeRef);
+
+    expect(controller.focusedRef).toBe(fallbackFocus);
+    expect(transport.dispatched).toEqual([]);
+  });
+
+  it("cancels a quarantined descendant first-page refresh and permits retry", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const destination = locatedNode("destination", locator(2, 1), true, 1);
+    const moved = locatedNode("moved", locator(3), true, 1);
+    const oldLeaf = locatedNode("old-leaf", locator(4));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(
+      root.nodeRef,
+      1,
+      [source, destination],
+    ));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+    transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+    transport.enqueue(childrenResponse(moved.nodeRef, 1, [oldLeaf]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(destination.nodeRef);
+    await controller.expand(moved.nodeRef);
+
+    const staleRefresh = deferred<DomResponse>();
+    transport.enqueue(staleRefresh.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: moved.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    expect(controllerState(controller).branches.get(moved.nodeRef)?.pending)
+      .toBeDefined();
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(controllerState(controller).branches.get(moved.nodeRef))
+      .toMatchObject({ loaded: false, pending: undefined });
+    expect(controllerState(controller).reconciliationBatches.size).toBe(0);
+
+    const lateLeaf = locatedNode("late-leaf", locator(4, 1));
+    staleRefresh.resolve(childrenResponse(moved.nodeRef, 2, [lateLeaf]));
+    await flushAsync();
+    expect(controllerState(controller).nodes.has(lateLeaf.nodeRef)).toBe(false);
+
+    const movedAtDestination = locatedNode(
+      moved.nodeRef,
+      locator(3, 2),
+      true,
+      2,
+    );
+    transport.enqueue(childrenResponse(
+      destination.nodeRef,
+      2,
+      [movedAtDestination],
+    ));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const freshLeaf = locatedNode("fresh-leaf", locator(4, 2));
+    transport.enqueue(childrenResponse(moved.nodeRef, 2, [freshLeaf]));
+    await controller.expand(moved.nodeRef);
+
+    expect(transport.requests.at(-1)).toMatchObject({
+      type: "dom.getChildren",
+      nodeRef: moved.nodeRef,
+      branchRevision: 2,
+    });
+    expect(nodeRefs(controller)).toContain(freshLeaf.nodeRef);
+    expect(nodeRefs(controller)).not.toContain(oldLeaf.nodeRef);
+    expect(nodeRefs(controller)).not.toContain(lateLeaf.nodeRef);
+  });
+
+  it.each(["empty", "error"] as const)(
+    "keeps a quarantined descendant coherent after a late %s refresh",
+    async (outcome) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const destination = locatedNode("destination", locator(2, 1), true, 1);
+      const moved = locatedNode("moved", locator(3), true, 1);
+      const oldLeaf = locatedNode("old-leaf", locator(4), true, 1);
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [source, destination],
+      ));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+      transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+      transport.enqueue(childrenResponse(moved.nodeRef, 1, [oldLeaf]));
+      transport.enqueue(childrenResponse(oldLeaf.nodeRef, 1, []));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      await controller.expand(destination.nodeRef);
+      await controller.expand(moved.nodeRef);
+      await controller.expand(oldLeaf.nodeRef);
+
+      const staleRefresh = deferred<DomResponse>();
+      transport.enqueue(staleRefresh.promise);
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: moved.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+
+      staleRefresh.resolve(outcome === "empty"
+        ? childrenResponse(moved.nodeRef, 2, [])
+        : {
+            type: "dom.error",
+            requestId: "ignored-by-test-transport",
+            documentEpoch: 1,
+            code: "internal-error",
+          });
+      await flushAsync();
+
+      expect(controller.snapshot().errorCode).toBeUndefined();
+      expect(controllerState(controller).branches.get(moved.nodeRef))
+        .toMatchObject({
+          children: [oldLeaf.nodeRef],
+          loaded: false,
+          pending: undefined,
+        });
+
+      const movedAtDestination = locatedNode(
+        moved.nodeRef,
+        locator(3, 2),
+        true,
+        2,
+      );
+      transport.enqueue(childrenResponse(
+        destination.nodeRef,
+        2,
+        [movedAtDestination],
+      ));
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+
+      expect(controller.rows().find((row) => row.nodeRef === oldLeaf.nodeRef))
+        .toMatchObject({ parentRef: moved.nodeRef, expanded: true });
+      expect(controllerState(controller).nodes.get(oldLeaf.nodeRef)?.parentRef)
+        .toBe(moved.nodeRef);
+
+      transport.enqueue(childrenResponse(moved.nodeRef, 2, []));
+      await controller.expand(moved.nodeRef);
+
+      expect(controllerState(controller).nodes.has(oldLeaf.nodeRef)).toBe(false);
+      expect(controllerState(controller).branches.has(oldLeaf.nodeRef)).toBe(false);
+      expect(controllerState(controller).expanded.has(oldLeaf.nodeRef)).toBe(false);
+    },
+  );
+
+  it.each(["empty", "error"] as const)(
+    "ignores a late descendant %s refresh after destination reownership",
+    async (outcome) => {
+      const transport = new TestTransport();
+      const root = locatedNode("root", locator(1), true, 1);
+      const source = locatedNode("source", locator(2), true, 1);
+      const destination = locatedNode("destination", locator(2, 1), true, 1);
+      const moved = locatedNode("moved", locator(3), true, 1);
+      const oldLeaf = locatedNode("old-leaf", locator(4));
+      transport.enqueue(rootResponse(root));
+      transport.enqueue(childrenResponse(
+        root.nodeRef,
+        1,
+        [source, destination],
+      ));
+      transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+      transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+      transport.enqueue(childrenResponse(moved.nodeRef, 1, [oldLeaf]));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+      await controller.expand(source.nodeRef);
+      await controller.expand(destination.nodeRef);
+      await controller.expand(moved.nodeRef);
+
+      const staleRefresh = deferred<DomResponse>();
+      transport.enqueue(staleRefresh.promise);
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: moved.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+
+      const movedAtDestination = locatedNode(
+        moved.nodeRef,
+        locator(3, 2),
+        true,
+        2,
+      );
+      transport.enqueue(childrenResponse(
+        destination.nodeRef,
+        2,
+        [movedAtDestination],
+      ));
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      expect(controller.rows().find((row) => row.nodeRef === oldLeaf.nodeRef))
+        .toMatchObject({ parentRef: moved.nodeRef });
+
+      staleRefresh.resolve(outcome === "empty"
+        ? childrenResponse(moved.nodeRef, 2, [])
+        : {
+            type: "dom.error",
+            requestId: "ignored-by-test-transport",
+            documentEpoch: 1,
+            code: "internal-error",
+          });
+      await flushAsync();
+
+      expect(controller.snapshot().errorCode).toBeUndefined();
+      expect(controller.rows().find((row) => row.nodeRef === oldLeaf.nodeRef))
+        .toMatchObject({ parentRef: moved.nodeRef });
+      expect(controllerState(controller).branches.get(moved.nodeRef))
+        .toMatchObject({
+          children: [oldLeaf.nodeRef],
+          loaded: false,
+          pending: undefined,
+        });
+    },
+  );
+
+  it("prunes disconnected quarantined members when FIFO eviction retires a root", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const reservoir = locatedNode("reservoir", locator(2, 1), true, 1);
+    const moved = locatedNode("moved", locator(3), true, 1);
+    const oldLeaf = locatedNode("old-leaf", locator(4), true, 1);
+    const candidates = Array.from(
+      { length: DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES },
+      (_, index) => locatedNode(`candidate-${index}`, locator(3, index + 10)),
+    );
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [source, reservoir]));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+    transport.enqueue(childrenResponse(
+      reservoir.nodeRef,
+      1,
+      candidates.slice(0, DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH),
+      "reservoir-page-2",
+    ));
+    transport.enqueue(childrenResponse(
+      reservoir.nodeRef,
+      1,
+      candidates.slice(DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH),
+    ));
+    transport.enqueue(childrenResponse(moved.nodeRef, 1, [oldLeaf]));
+    transport.enqueue(childrenResponse(oldLeaf.nodeRef, 1, []));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(reservoir.nodeRef);
+    await controller.loadMore(reservoir.nodeRef);
+    await controller.expand(moved.nodeRef);
+    await controller.expand(oldLeaf.nodeRef);
+
+    const staleRefresh = deferred<DomResponse>();
+    transport.enqueue(staleRefresh.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: moved.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    staleRefresh.resolve(childrenResponse(moved.nodeRef, 2, []));
+    await flushAsync();
+    transport.enqueue(childrenResponse(reservoir.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: reservoir.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    const state = controllerState(controller);
+    expect(state.quarantinedSubtrees.size).toBe(
+      DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+    );
+    expect(state.nodes.has(moved.nodeRef)).toBe(false);
+    expect(state.branches.has(moved.nodeRef)).toBe(false);
+    expect(state.nodes.has(oldLeaf.nodeRef)).toBe(false);
+    expect(state.branches.has(oldLeaf.nodeRef)).toBe(false);
+    expect(state.expanded.has(oldLeaf.nodeRef)).toBe(false);
+    expect(state.quarantineRootByNodeRef.has(oldLeaf.nodeRef)).toBe(false);
+
+    const fallbackFocus = controller.focusedRef;
+    controller.focus(oldLeaf.nodeRef);
+    controller.hover(oldLeaf.nodeRef);
+    await controller.select(oldLeaf.nodeRef);
+    expect(controller.focusedRef).toBe(fallbackFocus);
+    expect(transport.dispatched).toEqual([]);
+    expect(state.reconciliationBatches.size).toBe(0);
+  });
+
+  it("does not restore quarantined focus after unchanged-focus ArrowLeft intent", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const source = locatedNode("source", locator(2), true, 1);
+    const destination = locatedNode("destination", locator(2, 1), true, 1);
+    const moved = locatedNode("moved", locator(3), true, 1);
+    const movedLeaf = locatedNode("moved-leaf", locator(4));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(
+      root.nodeRef,
+      1,
+      [source, destination],
+    ));
+    transport.enqueue(childrenResponse(source.nodeRef, 1, [moved]));
+    transport.enqueue(childrenResponse(destination.nodeRef, 1, []));
+    transport.enqueue(childrenResponse(moved.nodeRef, 1, [movedLeaf]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(source.nodeRef);
+    await controller.expand(destination.nodeRef);
+    await controller.expand(moved.nodeRef);
+    controller.focus(movedLeaf.nodeRef);
+
+    transport.enqueue(childrenResponse(source.nodeRef, 2, []));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: source.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    expectSingleFocusedRow(controller, destination.nodeRef);
+
+    await controller.handleKey("ArrowLeft");
+    expectSingleFocusedRow(controller, destination.nodeRef);
+    expect(controller.isExpanded(destination.nodeRef)).toBe(false);
+    await controller.expand(destination.nodeRef);
+
+    const movedAtDestination = locatedNode(
+      moved.nodeRef,
+      locator(3, 2),
+      true,
+      1,
+    );
+    transport.enqueue(childrenResponse(
+      destination.nodeRef,
+      2,
+      [movedAtDestination],
+    ));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: destination.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expectSingleFocusedRow(controller, destination.nodeRef);
+    expect(controller.rows().find((row) => row.nodeRef === moved.nodeRef))
+      .toMatchObject({ parentRef: destination.nodeRef, expanded: true });
+    expect(controller.rows().find((row) => row.nodeRef === movedLeaf.nodeRef))
+      .toMatchObject({ parentRef: moved.nodeRef, focused: false });
+  });
+
   it.each([
     ["source-first", "moved-root"],
     ["destination-first", "moved-root"],
@@ -3012,8 +3558,12 @@ interface ControllerInternalState {
   readonly branches: Map<string, {
     readonly children: string[];
     readonly recoveredChildren: string[];
+    readonly loaded: boolean;
+    readonly nextCursor?: string;
+    readonly pending?: unknown;
     revealChild?: string;
   }>;
+  readonly reconciliationBatches: Map<number, unknown>;
   readonly expanded: Set<string>;
   readonly quarantinedSubtrees: Map<string, {
     readonly nodeRefs: ReadonlySet<string>;

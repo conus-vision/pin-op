@@ -305,7 +305,7 @@ export class DomTreeController {
 
   public expandedRefs(): readonly string[] {
     return Object.freeze([...this.expanded].filter((nodeRef) => (
-      !this.isDeferredPruneNode(nodeRef)
+      !this.isDeferredPruneNode(nodeRef) && this.hasLiveOwner(nodeRef)
     )));
   }
 
@@ -318,7 +318,9 @@ export class DomTreeController {
   }
 
   public isExpanded(nodeRef: string): boolean {
-    return this.expanded.has(nodeRef) && !this.isDeferredPruneNode(nodeRef);
+    return this.expanded.has(nodeRef) &&
+      !this.isDeferredPruneNode(nodeRef) &&
+      this.hasLiveOwner(nodeRef);
   }
 
   public beginRecovery(): DomTreeRecoverySnapshot {
@@ -544,7 +546,8 @@ export class DomTreeController {
     if (
       this.disposed ||
       this.recovering ||
-      this.isDeferredPruneNode(nodeRef)
+      this.isDeferredPruneNode(nodeRef) ||
+      !this.hasLiveOwner(nodeRef)
     ) {
       return;
     }
@@ -567,6 +570,7 @@ export class DomTreeController {
       this.disposed ||
       this.recovering ||
       this.isDeferredPruneNode(nodeRef) ||
+      !this.hasLiveOwner(nodeRef) ||
       !this.expanded.has(nodeRef)
     ) {
       return;
@@ -578,10 +582,10 @@ export class DomTreeController {
       nodeRef,
       this.focusedNodeRef,
     );
+    this.focusIntentVersion += 1;
     this.expanded.delete(nodeRef);
     this.invalidateRows();
     if (focusedWasDescendant) {
-      this.focusIntentVersion += 1;
       this.focusedNodeRef = nodeRef;
     } else {
       this.reconcileFocus(focusAnchor);
@@ -604,7 +608,8 @@ export class DomTreeController {
     if (
       this.disposed ||
       this.recovering ||
-      this.isDeferredPruneNode(parentRef)
+      this.isDeferredPruneNode(parentRef) ||
+      !this.hasLiveOwner(parentRef)
     ) {
       return;
     }
@@ -645,7 +650,8 @@ export class DomTreeController {
       !state ||
       !state.view.selectable ||
       state.view.inaccessible ||
-      this.isDeferredPruneNode(nodeRef)
+      this.isDeferredPruneNode(nodeRef) ||
+      !this.hasLiveOwner(nodeRef)
     ) {
       return;
     }
@@ -677,7 +683,8 @@ export class DomTreeController {
       !state ||
       !state.view.selectable ||
       state.view.inaccessible ||
-      this.isDeferredPruneNode(nodeRef)
+      this.isDeferredPruneNode(nodeRef) ||
+      !this.hasLiveOwner(nodeRef)
     ) {
       return;
     }
@@ -871,7 +878,9 @@ export class DomTreeController {
       : undefined;
     const focusAnchor = this.captureRecoveryFocusAnchor();
     const ordered = [...this.expanded]
-      .filter((nodeRef) => !this.isDeferredPruneNode(nodeRef))
+      .filter((nodeRef) => (
+        !this.isDeferredPruneNode(nodeRef) && this.hasLiveOwner(nodeRef)
+      ))
       .map((nodeRef, index) => {
         const stableLocator = this.nodes.get(nodeRef)?.view.locator;
         return stableLocator
@@ -1293,7 +1302,7 @@ export class DomTreeController {
     ) {
       void this.refreshRootSnapshot(nodeRef, branchRevision);
     }
-    if (this.expanded.has(nodeRef)) {
+    if (this.expanded.has(nodeRef) && this.hasLiveOwner(nodeRef)) {
       void this.fetchChildren(
         nodeRef,
         undefined,
@@ -1467,6 +1476,14 @@ export class DomTreeController {
     }
     const branch = this.branches.get(nodeRef);
     if (branch) {
+      if (branch.pending) {
+        const pending = branch.pending;
+        branch.pending = undefined;
+        this.settleReconciliationToken(
+          pending.reconciliationBatchId,
+          pending.token,
+        );
+      }
       const descendants = new Set([
         ...branch.children,
         ...branch.recoveredChildren,
@@ -1891,7 +1908,25 @@ export class DomTreeController {
     for (const candidateRef of nodeRefs) {
       this.quarantineRootByNodeRef.set(candidateRef, nodeRef);
     }
+    this.cancelPendingQuarantinedBranches(nodeRefs);
     return true;
+  }
+
+  private cancelPendingQuarantinedBranches(
+    nodeRefs: ReadonlySet<string>,
+  ): void {
+    for (const candidateRef of nodeRefs) {
+      const branch = this.branches.get(candidateRef);
+      const pending = branch?.pending;
+      if (!branch || !pending) {
+        continue;
+      }
+      branch.pending = undefined;
+      this.settleReconciliationToken(
+        pending.reconciliationBatchId,
+        pending.token,
+      );
+    }
   }
 
   private collectSubtreeNodeRefs(
@@ -1932,7 +1967,9 @@ export class DomTreeController {
         this.quarantineRootByNodeRef.delete(candidateRef);
       }
     }
-    this.removeSubtree(nodeRef);
+    for (const candidateRef of new Set([nodeRef, ...state.nodeRefs])) {
+      this.removeSubtree(candidateRef);
+    }
   }
 
   private releaseQuarantinedSubtree(nodeRef: string): void {
@@ -1945,44 +1982,56 @@ export class DomTreeController {
       this.quarantineRootByNodeRef.delete(nodeRef);
       return;
     }
-    if (nodeRef === rootRef) {
-      this.quarantinedSubtrees.delete(rootRef);
-      for (const candidateRef of state.nodeRefs) {
-        if (this.quarantineRootByNodeRef.get(candidateRef) === rootRef) {
-          this.quarantineRootByNodeRef.delete(candidateRef);
-        }
-      }
-      this.restoreQuarantinedFocus(state, state.nodeRefs);
+    const releasedReachable = this.collectSubtreeNodeRefs(
+      nodeRef,
+      DOM_TREE_MAX_QUARANTINED_NODE_REFS,
+    );
+    const retainedReachable = nodeRef === rootRef
+      ? new Set<string>()
+      : this.collectSubtreeNodeRefs(
+          rootRef,
+          DOM_TREE_MAX_QUARANTINED_NODE_REFS,
+        );
+    if (
+      releasedReachable.size > DOM_TREE_MAX_QUARANTINED_NODE_REFS ||
+      retainedReachable.size > DOM_TREE_MAX_QUARANTINED_NODE_REFS
+    ) {
+      this.evictQuarantinedSubtree(rootRef);
       return;
     }
-    const pending = [nodeRef];
     const released = new Set<string>();
-    while (pending.length > 0) {
-      const currentRef = pending.pop();
-      if (
-        !currentRef ||
-        released.has(currentRef) ||
-        this.quarantineRootByNodeRef.get(currentRef) !== rootRef
-      ) {
-        continue;
-      }
-      released.add(currentRef);
-      const branch = this.branches.get(currentRef);
-      if (!branch) {
-        continue;
-      }
-      pending.push(...branch.children, ...branch.recoveredChildren);
-      if (branch.revealChild) {
-        pending.push(branch.revealChild);
+    const retained = new Set<string>();
+    const orphaned = new Set<string>();
+    for (const candidateRef of state.nodeRefs) {
+      if (releasedReachable.has(candidateRef)) {
+        released.add(candidateRef);
+      } else if (retainedReachable.has(candidateRef)) {
+        retained.add(candidateRef);
+      } else {
+        orphaned.add(candidateRef);
       }
     }
-    for (const candidateRef of released) {
-      state.nodeRefs.delete(candidateRef);
-      this.quarantineRootByNodeRef.delete(candidateRef);
+    for (const candidateRef of [...released, ...orphaned]) {
+      if (this.quarantineRootByNodeRef.get(candidateRef) === rootRef) {
+        this.quarantineRootByNodeRef.delete(candidateRef);
+      }
     }
     this.restoreQuarantinedFocus(state, released);
-    if (state.nodeRefs.size === 0) {
+    if (state.focusRef && orphaned.has(state.focusRef)) {
+      delete state.focusRef;
+    }
+    state.nodeRefs.clear();
+    for (const candidateRef of retained) {
+      state.nodeRefs.add(candidateRef);
+    }
+    if (retained.size === 0) {
       this.quarantinedSubtrees.delete(rootRef);
+      for (const batch of this.reconciliationBatches.values()) {
+        batch.candidates.delete(rootRef);
+      }
+    }
+    for (const candidateRef of orphaned) {
+      this.removeSubtree(candidateRef);
     }
   }
 
@@ -2019,6 +2068,9 @@ export class DomTreeController {
     this.detachNodeFromOtherOwners(view.nodeRef, parentRef);
     this.upsertNode(view, parentRef);
     this.releaseDeferredCandidate(view.nodeRef);
+    if (!this.nodes.has(view.nodeRef)) {
+      this.upsertNode(view, parentRef);
+    }
     return true;
   }
 
