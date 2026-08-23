@@ -1152,18 +1152,21 @@ export class DomTreeController {
         if (useFocusAnchorOverride) {
           this.focusedNodeRef = undefined;
         }
+        let adoptedChildRefs: readonly string[];
         if (cursor) {
+          const appendedChildRefs: string[] = [];
           for (const child of response.nodes) {
-            if (
-              this.adoptPageChild(child, nodeRef) &&
-              !currentBranch.children.includes(child.nodeRef)
-            ) {
-              currentBranch.children.push(child.nodeRef);
+            if (this.adoptPageChild(child, nodeRef)) {
+              appendedChildRefs.push(child.nodeRef);
+              if (!currentBranch.children.includes(child.nodeRef)) {
+                currentBranch.children.push(child.nodeRef);
+              }
             }
           }
           this.rebuildRevealPathFromSelection();
+          adoptedChildRefs = appendedChildRefs;
         } else {
-          this.replacePageChildren(
+          adoptedChildRefs = this.replacePageChildren(
             currentBranch,
             nodeRef,
             response.nodes,
@@ -1175,6 +1178,10 @@ export class DomTreeController {
         this.currentError = undefined;
         this.invalidateRows();
         this.reconcileFocus(focusAnchor);
+        this.resumeOwnedExpandedBranches(
+          adoptedChildRefs,
+          reconciliationBatchId,
+        );
       } catch (error) {
         const currentBranch = this.branches.get(nodeRef);
         if (
@@ -1796,7 +1803,7 @@ export class DomTreeController {
     parentRef: string,
     children: readonly DomNodeView[],
     reconciliationBatchId?: number,
-  ): void {
+  ): readonly string[] {
     const previousChildren = [...branch.children];
     const nextChildren: string[] = [];
     for (const child of children) {
@@ -1816,6 +1823,36 @@ export class DomTreeController {
       }
     }
     this.rebuildRevealPathFromSelection();
+    return nextChildren;
+  }
+
+  private resumeOwnedExpandedBranches(
+    nodeRefs: readonly string[],
+    reconciliationBatchId?: number,
+  ): void {
+    for (const nodeRef of new Set(nodeRefs)) {
+      const state = this.nodes.get(nodeRef);
+      const branch = this.branches.get(nodeRef);
+      if (
+        !state ||
+        !state.view.expandable ||
+        state.view.inaccessible ||
+        !branch ||
+        branch.loaded ||
+        branch.pending ||
+        !this.expanded.has(nodeRef) ||
+        this.isDeferredPruneNode(nodeRef) ||
+        !this.hasLiveOwner(nodeRef)
+      ) {
+        continue;
+      }
+      void this.fetchChildren(
+        nodeRef,
+        undefined,
+        undefined,
+        reconciliationBatchId,
+      );
+    }
   }
 
   private failFirstPageRefresh(
