@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { builtinModules, createRequire } from "node:module";
 import { lstat, readFile, readdir } from "node:fs/promises";
@@ -6,6 +7,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import { createHeadArchiveBuffer } from "./archive-firefox-source.mjs";
+import {
+  CHROMIUM_EMBEDDED_NOTICE_DIGESTS,
+  CHROMIUM_UPSTREAM_PATHS,
+  PINNED_CHROMIUM_REVISION,
+  renderChromiumDerivedNoticeSection,
+} from "./browser-bundle-notices.mjs";
 import {
   assertBrowserPackageRuntimeContract,
 } from "./browser-package-contract.mjs";
@@ -47,6 +54,9 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "dist/icons/pin-op-48.png",
   "dist/icons/pin-op-96.png",
   "dist/icons/pin-op-128.png",
+  "dist/devtools-elements.css",
+  "dist/inspector-panel.html",
+  "dist/inspectorPanel.js",
   "dist/panel.css",
   "dist/panel.html",
   "dist/panel.js",
@@ -79,6 +89,20 @@ const EOCD_MIN_BYTES = 22;
 const MAX_ZIP_COMMENT_BYTES = 0xffff;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
+const chromiumUpstreamManifest = JSON.parse(
+  readFileSync(
+    resolve(repositoryRoot, "third_party/chromium-devtools-frontend/UPSTREAM.json"),
+    "utf8",
+  ),
+);
+const chromiumRootLicense = readFileSync(
+  resolve(repositoryRoot, "third_party/chromium-devtools-frontend/LICENSE"),
+  "utf8",
+);
+const chromiumDerivedNoticeSection = renderChromiumDerivedNoticeSection(
+  chromiumUpstreamManifest,
+  chromiumRootLicense,
+);
 const vscodeReadme = await readFile(
   resolve(repositoryRoot, "extensions/vscode/README.md"),
 );
@@ -110,6 +134,201 @@ const BROWSER_ICONS = Object.freeze({
   96: "dist/icons/pin-op-96.png",
   128: "dist/icons/pin-op-128.png",
 });
+const BROWSER_PERMISSIONS = Object.freeze([
+  "activeTab",
+  "clipboardRead",
+  "scripting",
+  "storage",
+  "tabs",
+]);
+const BROWSER_HOST_PERMISSIONS = Object.freeze([
+  "http://localhost/*",
+  "http://127.0.0.1/*",
+  "<all_urls>",
+]);
+const BROWSER_EXTENSION_CSP =
+  "script-src 'self'; object-src 'none'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*";
+const BROWSER_MANIFEST_KEYS = Object.freeze({
+  chrome: Object.freeze([
+    "manifest_version",
+    "name",
+    "description",
+    "version",
+    "icons",
+    "minimum_chrome_version",
+    "devtools_page",
+    "background",
+    "permissions",
+    "host_permissions",
+    "content_security_policy",
+  ]),
+  firefox: Object.freeze([
+    "manifest_version",
+    "name",
+    "description",
+    "version",
+    "icons",
+    "devtools_page",
+    "background",
+    "permissions",
+    "host_permissions",
+    "content_security_policy",
+    "browser_specific_settings",
+  ]),
+});
+const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
+  ".gitattributes",
+  "package.json",
+  "pnpm-lock.yaml",
+  "third_party/chromium-devtools-frontend/.gitattributes",
+  "third_party/chromium-devtools-frontend/LICENSE",
+  "third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md",
+  "third_party/chromium-devtools-frontend/README.pin-op.md",
+  "third_party/chromium-devtools-frontend/UPSTREAM.json",
+  "packages/devtools-elements-ui/.gitattributes",
+  "packages/devtools-elements-ui/assets/devtools-elements.css",
+  "packages/devtools-elements-ui/package.json",
+  "packages/devtools-elements-ui/src/contracts.ts",
+  "packages/devtools-elements-ui/src/elementsInspectorView.ts",
+  "packages/devtools-elements-ui/src/index.ts",
+  "packages/devtools-elements-ui/test/elementsInspectorView.test.ts",
+  "packages/devtools-elements-ui/test/elementsTreeOutline.test.ts",
+  "packages/devtools-elements-ui/test/fixtures/elementsSession.ts",
+  "packages/devtools-elements-ui/test/public-export.mjs",
+  "packages/devtools-elements-ui/test/support/fakeDocument.ts",
+  "packages/devtools-elements-ui/test/support/fakeElementsBackend.ts",
+  "packages/devtools-elements-ui/tsconfig.json",
+  "packages/browser-extension-core/package.json",
+  "packages/browser-extension-core/assets/inspector-panel.html",
+  "packages/browser-extension-core/assets/panel.css",
+  "packages/browser-extension-core/assets/panel.html",
+  "packages/browser-extension-core/assets/pin-op.svg",
+  "packages/browser-extension-core/assets/icons/pin-op-16.png",
+  "packages/browser-extension-core/assets/icons/pin-op-32.png",
+  "packages/browser-extension-core/assets/icons/pin-op-48.png",
+  "packages/browser-extension-core/assets/icons/pin-op-96.png",
+  "packages/browser-extension-core/assets/icons/pin-op-128.png",
+  "tools/archive-firefox-source.mjs",
+  "tools/browser-bundle-notices.mjs",
+  "tools/browser-package-contract.mjs",
+  "tools/browser-panel-assets.mjs",
+  "tools/chromium-vendor-paths.mjs",
+  "tools/update-chromium-derivations.mjs",
+  "tools/vendor-chromium-elements.mjs",
+  "tools/verify-artifacts.mjs",
+  "tools/verify-chromium-elements-vendor.mjs",
+  "extensions/test/browserExtensionContract.ts",
+  "extensions/firefox/LICENSE",
+  "extensions/firefox/THIRD_PARTY_NOTICES",
+  "extensions/firefox/esbuild.mjs",
+  "extensions/firefox/manifest.json",
+  "extensions/firefox/package.json",
+  "extensions/firefox/src/background.ts",
+  "extensions/firefox/src/contentScript.ts",
+  "extensions/firefox/src/devtools.html",
+  "extensions/firefox/src/devtools.ts",
+  "extensions/firefox/src/inspectorPanel.ts",
+  "extensions/firefox/src/panel.ts",
+  "extensions/firefox/test/adapter.test.ts",
+  "extensions/firefox/test/manifest.test.ts",
+  "extensions/firefox/test/panelAssets.test.ts",
+  "extensions/firefox/tsconfig.json",
+]);
+const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
+  {
+    upstreamPath: "front_end/panels/elements/ElementsTreeOutline.ts",
+    sha256: "36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
+      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
+      localSha256: "2d12ac3dcbaeba784bed93c29afe27c40e651471f27ba61cfb706b248d2f0996",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/ElementsTreeElement.ts",
+    sha256: "40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
+      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
+      localSha256: "f01ce4ffd5c115f755fd22c997c71db5699600e222cc2413a2f911e67e7fc8be",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/StylesSidebarPane.ts",
+    sha256: "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+      localSha256: "pending",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/StylePropertiesSection.ts",
+    sha256: "bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+      localSha256: "pending",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/StylePropertyTreeElement.ts",
+    sha256: "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+      localSha256: "pending",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/PropertyRenderer.ts",
+    sha256: "b13d5d5edede2f5dc0b8cb7e7d974f3b5cf69afd41e81c320f78466aa9e7464e",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+      localSha256: "pending",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/StylePropertyUtils.ts",
+    sha256: "f4fc4e139fe9fac7ef2632f0ae0042de18e01ec00d3b60159d6827edc0e0ee4b",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
+      changeRecord: "PIN_OP_CHANGES.md#rules",
+      localSha256: "pending",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/elementsTreeOutline.css",
+    sha256: "86b768a436167e97ca7c2e5cee622c122ba095d2fb6853a15aedf18b892f0c6d",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/assets/devtools-elements.css",
+      changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
+      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/stylesSidebarPane.css",
+    sha256: "01d5198e52f4b1a2dea4b3d20631f756ecf7db5bedab093539e87b4569ede5aa",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/assets/devtools-elements.css",
+      changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
+      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+    }],
+  },
+  {
+    upstreamPath: "front_end/panels/elements/stylePropertiesTreeOutline.css",
+    sha256: "87bfbaeb3ddf0d33dd001c023d0ca64e6926fe27724af828074e8b2b7e432860",
+    derivedTargets: [{
+      path: "packages/devtools-elements-ui/assets/devtools-elements.css",
+      changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
+      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+    }],
+  },
+]);
+const CHROMIUM_SOURCE_REPRODUCTION_BY_PATH = new Map(
+  CHROMIUM_SOURCE_REPRODUCTION_INVENTORY.map((file) => [file.upstreamPath, file]),
+);
 
 export async function verifyArtifacts(arguments_) {
   const artifacts = await collectArtifacts(arguments_);
@@ -120,13 +339,21 @@ export async function verifyArtifacts(arguments_) {
     throw new Error(`Missing required release artifacts: ${missing.join(", ")}`);
   }
 
+  const browserArchives = new Map();
   for (const [filename, kind] of EXPECTED_ARTIFACTS) {
     const archive = readArchive(artifacts.get(filename), filename);
     if (kind === "vscode") await verifyVsix(archive, filename);
     else if (kind === "firefox-source") await verifySource(archive, filename);
-    else await verifyBrowser(archive, filename, kind);
+    else {
+      await verifyBrowser(archive, filename, kind);
+      browserArchives.set(kind, archive);
+    }
     console.log(`Verified ${filename} (${archive.files.size} files)`);
   }
+  assertBrowserInspectorParity(
+    browserArchives.get("chrome"),
+    browserArchives.get("firefox"),
+  );
 }
 
 export function readArchive(path, filename) {
@@ -478,9 +705,11 @@ export function validateBrowserArchive(archive, filename, browser) {
     assertPngDimensions(archive.files.get(path), `${filename} ${path}`, Number(size));
   }
   verifyBrowserPanelIdentity(archive.files.get("dist/panel.html"), filename);
+  assertChromiumDerivedNotices(archive, filename);
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
+    platform: browser,
   });
 }
 
@@ -503,6 +732,9 @@ function verifyBrowserPanelIdentity(panelBuffer, filename) {
 }
 
 function verifyBrowserManifest(manifest, filename, browser) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`${filename} has invalid manifest`);
+  }
   if (manifest.manifest_version !== 3) {
     throw new Error(`${filename} has unexpected manifest_version`);
   }
@@ -515,16 +747,49 @@ function verifyBrowserManifest(manifest, filename, browser) {
   if (!hasExactStringEntries(manifest.icons, BROWSER_ICONS)) {
     throw new Error(`${filename} has unexpected manifest icons`);
   }
-  assertVersion(manifest.version, `${filename} manifest`, VERSION);
-  if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.includes("<all_urls>")) {
-    throw new Error(`${filename} manifest must request <all_urls>`);
+  if (manifest.devtools_page !== "dist/devtools.html") {
+    throw new Error(`${filename} has unexpected manifest devtools page`);
   }
-  const forbiddenHosts = manifest.host_permissions.filter((value) =>
-    typeof value === "string" && /^wss?:\/\//i.test(value)
+  const expectedBackground = browser === "chrome"
+    ? hasExactStringEntries(manifest.background, {
+      service_worker: "dist/background.js",
+    })
+    : (
+      manifest.background !== null &&
+      typeof manifest.background === "object" &&
+      !Array.isArray(manifest.background) &&
+      Object.keys(manifest.background).length === 1 &&
+      sameStringArray(manifest.background.scripts, ["dist/background.js"])
+    );
+  if (!expectedBackground) {
+    throw new Error(`${filename} has unexpected manifest background`);
+  }
+  if (!sameStringArray(manifest.permissions, BROWSER_PERMISSIONS)) {
+    throw new Error(`${filename} has unexpected manifest permissions`);
+  }
+  if (!sameStringArray(manifest.host_permissions, BROWSER_HOST_PERMISSIONS)) {
+    throw new Error(`${filename} has unexpected manifest host permissions`);
+  }
+  if (
+    Object.hasOwn(manifest, "optional_permissions") ||
+    Object.hasOwn(manifest, "optional_host_permissions")
+  ) {
+    throw new Error(`${filename} has unexpected manifest optional permissions`);
+  }
+  const unexpectedKeys = Object.keys(manifest).filter(
+    (key) => !BROWSER_MANIFEST_KEYS[browser].includes(key),
   );
-  if (forbiddenHosts.length > 0) {
-    throw new Error(`${filename} has forbidden WebSocket host_permissions: ${forbiddenHosts.join(", ")}`);
+  if (unexpectedKeys.length > 0) {
+    throw new Error(
+      `${filename} has unexpected manifest capability key ${unexpectedKeys[0]}`,
+    );
   }
+  if (!hasExactStringEntries(manifest.content_security_policy, {
+    extension_pages: BROWSER_EXTENSION_CSP,
+  })) {
+    throw new Error(`${filename} has unexpected manifest content security policy`);
+  }
+  assertVersion(manifest.version, `${filename} manifest`, VERSION);
   if (browser === "chrome" && manifest.minimum_chrome_version !== "116") {
     throw new Error(`${filename} has unexpected minimum_chrome_version`);
   }
@@ -539,6 +804,95 @@ function verifyBrowserManifest(manifest, filename, browser) {
     manifest.browser_specific_settings?.gecko?.id !== "info@conus.vision"
   ) {
     throw new Error(`${filename} has unexpected Firefox Gecko ID`);
+  }
+  if (
+    browser === "firefox" &&
+    !hasExactFirefoxBrowserSpecificSettings(manifest.browser_specific_settings)
+  ) {
+    throw new Error(`${filename} has unexpected Firefox browser_specific_settings`);
+  }
+}
+
+function hasExactFirefoxBrowserSpecificSettings(settings) {
+  if (
+    settings === null ||
+    typeof settings !== "object" ||
+    Array.isArray(settings) ||
+    !sameStringArray(Object.keys(settings), ["gecko"])
+  ) {
+    return false;
+  }
+  const gecko = settings.gecko;
+  if (
+    gecko === null ||
+    typeof gecko !== "object" ||
+    Array.isArray(gecko) ||
+    !sameStringArray(Object.keys(gecko), [
+      "id",
+      "strict_min_version",
+      "data_collection_permissions",
+    ]) ||
+    gecko.id !== "info@conus.vision" ||
+    gecko.strict_min_version !== "142.0"
+  ) {
+    return false;
+  }
+  const permissions = gecko.data_collection_permissions;
+  return (
+    permissions !== null &&
+    typeof permissions === "object" &&
+    !Array.isArray(permissions) &&
+    sameStringArray(Object.keys(permissions), ["required"]) &&
+    sameStringArray(permissions.required, ["websiteContent", "websiteActivity"])
+  );
+}
+
+function assertChromiumDerivedNotices(archive, filename) {
+  const bytes = archive.files.get("THIRD_PARTY_NOTICES");
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${filename} is missing THIRD_PARTY_NOTICES`);
+  }
+  const notices = bytes.toString("utf8").replaceAll("\r\n", "\n");
+  if (countOccurrences(notices, chromiumDerivedNoticeSection) !== 1) {
+    throw new Error(`${filename} has incomplete Chromium-derived notices`);
+  }
+  const distinctEmbeddedNotices = new Map();
+  for (const file of chromiumUpstreamManifest.files) {
+    for (const notice of file.embeddedNotices) {
+      distinctEmbeddedNotices.set(
+        notice.sha256,
+        notice.text.replaceAll("\r\n", "\n").trim(),
+      );
+    }
+  }
+  for (const text of distinctEmbeddedNotices.values()) {
+    if (countOccurrences(notices, text) !== 1) {
+      throw new Error(`${filename} has incomplete Chromium-derived notices`);
+    }
+  }
+}
+
+export function assertBrowserInspectorParity(chromeArchive, firefoxArchive) {
+  if (!chromeArchive || !firefoxArchive) {
+    throw new Error("Chrome and Firefox archives are required for Inspector parity");
+  }
+  const chromeCss = chromeArchive.files.get("dist/devtools-elements.css");
+  const firefoxCss = firefoxArchive.files.get("dist/devtools-elements.css");
+  if (
+    !Buffer.isBuffer(chromeCss) ||
+    !Buffer.isBuffer(firefoxCss) ||
+    !chromeCss.equals(firefoxCss)
+  ) {
+    throw new Error("Chrome and Firefox devtools-elements.css must be byte-identical");
+  }
+  const chromeNotices = chromeArchive.files.get("THIRD_PARTY_NOTICES");
+  const firefoxNotices = firefoxArchive.files.get("THIRD_PARTY_NOTICES");
+  if (
+    !Buffer.isBuffer(chromeNotices) ||
+    !Buffer.isBuffer(firefoxNotices) ||
+    !chromeNotices.equals(firefoxNotices)
+  ) {
+    throw new Error("Chrome and Firefox Chromium notice sections must be identical");
   }
 }
 
@@ -826,6 +1180,7 @@ function assertXmlAttribute(element, name, expected, filename, path) {
 async function verifySource(archive, filename) {
   await verifySourceAgainstHead(archive, filename, readHeadTree(repositoryRoot));
   verifySourceArchiveIdentity(archive, filename, repositoryRoot);
+  assertFirefoxSourceReproductionInputs(archive.files, filename);
   assertProjectLicense(archive, filename, "LICENSE");
 
   const rootManifest = parseJsonFile(archive, filename, "package.json");
@@ -941,6 +1296,172 @@ function hasExactStringEntries(actual, expected) {
   return actualKeys.length === expectedEntries.length && expectedEntries.every(
     ([key, value]) => actual[key] === value,
   );
+}
+
+export function requiredFirefoxSourceReproductionPaths(manifest) {
+  if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.files)) {
+    throw new Error("Invalid Chromium upstream source inventory");
+  }
+  assertPinnedChromiumSourceInventory(manifest, "Chromium upstream source inventory");
+  const paths = new Set(FIREFOX_INSPECTOR_SOURCE_INPUTS);
+  for (const file of manifest.files) {
+    paths.add(
+      `third_party/chromium-devtools-frontend/upstream/${file.upstreamPath}`,
+    );
+    for (const target of file.derivedTargets) {
+      if (target?.localSha256 === "pending") continue;
+      paths.add(target.path);
+    }
+  }
+  return [...paths].sort(compareAscii);
+}
+
+export function assertFirefoxSourceReproductionInputs(files, label) {
+  const manifestPath = "third_party/chromium-devtools-frontend/UPSTREAM.json";
+  requireSourceInput(files, label, manifestPath);
+  let manifest;
+  try {
+    manifest = JSON.parse(files.get(manifestPath).toString("utf8"));
+  } catch (error) {
+    throw new Error(`${label} has invalid ${manifestPath}: ${error.message}`);
+  }
+  if (
+    manifest?.revision !== PINNED_CHROMIUM_REVISION ||
+    manifest.license !== "LICENSE" ||
+    !/^[0-9a-f]{64}$/.test(manifest.licenseSha256 ?? "") ||
+    !Array.isArray(manifest.files) ||
+    manifest.files.length !== 10
+  ) {
+    throw new Error(`${label} has invalid Chromium upstream source inventory`);
+  }
+  assertPinnedChromiumSourceInventory(manifest, label);
+  for (const path of requiredFirefoxSourceReproductionPaths(manifest)) {
+    requireSourceInput(files, label, path);
+  }
+
+  const embeddedNotices = new Map();
+  for (const file of manifest.files) {
+    if (
+      typeof file?.upstreamPath !== "string" ||
+      !/^front_end\/panels\/elements\/[A-Za-z0-9._-]+$/.test(file.upstreamPath)
+    ) {
+      throw new Error(`${label} has invalid Chromium upstream source path`);
+    }
+    if (!Array.isArray(file.embeddedNotices) || file.embeddedNotices.length === 0) {
+      throw new Error(`${label} source ${file.upstreamPath} is missing an embedded notice`);
+    }
+    for (const notice of file.embeddedNotices) {
+      if (
+        !/^[0-9a-f]{64}$/.test(notice?.sha256 ?? "") ||
+        typeof notice?.text !== "string" ||
+        !notice.text.trim()
+      ) {
+        throw new Error(`${label} has invalid embedded notice metadata`);
+      }
+      const normalizedText = notice.text.replaceAll("\r\n", "\n").trim();
+      const existing = embeddedNotices.get(notice.sha256);
+      if (existing !== undefined && existing !== normalizedText) {
+        throw new Error(`${label} has conflicting embedded notice metadata`);
+      }
+      embeddedNotices.set(notice.sha256, normalizedText);
+    }
+    if (!Array.isArray(file.derivedTargets) || file.derivedTargets.length === 0) {
+      throw new Error(`${label} source ${file.upstreamPath} has no derived target`);
+    }
+
+    const upstreamArchivePath =
+      `third_party/chromium-devtools-frontend/upstream/${file.upstreamPath}`;
+    if (sha256Bytes(files.get(upstreamArchivePath)) !== file.sha256) {
+      throw new Error(`${label} source ${file.upstreamPath} has invalid upstream sha256 bytes`);
+    }
+    for (const target of file.derivedTargets) {
+      if (target.localSha256 === "pending") continue;
+      if (sha256Bytes(files.get(target.path)) !== target.localSha256) {
+        throw new Error(
+          `${label} derived target ${target.path} has invalid derived sha256 bytes`,
+        );
+      }
+    }
+  }
+  const embeddedDigests = [...embeddedNotices.keys()].sort(compareAscii);
+  if (!sameStringArray(embeddedDigests, CHROMIUM_EMBEDDED_NOTICE_DIGESTS)) {
+    throw new Error(`${label} has unexpected embedded notice inventory`);
+  }
+  try {
+    renderChromiumDerivedNoticeSection(
+      manifest,
+      files.get("third_party/chromium-devtools-frontend/LICENSE").toString("utf8"),
+    );
+  } catch (error) {
+    throw new Error(
+      `${label} has invalid Chromium notice metadata: ${error.message}`,
+    );
+  }
+}
+
+function assertPinnedChromiumSourceInventory(manifest, label) {
+  const upstreamPaths = manifest.files
+    .map((file) => file?.upstreamPath)
+    .sort(compareAscii);
+  if (!sameStringArray(upstreamPaths, CHROMIUM_UPSTREAM_PATHS)) {
+    throw new Error(`${label} has unexpected Chromium upstream path inventory`);
+  }
+
+  for (const file of manifest.files) {
+    const expected = CHROMIUM_SOURCE_REPRODUCTION_BY_PATH.get(file.upstreamPath);
+    if (!expected || file.sha256 !== expected.sha256) {
+      throw new Error(`${label} has unexpected upstream sha256 metadata`);
+    }
+    if (
+      !Array.isArray(file.derivedTargets) ||
+      file.derivedTargets.length !== expected.derivedTargets.length
+    ) {
+      throw new Error(`${label} has unexpected derived target inventory`);
+    }
+    for (let index = 0; index < expected.derivedTargets.length; index += 1) {
+      const target = file.derivedTargets[index];
+      const expectedTarget = expected.derivedTargets[index];
+      if (!isApprovedDerivedTargetPath(target?.path)) {
+        throw new Error(`${label} has derived target path outside the approved root`);
+      }
+      if (
+        !hasExactStringEntries(target, expectedTarget)
+      ) {
+        throw new Error(`${label} has unexpected derived target mapping`);
+      }
+    }
+  }
+}
+
+function isApprovedDerivedTargetPath(path) {
+  return (
+    typeof path === "string" &&
+    path.startsWith("packages/devtools-elements-ui/") &&
+    !path.includes("\\") &&
+    path.split("/").every((segment) => segment && segment !== "." && segment !== "..")
+  );
+}
+
+function sha256Bytes(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function requireSourceInput(files, label, path) {
+  if (typeof path !== "string" || !Buffer.isBuffer(files.get(path))) {
+    throw new Error(`${label} is missing Chromium Inspector source input ${path}`);
+  }
+}
+
+function sameStringArray(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
+
+function countOccurrences(text, needle) {
+  return needle ? text.split(needle).length - 1 : 0;
 }
 
 export function assertPngDimensions(buffer, label, expectedSize) {

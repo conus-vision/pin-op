@@ -36,6 +36,20 @@ const panelCssFixture = readFileSync(
   ),
   "utf8",
 );
+const inspectorPanelHtmlFixture = readFileSync(
+  new URL(
+    "../../packages/browser-extension-core/assets/inspector-panel.html",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const elementsCssFixture = readFileSync(
+  new URL(
+    "../../packages/devtools-elements-ui/assets/devtools-elements.css",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 const panelBundleFixture = [
   'const sourcePresentationCapability = "source-presentation";',
@@ -46,6 +60,8 @@ const panelBundleFixture = [
   'const opaqueMatchIdentity = "matchId";',
   'const resolveLocatorType = "dom.resolveLocator";',
 ].join("\n");
+const inspectorPanelBundleFixture =
+  'const inspectorWorkspace = "inspector-workspace";\n';
 
 function createArchive(paths = CHROME_ARCHIVE_FILES) {
   const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
@@ -61,11 +77,23 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
     ),
   );
   files.set("dist/panel.html", Buffer.from(panelHtmlFixture));
+  files.set("dist/inspector-panel.html", Buffer.from(inspectorPanelHtmlFixture));
   files.set("dist/panel.css", Buffer.from(panelCssFixture));
+  files.set("dist/devtools-elements.css", Buffer.from(elementsCssFixture));
   files.set("dist/panel.js", Buffer.from(panelBundleFixture));
-  files.set("dist/background.js", Buffer.from("packaged background runtime"));
-  files.set("dist/contentScript.js", Buffer.from("packaged content runtime"));
-  files.set("dist/devtools.js", Buffer.from("packaged DevTools runtime"));
+  files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundleFixture));
+  files.set(
+    "dist/background.js",
+    Buffer.from("const packagedBackgroundRuntime = true;\n"),
+  );
+  files.set(
+    "dist/contentScript.js",
+    Buffer.from("const packagedContentRuntime = true;\n"),
+  );
+  files.set(
+    "dist/devtools.js",
+    Buffer.from("const packagedDevtoolsRuntime = true;\n"),
+  );
   files.set(
     "dist/runtime-metadata.json",
     Buffer.from('{"schemaVersion":1,"protocolVersion":6}\n'),
@@ -275,7 +303,7 @@ test("rejects inline style blocks that hide the link code", () => {
 
   assert.throws(
     () => validatePackagedChromeArchive(archive),
-    /connection controls.*visible/i,
+    /(?:inline style|connection controls.*visible)/i,
   );
 });
 

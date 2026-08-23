@@ -9,6 +9,10 @@ import {
   writeBrowserProjectLicense,
 } from "../../tools/browser-bundle-notices.mjs";
 import {
+  assertNoChromiumUpstreamInputs,
+  copyBrowserPanelAssets,
+} from "../../tools/browser-panel-assets.mjs";
+import {
   RUNTIME_METADATA_FILENAME,
   serializeRuntimeMetadata,
 } from "../../tools/runtime-metadata.mjs";
@@ -50,40 +54,10 @@ const result = await build({
     __PIN_OP_PANEL_PAGE__: JSON.stringify(panelPage),
   },
 });
+assertNoChromiumUpstreamInputs(result.metafile, "Firefox browser bundle");
 
 await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
-
-for (const asset of [
-  "panel.html",
-  "inspector-panel.html",
-  "panel.css",
-  "pin-op.svg",
-]) {
-  await copyFile(
-    resolve(extensionRoot, `../../packages/browser-extension-core/assets/${asset}`),
-    resolve(outdir, asset),
-  );
-}
-
-await copyFile(
-  resolve(
-    extensionRoot,
-    "../../packages/devtools-elements-ui/assets/devtools-elements.css",
-  ),
-  resolve(outdir, "devtools-elements.css"),
-);
-
-const iconsOutdir = resolve(outdir, "icons");
-await mkdir(iconsOutdir, { recursive: true });
-for (const size of [16, 32, 48, 96, 128]) {
-  await copyFile(
-    resolve(
-      extensionRoot,
-      `../../packages/browser-extension-core/assets/icons/pin-op-${size}.png`,
-    ),
-    resolve(iconsOutdir, `pin-op-${size}.png`),
-  );
-}
+await copyBrowserPanelAssets(extensionRoot);
 
 await writeFile(
   resolve(outdir, RUNTIME_METADATA_FILENAME),

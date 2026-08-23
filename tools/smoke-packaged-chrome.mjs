@@ -146,6 +146,7 @@ export function validatePackagedChromeArchive(archive) {
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: "Packaged Chrome",
     metadataLabel: "Packaged Chrome runtime metadata",
+    platform: "chrome",
   });
   return manifest;
 }

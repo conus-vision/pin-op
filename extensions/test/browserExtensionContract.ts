@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -23,7 +24,12 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import postcss from "postcss";
 import ts from "typescript";
+import {
+  assertBrowserPackageRuntimeContract,
+  TRUSTED_ZOD_V3_BUNDLE_PROVENANCE,
+} from "../../tools/browser-package-contract.mjs";
 import {
   afterAll,
   afterEach,
@@ -53,6 +59,7 @@ export interface BrowserPackageContractOptions {
   readonly platformName: string;
   readonly extensionRoot: URL;
   readonly buildTarget: string;
+  readonly expectedInspectorAssets: readonly string[];
 }
 
 export function createBrowserAdapterHarness() {
@@ -781,6 +788,11 @@ export function describeBrowserPackageContract(
       expect(inspectorPanel).toBe(sharedAsset("inspector-panel.html"));
       expect(elementsCss).toBe(sharedElementsAsset("devtools-elements.css"));
       expect(inspectorPanel).toContain('./inspectorPanel.js');
+      expect(
+        [...inspectorPanel.matchAll(
+          /<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/g,
+        )].map((match) => match[1]),
+      ).toEqual(["./panel.css", "./devtools-elements.css"]);
       expect(inspectorPanelBundle).toContain("inspector-workspace");
       expect(panelCss).toBe(sharedAsset("panel.css"));
       expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
@@ -876,6 +888,175 @@ export function describeBrowserPackageContract(
       }
     });
 
+    it("passes the common runtime contract with the real emitted bundles", () => {
+      expect(() => assertBrowserPackageRuntimeContract(
+        { files: new Map(packaged.files) },
+        {
+          artifactLabel: `${contract.platformName} real emitted package`,
+          metadataLabel: `${contract.platformName} real emitted metadata`,
+          platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
+        },
+      )).not.toThrow();
+    });
+
+    it("hashes the raw emitted bundle bytes used for Zod provenance", () => {
+      const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
+      const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
+        (entry) => entry.browser === browser,
+      );
+      const actual = expected.map(({ path }) => ({
+        browser,
+        path,
+        sha256: createHash("sha256").update(packagedBytes(packaged, path)).digest("hex"),
+      }));
+
+      expect(actual).toEqual(expected);
+    });
+
+    it("rejects byte drift and copied constructor code in a real emitted bundle", () => {
+      const path = "dist/background.js";
+      const original = packagedBytes(packaged, path);
+      const copiedExploit = Buffer.from(
+        "\nclass CopiedSchema {" +
+        "describe(description) {" +
+        "const Constructor = this.constructor;" +
+        "return new Constructor({...this._def, description});" +
+        "}}" +
+        "function LocalFunction() {}" +
+        "LocalFunction._def = {" +
+        "toString() { return 'return 1'; }" +
+        "};" +
+        "CopiedSchema.prototype.describe.call(LocalFunction, 'x')();\n",
+      );
+
+      for (const mutation of [Buffer.from(" "), copiedExploit]) {
+        const files = new Map(packaged.files);
+        files.set(path, Buffer.concat([original, mutation]));
+        expect(() => assertBrowserPackageRuntimeContract(
+          { files },
+          {
+            artifactLabel: `${contract.platformName} altered emitted package`,
+            metadataLabel: `${contract.platformName} altered emitted metadata`,
+            platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
+          },
+        )).toThrow(/dynamic code evaluation/i);
+      }
+    });
+
+    it("centralizes browser panel assets and builds dependencies in fixed order", () => {
+      const build = readFileSync(
+        new URL("esbuild.mjs", contract.extensionRoot),
+        "utf8",
+      );
+      expect(build).toContain("../../tools/browser-panel-assets.mjs");
+      expect(build).toContain("copyBrowserPanelAssets");
+      expect(build).toContain("assertNoChromiumUpstreamInputs");
+      expect(build).toContain("assertNoChromiumUpstreamInputs(result.metafile");
+
+      const manifest = JSON.parse(
+        readFileSync(new URL("package.json", contract.extensionRoot), "utf8"),
+      ) as { readonly scripts?: Record<string, string> };
+      expect(manifest.scripts?.["build:deps"]).toBe(
+        "pnpm --filter @pin-op/protocol build && " +
+          "pnpm --filter @pin-op/devtools-elements-ui build && " +
+          "pnpm --filter @pin-op/browser-extension-core build",
+      );
+    });
+
+    it("declares the shared browser panel assets in deterministic copy order", async () => {
+      const helperUrl = new URL(
+        "../../tools/browser-panel-assets.mjs",
+        import.meta.url,
+      );
+      expect(existsSync(fileURLToPath(helperUrl))).toBe(true);
+      const helper = await import(helperUrl.href) as {
+        readonly BROWSER_PANEL_ASSET_PATHS?: readonly string[];
+        readonly assertNoChromiumUpstreamInputs?: (
+          metafile: unknown,
+          label?: string,
+        ) => void;
+      };
+      expect(helper.BROWSER_PANEL_ASSET_PATHS).toEqual([
+        "panel.html",
+        "inspector-panel.html",
+        "panel.css",
+        "devtools-elements.css",
+        "pin-op.svg",
+        "icons/pin-op-16.png",
+        "icons/pin-op-32.png",
+        "icons/pin-op-48.png",
+        "icons/pin-op-96.png",
+        "icons/pin-op-128.png",
+      ]);
+      expect(typeof helper.assertNoChromiumUpstreamInputs).toBe("function");
+      expect(() => helper.assertNoChromiumUpstreamInputs?.({
+        inputs: {
+          "src/panel.ts": {},
+          "../../packages/devtools-elements-ui/src/index.ts": {},
+        },
+      }, contract.platformName)).not.toThrow();
+
+      for (const resolvedInput of [
+        "../../third_party/chromium-devtools-frontend/upstream/front_end/panels/elements/ElementsTreeOutline.ts",
+        "..\\..\\third_party\\chromium-devtools-frontend\\upstream\\front_end\\panels\\elements\\ElementsTreeOutline.ts",
+      ]) {
+        expect(
+          () => helper.assertNoChromiumUpstreamInputs?.({
+            inputs: {
+              "src/reexport.ts": {},
+              [resolvedInput]: {},
+            },
+          }, contract.platformName),
+          resolvedInput,
+        ).toThrow(/upstream snapshot input/i);
+      }
+    });
+
+    it("keeps both panel entrypoints free of inline and remote UI resources", () => {
+      for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+        const html = packagedText(packaged, path);
+        expect(html, path).not.toMatch(/<style\b/i);
+        expect(html, path).not.toMatch(/\sstyle\s*=/i);
+        expect(html, path).not.toMatch(/<script\b(?![^>]*\bsrc=)/i);
+        for (const match of html.matchAll(
+          /<(?:script|link|img)\b[^>]*\b(?:src|href)="([^"]+)"/gi,
+        )) {
+          expect(match[1], `${path}: ${match[0]}`).toMatch(/^\.\/[A-Za-z0-9._/-]+$/);
+        }
+      }
+    });
+
+    it("keeps Chromium-derived CSS scoped and upstream snapshots out of production", () => {
+      const elementsCss = packagedText(packaged, "dist/devtools-elements.css");
+      postcss.parse(elementsCss).walkRules((rule) => {
+        for (const selector of rule.selectors) {
+          expect(selector.trim(), rule.toString()).toMatch(
+            /^\.pin-op-elements-inspector(?:\b|\s|\.|#|:|\[|>|\+|~)/,
+          );
+        }
+      });
+
+      const productionSources = [
+        ...readProductionSources(new URL("src/", contract.extensionRoot)),
+        ...readProductionSources(
+          new URL("../../packages/browser-extension-core/src/", import.meta.url),
+        ),
+        ...readProductionSources(
+          new URL("../../packages/devtools-elements-ui/src/", import.meta.url),
+        ),
+      ].join("\n");
+      expect(productionSources).not.toContain(
+        "third_party/chromium-devtools-frontend/upstream",
+      );
+      expect(productionSources).not.toContain(
+        "chromium-devtools-frontend/upstream",
+      );
+
+      for (const path of ["dist/panel.js", "dist/inspectorPanel.js"]) {
+        expect(packagedText(packaged, path), path).not.toMatch(/\beval\s*\(/);
+      }
+    });
+
     it("emits exact structured protocol metadata without live marker logic", () => {
       const metadata = JSON.parse(
         packagedText(packaged, "dist/runtime-metadata.json"),
@@ -935,12 +1116,10 @@ export function describeBrowserPackageContract(
         "dist/contentScript.js",
         "dist/devtools.js",
         "dist/panel.js",
-        "dist/inspectorPanel.js",
         "dist/devtools.html",
         "dist/panel.html",
-        "dist/inspector-panel.html",
         "dist/panel.css",
-        "dist/devtools-elements.css",
+        ...contract.expectedInspectorAssets,
         "dist/pin-op.svg",
         "dist/icons/pin-op-16.png",
         "dist/icons/pin-op-32.png",
@@ -1003,6 +1182,7 @@ export function describeBrowserPackageContract(
         "dist/contentScript.js",
         "dist/devtools.js",
         "dist/panel.js",
+        "dist/inspectorPanel.js",
       ]
         .map((path) => packagedText(packaged, path))
         .join("\n");
@@ -1269,6 +1449,23 @@ function sharedAssetBytes(name: string): Buffer {
   );
 }
 
+function readProductionSources(root: URL): string[] {
+  const rootPath = fileURLToPath(root);
+  const sources: string[] = [];
+  const visit = (path: string): void => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) {
+        visit(child);
+      } else if (entry.isFile() && /\.(?:ts|js|mjs)$/.test(entry.name)) {
+        sources.push(readFileSync(child, "utf8"));
+      }
+    }
+  };
+  visit(rootPath);
+  return sources;
+}
+
 function openingTag(panel: string, id: string): string {
   const match = new RegExp(`<[^>]+\\bid="${id}"[^>]*>`).exec(panel);
   expect(match).not.toBeNull();
@@ -1457,15 +1654,30 @@ function stageBrowserExtensionProject(
     });
   }
   copyWorkspacePath(workspaceRoot, stagedWorkspace, "LICENSE");
+  copyWorkspacePath(workspaceRoot, stagedWorkspace, "tsconfig.base.json");
   copyWorkspacePath(
     workspaceRoot,
     stagedWorkspace,
     join("tools", "browser-bundle-notices.mjs"),
   );
+  const panelAssetsHelper = join("tools", "browser-panel-assets.mjs");
+  if (existsSync(join(workspaceRoot, panelAssetsHelper))) {
+    copyWorkspacePath(workspaceRoot, stagedWorkspace, panelAssetsHelper);
+  }
   copyWorkspacePath(
     workspaceRoot,
     stagedWorkspace,
     join("tools", "runtime-metadata.mjs"),
+  );
+  copyWorkspacePath(
+    workspaceRoot,
+    stagedWorkspace,
+    join("third_party", "chromium-devtools-frontend", "UPSTREAM.json"),
+  );
+  copyWorkspacePath(
+    workspaceRoot,
+    stagedWorkspace,
+    join("third_party", "chromium-devtools-frontend", "LICENSE"),
   );
   copyWorkspacePath(
     workspaceRoot,

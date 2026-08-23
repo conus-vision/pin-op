@@ -33,6 +33,22 @@ Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
 WebSocket.
 
+The separately selectable Inspector panel reuses a small BSD-licensed view
+derivation from pinned Chromium DevTools Elements sources. It is presentation
+code only: Pin-op does not embed Chromium's `ElementsPanel`, Chrome DevTools
+Protocol backend, SDK models, target discovery, host integration, or browser
+branding. `DomTreeProvider`, `DomTreeController`, page inspection, overlay,
+selection, refresh, and bridge routing remain Pin-op-owned. The checked-in
+upstream snapshot is provenance and reproduction input and is never imported by
+production code.
+
+Chrome and Firefox copy the same two panel HTML entrypoints, core stylesheet,
+scoped `devtools-elements.css`, logo, and icons through one deterministic asset
+assembler. Both bundles emit the legacy `panel.js` rollback path and the
+feature-selected `inspectorPanel.js`; the legacy page remains the default in
+this checkpoint. Release verification requires byte-identical derived CSS and
+Chromium notice inventory across browsers.
+
 ### Inspected-Page Runtime
 
 The content runtime owns the browser-local Inspector session. One selection

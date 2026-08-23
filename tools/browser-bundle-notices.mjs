@@ -1,7 +1,34 @@
+import { createHash } from "node:crypto";
 import { readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
+const CHROMIUM_UPSTREAM_ROOT = "third_party/chromium-devtools-frontend";
+export const PINNED_CHROMIUM_REVISION =
+  "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280";
+export const CHROMIUM_EMBEDDED_NOTICE_DIGESTS = Object.freeze([
+  "0341a16b53a79d5e32172c89db96057ee8358305eef0aaaa556681c83667338e",
+  "050f83ce2b9b631be983c4ef44f0957b238a1643813e53a40387d672daf1f343",
+  "131804219ff999f3413b2f96f4a83a6bcce31958295d4b9386ae8908b1feeb58",
+  "3125b574da3d3e661c007a698a0ad1a606c9ac1d9d85a4a10fc108acbd0de9de",
+  "3d7a44c2f58a44d1fc5b62cc6e0b9368f9be300f60d3772e77a0be8f9f91c8e0",
+  "4c27ba6729a100d4fc512203eaec26c3fff044751c4852909a3166ef152d9c0a",
+  "5faa528cc315b32fd8d47131934c4b5efe04f5bef5ee9f759c5f7ced60a31739",
+  "a440e634c6fb90d085c874f96fd50705b609b91c648f4f75c1edb60999aa5ad3",
+  "de0c092c55e5a9bd3da8e050472082eb98379a3aeafcdf8c060b71b751bde822",
+]);
+export const CHROMIUM_UPSTREAM_PATHS = Object.freeze([
+  "front_end/panels/elements/ElementsTreeElement.ts",
+  "front_end/panels/elements/ElementsTreeOutline.ts",
+  "front_end/panels/elements/PropertyRenderer.ts",
+  "front_end/panels/elements/StylePropertiesSection.ts",
+  "front_end/panels/elements/StylePropertyTreeElement.ts",
+  "front_end/panels/elements/StylePropertyUtils.ts",
+  "front_end/panels/elements/StylesSidebarPane.ts",
+  "front_end/panels/elements/elementsTreeOutline.css",
+  "front_end/panels/elements/stylePropertiesTreeOutline.css",
+  "front_end/panels/elements/stylesSidebarPane.css",
+]);
 
 export async function writeBrowserProjectLicense(extensionRoot) {
   const license = normalizeText(
@@ -16,20 +43,32 @@ export async function writeBrowserBundleNotices(metafile, extensionRoot) {
     throw new Error("Browser bundle metadata contains no third-party packages");
   }
 
-  const sections = packages.map((entry) => [
+  const packageSections = packages.map((entry) => [
     `## ${entry.name}@${entry.version}`,
     `Declared license: ${entry.license}`,
     `License file: ${entry.licenseFile}`,
     "",
     entry.licenseText,
   ].join("\n"));
+  const repositoryRoot = resolve(extensionRoot, "../..");
+  const chromiumRoot = resolve(repositoryRoot, CHROMIUM_UPSTREAM_ROOT);
+  const upstreamManifest = JSON.parse(
+    await readFile(resolve(chromiumRoot, "UPSTREAM.json"), "utf8"),
+  );
+  const chromiumLicense = await readFile(resolve(chromiumRoot, "LICENSE"), "utf8");
+  const chromiumSection = renderChromiumDerivedNoticeSection(
+    upstreamManifest,
+    chromiumLicense,
+  );
   const notices = [
     "# Third-Party Notices",
     "",
     "Pin-op includes the following bundled third-party software.",
     "This list is generated from the inputs in esbuild's bundle metadata.",
     "",
-    ...sections.flatMap((section) => [section, ""]),
+    ...packageSections.flatMap((section) => [section, ""]),
+    chromiumSection,
+    "",
   ].join("\n");
 
   await writeFile(
@@ -37,6 +76,92 @@ export async function writeBrowserBundleNotices(metafile, extensionRoot) {
     notices,
     "utf8",
   );
+}
+
+export function renderChromiumDerivedNoticeSection(manifest, rootLicense) {
+  if (
+    !manifest ||
+    typeof manifest !== "object" ||
+    manifest.license !== "LICENSE" ||
+    !/^[0-9a-f]{64}$/.test(manifest.licenseSha256 ?? "") ||
+    !Array.isArray(manifest.files)
+  ) {
+    throw new Error("Invalid Chromium upstream notice manifest");
+  }
+  if (manifest.revision !== PINNED_CHROMIUM_REVISION) {
+    throw new Error(
+      `Expected pinned Chromium revision ${PINNED_CHROMIUM_REVISION}`,
+    );
+  }
+  if (manifest.files.length !== 10) {
+    throw new Error(
+      "Chromium embedded notice inventory does not match the pinned source set",
+    );
+  }
+  const upstreamPaths = manifest.files
+    .map((file) => file?.upstreamPath)
+    .sort(compareAscii);
+  if (!sameStrings(upstreamPaths, CHROMIUM_UPSTREAM_PATHS)) {
+    throw new Error(
+      "Chromium upstream path inventory does not match the pinned source set",
+    );
+  }
+  const normalizedLicenseBytes = normalizeLineEndings(rootLicense);
+  if (sha256(normalizedLicenseBytes) !== manifest.licenseSha256) {
+    throw new Error("Chromium root license does not match UPSTREAM.json");
+  }
+  const normalizedLicense = normalizedLicenseBytes.trim();
+  if (!normalizedLicense) {
+    throw new Error("Chromium root license is empty");
+  }
+
+  const embeddedNotices = new Map();
+  for (const file of manifest.files) {
+    if (!Array.isArray(file?.embeddedNotices) || file.embeddedNotices.length === 0) {
+      throw new Error(`Chromium source ${file?.upstreamPath ?? "<unknown>"} has no embedded notice`);
+    }
+    for (const notice of file.embeddedNotices) {
+      const text = normalizeText(notice?.text ?? "");
+      if (!/^[0-9a-f]{64}$/.test(notice?.sha256 ?? "") || !text) {
+        throw new Error("Invalid Chromium embedded notice metadata");
+      }
+      const existing = embeddedNotices.get(notice.sha256);
+      if (existing !== undefined && existing !== text) {
+        throw new Error(`Conflicting Chromium embedded notice ${notice.sha256}`);
+      }
+      if (sha256(text) !== notice.sha256) {
+        throw new Error(`Chromium embedded notice ${notice.sha256} has invalid text`);
+      }
+      embeddedNotices.set(notice.sha256, text);
+    }
+  }
+
+  const embeddedDigests = [...embeddedNotices.keys()].sort(compareAscii);
+  if (!sameStrings(embeddedDigests, CHROMIUM_EMBEDDED_NOTICE_DIGESTS)) {
+    throw new Error(
+      "Chromium embedded notice inventory does not match the pinned source set",
+    );
+  }
+
+  const embeddedSections = [...embeddedNotices]
+    .sort(([left], [right]) => compareAscii(left, right))
+    .flatMap(([digest, text]) => [
+      `### Embedded notice ${digest}`,
+      "",
+      text,
+      "",
+    ]);
+  return [
+    "## Chromium DevTools Frontend (derived view code)",
+    `Pinned revision: ${manifest.revision}`,
+    `License file: ${CHROMIUM_UPSTREAM_ROOT}/${manifest.license}`,
+    "",
+    normalizedLicense,
+    "",
+    "## Chromium DevTools Frontend embedded source notices",
+    "",
+    ...embeddedSections,
+  ].join("\n").trimEnd();
 }
 
 export async function normalizeBrowserPackageTimestamps(extensionRoot) {
@@ -152,9 +277,24 @@ function sourceDate() {
 }
 
 function normalizeText(text) {
-  return text.replaceAll("\r\n", "\n").trim();
+  return normalizeLineEndings(text).trim();
+}
+
+function normalizeLineEndings(text) {
+  return text.replaceAll("\r\n", "\n");
+}
+
+function sha256(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function compareAscii(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function sameStrings(left, right) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }

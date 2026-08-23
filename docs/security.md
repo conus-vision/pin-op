@@ -151,6 +151,22 @@ the pointer leaves the page element or DOM list and on refresh, document change,
 or disposal. Unsafe transformed or fragmented geometry is omitted rather than
 approximated.
 
+## Chromium-Derived View Boundary
+
+Pin-op ships a small BSD-licensed derivation of Chromium DevTools DOM-tree view
+code, not Chromium's native Inspector backend. Production bundles cannot import
+the checked-in upstream snapshot and contain no CDP/SDK model, DevTools host,
+target discovery, remote code, or browser branding. The snapshot, manifest,
+licenses, and patch record are source-provenance inputs only.
+
+The shared derived stylesheet is required to scope every selector below
+`.pin-op-elements-inspector`. Browser package verification rejects unscoped
+selectors, CSS resource loads, remote UI resources, inline script/style/event
+handlers, `eval`, `Function` construction, remote dynamic loading, upstream
+snapshot paths, changed permissions or host permissions, optional permissions,
+and any CSP drift. Both browser packages must carry the same complete Chromium
+root and embedded Apple/Pecoraro notice inventory.
+
 ## Bounded Facts Sent To VS Code
 
 Only a valid selection creates protocol facts. Pin-op sends bounded facts

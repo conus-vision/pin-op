@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { load } from "cheerio";
 import postcss from "postcss";
 import selectorParser from "postcss-selector-parser";
 import valueParser from "postcss-value-parser";
+import ts from "typescript";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 
 const PANEL_HTML_MARKERS = Object.freeze([
@@ -115,11 +117,54 @@ const CSS_WIDE_KEYWORDS = new Set([
 const MAX_CUSTOM_PROPERTY_DEPTH = 32;
 const MAX_RESOLVED_CSS_VALUE_LENGTH = 16_384;
 const MAX_STYLE_CONTEXTS = 12;
+const STATIC_CODE_CAPABILITIES = new Set(["eval", "Function", "importScripts"]);
+const MAX_STATIC_STRING_CANDIDATES = 32;
+const MAX_STATIC_STRING_LENGTH = 256;
+
+// zod@3.25.76 v3's describe helper clones schemas through this.constructor.
+// Trust only the sole helper in these exact esbuild outputs, hashing the raw
+// archived bytes. A dependency, esbuild, or bundle change that retains the
+// helper requires deliberate review and digest updates; helper-free bundles do
+// not depend on this provenance list.
+export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "091541209b0e387b65cd6fc81d03dcf221c632b62d6977ebdd1682a3bbd90851" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "ac0f61ea56f48a815079b66b0a74dc03d6805ad6270ac87787bb6d93168d06ad" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "9920d4e4b8b67a98a98c112039f00598720b1b00cfbd277dbfcc7223fda6d92e" }),
+  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "091541209b0e387b65cd6fc81d03dcf221c632b62d6977ebdd1682a3bbd90851" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "0ab26b2a545063cf09643e3466da9d7c7842454e883d310f9240ea1c82a82144" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "9920d4e4b8b67a98a98c112039f00598720b1b00cfbd277dbfcc7223fda6d92e" }),
+  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" }),
+]);
 
 export function assertBrowserPackageRuntimeContract(
   archive,
-  { artifactLabel, metadataLabel },
+  { artifactLabel, metadataLabel, platform },
 ) {
+  assertStaticPanelResourceBoundary(
+    archive,
+    artifactLabel,
+    "dist/panel.html",
+    ["./panel.css"],
+    ["./panel.js"],
+  );
+  assertStaticPanelResourceBoundary(
+    archive,
+    artifactLabel,
+    "dist/inspector-panel.html",
+    ["./panel.css", "./devtools-elements.css"],
+    ["./inspectorPanel.js"],
+  );
+  assertNoRemoteCssResources(
+    archive,
+    artifactLabel,
+    "dist/panel.css",
+    "panel",
+  );
+  assertScopedChromiumCss(archive, artifactLabel);
+  assertBrowserBundlesAreStatic(archive, artifactLabel, platform);
   assertTextMarkers(
     archive,
     artifactLabel,
@@ -136,6 +181,22 @@ export function assertBrowserPackageRuntimeContract(
   assertTextMarkers(
     archive,
     artifactLabel,
+    "dist/inspector-panel.html",
+    [
+      ["Inspector workspace", 'id="inspector-workspace"'],
+      ["Inspector mount", 'id="inspector-elements-mount"'],
+      ["Inspector bundle", 'src="./inspectorPanel.js"'],
+    ],
+  );
+  assertTextMarkers(
+    archive,
+    artifactLabel,
+    "dist/inspectorPanel.js",
+    [["Inspector runtime", "inspector-workspace"]],
+  );
+  assertTextMarkers(
+    archive,
+    artifactLabel,
     "dist/panel.js",
     PANEL_BUNDLE_MARKERS,
   );
@@ -143,6 +204,1000 @@ export function assertBrowserPackageRuntimeContract(
     expectedProtocolVersion: 6,
     label: metadataLabel,
   });
+}
+
+function assertStaticPanelResourceBoundary(
+  archive,
+  artifactLabel,
+  path,
+  expectedStylesheets,
+  expectedScripts,
+) {
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${artifactLabel} is missing ${path}`);
+  }
+  const $ = load(bytes.toString("utf8"));
+  const stylesheets = [];
+  const scripts = [];
+
+  if ($("style").length > 0 || $("[style]").length > 0) {
+    throw new Error(`${artifactLabel} ${path} contains inline style`);
+  }
+  if ($("base").length > 0) {
+    throw new Error(`${artifactLabel} ${path} contains remote UI resource base`);
+  }
+  $("*").each((_index, element) => {
+    const tagName = element.tagName?.toLowerCase();
+    for (const [name, value] of Object.entries(element.attribs ?? {})) {
+      if (/^on/i.test(name)) {
+        throw new Error(`${artifactLabel} ${path} contains inline event handler`);
+      }
+      const attribute = name.toLowerCase();
+      if (attribute === "srcdoc") {
+        throw new Error(`${artifactLabel} ${path} contains inline frame srcdoc`);
+      }
+      if (attribute === "ping") {
+        throw new Error(`${artifactLabel} ${path} contains remote UI resource ${value}`);
+      }
+      if (attribute === "srcset" || attribute === "imagesrcset") {
+        assertSafeLocalSrcset(value, artifactLabel, path);
+      }
+      if (
+        (attribute === "href" && tagName !== "a" && tagName !== "area") ||
+        attribute === "xlink:href" ||
+        attribute === "background"
+      ) {
+        assertSafeLocalUiResource(value, artifactLabel, path);
+      }
+      if (
+        (tagName === "form" && attribute === "action") ||
+        attribute === "formaction"
+      ) {
+        throw new Error(`${artifactLabel} ${path} contains remote UI resource ${value}`);
+      }
+      if (
+        (tagName === "a" || tagName === "area") &&
+        attribute === "href" &&
+        !isApprovedPanelNavigation(value)
+      ) {
+        throw new Error(`${artifactLabel} ${path} contains remote UI resource ${value}`);
+      }
+      if (
+        hasRemoteCssResource(value)
+      ) {
+        throw new Error(`${artifactLabel} ${path} contains remote UI resource ${value}`);
+      }
+    }
+    if (
+      tagName === "meta" &&
+      ($(element).attr("http-equiv") ?? "").trim().toLowerCase() === "refresh"
+    ) {
+      throw new Error(`${artifactLabel} ${path} contains meta refresh`);
+    }
+  });
+  $("script").each((_index, element) => {
+    const source = $(element).attr("src");
+    if (!source || $(element).text().trim()) {
+      throw new Error(`${artifactLabel} ${path} contains inline script`);
+    }
+    scripts.push(source);
+  });
+  $("link").each((_index, element) => {
+    const rel = ($(element).attr("rel") ?? "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (rel.includes("stylesheet")) {
+      stylesheets.push($(element).attr("href") ?? "");
+    }
+  });
+  for (const [selector, attribute] of [
+    ["script[src]", "src"],
+    ["link[href]", "href"],
+    ["img[src]", "src"],
+    ["iframe[src]", "src"],
+    ["frame[src]", "src"],
+    ["object[data]", "data"],
+    ["embed[src]", "src"],
+    ["source[src]", "src"],
+    ["audio[src]", "src"],
+    ["video[src]", "src"],
+    ["video[poster]", "poster"],
+    ["track[src]", "src"],
+    ["input[src]", "src"],
+  ]) {
+    $(selector).each((_index, element) => {
+      const resource = $(element).attr(attribute) ?? "";
+      if (!isSafeLocalUiResource(resource)) {
+        throw new Error(
+          `${artifactLabel} ${path} contains remote UI resource ${resource}`,
+        );
+      }
+    });
+  }
+  if (!sameStrings(stylesheets, expectedStylesheets)) {
+    throw new Error(`${artifactLabel} ${path} has unexpected stylesheet order`);
+  }
+  if (!sameStrings(scripts, expectedScripts)) {
+    throw new Error(`${artifactLabel} ${path} has unexpected script resources`);
+  }
+}
+
+function assertNoRemoteCssResources(archive, artifactLabel, path, kind) {
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${artifactLabel} is missing ${path}`);
+  }
+  let root;
+  try {
+    root = postcss.parse(bytes.toString("utf8"), { from: path });
+  } catch (error) {
+    throw new Error(`${artifactLabel} has invalid ${kind} CSS: ${error.message}`);
+  }
+  root.walkAtRules((atRule) => {
+    if (decodeCssIdentifier(atRule.name) === "import") {
+      throw new Error(`${artifactLabel} contains remote ${kind} CSS resource`);
+    }
+  });
+  root.walkDecls((declaration) => {
+    if (hasRemoteCssResource(declaration.value)) {
+      throw new Error(`${artifactLabel} contains remote ${kind} CSS resource`);
+    }
+  });
+}
+
+function assertScopedChromiumCss(archive, artifactLabel) {
+  const path = "dist/devtools-elements.css";
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${artifactLabel} is missing ${path}`);
+  }
+  let root;
+  try {
+    root = postcss.parse(bytes.toString("utf8"), { from: path });
+  } catch (error) {
+    throw new Error(`${artifactLabel} has invalid Chromium CSS: ${error.message}`);
+  }
+  root.walkAtRules((atRule) => {
+    const name = decodeCssIdentifier(atRule.name);
+    if (name === "import") {
+      throw new Error(`${artifactLabel} contains remote Chromium CSS resource`);
+    }
+    if (isKeyframesAtRuleName(name)) {
+      const keyframeName = decodeCssIdentifier(atRule.params);
+      if (!/^pin-op-elements-[a-z0-9_-]+$/.test(keyframeName ?? "")) {
+        throw new Error(`${artifactLabel} contains global Chromium CSS keyframes`);
+      }
+      return;
+    }
+    if (!["container", "layer", "media", "supports"].includes(name)) {
+      throw new Error(`${artifactLabel} contains global Chromium CSS at-rule ${atRule.name}`);
+    }
+  });
+  root.walkDecls((declaration) => {
+    walkCssResourceFunctions(declaration.value, () => {
+      throw new Error(`${artifactLabel} contains remote Chromium CSS resource`);
+    });
+  });
+  root.walkRules((rule) => {
+    if (isKeyframeRule(rule)) return;
+    for (const selector of rule.selectors) {
+      if (!isScopedChromiumSelector(selector)) {
+        throw new Error(
+          `${artifactLabel} contains unscoped Chromium CSS selector ${selector}`,
+        );
+      }
+    }
+  });
+}
+
+function assertBrowserBundlesAreStatic(archive, artifactLabel, platform) {
+  for (const path of [
+    "dist/background.js",
+    "dist/contentScript.js",
+    "dist/devtools.js",
+    "dist/panel.js",
+    "dist/inspectorPanel.js",
+  ]) {
+    const bytes = archive.files.get(path);
+    if (!Buffer.isBuffer(bytes)) {
+      throw new Error(`${artifactLabel} is missing ${path}`);
+    }
+    const source = bytes.toString("utf8");
+    const sourceSha256 = createHash("sha256").update(bytes).digest("hex");
+    assertStaticJavaScript(source, artifactLabel, path, {
+      platform,
+      sourceSha256,
+    });
+    if (
+      /(?:third_party\/)?chromium-devtools-frontend[\\/]upstream[\\/]/i.test(
+        source,
+      )
+    ) {
+      throw new Error(`${artifactLabel} ${path} contains an upstream snapshot import`);
+    }
+  }
+}
+
+function isSafeLocalUiResource(resource) {
+  return (
+    /^\.\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(resource) &&
+    !resource.split("/").includes("..")
+  );
+}
+
+function assertSafeLocalUiResource(resource, artifactLabel, path) {
+  if (!isSafeLocalUiResource(resource)) {
+    throw new Error(
+      `${artifactLabel} ${path} contains remote UI resource ${resource}`,
+    );
+  }
+}
+
+function assertSafeLocalSrcset(srcset, artifactLabel, path) {
+  const candidates = srcset.split(",").map((candidate) => candidate.trim());
+  if (
+    candidates.length === 0 ||
+    candidates.some((candidate) => {
+      const [resource, ...descriptors] = candidate.split(/\s+/);
+      return (
+        !resource ||
+        !isSafeLocalUiResource(resource) ||
+        descriptors.length > 1 ||
+        (descriptors.length === 1 && !/^\d+(?:\.\d+)?x$|^\d+w$/.test(descriptors[0]))
+      );
+    })
+  ) {
+    throw new Error(`${artifactLabel} ${path} contains remote UI resource srcset`);
+  }
+}
+
+function isApprovedPanelNavigation(resource) {
+  return resource === "mailto:info@conus.vision" ||
+    resource === "https://conus.vision";
+}
+
+function walkCssResourceFunctions(value, callback) {
+  const withoutComments = value.replace(/\/\*[\s\S]*?\*\//g, "");
+  valueParser(withoutComments).walk((node) => {
+    if (node.type !== "function") return;
+    const name = decodeCssIdentifier(node.value);
+    if (["url", "image-set", "-webkit-image-set"].includes(name)) {
+      callback(node, name);
+    }
+  });
+}
+
+function hasRemoteCssResource(value) {
+  let remote = false;
+  walkCssResourceFunctions(value, (node, name) => {
+    if (name !== "url") {
+      remote = true;
+      return;
+    }
+    const rawResource = valueParser.stringify(node.nodes).trim();
+    const resource = rawResource.replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+    const decodedResource = decodeCssEscapedText(resource)?.trim();
+    if (
+      decodedResource === undefined ||
+      (!isSafeLocalUiResource(decodedResource) &&
+        !/^#[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(decodedResource))
+    ) {
+      remote = true;
+    }
+  });
+  return remote;
+}
+
+function isKeyframesAtRuleName(name) {
+  return /^(?:-[a-z]+-)?keyframes$/.test(name ?? "");
+}
+
+function isKeyframeRule(rule) {
+  for (let parent = rule.parent; parent; parent = parent.parent) {
+    if (
+      parent.type === "atrule" &&
+      isKeyframesAtRuleName(decodeCssIdentifier(parent.name))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isScopedChromiumSelector(selector) {
+  let scoped = true;
+  try {
+    selectorParser((root) => {
+      root.each((candidate) => {
+        const nodes = candidate.nodes;
+        if (
+          nodes[0]?.type !== "class" ||
+          nodes[0].value !== "pin-op-elements-inspector"
+        ) {
+          scoped = false;
+          return;
+        }
+        let descendantBoundary = false;
+        for (const node of nodes.slice(1)) {
+          if (node.type !== "combinator") continue;
+          const combinator = node.value.trim();
+          if (combinator === "||") {
+            scoped = false;
+            return;
+          }
+          if ((combinator === "+" || combinator === "~") && !descendantBoundary) {
+            scoped = false;
+            return;
+          }
+          if (combinator === "" || combinator === ">") {
+            descendantBoundary = true;
+          }
+        }
+      });
+    }).processSync(selector);
+  } catch {
+    return false;
+  }
+  return scoped;
+}
+
+function assertStaticJavaScript(
+  source,
+  artifactLabel,
+  path,
+  { platform, sourceSha256 },
+) {
+  const analysisPath = path.replaceAll("\\", "/");
+  const sourceFile = ts.createSourceFile(
+    analysisPath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (sourceFile.parseDiagnostics.length > 0) {
+    throw new Error(`${artifactLabel} ${path} contains invalid static JavaScript`);
+  }
+  const checker = createStaticJavaScriptChecker(sourceFile, analysisPath);
+  const capabilityAliases = new Map();
+  const globalObjectAliases = new Set();
+  const staticStringAliases = new Map();
+  collectStaticJavaScriptAliases(
+    sourceFile,
+    checker,
+    capabilityAliases,
+    globalObjectAliases,
+    staticStringAliases,
+    { platform, path, sourceSha256 },
+  );
+
+  let violation;
+  const visit = (node) => {
+    if (violation) return;
+    if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        violation = "remote code loading";
+        return;
+      }
+      const reflectedCapability = reflectedCodeCapability(
+        node,
+        checker,
+        capabilityAliases,
+        globalObjectAliases,
+        staticStringAliases,
+      );
+      const capability = reflectedCapability ?? invokedCodeCapability(
+        node.expression,
+        checker,
+        capabilityAliases,
+        globalObjectAliases,
+        staticStringAliases,
+      );
+      if (capability) {
+        violation = capability === "importScripts"
+          ? "remote code loading"
+          : "dynamic code evaluation";
+        return;
+      }
+    }
+    if (ts.isNewExpression(node)) {
+      const capability = resolveCodeCapability(
+        node.expression,
+        checker,
+        capabilityAliases,
+        globalObjectAliases,
+        staticStringAliases,
+      );
+      if (capability === "Function" || capability === "eval") {
+        violation = "dynamic code evaluation";
+        return;
+      }
+    }
+    if (ts.isTaggedTemplateExpression(node)) {
+      const capability = resolveCodeCapability(
+        node.tag,
+        checker,
+        capabilityAliases,
+        globalObjectAliases,
+        staticStringAliases,
+      );
+      if (capability) {
+        violation = capability === "importScripts"
+          ? "remote code loading"
+          : "dynamic code evaluation";
+        return;
+      }
+    }
+    const referencedCapability = globalCodeCapabilityReference(
+      node,
+      checker,
+      globalObjectAliases,
+      staticStringAliases,
+    ) ?? destructuredGlobalCodeCapability(
+      node,
+      checker,
+      globalObjectAliases,
+      staticStringAliases,
+    );
+    if (referencedCapability) {
+      violation = referencedCapability === "importScripts"
+        ? "remote code loading"
+        : "dynamic code evaluation";
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  if (violation) {
+    throw new Error(
+      `${artifactLabel} ${path} contains ${violation} (sha256 ${sourceSha256})`,
+    );
+  }
+}
+
+function createStaticJavaScriptChecker(sourceFile, path) {
+  const options = {
+    allowJs: true,
+    checkJs: false,
+    module: ts.ModuleKind.ESNext,
+    noLib: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const host = {
+    fileExists: (candidate) => candidate === path,
+    getCanonicalFileName: (candidate) => candidate,
+    getCurrentDirectory: () => "",
+    getDefaultLibFileName: () => "",
+    getNewLine: () => "\n",
+    getSourceFile: (candidate) => candidate === path ? sourceFile : undefined,
+    readFile: (candidate) => candidate === path ? sourceFile.text : undefined,
+    useCaseSensitiveFileNames: () => true,
+    writeFile: () => {},
+  };
+  return ts.createProgram([path], options, host).getTypeChecker();
+}
+
+function collectStaticJavaScriptAliases(
+  sourceFile,
+  checker,
+  capabilityAliases,
+  globalObjectAliases,
+  staticStringAliases,
+  provenance,
+) {
+  const assignments = [];
+  const collect = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer
+    ) {
+      assignments.push({
+        name: node.name,
+        initializer: node.initializer,
+        source: node,
+      });
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left)
+    ) {
+      assignments.push({
+        name: node.left,
+        initializer: node.right,
+        source: node,
+      });
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+  collectStaticStringAliases(assignments, checker, staticStringAliases);
+
+  const schemaCloneAssignments = assignments.filter((assignment) =>
+    isZodSchemaCloneConstructorAliasSyntax(assignment, checker)
+  );
+  const hasTrustedBundleProvenance = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.some(
+    (entry) =>
+      entry.browser === provenance.platform &&
+      entry.path === provenance.path &&
+      entry.sha256 === provenance.sourceSha256,
+  );
+  const trustedSchemaCloneAssignment =
+    hasTrustedBundleProvenance && schemaCloneAssignments.length === 1
+      ? schemaCloneAssignments[0]
+      : undefined;
+
+  for (let pass = 0; pass <= assignments.length; pass += 1) {
+    let changed = false;
+    for (const assignment of assignments) {
+      const symbol = checker.getSymbolAtLocation(assignment.name);
+      if (!symbol) continue;
+      if (
+        !globalObjectAliases.has(symbol) &&
+        isGlobalObjectExpression(
+          assignment.initializer,
+          checker,
+          globalObjectAliases,
+        )
+      ) {
+        globalObjectAliases.add(symbol);
+        changed = true;
+      }
+      const capability = assignment === trustedSchemaCloneAssignment
+        ? undefined
+        : resolveCodeCapability(
+          assignment.initializer,
+          checker,
+          capabilityAliases,
+          globalObjectAliases,
+          staticStringAliases,
+        );
+      if (capability && capabilityAliases.get(symbol) !== capability) {
+        capabilityAliases.set(symbol, capability);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+  }
+}
+
+function collectStaticStringAliases(assignments, checker, staticStringAliases) {
+  for (let pass = 0; pass <= assignments.length; pass += 1) {
+    let changed = false;
+    for (const assignment of assignments) {
+      const symbol = checker.getSymbolAtLocation(assignment.name);
+      if (!symbol) continue;
+      const values = staticStrings(
+        assignment.initializer,
+        checker,
+        staticStringAliases,
+      );
+      if (!values) continue;
+      const known = staticStringAliases.get(symbol) ?? new Set();
+      for (const value of values) {
+        if (known.size >= MAX_STATIC_STRING_CANDIDATES) break;
+        if (!known.has(value)) {
+          known.add(value);
+          changed = true;
+        }
+      }
+      if (known.size > 0) staticStringAliases.set(symbol, known);
+    }
+    if (!changed) return;
+  }
+}
+
+function isZodSchemaCloneConstructorAliasSyntax(assignment, checker) {
+  if (!ts.isVariableDeclaration(assignment.source)) return false;
+  const constructor = staticMember(assignment.initializer);
+  if (
+    constructor?.name !== "constructor" ||
+    unwrapStaticExpression(constructor.expression).kind !== ts.SyntaxKind.ThisKeyword
+  ) {
+    return false;
+  }
+
+  const declarationList = assignment.source.parent;
+  const variableStatement = declarationList?.parent;
+  const body = variableStatement?.parent;
+  const method = body?.parent;
+  if (
+    !ts.isVariableDeclarationList(declarationList) ||
+    declarationList.declarations.length !== 1 ||
+    !ts.isVariableStatement(variableStatement) ||
+    !ts.isBlock(body) ||
+    !ts.isMethodDeclaration(method) ||
+    !ts.isIdentifier(method.name) ||
+    method.name.text !== "describe" ||
+    method.parameters.length !== 1 ||
+    !ts.isIdentifier(method.parameters[0].name) ||
+    body.statements.length !== 2 ||
+    body.statements[0] !== variableStatement ||
+    !ts.isReturnStatement(body.statements[1])
+  ) {
+    return false;
+  }
+
+  const returned = unwrapStaticExpression(body.statements[1].expression);
+  if (
+    !ts.isNewExpression(returned) ||
+    returned.arguments?.length !== 1 ||
+    !ts.isObjectLiteralExpression(returned.arguments[0]) ||
+    checker.getSymbolAtLocation(returned.expression) !==
+      checker.getSymbolAtLocation(assignment.name)
+  ) {
+    return false;
+  }
+
+  const [spread, description] = returned.arguments[0].properties;
+  if (
+    returned.arguments[0].properties.length !== 2 ||
+    !ts.isSpreadAssignment(spread) ||
+    !isThisDefinitionReference(spread.expression)
+  ) {
+    return false;
+  }
+  const parameterSymbol = checker.getSymbolAtLocation(method.parameters[0].name);
+  if (ts.isShorthandPropertyAssignment(description)) {
+    return description.name.text === "description" &&
+      checker.getShorthandAssignmentValueSymbol(description) === parameterSymbol;
+  }
+  return ts.isPropertyAssignment(description) &&
+    staticPropertyName(description.name) === "description" &&
+    checker.getSymbolAtLocation(unwrapStaticExpression(description.initializer)) ===
+      parameterSymbol;
+}
+
+function isThisDefinitionReference(expression) {
+  const member = staticMember(expression);
+  return member?.name === "_def" &&
+    unwrapStaticExpression(member.expression).kind === ts.SyntaxKind.ThisKeyword;
+}
+
+function staticPropertyName(name) {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) return staticString(name.expression);
+  return undefined;
+}
+
+function invokedCodeCapability(
+  expression,
+  checker,
+  capabilityAliases,
+  globalObjectAliases,
+  staticStringAliases,
+) {
+  const direct = resolveCodeCapability(
+    expression,
+    checker,
+    capabilityAliases,
+    globalObjectAliases,
+    staticStringAliases,
+  );
+  if (direct) return direct;
+
+  for (const member of staticMembers(expression, checker, staticStringAliases)) {
+    if (!["apply", "bind", "call"].includes(member.name)) continue;
+    const capability = resolveCodeCapability(
+      member.expression,
+      checker,
+      capabilityAliases,
+      globalObjectAliases,
+      staticStringAliases,
+    );
+    if (capability) return capability;
+  }
+  return undefined;
+}
+
+function reflectedCodeCapability(
+  call,
+  checker,
+  capabilityAliases,
+  globalObjectAliases,
+  staticStringAliases,
+) {
+  for (const member of staticMembers(
+    call.expression,
+    checker,
+    staticStringAliases,
+  )) {
+    if (
+      !["apply", "construct"].includes(member.name) ||
+      !isUnboundGlobalIdentifier(member.expression, "Reflect", checker)
+    ) {
+      continue;
+    }
+    const capability = resolveCodeCapability(
+      call.arguments[0],
+      checker,
+      capabilityAliases,
+      globalObjectAliases,
+      staticStringAliases,
+    );
+    if (capability) return capability;
+  }
+  return undefined;
+}
+
+function resolveCodeCapability(
+  expression,
+  checker,
+  capabilityAliases,
+  globalObjectAliases,
+  staticStringAliases,
+) {
+  const node = unwrapStaticExpression(expression);
+  if (!node) return undefined;
+  if (ts.isIdentifier(node)) {
+    const symbol = checker.getSymbolAtLocation(node);
+    if (symbol && capabilityAliases.has(symbol)) {
+      return capabilityAliases.get(symbol);
+    }
+    if (symbol && hasLocalDeclaration(symbol, node.getSourceFile())) {
+      return undefined;
+    }
+    if (["eval", "Function", "importScripts"].includes(node.text)) {
+      return node.text;
+    }
+    return undefined;
+  }
+
+  for (const member of staticMembers(node, checker, staticStringAliases)) {
+    if (
+      isGlobalObjectExpression(member.expression, checker, globalObjectAliases) &&
+      ["eval", "Function", "importScripts"].includes(member.name)
+    ) {
+      return member.name;
+    }
+    if (member.name === "constructor") return "Function";
+  }
+  return undefined;
+}
+
+function isGlobalObjectExpression(expression, checker, globalObjectAliases) {
+  const node = unwrapStaticExpression(expression);
+  if (!node || !ts.isIdentifier(node)) return false;
+  const symbol = checker.getSymbolAtLocation(node);
+  if (symbol && globalObjectAliases.has(symbol)) return true;
+  return ["globalThis", "window", "self", "global"].includes(node.text) &&
+    !hasLocalDeclaration(symbol, node.getSourceFile());
+}
+
+function isUnboundGlobalIdentifier(node, name, checker) {
+  const expression = unwrapStaticExpression(node);
+  return ts.isIdentifier(expression) &&
+    expression.text === name &&
+    !hasLocalDeclaration(
+      checker.getSymbolAtLocation(expression),
+      expression.getSourceFile(),
+    );
+}
+
+function hasLocalDeclaration(symbol, sourceFile) {
+  return Boolean(symbol?.declarations?.some(
+    (declaration) => declaration.getSourceFile() === sourceFile,
+  ));
+}
+
+function globalCodeCapabilityReference(
+  node,
+  checker,
+  globalObjectAliases,
+  staticStringAliases,
+) {
+  if (ts.isIdentifier(node)) {
+    if (!STATIC_CODE_CAPABILITIES.has(node.text)) return undefined;
+    if (!isValueIdentifierReference(node)) return undefined;
+    const symbol = ts.isShorthandPropertyAssignment(node.parent)
+      ? checker.getShorthandAssignmentValueSymbol(node.parent)
+      : checker.getSymbolAtLocation(node);
+    if (hasLocalDeclaration(symbol, node.getSourceFile())) return undefined;
+    if (node.text === "Function" && isExactEsbuildFunctionHelperReference(node)) {
+      return undefined;
+    }
+    return node.text;
+  }
+
+  for (const member of staticMembers(node, checker, staticStringAliases)) {
+    if (
+      STATIC_CODE_CAPABILITIES.has(member.name) &&
+      isGlobalObjectExpression(member.expression, checker, globalObjectAliases)
+    ) {
+      return member.name;
+    }
+  }
+  return undefined;
+}
+
+function destructuredGlobalCodeCapability(
+  node,
+  checker,
+  globalObjectAliases,
+  staticStringAliases,
+) {
+  if (
+    !ts.isVariableDeclaration(node) ||
+    !ts.isObjectBindingPattern(node.name) ||
+    !node.initializer ||
+    !isGlobalObjectExpression(node.initializer, checker, globalObjectAliases)
+  ) {
+    return undefined;
+  }
+  for (const element of node.name.elements) {
+    const property = element.propertyName ?? element.name;
+    const names = ts.isComputedPropertyName(property)
+      ? staticStrings(property.expression, checker, staticStringAliases)
+      : ts.isIdentifier(property) || ts.isStringLiteralLike(property)
+      ? new Set([property.text])
+      : undefined;
+    for (const name of names ?? []) {
+      if (STATIC_CODE_CAPABILITIES.has(name)) return name;
+    }
+  }
+  return undefined;
+}
+
+function isValueIdentifierReference(node) {
+  const parent = node.parent;
+  if (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+    (ts.isPropertyAssignment(parent) && parent.name === node) ||
+    (ts.isBindingElement(parent) &&
+      (parent.name === node || parent.propertyName === node))
+  ) {
+    return false;
+  }
+  return ts.isShorthandPropertyAssignment(parent) || ts.isInExpressionContext(node);
+}
+
+function isExactEsbuildFunctionHelperReference(node) {
+  const callMember = node.parent;
+  if (
+    !ts.isPropertyAccessExpression(callMember) ||
+    callMember.expression !== node ||
+    callMember.name.text !== "call"
+  ) {
+    return false;
+  }
+  const bindMember = callMember.parent;
+  if (
+    !ts.isPropertyAccessExpression(bindMember) ||
+    bindMember.expression !== callMember ||
+    bindMember.name.text !== "bind"
+  ) {
+    return false;
+  }
+  const invocation = bindMember.parent;
+  return ts.isCallExpression(invocation) &&
+    invocation.expression === bindMember &&
+    invocation.arguments.length === 1 &&
+    isExactObjectPrototypeHasOwnProperty(invocation.arguments[0]);
+}
+
+function isExactObjectPrototypeHasOwnProperty(node) {
+  const hasOwnProperty = staticMember(node);
+  if (!hasOwnProperty || hasOwnProperty.name !== "hasOwnProperty") return false;
+  const prototype = staticMember(hasOwnProperty.expression);
+  const object = prototype && unwrapStaticExpression(prototype.expression);
+  return prototype?.name === "prototype" &&
+    ts.isIdentifier(object) &&
+    object.text === "Object";
+}
+
+function staticMember(node, checker, staticStringAliases) {
+  const members = staticMembers(node, checker, staticStringAliases);
+  return members.length === 1 ? members[0] : undefined;
+}
+
+function staticMembers(node, checker, staticStringAliases) {
+  const expression = unwrapStaticExpression(node);
+  if (ts.isPropertyAccessExpression(expression)) {
+    return [{ expression: expression.expression, name: expression.name.text }];
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    const names = staticStrings(
+      expression.argumentExpression,
+      checker,
+      staticStringAliases,
+    );
+    return [...(names ?? [])].map((name) => ({
+      expression: expression.expression,
+      name,
+    }));
+  }
+  return [];
+}
+
+function staticString(node, checker, staticStringAliases) {
+  const values = staticStrings(node, checker, staticStringAliases);
+  return values?.size === 1 ? values.values().next().value : undefined;
+}
+
+function staticStrings(node, checker, staticStringAliases) {
+  const expression = unwrapStaticExpression(node);
+  if (!expression) return undefined;
+  if (ts.isStringLiteralLike(expression)) return new Set([expression.text]);
+  if (ts.isIdentifier(expression) && checker && staticStringAliases) {
+    const values = staticStringAliases.get(checker.getSymbolAtLocation(expression));
+    return values ? new Set(values) : undefined;
+  }
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    return concatenateStaticStrings(
+      staticStrings(expression.left, checker, staticStringAliases),
+      staticStrings(expression.right, checker, staticStringAliases),
+    );
+  }
+  if (ts.isTemplateExpression(expression)) {
+    let values = new Set([expression.head.text]);
+    for (const span of expression.templateSpans) {
+      values = concatenateStaticStrings(
+        values,
+        staticStrings(span.expression, checker, staticStringAliases),
+      );
+      if (!values) return undefined;
+      values = new Set(
+        [...values]
+          .map((value) => value + span.literal.text)
+          .filter((value) => value.length <= MAX_STATIC_STRING_LENGTH),
+      );
+      if (values.size === 0) return undefined;
+    }
+    return values;
+  }
+  return undefined;
+}
+
+function concatenateStaticStrings(left, right) {
+  if (!left || !right) return undefined;
+  const values = new Set();
+  for (const leftValue of left) {
+    for (const rightValue of right) {
+      const value = leftValue + rightValue;
+      if (value.length <= MAX_STATIC_STRING_LENGTH) values.add(value);
+      if (values.size >= MAX_STATIC_STRING_CANDIDATES) return values;
+    }
+  }
+  return values.size > 0 ? values : undefined;
+}
+
+function unwrapStaticExpression(node) {
+  let expression = node;
+  while (expression) {
+    if (
+      ts.isParenthesizedExpression(expression) ||
+      ts.isAsExpression(expression) ||
+      ts.isNonNullExpression(expression) ||
+      ts.isSatisfiesExpression(expression) ||
+      ts.isTypeAssertionExpression(expression)
+    ) {
+      expression = expression.expression;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.CommaToken
+    ) {
+      expression = expression.right;
+      continue;
+    }
+    if (ts.isCommaListExpression(expression)) {
+      expression = expression.elements.at(-1);
+      continue;
+    }
+    return expression;
+  }
+  return undefined;
+}
+
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function assertPanelHtmlContract(archive, artifactLabel) {
@@ -914,18 +1969,30 @@ function parseCssWords(value) {
 
 function decodeCssIdentifier(identifier, lowercase = true) {
   const input = identifier.trim();
+  if (/\s/.test(input)) return undefined;
+  const decoded = decodeCssEscapedText(input);
+  if (decoded === undefined) return undefined;
+  return lowercase ? decoded.toLowerCase() : decoded;
+}
+
+function decodeCssEscapedText(input) {
   let decoded = "";
   for (let index = 0; index < input.length; index += 1) {
     const character = input[index];
-    if (/\s/.test(character)) return undefined;
     if (character !== "\\") {
       decoded += character;
       continue;
     }
 
     const next = input[index + 1];
-    if (next === undefined || next === "\n" || next === "\r" || next === "\f") {
-      return undefined;
+    if (next === undefined) return undefined;
+    if (next === "\n" || next === "\f") {
+      index += 1;
+      continue;
+    }
+    if (next === "\r") {
+      index += input[index + 2] === "\n" ? 2 : 1;
+      continue;
     }
     if (!/[0-9a-f]/i.test(next)) {
       decoded += next;
@@ -947,7 +2014,7 @@ function decodeCssIdentifier(identifier, lowercase = true) {
     if (/\s/.test(input[cursor] ?? "")) cursor += 1;
     index = cursor - 1;
   }
-  return lowercase ? decoded.toLowerCase() : decoded;
+  return decoded;
 }
 
 function assertTextMarkers(archive, artifactLabel, path, markers) {
