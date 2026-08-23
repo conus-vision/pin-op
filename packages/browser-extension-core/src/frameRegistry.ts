@@ -267,8 +267,20 @@ export class FrameRegistry {
   public describeFrame(
     frameElement: HTMLIFrameElement,
     parentFrameRef = this.top?.frameRef,
+    isAuthoritative: () => boolean = () => true,
   ): FrameDescription | undefined {
+    let authorityRevoked = false;
+    const registrationAuthorityCurrent = (): boolean => {
+      if (authorityRevoked) return false;
+      try {
+        authorityRevoked = isAuthoritative() !== true;
+      } catch {
+        authorityRevoked = true;
+      }
+      return !authorityRevoked;
+    };
     if (
+      !registrationAuthorityCurrent() ||
       this.state !== "active" ||
       !isObject(frameElement) ||
       !parentFrameRef ||
@@ -278,13 +290,22 @@ export class FrameRegistry {
       return undefined;
     }
     const parent = this.getContext(parentFrameRef);
-    if (!parent || readOwnerDocument(frameElement) !== parent.document) {
+    if (
+      !registrationAuthorityCurrent() ||
+      !parent ||
+      readOwnerDocument(frameElement) !== parent.document ||
+      !registrationAuthorityCurrent()
+    ) {
       return undefined;
     }
     const existing = this.recordByElement.get(frameElement);
     if (existing) {
-      if (existing.parentFrameRef !== parentFrameRef) return undefined;
-      return this.describeExisting(existing, parent);
+      if (
+        !registrationAuthorityCurrent() ||
+        existing.parentFrameRef !== parentFrameRef
+      ) return undefined;
+      const description = this.describeExisting(existing, parent);
+      return registrationAuthorityCurrent() ? description : undefined;
     }
     if (this.records.size + 1 >= this.maxFrames) {
       return undefined;
@@ -293,8 +314,9 @@ export class FrameRegistry {
     let registeredRecord: FrameRecord | undefined;
     this.state = "mutating";
     try {
+      if (!registrationAuthorityCurrent()) return undefined;
       const access = captureFrameElementAccess(frameElement);
-      if (!access) {
+      if (!registrationAuthorityCurrent() || !access) {
         return undefined;
       }
       const frameRef = this.reserveFrameRef();
@@ -302,39 +324,65 @@ export class FrameRegistry {
       const onLoad: EventListener = function handleFrameLoad(): void {
         registryRef.deref()?.handleLoadByRef(frameRef);
       };
+      const abandonRegistration = (): undefined => {
+        if (!tryRemoveLoadListener({ access, onLoad })) {
+          this.nextFrameRef += 1;
+        }
+        return undefined;
+      };
       const registrationRevision = this.structuralRevision;
       const parentSnapshot = this.captureContextChain(parent, "mutating");
       if (!parentSnapshot) return undefined;
-      const isRegistrationCurrent = (): boolean => (
-        this.state === "mutating" &&
-        this.structuralRevision === registrationRevision &&
-        this.validateLiveContextChain(parentSnapshot)
-      );
+      const isRegistrationCurrent = (): boolean => {
+        if (
+          !registrationAuthorityCurrent() ||
+          this.state !== "mutating" ||
+          this.structuralRevision !== registrationRevision
+        ) return false;
+        const parentCurrent = this.validateLiveContextChain(parentSnapshot);
+        return parentCurrent &&
+          registrationAuthorityCurrent() &&
+          this.state === "mutating" &&
+          this.structuralRevision === registrationRevision;
+      };
       const inspected = this.inspectDocument(access, isRegistrationCurrent);
+      if (!isRegistrationCurrent()) return undefined;
       try {
         access.addLoadListener(onLoad);
       } catch {
-        if (!tryRemoveLoadListener({ access, onLoad })) {
-          this.nextFrameRef += 1;
-        }
-        return undefined;
+        return abandonRegistration();
+      }
+      if (!isRegistrationCurrent()) {
+        return abandonRegistration();
       }
       const verifiedAccess = captureFrameElementAccess(frameElement);
-      const verifiedDocument = verifiedAccess
-        ? this.inspectDocument(verifiedAccess, isRegistrationCurrent)
-        : undefined;
       if (
-        !verifiedAccess ||
-        !sameFrameElementAccess(access, verifiedAccess) ||
-        !sameFrameDocumentAccess(inspected, verifiedDocument) ||
         !isRegistrationCurrent() ||
-        this.revalidateContext(parent, undefined, "mutating") !== parent ||
-        readOwnerDocument(frameElement) !== parent.document
+        !verifiedAccess ||
+        !sameFrameElementAccess(access, verifiedAccess)
       ) {
-        if (!tryRemoveLoadListener({ access, onLoad })) {
-          this.nextFrameRef += 1;
-        }
-        return undefined;
+        return abandonRegistration();
+      }
+      const verifiedDocument = this.inspectDocument(
+        verifiedAccess,
+        isRegistrationCurrent,
+      );
+      if (
+        !isRegistrationCurrent() ||
+        !sameFrameDocumentAccess(inspected, verifiedDocument)
+      ) {
+        return abandonRegistration();
+      }
+      const verifiedParent = this.revalidateContext(parent, undefined, "mutating");
+      if (!isRegistrationCurrent() || verifiedParent !== parent) {
+        return abandonRegistration();
+      }
+      const verifiedOwnerDocument = readOwnerDocument(frameElement);
+      if (
+        !isRegistrationCurrent() ||
+        verifiedOwnerDocument !== parent.document
+      ) {
+        return abandonRegistration();
       }
       const ownership = Object.freeze({ frameElement, access, onLoad });
       const record: FrameRecord = {

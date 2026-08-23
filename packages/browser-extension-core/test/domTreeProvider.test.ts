@@ -1568,6 +1568,82 @@ describe("DomTreeProvider", () => {
     }
   });
 
+  it("rejects stale frame registration when contentDocument accepts a newer reset", () => {
+    const document = createDocument();
+    const intermediateDocument = createDocument();
+    const intermediateChild = createDocument();
+    const intermediateFrame = createFrameElement(
+      intermediateDocument,
+      intermediateChild,
+    );
+    intermediateDocument.documentElement.append(intermediateFrame);
+    const latestDocument = createDocument();
+    const latestChild = createDocument();
+    latestDocument.documentElement.append(
+      createFrameElement(latestDocument, latestChild),
+    );
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const staleOwnership: Array<{
+      readonly context: boolean;
+      readonly owned: boolean;
+    }> = [];
+    let provider!: DomTreeProvider;
+    let armed = false;
+    let reentered = false;
+    Object.defineProperty(intermediateFrame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        intermediateFrame.contentDocumentReads += 1;
+        if (armed && !reentered) {
+          reentered = true;
+          provider.resetDocument(latestDocument as unknown as Document, 5);
+        }
+        return intermediateChild as unknown as Document;
+      },
+    });
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        lifecycle.push(event);
+        if (event.type === "registered" && event.documentEpoch === 4) {
+          staleOwnership.push({
+            context: provider.frameAuthority.getContextForDocument(
+              intermediateChild as unknown as Document,
+            ) !== undefined,
+            owned: (provider as unknown as {
+              readonly ownedFramesByRef: ReadonlyMap<string, unknown>;
+            }).ownedFramesByRef.has(event.frameRef),
+          });
+        }
+      },
+    });
+    provider = harness.provider;
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    lifecycle.length = 0;
+    armed = true;
+
+    provider.resetDocument(intermediateDocument as unknown as Document, 4);
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(reentered).toBe(true);
+    expect(staleOwnership).toEqual([]);
+    expect(lifecycle.filter((event) => (
+      event.type === "registered" && event.documentEpoch === 4
+    ))).toEqual([]);
+    expect(lifecycle.filter((event) => (
+      event.type === "registered" && event.documentEpoch === 5
+    ))).toHaveLength(1);
+    expect(provider.currentDocumentEpoch).toBe(5);
+    expect(provider.frameAuthority.getContextForDocument(
+      intermediateChild as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      latestChild as unknown as Document,
+    )).toBeDefined();
+  });
+
   it("continues an authoritative reset-owned frame scan in later slices", () => {
     const document = createDocument();
     const replacementDocument = createDocument();

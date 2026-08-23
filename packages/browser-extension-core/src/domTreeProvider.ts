@@ -3930,7 +3930,11 @@ export class DomTreeProvider {
     if (!parent) {
       return;
     }
-    const description = this.frameRegistry.describeFrame(frameElement, parent.frameRef);
+    const description = this.frameRegistry.describeFrame(
+      frameElement,
+      parent.frameRef,
+      isCurrent,
+    );
     if (!isCurrent()) return;
     if (description) {
       this.trackFrameDescription(
@@ -4288,6 +4292,12 @@ export class DomTreeProvider {
   }
 
   private handleFrameLifecycle(event: FrameLifecycleEvent): boolean {
+    const frameScanGuard = this.activeFrameMutationScanGuard;
+    const isCurrent = (): boolean => (
+      !this.disposed && (frameScanGuard?.() ?? true)
+    );
+    if (this.disposed) return true;
+    if (event.type !== "reset" && !isCurrent()) return false;
     const deferredFrameLifecycleReadCount = this.deferredFrameLifecycleReadCount;
     const effectSavepoint = this.outwardEffectBuffer?.length;
     if (!this.outwardEffectBuffer) {
@@ -4320,11 +4330,16 @@ export class DomTreeProvider {
     }
     if (event.type === "registered" || event.type === "navigated") {
       const context = this.frameRegistry.getContext(event.frameRef);
+      if (!isCurrent()) return false;
       if (context) {
         const description = Object.freeze({
           kind: "accessible" as const,
           ...context,
         });
+        if (!this.inactiveFrameRefs.has(context.frameRef)) {
+          this.observeRoot(context.document, isCurrent);
+          if (!isCurrent()) return false;
+        }
         if (context.frameElement) {
           this.frameRefsByElement.set(context.frameElement, context.frameRef);
           if (context.parentFrameRef) {
@@ -4336,12 +4351,12 @@ export class DomTreeProvider {
         }
         if (!this.inactiveFrameRefs.has(context.frameRef)) {
           this.frameDocumentsByRef.set(context.frameRef, context.document);
-          this.observeRoot(context.document);
         }
         for (const nodeRef of frameNodeRefs) {
           this.frameDescriptions.set(nodeRef, description);
         }
       } else if (event.parentFrameRef) {
+        if (!isCurrent()) return false;
         const description = Object.freeze({
           kind: "inaccessible" as const,
           locked: true as const,
@@ -4354,6 +4369,7 @@ export class DomTreeProvider {
           this.frameDescriptions.set(nodeRef, description);
         }
       }
+      if (!isCurrent()) return false;
     }
     if (event.type === "navigated" || event.type === "invalidated") {
       const affected = new Set<string>();
@@ -4374,10 +4390,12 @@ export class DomTreeProvider {
       (event.type === "registered" || event.type === "navigated")
     ) {
       const context = this.frameRegistry.getContext(event.frameRef);
+      if (!isCurrent()) return false;
       if (context) {
-        this.queueFrameDiscovery(context.document);
+        this.queueFrameDiscovery(context.document, frameScanGuard);
       }
     }
+    if (!isCurrent()) return false;
     return this.emitFrameLifecycle(event);
   }
 
