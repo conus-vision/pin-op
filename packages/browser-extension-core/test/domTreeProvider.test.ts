@@ -13,6 +13,45 @@ import {
 import type { DomStableLocator } from "../src/domStableLocator.js";
 import type { FrameLifecycleEvent } from "../src/frameRegistry.js";
 
+class ExternalSettlementDomTreeProvider extends DomTreeProvider {
+  public settlementTrapCalls = 0;
+}
+
+Object.defineProperty(
+  ExternalSettlementDomTreeProvider.prototype,
+  "settleFrameRegistryDocumentResets",
+  {
+    configurable: true,
+    value(this: ExternalSettlementDomTreeProvider): void {
+      this.settlementTrapCalls += 1;
+    },
+  },
+);
+
+class ExternalMutationBridgeDomTreeProvider extends DomTreeProvider {
+  public mutationBridgeTrapCalls = 0;
+  public settlementTrapCalls = 0;
+}
+
+Object.defineProperties(ExternalMutationBridgeDomTreeProvider.prototype, {
+  settleFrameRegistryDocumentResets: {
+    configurable: true,
+    value(this: ExternalMutationBridgeDomTreeProvider): void {
+      this.settlementTrapCalls += 1;
+    },
+  },
+  withFrameRegistryMutation: {
+    configurable: true,
+    value(
+      this: ExternalMutationBridgeDomTreeProvider,
+      operation: () => unknown,
+    ): unknown {
+      this.mutationBridgeTrapCalls += 1;
+      return operation();
+    },
+  },
+});
+
 describe("DomTreeProvider", () => {
   it("binds default timers to the inspected document window", () => {
     const document = createDocument();
@@ -1774,6 +1813,133 @@ describe("DomTreeProvider", () => {
       readonly drainingDocumentResets: boolean;
     })).toMatchObject({
       activeDocumentReset: undefined,
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
+  it("does not let external subclasses override frame-registry settlement", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const latestDocument = createDocument();
+    let provider!: ExternalSettlementDomTreeProvider;
+    let reentered = false;
+    Object.defineProperty(frame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        frame.contentDocumentReads += 1;
+        if (!reentered) {
+          reentered = true;
+          provider.resetDocument(latestDocument as unknown as Document, 1);
+        }
+        return childDocument as unknown as Document;
+      },
+    });
+    provider = new ExternalSettlementDomTreeProvider(
+      document as unknown as Document,
+      {
+        documentEpoch: 0,
+        createMutationObserver: (callback) => new TestMutationObserver(callback),
+      },
+    );
+    const root = provider.getRoot();
+
+    try {
+      provider.getChildren({
+        type: "dom.getChildren",
+        requestId: "external-settlement-attack",
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+    } catch {
+      // The authority transition may invalidate the in-flight old-root query.
+    }
+
+    expect(reentered).toBe(true);
+    expect.soft(provider.settlementTrapCalls).toBe(0);
+    expect.soft(provider.currentDocumentEpoch).toBe(1);
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(frame.loadListenerCount).toBe(0);
+    expect((provider as unknown as {
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
+  it("does not let external subclasses bypass frame-registry mutation settlement", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const latestDocument = createDocument();
+    let provider!: ExternalMutationBridgeDomTreeProvider;
+    let reentered = false;
+    Object.defineProperty(frame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        frame.contentDocumentReads += 1;
+        if (!reentered) {
+          reentered = true;
+          provider.resetDocument(latestDocument as unknown as Document, 1);
+        }
+        return childDocument as unknown as Document;
+      },
+    });
+    provider = new ExternalMutationBridgeDomTreeProvider(
+      document as unknown as Document,
+      {
+        documentEpoch: 0,
+        createMutationObserver: (callback) => new TestMutationObserver(callback),
+      },
+    );
+    const root = provider.getRoot();
+
+    try {
+      provider.getChildren({
+        type: "dom.getChildren",
+        requestId: "external-mutation-bridge-attack",
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+    } catch {
+      // The authority transition may invalidate the in-flight old-root query.
+    }
+
+    expect(reentered).toBe(true);
+    expect.soft(provider.mutationBridgeTrapCalls).toBe(0);
+    expect.soft(provider.settlementTrapCalls).toBe(0);
+    expect.soft(provider.currentDocumentEpoch).toBe(1);
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(frame.loadListenerCount).toBe(0);
+    expect((provider as unknown as {
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
       pendingDocumentReset: undefined,
       drainingDocumentResets: false,
     });

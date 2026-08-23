@@ -440,7 +440,7 @@ export class DomTreeProvider {
     this.frameRegistry = new DomTreeProviderFrameRegistry(topDocument, {
       documentEpoch: this.documentEpoch,
       onLifecycle: (event) => {
-        this.settleFrameRegistryDocumentResets();
+        this.#settleFrameRegistryDocumentResets();
         if (event.type === "reset" || event.documentEpoch === this.documentEpoch) {
           this.handleFrameLifecycle(event);
         }
@@ -448,7 +448,7 @@ export class DomTreeProvider {
     });
     installDomTreeProviderFrameRegistrySettlement(
       this.frameRegistry,
-      () => this.settleFrameRegistryDocumentResets(),
+      () => this.#settleFrameRegistryDocumentResets(),
     );
     this.locatorService = this.createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
@@ -491,11 +491,11 @@ export class DomTreeProvider {
           this.frameRegistry.hasExactFrameElementRegistration(frameElement, parentFrameRef)
         ),
         authorizeExactFrameElement: (frameElement, parentFrameRef) => (
-          this.withFrameRegistryMutation(() => (
+          this.#withFrameRegistryMutation(() => (
             this.frameRegistry.authorizeExactFrameElement(frameElement, parentFrameRef)
           ))
         ),
-        unregisterFrame: (frameElement) => this.withFrameRegistryMutation(() => (
+        unregisterFrame: (frameElement) => this.#withFrameRegistryMutation(() => (
           this.frameRegistry.unregisterFrame(frameElement)
         )),
       },
@@ -1202,7 +1202,7 @@ export class DomTreeProvider {
     }
   }
 
-  private settleFrameRegistryDocumentResets(): void {
+  #settleFrameRegistryDocumentResets(): void {
     try {
       this.drainDocumentResets();
     } catch {
@@ -1210,11 +1210,11 @@ export class DomTreeProvider {
     }
   }
 
-  private withFrameRegistryMutation<Result>(operation: () => Result): Result {
+  #withFrameRegistryMutation<Result>(operation: () => Result): Result {
     try {
       return operation();
     } finally {
-      this.settleFrameRegistryDocumentResets();
+      this.#settleFrameRegistryDocumentResets();
     }
   }
 
@@ -1227,7 +1227,7 @@ export class DomTreeProvider {
     this.postCommitEffectBatches.length = 0;
     let frameReset = false;
     try {
-      frameReset = this.withFrameRegistryMutation(() => (
+      frameReset = this.#withFrameRegistryMutation(() => (
         this.frameRegistry.resetTopDocument(
           request.topDocument,
           request.documentEpoch,
@@ -1991,7 +1991,7 @@ export class DomTreeProvider {
     nodeRef: string,
     activateSubtree = false,
   ): FrameDescription | undefined {
-    const description = this.withFrameRegistryMutation(() => (
+    const description = this.#withFrameRegistryMutation(() => (
       this.frameRegistry.describeFrame(frameElement, scope.frameRef)
     ));
     if (!description) {
@@ -3186,7 +3186,7 @@ export class DomTreeProvider {
       })
       .reverse();
     for (const frameRef of registeredFrameRefs) {
-      this.withFrameRegistryMutation(() => this.frameRegistry.unregisterFrame(frameRef));
+      this.#withFrameRegistryMutation(() => this.frameRegistry.unregisterFrame(frameRef));
       if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
     }
     return Object.freeze(events.flatMap((event) => {
@@ -3996,7 +3996,7 @@ export class DomTreeProvider {
     if (!parent) {
       return;
     }
-    const description = this.withFrameRegistryMutation(() => (
+    const description = this.#withFrameRegistryMutation(() => (
       this.frameRegistry.describeFrame(
         frameElement,
         parent.frameRef,
@@ -4215,7 +4215,7 @@ export class DomTreeProvider {
 
   private unregisterDiscoveredFrame(frameElement: HTMLIFrameElement): void {
     const frameRef = this.frameRefsByElement.get(frameElement);
-    const invalidated = this.withFrameRegistryMutation(() => (
+    const invalidated = this.#withFrameRegistryMutation(() => (
       this.frameRegistry.unregisterFrame(frameElement)
     ));
     this.frameRefsByElement.delete(frameElement);
