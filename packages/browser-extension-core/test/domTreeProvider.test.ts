@@ -5824,6 +5824,544 @@ describe("DomTreeProvider", () => {
     expect(harness.pendingTimerCount()).toBe(0);
   });
 
+  it("fails closed when a removed shadow frame lies about its parent", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("section", document);
+    const shadowRoot = host.attachShadow();
+    const frame = createFrameElement(document, childDocument);
+    shadowRoot.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(host);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [host]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(host);
+    Object.defineProperty(frame, "parentNode", {
+      configurable: true,
+      get: () => document,
+    });
+    Object.defineProperty(host, "shadowRoot", {
+      configurable: true,
+      get: () => null,
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [host]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when a removed frame lies outside deceptive children", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [container]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(container);
+    Object.defineProperty(frame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when a removed shadow root lies about its host", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("section", document);
+    const originalShadowRoot = host.attachShadow();
+    const frame = createFrameElement(document, childDocument);
+    originalShadowRoot.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(host);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [host]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(host);
+    const detachedDecoy = createElement("aside", document);
+    Object.defineProperty(originalShadowRoot, "host", {
+      configurable: true,
+      get: () => detachedDecoy,
+    });
+    const replacementShadowRoot = host.attachShadow();
+    expect(replacementShadowRoot).not.toBe(originalShadowRoot);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [host]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("uses an initial discovery proof when removed topology later lies", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    document.documentElement.append(container);
+    const harness = createProviderHarness(document);
+
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(container);
+    Object.defineProperty(frame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+  });
+
+  it("uses a view-path proof before frame scanning starts", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    document.documentElement.append(container);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const containerView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "view-proof-container",
+    );
+    onlyChild(
+      harness.provider,
+      containerView,
+      root.documentEpoch,
+      "view-proof-frame",
+    );
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(container);
+    Object.defineProperty(frame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+  });
+
+  it("uses a locator-resolution proof for newly authorized frames", () => {
+    const createTree = () => {
+      const document = createDocument();
+      const childDocument = createDocument();
+      const container = createElement("main", document);
+      const frame = createFrameElement(document, childDocument);
+      const target = createElement("button", childDocument);
+      target.id = "locator_frame_target";
+      childDocument.documentElement.append(target);
+      container.append(frame);
+      document.documentElement.append(container);
+      return { document, childDocument, container, frame, target };
+    };
+    const first = createTree();
+    const firstProvider = createProvider(first.document);
+    const firstRoot = firstProvider.getRoot();
+    const firstContainer = onlyChild(
+      firstProvider,
+      firstRoot.node,
+      firstRoot.documentEpoch,
+      "locator-proof-container",
+    );
+    const firstFrame = onlyChild(
+      firstProvider,
+      firstContainer,
+      firstRoot.documentEpoch,
+      "locator-proof-frame",
+    );
+    onlyChild(
+      firstProvider,
+      firstFrame,
+      firstRoot.documentEpoch,
+      "locator-proof-document",
+    );
+    const locator = firstProvider.revealElement(
+      first.target as unknown as Element,
+    ).ancestorPath.at(-1)!.locator!;
+    const second = createTree();
+    const harness = createProviderHarness(second.document);
+
+    expect(resolveLocator(harness.provider, locator)?.node.label)
+      .toContain("button#locator_frame_target");
+    expect(second.frame.loadListenerCount).toBe(1);
+
+    second.document.documentElement.remove(second.container);
+    Object.defineProperty(second.frame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(second.container, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(second.document.documentElement, [], [second.container]),
+    ]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(second.frame.loadListenerCount).toBe(0);
+  });
+
+  it("atomically reowns a frame proof across a same-scope move", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const source = createElement("main", document);
+    const destination = createElement("aside", document);
+    const frame = createFrameElement(document, childDocument);
+    source.append(frame);
+    document.documentElement.append(source);
+    document.documentElement.append(destination);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "move-proof-root",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+    const sourceView = topChildren.nodes.find((node) => node.label === "main")!;
+    onlyChild(
+      harness.provider,
+      sourceView,
+      root.documentEpoch,
+      "move-proof-frame",
+    );
+    expect(frame.loadListenerCount).toBe(1);
+
+    source.remove(frame);
+    destination.append(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(source, [], [frame]),
+      mutationRecord(destination, [frame]),
+    ]);
+    harness.flushTimers();
+
+    document.documentElement.remove(source);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [source]),
+    ]);
+    harness.flushTimers();
+    expect(() => harness.provider.getRoot()).not.toThrow();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(destination);
+    Object.defineProperty(frame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(destination, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [destination]),
+    ]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+  });
+
+  it("retires nested frame proofs when an outer frame ancestor disappears", () => {
+    const document = createDocument();
+    const outerDocument = createDocument();
+    const innerDocument = createDocument();
+    const container = createElement("main", document);
+    const outerFrame = createFrameElement(document, outerDocument);
+    const innerFrame = createFrameElement(outerDocument, innerDocument);
+    outerDocument.documentElement.append(innerFrame);
+    container.append(outerFrame);
+    document.documentElement.append(container);
+    const harness = createProviderHarness(document);
+
+    harness.provider.startFrameTracking();
+    for (let index = 0; index < 4; index += 1) harness.flushTimers();
+    expect([outerFrame.loadListenerCount, innerFrame.loadListenerCount])
+      .toEqual([1, 1]);
+
+    document.documentElement.remove(container);
+    Object.defineProperty(outerFrame, "parentNode", {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => [],
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect([outerFrame.loadListenerCount, innerFrame.loadListenerCount])
+      .toEqual([0, 0]);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+  });
+
+  it("publishes a frame lifecycle only after its ownership proof exists", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    let harness: ReturnType<typeof createProviderHarness> | undefined;
+    let removed = false;
+    harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => {
+        if (event.type !== "registered" || removed) return;
+        removed = true;
+        document.documentElement.remove(container);
+        Object.defineProperty(frame, "parentNode", {
+          configurable: true,
+          get: () => null,
+        });
+        Object.defineProperty(container, "childNodes", {
+          configurable: true,
+          get: () => [],
+        });
+        harness!.observers[0]!.emit([
+          mutationRecord(document.documentElement, [], [container]),
+        ]);
+      },
+    });
+    container.append(frame);
+    document.documentElement.append(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [container]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    harness.flushEffects();
+    harness.flushTimers();
+
+    expect(removed).toBe(true);
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+  });
+
+  it("restores a frozen frame ownership proof across authority rollback", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const source = createElement("main", document);
+    const destination = createElement("aside", document);
+    const frame = createFrameElement(document, childDocument);
+    source.append(frame);
+    document.documentElement.append(source);
+    document.documentElement.append(destination);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const sourceView = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "rollback-proof-root",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes.find((node) => node.label === "main")!;
+    onlyChild(
+      harness.provider,
+      sourceView,
+      root.documentEpoch,
+      "rollback-proof-frame",
+    );
+    const state = harness.provider as unknown as {
+      ownedFramesByRef: Map<string, {
+        readonly frameElement: HTMLIFrameElement;
+        readonly parentFrameRef: string;
+        readonly ownershipPath?: readonly Node[];
+      }>;
+      frameOwnershipPathNodeCount?: number;
+      snapshotProviderAuthority(): unknown;
+      restoreProviderAuthority(snapshot: unknown): boolean;
+    };
+    const [frameRef, owned] = [...state.ownedFramesByRef.entries()][0]!;
+    const before = owned.ownershipPath;
+    const beforeCount = state.frameOwnershipPathNodeCount;
+    const snapshot = state.snapshotProviderAuthority();
+    state.ownedFramesByRef.set(frameRef, {
+      ...owned,
+      ownershipPath: Object.freeze([
+        document as unknown as Node,
+        destination as unknown as Node,
+        frame as unknown as Node,
+      ]),
+    });
+    state.frameOwnershipPathNodeCount = 3;
+
+    expect(state.restoreProviderAuthority(snapshot)).toBe(true);
+    const restored = [...state.ownedFramesByRef.values()][0]!.ownershipPath;
+    expect(restored).toEqual(before);
+    expect(restored).toContain(source as unknown as Node);
+    expect(Object.isFrozen(restored)).toBe(true);
+    expect(state.frameOwnershipPathNodeCount).toBe(beforeCount);
+  });
+
+  it("fails closed when one frame ownership proof exceeds its path cap", () => {
+    const document = createDocument();
+    let parent: FakeNode = document.documentElement;
+    for (let depth = 0; depth < 513; depth += 1) {
+      const next = createElement("div", document);
+      parent.append(next);
+      parent = next;
+    }
+    const frame = createFrameElement(document, createDocument());
+    parent.append(frame);
+    const harness = createProviderHarness(document);
+
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+  });
+
+  it("fails closed when frame ownership proofs exceed the global path cap", () => {
+    const document = createDocument();
+    const frames: FakeFrameElement[] = [];
+    for (let branch = 0; branch < 9; branch += 1) {
+      let parent: FakeNode = document.documentElement;
+      for (let depth = 0; depth < 460; depth += 1) {
+        const next = createElement("div", document);
+        parent.append(next);
+        parent = next;
+      }
+      const frame = createFrameElement(document, createDocument());
+      parent.append(frame);
+      frames.push(frame);
+    }
+    const harness = createProviderHarness(document);
+
+    harness.provider.startFrameTracking();
+    for (let index = 0; index < 12; index += 1) harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frames.every((frame) => frame.loadListenerCount === 0)).toBe(true);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("does not register a frame through a deceptive parent-child edge", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const decoy = createElement("aside", document);
+    const frame = createFrameElement(document, childDocument);
+    container.childNodes.push(frame);
+    frame.parentNode = decoy;
+    document.documentElement.append(container);
+    const lifecycle: string[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event.type),
+    });
+
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).not.toThrow();
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    harness.flushEffects();
+    expect(lifecycle).toEqual([]);
+  });
+
   it("conservatively skips unreadable added frame topology", () => {
     const document = createDocument();
     const frameDocument = createDocument();
@@ -10886,7 +11424,7 @@ function repeatedIndexedList<T>(
 }
 
 class FakeNode {
-  public parentNode: FakeNode | null = null;
+  private parentNodeValue: FakeNode | null = null;
   public readonly childNodes: FakeNode[] = [];
   public previousElementSibling: FakeElement | null = null;
 
@@ -10895,6 +11433,14 @@ class FakeNode {
     public nodeName = "",
     public nodeValue: string | null = null,
   ) {}
+
+  public get parentNode(): FakeNode | null {
+    return this.parentNodeValue;
+  }
+
+  public set parentNode(parentNode: FakeNode | null) {
+    this.parentNodeValue = parentNode;
+  }
 
   public prepend(child: FakeNode): void {
     child.parentNode = this;
@@ -10950,13 +11496,31 @@ class FakeElement extends FakeNode {
   public id = "";
   public className = "";
   public readonly attributes: Array<{ name: string; value: string }> = [];
-  public shadowRoot: FakeShadowRoot | null = null;
+  private tagNameValue: string;
+  private shadowRootValue: FakeShadowRoot | null = null;
 
   public constructor(
-    public readonly tagName: string,
+    tagName: string,
     public readonly ownerDocument: FakeDocument,
   ) {
     super(1, tagName);
+    this.tagNameValue = tagName;
+  }
+
+  public get tagName(): string {
+    return this.tagNameValue;
+  }
+
+  public set tagName(tagName: string) {
+    this.tagNameValue = tagName;
+  }
+
+  public get shadowRoot(): FakeShadowRoot | null {
+    return this.shadowRootValue;
+  }
+
+  public set shadowRoot(shadowRoot: FakeShadowRoot | null) {
+    this.shadowRootValue = shadowRoot;
   }
 
   public attachShadow(): FakeShadowRoot {
@@ -11085,10 +11649,19 @@ class FakeFrameElement extends FakeElement {
 }
 
 class FakeShadowRoot extends FakeNode {
-  public readonly mode = "open";
+  private readonly hostValue: FakeElement;
 
-  public constructor(public readonly host: FakeElement) {
+  public constructor(host: FakeElement) {
     super(11, "#document-fragment");
+    this.hostValue = host;
+  }
+
+  public get mode(): "open" {
+    return "open";
+  }
+
+  public get host(): FakeElement {
+    return this.hostValue;
   }
 
   public getRootNode(): FakeShadowRoot {

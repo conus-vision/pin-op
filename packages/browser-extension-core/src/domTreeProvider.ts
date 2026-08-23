@@ -66,6 +66,8 @@ const MUTATION_OVERFLOW_FRAME_VISIT_LIMIT = 4_096;
 // hostile page cannot keep the provider on the stack forever.
 const DOCUMENT_RESET_APPLICATION_LIMIT = 16;
 const MAX_SHADOW_CONTAINMENT_DEPTH = 512;
+const FRAME_OWNERSHIP_PATH_LENGTH_LIMIT = MAX_SHADOW_CONTAINMENT_DEPTH;
+const FRAME_OWNERSHIP_PATH_NODE_LIMIT = MUTATION_INTAKE_NODE_LIMIT;
 const ROLLBACK_FRAME_RECONCILIATION_MAX_ATTEMPTS = 16;
 const ROLLBACK_FRAME_RECONCILIATION_MAX_EFFECTS = 256;
 const SHADOW_SCAN_BATCH_SIZE = 8;
@@ -214,6 +216,7 @@ interface PendingFrameMutationScan {
   readonly ownerRoot: Node;
   readonly root: Node;
   readonly stack: FrameTraversalEntry[];
+  readonly ownershipPathPrefix?: readonly Node[];
   readonly remainingOwnedFrameElements?: Set<HTMLIFrameElement>;
   readonly resetGuard?: () => boolean;
   readonly visitBudget?: FrameMutationVisitBudget;
@@ -255,11 +258,19 @@ interface PendingElementMutationRoot {
   readonly ownerRoot: Node;
   readonly parentRef?: string;
   readonly scope?: NodeScope;
+  readonly ownershipPathPrefix?: readonly Node[];
 }
 
 interface OwnedFrame {
   readonly frameElement: HTMLIFrameElement;
   readonly parentFrameRef: string;
+  readonly ownershipPath: readonly Node[];
+}
+
+interface ActiveFrameOwnershipProof {
+  readonly frameElement: HTMLIFrameElement;
+  readonly parentFrameRef: string;
+  readonly ownershipPath: readonly Node[];
 }
 
 interface SelectedNodeRefRead {
@@ -283,6 +294,7 @@ interface ProviderMaterializationMetadata {
   readonly frameDescriptions: readonly (readonly [string, FrameDescription])[];
   readonly frameDocumentsByRef: readonly (readonly [string, Document])[];
   readonly ownedFramesByRef: readonly (readonly [string, OwnedFrame])[];
+  readonly frameOwnershipPathNodeCount: number;
   readonly inactiveFrameRefs: readonly string[];
   readonly cursors: readonly (readonly [string, CursorRecord])[];
   readonly nextCursor: number;
@@ -380,6 +392,7 @@ export class DomTreeProvider {
   private frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
   private readonly frameDocumentsByRef = new Map<string, Document>();
   private readonly ownedFramesByRef = new Map<string, OwnedFrame>();
+  private frameOwnershipPathNodeCount = 0;
   private readonly inactiveFrameRefs = new Set<string>();
   private readonly maxCursors: number;
   private readonly maxRecords: number;
@@ -428,6 +441,7 @@ export class DomTreeProvider {
   private activeFrameMutationScanGuard: (() => boolean) | undefined;
   private activeFrameMutationVisitBudget: FrameMutationVisitBudget | undefined;
   private authorityGeneration = 0;
+  #activeFrameOwnershipProof: ActiveFrameOwnershipProof | undefined;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
   private deferredFrameLifecycleReadCount = 0;
@@ -526,11 +540,26 @@ export class DomTreeProvider {
         hasExactFrameElementRegistration: (frameElement, parentFrameRef) => (
           this.frameRegistry.hasExactFrameElementRegistration(frameElement, parentFrameRef)
         ),
-        authorizeExactFrameElement: (frameElement, parentFrameRef) => (
-          this.#withFrameRegistryMutation(() => (
-            this.frameRegistry.authorizeExactFrameElement(frameElement, parentFrameRef)
-          ))
-        ),
+        authorizeExactFrameElement: (
+          frameElement,
+          parentFrameRef,
+          ownershipPath,
+        ) => {
+          const proof = this.#prepareFrameOwnershipProof(
+            frameElement,
+            parentFrameRef,
+            ownershipPath,
+          );
+          if (!proof) return undefined;
+          return this.#withFrameOwnershipProof(proof, () => (
+            this.#withFrameRegistryMutation(() => (
+              this.frameRegistry.authorizeExactFrameElement(
+                frameElement,
+                parentFrameRef,
+              )
+            ))
+          ));
+        },
         unregisterFrame: (frameElement) => this.#withFrameRegistryMutation(() => (
           this.frameRegistry.unregisterFrame(frameElement)
         )),
@@ -1301,6 +1330,7 @@ export class DomTreeProvider {
     this.frameDescriptions.clear();
     this.frameDocumentsByRef.clear();
     this.ownedFramesByRef.clear();
+    this.frameOwnershipPathNodeCount = 0;
     this.inactiveFrameRefs.clear();
     this.pendingMutations.length = 0;
     this.pendingMutationNodeCount = 0;
@@ -1446,6 +1476,7 @@ export class DomTreeProvider {
     this.frameDescriptions.clear();
     this.frameDocumentsByRef.clear();
     this.ownedFramesByRef.clear();
+    this.frameOwnershipPathNodeCount = 0;
     this.inactiveFrameRefs.clear();
     this.pendingMutations.length = 0;
     this.pendingMutationNodeCount = 0;
@@ -1470,7 +1501,13 @@ export class DomTreeProvider {
     const frameWasRegistered = frameElement && this.frameRegistry
       .hasExactFrameElementRegistration(element, scope.frameRef);
     const frame = frameElement
-      ? this.describeFrame(element, scope, nodeRef)
+      ? this.describeFrame(
+        element,
+        scope,
+        nodeRef,
+        false,
+        parentRef ?? existing?.parentRef,
+      )
       : undefined;
     if (frameElement && frame && !frameWasRegistered) {
       newlyRegisteredFrames?.add(element);
@@ -2040,9 +2077,31 @@ export class DomTreeProvider {
     scope: NodeScope,
     nodeRef: string,
     activateSubtree = false,
+    parentRef = this.records.get(nodeRef)?.parentRef,
   ): FrameDescription | undefined {
-    const description = this.#withFrameRegistryMutation(() => (
-      this.frameRegistry.describeFrame(frameElement, scope.frameRef)
+    const existingFrameRef = this.frameRefsByElement.get(frameElement);
+    const existingOwnership = existingFrameRef
+      ? this.ownedFramesByRef.get(existingFrameRef)
+      : undefined;
+    const ownershipPath = existingOwnership?.parentFrameRef === scope.frameRef
+      ? existingOwnership.ownershipPath
+      : this.frameOwnershipPathFromRecords(
+        frameElement,
+        scope,
+        parentRef,
+      );
+    const proof = ownershipPath
+      ? this.#prepareFrameOwnershipProof(
+        frameElement,
+        scope.frameRef,
+        ownershipPath,
+      )
+      : undefined;
+    if (!proof) return undefined;
+    const description = this.#withFrameOwnershipProof(proof, () => (
+      this.#withFrameRegistryMutation(() => (
+        this.frameRegistry.describeFrame(frameElement, scope.frameRef)
+      ))
     ));
     if (!description) {
       return undefined;
@@ -2052,8 +2111,190 @@ export class DomTreeProvider {
       description,
       nodeRef,
       activateSubtree,
+      () => !this.disposed,
+      proof,
     );
     return description;
+  }
+
+  private frameOwnershipPathFromRecords(
+    node: Node,
+    scope: NodeScope,
+    parentRef?: string,
+  ): readonly Node[] | undefined {
+    const context = this.frameRegistry.getContext(scope.frameRef);
+    if (!context) return undefined;
+    const reversed: Node[] = [node];
+    const seen = new Set<Node>(reversed);
+    let currentRef = parentRef;
+    for (let depth = 0; currentRef && depth < this.maxRecords; depth += 1) {
+      const record = this.records.get(currentRef);
+      if (!record || !sameNodeScope(record.scope, scope)) return undefined;
+      const parent = this.nodeRegistry.resolve(currentRef, record.scope);
+      if (!parent || seen.has(parent)) return undefined;
+      seen.add(parent);
+      reversed.push(parent);
+      currentRef = parent === context.document ? undefined : record.parentRef;
+    }
+    if (currentRef) return undefined;
+    const path = reversed.reverse();
+    if (path[0] !== context.document) {
+      if (!isTrustedFrameOwnershipEdge(context.document, path[0]!)) {
+        return undefined;
+      }
+      path.unshift(context.document);
+    }
+    for (let index = 1; index < path.length; index += 1) {
+      if (!isTrustedFrameOwnershipEdge(path[index - 1]!, path[index]!)) {
+        return undefined;
+      }
+    }
+    return Object.freeze(path);
+  }
+
+  #prepareFrameOwnershipProof(
+    frameElement: HTMLIFrameElement,
+    parentFrameRef: string,
+    ownershipPath: readonly Node[],
+  ): ActiveFrameOwnershipProof | undefined {
+    if (this.disposed) return undefined;
+    if (
+      ownershipPath.length === 0 ||
+      ownershipPath.length > FRAME_OWNERSHIP_PATH_LENGTH_LIMIT
+    ) {
+      this.#dispose();
+      return undefined;
+    }
+    const context = this.frameRegistry.getContext(parentFrameRef);
+    if (
+      !context ||
+      ownershipPath[0] !== context.document ||
+      ownershipPath.at(-1) !== frameElement ||
+      readTrustedFrameTagName(frameElement) !== "IFRAME"
+    ) {
+      return undefined;
+    }
+    const seen = new Set<Node>();
+    for (let index = 0; index < ownershipPath.length; index += 1) {
+      const node = ownershipPath[index]!;
+      if (seen.has(node)) return undefined;
+      seen.add(node);
+      if (
+        index > 0 &&
+        !isTrustedFrameOwnershipEdge(ownershipPath[index - 1]!, node)
+      ) {
+        return undefined;
+      }
+    }
+    return Object.freeze({
+      frameElement,
+      parentFrameRef,
+      ownershipPath: Object.freeze([...ownershipPath]),
+    });
+  }
+
+  #withFrameOwnershipProof<Result>(
+    proof: ActiveFrameOwnershipProof,
+    operation: () => Result,
+  ): Result {
+    const previous = this.#activeFrameOwnershipProof;
+    this.#activeFrameOwnershipProof = proof;
+    try {
+      return operation();
+    } finally {
+      this.#activeFrameOwnershipProof = previous;
+    }
+  }
+
+  #commitFrameOwnership(
+    frameRef: string,
+    proof: ActiveFrameOwnershipProof,
+  ): boolean {
+    if (this.disposed) return false;
+    const existing = this.ownedFramesByRef.get(frameRef);
+    const nextCount = this.frameOwnershipPathNodeCount -
+      (existing?.ownershipPath.length ?? 0) +
+      proof.ownershipPath.length;
+    if (nextCount > FRAME_OWNERSHIP_PATH_NODE_LIMIT) {
+      this.#dispose();
+      return false;
+    }
+    this.ownedFramesByRef.set(frameRef, Object.freeze({
+      frameElement: proof.frameElement,
+      parentFrameRef: proof.parentFrameRef,
+      ownershipPath: proof.ownershipPath,
+    }));
+    this.frameOwnershipPathNodeCount = nextCount;
+    return true;
+  }
+
+  #releaseFrameOwnership(frameRef: string): void {
+    const owned = this.ownedFramesByRef.get(frameRef);
+    if (!owned) return;
+    this.ownedFramesByRef.delete(frameRef);
+    this.frameOwnershipPathNodeCount = Math.max(
+      0,
+      this.frameOwnershipPathNodeCount - owned.ownershipPath.length,
+    );
+  }
+
+  private reownMovedFramePaths(
+    movedNode: Node,
+    movedRef: string,
+    scope: NodeScope,
+  ): boolean {
+    const affected = [...this.ownedFramesByRef.entries()].filter(([, owned]) => (
+      owned.ownershipPath.includes(movedNode)
+    ));
+    if (affected.length === 0) return true;
+    const movedRecord = this.records.get(movedRef);
+    const movedPath = movedRecord
+      ? this.frameOwnershipPathFromRecords(
+        movedNode,
+        scope,
+        movedRecord.parentRef,
+      )
+      : undefined;
+    if (!movedPath) {
+      this.#dispose();
+      return false;
+    }
+    const replacements: Array<readonly [string, OwnedFrame]> = [];
+    let nextCount = this.frameOwnershipPathNodeCount;
+    for (const [frameRef, owned] of affected) {
+      const movedIndex = owned.ownershipPath.indexOf(movedNode);
+      const candidate = Object.freeze([
+        ...movedPath,
+        ...owned.ownershipPath.slice(movedIndex + 1),
+      ]);
+      const proof = this.#prepareFrameOwnershipProof(
+        owned.frameElement,
+        owned.parentFrameRef,
+        candidate,
+      );
+      if (!proof) {
+        if (!this.disposed) this.#dispose();
+        return false;
+      }
+      nextCount += proof.ownershipPath.length - owned.ownershipPath.length;
+      replacements.push(Object.freeze([
+        frameRef,
+        Object.freeze({
+          frameElement: proof.frameElement,
+          parentFrameRef: proof.parentFrameRef,
+          ownershipPath: proof.ownershipPath,
+        }),
+      ]));
+    }
+    if (nextCount > FRAME_OWNERSHIP_PATH_NODE_LIMIT) {
+      this.#dispose();
+      return false;
+    }
+    for (const [frameRef, owned] of replacements) {
+      this.ownedFramesByRef.set(frameRef, owned);
+    }
+    this.frameOwnershipPathNodeCount = nextCount;
+    return true;
   }
 
   private createCursor(record: Omit<CursorRecord, "active">): string {
@@ -2462,6 +2703,13 @@ export class DomTreeProvider {
       const targetScope = targetRecord?.scope ??
         this.scopeForMutationTarget(mutation.target);
       if (!isCurrent()) return false;
+      const ownershipPathPrefix = targetScope
+        ? this.frameOwnershipPathFromRecords(
+          mutation.target,
+          targetScope,
+          targetRecord?.parentRef,
+        )
+        : undefined;
       let logicalTreeChanged = false;
       let rootAuxiliaryChanged = false;
       const removedNodes = mutation.removedNodes;
@@ -2513,6 +2761,7 @@ export class DomTreeProvider {
             ownerRoot: pending.observedRoot,
             ...(targetRef ? { parentRef: targetRef } : {}),
             ...(targetScope ? { scope: targetScope } : {}),
+            ...(ownershipPathPrefix ? { ownershipPathPrefix } : {}),
           });
           logicalTreeChanged = true;
         } else if (
@@ -2574,6 +2823,13 @@ export class DomTreeProvider {
       if (!finalParentRef) {
         continue;
       }
+      if (!this.reownMovedFramePaths(
+        removed.node,
+        movedRef,
+        finalScope,
+      )) {
+        return false;
+      }
       movedRoots.add(removed.node);
       if (this.expandedBranches.has(finalParentRef)) {
         affected.add(finalParentRef);
@@ -2585,7 +2841,7 @@ export class DomTreeProvider {
         continue;
       }
       const remainingOwnedFrameElements =
-        this.captureOwnedFramesForUnregister(root.node, isCurrent);
+        this.ownedFramesWithinRemovalRoot(root.node, isCurrent);
       if (!remainingOwnedFrameElements || !isCurrent()) return false;
       if (!this.enqueueFrameMutationScan({
         action: "unregister",
@@ -2600,11 +2856,35 @@ export class DomTreeProvider {
       if (movedRoots.has(root.node)) {
         continue;
       }
+      let scanRoot = root.node;
+      let ownershipPathPrefix = root.ownershipPathPrefix;
+      if (!ownershipPathPrefix) {
+        const ownerPath = root.scope
+          ? this.frameOwnershipPathFromRecords(
+            root.ownerRoot,
+            root.scope,
+            this.records.get(
+              this.refsByNode.get(root.ownerRoot) ?? "",
+            )?.parentRef,
+          )
+          : undefined;
+        if (!ownerPath) {
+          continue;
+        }
+        scanRoot = root.ownerRoot;
+        ownershipPathPrefix = Object.freeze(ownerPath.slice(0, -1));
+      }
+      if (this.pendingFrameMutationScans.some((scan) => (
+        scan.action === "register" && scan.root === scanRoot
+      ))) {
+        continue;
+      }
       if (!this.enqueueFrameMutationScan({
         action: "register",
         ownerRoot: root.ownerRoot,
-        root: root.node,
-        stack: [createFrameTraversalEntry(root.node)],
+        root: scanRoot,
+        stack: [createFrameTraversalEntry(scanRoot)],
+        ownershipPathPrefix,
       })) return false;
     }
     if (removedRoots.length > 0 || addedRoots.length > 0) {
@@ -2711,6 +2991,7 @@ export class DomTreeProvider {
     this.frameDescriptions.clear();
     this.frameDocumentsByRef.clear();
     this.ownedFramesByRef.clear();
+    this.frameOwnershipPathNodeCount = 0;
     this.frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
     this.inactiveFrameRefs.clear();
     this.shadowScanOffset = 0;
@@ -3476,7 +3757,17 @@ export class DomTreeProvider {
         const previousSuppressedEvent = this.rollbackSuppressedFrameEvent;
         this.rollbackSuppressedFrameEvent = event;
         try {
-          if (!this.handleFrameLifecycle(event)) return false;
+          const owned = event.type === "registered"
+            ? this.ownedFramesByRef.get(event.frameRef)
+            : undefined;
+          const handled = owned
+            ? this.#withFrameOwnershipProof(Object.freeze({
+                frameElement: owned.frameElement,
+                parentFrameRef: owned.parentFrameRef,
+                ownershipPath: owned.ownershipPath,
+              }), () => this.handleFrameLifecycle(event))
+            : this.handleFrameLifecycle(event);
+          if (!handled) return false;
         } finally {
           this.rollbackSuppressedFrameEvent = previousSuppressedEvent;
         }
@@ -3546,15 +3837,38 @@ export class DomTreeProvider {
           return false;
         }
       }
+      let ownershipPathNodeCount = 0;
       for (const [frameRef, owned] of this.ownedFramesByRef) {
         const context = this.frameRegistry.getContext(frameRef);
         if (
           !context ||
           context.frameElement !== owned.frameElement ||
           context.parentFrameRef !== owned.parentFrameRef ||
-          this.frameRefsByElement.get(owned.frameElement) !== frameRef
+          this.frameRefsByElement.get(owned.frameElement) !== frameRef ||
+          !Object.isFrozen(owned.ownershipPath) ||
+          owned.ownershipPath.length === 0 ||
+          owned.ownershipPath.length > FRAME_OWNERSHIP_PATH_LENGTH_LIMIT ||
+          owned.ownershipPath[0] !== this.frameRegistry
+            .getContext(owned.parentFrameRef)?.document ||
+          owned.ownershipPath.at(-1) !== owned.frameElement ||
+          readTrustedFrameTagName(owned.frameElement) !== "IFRAME"
         ) return false;
+        const seen = new Set<Node>();
+        for (let index = 0; index < owned.ownershipPath.length; index += 1) {
+          const node = owned.ownershipPath[index]!;
+          if (
+            seen.has(node) ||
+            (
+              index > 0 &&
+              !isTrustedFrameOwnershipEdge(owned.ownershipPath[index - 1]!, node)
+            )
+          ) return false;
+          seen.add(node);
+        }
+        ownershipPathNodeCount += owned.ownershipPath.length;
+        if (ownershipPathNodeCount > FRAME_OWNERSHIP_PATH_NODE_LIMIT) return false;
       }
+      if (ownershipPathNodeCount !== this.frameOwnershipPathNodeCount) return false;
       return true;
     } catch {
       return false;
@@ -3771,7 +4085,8 @@ export class DomTreeProvider {
       shadowRootRefs: [...this.shadowRootRefs],
       frameDescriptions: [...this.frameDescriptions],
       frameDocumentsByRef: [...this.frameDocumentsByRef],
-      ownedFramesByRef: [...this.ownedFramesByRef],
+      ownedFramesByRef: snapshotOwnedFrames(this.ownedFramesByRef),
+      frameOwnershipPathNodeCount: this.frameOwnershipPathNodeCount,
       inactiveFrameRefs: [...this.inactiveFrameRefs],
       cursors: [...this.cursors],
       nextCursor: this.nextCursor,
@@ -3803,7 +4118,8 @@ export class DomTreeProvider {
     restoreMap(this.shadowRootRefs, snapshot.shadowRootRefs);
     restoreMap(this.frameDescriptions, snapshot.frameDescriptions);
     restoreMap(this.frameDocumentsByRef, snapshot.frameDocumentsByRef);
-    restoreMap(this.ownedFramesByRef, snapshot.ownedFramesByRef);
+    restoreMap(this.ownedFramesByRef, snapshotOwnedFrames(snapshot.ownedFramesByRef));
+    this.frameOwnershipPathNodeCount = snapshot.frameOwnershipPathNodeCount;
     restoreSet(this.inactiveFrameRefs, snapshot.inactiveFrameRefs);
     restoreMap(this.cursors, snapshot.cursors);
     // Cursors are opaque capabilities: rollback may remove their records, but
@@ -4409,6 +4725,7 @@ export class DomTreeProvider {
   private registerDiscoveredFrame(
     frameElement: HTMLIFrameElement,
     isCurrent: () => boolean,
+    ownershipPath: readonly Node[],
   ): void {
     if (!isCurrent()) return;
     const excluded = this.isNodeExcluded(frameElement);
@@ -4429,12 +4746,20 @@ export class DomTreeProvider {
     if (!parent) {
       return;
     }
-    const description = this.#withFrameRegistryMutation(() => (
-      this.frameRegistry.describeFrame(
-        frameElement,
-        parent.frameRef,
-        isCurrent,
-      )
+    const proof = this.#prepareFrameOwnershipProof(
+      frameElement,
+      parent.frameRef,
+      ownershipPath,
+    );
+    if (!proof || !isCurrent()) return;
+    const description = this.#withFrameOwnershipProof(proof, () => (
+      this.#withFrameRegistryMutation(() => (
+        this.frameRegistry.describeFrame(
+          frameElement,
+          parent.frameRef,
+          isCurrent,
+        )
+      ))
     ));
     if (!isCurrent()) return;
     if (description) {
@@ -4444,6 +4769,7 @@ export class DomTreeProvider {
         undefined,
         false,
         isCurrent,
+        proof,
       );
     }
   }
@@ -4487,7 +4813,7 @@ export class DomTreeProvider {
     return true;
   }
 
-  private captureOwnedFramesForUnregister(
+  private ownedFramesWithinRemovalRoot(
     root: Node,
     isCurrent: () => boolean,
   ): Set<HTMLIFrameElement> | undefined {
@@ -4497,38 +4823,9 @@ export class DomTreeProvider {
       return undefined;
     }
     const expected = new Set<HTMLIFrameElement>();
-    let remainingParentReads = MUTATION_INTAKE_NODE_LIMIT;
-    for (const { frameElement } of this.ownedFramesByRef.values()) {
+    for (const { frameElement, ownershipPath } of this.ownedFramesByRef.values()) {
       if (!isCurrent()) return undefined;
-      let current: Node | undefined = frameElement;
-      const seen = new Set<Node>();
-      let reachedBoundary = false;
-      for (let depth = 0; depth < MAX_SHADOW_CONTAINMENT_DEPTH; depth += 1) {
-        if (current === root) {
-          expected.add(frameElement);
-          reachedBoundary = true;
-          break;
-        }
-        if (!current || seen.has(current) || remainingParentReads <= 0) {
-          break;
-        }
-        seen.add(current);
-        remainingParentReads -= 1;
-        const parentRead = readFrameOwnershipParent(current, isCurrent);
-        if (!parentRead.ok || !isCurrent()) {
-          if (isCurrent()) this.#dispose();
-          return undefined;
-        }
-        current = parentRead.value;
-        if (!current) {
-          reachedBoundary = true;
-          break;
-        }
-      }
-      if (!reachedBoundary) {
-        if (isCurrent()) this.#dispose();
-        return undefined;
-      }
+      if (ownershipPath.includes(root)) expected.add(frameElement);
     }
     return expected;
   }
@@ -4662,7 +4959,9 @@ export class DomTreeProvider {
           if (abandonIfStale()) continue;
           if (nodeType === 1) {
             const element = entry.node as Element;
-            const frameElementRead = readFrameTraversalFrameElement(element);
+            const frameElementRead = readAuthenticatedFrameTraversalFrameElement(
+              element,
+            );
             if (!frameElementRead.ok) {
               if (rejectTraversalRead()) return;
               continue;
@@ -4681,7 +4980,14 @@ export class DomTreeProvider {
             }
             if (frameElement) {
               if (scan.action === "register") {
-                this.registerDiscoveredFrame(frameElement, isCurrent);
+                this.registerDiscoveredFrame(
+                  frameElement,
+                  isCurrent,
+                  Object.freeze([
+                    ...(scan.ownershipPathPrefix ?? []),
+                    ...scan.stack.map(({ node }) => node),
+                  ]),
+                );
               } else {
                 this.unregisterDiscoveredFrame(frameElement);
               }
@@ -4692,7 +4998,9 @@ export class DomTreeProvider {
                 }
               }
             }
-            const shadowRootRead = readFrameTraversalOpenShadowRoot(element);
+            const shadowRootRead = readAuthenticatedFrameTraversalOpenShadowRoot(
+              element,
+            );
             if (!shadowRootRead.ok) {
               if (rejectTraversalRead()) return;
               continue;
@@ -4721,6 +5029,10 @@ export class DomTreeProvider {
           }
           if (abandonIfStale()) continue;
           entry.nextChildIndex += 1;
+          if (!isTrustedFrameOwnershipEdge(entry.node, childRead.value)) {
+            if (rejectTraversalRead()) return;
+            continue;
+          }
           scan.stack.push(createFrameTraversalEntry(childRead.value));
           continue;
         }
@@ -4802,6 +5114,7 @@ export class DomTreeProvider {
     nodeRef?: string,
     activateSubtree = false,
     isCurrent: () => boolean = () => !this.disposed,
+    ownershipProof = this.#activeFrameOwnershipProof,
   ): void {
     if (!isCurrent()) return;
     const parentFrameRef = description.parentFrameRef;
@@ -4811,11 +5124,16 @@ export class DomTreeProvider {
     if (activateSubtree) {
       this.inactiveFrameRefs.delete(description.frameRef);
     }
+    if (
+      !ownershipProof ||
+      ownershipProof.frameElement !== frameElement ||
+      ownershipProof.parentFrameRef !== parentFrameRef ||
+      !this.#commitFrameOwnership(description.frameRef, ownershipProof)
+    ) {
+      if (!this.disposed) this.#dispose();
+      return;
+    }
     this.frameRefsByElement.set(frameElement, description.frameRef);
-    this.ownedFramesByRef.set(description.frameRef, {
-      frameElement,
-      parentFrameRef,
-    });
     if (nodeRef) {
       this.frameDescriptions.set(nodeRef, description);
     }
@@ -4924,7 +5242,7 @@ export class DomTreeProvider {
       if (ownership) {
         this.frameRefsByElement.delete(ownership.frameElement);
       }
-      this.ownedFramesByRef.delete(frameRef);
+      this.#releaseFrameOwnership(frameRef);
       this.inactiveFrameRefs.delete(frameRef);
     }
     return true;
@@ -4968,6 +5286,24 @@ export class DomTreeProvider {
       if (!this.releaseFrameIdentity(identity.frameRef, true)) return false;
     }
     if (event.type === "registered" || event.type === "navigated") {
+      if (event.type === "registered") {
+        const proof = this.#activeFrameOwnershipProof;
+        if (
+          !proof ||
+          proof.parentFrameRef !== event.parentFrameRef ||
+          !this.#commitFrameOwnership(event.frameRef, proof)
+        ) {
+          if (!this.disposed) this.#dispose();
+          return false;
+        }
+        this.frameRefsByElement.set(proof.frameElement, event.frameRef);
+      } else {
+        const owned = this.ownedFramesByRef.get(event.frameRef);
+        if (!owned || owned.parentFrameRef !== event.parentFrameRef) {
+          this.#dispose();
+          return false;
+        }
+      }
       const context = this.frameRegistry.getContext(event.frameRef);
       if (!isCurrent()) return false;
       if (context) {
@@ -4981,11 +5317,14 @@ export class DomTreeProvider {
         }
         if (context.frameElement) {
           this.frameRefsByElement.set(context.frameElement, context.frameRef);
-          if (context.parentFrameRef) {
-            this.ownedFramesByRef.set(context.frameRef, {
-              frameElement: context.frameElement,
-              parentFrameRef: context.parentFrameRef,
-            });
+          const owned = this.ownedFramesByRef.get(context.frameRef);
+          if (
+            !owned ||
+            owned.frameElement !== context.frameElement ||
+            owned.parentFrameRef !== context.parentFrameRef
+          ) {
+            this.#dispose();
+            return false;
           }
         }
         if (!this.inactiveFrameRefs.has(context.frameRef)) {
@@ -5229,43 +5568,188 @@ function readFrameTraversalNodeType(
   }
 }
 
-function readFrameOwnershipParent(
-  node: Node,
-  isCurrent: () => boolean,
-): FrameTraversalRead<Node | undefined> {
-  let parent: unknown;
+const TRUSTED_NODE_PARENT_GETTER = captureDomPrototypeGetter(
+  "Node",
+  "parentNode",
+);
+const TRUSTED_ELEMENT_TAG_NAME_GETTER = captureDomPrototypeGetter(
+  "Element",
+  "tagName",
+);
+const TRUSTED_ELEMENT_SHADOW_ROOT_GETTER = captureDomPrototypeGetter(
+  "Element",
+  "shadowRoot",
+);
+const TRUSTED_SHADOW_ROOT_HOST_GETTER = captureDomPrototypeGetter(
+  "ShadowRoot",
+  "host",
+);
+const TRUSTED_SHADOW_ROOT_MODE_GETTER = captureDomPrototypeGetter(
+  "ShadowRoot",
+  "mode",
+);
+
+function captureDomPrototypeGetter(
+  constructorName: string,
+  property: PropertyKey,
+): ((this: object) => unknown) | undefined {
   try {
-    parent = (node as { readonly parentNode?: unknown }).parentNode;
+    const constructor = Reflect.get(globalThis, constructorName) as {
+      readonly prototype?: object;
+    } | undefined;
+    const descriptor = constructor?.prototype
+      ? Reflect.getOwnPropertyDescriptor(constructor.prototype, property)
+      : undefined;
+    return typeof descriptor?.get === "function" ? descriptor.get : undefined;
   } catch {
-    return { ok: false };
+    return undefined;
   }
-  if (!isCurrent()) return { ok: false };
-  if (parent !== null) {
-    return parent && typeof parent === "object"
-      ? { ok: true, value: parent as Node }
-      : { ok: false };
+}
+
+function readTrustedDomAccessor(
+  target: object,
+  property: PropertyKey,
+  intrinsic: ((this: object) => unknown) | undefined,
+): FrameTraversalRead<unknown> {
+  try {
+    if (intrinsic) {
+      return { ok: true, value: Reflect.apply(intrinsic, target, []) };
+    }
+    let prototype = Reflect.getPrototypeOf(target);
+    for (
+      let depth = 0;
+      prototype !== null && depth < 16;
+      depth += 1
+    ) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(prototype, property);
+      if (descriptor) {
+        return typeof descriptor.get === "function"
+          ? { ok: true, value: Reflect.apply(descriptor.get, target, []) }
+          : { ok: false };
+      }
+      prototype = Reflect.getPrototypeOf(prototype);
+    }
+  } catch {
+    // Treat prototype reflection and native accessor failures as unavailable
+    // authority. Registration may skip the subtree; removal fails closed.
   }
-  const nodeTypeRead = readFrameTraversalNodeType(node);
-  if (!nodeTypeRead.ok || !isCurrent()) return { ok: false };
-  if (nodeTypeRead.value !== 11) {
+  return { ok: false };
+}
+
+function readTrustedFrameParent(node: Node): FrameTraversalRead<Node | null> {
+  const read = readTrustedDomAccessor(
+    node,
+    "parentNode",
+    TRUSTED_NODE_PARENT_GETTER,
+  );
+  if (!read.ok) return read;
+  return read.value === null || (
+    typeof read.value === "object" && read.value !== null
+  )
+    ? { ok: true, value: read.value as Node | null }
+    : { ok: false };
+}
+
+function readTrustedFrameTagName(element: Element): string | undefined {
+  const read = readTrustedDomAccessor(
+    element,
+    "tagName",
+    TRUSTED_ELEMENT_TAG_NAME_GETTER,
+  );
+  return read.ok && typeof read.value === "string"
+    ? read.value.toUpperCase()
+    : undefined;
+}
+
+function readTrustedOpenShadowRoot(
+  element: Element,
+): FrameTraversalRead<ShadowRoot | undefined> {
+  const rootRead = readTrustedDomAccessor(
+    element,
+    "shadowRoot",
+    TRUSTED_ELEMENT_SHADOW_ROOT_GETTER,
+  );
+  if (!rootRead.ok) return rootRead;
+  if (rootRead.value === null || rootRead.value === undefined) {
     return { ok: true, value: undefined };
   }
-  let mode: unknown;
-  try {
-    mode = (node as { readonly mode?: unknown }).mode;
-  } catch {
+  if (typeof rootRead.value !== "object") return { ok: false };
+  const root = rootRead.value as ShadowRoot;
+  const modeRead = readTrustedDomAccessor(
+    root,
+    "mode",
+    TRUSTED_SHADOW_ROOT_MODE_GETTER,
+  );
+  const hostRead = readTrustedDomAccessor(
+    root,
+    "host",
+    TRUSTED_SHADOW_ROOT_HOST_GETTER,
+  );
+  if (
+    !modeRead.ok ||
+    modeRead.value !== "open" ||
+    !hostRead.ok ||
+    hostRead.value !== element
+  ) {
     return { ok: false };
   }
-  if (!isCurrent() || mode !== "open") return { ok: false };
-  let host: unknown;
-  try {
-    host = (node as { readonly host?: unknown }).host;
-  } catch {
-    return { ok: false };
-  }
-  if (!isCurrent()) return { ok: false };
-  return host && typeof host === "object"
-    ? { ok: true, value: host as Node }
+  return { ok: true, value: root };
+}
+
+function readTrustedShadowRootHost(
+  root: Node,
+): FrameTraversalRead<Element> {
+  const modeRead = readTrustedDomAccessor(
+    root,
+    "mode",
+    TRUSTED_SHADOW_ROOT_MODE_GETTER,
+  );
+  const hostRead = readTrustedDomAccessor(
+    root,
+    "host",
+    TRUSTED_SHADOW_ROOT_HOST_GETTER,
+  );
+  return modeRead.ok &&
+    modeRead.value === "open" &&
+    hostRead.ok &&
+    typeof hostRead.value === "object" &&
+    hostRead.value !== null
+    ? { ok: true, value: hostRead.value as Element }
+    : { ok: false };
+}
+
+function isTrustedFrameOwnershipEdge(parent: Node, child: Node): boolean {
+  const parentRead = readTrustedFrameParent(child);
+  if (parentRead.ok && parentRead.value === parent) return true;
+  const hostRead = readTrustedShadowRootHost(child);
+  if (!hostRead.ok || hostRead.value !== parent) return false;
+  const rootRead = readTrustedOpenShadowRoot(parent as Element);
+  return rootRead.ok && rootRead.value === child;
+}
+
+function readAuthenticatedFrameTraversalFrameElement(
+  element: Element,
+): FrameTraversalRead<HTMLIFrameElement | undefined> {
+  const visibleRead = readFrameTraversalFrameElement(element);
+  const trustedTagName = readTrustedFrameTagName(element);
+  if (!visibleRead.ok || trustedTagName === undefined) return { ok: false };
+  const trustedFrame = trustedTagName === "IFRAME"
+    ? element as HTMLIFrameElement
+    : undefined;
+  return visibleRead.value === trustedFrame
+    ? { ok: true, value: trustedFrame }
+    : { ok: false };
+}
+
+function readAuthenticatedFrameTraversalOpenShadowRoot(
+  element: Element,
+): FrameTraversalRead<ShadowRoot | undefined> {
+  const visibleRead = readFrameTraversalOpenShadowRoot(element);
+  const trustedRead = readTrustedOpenShadowRoot(element);
+  return visibleRead.ok &&
+    trustedRead.ok &&
+    visibleRead.value === trustedRead.value
+    ? { ok: true, value: trustedRead.value }
     : { ok: false };
 }
 
@@ -5847,6 +6331,21 @@ function snapshotExpandedBranches(
   )));
 }
 
+function snapshotOwnedFrames(
+  entries: Iterable<readonly [string, OwnedFrame]>,
+): readonly (readonly [string, OwnedFrame])[] {
+  return Object.freeze(Array.from(entries, ([frameRef, owned]) => (
+    Object.freeze([
+      frameRef,
+      Object.freeze({
+        frameElement: owned.frameElement,
+        parentFrameRef: owned.parentFrameRef,
+        ownershipPath: Object.freeze([...owned.ownershipPath]),
+      }),
+    ] as const)
+  )));
+}
+
 function snapshotPendingFrameMutationScans(
   scans: readonly PendingFrameMutationScan[],
 ): readonly PendingFrameMutationScan[] {
@@ -5859,6 +6358,9 @@ function snapshotPendingFrameMutationScans(
     ownerRoot: scan.ownerRoot,
     root: scan.root,
     stack: scan.stack.map((entry) => ({ ...entry })),
+    ...(scan.ownershipPathPrefix
+      ? { ownershipPathPrefix: Object.freeze([...scan.ownershipPathPrefix]) }
+      : {}),
     ...(scan.remainingOwnedFrameElements
       ? {
           remainingOwnedFrameElements: new Set(

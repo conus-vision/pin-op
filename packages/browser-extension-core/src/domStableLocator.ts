@@ -99,6 +99,7 @@ export interface DomStableLocatorServiceOptions {
     authorizeExactFrameElement(
       frameElement: HTMLIFrameElement,
       parentFrameRef: string,
+      ownershipPath: readonly Node[],
     ): {
       readonly kind: "accessible" | "inaccessible";
       readonly document?: Document;
@@ -181,13 +182,17 @@ export class DomStableLocatorService {
         let shadowRoot: ShadowRoot | undefined;
         let childDocument: Document | undefined;
         let childContext: { readonly document: Document; readonly frameRef: string } | undefined;
-        const host = this.resolvePath(root, boundary.hostPath, seen, traversed, budget, (candidate) => {
+        const host = this.resolvePath(root, boundary.hostPath, seen, traversed, budget, (candidate, ownershipPath) => {
           if (boundary.kind === "shadow-root") {
             shadowRoot = readOpenShadowRoot(candidate, seen);
             return !!shadowRoot && !this.isExcluded(shadowRoot);
           }
           if (!isFrameElement(candidate)) return false;
-          const frame = this.resolveExactFrame(candidate, context.frameRef);
+          const frame = this.resolveExactFrame(
+            candidate,
+            context.frameRef,
+            ownershipPath,
+          );
           if (frame?.created) authorizedFrames.push(candidate);
           const description = frame?.description;
           if (
@@ -224,14 +229,18 @@ export class DomStableLocatorService {
       }
       let targetShadowRoot: ShadowRoot | undefined;
       let targetFrameDocument: Document | undefined;
-      const target = this.resolvePath(root, parsed.path, seen, traversed, budget, (candidate) => {
+      const target = this.resolvePath(root, parsed.path, seen, traversed, budget, (candidate, ownershipPath) => {
         if (parsed.targetKind === "element") return true;
         if (parsed.targetKind === "shadow-root") {
           targetShadowRoot = readOpenShadowRoot(candidate, seen);
           return !!targetShadowRoot && !this.isExcluded(targetShadowRoot);
         }
         if (!isFrameElement(candidate)) return false;
-        const frame = this.resolveExactFrame(candidate, context.frameRef);
+        const frame = this.resolveExactFrame(
+          candidate,
+          context.frameRef,
+          ownershipPath,
+        );
         if (frame?.created) authorizedFrames.push(candidate);
         const description = frame?.description;
         if (
@@ -363,13 +372,17 @@ export class DomStableLocatorService {
     seen: Set<Node>,
     traversed: number,
     budget: LocatorVisitBudget,
-    prepareFinal?: (element: Element) => boolean,
+    prepareFinal?: (
+      element: Element,
+      ownershipPath: readonly Node[],
+    ) => boolean,
   ): Element | undefined {
     if (path.length === 0 || traversed + path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) {
       return undefined;
     }
     let parent = root;
     let resolved: Element | undefined;
+    const resolvedPath: Node[] = [root];
     for (let index = 0; index < path.length; index += 1) {
       const segment = path[index]!;
       const candidate = elementChildAt(parent, segment.siblingIndex, budget);
@@ -383,7 +396,12 @@ export class DomStableLocatorService {
           parent,
           root,
           budget,
-          index === path.length - 1 ? prepareFinal : undefined,
+          index === path.length - 1 && prepareFinal
+            ? (element) => prepareFinal(
+              element,
+              Object.freeze([...resolvedPath, element]),
+            )
+            : undefined,
         )
       ) {
         return undefined;
@@ -391,6 +409,7 @@ export class DomStableLocatorService {
       seen.add(candidate);
       parent = candidate;
       resolved = candidate;
+      resolvedPath.push(candidate);
     }
     return resolved;
   }
@@ -398,6 +417,7 @@ export class DomStableLocatorService {
   private resolveExactFrame(
     frameElement: HTMLIFrameElement,
     parentFrameRef: string,
+    ownershipPath: readonly Node[],
   ): {
     readonly description: { readonly kind: "accessible" | "inaccessible"; readonly document?: Document; readonly frameRef: string };
     readonly created: boolean;
@@ -423,6 +443,7 @@ export class DomStableLocatorService {
     const description = this.frameRegistry.authorizeExactFrameElement(
       frameElement,
       parentFrameRef,
+      ownershipPath,
     );
     return description
       ? Object.freeze({ description, created: !existing })
