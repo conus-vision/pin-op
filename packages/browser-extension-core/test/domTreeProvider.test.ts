@@ -1019,6 +1019,147 @@ describe("DomTreeProvider", () => {
     expect(state.pendingMutationOverflow).toBeDefined();
   });
 
+  it("bounds record intake when an indexed record getter reenters", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const record = attributeMutationRecord(
+      document.documentElement,
+      "data-reentrant-index",
+    );
+    let reentered = false;
+    const outerRecords = new Proxy([] as MutationRecord[], {
+      get(target, property, receiver) {
+        if (property === "length") return 101;
+        if (typeof property === "string" && /^\d+$/.test(property)) {
+          if (!reentered) {
+            reentered = true;
+            harness.observers[0]!.emit(repeatedIndexedList(
+              4_096,
+              record,
+              () => undefined,
+            ));
+          }
+          return record;
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+
+    harness.observers[0]!.emit(outerRecords);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+      pendingMutationOverflow?: unknown;
+    };
+    expect(reentered).toBe(true);
+    expect(state.pendingMutations.length).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutationOverflow).toBeDefined();
+  });
+
+  it("bounds record intake when a MutationRecord getter reenters", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const nestedRecord = attributeMutationRecord(
+      document.documentElement,
+      "data-nested-record",
+    );
+    let reentered = false;
+    const outerRecord = new Proxy(attributeMutationRecord(
+      document.documentElement,
+      "data-outer-record",
+    ), {
+      get(target, property, receiver) {
+        if (property === "type" && !reentered) {
+          reentered = true;
+          harness.observers[0]!.emit(repeatedIndexedList(
+            4_096,
+            nestedRecord,
+            () => undefined,
+          ));
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+
+    harness.observers[0]!.emit([outerRecord]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+      pendingMutationOverflow?: unknown;
+    };
+    expect(reentered).toBe(true);
+    expect(state.pendingMutations.length).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutationOverflow).toBeDefined();
+  });
+
+  it("bounds copied nodes when a NodeList getter reenters intake", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const node = createElement("aside", document);
+    const nestedRecords = Array.from({ length: 16 }, () => mutationRecord(
+      document.documentElement,
+      Array.from({ length: 256 }, () => node),
+    ));
+    let reentered = false;
+    const outerNodes = repeatedIndexedList(256, node, () => {
+      if (!reentered) {
+        reentered = true;
+        harness.observers[0]!.emit(nestedRecords);
+      }
+    });
+    const outerRecord = {
+      type: "childList",
+      target: document.documentElement,
+      removedNodes: outerNodes,
+      addedNodes: [] as readonly FakeNode[],
+    } as unknown as MutationRecord;
+
+    harness.observers[0]!.emit([outerRecord]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: unknown;
+    };
+    expect(reentered).toBe(true);
+    expect(state.pendingMutations.length).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutationNodeCount).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutationOverflow).toBeDefined();
+  });
+
+  it("releases the intake guard after a reentrant getter throws", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    let reentered = false;
+    const hostile = new Proxy(attributeMutationRecord(
+      document.documentElement,
+      "data-hostile-reentry",
+    ), {
+      get(target, property, receiver) {
+        if (property === "type" && !reentered) {
+          reentered = true;
+          harness.observers[0]!.emit([
+            attributeMutationRecord(document.documentElement, "data-nested"),
+          ]);
+          throw new Error("hostile record getter");
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    harness.observers[0]!.emit([hostile]);
+    harness.flushTimers();
+
+    const currentObserver = harness.observers.at(-1)!;
+    currentObserver.emit([
+      attributeMutationRecord(document.documentElement, "data-after-error"),
+    ]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+    };
+    expect(state.pendingMutations).toHaveLength(1);
+  });
+
   it("conservatively recovers branch, cursor, and selected authority after overflow", () => {
     const document = createDocument();
     const parent = createElement("main", document);
@@ -1097,6 +1238,70 @@ describe("DomTreeProvider", () => {
     });
   });
 
+  it("bounds branch generations across repeated overflow namespaces", () => {
+    const document = createDocument();
+    const initialChild = createElement("main", document);
+    initialChild.append(createElement("p", document));
+    document.documentElement.append(initialChild);
+    const harness = createProviderHarness(document);
+    const branchGenerations = (harness.provider as unknown as {
+      readonly branchGenerations: ReadonlyMap<string, number>;
+    }).branchGenerations;
+    let root = harness.provider.getRoot();
+
+    for (let cycle = 0; cycle < 8; cycle += 1) {
+      const oldRootRevision = root.node.branchRevision;
+      const page = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `overflow-cycle-root-${cycle}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+      const retired = page.nodes[0]!;
+      harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `overflow-cycle-child-${cycle}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: retired.nodeRef,
+        branchRevision: retired.branchRevision,
+      });
+
+      const oldElement = document.documentElement.childNodes[0]!;
+      const replacement = createElement("main", document);
+      replacement.append(createElement("p", document));
+      document.documentElement.remove(oldElement);
+      document.documentElement.append(replacement);
+      harness.observers.at(-1)!.emit(repeatedIndexedList(
+        4_097,
+        attributeMutationRecord(document.documentElement, "data-overflow"),
+        () => undefined,
+      ));
+      harness.flushTimers();
+
+      root = harness.provider.getRoot();
+      expect(root.node.branchRevision).toBe(oldRootRevision + 1);
+      expect(branchGenerations).toEqual(new Map([
+        [root.node.nodeRef, root.node.branchRevision],
+      ]));
+      const refreshed = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `overflow-cycle-refreshed-root-${cycle}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      }).nodes[0]!;
+      expect(refreshed.nodeRef).not.toBe(retired.nodeRef);
+      expect(() => harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `overflow-cycle-refreshed-child-${cycle}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: refreshed.nodeRef,
+        branchRevision: refreshed.branchRevision,
+      })).not.toThrow();
+    }
+  });
+
   it("retires removed frames and rediscovers current frames after overflow", () => {
     const document = createDocument();
     const oldChildDocument = createDocument();
@@ -1138,6 +1343,154 @@ describe("DomTreeProvider", () => {
     expect(lifecycle.map((event) => event.type)).toEqual(
       expect.arrayContaining(["removed", "registered"]),
     );
+  });
+
+  it("fails closed when overflow frame discovery cannot read nodeType", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const oldFrame = createFrameElement(document, childDocument);
+    document.documentElement.append(oldFrame);
+    const harness = createProviderHarness(document);
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const hostile = createElement("main", document);
+    document.documentElement.append(hostile);
+    Object.defineProperty(hostile, "nodeType", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile nodeType");
+      },
+    });
+
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(oldFrame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when overflow frame discovery cannot read child-list length", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const oldFrame = createFrameElement(document, childDocument);
+    document.documentElement.append(oldFrame);
+    const harness = createProviderHarness(document);
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const hostile = createElement("main", document);
+    document.documentElement.append(hostile);
+    Object.defineProperty(hostile, "childNodes", {
+      configurable: true,
+      get: () => ({
+        get length(): number {
+          throw new Error("hostile child-list length");
+        },
+      }),
+    });
+
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+    harness.flushTimers();
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(oldFrame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("reads overflow frame child-list length once before rediscovery", () => {
+    const document = createDocument();
+    const oldChildDocument = createDocument();
+    const oldFrame = createFrameElement(document, oldChildDocument);
+    document.documentElement.append(oldFrame);
+    const harness = createProviderHarness(document);
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    document.documentElement.remove(oldFrame);
+    const newChildDocument = createDocument();
+    const newFrame = createFrameElement(document, newChildDocument);
+    const container = createElement("main", document);
+    container.append(newFrame);
+    document.documentElement.append(container);
+    const childNodes = container.childNodes;
+    let lengthReads = 0;
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(childNodes, {
+        get(target, property, receiver) {
+          if (property === "length") {
+            lengthReads += 1;
+            if (lengthReads > 1) {
+              throw new Error("child-list length read twice");
+            }
+          }
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      }),
+    });
+
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    expect(lengthReads).toBe(1);
+    expect(oldFrame.loadListenerCount).toBe(0);
+    expect(newFrame.loadListenerCount).toBe(1);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      newChildDocument as unknown as Document,
+    )).toBeDefined();
+  });
+
+  it("fails closed when overflow frame discovery cannot read a child index", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const oldFrame = createFrameElement(document, childDocument);
+    document.documentElement.append(oldFrame);
+    const harness = createProviderHarness(document);
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    const hostile = createElement("main", document);
+    const childNodes = [createElement("aside", document)];
+    document.documentElement.append(hostile);
+    Object.defineProperty(hostile, "childNodes", {
+      configurable: true,
+      get: () => new Proxy(childNodes, {
+        get(target, property, receiver) {
+          if (property === "0") throw new Error("hostile child index");
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      }),
+    });
+
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(oldFrame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
   });
 
   it("fails closed when overflow frame rediscovery exhausts its total visit budget", () => {

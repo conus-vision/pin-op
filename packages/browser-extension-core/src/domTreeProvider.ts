@@ -198,6 +198,15 @@ interface FrameTraversalEntry {
   shadowQueued: boolean;
 }
 
+type FrameTraversalRead<Value> =
+  | { readonly ok: true; readonly value: Value }
+  | { readonly ok: false };
+
+interface CapturedFrameChildList {
+  readonly childNodes: ArrayLike<Node>;
+  readonly childCount: number;
+}
+
 type FrameMutationAction = "register" | "unregister";
 
 interface PendingFrameMutationScan {
@@ -395,6 +404,7 @@ export class DomTreeProvider {
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private pendingMutationNodeCount = 0;
   private pendingMutationOverflow: PendingMutationOverflow | undefined;
+  private mutationIntakeDepth = 0;
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
   private rollbackEffectSuppressionDepth = 0;
@@ -2094,44 +2104,64 @@ export class DomTreeProvider {
     records: readonly MutationRecord[],
     authority: MutationDrainAuthority,
   ): void {
-    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
-    let recordCount: number;
-    try {
-      recordCount = readSafeArrayLikeLength(records);
-    } catch {
-      if (isCurrent()) this.markMutationOverflow(observedRoot);
+    if (this.mutationIntakeDepth > 0) {
+      this.markMutationOverflow(observedRoot);
       return;
     }
-    const availableRecords = Math.max(
-      0,
-      MUTATION_INTAKE_RECORD_LIMIT - this.pendingMutations.length,
-    );
-    const acceptedRecordCount = Math.min(recordCount, availableRecords);
-    for (let index = 0; index < acceptedRecordCount; index += 1) {
-      if (!isCurrent()) return;
-      let record: MutationRecord | undefined;
+    this.mutationIntakeDepth += 1;
+    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
+    try {
+      let recordCount: number;
       try {
-        record = records[index];
+        recordCount = readSafeArrayLikeLength(records);
       } catch {
-        this.markMutationOverflow(observedRoot);
+        if (isCurrent()) this.markMutationOverflow(observedRoot);
         return;
       }
-      if (!isCurrent()) return;
-      const snapshot = record
-        ? this.snapshotMutationRecord(observedRoot, record, authority)
-        : undefined;
-      if (!isCurrent()) return;
-      if (!snapshot) {
-        this.markMutationOverflow(observedRoot);
-        return;
+      if (!isCurrent() || this.pendingMutationOverflow) return;
+      const availableRecords = Math.max(
+        0,
+        MUTATION_INTAKE_RECORD_LIMIT - this.pendingMutations.length,
+      );
+      const acceptedRecordCount = Math.min(recordCount, availableRecords);
+      for (let index = 0; index < acceptedRecordCount; index += 1) {
+        if (!isCurrent()) return;
+        let record: MutationRecord | undefined;
+        try {
+          record = records[index];
+        } catch {
+          this.markMutationOverflow(observedRoot);
+          return;
+        }
+        if (!isCurrent() || this.pendingMutationOverflow) return;
+        const snapshot = record
+          ? this.snapshotMutationRecord(observedRoot, record, authority)
+          : undefined;
+        if (!isCurrent() || this.pendingMutationOverflow) return;
+        if (!snapshot) {
+          this.markMutationOverflow(observedRoot);
+          return;
+        }
+        const snapshotNodeCount =
+          snapshot.addedNodes.length + snapshot.removedNodes.length;
+        if (
+          this.pendingMutations.length >= MUTATION_INTAKE_RECORD_LIMIT ||
+          snapshotNodeCount > MUTATION_RECORD_NODE_LIMIT ||
+          this.pendingMutationNodeCount + snapshotNodeCount >
+            MUTATION_INTAKE_NODE_LIMIT
+        ) {
+          this.markMutationOverflow(observedRoot, snapshot.target);
+          return;
+        }
+        this.pendingMutations.push(snapshot);
+        this.pendingMutationNodeCount += snapshotNodeCount;
+        if (this.pendingMutationOverflow) return;
       }
-      this.pendingMutations.push(snapshot);
-      this.pendingMutationNodeCount +=
-        snapshot.addedNodes.length + snapshot.removedNodes.length;
-      if (this.pendingMutationOverflow) return;
-    }
-    if (recordCount > acceptedRecordCount && isCurrent()) {
-      this.markMutationOverflow(observedRoot);
+      if (recordCount > acceptedRecordCount && isCurrent()) {
+        this.markMutationOverflow(observedRoot);
+      }
+    } finally {
+      this.mutationIntakeDepth -= 1;
     }
   }
 
@@ -2145,13 +2175,14 @@ export class DomTreeProvider {
     let target: unknown;
     try {
       type = record.type;
-      if (!isCurrent()) return undefined;
+      if (!isCurrent() || this.pendingMutationOverflow) return undefined;
       target = record.target;
     } catch {
       return undefined;
     }
     if (
       !isCurrent() ||
+      this.pendingMutationOverflow !== undefined ||
       (type !== "attributes" && type !== "characterData" && type !== "childList") ||
       !target ||
       typeof target !== "object"
@@ -2174,7 +2205,7 @@ export class DomTreeProvider {
     } catch {
       return undefined;
     }
-    if (!isCurrent()) return undefined;
+    if (!isCurrent() || this.pendingMutationOverflow) return undefined;
     const copied: Node[] = [];
     const copyNodes = (source: unknown): readonly Node[] | undefined => {
       if (!source || typeof source !== "object") return undefined;
@@ -2184,7 +2215,7 @@ export class DomTreeProvider {
       } catch {
         return undefined;
       }
-      if (!isCurrent()) return undefined;
+      if (!isCurrent() || this.pendingMutationOverflow) return undefined;
       const recordCapacity = MUTATION_RECORD_NODE_LIMIT - copied.length;
       const pendingCapacity = MUTATION_INTAKE_NODE_LIMIT -
         this.pendingMutationNodeCount - copied.length;
@@ -2198,7 +2229,20 @@ export class DomTreeProvider {
         } catch {
           return undefined;
         }
-        if (!isCurrent() || !node || typeof node !== "object") {
+        if (
+          !isCurrent() ||
+          this.pendingMutationOverflow ||
+          !node ||
+          typeof node !== "object"
+        ) {
+          return undefined;
+        }
+        if (
+          copied.length >= MUTATION_RECORD_NODE_LIMIT ||
+          this.pendingMutationNodeCount + copied.length >=
+            MUTATION_INTAKE_NODE_LIMIT
+        ) {
+          this.markMutationOverflow(observedRoot, target as Node);
           return undefined;
         }
         result.push(node as Node);
@@ -2219,7 +2263,7 @@ export class DomTreeProvider {
       } catch {
         return undefined;
       }
-      if (!isCurrent()) return undefined;
+      if (!isCurrent() || this.pendingMutationOverflow) return undefined;
       addedNodes = copyNodes(addedSource);
     }
     if (!addedNodes || !isCurrent()) return undefined;
@@ -2644,9 +2688,17 @@ export class DomTreeProvider {
     for (const nodeRef of invalidatedBranches) {
       this.nodeRegistry.release(nodeRef, "expanded");
     }
+    const publishedRootGeneration = this.publishedRootPresentation;
     this.records.clear();
     this.cursors.clear();
     this.expandedBranches.clear();
+    this.branchGenerations.clear();
+    if (publishedRootGeneration) {
+      this.branchGenerations.set(
+        publishedRootGeneration.nodeRef,
+        publishedRootGeneration.branchRevision,
+      );
+    }
     this.exhaustedBranches.clear();
     this.transientRecordRetentions.clear();
     this.expandedShadowHosts.clear();
@@ -4470,6 +4522,14 @@ export class DomTreeProvider {
       ) {
         operations += 1;
         const scan = this.pendingFrameMutationScans[0]!;
+        const rejectTraversalRead = (): boolean => {
+          if (scan.visitBudget?.failClosedOnExhaustion) {
+            this.#failClosedMutationOverflow();
+            return true;
+          }
+          scan.stack.pop();
+          return false;
+        };
         const isCurrent = (): boolean => (
           !this.disposed && (scan.resetGuard?.() ?? true)
         );
@@ -4531,7 +4591,12 @@ export class DomTreeProvider {
               continue;
             }
           }
-          const nodeType = entry.node.nodeType;
+          const nodeTypeRead = readFrameTraversalNodeType(entry.node);
+          if (!nodeTypeRead.ok) {
+            if (rejectTraversalRead()) return;
+            continue;
+          }
+          const nodeType = nodeTypeRead.value;
           if (abandonIfStale()) continue;
           if (nodeType === 1) {
             const element = entry.node as Element;
@@ -4548,19 +4613,28 @@ export class DomTreeProvider {
             entry.shadowRoot = getOpenShadowRoot(element);
             if (abandonIfStale()) continue;
           }
-          const childNodes = readChildNodes(entry.node);
+          const childListRead = readFrameTraversalChildList(entry.node);
+          if (!childListRead.ok) {
+            if (rejectTraversalRead()) return;
+            continue;
+          }
           if (abandonIfStale()) continue;
-          entry.childNodes = childNodes;
-          entry.childCount = childNodes?.length ?? 0;
+          entry.childNodes = childListRead.value.childNodes;
+          entry.childCount = childListRead.value.childCount;
           continue;
         }
         if (entry.nextChildIndex < entry.childCount) {
-          const child = entry.childNodes?.[entry.nextChildIndex];
+          const childRead = readFrameTraversalChild(
+            entry.childNodes,
+            entry.nextChildIndex,
+          );
+          if (!childRead.ok) {
+            if (rejectTraversalRead()) return;
+            continue;
+          }
           if (abandonIfStale()) continue;
           entry.nextChildIndex += 1;
-          if (child) {
-            scan.stack.push(createFrameTraversalEntry(child));
-          }
+          scan.stack.push(createFrameTraversalEntry(childRead.value));
           continue;
         }
         if (!entry.shadowQueued) {
@@ -5053,6 +5127,61 @@ function createFrameTraversalEntry(node: Node): FrameTraversalEntry {
     shadowRoot: undefined,
     shadowQueued: false,
   };
+}
+
+function readFrameTraversalNodeType(
+  node: Node,
+): FrameTraversalRead<number> {
+  try {
+    const nodeType = (node as { readonly nodeType?: unknown }).nodeType;
+    return typeof nodeType === "number" && Number.isSafeInteger(nodeType)
+      ? { ok: true, value: nodeType }
+      : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readFrameTraversalChildList(
+  node: Node,
+): FrameTraversalRead<CapturedFrameChildList> {
+  try {
+    const childNodes = (node as { readonly childNodes?: unknown }).childNodes;
+    if (!childNodes || typeof childNodes !== "object") {
+      return { ok: false };
+    }
+    const childCount = (childNodes as { readonly length?: unknown }).length;
+    if (
+      typeof childCount !== "number" ||
+      !Number.isSafeInteger(childCount) ||
+      childCount < 0
+    ) {
+      return { ok: false };
+    }
+    return {
+      ok: true,
+      value: {
+        childNodes: childNodes as ArrayLike<Node>,
+        childCount,
+      },
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readFrameTraversalChild(
+  childNodes: ArrayLike<Node> | undefined,
+  index: number,
+): FrameTraversalRead<Node> {
+  try {
+    const child = childNodes?.[index];
+    return child && typeof child === "object"
+      ? { ok: true, value: child }
+      : { ok: false };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function freezeLogicalChildPage(
