@@ -107,6 +107,7 @@ const MAX_CONTEXT_ANCESTORS = 512;
 const LIVE_CONTEXT_STABILIZATION_PASSES = 2;
 const GEOMETRY_DIMENSION_TOLERANCE = 0.5;
 const EMPTY_FRAME_IDENTITIES = Object.freeze([]) as readonly FrameIdentity[];
+const providerMutationSettlements = new WeakMap<object, () => void>();
 
 interface FrameDocumentAccess {
   readonly document: Document;
@@ -168,11 +169,6 @@ export class FrameRegistry {
 
   protected get mutationInProgress(): boolean {
     return this.state === "mutating";
-  }
-
-  protected settleProviderDocumentResetAfterMutation(): void {
-    // DomTreeProvider narrows this hook to an already accepted, newer document
-    // reset. Standalone registries keep mutation settlement side-effect free.
   }
 
   public getContext(frameRef: string): FrameContext | undefined {
@@ -732,7 +728,13 @@ export class FrameRegistry {
       this.dispose();
       return;
     }
-    this.settleProviderDocumentResetAfterMutation();
+    const settleProviderMutation = providerMutationSettlements.get(this);
+    if (!settleProviderMutation) return;
+    try {
+      settleProviderMutation();
+    } catch {
+      // Provider settlement must not strand committed registry lifecycle state.
+    }
   }
 
   private isActive(): boolean {
@@ -1141,6 +1143,14 @@ export class FrameRegistry {
       // Lifecycle observers must not disrupt page-frame bookkeeping.
     }
   }
+}
+
+/** @internal Package-private bridge for DomTreeProvider document resets. */
+export function installDomTreeProviderFrameRegistrySettlement(
+  registry: FrameRegistry,
+  settle: () => void,
+): void {
+  providerMutationSettlements.set(registry, settle);
 }
 
 function freezeIdentity(identity: FrameIdentity): FrameIdentity {

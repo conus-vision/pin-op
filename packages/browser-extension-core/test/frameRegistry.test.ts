@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as frameRegistryModule from "../src/frameRegistry.js";
 import {
   FrameRegistry as FrameRegistryBase,
   type FrameIdentity,
@@ -18,6 +19,21 @@ class FrameRegistry extends FrameRegistryBase {
     return super.describeFrame(frameElement, parentFrameRef);
   }
 }
+
+class ExternalSettlementFrameRegistry extends FrameRegistry {
+  public onSettlement: (() => void) | undefined;
+}
+
+Object.defineProperty(
+  ExternalSettlementFrameRegistry.prototype,
+  "settleProviderDocumentResetAfterMutation",
+  {
+    configurable: true,
+    value(this: ExternalSettlementFrameRegistry): void {
+      this.onSettlement?.();
+    },
+  },
+);
 
 describe("FrameRegistry", () => {
   it("exposes a stable top context for the current document epoch", () => {
@@ -1355,6 +1371,113 @@ describe("FrameRegistry", () => {
       frameEpoch: 2,
     });
     expect(frame.loadListenerCount).toBe(1);
+  });
+
+  it("does not let external subclasses reenter reset settlement", () => {
+    const initialDocument = createDocument();
+    const replacementDocument = createDocument();
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    const registry = new ExternalSettlementFrameRegistry(initialDocument, {
+      maxFrames: 3,
+      onLifecycle: (event) => events.push(event),
+    });
+    let settlementCalls = 0;
+    let armed = true;
+    registry.onSettlement = () => {
+      if (!armed) return;
+      armed = false;
+      settlementCalls += 1;
+      registry.describeFrame(childFrame);
+    };
+
+    expect(registry.resetTopDocument(replacementDocument, 1)).toBe(true);
+
+    expect(settlementCalls).toBe(0);
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "reset:frame-1",
+    ]);
+    expect(registry.accessibleContexts()).toEqual([registry.topContext]);
+    expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    expect(childFrame.loadListenerCount).toBe(0);
+  });
+
+  it("does not let external settlement throws strand frame publication", () => {
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    const registry = new ExternalSettlementFrameRegistry(createDocument(), {
+      maxFrames: 2,
+      onLifecycle: (event) => events.push(event),
+    });
+    let settlementCalls = 0;
+    registry.onSettlement = () => {
+      settlementCalls += 1;
+      throw new Error("hostile external settlement");
+    };
+    let firstDescription: ReturnType<FrameRegistry["describeFrame"]>;
+    let firstError: unknown;
+    try {
+      firstDescription = registry.describeFrame(childFrame);
+    } catch (error) {
+      firstError = error;
+    }
+    registry.onSettlement = undefined;
+    const retainedContext = registry.getContextForDocument(childDocument);
+    const retriedDescription = registry.describeFrame(childFrame);
+
+    expect(settlementCalls).toBe(0);
+    expect(firstError).toBeUndefined();
+    expect(firstDescription).toMatchObject({
+      kind: "accessible",
+      frameRef: "frame-2",
+    });
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "registered:frame-2",
+    ]);
+    expect(retainedContext).toMatchObject({ frameRef: "frame-2" });
+    expect(retriedDescription).toEqual(firstDescription);
+    expect(childFrame.loadListenerCount).toBe(1);
+  });
+
+  it("contains internal provider settlement failures before publication", () => {
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    const registry = new FrameRegistry(createDocument(), {
+      maxFrames: 2,
+      onLifecycle: (event) => events.push(event),
+    });
+    const installSettlement = (frameRegistryModule as unknown as {
+      readonly installDomTreeProviderFrameRegistrySettlement?: (
+        target: FrameRegistryBase,
+        settle: () => void,
+      ) => void;
+    }).installDomTreeProviderFrameRegistrySettlement;
+
+    expect(installSettlement).toBeTypeOf("function");
+    if (!installSettlement) return;
+    let settlementCalls = 0;
+    installSettlement(registry, () => {
+      settlementCalls += 1;
+      throw new Error("hostile internal settlement");
+    });
+
+    const description = registry.describeFrame(childFrame);
+
+    expect(settlementCalls).toBe(1);
+    expect(description).toMatchObject({
+      kind: "accessible",
+      frameRef: "frame-2",
+    });
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "registered:frame-2",
+    ]);
+    expect(registry.getContextForDocument(childDocument)).toMatchObject({
+      frameRef: "frame-2",
+    });
+    expect(childFrame.loadListenerCount).toBe(1);
   });
 
   it("gates public operations while reset detaches hostile listeners", () => {

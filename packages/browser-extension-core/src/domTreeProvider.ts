@@ -6,11 +6,11 @@ import {
 } from "./domNodeRegistry.js";
 import {
   FrameRegistry,
+  installDomTreeProviderFrameRegistrySettlement,
   type FrameContext,
   type FrameDescription,
   type FrameIdentity,
   type FrameLifecycleEvent,
-  type FrameRegistryOptions,
   type TopViewportRect,
   type ViewportRect,
 } from "./frameRegistry.js";
@@ -323,20 +323,8 @@ type LogicalPathEntry =
     };
 
 class DomTreeProviderFrameRegistry extends FrameRegistry {
-  public constructor(
-    topDocument: Document,
-    options: FrameRegistryOptions,
-    private readonly settleDocumentReset: () => void,
-  ) {
-    super(topDocument, options);
-  }
-
   public get documentResetMustWait(): boolean {
     return this.mutationInProgress;
-  }
-
-  protected override settleProviderDocumentResetAfterMutation(): void {
-    this.settleDocumentReset();
   }
 }
 
@@ -457,7 +445,11 @@ export class DomTreeProvider {
           this.handleFrameLifecycle(event);
         }
       },
-    }, () => this.settleFrameRegistryDocumentResets());
+    });
+    installDomTreeProviderFrameRegistrySettlement(
+      this.frameRegistry,
+      () => this.settleFrameRegistryDocumentResets(),
+    );
     this.locatorService = this.createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
       getContext: (frameRef: string) => this.frameRegistry.getContext(frameRef),
