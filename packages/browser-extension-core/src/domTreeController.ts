@@ -1159,6 +1159,7 @@ export class DomTreeController {
     const moveFocusedServiceRow = focusedRow?.type === "load-more";
     let provisionalFocusRef: string | undefined;
     let firstPageFailed = false;
+    let firstPageFailureFallbackRef: string | undefined;
     const request: DomGetChildrenRequest = {
       type: "dom.getChildren",
       requestId: this.createRequestId(),
@@ -1193,7 +1194,7 @@ export class DomTreeController {
         if (response.type === "dom.error") {
           if (!cursor) {
             firstPageFailed = true;
-            this.failFirstPageRefresh(
+            firstPageFailureFallbackRef = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1217,7 +1218,7 @@ export class DomTreeController {
         ) {
           if (!cursor) {
             firstPageFailed = true;
-            this.failFirstPageRefresh(
+            firstPageFailureFallbackRef = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1276,7 +1277,7 @@ export class DomTreeController {
         ) {
           if (!cursor) {
             firstPageFailed = true;
-            this.failFirstPageRefresh(
+            firstPageFailureFallbackRef = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1291,9 +1292,15 @@ export class DomTreeController {
           const focusAnchor = firstPageFailed
             ? pendingFocusAnchor
             : this.focusAnchor(this.rows());
+          const restoreRetryFocus = firstPageFailed &&
+            firstPageFailureFallbackRef !== undefined &&
+            this.focusedNodeRef === firstPageFailureFallbackRef;
           currentBranch.pending = undefined;
           this.settleReconciliationToken(reconciliationBatchId, token);
           this.invalidateRows();
+          if (restoreRetryFocus) {
+            this.focusedNodeRef = undefined;
+          }
           this.reconcileFocus(focusAnchor);
           this.notify();
         } else {
@@ -1593,6 +1600,8 @@ export class DomTreeController {
           this.rootEpilogue = Object.freeze([...response.epilogue]);
           this.rootSnapshotRevision = response.node.branchRevision;
           this.upsertNode(response.node, undefined);
+          this.invalidateRows();
+          this.reconcileFocus(focusAnchor);
           this.resumeOwnedExpandedBranches(
             [nodeRef],
             childReconciliationBatchId,
@@ -2173,7 +2182,8 @@ export class DomTreeController {
     branch: BranchState,
     parentRef: string,
     focusAnchor: FocusAnchor,
-  ): void {
+  ): string | undefined {
+    const previousFocusedRef = this.focusedNodeRef;
     const previousChildren = [...branch.children];
     branch.children.length = 0;
     for (const childRef of previousChildren) {
@@ -2185,6 +2195,9 @@ export class DomTreeController {
     branch.nextCursor = undefined;
     this.invalidateRows();
     this.reconcileFocus(focusAnchor);
+    return this.focusedNodeRef !== previousFocusedRef
+      ? this.focusedNodeRef
+      : undefined;
   }
 
   private deferDetachedSubtree(
@@ -2649,13 +2662,13 @@ export class DomTreeController {
       this.focusedNodeRef = undefined;
       return;
     }
-    if (rows.some((row) => row.nodeRef === this.focusedNodeRef)) {
+    if (isFocusableRow(rows.find((row) => row.nodeRef === this.focusedNodeRef))) {
       return;
     }
     const index = anchor.index < 0
       ? 0
       : Math.min(anchor.index, rows.length - 1);
-    this.focusedNodeRef = rows[index]?.nodeRef ?? rows[0]?.nodeRef;
+    this.focusedNodeRef = nearestFocusableRow(rows, index)?.nodeRef;
   }
 
   private moveFocusToNearestFocusable(anchor: FocusAnchor): void {

@@ -198,6 +198,104 @@ describe("DomTreeController", () => {
     expect(controller.focusedRef).toBe(root.nodeRef);
   });
 
+  it("reconciles replaced auxiliary focus before a resumed child refresh publishes", async () => {
+    const transport = new TestTransport();
+    const root = node("root", true, 1);
+    const oldChild = node("old-child");
+    const oldTrailing = displayNode("old-trailing", "comment", "before");
+    const newTrailing = displayNode("new-trailing", "comment", "after");
+    transport.enqueue(rootResponse(root, 1, [], [oldTrailing]));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [oldChild]));
+    let observeCommit = false;
+    const publishedFocusRefs: Array<string | undefined> = [];
+    let controller!: DomTreeController;
+    controller = createController(transport, () => {
+      const rows = controller.rows();
+      if (observeCommit && rows.some((row) => row.nodeRef === newTrailing.nodeRef)) {
+        publishedFocusRefs.push(controller.focusedRef);
+      }
+    });
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    controller.focus(oldTrailing.nodeRef);
+    const refreshedRoot = deferred<DomResponse>();
+    transport.enqueue(refreshedRoot.promise);
+    transport.enqueue({
+      type: "dom.error",
+      requestId: "ignored-by-test-transport",
+      documentEpoch: 1,
+      code: "internal-error",
+    });
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    const resumedChildren = deferred<DomResponse>();
+    transport.enqueue(resumedChildren.promise);
+    observeCommit = true;
+    refreshedRoot.resolve(rootResponse(
+      { ...root, branchRevision: 2 },
+      1,
+      [],
+      [newTrailing],
+    ));
+    await flushAsync();
+
+    expect(publishedFocusRefs.length).toBeGreaterThan(0);
+    expect(publishedFocusRefs).toEqual(
+      publishedFocusRefs.map(() => newTrailing.nodeRef),
+    );
+    expectSingleFocusedRow(controller, newTrailing.nodeRef);
+
+    resumedChildren.resolve(childrenResponse(root.nodeRef, 2, []));
+    await flushAsync();
+  });
+
+  it("never falls back to a loading service row after removing a root auxiliary", async () => {
+    const transport = new TestTransport();
+    const root = node("root", true, 1);
+    const oldTrailing = displayNode("old-trailing", "comment", "before");
+    transport.enqueue(rootResponse(root, 1, [], [oldTrailing]));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, []));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    controller.focus(oldTrailing.nodeRef);
+    const refreshedRoot = deferred<DomResponse>();
+    transport.enqueue(refreshedRoot.promise);
+    transport.enqueue({
+      type: "dom.error",
+      requestId: "ignored-by-test-transport",
+      documentEpoch: 1,
+      code: "internal-error",
+    });
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    const resumedChildren = deferred<DomResponse>();
+    transport.enqueue(resumedChildren.promise);
+    refreshedRoot.resolve(rootResponse({ ...root, branchRevision: 2 }));
+    await flushAsync();
+    const focusedWhileLoading = controller.focusedRef;
+    const rowsWhileLoading = controller.rows();
+
+    resumedChildren.resolve(childrenResponse(root.nodeRef, 2, []));
+    await flushAsync();
+
+    expect(focusedWhileLoading).toBe(root.nodeRef);
+    expect(rowsWhileLoading.find((row) => row.nodeRef === focusedWhileLoading))
+      .toMatchObject({ type: "node", loading: true, focused: true });
+    expect(rowsWhileLoading.find((row) => row.type === "load-more"))
+      .toMatchObject({ loading: true, focused: false });
+  });
+
   it.each(["root-first", "children-first"] as const)(
     "keeps a failed root snapshot stale and independently errored when %s settles",
     async (order) => {

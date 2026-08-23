@@ -93,6 +93,50 @@ describe("DomTreeView", () => {
     )).toBeUndefined();
   });
 
+  it("does not let a resumed child refresh steal replacement auxiliary focus", async () => {
+    const harness = createHarness();
+    const root = { ...node("root", "html", true), branchRevision: 1 };
+    const oldTrailing = displayNode("old-trailing", "before");
+    const newTrailing = displayNode("new-trailing", "after");
+    harness.transport.enqueue(rootResponse(root, [], [oldTrailing]));
+    harness.transport.enqueue(childrenResponse(root.nodeRef, [], 1));
+    await harness.controller.loadRoot();
+    await harness.controller.expand(root.nodeRef);
+    harness.view.focus(oldTrailing.nodeRef);
+    const refreshedRoot = deferred<DomResponse>();
+    harness.transport.enqueue(refreshedRoot.promise);
+    harness.transport.enqueue({
+      type: "dom.error",
+      requestId: "ignored-by-test-transport",
+      documentEpoch: 1,
+      code: "internal-error",
+    });
+
+    harness.controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    const resumedChildren = deferred<DomResponse>();
+    harness.transport.enqueue(resumedChildren.promise);
+    refreshedRoot.resolve(rootResponse(
+      { ...root, branchRevision: 2 },
+      [],
+      [newTrailing],
+    ));
+    await flushAsync();
+
+    expect(harness.controller.focusedRef).toBe(newTrailing.nodeRef);
+    expect(tabbableRows(harness.dom)).toEqual([
+      harness.dom.row(newTrailing.nodeRef),
+    ]);
+    expect(harness.dom.activeElement).toBe(harness.dom.row(newTrailing.nodeRef));
+
+    resumedChildren.resolve(childrenResponse(root.nodeRef, [], 2));
+    await flushAsync();
+  });
+
   it("materializes exactly viewport and overscan rows at a stable height", () => {
     const harness = createHarness({ clientHeight: 60, rowHeight: 20, overscan: 2 });
     const path = Array.from({ length: 40 }, (_, index) =>
@@ -1684,13 +1728,14 @@ function navigationState(
 function childrenResponse(
   nodeRef: string,
   nodes: readonly DomNodeView[],
+  branchRevision = 0,
 ): DomResponse {
   return {
     type: "dom.children",
     requestId: "ignored-by-test-transport",
     documentEpoch: 1,
     nodeRef,
-    branchRevision: 0,
+    branchRevision,
     nodes,
   };
 }
