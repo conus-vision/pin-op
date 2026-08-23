@@ -107,6 +107,127 @@ describe("DomTreeController", () => {
     expect(transport.dispatched).toEqual([]);
   });
 
+  it("rejects a same-root auxiliary refresh that collides with retained child authority", async () => {
+    const transport = new TestTransport();
+    const root = {
+      ...node("root", true, 1),
+      attributes: [{ name: "data-snapshot", value: "old" }],
+    };
+    const child = node("child");
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [child]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    controller.focus(child.nodeRef);
+    const refreshedRoot = deferred<DomResponse>();
+    const hangingChildren = deferred<DomResponse>();
+    transport.enqueue(refreshedRoot.promise);
+    transport.enqueue(hangingChildren.promise);
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    refreshedRoot.resolve(rootResponse({
+      ...root,
+      attributes: [{ name: "data-snapshot", value: "new" }],
+      branchRevision: 2,
+    }, 1, [displayNode(child.nodeRef, "comment", "collision")]));
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual([root.nodeRef, child.nodeRef]);
+    expect(controller.rows().map((row) => row.nodeRef)).toEqual([
+      root.nodeRef,
+      child.nodeRef,
+      `pin-op:load-more:${root.nodeRef}`,
+    ]);
+    expect(controller.rows().at(-1)).toMatchObject({
+      type: "load-more",
+      parentRef: root.nodeRef,
+      loading: true,
+    });
+    expect(controller.rows().find((row) => row.nodeRef === root.nodeRef))
+      .toMatchObject({
+        node: { attributes: [{ name: "data-snapshot", value: "old" }] },
+      });
+    expectSingleFocusedRow(controller, child.nodeRef);
+    expect(controller.snapshot().errorCode).toBe("internal-error");
+
+    hangingChildren.resolve(childrenResponse(root.nodeRef, 2, [child]));
+    await flushAsync();
+  });
+
+  it.each(["root", "auxiliary"] as const)(
+    "rejects a root snapshot using the tree-service namespace for a real %s",
+    async (position) => {
+      const transport = new TestTransport();
+      const reservedRef = "pin-op:load-more:root";
+      const root = node(position === "root" ? reservedRef : "root", true);
+      const prologue = position === "auxiliary"
+        ? [displayNode(reservedRef, "comment", "collision")]
+        : [];
+      transport.enqueue(rootResponse(root, 1, prologue));
+      const controller = createController(transport);
+
+      await controller.loadRoot();
+      await controller.expand(root.nodeRef);
+
+      expect(controller.rows()).toEqual([]);
+      expect(controller.focusedRef).toBeUndefined();
+      expect(controllerState(controller).nodes.size).toBe(0);
+    },
+  );
+
+  it("rejects reserved service identities at selection and recovery boundaries", () => {
+    const reservedRoot = locatedNode(
+      "pin-op:load-more:root",
+      locator(1),
+      true,
+    );
+    const liveController = createController(new TestTransport());
+
+    liveController.handleEvent(selectionEvent(1, [reservedRoot]));
+
+    expect(liveController.rows()).toEqual([]);
+    expect(liveController.snapshot().selectedRef).toBeUndefined();
+
+    const recoveryController = createController(new TestTransport());
+    recoveryController.beginRecovery();
+    recoveryController.installRecoveryRoot(rootResponse(reservedRoot));
+    recoveryController.finishRecovery();
+
+    expect(recoveryController.rows()).toEqual([]);
+    expect(recoveryController.focusedRef).toBeUndefined();
+  });
+
+  it("keeps synthetic load-more rows while accepting a non-reserved lookalike", async () => {
+    const transport = new TestTransport();
+    const root = node("pin-op:load-more", true);
+    const hangingChildren = deferred<DomResponse>();
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(hangingChildren.promise);
+    const controller = createController(transport);
+    await controller.loadRoot();
+
+    const expansion = controller.expand(root.nodeRef);
+    await flushAsync();
+
+    expect(controller.rows()).toEqual([
+      expect.objectContaining({ type: "node", nodeRef: root.nodeRef }),
+      expect.objectContaining({
+        type: "load-more",
+        nodeRef: `pin-op:load-more:${root.nodeRef}`,
+        loading: true,
+      }),
+    ]);
+
+    hangingChildren.resolve(childrenResponse(root.nodeRef, 0, []));
+    await expansion;
+  });
+
   it("refreshes displayed root auxiliaries after a collapsed-root invalidation", async () => {
     const transport = new TestTransport();
     const root = node("root", false, 1);

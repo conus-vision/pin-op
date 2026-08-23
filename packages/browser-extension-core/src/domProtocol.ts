@@ -18,6 +18,7 @@ export const DOM_PROTOCOL_MAX_DOCTYPE_ID_LENGTH = 4_096;
 export const DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS = 32;
 export const DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED = 128;
 export const DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES = 64 * 1024;
+export const DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX = "pin-op:load-more:";
 
 export type DomErrorCode =
   | "invalid-request"
@@ -756,8 +757,12 @@ function parseNodeView(value: unknown): DomNodeView {
   if (!characterData && hasOwn(record, "nodeValue")) throw invalidMessage();
   const attributes = parseInspectorAttributes(record.attributes);
   if (kind !== "element" && attributes.length > 0) throw invalidMessage();
+  const nodeRef = assertIdentifier(record.nodeRef);
+  if (nodeRef.startsWith(DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX)) {
+    throw invalidMessage();
+  }
   return freeze({
-    nodeRef: assertIdentifier(record.nodeRef),
+    nodeRef,
     kind,
     nodeType: expectedNodeType,
     nodeName: assertBoundedText(

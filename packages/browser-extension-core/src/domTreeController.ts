@@ -1,6 +1,7 @@
 import {
   DOM_PROTOCOL_MAX_CHILDREN_PAGE_LENGTH,
   DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES,
+  DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX,
   type DomErrorCode,
   type DomEvent,
   type DomGetChildrenRequest,
@@ -171,7 +172,6 @@ interface FocusAnchor {
   readonly index: number;
 }
 
-const LOAD_MORE_PREFIX = "pin-op:load-more:";
 const DOM_TREE_MAX_QUARANTINED_ROOTS = DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES;
 const DOM_TREE_MAX_QUARANTINED_NODE_REFS =
   DOM_PROTOCOL_MAX_INVALIDATION_BRANCHES *
@@ -372,7 +372,11 @@ export class DomTreeController {
   }
 
   public installRecoveryRoot(response: DomRootResponse): void {
-    if (this.disposed || !this.recovering) {
+    if (
+      this.disposed ||
+      !this.recovering ||
+      !this.canCommitRootPresentation(response)
+    ) {
       return;
     }
     this.currentDocumentEpoch = response.documentEpoch;
@@ -540,6 +544,10 @@ export class DomTreeController {
           response.requestId !== request.requestId ||
           (expectedEpoch !== undefined && response.documentEpoch !== expectedEpoch)
         ) {
+          return;
+        }
+        if (!this.canCommitRootPresentation(response)) {
+          this.applyError("internal-error");
           return;
         }
         if (this.currentDocumentEpoch === undefined) {
@@ -1581,6 +1589,10 @@ export class DomTreeController {
           this.applyRootSnapshotError("internal-error");
           return;
         }
+        if (!this.canCommitRootPresentation(response)) {
+          this.applyRootSnapshotError("internal-error");
+          return;
+        }
         if (response.node.nodeRef !== nodeRef) {
           this.adoptReplacementRoot(response, reconciliationBatchId);
           return;
@@ -1923,7 +1935,7 @@ export class DomTreeController {
       const loading = Boolean(branch.pending);
       result.push(Object.freeze({
         type: "load-more",
-        nodeRef: `${LOAD_MORE_PREFIX}${nodeRef}`,
+        nodeRef: `${DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX}${nodeRef}`,
         parentRef: nodeRef,
         label: loading ? "Loading" : branch.nextCursor ? "Load more" : "Load children",
         kind: "load-more",
@@ -1935,7 +1947,8 @@ export class DomTreeController {
         expanded: false,
         loading,
         selected: false,
-        focused: this.focusedNodeRef === `${LOAD_MORE_PREFIX}${nodeRef}`,
+        focused: this.focusedNodeRef ===
+          `${DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX}${nodeRef}`,
         hovered: false,
       }));
     }
@@ -2478,7 +2491,10 @@ export class DomTreeController {
     const expectedRootRef = this.rootRef ?? ancestorPath[0]?.nodeRef;
     const pathRefs = new Set<string>();
     for (const [index, view] of ancestorPath.entries()) {
-      if (pathRefs.has(view.nodeRef)) {
+      if (
+        pathRefs.has(view.nodeRef) ||
+        view.nodeRef.startsWith(DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX)
+      ) {
         return false;
       }
       pathRefs.add(view.nodeRef);
@@ -2495,9 +2511,30 @@ export class DomTreeController {
     return true;
   }
 
+  private canCommitRootPresentation(response: DomRootResponse): boolean {
+    const visibleRefs = new Set<string>();
+    const auxiliaryViews = [...response.prologue, ...response.epilogue];
+    for (const view of [response.node, ...auxiliaryViews]) {
+      if (
+        visibleRefs.has(view.nodeRef) ||
+        view.nodeRef.startsWith(DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX)
+      ) {
+        return false;
+      }
+      visibleRefs.add(view.nodeRef);
+    }
+    if (
+      this.nodes.has(response.node.nodeRef) &&
+      response.node.nodeRef !== this.rootRef
+    ) {
+      return false;
+    }
+    return auxiliaryViews.every((view) => !this.nodes.has(view.nodeRef));
+  }
+
   private isReservedPresentationRef(nodeRef: string): boolean {
     return nodeRef === this.rootRef ||
-      nodeRef.startsWith(LOAD_MORE_PREFIX) ||
+      nodeRef.startsWith(DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX) ||
       this.rootPrologue.some((view) => view.nodeRef === nodeRef) ||
       this.rootEpilogue.some((view) => view.nodeRef === nodeRef);
   }
@@ -2673,7 +2710,7 @@ export class DomTreeController {
         this.focusedNodeRef = this.rootRef;
         return undefined;
       }
-      const loadMoreRef = `${LOAD_MORE_PREFIX}${nodeRef}`;
+      const loadMoreRef = `${DOM_PROTOCOL_RESERVED_NODE_REF_PREFIX}${nodeRef}`;
       this.focusedNodeRef = loadMoreRef;
       return loadMoreRef;
     }

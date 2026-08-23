@@ -240,6 +240,65 @@ describe("DOM protocol", () => {
     });
   });
 
+  it.each([
+    ["root", () => parseDomResponse({
+      type: "dom.root",
+      requestId: "reserved-root",
+      documentEpoch: 1,
+      node: nodeView({ nodeRef: "pin-op:load-more:root" }),
+      prologue: [],
+      epilogue: [],
+    })],
+    ["root auxiliary", () => parseDomResponse({
+      type: "dom.root",
+      requestId: "reserved-auxiliary",
+      documentEpoch: 1,
+      node: nodeView({ nodeRef: "root" }),
+      prologue: [displayNodeView("comment", {
+        nodeRef: "pin-op:load-more:root",
+      })],
+      epilogue: [],
+    })],
+    ["child page", () => parseDomResponse({
+      type: "dom.children",
+      requestId: "reserved-child",
+      documentEpoch: 1,
+      nodeRef: "root",
+      branchRevision: 1,
+      nodes: [nodeView({ nodeRef: "pin-op:load-more:root" })],
+    })],
+    ["selection path", () => parseDomEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 1,
+      selectionRevision: 1,
+      nodeRef: "pin-op:load-more:root",
+      ancestorPath: [nodeView({ nodeRef: "pin-op:load-more:root" })],
+    })],
+    ["locator recovery path", () => {
+      const target = nodeView({ nodeRef: "pin-op:load-more:root" });
+      return parseDomResponse({
+        type: "dom.locator",
+        requestId: "reserved-locator",
+        documentEpoch: 1,
+        node: target,
+        ancestorPath: [target],
+      });
+    }],
+  ])("rejects the tree-service node-ref namespace in a %s", (_case, parse) => {
+    expect(parse).toThrow(DomProtocolError);
+  });
+
+  it("accepts a node ref that only resembles the tree-service namespace", () => {
+    expect(parseDomResponse({
+      type: "dom.root",
+      requestId: "service-lookalike",
+      documentEpoch: 1,
+      node: nodeView({ nodeRef: "pin-op:load-more" }),
+      prologue: [],
+      epilogue: [],
+    })).toMatchObject({ node: { nodeRef: "pin-op:load-more" } });
+  });
+
   it("parses structured element and display-only node snapshots", () => {
     const element = nodeView({
       nodeName: "BUTTON",
