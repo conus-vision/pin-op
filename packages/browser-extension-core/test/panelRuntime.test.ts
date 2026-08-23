@@ -2681,6 +2681,79 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("keeps cleared selection authority over a delayed lower revision", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    showReadySourceNavigation(port, "selected-current", "inspect-current", 4);
+
+    port.emitMessage(selectionCleared("selected-current", 7));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-current",
+    )).toBeUndefined();
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-delayed",
+      "button#delayed",
+      6,
+    ));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-delayed",
+    )).toBeUndefined();
+    runtime.dispose();
+  });
+
+  it("cancels in-flight source and settings authority when selection clears", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-pending",
+      "button#pending",
+      4,
+    ));
+    port.emitMessage(inspectStarted("inspect-pending", 4));
+
+    port.emitMessage(selectionCleared("selected-pending", 7));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-pending",
+      resolutionGeneration: 8,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceMatches("inspect-pending", 8));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    const presentationCount = port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    )).length;
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    ))).toHaveLength(presentationCount);
+    runtime.dispose();
+  });
+
   it("invalidates B when a newer selection arrives", async () => {
     const runtime = createRuntime();
     await runtime.ready;
@@ -3837,6 +3910,19 @@ function selectionChangedWithRevision(
       domNode("selection-root", "html", true),
       domNode(nodeRef, label),
     ],
+  };
+}
+
+function selectionCleared(
+  nodeRef: string,
+  selectionRevision: number,
+  documentEpoch = 1,
+) {
+  return {
+    type: "dom.selectionCleared" as const,
+    documentEpoch,
+    selectionRevision,
+    nodeRef,
   };
 }
 

@@ -2105,6 +2105,7 @@ export class DomTreeProvider {
     const records = this.pendingMutations.splice(0);
     const affected = new Set<string>();
     const forcedAffected = new Set<string>();
+    const selectedRemovalOwnerCandidates: string[] = [];
     const addedRoots: PendingElementMutationRoot[] = [];
     const removedRoots: PendingElementMutationRoot[] = [];
     for (const pending of records) {
@@ -2202,7 +2203,11 @@ export class DomTreeProvider {
           const invalidated = this.nodeRegistry.invalidateSubtree(removed);
           if (
             !isCurrent() ||
-            !this.releaseInvalidatedRefs(invalidated, true, forcedAffected)
+            !this.releaseInvalidatedRefs(
+              invalidated,
+              true,
+              selectedRemovalOwnerCandidates,
+            )
           ) {
             return false;
           }
@@ -2325,10 +2330,20 @@ export class DomTreeProvider {
       const invalidated = this.nodeRegistry.invalidateSubtree(root.node);
       if (
         !isCurrent() ||
-        !this.releaseInvalidatedRefs(invalidated, true, forcedAffected)
+        !this.releaseInvalidatedRefs(
+          invalidated,
+          true,
+          selectedRemovalOwnerCandidates,
+        )
       ) {
         return false;
       }
+    }
+    const selectedRemovalOwner = selectedRemovalOwnerCandidates.find(
+      (nodeRef) => this.records.has(nodeRef),
+    );
+    if (selectedRemovalOwner) {
+      forcedAffected.add(selectedRemovalOwner);
     }
     return isCurrent() &&
       this.invalidateBranches(affected, forcedAffected) &&
@@ -3831,7 +3846,7 @@ export class DomTreeProvider {
   private releaseInvalidatedRefs(
     nodeRefs: readonly string[],
     notifySelectedRemoval = true,
-    survivingPresentationOwners?: Set<string>,
+    selectedRemovalOwnerCandidates?: string[],
   ): boolean {
     if (nodeRefs.length === 0) {
       return true;
@@ -3843,15 +3858,13 @@ export class DomTreeProvider {
     if (!selected.valid) return false;
     const selectedRef = selected.nodeRef;
     const selectedWasRemoved = selectedRef !== undefined && invalidated.has(selectedRef);
-    if (selectedWasRemoved && survivingPresentationOwners) {
+    if (selectedWasRemoved && selectedRemovalOwnerCandidates) {
       let ownerRef = this.records.get(selectedRef)?.parentRef;
       const visited = new Set<string>();
-      while (ownerRef && invalidated.has(ownerRef) && !visited.has(ownerRef)) {
+      while (ownerRef && !visited.has(ownerRef)) {
         visited.add(ownerRef);
+        selectedRemovalOwnerCandidates.push(ownerRef);
         ownerRef = this.records.get(ownerRef)?.parentRef;
-      }
-      if (ownerRef && this.records.has(ownerRef)) {
-        survivingPresentationOwners.add(ownerRef);
       }
     }
     for (const nodeRef of invalidated) {

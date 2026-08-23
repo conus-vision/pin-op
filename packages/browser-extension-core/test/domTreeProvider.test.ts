@@ -3168,6 +3168,49 @@ describe("DomTreeProvider", () => {
     });
   });
 
+  it("resolves a removed selection owner after the complete mutation batch", () => {
+    const document = createDocument();
+    const section = createElement("section", document);
+    const main = createElement("main", document);
+    const selected = createElement("button", document);
+    main.append(selected);
+    section.append(main);
+    document.documentElement.append(section);
+    let selectedRef: string | undefined;
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const revealed = harness.provider.revealElement(selected as unknown as Element);
+    const sectionView = revealed.ancestorPath.at(-3)!;
+    const mainView = revealed.ancestorPath.at(-2)!;
+    selectedRef = revealed.nodeRef;
+
+    main.remove(selected);
+    section.remove(main);
+    harness.observers[0]!.emit([
+      mutationRecord(main, [], [selected]),
+      mutationRecord(section, [], [main]),
+    ]);
+    harness.flushTimers();
+
+    expect(invalidated).toContainEqual({
+      nodeRef: sectionView.nodeRef,
+      branchRevision: sectionView.branchRevision + 1,
+    });
+    expect(invalidated.map(({ nodeRef }) => nodeRef)).not.toContain(
+      mainView.nodeRef,
+    );
+    expect(harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "surviving-selection-owner",
+      nodeRef: sectionView.nodeRef,
+      documentEpoch: revealed.documentEpoch,
+      branchRevision: sectionView.branchRevision + 1,
+    }).nodes).toEqual([]);
+  });
+
   it("notifies after retained hovered nodes reach their final moved or detached state", () => {
     const document = createDocument();
     const source = createElement("main", document);

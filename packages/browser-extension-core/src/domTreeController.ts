@@ -827,20 +827,21 @@ export class DomTreeController {
         return;
       }
     }
+    const routedEvent = selectionEvent ?? event;
     if (this.recovering && !selectionEvent) return;
     if (
       this.currentDocumentEpoch !== undefined &&
-      event.documentEpoch < this.currentDocumentEpoch
+      routedEvent.documentEpoch < this.currentDocumentEpoch
     ) {
       return;
     }
     if (
       this.currentDocumentEpoch === undefined ||
-      event.documentEpoch > this.currentDocumentEpoch
+      routedEvent.documentEpoch > this.currentDocumentEpoch
     ) {
-      this.resetState(event.documentEpoch, "DOM document changed");
+      this.resetState(routedEvent.documentEpoch, "DOM document changed");
     }
-    if (event.documentEpoch !== this.currentDocumentEpoch) {
+    if (routedEvent.documentEpoch !== this.currentDocumentEpoch) {
       return;
     }
 
@@ -854,28 +855,28 @@ export class DomTreeController {
       this.acceptedSelectionRevision = selectionEvent.selectionRevision;
     }
 
-    switch (event.type) {
+    switch (routedEvent.type) {
       case "dom.selectionChanged":
         if (!this.recovering) {
-          this.handleSelectionChanged(selectionEvent as DomSelectionChangedEvent);
+          this.handleSelectionChanged(routedEvent);
         }
         return;
       case "dom.selectionCleared":
         this.handleSelectionCleared();
         return;
       case "dom.hoverChanged":
-        this.currentHoverSummary = event.summary;
-        this.lastHoverRequest = event.nodeRef ?? null;
-        this.hoveredNodeRef = event.nodeRef && this.nodes.has(event.nodeRef)
-          ? event.nodeRef
+        this.currentHoverSummary = routedEvent.summary;
+        this.lastHoverRequest = routedEvent.nodeRef ?? null;
+        this.hoveredNodeRef = routedEvent.nodeRef && this.nodes.has(routedEvent.nodeRef)
+          ? routedEvent.nodeRef
           : undefined;
         this.notify();
         return;
       case "dom.invalidated":
         const reconciliationBatchId = this.beginReconciliationBatch(
-          event.branches.length,
+          routedEvent.branches.length,
         );
-        for (const invalidation of event.branches) {
+        for (const invalidation of routedEvent.branches) {
           this.invalidateBranch(
             invalidation.nodeRef,
             invalidation.branchRevision,
@@ -1353,18 +1354,18 @@ export class DomTreeController {
 
   private handleSelectionCleared(): void {
     const oldRevealPath = this.revealPathRefs;
+    const wasRecovering = this.recovering;
+    if (wasRecovering) {
+      this.generation += 1;
+      this.recovering = false;
+      this.frozenRows = undefined;
+    }
     this.pendingRootSelection = undefined;
     this.selectedNodeRef = undefined;
     this.recoverySnapshot = undefined;
     this.recoveryFocusRef = undefined;
     this.recoveryFocusRowType = undefined;
     this.recoveredFocusRef = undefined;
-    if (this.recovering) {
-      this.cancelPending("DOM selection authority cleared");
-      this.generation += 1;
-      this.recovering = false;
-      this.frozenRows = undefined;
-    }
     this.clearRevealEdges();
     this.revealPathRefs = Object.freeze([]);
     if (this.currentRevealRef !== undefined) {
@@ -1380,6 +1381,9 @@ export class DomTreeController {
       this.focusedNodeRef = this.rootRef;
     }
     this.invalidateRows();
+    if (wasRecovering) {
+      this.cancelPending("DOM selection authority cleared");
+    }
     this.notify();
   }
 
@@ -2675,12 +2679,12 @@ export class DomTreeController {
     documentEpoch: number | undefined,
     cancellationReason: string,
   ): void {
-    this.cancelPending(cancellationReason);
     this.generation += 1;
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
     this.clearLiveState(documentEpoch);
+    this.cancelPending(cancellationReason);
   }
 
   private clearLiveState(documentEpoch: number | undefined): void {

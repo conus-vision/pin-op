@@ -308,7 +308,11 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       }
     } else if (domEvent) {
       let beginsSelection = false;
-      if (domEvent.type === "dom.selectionChanged") {
+      let selectionOwnership: "current" | "advanced" | undefined;
+      if (
+        domEvent.type === "dom.selectionChanged" ||
+        domEvent.type === "dom.selectionCleared"
+      ) {
         const ownership = acceptSelectionOwnership(
           domEvent.selectionRevision,
           domEvent.documentEpoch,
@@ -317,9 +321,12 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         if (ownership === "stale") {
           return;
         }
+        selectionOwnership = ownership;
+      }
+      if (domEvent.type === "dom.selectionChanged") {
         domRecoveryStatusGeneration += 1;
         recoveryCoordinator.handleManualSelection(domEvent);
-        if (ownership === "advanced") {
+        if (selectionOwnership === "advanced") {
           activeInspectSelectionRevision = undefined;
           sourceNavigationController.invalidate();
           if (!mismatchBlocked) {
@@ -340,7 +347,21 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         }
       }
       treeController.handleEvent(domEvent);
-      if (domEvent.type === "dom.selectionChanged") {
+      if (
+        domEvent.type === "dom.selectionCleared" &&
+        selectionOwnership === "advanced"
+      ) {
+        domRecoveryStatusGeneration += 1;
+        activeInspectSelectionRevision = undefined;
+        sourceNavigationController.invalidate();
+        sourcePaneController.invalidate();
+        settingsController.invalidateInspect();
+        sourcePaneView.setState({
+          kind: "empty",
+          statusText: "Select an element to inspect",
+        });
+        resetResolutionState();
+      } else if (domEvent.type === "dom.selectionChanged") {
         const selected = domEvent.ancestorPath.at(-1);
         if (beginsSelection) {
           diagnostics.clearResolution();

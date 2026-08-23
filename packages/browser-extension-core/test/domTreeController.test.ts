@@ -936,6 +936,133 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual([root.nodeRef]);
   });
 
+  it("seals a new document epoch before cancellation can publish a newer selection", () => {
+    const baseTransport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldSelected = locatedNode("old-selected", locator(2));
+    const outerRoot = locatedNode("outer-root", locator(1, 1), true, 1);
+    const outerSelected = locatedNode("outer-selected", locator(2, 1));
+    const reentrantRoot = locatedNode("reentrant-root", locator(1, 2), true, 1);
+    const reentrantSelected = locatedNode("reentrant-selected", locator(2, 2));
+    let injectSelection = false;
+    let controller!: DomTreeController;
+    const transport: DomTreeTransport = {
+      request: (request) => baseTransport.request(request),
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        baseTransport.cancelPending(reason);
+        if (!injectSelection) return;
+        injectSelection = false;
+        controller.handleEvent(selectionEventWithRevision(
+          2,
+          [reentrantRoot, reentrantSelected],
+          6,
+        ));
+      },
+    };
+    controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldSelected],
+      4,
+    ));
+    injectSelection = true;
+
+    controller.handleEvent(selectionEventWithRevision(
+      2,
+      [outerRoot, outerSelected],
+      5,
+    ));
+
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      selectedRef: reentrantSelected.nodeRef,
+      revealRef: reentrantSelected.nodeRef,
+    });
+    expect(controllerState(controller).acceptedSelectionRevision).toBe(6);
+    expect(nodeRefs(controller)).toEqual([
+      reentrantRoot.nodeRef,
+      reentrantSelected.nodeRef,
+    ]);
+  });
+
+  it("does not let recovery cancellation tear down a reentrant new-epoch selection", () => {
+    const baseTransport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldSelected = locatedNode("old-selected", locator(2));
+    const recoveryRoot = locatedNode("recovery-root", locator(1, 1), true, 1);
+    const reentrantRoot = locatedNode("reentrant-root", locator(1, 2), true, 1);
+    const reentrantSelected = locatedNode("reentrant-selected", locator(2, 2));
+    let injectSelection = false;
+    let controller!: DomTreeController;
+    const transport: DomTreeTransport = {
+      request: (request) => baseTransport.request(request),
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        baseTransport.cancelPending(reason);
+        if (!injectSelection || reason !== "DOM selection authority cleared") return;
+        injectSelection = false;
+        controller.handleEvent(selectionEventWithRevision(
+          2,
+          [reentrantRoot, reentrantSelected],
+          6,
+        ));
+      },
+    };
+    controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldSelected],
+      4,
+    ));
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(recoveryRoot, 1));
+    injectSelection = true;
+
+    controller.handleEvent(selectionClearedEvent(1, oldSelected.nodeRef, 5));
+
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      selectedRef: reentrantSelected.nodeRef,
+      revealRef: reentrantSelected.nodeRef,
+      recovering: false,
+    });
+    expect(controllerState(controller).acceptedSelectionRevision).toBe(6);
+    expect(nodeRefs(controller)).toEqual([
+      reentrantRoot.nodeRef,
+      reentrantSelected.nodeRef,
+    ]);
+  });
+
+  it("routes a selection only through its frozen parsed authority", () => {
+    const controller = createController(new TestTransport());
+    const root = locatedNode("root", locator(1), true, 1);
+    const selected = locatedNode("selected", locator(2));
+    const target = selectionEventWithRevision(1, [root, selected], 4);
+    let typeReads = 0;
+    const splitAuthority = new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === "type") {
+          typeReads += 1;
+          return typeReads === 1
+            ? "dom.selectionChanged"
+            : "dom.selectionCleared";
+        }
+        if (property === "documentEpoch") return 9;
+        return Reflect.get(object, property, receiver);
+      },
+    });
+
+    controller.handleEvent(splitAuthority);
+
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 1,
+      selectedRef: selected.nodeRef,
+      revealRef: selected.nodeRef,
+    });
+    expect(typeReads).toBe(1);
+  });
+
   it.each(["reset", "dispose", "recovery"] as const)(
     "clears pending replacement intent on %s",
     async (transition) => {
