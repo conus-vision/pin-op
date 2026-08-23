@@ -164,6 +164,54 @@ describe("DomTreeRecoveryCoordinator", () => {
     },
   );
 
+  it.each(["cancel", "dispose"] as const)(
+    "does not resolve a locator when its request id factory reentrantly %ss",
+    async (action) => {
+      const transport = new TestTransport();
+      const selectedLocator = locator(1, 1);
+      const controller = createController(transport);
+      controller.handleEvent(selectionEvent(1, [
+        node("old-selected", selectedLocator),
+      ], 4));
+      const newRoot = node("new-root", selectedLocator);
+      const locatorDeferred = deferred<DomResponse>();
+      transport.enqueue(rootResponse(newRoot, 2));
+      transport.enqueue(locatorDeferred.promise);
+      let requestIdCalls = 0;
+      let coordinator!: DomTreeRecoveryCoordinator;
+      coordinator = new DomTreeRecoveryCoordinator({
+        controller,
+        transport,
+        createRequestId() {
+          requestIdCalls += 1;
+          if (requestIdCalls === 2) {
+            if (action === "cancel") {
+              coordinator.cancel("locator request id canceled");
+            } else {
+              coordinator.dispose();
+            }
+          }
+          return `recovery-${requestIdCalls}`;
+        },
+      });
+
+      const recovery = coordinator.begin();
+      for (let index = 0; index < 50 && requestIdCalls < 2; index += 1) {
+        await Promise.resolve();
+      }
+      const resolveRequests = transport.requests.filter(isResolveRequest);
+      const canceledSnapshot = controller.snapshot();
+      locatorDeferred.resolve(locatorResponse(newRoot, [newRoot], 2));
+      await recovery;
+
+      expect(requestIdCalls).toBe(2);
+      expect(resolveRequests).toEqual([]);
+      expect(controller.snapshot()).toEqual(canceledSnapshot);
+      expect(controller.snapshot().recovering).toBe(false);
+      expect(transport.dispatched).toEqual([]);
+    },
+  );
+
   it("rejects a bounded locator response whose target omits recovery ownership", async () => {
     const transport = new TestTransport();
     const rootLocator = locator(1, 0);

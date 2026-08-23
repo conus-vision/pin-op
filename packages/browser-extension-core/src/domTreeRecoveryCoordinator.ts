@@ -240,6 +240,9 @@ export class DomTreeRecoveryCoordinator {
       requestId: this.createRequestId(),
       locator: stableLocator,
     };
+    if (!this.isActiveRecovery(token, contentSessionGeneration)) {
+      return undefined;
+    }
     const response = await this.transport.request(request);
     if (!this.isActiveRecovery(token, contentSessionGeneration)) {
       return undefined;
