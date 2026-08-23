@@ -1,9 +1,50 @@
 # Pin-op MVP Verification
 
 This runbook separates installed-product acceptance from optional source-checkout
-development. The manual sections describe expected acceptance steps. They have
-not been performed in this task, and this document does not claim that any
-manual, installed-product, signed-package, screenshot, or release check passed.
+development. Unless a dated evidence section says otherwise, the manual sections
+describe expected acceptance steps and do not claim that an installed-product,
+signed-package, screenshot, or release check passed.
+
+## Checkpoint 1 Development-Host Evidence (2026-08-23)
+
+This evidence is limited to the Chromium Inspector shell and DOM checkpoint. It
+used source-checkout builds, a VS Code Extension Development Host, the local
+fixture, disposable browser profiles, Chrome 151, and Firefox 154. It is not
+installed-VSIX, packaged-ZIP, Mozilla-signed-XPI, persistence, or release-candidate
+evidence.
+
+Both browsers were built with `PIN_OP_PANEL_VARIANT=inspector`. The shared
+`inspector-panel.html` runtime connected to the fixture and never exposed a
+visible Source tab. Chrome exercised the complete interactive checklist. The
+Firefox run repeated the browser-specific DOM, picker, recovery, layout, and
+cleanup paths; Auto Refresh, IDE Highlight, and forced-colors presentation use
+the same controllers and stylesheet exercised live in Chrome and by the shared
+and Firefox package gates.
+
+| Check | Development-host result |
+| --- | --- |
+| Link and lazy root | Chrome and Firefox reached `Connected` with enabled picker/settings controls and a bounded initial root. No link code or credential was recorded. |
+| Picker and page overlay | Trusted page input selected `article#fixture-card.card.featured` in both browsers, revealed its collapsed ancestor path, kept the fixture's normal-click count at `0`, and rendered the page overlay. Turning the picker off cleared the preview without clearing selection. |
+| Tree selection and hover | The selected row and tree hover drove the same selection/overlay path in both browsers. Chrome also verified a direct tree selection; Firefox showed the selected article row and a live overlay after tree hover. |
+| Mutation and reload recovery | Removing the selected article cleared selection and kept a bounded live tree. A full navigation then recovered automatically to `Connected` with a populated tree in both browsers. This run exposed and verified the fix for the content-reinjection race. |
+| Auto Refresh | In Chrome, a saved CSS change replaced only the external stylesheet URL while preserving `performance.timeOrigin` and scroll. With Auto Refresh off, a later saved CSS change produced no replacement. The probe was restored before this evidence was recorded. |
+| IDE Highlight | In Chrome, selection created the expected Monaco decorations; disabling IDE Highlight removed them, selecting another node did not recreate them, and re-enabling it restored them. |
+| Resize and keyboard | Chrome and Firefox both rendered side-by-side DOM/Rules panes at wide width and stacked DOM above Rules at 320 px. The toolbar remained horizontally reachable. ArrowRight expanded `html`; ArrowDown moved the single roving focus to its child. |
+| High contrast | Chrome forced-colors emulation showed a visible selected-row treatment, focus outline, and disclosure controls without opting out of forced-color adjustment. Shared stylesheet tests cover the same asset packaged for Firefox. |
+| Disconnect cleanup | In both browsers, Disconnect returned to `Not linked`, disabled picker/settings, emptied the tree, and removed the page-owned overlay host. |
+
+Chrome loaded the unpacked extension through its official extension-debugging
+protocol and displayed the registered DevTools panel. Firefox loaded the same
+source tree as a temporary add-on with `web-ext`; automation exercised the exact
+registered `inspector-panel.html` asset through an add-on-scoped DevTools iframe
+and normal page input. The Firefox native custom-tab click itself was not used as
+installed-product evidence.
+
+Finally, both browser builds were rebuilt without `PIN_OP_PANEL_VARIANT`, so the
+legacy panel remained the default rollback asset. In a fresh Chrome profile the
+legacy Source tab stayed visible, resolved `.card`, `.card:hover`, and
+`.featured` from the active `card.scss`, and its Open action moved VS Code to
+line 10. The Inspector asset was not made the store-build default.
 
 ## Installed Product Verification
 
