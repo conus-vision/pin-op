@@ -5610,6 +5610,82 @@ describe("DomTreeProvider", () => {
     expect(childObserver?.disconnectCount).toBe(1);
   });
 
+  it("fails closed when a removed frame subtree cannot be traversed", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(container);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [container]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeDefined();
+
+    document.documentElement.remove(container);
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile removed child collection");
+      },
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [container]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("conservatively skips an unreadable added frame subtree", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const container = createElement("main", document);
+    const frame = createFrameElement(document, childDocument);
+    container.append(frame);
+    const childNodes = container.childNodes;
+    const harness = createProviderHarness(document);
+    document.documentElement.append(container);
+    Object.defineProperty(container, "childNodes", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile added child collection");
+      },
+    });
+    try {
+      expect(() => harness.provider.startFrameTracking()).not.toThrow();
+    } finally {
+      Object.defineProperty(container, "childNodes", {
+        configurable: true,
+        value: childNodes,
+      });
+    }
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).not.toThrow();
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(harness.provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+  });
+
   it("continues a bounded scan to register a late frame in an added subtree", () => {
     const document = createDocument();
     const childDocument = createDocument();

@@ -4523,8 +4523,11 @@ export class DomTreeProvider {
         operations += 1;
         const scan = this.pendingFrameMutationScans[0]!;
         const rejectTraversalRead = (): boolean => {
-          if (scan.visitBudget?.failClosedOnExhaustion) {
-            this.#failClosedMutationOverflow();
+          if (
+            scan.action === "unregister" ||
+            scan.visitBudget?.failClosedOnExhaustion
+          ) {
+            this.#dispose();
             return true;
           }
           scan.stack.pop();
