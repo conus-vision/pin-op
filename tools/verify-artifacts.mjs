@@ -241,7 +241,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
       changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256: "2d12ac3dcbaeba784bed93c29afe27c40e651471f27ba61cfb706b248d2f0996",
+      localSha256: "13a888ecc9cf4faec200bcb6a0149c0de7ae726a7406c95b94201f5b69f75d40",
     }],
   },
   {
@@ -250,7 +250,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
       changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256: "f01ce4ffd5c115f755fd22c997c71db5699600e222cc2413a2f911e67e7fc8be",
+      localSha256: "882883d5a5231eff4d7aed88e58e5680690ef2a29948edd0e71926aecbe2eb64",
     }],
   },
   {
@@ -304,7 +304,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
     }],
   },
   {
@@ -313,7 +313,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
     }],
   },
   {
@@ -322,7 +322,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d",
+      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
     }],
   },
 ]);
