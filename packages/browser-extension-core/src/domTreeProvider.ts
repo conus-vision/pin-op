@@ -1153,10 +1153,10 @@ export class DomTreeProvider {
     });
     this.authorityGeneration += 1;
     this.pendingDocumentReset = request;
-    this.drainDocumentResets();
+    this.#drainDocumentResets();
   }
 
-  private drainDocumentResets(): void {
+  #drainDocumentResets(): void {
     if (
       this.drainingDocumentResets ||
       this.frameRegistry.documentResetMustWait
@@ -1181,9 +1181,9 @@ export class DomTreeProvider {
         this.pendingDocumentReset = undefined;
         this.activeDocumentReset = next;
         try {
-          this.applyDocumentReset(next);
+          this.#applyDocumentReset(next);
         } catch (error) {
-          if (this.isDocumentResetCurrent(next)) throw error;
+          if (this.#isDocumentResetCurrent(next)) throw error;
         } finally {
           if (this.activeDocumentReset === next) {
             this.activeDocumentReset = undefined;
@@ -1204,7 +1204,7 @@ export class DomTreeProvider {
 
   #settleFrameRegistryDocumentResets(): void {
     try {
-      this.drainDocumentResets();
+      this.#drainDocumentResets();
     } catch {
       // Deferred hostile resets already fail closed inside the bounded drain.
     }
@@ -1218,8 +1218,8 @@ export class DomTreeProvider {
     }
   }
 
-  private applyDocumentReset(request: DocumentResetRequest): void {
-    const isCurrent = () => this.isDocumentResetCurrent(request);
+  #applyDocumentReset(request: DocumentResetRequest): void {
+    const isCurrent = () => this.#isDocumentResetCurrent(request);
     if (!isCurrent()) return;
     const deferFrameDiscovery = this.frameTracking &&
       this.outwardEffectBuffer !== undefined;
@@ -1283,7 +1283,7 @@ export class DomTreeProvider {
           authorityGeneration: this.authorityGeneration,
         });
       } else {
-        const scanGuard = () => this.isDocumentResetScanCurrent(request);
+        const scanGuard = () => this.#isDocumentResetScanCurrent(request);
         this.queueFrameDiscovery(request.topDocument, scanGuard);
         if (!isCurrent()) return;
         this.processFrameMutationScanSlice();
@@ -1291,14 +1291,14 @@ export class DomTreeProvider {
     }
   }
 
-  private isDocumentResetCurrent(request: DocumentResetRequest): boolean {
+  #isDocumentResetCurrent(request: DocumentResetRequest): boolean {
     return !this.disposed &&
       this.activeDocumentReset === request &&
       this.pendingDocumentReset === undefined &&
       this.documentResetGeneration === request.requestGeneration;
   }
 
-  private isDocumentResetScanCurrent(request: DocumentResetRequest): boolean {
+  #isDocumentResetScanCurrent(request: DocumentResetRequest): boolean {
     return !this.disposed &&
       this.topDocument === request.topDocument &&
       this.documentEpoch === request.documentEpoch &&

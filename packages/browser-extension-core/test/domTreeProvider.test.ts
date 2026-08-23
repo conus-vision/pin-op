@@ -3,6 +3,7 @@ import { utf8ByteLength } from "@pin-op/protocol";
 import {
   DomTreeProvider,
   DomTreeProviderError,
+  type DomTreeProviderOptions,
 } from "../src/domTreeProvider.js";
 import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
@@ -48,6 +49,68 @@ Object.defineProperties(ExternalMutationBridgeDomTreeProvider.prototype, {
     ): unknown {
       this.mutationBridgeTrapCalls += 1;
       return operation();
+    },
+  },
+});
+
+class ExternalResetAuthorityDomTreeProvider extends DomTreeProvider {
+  public blockDrain = false;
+  public drainTrapCalls = 0;
+  public applyTrapCalls = 0;
+  public currentTrapCalls = 0;
+  public scanCurrentTrapCalls = 0;
+}
+
+const baseDrainDocumentResets = Object.getOwnPropertyDescriptor(
+  DomTreeProvider.prototype,
+  "drainDocumentResets",
+)?.value as ((this: DomTreeProvider) => void) | undefined;
+const baseApplyDocumentReset = Object.getOwnPropertyDescriptor(
+  DomTreeProvider.prototype,
+  "applyDocumentReset",
+)?.value as ((this: DomTreeProvider, request: unknown) => void) | undefined;
+const baseIsDocumentResetCurrent = Object.getOwnPropertyDescriptor(
+  DomTreeProvider.prototype,
+  "isDocumentResetCurrent",
+)?.value as ((this: DomTreeProvider, request: unknown) => boolean) | undefined;
+const baseIsDocumentResetScanCurrent = Object.getOwnPropertyDescriptor(
+  DomTreeProvider.prototype,
+  "isDocumentResetScanCurrent",
+)?.value as ((this: DomTreeProvider, request: unknown) => boolean) | undefined;
+
+Object.defineProperties(ExternalResetAuthorityDomTreeProvider.prototype, {
+  drainDocumentResets: {
+    configurable: true,
+    value(this: ExternalResetAuthorityDomTreeProvider): void {
+      this.drainTrapCalls += 1;
+      if (!this.blockDrain) baseDrainDocumentResets?.call(this);
+    },
+  },
+  applyDocumentReset: {
+    configurable: true,
+    value(this: ExternalResetAuthorityDomTreeProvider, request: unknown): void {
+      this.applyTrapCalls += 1;
+      baseApplyDocumentReset?.call(this, request);
+    },
+  },
+  isDocumentResetCurrent: {
+    configurable: true,
+    value(
+      this: ExternalResetAuthorityDomTreeProvider,
+      request: unknown,
+    ): boolean {
+      this.currentTrapCalls += 1;
+      return baseIsDocumentResetCurrent?.call(this, request) ?? false;
+    },
+  },
+  isDocumentResetScanCurrent: {
+    configurable: true,
+    value(
+      this: ExternalResetAuthorityDomTreeProvider,
+      request: unknown,
+    ): boolean {
+      this.scanCurrentTrapCalls += 1;
+      return baseIsDocumentResetScanCurrent?.call(this, request) ?? false;
     },
   },
 });
@@ -1940,6 +2003,157 @@ describe("DomTreeProvider", () => {
       readonly pendingDocumentReset: unknown;
       readonly drainingDocumentResets: boolean;
     })).toMatchObject({
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
+  it("does not let external subclasses strand the latest reset drain", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const intermediateDocument = createDocument();
+    const latestDocument = createDocument();
+    let provider!: ExternalResetAuthorityDomTreeProvider;
+    let reentered = false;
+    Object.defineProperty(frame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        frame.contentDocumentReads += 1;
+        if (!reentered) {
+          reentered = true;
+          provider.resetDocument(intermediateDocument as unknown as Document, 1);
+          provider.resetDocument(latestDocument as unknown as Document, 2);
+        }
+        return childDocument as unknown as Document;
+      },
+    });
+    provider = new ExternalResetAuthorityDomTreeProvider(
+      document as unknown as Document,
+      {
+        documentEpoch: 0,
+        createMutationObserver: (callback) => new TestMutationObserver(callback),
+      },
+    );
+    provider.blockDrain = true;
+    const root = provider.getRoot();
+
+    try {
+      provider.getChildren({
+        type: "dom.getChildren",
+        requestId: "external-reset-drain-attack",
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+    } catch {
+      // The authority transition may invalidate the in-flight old-root query.
+    }
+
+    expect(reentered).toBe(true);
+    expect.soft(provider.drainTrapCalls).toBe(0);
+    expect.soft(provider.applyTrapCalls).toBe(0);
+    expect.soft(provider.currentTrapCalls).toBe(0);
+    expect.soft(provider.scanCurrentTrapCalls).toBe(0);
+    expect.soft(provider.currentDocumentEpoch).toBe(2);
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    expect((provider as unknown as {
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
+  it("does not let external subclasses intercept ordinary reset authority", () => {
+    const document = createDocument();
+    const latestDocument = createDocument();
+    const provider = new ExternalResetAuthorityDomTreeProvider(
+      document as unknown as Document,
+      {
+        documentEpoch: 0,
+        createMutationObserver: (callback) => new TestMutationObserver(callback),
+      },
+    );
+
+    provider.resetDocument(latestDocument as unknown as Document, 1);
+
+    expect.soft(provider.drainTrapCalls).toBe(0);
+    expect.soft(provider.applyTrapCalls).toBe(0);
+    expect.soft(provider.currentTrapCalls).toBe(0);
+    expect.soft(provider.scanCurrentTrapCalls).toBe(0);
+    expect(provider.currentDocumentEpoch).toBe(1);
+    expect(provider.getRoot()).toMatchObject({ documentEpoch: 1 });
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+  });
+
+  it("does not let external subclasses intercept deferred reset scan authority", () => {
+    const document = createDocument();
+    const latestDocument = createDocument();
+    for (let index = 0; index < 1_030; index += 1) {
+      latestDocument.documentElement.append(
+        createElement("section", latestDocument),
+      );
+    }
+    const latestChild = createDocument();
+    latestDocument.documentElement.append(
+      createFrameElement(latestDocument, latestChild),
+    );
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const harness = createProviderHarness(document, {
+      documentEpoch: 0,
+      onFrameLifecycle: (event) => lifecycle.push(event),
+      createProvider: (topDocument, options) => (
+        new ExternalResetAuthorityDomTreeProvider(topDocument, options)
+      ),
+    });
+    const provider = harness.provider as ExternalResetAuthorityDomTreeProvider;
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    provider.resetDocument(latestDocument as unknown as Document, 1);
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect.soft(provider.drainTrapCalls).toBe(0);
+    expect.soft(provider.applyTrapCalls).toBe(0);
+    expect.soft(provider.currentTrapCalls).toBe(0);
+    expect.soft(provider.scanCurrentTrapCalls).toBe(0);
+    expect(provider.currentDocumentEpoch).toBe(1);
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      latestChild as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+    expect(lifecycle.filter((event) => (
+      event.type === "registered" && event.documentEpoch === 1
+    ))).toHaveLength(1);
+    expect((provider as unknown as {
+      readonly activeDocumentReset: unknown;
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
+      activeDocumentReset: undefined,
       pendingDocumentReset: undefined,
       drainingDocumentResets: false,
     });
@@ -9312,6 +9526,10 @@ function createFramedButtonTree(options: {
 
 interface ProviderHarnessOptions {
   readonly documentEpoch?: number;
+  readonly createProvider?: (
+    document: Document,
+    options: DomTreeProviderOptions,
+  ) => DomTreeProvider;
   readonly createMutationObserver?: (
     callback: (records: readonly MutationRecord[]) => void,
   ) => TestMutationObserver;
@@ -9375,10 +9593,9 @@ function createProviderHarness(
     maxCursors: options.maxCursors,
     maxRecords: options.maxRecords,
   };
-  const provider = new DomTreeProvider(
-    document as unknown as Document,
-    providerOptions,
-  );
+  const provider = options.createProvider
+    ? options.createProvider(document as unknown as Document, providerOptions)
+    : new DomTreeProvider(document as unknown as Document, providerOptions);
   return {
     provider,
     observers,
