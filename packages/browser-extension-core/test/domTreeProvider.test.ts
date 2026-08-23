@@ -5683,6 +5683,40 @@ describe("DomTreeProvider", () => {
     expect(harness.pendingTimerCount()).toBe(0);
   });
 
+  it("fails closed when a removed registered frame changes its tag name", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [frame]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(frame);
+    Object.defineProperty(frame, "tagName", {
+      configurable: true,
+      get: () => "DIV",
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
   it("fails closed when a removed shadow host hides a registered frame", () => {
     const document = createDocument();
     const childDocument = createDocument();
@@ -5715,6 +5749,78 @@ describe("DomTreeProvider", () => {
     );
     expect(frame.loadListenerCount).toBe(0);
     expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when a removed shadow host returns no shadow root", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("section", document);
+    const shadowRoot = host.attachShadow();
+    const frame = createFrameElement(document, childDocument);
+    shadowRoot.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(host);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [host]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(host);
+    Object.defineProperty(host, "shadowRoot", {
+      configurable: true,
+      get: () => null,
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [host]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when a removed shadow host changes its shadow root", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("section", document);
+    const originalShadowRoot = host.attachShadow();
+    const frame = createFrameElement(document, childDocument);
+    originalShadowRoot.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(host);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [host]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(host);
+    const replacementShadowRoot = host.attachShadow();
+    expect(replacementShadowRoot).not.toBe(originalShadowRoot);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [host]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    const state = harness.provider as unknown as {
+      readonly pendingFrameMutationScans: readonly unknown[];
+    };
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(state.pendingFrameMutationScans).toHaveLength(0);
     expect(harness.pendingTimerCount()).toBe(0);
   });
 

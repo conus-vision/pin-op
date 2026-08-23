@@ -214,6 +214,7 @@ interface PendingFrameMutationScan {
   readonly ownerRoot: Node;
   readonly root: Node;
   readonly stack: FrameTraversalEntry[];
+  readonly remainingOwnedFrameElements?: Set<HTMLIFrameElement>;
   readonly resetGuard?: () => boolean;
   readonly visitBudget?: FrameMutationVisitBudget;
 }
@@ -2583,11 +2584,15 @@ export class DomTreeProvider {
       if (movedRoots.has(root.node)) {
         continue;
       }
+      const remainingOwnedFrameElements =
+        this.captureOwnedFramesForUnregister(root.node, isCurrent);
+      if (!remainingOwnedFrameElements || !isCurrent()) return false;
       if (!this.enqueueFrameMutationScan({
         action: "unregister",
         ownerRoot: root.ownerRoot,
         root: root.node,
         stack: [createFrameTraversalEntry(root.node)],
+        remainingOwnedFrameElements,
       })) return false;
     }
     for (const root of addedRoots) {
@@ -4482,6 +4487,52 @@ export class DomTreeProvider {
     return true;
   }
 
+  private captureOwnedFramesForUnregister(
+    root: Node,
+    isCurrent: () => boolean,
+  ): Set<HTMLIFrameElement> | undefined {
+    if (!isCurrent()) return undefined;
+    if (this.ownedFramesByRef.size > FRAME_MUTATION_SCAN_LIMIT) {
+      this.#dispose();
+      return undefined;
+    }
+    const expected = new Set<HTMLIFrameElement>();
+    let remainingParentReads = MUTATION_INTAKE_NODE_LIMIT;
+    for (const { frameElement } of this.ownedFramesByRef.values()) {
+      if (!isCurrent()) return undefined;
+      let current: Node | undefined = frameElement;
+      const seen = new Set<Node>();
+      let reachedBoundary = false;
+      for (let depth = 0; depth < MAX_SHADOW_CONTAINMENT_DEPTH; depth += 1) {
+        if (current === root) {
+          expected.add(frameElement);
+          reachedBoundary = true;
+          break;
+        }
+        if (!current || seen.has(current) || remainingParentReads <= 0) {
+          break;
+        }
+        seen.add(current);
+        remainingParentReads -= 1;
+        const parentRead = readFrameOwnershipParent(current, isCurrent);
+        if (!parentRead.ok || !isCurrent()) {
+          if (isCurrent()) this.#dispose();
+          return undefined;
+        }
+        current = parentRead.value;
+        if (!current) {
+          reachedBoundary = true;
+          break;
+        }
+      }
+      if (!reachedBoundary) {
+        if (isCurrent()) this.#dispose();
+        return undefined;
+      }
+    }
+    return expected;
+  }
+
   private deferFrameDiscovery(authority: MutationDrainAuthority): void {
     this.deferredFrameDiscovery = authority;
     if (this.deferredFrameDiscoveryScheduled) return;
@@ -4571,6 +4622,14 @@ export class DomTreeProvider {
         }
         const entry = scan.stack[scan.stack.length - 1];
         if (!entry) {
+          if (
+            scan.action === "unregister" &&
+            scan.remainingOwnedFrameElements &&
+            scan.remainingOwnedFrameElements.size > 0
+          ) {
+            this.#dispose();
+            return;
+          }
           this.pendingFrameMutationScans.shift();
           continue;
         }
@@ -4610,6 +4669,16 @@ export class DomTreeProvider {
             }
             const frameElement = frameElementRead.value;
             if (abandonIfStale()) continue;
+            if (
+              scan.action === "unregister" &&
+              scan.remainingOwnedFrameElements?.has(
+                element as HTMLIFrameElement,
+              ) &&
+              frameElement !== element
+            ) {
+              if (rejectTraversalRead()) return;
+              continue;
+            }
             if (frameElement) {
               if (scan.action === "register") {
                 this.registerDiscoveredFrame(frameElement, isCurrent);
@@ -4617,6 +4686,11 @@ export class DomTreeProvider {
                 this.unregisterDiscoveredFrame(frameElement);
               }
               if (abandonIfStale()) continue;
+              if (scan.action === "unregister") {
+                for (const pendingScan of this.pendingFrameMutationScans) {
+                  pendingScan.remainingOwnedFrameElements?.delete(frameElement);
+                }
+              }
             }
             const shadowRootRead = readFrameTraversalOpenShadowRoot(element);
             if (!shadowRootRead.ok) {
@@ -5153,6 +5227,46 @@ function readFrameTraversalNodeType(
   } catch {
     return { ok: false };
   }
+}
+
+function readFrameOwnershipParent(
+  node: Node,
+  isCurrent: () => boolean,
+): FrameTraversalRead<Node | undefined> {
+  let parent: unknown;
+  try {
+    parent = (node as { readonly parentNode?: unknown }).parentNode;
+  } catch {
+    return { ok: false };
+  }
+  if (!isCurrent()) return { ok: false };
+  if (parent !== null) {
+    return parent && typeof parent === "object"
+      ? { ok: true, value: parent as Node }
+      : { ok: false };
+  }
+  const nodeTypeRead = readFrameTraversalNodeType(node);
+  if (!nodeTypeRead.ok || !isCurrent()) return { ok: false };
+  if (nodeTypeRead.value !== 11) {
+    return { ok: true, value: undefined };
+  }
+  let mode: unknown;
+  try {
+    mode = (node as { readonly mode?: unknown }).mode;
+  } catch {
+    return { ok: false };
+  }
+  if (!isCurrent() || mode !== "open") return { ok: false };
+  let host: unknown;
+  try {
+    host = (node as { readonly host?: unknown }).host;
+  } catch {
+    return { ok: false };
+  }
+  if (!isCurrent()) return { ok: false };
+  return host && typeof host === "object"
+    ? { ok: true, value: host as Node }
+    : { ok: false };
 }
 
 function readFrameTraversalFrameElement(
@@ -5745,6 +5859,13 @@ function snapshotPendingFrameMutationScans(
     ownerRoot: scan.ownerRoot,
     root: scan.root,
     stack: scan.stack.map((entry) => ({ ...entry })),
+    ...(scan.remainingOwnedFrameElements
+      ? {
+          remainingOwnedFrameElements: new Set(
+            scan.remainingOwnedFrameElements,
+          ),
+        }
+      : {}),
     ...(scan.resetGuard ? { resetGuard: scan.resetGuard } : {}),
     ...(scan.visitBudget
       ? {
