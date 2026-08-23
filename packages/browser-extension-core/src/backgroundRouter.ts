@@ -2562,9 +2562,18 @@ export class BackgroundRouter {
         settleQuery("session-disposed");
         return;
       }
+      const inspectSession = record.inspectSession;
+      const panelSessionBinding = record.panelSessionBinding;
+      await inspectSession.whenIdle();
+      if (
+        record.inspectSession !== inspectSession ||
+        record.panelSessionBinding !== panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settleQuery("session-disposed");
+        return;
+      }
       if (requestId) {
-        const inspectSession = record.inspectSession;
-        const panelSessionBinding = record.panelSessionBinding;
         const response = await this.panelSessions.request(record.channel, request);
         if (
           record.inspectSession !== inspectSession ||

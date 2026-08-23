@@ -4161,6 +4161,63 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "dom.root")).toEqual([domRoot("root-1")]);
   });
 
+  it("waits for recovered content injection before routing a DOM query", async () => {
+    const recoveryInjectionStarted = deferred<void>();
+    const releaseRecoveryInjection = deferred<void>();
+    let injectionCount = 0;
+    let contentReady = true;
+    const harness = createHarness({
+      async executeScript() {
+        injectionCount += 1;
+        if (injectionCount !== 2) {
+          return;
+        }
+        contentReady = false;
+        recoveryInjectionStarted.resolve();
+        await releaseRecoveryInjection.promise;
+        contentReady = true;
+      },
+      sendTabMessage: async (_tabId, message) => {
+        if (isRecord(message) && message.type === "dom.getRoot") {
+          if (!contentReady) {
+            throw new Error("No receiving content document");
+          }
+          return domRoot(String(message.requestId));
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const contentLease = await harness.attachContentSession(17);
+
+    contentLease.disconnect();
+    await recoveryInjectionStarted.promise;
+    panel.emitMessage({
+      type: "dom.getRoot",
+      requestId: "root-after-navigation",
+    });
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toEqual([]);
+    expect(harness.inspectCalls).not.toContainEqual([
+      "tab",
+      17,
+      { type: "dom.getRoot", requestId: "root-after-navigation" },
+    ]);
+
+    releaseRecoveryInjection.resolve();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.root")).toEqual([
+      domRoot("root-after-navigation"),
+    ]);
+  });
+
   it("routes locator resolution errors from the current content session", async () => {
     const request = domResolveLocator("locator-1");
     const response = {
