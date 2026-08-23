@@ -80,6 +80,124 @@ describe("DomTreeController", () => {
     expect(controller.isExpanded("root")).toBe(false);
   });
 
+  it.each([
+    {
+      case: "removed prologue",
+      initialPrologue: [displayNode("old-leading", "comment", "before")],
+      initialEpilogue: [] as readonly DomNodeView[],
+      focusedRef: "old-leading",
+      nextPrologue: [] as readonly DomNodeView[],
+      nextEpilogue: [] as readonly DomNodeView[],
+      expectedFocus: "root",
+    },
+    {
+      case: "replaced epilogue",
+      initialPrologue: [] as readonly DomNodeView[],
+      initialEpilogue: [displayNode("old-trailing", "comment", "before")],
+      focusedRef: "old-trailing",
+      nextPrologue: [] as readonly DomNodeView[],
+      nextEpilogue: [displayNode("new-trailing", "comment", "after")],
+      expectedFocus: "new-trailing",
+    },
+    {
+      case: "removed epilogue",
+      initialPrologue: [] as readonly DomNodeView[],
+      initialEpilogue: [displayNode("old-trailing", "comment", "before")],
+      focusedRef: "old-trailing",
+      nextPrologue: [] as readonly DomNodeView[],
+      nextEpilogue: [] as readonly DomNodeView[],
+      expectedFocus: "root",
+    },
+  ])("reconciles focus after a root snapshot with $case", async ({
+    initialPrologue,
+    initialEpilogue,
+    focusedRef,
+    nextPrologue,
+    nextEpilogue,
+    expectedFocus,
+  }) => {
+    const transport = new TestTransport();
+    const root = node("root", false, 1);
+    transport.enqueue(rootResponse(
+      root,
+      1,
+      initialPrologue,
+      initialEpilogue,
+    ));
+    let observeRefresh = false;
+    const publishedFocusRefs: Array<string | undefined> = [];
+    let controller!: DomTreeController;
+    controller = createController(transport, () => {
+      if (
+        observeRefresh &&
+        controller.rows().find((row) => row.nodeRef === root.nodeRef)
+          ?.branchRevision === 2
+      ) {
+        publishedFocusRefs.push(controller.focusedRef);
+      }
+    });
+    await controller.loadRoot();
+    controller.focus(focusedRef);
+    const refreshedRoot = deferred<DomResponse>();
+    transport.enqueue(refreshedRoot.promise);
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    observeRefresh = true;
+    refreshedRoot.resolve(rootResponse(
+      { ...root, branchRevision: 2 },
+      1,
+      nextPrologue,
+      nextEpilogue,
+    ));
+    await flushAsync();
+
+    expect(controller.focusedRef).toBe(expectedFocus);
+    expect(publishedFocusRefs.length).toBeGreaterThan(0);
+    expect(publishedFocusRefs).not.toContain(focusedRef);
+    expect(controller.rows().some((row) => row.nodeRef === focusedRef)).toBe(
+      focusedRef === expectedFocus,
+    );
+  });
+
+  it("uses the latest user focus when an async root snapshot removes auxiliaries", async () => {
+    const transport = new TestTransport();
+    const root = node("root", false, 1);
+    const leading = displayNode("leading", "comment", "before");
+    const trailing = displayNode("trailing", "comment", "after");
+    transport.enqueue(rootResponse(root, 1, [leading], [trailing]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    controller.focus(leading.nodeRef);
+    const refreshedRoot = deferred<DomResponse>();
+    transport.enqueue(refreshedRoot.promise);
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    controller.focus(trailing.nodeRef);
+    expect(controller.focusedRef).toBe(trailing.nodeRef);
+    refreshedRoot.resolve(rootResponse(
+      { ...root, branchRevision: 2 },
+      1,
+      [leading],
+    ));
+    await flushAsync();
+
+    expect(controller.rows().map((row) => row.nodeRef)).toEqual([
+      leading.nodeRef,
+      root.nodeRef,
+    ]);
+    expect(controller.focusedRef).toBe(root.nodeRef);
+  });
+
   it.each(["root-first", "children-first"] as const)(
     "keeps a failed root snapshot stale and independently errored when %s settles",
     async (order) => {
@@ -4269,6 +4387,30 @@ describe("DomTreeController", () => {
     expect(controller.snapshot().selectedRef).toBe("target");
   });
 
+  it.each(["non-element-root", "duplicate-ref"] as const)(
+    "rejects a %s live selection topology",
+    (topology) => {
+      const controller = createController(new TestTransport());
+      const root = locatedNode("root", locator(1), true);
+      const target = locatedNode("target", locator(4));
+      const ancestorPath = topology === "non-element-root"
+        ? [recoverableNode("shadow-root", "shadow-root"), target]
+        : [
+            root,
+            recoverableNode("duplicate", "shadow-root"),
+            recoverableNode("duplicate", "frame-document"),
+            target,
+          ];
+
+      controller.handleEvent(selectionEvent(1, ancestorPath));
+
+      expect(controller.rows()).toEqual([]);
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controller.snapshot().revealRef).toBeUndefined();
+      expect(controller.expandedRefs()).toEqual([]);
+    },
+  );
+
   it("keeps reveal versions monotonic across document epochs", () => {
     const controller = createController(new TestTransport());
     controller.handleEvent(selectionEvent(1, [node("old")]));
@@ -4690,6 +4832,36 @@ describe("DomTreeController", () => {
     expect(controller.snapshot().selectedRef).toBeUndefined();
     expect(controller.expandedRefs()).toEqual([]);
   });
+
+  it.each(["non-element-root", "duplicate-ref"] as const)(
+    "rejects a %s locator topology during recovery",
+    (topology) => {
+      const controller = createController(new TestTransport());
+      const root = locatedNode("new-root", locator(1), true);
+      const target = locatedNode("new-target", locator(4));
+      const ancestorPath = topology === "non-element-root"
+        ? [recoverableNode(root.nodeRef, "shadow-root"), target]
+        : [
+            root,
+            recoverableNode("duplicate", "shadow-root"),
+            recoverableNode("duplicate", "frame-document"),
+            target,
+          ];
+
+      controller.beginRecovery();
+      controller.installRecoveryRoot(rootResponse(root, 2));
+      controller.installRecoveredPath(
+        locatorResponse(target, ancestorPath, 2),
+        { selected: true, expanded: true },
+      );
+      controller.finishRecovery();
+
+      expect(nodeRefs(controller)).toEqual([root.nodeRef]);
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controller.snapshot().revealRef).toBeUndefined();
+      expect(controller.expandedRefs()).toEqual([]);
+    },
+  );
 
   it("does not publish a recovered focus ref for root fallback", () => {
     const transport = new TestTransport();

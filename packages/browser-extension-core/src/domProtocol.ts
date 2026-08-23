@@ -865,6 +865,8 @@ function parseRecoverableAncestorPath(
   if (
     !target ||
     !target.locator ||
+    path[0]?.kind !== "element" ||
+    new Set(path.map((view) => view.nodeRef)).size !== path.length ||
     path.some((view) => !DOM_RECOVERABLE_NODE_KINDS.has(view.kind)) ||
     (context === "selection" && (
       target.kind !== "element" ||

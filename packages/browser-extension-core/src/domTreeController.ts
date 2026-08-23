@@ -1587,6 +1587,7 @@ export class DomTreeController {
         const handoffToken = {};
         this.registerReconciliationToken(childReconciliationBatchId, handoffToken);
         try {
+          const focusAnchor = this.focusAnchor(this.rows());
           this.rootSnapshotError = undefined;
           this.rootPrologue = Object.freeze([...response.prologue]);
           this.rootEpilogue = Object.freeze([...response.epilogue]);
@@ -1597,6 +1598,7 @@ export class DomTreeController {
             childReconciliationBatchId,
           );
           this.invalidateRows();
+          this.reconcileFocus(focusAnchor);
         } finally {
           this.settleReconciliationToken(
             childReconciliationBatchId,
@@ -2795,7 +2797,7 @@ function isRecoverableSelectionPath(
     target.nodeRef === nodeRef &&
     target.locator &&
     isSelectableElementView(target) &&
-    ancestorPath.every(isRecoverablePathView),
+    isRecoverableAncestorPath(ancestorPath),
   );
 }
 
@@ -2804,9 +2806,18 @@ function isRecoverableLocatorResponse(response: DomLocatorResponse): boolean {
   return Boolean(
     target &&
     target.locator &&
-    response.ancestorPath.every(isRecoverablePathView) &&
+    isRecoverableAncestorPath(response.ancestorPath) &&
     sameDomNodeViewAuthority(response.node, target),
   );
+}
+
+function isRecoverableAncestorPath(
+  ancestorPath: readonly DomNodeView[],
+): boolean {
+  return ancestorPath[0]?.kind === "element" &&
+    new Set(ancestorPath.map((view) => view.nodeRef)).size ===
+      ancestorPath.length &&
+    ancestorPath.every(isRecoverablePathView);
 }
 
 function isRecoverablePathView(view: DomNodeView): boolean {

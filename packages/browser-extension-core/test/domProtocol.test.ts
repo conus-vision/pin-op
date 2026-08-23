@@ -443,6 +443,62 @@ describe("DOM protocol", () => {
     })).toMatchObject({ ancestorPath: validPath });
   });
 
+  it.each(["selection", "locator"] as const)(
+    "requires a recoverable %s path to start at an element",
+    (context) => {
+      const target = nodeView({ nodeRef: "node-target" });
+      const ancestorPath = [
+        nodeView({ kind: "shadow-root", nodeRef: "node-shadow" }),
+        target,
+      ];
+
+      expect(() => context === "selection"
+        ? parseDomEvent({
+            type: "dom.selectionChanged",
+            documentEpoch: 1,
+            selectionRevision: 4,
+            nodeRef: target.nodeRef,
+            ancestorPath,
+          })
+        : parseDomResponse({
+            type: "dom.locator",
+            requestId: "non-element-root",
+            documentEpoch: 1,
+            node: target,
+            ancestorPath,
+          })).toThrow(DomProtocolError);
+    },
+  );
+
+  it.each(["selection", "locator"] as const)(
+    "requires unique node refs across a recoverable %s path",
+    (context) => {
+      const target = nodeView({ nodeRef: "node-target" });
+      const ancestorPath = [
+        nodeView({ nodeRef: "node-root" }),
+        nodeView({ kind: "shadow-root", nodeRef: "node-duplicate" }),
+        nodeView({ kind: "frame-document", nodeRef: "node-duplicate" }),
+        target,
+      ];
+
+      expect(() => context === "selection"
+        ? parseDomEvent({
+            type: "dom.selectionChanged",
+            documentEpoch: 1,
+            selectionRevision: 4,
+            nodeRef: target.nodeRef,
+            ancestorPath,
+          })
+        : parseDomResponse({
+            type: "dom.locator",
+            requestId: "duplicate-ref",
+            documentEpoch: 1,
+            node: target,
+            ancestorPath,
+          })).toThrow(DomProtocolError);
+    },
+  );
+
   it("requires a correlated recoverable target for locator paths", () => {
     for (const kind of ["document-type", "text", "comment"] as const) {
       const display = displayNodeView(kind);
@@ -487,6 +543,20 @@ describe("DOM protocol", () => {
       node: targetWithoutLocator,
       ancestorPath: [targetWithoutLocator],
     })).toThrow(DomProtocolError);
+
+    const validBoundaryPath = [
+      nodeView({ nodeRef: "node-root" }),
+      nodeView({ kind: "shadow-root", nodeRef: "node-shadow" }),
+      nodeView({ kind: "frame-document", nodeRef: "node-frame" }),
+      target,
+    ];
+    expect(parseDomResponse({
+      type: "dom.locator",
+      requestId: "valid-boundaries",
+      documentEpoch: 1,
+      node: target,
+      ancestorPath: validBoundaryPath,
+    })).toMatchObject({ ancestorPath: validBoundaryPath });
   });
 
   it("requires each node locator target kind to match its DOM node kind", () => {

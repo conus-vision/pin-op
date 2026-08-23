@@ -57,6 +57,42 @@ describe("DomTreeView", () => {
     expect(tabbableRows(harness.dom)).toEqual([]);
   });
 
+  it("moves roving focus to a replacement root auxiliary before rendering", async () => {
+    const harness = createHarness();
+    const root = { ...node("root", "html"), branchRevision: 1 };
+    const oldTrailing = displayNode("old-trailing", "before");
+    const newTrailing = displayNode("new-trailing", "after");
+    harness.transport.enqueue(rootResponse(root, [], [oldTrailing]));
+    await harness.controller.loadRoot();
+    harness.view.focus(oldTrailing.nodeRef);
+    expect(harness.dom.activeElement).toBe(harness.dom.row(oldTrailing.nodeRef));
+    const refreshedRoot = deferred<DomResponse>();
+    harness.transport.enqueue(refreshedRoot.promise);
+
+    harness.controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    refreshedRoot.resolve(rootResponse(
+      { ...root, branchRevision: 2 },
+      [],
+      [newTrailing],
+    ));
+    await flushAsync();
+
+    expect(harness.controller.focusedRef).toBe(newTrailing.nodeRef);
+    expect(tabbableRows(harness.dom)).toEqual([
+      harness.dom.row(newTrailing.nodeRef),
+    ]);
+    expect(harness.dom.activeElement).toBe(harness.dom.row(newTrailing.nodeRef));
+    expect(harness.dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      oldTrailing.nodeRef,
+    )).toBeUndefined();
+  });
+
   it("materializes exactly viewport and overscan rows at a stable height", () => {
     const harness = createHarness({ clientHeight: 60, rowHeight: 20, overscan: 2 });
     const path = Array.from({ length: 40 }, (_, index) =>
@@ -1532,6 +1568,38 @@ function node(
       boundaries: [],
       path: [{ tagName: "div", siblingIndex: 0 }],
     },
+  };
+}
+
+function displayNode(nodeRef: string, label: string): DomNodeView {
+  return {
+    nodeRef,
+    kind: "comment",
+    nodeType: 8,
+    nodeName: "#comment",
+    nodeValue: label,
+    attributes: [],
+    childCount: 0,
+    relationship: "dom",
+    selectable: false,
+    label,
+    expandable: false,
+    branchRevision: 0,
+  };
+}
+
+function rootResponse(
+  root: DomNodeView,
+  prologue: readonly DomNodeView[] = [],
+  epilogue: readonly DomNodeView[] = [],
+): DomResponse {
+  return {
+    type: "dom.root",
+    requestId: "ignored-by-test-transport",
+    documentEpoch: 1,
+    node: root,
+    prologue,
+    epilogue,
   };
 }
 
