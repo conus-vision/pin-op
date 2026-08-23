@@ -409,7 +409,7 @@ export class FrameRegistry {
       this.nextFrameRef += 1;
       registeredRecord = record;
     } finally {
-      this.finishMutation();
+      this.#finishMutation();
     }
     if (
       !registeredRecord ||
@@ -450,7 +450,7 @@ export class FrameRegistry {
       this.bumpStructuralRevision();
       invalidated = this.removeSubtree(record);
     } finally {
-      this.finishMutation();
+      this.#finishMutation();
     }
     if (!this.isActive() || record.documentEpoch !== this.documentEpoch) {
       return EMPTY_FRAME_IDENTITIES;
@@ -602,7 +602,7 @@ export class FrameRegistry {
       this.contexts.set(this.top.frameRef, this.top);
       this.documentRefs.set(topDocument, this.top.frameRef);
     } finally {
-      this.finishMutation();
+      this.#finishMutation();
     }
     if (
       !this.isActive() ||
@@ -710,7 +710,7 @@ export class FrameRegistry {
         eventType = "navigated";
       }
     } finally {
-      this.finishMutation();
+      this.#finishMutation();
     }
     if (
       eventType &&
@@ -721,7 +721,7 @@ export class FrameRegistry {
     }
   }
 
-  private finishMutation(): void {
+  #finishMutation(): void {
     this.state = "active";
     if (this.pendingDispose) {
       this.pendingDispose = false;

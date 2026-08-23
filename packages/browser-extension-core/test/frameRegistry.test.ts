@@ -35,6 +35,29 @@ Object.defineProperty(
   },
 );
 
+class ExternalFinalizerFrameRegistry extends FrameRegistry {
+  public finalizerCalls = 0;
+  public onFinalizer: (() => void) | undefined;
+}
+
+const baseFinishMutation = Object.getOwnPropertyDescriptor(
+  FrameRegistryBase.prototype,
+  "finishMutation",
+)?.value as ((this: FrameRegistryBase) => void) | undefined;
+
+Object.defineProperty(
+  ExternalFinalizerFrameRegistry.prototype,
+  "finishMutation",
+  {
+    configurable: true,
+    value(this: ExternalFinalizerFrameRegistry): void {
+      this.finalizerCalls += 1;
+      baseFinishMutation?.call(this);
+      this.onFinalizer?.();
+    },
+  },
+);
+
 describe("FrameRegistry", () => {
   it("exposes a stable top context for the current document epoch", () => {
     const topDocument = createDocument();
@@ -1477,6 +1500,74 @@ describe("FrameRegistry", () => {
     expect(registry.getContextForDocument(childDocument)).toMatchObject({
       frameRef: "frame-2",
     });
+    expect(childFrame.loadListenerCount).toBe(1);
+  });
+
+  it("does not let external subclasses override reset finalization", () => {
+    const initialDocument = createDocument();
+    const replacementDocument = createDocument();
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    const registry = new ExternalFinalizerFrameRegistry(initialDocument, {
+      maxFrames: 3,
+      onLifecycle: (event) => events.push(event),
+    });
+    let armed = true;
+    registry.onFinalizer = () => {
+      if (!armed) return;
+      armed = false;
+      registry.describeFrame(childFrame);
+    };
+
+    expect(registry.resetTopDocument(replacementDocument, 1)).toBe(true);
+
+    expect(registry.finalizerCalls).toBe(0);
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "reset:frame-1",
+    ]);
+    expect(registry.accessibleContexts()).toEqual([registry.topContext]);
+    expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    expect(childFrame.loadListenerCount).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(
+      FrameRegistryBase.prototype,
+      "finishMutation",
+    )).toBeUndefined();
+  });
+
+  it("does not let external finalizer throws strand frame publication", () => {
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    const registry = new ExternalFinalizerFrameRegistry(createDocument(), {
+      maxFrames: 2,
+      onLifecycle: (event) => events.push(event),
+    });
+    registry.onFinalizer = () => {
+      throw new Error("hostile external finalizer");
+    };
+    let firstDescription: ReturnType<FrameRegistry["describeFrame"]>;
+    let firstError: unknown;
+    try {
+      firstDescription = registry.describeFrame(childFrame);
+    } catch (error) {
+      firstError = error;
+    }
+    registry.onFinalizer = undefined;
+    const retainedContext = registry.getContextForDocument(childDocument);
+    const retriedDescription = registry.describeFrame(childFrame);
+
+    expect(registry.finalizerCalls).toBe(0);
+    expect(firstError).toBeUndefined();
+    expect(firstDescription).toMatchObject({
+      kind: "accessible",
+      frameRef: "frame-2",
+    });
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "registered:frame-2",
+    ]);
+    expect(retainedContext).toMatchObject({ frameRef: "frame-2" });
+    expect(retriedDescription).toEqual(firstDescription);
     expect(childFrame.loadListenerCount).toBe(1);
   });
 
