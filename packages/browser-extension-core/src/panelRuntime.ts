@@ -14,6 +14,8 @@ import { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
 import {
   isSelectionRevision,
   parseDomEvent,
+  type DomSelectionChangedEvent,
+  type DomSelectionClearedEvent,
 } from "./domProtocol.js";
 import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
 import { PanelInspectController } from "./panelInspectController.js";
@@ -70,6 +72,10 @@ export interface PanelRuntime {
   dispose(): void;
 }
 
+type DomSelectionAuthorityEvent =
+  | DomSelectionChangedEvent
+  | DomSelectionClearedEvent;
+
 export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   const channel = new URLSearchParams(options.locationSearch).get("channel") ?? "";
   if (!isValidDevtoolsChannel(channel)) {
@@ -101,6 +107,12 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   let domRecoveryStatusGeneration = 0;
   let acceptedSelectionDocumentEpoch: number | undefined;
   let acceptedSelectionRevision: number | undefined;
+  let lastConsumedDomSelection: {
+    readonly documentEpoch: number;
+    readonly selectionRevision: number;
+    readonly type: DomSelectionAuthorityEvent["type"];
+    readonly fingerprint: string;
+  } | undefined;
   let activeInspectSelectionRevision: number | undefined;
   let settingsBinding: PanelSettingsBindingToken | undefined;
   let compatibility: "pending" | "compatible" | "incompatible" = "pending";
@@ -283,12 +295,24 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       if (compatibility === "incompatible") {
         return;
       }
+      const inspectDocumentEpoch = treeController.documentEpoch ??
+        acceptedSelectionDocumentEpoch;
       const ownership = acceptSelectionOwnership(
         inspectStarted.selectionRevision,
-        treeController.documentEpoch ?? acceptedSelectionDocumentEpoch,
+        inspectDocumentEpoch,
         treeController.documentEpoch,
       );
-      if (ownership === "stale") {
+      if (
+        ownership === "stale" ||
+        (
+          ownership === "current" &&
+          inspectDocumentEpoch !== undefined &&
+          lastConsumedDomSelection?.documentEpoch === inspectDocumentEpoch &&
+          lastConsumedDomSelection.selectionRevision ===
+            inspectStarted.selectionRevision &&
+          lastConsumedDomSelection.type === "dom.selectionCleared"
+        )
+      ) {
         return;
       }
       activeInspectSelectionRevision = inspectStarted.selectionRevision;
@@ -313,12 +337,11 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         domEvent.type === "dom.selectionChanged" ||
         domEvent.type === "dom.selectionCleared"
       ) {
-        const ownership = acceptSelectionOwnership(
-          domEvent.selectionRevision,
-          domEvent.documentEpoch,
+        const ownership = acceptDomSelectionOwnership(
+          domEvent,
           treeController.documentEpoch,
         );
-        if (ownership === "stale") {
+        if (ownership !== "current" && ownership !== "advanced") {
           return;
         }
         selectionOwnership = ownership;
@@ -660,7 +683,38 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   function resetSelectionOwnership(): void {
     acceptedSelectionDocumentEpoch = undefined;
     acceptedSelectionRevision = undefined;
+    lastConsumedDomSelection = undefined;
     activeInspectSelectionRevision = undefined;
+  }
+
+  function acceptDomSelectionOwnership(
+    event: DomSelectionAuthorityEvent,
+    minimumDocumentEpoch: number | undefined,
+  ): "stale" | "duplicate" | "conflict" | "current" | "advanced" {
+    const ownership = acceptSelectionOwnership(
+      event.selectionRevision,
+      event.documentEpoch,
+      minimumDocumentEpoch,
+    );
+    if (ownership === "stale") return ownership;
+
+    const fingerprint = JSON.stringify(event);
+    const lastConsumed = lastConsumedDomSelection;
+    if (
+      lastConsumed?.documentEpoch === event.documentEpoch &&
+      lastConsumed.selectionRevision === event.selectionRevision
+    ) {
+      return lastConsumed.fingerprint === fingerprint
+        ? "duplicate"
+        : "conflict";
+    }
+    lastConsumedDomSelection = Object.freeze({
+      documentEpoch: event.documentEpoch,
+      selectionRevision: event.selectionRevision,
+      type: event.type,
+      fingerprint,
+    });
+    return ownership;
   }
 
   function acceptSelectionOwnership(
@@ -699,6 +753,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     const revisionAdvanced =
       acceptedSelectionRevision === undefined ||
       selectionRevision > acceptedSelectionRevision;
+    if (epochAdvanced) {
+      lastConsumedDomSelection = undefined;
+    }
     if (documentEpoch !== undefined) {
       acceptedSelectionDocumentEpoch = documentEpoch;
     }

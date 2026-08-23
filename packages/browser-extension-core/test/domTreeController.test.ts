@@ -986,6 +986,95 @@ describe("DomTreeController", () => {
     ]);
   });
 
+  it("reserves a first-seen new-epoch selection before cancellation callbacks", () => {
+    const baseTransport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldSelected = locatedNode("old-selected", locator(2));
+    const firstRoot = locatedNode("first-root", locator(1, 1), true, 1);
+    const firstSelected = locatedNode("first-selected", locator(2, 1));
+    const reentrantRoot = locatedNode("reentrant-root", locator(1, 2), true, 1);
+    const reentrantSelected = locatedNode("reentrant-selected", locator(2, 2));
+    let injectSelection = false;
+    let controller!: DomTreeController;
+    const transport: DomTreeTransport = {
+      request: (request) => baseTransport.request(request),
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        baseTransport.cancelPending(reason);
+        if (!injectSelection) return;
+        injectSelection = false;
+        controller.handleEvent(selectionEventWithRevision(
+          2,
+          [reentrantRoot, reentrantSelected],
+          6,
+        ));
+      },
+    };
+    controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldSelected],
+      4,
+    ));
+    injectSelection = true;
+
+    controller.handleEvent(selectionEventWithRevision(
+      2,
+      [firstRoot, firstSelected],
+      6,
+    ));
+
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      selectedRef: firstSelected.nodeRef,
+      revealRef: firstSelected.nodeRef,
+    });
+    expect(controllerState(controller).acceptedSelectionRevision).toBe(6);
+    expect(nodeRefs(controller)).toEqual([
+      firstRoot.nodeRef,
+      firstSelected.nodeRef,
+    ]);
+  });
+
+  it("does not repopulate a controller disposed by epoch cancellation", () => {
+    const baseTransport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldSelected = locatedNode("old-selected", locator(2));
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const replacementSelected = locatedNode("replacement-selected", locator(2, 1));
+    let disposeOnCancel = false;
+    let controller!: DomTreeController;
+    const transport: DomTreeTransport = {
+      request: (request) => baseTransport.request(request),
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        baseTransport.cancelPending(reason);
+        if (!disposeOnCancel) return;
+        disposeOnCancel = false;
+        controller.dispose();
+      },
+    };
+    controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldSelected],
+      4,
+    ));
+    disposeOnCancel = true;
+
+    controller.handleEvent(selectionEventWithRevision(
+      2,
+      [replacementRoot, replacementSelected],
+      6,
+    ));
+
+    expect(controller.rows()).toEqual([]);
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
+    expect(controllerState(controller).acceptedSelectionRevision).toBeUndefined();
+    expect(controllerState(controller).nodes.size).toBe(0);
+  });
+
   it("does not let recovery cancellation tear down a reentrant new-epoch selection", () => {
     const baseTransport = new TestTransport();
     const oldRoot = locatedNode("old-root", locator(1), true, 1);
@@ -1034,6 +1123,51 @@ describe("DomTreeController", () => {
     ]);
   });
 
+  it("seals recovery cancellation before publishing a reentrant selection", () => {
+    const baseTransport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldSelected = locatedNode("old-selected", locator(2));
+    const reentrantRoot = locatedNode("reentrant-root", locator(1, 1), true, 1);
+    const reentrantSelected = locatedNode("reentrant-selected", locator(2, 1));
+    let injectSelection = false;
+    let controller!: DomTreeController;
+    const transport: DomTreeTransport = {
+      request: (request) => baseTransport.request(request),
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        baseTransport.cancelPending(reason);
+        if (!injectSelection) return;
+        injectSelection = false;
+        controller.handleEvent(selectionEventWithRevision(
+          2,
+          [reentrantRoot, reentrantSelected],
+          6,
+        ));
+      },
+    };
+    controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldSelected],
+      4,
+    ));
+    controller.beginRecovery();
+    injectSelection = true;
+
+    controller.cancelRecovery("Manual DOM selection replaced recovery");
+
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      selectedRef: reentrantSelected.nodeRef,
+      revealRef: reentrantSelected.nodeRef,
+      recovering: false,
+    });
+    expect(nodeRefs(controller)).toEqual([
+      reentrantRoot.nodeRef,
+      reentrantSelected.nodeRef,
+    ]);
+  });
+
   it("routes a selection only through its frozen parsed authority", () => {
     const controller = createController(new TestTransport());
     const root = locatedNode("root", locator(1), true, 1);
@@ -1060,7 +1194,38 @@ describe("DomTreeController", () => {
       selectedRef: selected.nodeRef,
       revealRef: selected.nodeRef,
     });
-    expect(typeReads).toBe(1);
+    expect(typeReads).toBe(0);
+  });
+
+  it("does not let raw type reads bypass parsed selection high-water", () => {
+    const controller = createController(new TestTransport());
+    const root = locatedNode("root", locator(1), true, 1);
+    const selected = locatedNode("selected", locator(2));
+    controller.handleEvent(selectionClearedEvent(1, "removed", 7));
+    const target = selectionEventWithRevision(1, [root, selected], 6);
+    const rawTypes = [
+      "dom.hoverChanged",
+      "dom.invalidated",
+      "dom.selectionChanged",
+    ] as const;
+    let typeReads = 0;
+    const splitAuthority = new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === "type") {
+          return rawTypes[typeReads++] ?? "dom.selectionChanged";
+        }
+        return Reflect.get(object, property, receiver);
+      },
+    });
+
+    controller.handleEvent(splitAuthority);
+
+    expect(controller.snapshot().documentEpoch).toBe(1);
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
+    expect(controllerState(controller).acceptedSelectionRevision).toBe(7);
+    expect(nodeRefs(controller)).toEqual([]);
+    expect(typeReads).toBe(0);
   });
 
   it.each(["reset", "dispose", "recovery"] as const)(

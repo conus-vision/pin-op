@@ -75,6 +75,40 @@ describe("DomTreeRecoveryCoordinator", () => {
     expect(controller.snapshot().revealRef).toBeUndefined();
   });
 
+  it("does not strand recovery when manual selection reenters begin cancellation", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-selected", locator(1, 1)),
+    ], 4));
+    let coordinator!: DomTreeRecoveryCoordinator;
+    let injectSelection = true;
+    const originalCancelPending = transport.cancelPending.bind(transport);
+    transport.cancelPending = (reason) => {
+      originalCancelPending(reason);
+      if (!injectSelection) return;
+      injectSelection = false;
+      const manualSelection = selectionEvent(2, [
+        node("manual-root", locator(1, 2), true),
+        node("manual-selected", locator(2, 2)),
+      ], 6);
+      coordinator.handleManualSelection(manualSelection);
+      controller.handleEvent(manualSelection);
+    };
+    coordinator = createCoordinator(controller, transport);
+
+    await coordinator.begin();
+
+    expect(transport.requests).toEqual([]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      selectedRef: "manual-selected",
+      revealRef: "manual-selected",
+      recovering: false,
+    });
+    expect(nodeRefs(controller)).toEqual(["manual-root", "manual-selected"]);
+  });
+
   it("rejects a bounded locator response whose target omits recovery ownership", async () => {
     const transport = new TestTransport();
     const rootLocator = locator(1, 0);

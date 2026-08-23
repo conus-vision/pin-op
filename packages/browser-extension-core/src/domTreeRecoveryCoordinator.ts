@@ -51,6 +51,9 @@ export class DomTreeRecoveryCoordinator {
     this.recoveryToken = token;
     const contentSessionGeneration = ++this.contentSessionGeneration;
     const snapshot = this.controller.beginRecovery();
+    if (!this.isActiveRecovery(token, contentSessionGeneration)) {
+      return;
+    }
     const rootRequest: DomGetRootRequest = {
       type: "dom.getRoot",
       requestId: this.createRequestId(),

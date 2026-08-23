@@ -2627,6 +2627,123 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it.each(["inspect-first", "dom-first"] as const)(
+    "consumes one DOM authority at an inspect-correlated revision when %s",
+    async (order) => {
+      const runtime = createRuntime();
+      await runtime.ready;
+      const port = requiredPort(ports, 0);
+      port.emitMessage(compatible());
+      port.emitMessage(tabState(true, true));
+      const selectedA = selectionChangedWithRevision(
+        "selected-a",
+        "button#a.primary",
+        4,
+      );
+      if (order === "inspect-first") {
+        port.emitMessage(inspectStarted("inspect-a", 4));
+        port.emitMessage(selectedA);
+      } else {
+        port.emitMessage(selectedA);
+        port.emitMessage(inspectStarted("inspect-a", 4));
+      }
+      port.emitMessage(resolutionMessage({
+        inspectMessageId: "inspect-a",
+        resolutionGeneration: 5,
+        selectedMatchCount: 2,
+        document: { label: "card.scss", languageId: "scss" },
+      }));
+      port.emitMessage(sourceMatches("inspect-a", 5));
+      expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+
+      port.emitMessage(selectionChangedWithRevision(
+        "selected-b",
+        "button#b.primary",
+        4,
+      ));
+
+      expect(dom.element("selected-element-summary").value).toBe(
+        "Selected: button#a.primary",
+      );
+      expect(dom.element("dom-tree-spacer").findByData(
+        "nodeRef",
+        "selected-a",
+      )).toBeDefined();
+      expect(dom.element("dom-tree-spacer").findByData(
+        "nodeRef",
+        "selected-b",
+      )).toBeUndefined();
+      expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+      runtime.dispose();
+    },
+  );
+
+  it("keeps an equal-revision selection clear authoritative", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-a",
+      "button#a.primary",
+      4,
+    ));
+    port.emitMessage(selectionCleared("selected-a", 7));
+
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#b.primary",
+      7,
+    ));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-b",
+    )).toBeUndefined();
+    runtime.dispose();
+  });
+
+  it("rejects an equal inspect after selection authority was cleared", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-a",
+      "button#a.primary",
+      4,
+    ));
+    port.emitMessage(selectionCleared("selected-a", 7));
+
+    port.emitMessage(inspectStarted("inspect-after-clear", 7));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-after-clear",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+    }));
+    port.emitMessage(sourceMatches("inspect-after-clear", 5));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    const presentationCount = port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    )).length;
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    ))).toHaveLength(presentationCount);
+    runtime.dispose();
+  });
+
   it("drops an older same-epoch selection without regressing B", async () => {
     const runtime = createRuntime();
     await runtime.ready;

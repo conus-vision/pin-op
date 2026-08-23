@@ -355,11 +355,17 @@ export class DomTreeController {
       this.recoverySnapshot = this.captureRecoverySnapshot();
     }
     const snapshot = this.recoverySnapshot ?? emptyRecoverySnapshot();
-    this.cancelPending("DOM tree recovery started");
     this.generation += 1;
+    const recoveryGeneration = this.generation;
     this.clearLiveState(undefined);
     this.recovering = true;
-    if (!alreadyRecovering) {
+    this.cancelPending("DOM tree recovery started");
+    if (
+      !alreadyRecovering &&
+      !this.disposed &&
+      this.recovering &&
+      this.generation === recoveryGeneration
+    ) {
       this.notify();
     }
     return snapshot;
@@ -488,12 +494,12 @@ export class DomTreeController {
     if (this.disposed || !this.recovering) {
       return;
     }
-    this.cancelPending(reason);
     this.generation += 1;
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
     this.clearLiveState(undefined);
+    this.cancelPending(reason);
     this.notify();
   }
 
@@ -806,28 +812,23 @@ export class DomTreeController {
     if (this.disposed) {
       return;
     }
-    let selectionEvent: DomSelectionAuthorityEvent | undefined;
-    if (
-      event.type === "dom.selectionChanged" ||
-      event.type === "dom.selectionCleared"
-    ) {
-      try {
-        const parsed = parseDomEvent(event);
-        if (parsed.type === "dom.selectionChanged") {
-          if (!isRecoverableSelectionPath(parsed.nodeRef, parsed.ancestorPath)) {
-            return;
-          }
-          selectionEvent = parsed;
-        } else if (parsed.type === "dom.selectionCleared") {
-          selectionEvent = parsed;
-        } else {
-          return;
-        }
-      } catch {
-        return;
-      }
+    let routedEvent: DomEvent;
+    try {
+      routedEvent = parseDomEvent(event);
+    } catch {
+      return;
     }
-    const routedEvent = selectionEvent ?? event;
+    const selectionEvent: DomSelectionAuthorityEvent | undefined =
+      routedEvent.type === "dom.selectionChanged" ||
+        routedEvent.type === "dom.selectionCleared"
+        ? routedEvent
+        : undefined;
+    if (
+      routedEvent.type === "dom.selectionChanged" &&
+      !isRecoverableSelectionPath(routedEvent.nodeRef, routedEvent.ancestorPath)
+    ) {
+      return;
+    }
     if (this.recovering && !selectionEvent) return;
     if (
       this.currentDocumentEpoch !== undefined &&
@@ -835,11 +836,25 @@ export class DomTreeController {
     ) {
       return;
     }
+    let reservedSelectionAuthority = false;
     if (
       this.currentDocumentEpoch === undefined ||
       routedEvent.documentEpoch > this.currentDocumentEpoch
     ) {
-      this.resetState(routedEvent.documentEpoch, "DOM document changed");
+      const expectedGeneration = this.generation + 1;
+      this.resetState(
+        routedEvent.documentEpoch,
+        "DOM document changed",
+        selectionEvent?.selectionRevision,
+      );
+      if (
+        this.disposed ||
+        this.generation !== expectedGeneration ||
+        routedEvent.documentEpoch !== this.currentDocumentEpoch
+      ) {
+        return;
+      }
+      reservedSelectionAuthority = selectionEvent !== undefined;
     }
     if (routedEvent.documentEpoch !== this.currentDocumentEpoch) {
       return;
@@ -848,7 +863,13 @@ export class DomTreeController {
     if (selectionEvent) {
       if (
         this.acceptedSelectionRevision !== undefined &&
-        selectionEvent.selectionRevision <= this.acceptedSelectionRevision
+        (
+          selectionEvent.selectionRevision < this.acceptedSelectionRevision ||
+          (
+            selectionEvent.selectionRevision === this.acceptedSelectionRevision &&
+            !reservedSelectionAuthority
+          )
+        )
       ) {
         return;
       }
@@ -2678,12 +2699,14 @@ export class DomTreeController {
   private resetState(
     documentEpoch: number | undefined,
     cancellationReason: string,
+    reservedSelectionRevision?: number,
   ): void {
     this.generation += 1;
     this.recovering = false;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
     this.clearLiveState(documentEpoch);
+    this.acceptedSelectionRevision = reservedSelectionRevision;
     this.cancelPending(cancellationReason);
   }
 
