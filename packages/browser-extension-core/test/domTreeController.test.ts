@@ -41,6 +41,72 @@ describe("DomTreeController", () => {
     expect(controller.rows().map((row) => row.depth)).toEqual([1, 1, 1, 1]);
   });
 
+  it.each(["auxiliary", "root", "duplicate"] as const)(
+    "rejects an atomic child page with a %s ref collision",
+    async (collision) => {
+      const transport = new TestTransport();
+      const root = node("root", true);
+      const auxiliary = displayNode("reserved", "comment", "leading");
+      const collidedRef = collision === "auxiliary"
+        ? auxiliary.nodeRef
+        : collision === "root"
+          ? root.nodeRef
+          : "duplicate";
+      const collided = node(collidedRef);
+      const responseNodes = collision === "duplicate"
+        ? [node("valid-before-collision"), collided, { ...collided }]
+        : [node("valid-before-collision"), collided];
+      transport.enqueue(rootResponse(root, 1, [auxiliary]));
+      transport.enqueue(childrenResponse(root.nodeRef, 0, responseNodes));
+      const controller = createController(transport);
+      await controller.loadRoot();
+
+      await controller.expand(root.nodeRef);
+
+      expect(nodeRefs(controller)).toEqual([auxiliary.nodeRef, root.nodeRef]);
+      expect(controller.snapshot().errorCode).toBe("internal-error");
+      expect(controllerState(controller).branches.get(root.nodeRef)?.children)
+        .toEqual([]);
+      expect(controllerState(controller).nodes.has("valid-before-collision"))
+        .toBe(false);
+      expect(controller.rows().at(-1)).toMatchObject({
+        type: "load-more",
+        parentRef: root.nodeRef,
+        loading: false,
+      });
+
+      transport.enqueue(childrenResponse(root.nodeRef, 0, [node("valid-retry")]));
+      await controller.loadMore(root.nodeRef);
+
+      expect(nodeRefs(controller)).toEqual([
+        auxiliary.nodeRef,
+        root.nodeRef,
+        "valid-retry",
+      ]);
+    },
+  );
+
+  it("rejects a live selection path that collides with a visible auxiliary", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true);
+    const auxiliary = displayNode("shared", "comment", "leading");
+    transport.enqueue(rootResponse(root, 1, [auxiliary]));
+    const controller = createController(transport);
+    await controller.loadRoot();
+
+    controller.handleEvent(selectionEvent(1, [
+      root,
+      locatedNode(auxiliary.nodeRef, locator(2)),
+    ]));
+    await controller.select(auxiliary.nodeRef);
+    controller.hover(auxiliary.nodeRef);
+
+    expect(nodeRefs(controller)).toEqual([auxiliary.nodeRef, root.nodeRef]);
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
+    expect(transport.dispatched).toEqual([]);
+  });
+
   it("refreshes displayed root auxiliaries after a collapsed-root invalidation", async () => {
     const transport = new TestTransport();
     const root = node("root", false, 1);
@@ -3988,7 +4054,7 @@ describe("DomTreeController", () => {
     expect(state.nodes.has(leaves.at(-1)?.nodeRef ?? "missing")).toBe(false);
   });
 
-  it("counts duplicate and cyclic detached edges once", async () => {
+  it("counts cyclic detached edges once", async () => {
     const transport = new TestTransport();
     const root = locatedNode("root", locator(1), true, 1);
     const source = locatedNode("source", locator(2), true, 1);
@@ -3997,7 +4063,7 @@ describe("DomTreeController", () => {
     transport.enqueue(rootResponse(root));
     transport.enqueue(childrenResponse(root.nodeRef, 1, [source]));
     transport.enqueue(childrenResponse(source.nodeRef, 1, [cycleA]));
-    transport.enqueue(childrenResponse(cycleA.nodeRef, 1, [cycleB, cycleB]));
+    transport.enqueue(childrenResponse(cycleA.nodeRef, 1, [cycleB]));
     transport.enqueue(childrenResponse(cycleB.nodeRef, 1, [cycleA]));
     const controller = createController(transport);
     await controller.loadRoot();
@@ -4965,6 +5031,47 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual(["new-root"]);
     expect(controller.snapshot().selectedRef).toBeUndefined();
     expect(controller.expandedRefs()).toEqual([]);
+  });
+
+  it("rejects a recovery path auxiliary collision without a partial commit", () => {
+    const controller = createController(new TestTransport());
+    const root = locatedNode("new-root", locator(1), true);
+    const auxiliary = displayNode("reserved", "comment", "leading");
+    const partial = locatedNode("partial", locator(2), true);
+    const collidedTarget = locatedNode(auxiliary.nodeRef, locator(3));
+
+    controller.beginRecovery();
+    controller.installRecoveryRoot(rootResponse(root, 2, [auxiliary]));
+    controller.installRecoveredPath(
+      locatorResponse(collidedTarget, [root, partial, collidedTarget], 2),
+      { selected: true, expanded: true },
+    );
+    controller.finishRecovery();
+
+    expect(nodeRefs(controller)).toEqual([auxiliary.nodeRef, root.nodeRef]);
+    expect(controllerState(controller).nodes.has(partial.nodeRef)).toBe(false);
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
+
+    const validController = createController(new TestTransport());
+    const validTarget = locatedNode("valid-target", locator(2, 1));
+    validController.beginRecovery();
+    validController.installRecoveryRoot(rootResponse(root, 2, [auxiliary]));
+    validController.installRecoveredPath(
+      locatorResponse(validTarget, [root, validTarget], 2),
+      { selected: true, expanded: false },
+    );
+    validController.finishRecovery();
+
+    expect(nodeRefs(validController)).toEqual([
+      auxiliary.nodeRef,
+      root.nodeRef,
+      validTarget.nodeRef,
+    ]);
+    expect(validController.snapshot()).toMatchObject({
+      selectedRef: validTarget.nodeRef,
+      revealRef: validTarget.nodeRef,
+    });
   });
 
   it.each(["non-element-root", "duplicate-ref"] as const)(

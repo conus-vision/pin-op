@@ -189,6 +189,14 @@ export class DomTreeView {
       }
       return;
     }
+    if (
+      rowType !== "node" ||
+      row.dataset.rowKind !== "element" ||
+      row.dataset.loading === "true" ||
+      row.dataset.inaccessible === "true"
+    ) {
+      return;
+    }
     this.run(() => this.controller.select(nodeRef));
   };
   private readonly onPointerOver = (event: Event): void => {

@@ -450,7 +450,7 @@ export class DomTreeProvider {
       this.frameRegistry,
       () => this.#settleFrameRegistryDocumentResets(),
     );
-    this.locatorService = this.createLocatorService(topDocument);
+    this.locatorService = this.#createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
       getContext: (frameRef: string) => this.frameRegistry.getContext(frameRef),
       getContextForDocument: (document: Document) => (
@@ -476,7 +476,7 @@ export class DomTreeProvider {
     return this.frameAuthorityView;
   }
 
-  private createLocatorService(topDocument: Document): DomStableLocatorService {
+  #createLocatorService(topDocument: Document): DomStableLocatorService {
     return new DomStableLocatorService({
       topDocument,
       frameRegistry: {
@@ -1192,7 +1192,7 @@ export class DomTreeProvider {
       }
       if (applicationLimitExceeded) {
         this.activeDocumentReset = undefined;
-        this.dispose();
+        this.#dispose();
         throwDomTreeError("node-unavailable");
       }
     } finally {
@@ -1225,6 +1225,8 @@ export class DomTreeProvider {
       this.outwardEffectBuffer !== undefined;
     this.deferredFrameDiscovery = undefined;
     this.postCommitEffectBatches.length = 0;
+    const locatorService = this.#createLocatorService(request.topDocument);
+    if (!isCurrent()) return;
     let frameReset = false;
     try {
       frameReset = this.#withFrameRegistryMutation(() => (
@@ -1243,8 +1245,6 @@ export class DomTreeProvider {
       if (!isCurrent()) return;
       throwDomTreeError("node-unavailable");
     }
-    if (!isCurrent()) return;
-    const locatorService = this.createLocatorService(request.topDocument);
     if (!isCurrent()) return;
     this.locatorService = locatorService;
     this.nodeRegistry.resetDocument(request.documentEpoch);
@@ -1365,6 +1365,10 @@ export class DomTreeProvider {
   }
 
   public dispose(): void {
+    this.#dispose();
+  }
+
+  #dispose(): void {
     if (this.disposed) {
       return;
     }

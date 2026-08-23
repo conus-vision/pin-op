@@ -198,6 +198,48 @@ describe("DOM protocol", () => {
     });
   });
 
+  it("rejects duplicate visible refs across a root snapshot", () => {
+    for (const [prologue, root, epilogue] of [
+      [
+        [displayNodeView("comment", { nodeRef: "shared" })],
+        nodeView({ nodeRef: "shared" }),
+        [],
+      ],
+      [
+        [displayNodeView("comment", { nodeRef: "shared" })],
+        nodeView({ nodeRef: "root" }),
+        [displayNodeView("comment", { nodeRef: "shared" })],
+      ],
+      [
+        [],
+        nodeView({ nodeRef: "shared" }),
+        [displayNodeView("comment", { nodeRef: "shared" })],
+      ],
+    ] as const) {
+      expect(() => parseDomResponse({
+        type: "dom.root",
+        requestId: "duplicate-root-ref",
+        documentEpoch: 1,
+        node: root,
+        prologue,
+        epilogue,
+      })).toThrow(DomProtocolError);
+    }
+
+    expect(parseDomResponse({
+      type: "dom.root",
+      requestId: "unique-root-refs",
+      documentEpoch: 1,
+      node: nodeView({ nodeRef: "root" }),
+      prologue: [displayNodeView("comment", { nodeRef: "leading" })],
+      epilogue: [displayNodeView("comment", { nodeRef: "trailing" })],
+    })).toMatchObject({
+      node: { nodeRef: "root" },
+      prologue: [{ nodeRef: "leading" }],
+      epilogue: [{ nodeRef: "trailing" }],
+    });
+  });
+
   it("parses structured element and display-only node snapshots", () => {
     const element = nodeView({
       nodeName: "BUTTON",
@@ -1145,6 +1187,113 @@ describe("DOM protocol", () => {
       })).toThrow(DomProtocolError);
       expect(calls).toBe(0);
     }
+  });
+
+  it("rejects oversized message records before reading property descriptors", () => {
+    const target = Object.fromEntries([
+      ["type", "dom.getRoot"],
+      ["requestId", "request-1"],
+      ...Array.from({ length: 10_000 }, (_, index) => [`unknown-${index}`, index]),
+    ]);
+    let ownKeysCalls = 0;
+    let descriptorCalls = 0;
+    const hostile = new Proxy(target, {
+      ownKeys(object) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, key) {
+        descriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+
+    expect(() => parseDomRequest(hostile)).toThrow(DomProtocolError);
+    expect(ownKeysCalls).toBe(1);
+    expect(descriptorCalls).toBe(0);
+  });
+
+  it("caps each top-level message variant at its largest valid record", () => {
+    for (const [target, parse] of [
+      [{
+        type: "dom.getChildren",
+        requestId: "request-1",
+        documentEpoch: 1,
+        nodeRef: "parent",
+        branchRevision: 1,
+        cursor: "next",
+        unknown: true,
+      }, parseDomRequest],
+      [{
+        type: "dom.children",
+        requestId: "request-1",
+        documentEpoch: 1,
+        nodeRef: "parent",
+        branchRevision: 1,
+        nodes: [],
+        nextCursor: "next",
+        unknown: true,
+      }, parseDomResponse],
+      [{
+        type: "dom.selectionChanged",
+        documentEpoch: 1,
+        selectionRevision: 1,
+        nodeRef: "target",
+        ancestorPath: [nodeView({ nodeRef: "target" })],
+        unknown: true,
+      }, parseDomEvent],
+    ] as const) {
+      let ownKeysCalls = 0;
+      let descriptorCalls = 0;
+      const oversized = new Proxy(target, {
+        ownKeys(object) {
+          ownKeysCalls += 1;
+          return Reflect.ownKeys(object);
+        },
+        getOwnPropertyDescriptor(object, key) {
+          descriptorCalls += 1;
+          return Reflect.getOwnPropertyDescriptor(object, key);
+        },
+      });
+
+      expect(() => parse(oversized)).toThrow(DomProtocolError);
+      expect(ownKeysCalls).toBe(1);
+      expect(descriptorCalls).toBe(0);
+    }
+  });
+
+  it("accepts maximal valid message records within bounded reflection work", () => {
+    const target = {
+      type: "dom.children" as const,
+      requestId: "request-1",
+      documentEpoch: 1,
+      nodeRef: "parent",
+      branchRevision: 1,
+      nodes: [nodeView({
+        nodeRef: "child",
+        inaccessible: false,
+      })],
+      nextCursor: "next",
+    };
+    let ownKeysCalls = 0;
+    let descriptorCalls = 0;
+    const bounded = new Proxy(target, {
+      ownKeys(object) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, key) {
+        descriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+
+    expect(parseDomResponse(bounded)).toMatchObject({
+      type: "dom.children",
+      nextCursor: "next",
+    });
+    expect(ownKeysCalls).toBe(1);
+    expect(descriptorCalls).toBe(Reflect.ownKeys(target).length);
   });
 
   it("snapshots hostile structured arrays and attributes without invoking accessors", () => {

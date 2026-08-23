@@ -50,6 +50,30 @@ describe("DomTreeView", () => {
     expect(harness.dom.createdTags()).not.toContain("img");
   });
 
+  it("never selects or hovers a visible comment whose ref collides with a path", async () => {
+    const harness = createHarness();
+    const root = node("root", "html", true);
+    const auxiliary = displayNode("shared", "leading");
+    harness.transport.enqueue(rootResponse(root, [auxiliary]));
+    await harness.controller.loadRoot();
+
+    harness.controller.handleEvent(selectionChanged(1, [
+      root,
+      node(auxiliary.nodeRef, "button.colliding"),
+    ]));
+    const renderedAuxiliary = harness.dom.row(auxiliary.nodeRef);
+    expect(renderedAuxiliary.dataset.rowKind).toBe("comment");
+
+    const tree = harness.dom.element("dom-tree");
+    tree.dispatch("click", { target: renderedAuxiliary });
+    tree.dispatch("pointerover", { target: renderedAuxiliary });
+    await flushAsync();
+
+    expect(harness.transport.dispatched.filter((request) => (
+      request.type === "dom.select" || request.type === "dom.hover"
+    ))).toEqual([]);
+  });
+
   it("keeps the empty tree root as its only tab stop", () => {
     const harness = createHarness();
 

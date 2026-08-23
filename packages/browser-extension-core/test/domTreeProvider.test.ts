@@ -1380,7 +1380,7 @@ describe("DomTreeProvider", () => {
     },
   );
 
-  it.each(["locator", "timer-cancel", "observer-disconnect"] as const)(
+  it.each(["timer-cancel", "observer-disconnect"] as const)(
     "keeps the latest reset authoritative after reentry during %s",
     (phase) => {
       const document = createDocument();
@@ -1402,7 +1402,6 @@ describe("DomTreeProvider", () => {
       const state = provider as unknown as {
         mutationTimer: unknown;
         cancelTimeout(handle: unknown): void;
-        createLocatorService(document: Document): unknown;
         readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
       };
       let armed = true;
@@ -1414,15 +1413,7 @@ describe("DomTreeProvider", () => {
         provider.resetDocument(latestDocument as unknown as Document, 5);
       };
 
-      if (phase === "locator") {
-        const createLocatorService = state.createLocatorService.bind(state);
-        state.createLocatorService = (topDocument) => {
-          if (topDocument === intermediateDocument as unknown as Document) {
-            reenterLatestReset();
-          }
-          return createLocatorService(topDocument);
-        };
-      } else if (phase === "timer-cancel") {
+      if (phase === "timer-cancel") {
         state.mutationTimer = 90210;
         state.cancelTimeout = (handle) => {
           if (handle === 90210) reenterLatestReset();
@@ -1598,6 +1589,75 @@ describe("DomTreeProvider", () => {
       drainingDocumentResets: false,
       rootObservers: new Map(),
     });
+  });
+
+  it("fails closed through native cleanup when a public subclass overrides dispose", () => {
+    class NoopDisposeDomTreeProvider extends DomTreeProvider {
+      public disposeCalls = 0;
+
+      public override dispose(): void {
+        this.disposeCalls += 1;
+      }
+    }
+
+    const document = createDocument();
+    let provider!: NoopDisposeDomTreeProvider;
+    let armed = false;
+    let nextEpoch = 5;
+    const harness = createProviderHarness(document, {
+      createProvider: (topDocument, options) => {
+        provider = new NoopDisposeDomTreeProvider(topDocument, options);
+        return provider;
+      },
+      isExcludedNode: (node) => {
+        if (!armed || node.nodeType !== 9) return false;
+        provider.resetDocument(
+          createDocument() as unknown as Document,
+          nextEpoch,
+        );
+        nextEpoch += 1;
+        return false;
+      },
+    });
+    armed = true;
+
+    expect(() => provider.resetDocument(
+      createDocument() as unknown as Document,
+      4,
+    )).toThrowError(expect.objectContaining({ code: "node-unavailable" }));
+
+    expect(provider.disposeCalls).toBe(0);
+    expect(provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(() => provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("does not prototype-dispatch locator creation during document reset", () => {
+    const initialDocument = createDocument();
+    const replacementDocument = createDocument();
+    const harness = createProviderHarness(initialDocument, { documentEpoch: 1 });
+    const provider = harness.provider;
+    const state = provider as unknown as {
+      createLocatorService(document: Document): unknown;
+      readonly frameRegistry: { readonly documentEpoch: number };
+    };
+    let trapCalls = 0;
+    state.createLocatorService = () => {
+      trapCalls += 1;
+      throw new Error("external locator factory trap");
+    };
+
+    expect(() => provider.resetDocument(
+      replacementDocument as unknown as Document,
+      2,
+    )).not.toThrow();
+
+    expect(trapCalls).toBe(0);
+    expect(provider.currentDocumentEpoch).toBe(2);
+    expect(state.frameRegistry.documentEpoch).toBe(2);
+    expect(provider.getRoot()).toMatchObject({ documentEpoch: 2 });
   });
 
   it("stops a stale reset-owned frame scan after lifecycle reentry", () => {

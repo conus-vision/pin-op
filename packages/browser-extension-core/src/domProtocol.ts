@@ -353,8 +353,17 @@ const DOM_INVALIDATION_BRANCH_KEYS = [
   "branchRevision",
 ] as const;
 
+const DOM_REQUEST_MAX_PROPERTIES = 6;
+const DOM_RESPONSE_MAX_PROPERTIES = 7;
+const DOM_EVENT_MAX_PROPERTIES = 5;
+const DOM_NODE_VIEW_MAX_PROPERTIES = 13;
+
 export function parseDomRequest(value: unknown): DomRequest {
-  const record = snapshotRecord(value, DOM_REQUEST_KEYS);
+  const record = snapshotRecord(
+    value,
+    DOM_REQUEST_KEYS,
+    DOM_REQUEST_MAX_PROPERTIES,
+  );
   switch (record.type) {
     case "dom.getRoot":
       assertKeys(record, ["type", "requestId", "documentEpoch"], [
@@ -425,7 +434,11 @@ export function parseDomRequest(value: unknown): DomRequest {
 }
 
 export function parseDomResponse(value: unknown): DomResponse {
-  const record = snapshotRecord(value, DOM_RESPONSE_KEYS);
+  const record = snapshotRecord(
+    value,
+    DOM_RESPONSE_KEYS,
+    DOM_RESPONSE_MAX_PROPERTIES,
+  );
   switch (record.type) {
     case "dom.root":
       assertKeys(record, [
@@ -448,6 +461,14 @@ export function parseDomResponse(value: unknown): DomResponse {
       const prologue = parseRootAuxiliaryViews(record.prologue, "prologue");
       const epilogue = parseRootAuxiliaryViews(record.epilogue, "epilogue");
       if (prologue.length + epilogue.length > DOM_PROTOCOL_MAX_ROOT_AUXILIARY_ROWS) {
+        throw invalidMessage();
+      }
+      const visibleRefs = new Set([
+        ...prologue.map((view) => view.nodeRef),
+        node.nodeRef,
+        ...epilogue.map((view) => view.nodeRef),
+      ]);
+      if (visibleRefs.size !== prologue.length + epilogue.length + 1) {
         throw invalidMessage();
       }
       return freeze({
@@ -538,7 +559,11 @@ export function parseDomResponse(value: unknown): DomResponse {
 }
 
 export function parseDomEvent(value: unknown): DomEvent {
-  const record = snapshotRecord(value, DOM_EVENT_KEYS);
+  const record = snapshotRecord(
+    value,
+    DOM_EVENT_KEYS,
+    DOM_EVENT_MAX_PROPERTIES,
+  );
   switch (record.type) {
     case "dom.hoverChanged":
       assertKeys(record, ["type", "documentEpoch", "nodeRef", "summary"], [
@@ -662,7 +687,11 @@ export function isDomResponseForRequest(
 }
 
 function parseNodeView(value: unknown): DomNodeView {
-  const record = snapshotRecord(value, DOM_NODE_VIEW_KEYS);
+  const record = snapshotRecord(
+    value,
+    DOM_NODE_VIEW_KEYS,
+    DOM_NODE_VIEW_MAX_PROPERTIES,
+  );
   assertKeys(record, [
     "nodeRef",
     "kind",
@@ -802,7 +831,7 @@ function parseInspectorAttributes(value: unknown): readonly InspectorAttribute[]
 }
 
 function parseInspectorAttribute(value: unknown): InspectorAttribute {
-  const record = snapshotRecord(value, DOM_INSPECTOR_ATTRIBUTE_KEYS);
+  const record = snapshotRecord(value, DOM_INSPECTOR_ATTRIBUTE_KEYS, 2);
   assertKeys(record, ["name", "value"], ["name", "value"]);
   return freeze({
     name: assertBoundedText(
@@ -902,7 +931,7 @@ function parseInvalidationBranches(
 }
 
 function parseInvalidationBranch(value: unknown): DomInvalidationBranch {
-  const record = snapshotRecord(value, DOM_INVALIDATION_BRANCH_KEYS);
+  const record = snapshotRecord(value, DOM_INVALIDATION_BRANCH_KEYS, 2);
   assertKeys(record, ["nodeRef", "branchRevision"], [
     "nodeRef",
     "branchRevision",
@@ -918,7 +947,11 @@ function parseBoundedArray<T>(
   maximumLength: number,
   parseItem: (item: unknown) => T,
 ): readonly T[] {
-  const properties = snapshotOwnDataProperties(value, "array");
+  const properties = snapshotOwnDataProperties(
+    value,
+    "array",
+    maximumLength + 1,
+  );
   const lengthProperty = properties.find(({ key }) => key === "length");
   const length = lengthProperty?.value;
   if (
@@ -1039,6 +1072,7 @@ interface OwnDataProperty {
 function snapshotOwnDataProperties(
   value: unknown,
   expectedKind: "record" | "array",
+  maximumPropertyCount: number,
 ): readonly OwnDataProperty[] {
   try {
     if (value === null || typeof value !== "object") {
@@ -1048,16 +1082,13 @@ function snapshotOwnDataProperties(
     if ((expectedKind === "array") !== isArray) {
       throw invalidMessage();
     }
-    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > maximumPropertyCount) {
+      throw invalidMessage();
+    }
     const properties: OwnDataProperty[] = [];
-    for (const key of Reflect.ownKeys(descriptors)) {
-      const descriptorHolder = Reflect.getOwnPropertyDescriptor(
-        descriptors,
-        key,
-      );
-      const descriptor = descriptorHolder?.value as
-        | PropertyDescriptor
-        | undefined;
+    for (const key of keys) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !hasOwn(descriptor, "value")) {
         throw invalidMessage();
       }
@@ -1072,8 +1103,13 @@ function snapshotOwnDataProperties(
 function snapshotRecord(
   value: unknown,
   allowedKeys: readonly string[],
+  maximumPropertyCount: number,
 ): Readonly<Record<string, unknown>> {
-  const properties = snapshotOwnDataProperties(value, "record");
+  const properties = snapshotOwnDataProperties(
+    value,
+    "record",
+    maximumPropertyCount,
+  );
   const snapshot: Record<string, unknown> = Object.create(null) as Record<
     string,
     unknown

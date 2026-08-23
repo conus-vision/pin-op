@@ -411,6 +411,7 @@ export class DomTreeController {
       response.ancestorPath.length === 0 ||
       response.ancestorPath[0]?.nodeRef !== this.rootRef ||
       !isRecoverableLocatorResponse(response) ||
+      !this.canCommitRecoverablePath(response.ancestorPath) ||
       (options.selected && !isSelectableElementView(response.node))
     ) {
       return;
@@ -675,8 +676,10 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
+    const visibleView = this.uniqueVisibleSelectableView(nodeRef);
     if (
       !state ||
+      visibleView !== state.view ||
       !state.view.selectable ||
       state.view.inaccessible ||
       this.isDeferredPruneNode(nodeRef) ||
@@ -708,8 +711,10 @@ export class DomTreeController {
       return;
     }
     const state = this.nodes.get(nodeRef);
+    const visibleView = this.uniqueVisibleSelectableView(nodeRef);
     if (
       !state ||
+      visibleView !== state.view ||
       !state.view.selectable ||
       state.view.inaccessible ||
       this.isDeferredPruneNode(nodeRef) ||
@@ -1242,6 +1247,7 @@ export class DomTreeController {
         }
         let adoptedChildRefs: readonly string[];
         if (cursor) {
+          this.assertAdoptablePageChildren(nodeRef, response.nodes);
           const appendedChildRefs: string[] = [];
           for (const child of response.nodes) {
             if (this.adoptPageChild(child, nodeRef)) {
@@ -1332,6 +1338,9 @@ export class DomTreeController {
     }
     const pathRootRef = ancestorPath[0]?.nodeRef;
     if (this.rootRef !== undefined && pathRootRef !== this.rootRef) {
+      return;
+    }
+    if (!this.canCommitRecoverablePath(ancestorPath)) {
       return;
     }
     this.recoveredFocusRef = undefined;
@@ -2132,6 +2141,7 @@ export class DomTreeController {
     children: readonly DomNodeView[],
     reconciliationBatchId?: number,
   ): readonly string[] {
+    this.assertAdoptablePageChildren(parentRef, children);
     const previousChildren = [...branch.children];
     const nextChildren: string[] = [];
     for (const child of children) {
@@ -2445,6 +2455,53 @@ export class DomTreeController {
     return true;
   }
 
+  private assertAdoptablePageChildren(
+    parentRef: string,
+    children: readonly DomNodeView[],
+  ): void {
+    const childRefs = new Set<string>();
+    for (const child of children) {
+      if (
+        childRefs.has(child.nodeRef) ||
+        this.isReservedPresentationRef(child.nodeRef) ||
+        this.wouldCreateOwnershipCycle(parentRef, child.nodeRef)
+      ) {
+        throw new Error("DOM child page contains a visible node identity collision");
+      }
+      childRefs.add(child.nodeRef);
+    }
+  }
+
+  private canCommitRecoverablePath(
+    ancestorPath: readonly DomNodeView[],
+  ): boolean {
+    const expectedRootRef = this.rootRef ?? ancestorPath[0]?.nodeRef;
+    const pathRefs = new Set<string>();
+    for (const [index, view] of ancestorPath.entries()) {
+      if (pathRefs.has(view.nodeRef)) {
+        return false;
+      }
+      pathRefs.add(view.nodeRef);
+      if (index === 0) {
+        if (view.nodeRef !== expectedRootRef) {
+          return false;
+        }
+        continue;
+      }
+      if (this.isReservedPresentationRef(view.nodeRef)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private isReservedPresentationRef(nodeRef: string): boolean {
+    return nodeRef === this.rootRef ||
+      nodeRef.startsWith(LOAD_MORE_PREFIX) ||
+      this.rootPrologue.some((view) => view.nodeRef === nodeRef) ||
+      this.rootEpilogue.some((view) => view.nodeRef === nodeRef);
+  }
+
   private detachPageChild(
     branch: BranchState,
     parentRef: string,
@@ -2711,6 +2768,20 @@ export class DomTreeController {
           : "DOM session disposed",
       );
     }
+  }
+
+  private uniqueVisibleSelectableView(nodeRef: string): DomNodeView | undefined {
+    const rows = this.rows().filter((row) => row.nodeRef === nodeRef);
+    if (rows.length !== 1) {
+      return undefined;
+    }
+    const row = rows[0];
+    return row?.type === "node" &&
+        row.selectable &&
+        !row.inaccessible &&
+        row.kind === "element"
+      ? row.node
+      : undefined;
   }
 
   private applyRootSnapshotError(code: DomErrorCode): void {
