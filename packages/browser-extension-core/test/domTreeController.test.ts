@@ -279,6 +279,159 @@ describe("DomTreeController", () => {
     expect(controller.snapshot().errorCode).toBeUndefined();
   });
 
+  it("transfers root child refresh ownership when the root snapshot advances revision", async () => {
+    const baseTransport = new TestTransport();
+    const root = {
+      ...locatedNode("root", locator(1), true, 1),
+      attributes: [{ name: "data-state", value: "old" }],
+    };
+    const oldChild = locatedNode("old-child", locator(2));
+    baseTransport.enqueue(rootResponse(root));
+    baseTransport.enqueue(childrenResponse(root.nodeRef, 1, [oldChild]));
+
+    let controller!: DomTreeController;
+    let originalBatchId: number | undefined;
+    let observeHandoff = false;
+    const changeObservations: Array<{
+      readonly batchActive: boolean;
+      readonly focusedRef: string | undefined;
+    }> = [];
+    const requestObservations: Array<{
+      readonly batchActive: boolean;
+      readonly pendingBatchId: number | undefined;
+      readonly focusedRef: string | undefined;
+      readonly nodeRefs: readonly string[];
+    }> = [];
+    const transport: DomTreeTransport = {
+      request(request) {
+        if (
+          request.type === "dom.getChildren" &&
+          request.nodeRef === root.nodeRef &&
+          request.branchRevision === 3
+        ) {
+          const state = controllerState(controller);
+          requestObservations.push({
+            batchActive: state.reconciliationBatches.has(originalBatchId ?? -1),
+            pendingBatchId: state.branches.get(root.nodeRef)?.pending
+              ?.reconciliationBatchId,
+            focusedRef: controller.focusedRef,
+            nodeRefs: nodeRefs(controller),
+          });
+        }
+        return baseTransport.request(request);
+      },
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => baseTransport.cancelPending(reason),
+    };
+    controller = createController(transport, () => {
+      if (!observeHandoff || originalBatchId === undefined) {
+        return;
+      }
+      changeObservations.push({
+        batchActive: controllerState(controller).reconciliationBatches.has(
+          originalBatchId,
+        ),
+        focusedRef: controller.focusedRef,
+      });
+    });
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    controller.focus(oldChild.nodeRef);
+
+    const refreshedRoot = deferred<DomResponse>();
+    const staleChildren = deferred<DomResponse>();
+    baseTransport.enqueue(refreshedRoot.promise);
+    baseTransport.enqueue(staleChildren.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    originalBatchId = controllerState(controller).branches.get(root.nodeRef)
+      ?.pending?.reconciliationBatchId;
+    expect(originalBatchId).toEqual(expect.any(Number));
+    expect(controllerState(controller).reconciliationBatches.has(
+      originalBatchId ?? -1,
+    )).toBe(true);
+
+    const freshChildren = deferred<DomResponse>();
+    baseTransport.enqueue(freshChildren.promise);
+    observeHandoff = true;
+    refreshedRoot.resolve(rootResponse({
+      ...locatedNode(root.nodeRef, locator(1), true, 3),
+      attributes: [{ name: "data-state", value: "new" }],
+    }));
+    await flushAsync();
+
+    expect(requestObservations).toEqual([{
+      batchActive: true,
+      pendingBatchId: originalBatchId,
+      focusedRef: oldChild.nodeRef,
+      nodeRefs: [root.nodeRef, oldChild.nodeRef],
+    }]);
+    expect(changeObservations.length).toBeGreaterThan(0);
+    expect(changeObservations.every((observation) => (
+      observation.batchActive && observation.focusedRef === oldChild.nodeRef
+    ))).toBe(true);
+    expect(controllerState(controller).branches.get(root.nodeRef))
+      .toMatchObject({
+        revision: 3,
+        loaded: false,
+        children: [oldChild.nodeRef],
+        pending: { reconciliationBatchId: originalBatchId },
+      });
+
+    const staleChild = locatedNode("stale-child", locator(2, 1));
+    staleChildren.resolve(childrenResponse(root.nodeRef, 2, [staleChild]));
+    await flushAsync();
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 3 }],
+    });
+    await flushAsync();
+
+    expect(baseTransport.requests.filter((request) => (
+      request.type === "dom.getRoot"
+    ))).toHaveLength(2);
+    expect(baseTransport.requests.filter((request) => (
+      request.type === "dom.getChildren" &&
+      request.nodeRef === root.nodeRef &&
+      request.branchRevision === 3
+    ))).toHaveLength(1);
+    expect(nodeRefs(controller)).toEqual([root.nodeRef, oldChild.nodeRef]);
+    expect(nodeRefs(controller)).not.toContain(staleChild.nodeRef);
+    expect(controllerState(controller).reconciliationBatches.has(
+      originalBatchId ?? -1,
+    )).toBe(true);
+
+    const freshChild = locatedNode("fresh-child", locator(2, 2));
+    freshChildren.resolve(childrenResponse(root.nodeRef, 3, [freshChild]));
+    await flushAsync();
+
+    expect(controllerState(controller).reconciliationBatches.size).toBe(0);
+    expect(controllerState(controller).branches.get(root.nodeRef))
+      .toMatchObject({
+        revision: 3,
+        loaded: true,
+        children: [freshChild.nodeRef],
+        pending: undefined,
+      });
+    expect(nodeRefs(controller)).toEqual([root.nodeRef, freshChild.nodeRef]);
+    expect(nodeRefs(controller)).not.toContain(oldChild.nodeRef);
+    expect(controller.focusedRef).toBe(freshChild.nodeRef);
+    expect(controller.rows().find((row) => row.nodeRef === root.nodeRef))
+      .toMatchObject({
+        branchRevision: 3,
+        node: {
+          branchRevision: 3,
+          attributes: [{ name: "data-state", value: "new" }],
+        },
+      });
+  });
+
   it("refreshes a collapsed visible child's structured count from its owner branch", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true, 1)));

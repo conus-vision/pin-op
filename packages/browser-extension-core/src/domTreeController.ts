@@ -1408,12 +1408,31 @@ export class DomTreeController {
           }
           return;
         }
-        this.rootSnapshotError = undefined;
-        this.rootPrologue = Object.freeze([...response.prologue]);
-        this.rootEpilogue = Object.freeze([...response.epilogue]);
-        this.rootSnapshotRevision = response.node.branchRevision;
-        this.upsertNode(response.node, undefined);
-        this.invalidateRows();
+        const pendingBatchId = this.branches.get(nodeRef)?.pending
+          ?.reconciliationBatchId;
+        const reconciliationBatchId = (
+          pendingBatchId !== undefined &&
+          this.reconciliationBatches.has(pendingBatchId)
+        )
+          ? pendingBatchId
+          : undefined;
+        // Keep ownership alive while upsert replaces the pending child refresh.
+        const handoffToken = {};
+        this.registerReconciliationToken(reconciliationBatchId, handoffToken);
+        try {
+          this.rootSnapshotError = undefined;
+          this.rootPrologue = Object.freeze([...response.prologue]);
+          this.rootEpilogue = Object.freeze([...response.epilogue]);
+          this.rootSnapshotRevision = response.node.branchRevision;
+          this.upsertNode(response.node, undefined);
+          this.resumeOwnedExpandedBranches(
+            [nodeRef],
+            reconciliationBatchId,
+          );
+          this.invalidateRows();
+        } finally {
+          this.settleReconciliationToken(reconciliationBatchId, handoffToken);
+        }
       } catch (error) {
         if (
           this.isCurrent(generation) &&
