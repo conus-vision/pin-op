@@ -1285,6 +1285,78 @@ describe("FrameRegistry", () => {
     expect(disposeFrame.loadListenerCount).toBe(0);
   });
 
+  it("does not expose reset settlement for same-epoch child registration", () => {
+    const initialDocument = createDocument();
+    const replacementDocument = createDocument();
+    const childDocument = createDocument();
+    const childFrame = createFrame({ document: childDocument });
+    const events: FrameLifecycleEvent[] = [];
+    let settlementCalls = 0;
+    let armed = false;
+    let registry!: FrameRegistry;
+    const options = {
+      maxFrames: 3,
+      onLifecycle: (event: FrameLifecycleEvent) => events.push(event),
+      onMutationSettled: () => {
+        settlementCalls += 1;
+        if (!armed) return;
+        armed = false;
+        registry.describeFrame(childFrame);
+      },
+    } as unknown as ConstructorParameters<typeof FrameRegistryBase>[1];
+    registry = new FrameRegistry(initialDocument, options);
+    armed = true;
+
+    expect(registry.resetTopDocument(replacementDocument, 1)).toBe(true);
+
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      "reset:frame-1",
+    ]);
+    expect(settlementCalls).toBe(0);
+    expect(registry.accessibleContexts()).toEqual([registry.topContext]);
+    expect(registry.getContextForDocument(childDocument)).toBeUndefined();
+    expect(childFrame.loadListenerCount).toBe(0);
+  });
+
+  it("does not expose navigation settlement for same-epoch unregistration", () => {
+    const events: FrameLifecycleEvent[] = [];
+    let settlementCalls = 0;
+    let armed = false;
+    let registry!: FrameRegistry;
+    const childDocument = createDocument();
+    const frame = createFrame({ document: childDocument });
+    const options = {
+      maxFrames: 2,
+      onLifecycle: (event: FrameLifecycleEvent) => events.push(event),
+      onMutationSettled: () => {
+        settlementCalls += 1;
+        if (!armed) return;
+        armed = false;
+        registry.unregisterFrame(frame);
+      },
+    } as unknown as ConstructorParameters<typeof FrameRegistryBase>[1];
+    registry = new FrameRegistry(createDocument(), options);
+    const description = registry.describeFrame(frame);
+    if (description?.kind !== "accessible") throw new Error("expected accessible frame");
+    settlementCalls = 0;
+    events.length = 0;
+    const replacementDocument = createDocument();
+    frame.setDocument(replacementDocument);
+    armed = true;
+
+    frame.dispatchLoad();
+
+    expect(events.map((event) => `${event.type}:${event.frameRef}`)).toEqual([
+      `navigated:${description.frameRef}`,
+    ]);
+    expect(settlementCalls).toBe(0);
+    expect(registry.getContext(description.frameRef)).toMatchObject({
+      document: replacementDocument,
+      frameEpoch: 2,
+    });
+    expect(frame.loadListenerCount).toBe(1);
+  });
+
   it("gates public operations while reset detaches hostile listeners", () => {
     const initialTopDocument = createDocument();
     const requestedTopDocument = createDocument();

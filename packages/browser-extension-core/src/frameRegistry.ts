@@ -63,7 +63,6 @@ export interface FrameRegistryOptions {
   readonly maxFrames?: number;
   readonly maxFrameEpoch?: number;
   readonly onLifecycle?: (event: FrameLifecycleEvent) => void;
-  readonly onMutationSettled?: () => void;
 }
 
 interface FrameRecord extends FrameIdentity {
@@ -132,7 +131,6 @@ export class FrameRegistry {
   private readonly maxFrames: number;
   private readonly maxFrameEpoch: number;
   private readonly onLifecycle: ((event: FrameLifecycleEvent) => void) | undefined;
-  private readonly onMutationSettled: (() => void) | undefined;
   private readonly contexts = new Map<string, FrameContext>();
   private readonly documentRefs = new Map<Document, string>();
   private readonly records = new Map<string, FrameRecord>();
@@ -144,7 +142,6 @@ export class FrameRegistry {
   private state: FrameRegistryState = "active";
   private structuralRevision = 0;
   private pendingDispose = false;
-  private notifyingMutationSettled = false;
 
   public constructor(topDocument: Document, options: FrameRegistryOptions = {}) {
     if (!isObject(topDocument)) {
@@ -160,7 +157,6 @@ export class FrameRegistry {
       "documentEpoch",
     );
     this.onLifecycle = options.onLifecycle;
-    this.onMutationSettled = options.onMutationSettled;
     this.top = this.createTopContext(topDocument, 1);
     this.contexts.set(this.top.frameRef, this.top);
     this.documentRefs.set(topDocument, this.top.frameRef);
@@ -170,7 +166,7 @@ export class FrameRegistry {
     return this.state === "active" ? this.top : undefined;
   }
 
-  public get mutationInProgress(): boolean {
+  protected get mutationInProgress(): boolean {
     return this.state === "mutating";
   }
 
@@ -729,16 +725,6 @@ export class FrameRegistry {
     if (this.pendingDispose) {
       this.pendingDispose = false;
       this.dispose();
-      return;
-    }
-    if (!this.onMutationSettled || this.notifyingMutationSettled) return;
-    this.notifyingMutationSettled = true;
-    try {
-      this.onMutationSettled();
-    } catch {
-      // Observer failures cannot disrupt frame bookkeeping.
-    } finally {
-      this.notifyingMutationSettled = false;
     }
   }
 

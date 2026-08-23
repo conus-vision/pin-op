@@ -5960,6 +5960,33 @@ describe("DomTreeProvider", () => {
     expect(second.frame.loadListenerCount).toBe(0);
   });
 
+  it("drains a newer reset after locator frame authorization aborts without lifecycle", () => {
+    const first = createFramedButtonTree();
+    const locator = locatorFor(first.provider, first.target);
+    const second = createFramedButtonTree({ materialize: false });
+    const latestDocument = createDocument();
+    let reentered = false;
+    second.frame.addEventListener = (type) => {
+      if (type === "load" && !reentered) {
+        reentered = true;
+        second.provider.resetDocument(latestDocument as unknown as Document, 4);
+      }
+      throw new Error("listener installation failed");
+    };
+
+    expect(resolveLocator(second.provider, locator)).toBeUndefined();
+
+    expect(reentered).toBe(true);
+    expect(second.provider.currentDocumentEpoch).toBe(4);
+    expect(second.provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(second.provider.frameAuthority.getContextForDocument(
+      second.document as unknown as Document,
+    )).toBeUndefined();
+    expect(second.frame.loadListenerCount).toBe(0);
+  });
+
   it("keeps pre-existing inaccessible frame authority when locator recovery fails", () => {
     const first = createFramedButtonTree();
     const locator = locatorFor(first.provider, first.target);

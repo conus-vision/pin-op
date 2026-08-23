@@ -321,9 +321,15 @@ type LogicalPathEntry =
       readonly scope: FrameContext;
     };
 
+class DomTreeProviderFrameRegistry extends FrameRegistry {
+  public get documentResetMustWait(): boolean {
+    return this.mutationInProgress;
+  }
+}
+
 export class DomTreeProvider {
   private nodeRegistry: DomNodeRegistry;
-  private readonly frameRegistry: FrameRegistry;
+  private readonly frameRegistry: DomTreeProviderFrameRegistry;
   private locatorService: DomStableLocatorService;
   private topDocument: Document | undefined;
   private readonly records = new Map<string, NodeRecord>();
@@ -430,10 +436,14 @@ export class DomTreeProvider {
       documentEpoch: this.documentEpoch,
       maxReverseEntries: this.maxRecords,
     });
-    this.frameRegistry = new FrameRegistry(topDocument, {
+    this.frameRegistry = new DomTreeProviderFrameRegistry(topDocument, {
       documentEpoch: this.documentEpoch,
-      onLifecycle: (event) => this.handleFrameLifecycle(event),
-      onMutationSettled: () => this.drainDocumentResets(),
+      onLifecycle: (event) => {
+        this.settleFrameRegistryDocumentResets();
+        if (event.type === "reset" || event.documentEpoch === this.documentEpoch) {
+          this.handleFrameLifecycle(event);
+        }
+      },
     });
     this.locatorService = this.createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
@@ -464,7 +474,26 @@ export class DomTreeProvider {
   private createLocatorService(topDocument: Document): DomStableLocatorService {
     return new DomStableLocatorService({
       topDocument,
-      frameRegistry: this.frameRegistry,
+      frameRegistry: {
+        getContextForDocument: (document) => (
+          this.frameRegistry.getContextForDocument(document)
+        ),
+        getContext: (frameRef) => this.frameRegistry.getContext(frameRef),
+        getContextForFrameElement: (frameElement, parentFrameRef) => (
+          this.frameRegistry.getContextForFrameElement(frameElement, parentFrameRef)
+        ),
+        hasExactFrameElementRegistration: (frameElement, parentFrameRef) => (
+          this.frameRegistry.hasExactFrameElementRegistration(frameElement, parentFrameRef)
+        ),
+        authorizeExactFrameElement: (frameElement, parentFrameRef) => (
+          this.withFrameRegistryMutation(() => (
+            this.frameRegistry.authorizeExactFrameElement(frameElement, parentFrameRef)
+          ))
+        ),
+        unregisterFrame: (frameElement) => this.withFrameRegistryMutation(() => (
+          this.frameRegistry.unregisterFrame(frameElement)
+        )),
+      },
       isExcludedNode: (node) => this.isNodeExcluded(node),
     });
   }
@@ -1125,7 +1154,7 @@ export class DomTreeProvider {
   private drainDocumentResets(): void {
     if (
       this.drainingDocumentResets ||
-      this.frameRegistry.mutationInProgress
+      this.frameRegistry.documentResetMustWait
     ) return;
     if (this.disposed) {
       this.pendingDocumentReset = undefined;
@@ -1168,6 +1197,22 @@ export class DomTreeProvider {
     }
   }
 
+  private settleFrameRegistryDocumentResets(): void {
+    try {
+      this.drainDocumentResets();
+    } catch {
+      // Deferred hostile resets already fail closed inside the bounded drain.
+    }
+  }
+
+  private withFrameRegistryMutation<Result>(operation: () => Result): Result {
+    try {
+      return operation();
+    } finally {
+      this.settleFrameRegistryDocumentResets();
+    }
+  }
+
   private applyDocumentReset(request: DocumentResetRequest): void {
     const isCurrent = () => this.isDocumentResetCurrent(request);
     if (!isCurrent()) return;
@@ -1177,10 +1222,12 @@ export class DomTreeProvider {
     this.postCommitEffectBatches.length = 0;
     let frameReset = false;
     try {
-      frameReset = this.frameRegistry.resetTopDocument(
-        request.topDocument,
-        request.documentEpoch,
-      );
+      frameReset = this.withFrameRegistryMutation(() => (
+        this.frameRegistry.resetTopDocument(
+          request.topDocument,
+          request.documentEpoch,
+        )
+      ));
     } finally {
       // dispose() can reenter while FrameRegistry is detaching a listener. Its
       // first registry disposal is then intentionally inert; retry once the
@@ -1939,7 +1986,9 @@ export class DomTreeProvider {
     nodeRef: string,
     activateSubtree = false,
   ): FrameDescription | undefined {
-    const description = this.frameRegistry.describeFrame(frameElement, scope.frameRef);
+    const description = this.withFrameRegistryMutation(() => (
+      this.frameRegistry.describeFrame(frameElement, scope.frameRef)
+    ));
     if (!description) {
       return undefined;
     }
@@ -3132,7 +3181,7 @@ export class DomTreeProvider {
       })
       .reverse();
     for (const frameRef of registeredFrameRefs) {
-      this.frameRegistry.unregisterFrame(frameRef);
+      this.withFrameRegistryMutation(() => this.frameRegistry.unregisterFrame(frameRef));
       if (!this.isProviderAuthorityCurrent(snapshot)) return undefined;
     }
     return Object.freeze(events.flatMap((event) => {
@@ -3942,11 +3991,13 @@ export class DomTreeProvider {
     if (!parent) {
       return;
     }
-    const description = this.frameRegistry.describeFrame(
-      frameElement,
-      parent.frameRef,
-      isCurrent,
-    );
+    const description = this.withFrameRegistryMutation(() => (
+      this.frameRegistry.describeFrame(
+        frameElement,
+        parent.frameRef,
+        isCurrent,
+      )
+    ));
     if (!isCurrent()) return;
     if (description) {
       this.trackFrameDescription(
@@ -4159,7 +4210,9 @@ export class DomTreeProvider {
 
   private unregisterDiscoveredFrame(frameElement: HTMLIFrameElement): void {
     const frameRef = this.frameRefsByElement.get(frameElement);
-    const invalidated = this.frameRegistry.unregisterFrame(frameElement);
+    const invalidated = this.withFrameRegistryMutation(() => (
+      this.frameRegistry.unregisterFrame(frameElement)
+    ));
     this.frameRefsByElement.delete(frameElement);
     if (frameRef && invalidated.length === 0) {
       this.releaseFrameIdentity(frameRef, true);
