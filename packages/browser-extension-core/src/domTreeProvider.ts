@@ -56,6 +56,9 @@ const ELEMENT_LABEL_MAX_CLASSES = 4;
 const ELEMENT_LABEL_MAX_TOKEN_LENGTH = 64;
 const FRAME_MUTATION_SCAN_LIMIT = 1_024;
 const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
+// A reset hook may synchronously request another epoch. Bound the drain so a
+// hostile page cannot keep the provider on the stack forever.
+const DOCUMENT_RESET_APPLICATION_LIMIT = 16;
 const MAX_SHADOW_CONTAINMENT_DEPTH = 512;
 const ROLLBACK_FRAME_RECONCILIATION_MAX_ATTEMPTS = 16;
 const ROLLBACK_FRAME_RECONCILIATION_MAX_EFFECTS = 256;
@@ -196,6 +199,7 @@ interface PendingFrameMutationScan {
   readonly ownerRoot: Node;
   readonly root: Node;
   readonly stack: FrameTraversalEntry[];
+  readonly resetGuard?: () => boolean;
 }
 
 interface PendingMutationRecord {
@@ -379,6 +383,7 @@ export class DomTreeProvider {
   private pendingDocumentReset: DocumentResetRequest | undefined;
   private documentResetGeneration = 0;
   private drainingDocumentResets = false;
+  private activeFrameMutationScanGuard: (() => boolean) | undefined;
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -1116,8 +1121,16 @@ export class DomTreeProvider {
     if (this.drainingDocumentResets) return;
 
     this.drainingDocumentResets = true;
+    let appliedResets = 0;
+    let applicationLimitExceeded = false;
     try {
       while (!this.disposed && this.pendingDocumentReset) {
+        if (appliedResets >= DOCUMENT_RESET_APPLICATION_LIMIT) {
+          this.pendingDocumentReset = undefined;
+          applicationLimitExceeded = true;
+          break;
+        }
+        appliedResets += 1;
         const next = this.pendingDocumentReset;
         this.pendingDocumentReset = undefined;
         this.activeDocumentReset = next;
@@ -1130,6 +1143,11 @@ export class DomTreeProvider {
             this.activeDocumentReset = undefined;
           }
         }
+      }
+      if (applicationLimitExceeded) {
+        this.activeDocumentReset = undefined;
+        this.dispose();
+        throwDomTreeError("node-unavailable");
       }
     } finally {
       this.activeDocumentReset = undefined;
@@ -1145,10 +1163,19 @@ export class DomTreeProvider {
       this.outwardEffectBuffer !== undefined;
     this.deferredFrameDiscovery = undefined;
     this.postCommitEffectBatches.length = 0;
-    if (!this.frameRegistry.resetTopDocument(
-      request.topDocument,
-      request.documentEpoch,
-    )) {
+    let frameReset = false;
+    try {
+      frameReset = this.frameRegistry.resetTopDocument(
+        request.topDocument,
+        request.documentEpoch,
+      );
+    } finally {
+      // dispose() can reenter while FrameRegistry is detaching a listener. Its
+      // first registry disposal is then intentionally inert; retry once the
+      // registry reset has restored an active state.
+      if (this.disposed) this.frameRegistry.dispose();
+    }
+    if (!frameReset) {
       if (!isCurrent()) return;
       throwDomTreeError("node-unavailable");
     }
@@ -1192,7 +1219,8 @@ export class DomTreeProvider {
           authorityGeneration: this.authorityGeneration,
         });
       } else {
-        this.queueFrameDiscovery(request.topDocument);
+        const scanGuard = () => this.isDocumentResetScanCurrent(request);
+        this.queueFrameDiscovery(request.topDocument, scanGuard);
         if (!isCurrent()) return;
         this.processFrameMutationScanSlice();
       }
@@ -1203,6 +1231,13 @@ export class DomTreeProvider {
     return !this.disposed &&
       this.activeDocumentReset === request &&
       this.pendingDocumentReset === undefined &&
+      this.documentResetGeneration === request.requestGeneration;
+  }
+
+  private isDocumentResetScanCurrent(request: DocumentResetRequest): boolean {
+    return !this.disposed &&
+      this.topDocument === request.topDocument &&
+      this.documentEpoch === request.documentEpoch &&
       this.documentResetGeneration === request.requestGeneration;
   }
 
@@ -1272,6 +1307,7 @@ export class DomTreeProvider {
     this.documentResetGeneration += 1;
     this.activeDocumentReset = undefined;
     this.pendingDocumentReset = undefined;
+    this.activeFrameMutationScanGuard = undefined;
     this.authorityGeneration += 1;
     this.disposed = true;
     this.postCommitEffectBatches.length = 0;
@@ -3871,8 +3907,13 @@ export class DomTreeProvider {
       : true;
   }
 
-  private registerDiscoveredFrame(frameElement: HTMLIFrameElement): void {
-    if (this.isNodeExcluded(frameElement)) {
+  private registerDiscoveredFrame(
+    frameElement: HTMLIFrameElement,
+    isCurrent: () => boolean,
+  ): void {
+    if (!isCurrent()) return;
+    const excluded = this.isNodeExcluded(frameElement);
+    if (!isCurrent() || excluded) {
       return;
     }
     let ownerDocument: Document | undefined;
@@ -3881,21 +3922,34 @@ export class DomTreeProvider {
     } catch {
       return;
     }
+    if (!isCurrent()) return;
     const parent = ownerDocument
       ? this.frameRegistry.getContextForDocument(ownerDocument)
       : undefined;
+    if (!isCurrent()) return;
     if (!parent) {
       return;
     }
     const description = this.frameRegistry.describeFrame(frameElement, parent.frameRef);
+    if (!isCurrent()) return;
     if (description) {
-      this.trackFrameDescription(frameElement, description, undefined, false);
+      this.trackFrameDescription(
+        frameElement,
+        description,
+        undefined,
+        false,
+        isCurrent,
+      );
     }
   }
 
-  private queueFrameDiscovery(document: Document): void {
+  private queueFrameDiscovery(
+    document: Document,
+    resetGuard = this.activeFrameMutationScanGuard,
+  ): void {
     if (
       this.disposed ||
+      (resetGuard !== undefined && !resetGuard()) ||
       this.pendingFrameMutationScans.some((scan) => (
         scan.action === "register" && scan.root === document
       ))
@@ -3907,6 +3961,7 @@ export class DomTreeProvider {
       ownerRoot: document,
       root: document,
       stack: [createFrameTraversalEntry(document)],
+      ...(resetGuard ? { resetGuard } : {}),
     });
     if (this.frameMutationScanTimer === undefined) {
       this.frameMutationScanTimer = this.scheduleTimeout(() => {
@@ -3946,72 +4001,109 @@ export class DomTreeProvider {
   private processFrameMutationScanSlice(): void {
     let visitedNodes = 0;
     let operations = 0;
-    while (
-      this.pendingFrameMutationScans.length > 0 &&
-      visitedNodes < FRAME_MUTATION_SCAN_LIMIT &&
-      operations < FRAME_MUTATION_OPERATION_LIMIT
-    ) {
-      operations += 1;
-      const scan = this.pendingFrameMutationScans[0]!;
-      if (
-        scan.action === "register" &&
-        (
-          !this.rootObservers.has(scan.ownerRoot) ||
-          (
-            scan.root !== scan.ownerRoot &&
-            !containsNode(scan.ownerRoot, scan.root)
-          )
-        )
+    const previousGuard = this.activeFrameMutationScanGuard;
+    try {
+      while (
+        this.pendingFrameMutationScans.length > 0 &&
+        visitedNodes < FRAME_MUTATION_SCAN_LIMIT &&
+        operations < FRAME_MUTATION_OPERATION_LIMIT
       ) {
-        this.pendingFrameMutationScans.shift();
-        continue;
-      }
-      const entry = scan.stack[scan.stack.length - 1];
-      if (!entry) {
-        this.pendingFrameMutationScans.shift();
-        continue;
-      }
-      if (!entry.entered) {
-        entry.entered = true;
-        visitedNodes += 1;
-        if (
-          scan.action === "register" &&
-          this.isNodeExcluded(entry.node)
-        ) {
-          scan.stack.pop();
-          continue;
-        }
-        if (entry.node.nodeType === 1) {
-          const element = entry.node as Element;
-          if (isFrameElement(element)) {
-            if (scan.action === "register") {
-              this.registerDiscoveredFrame(element);
-            } else {
-              this.unregisterDiscoveredFrame(element);
+        operations += 1;
+        const scan = this.pendingFrameMutationScans[0]!;
+        const isCurrent = (): boolean => (
+          !this.disposed && (scan.resetGuard?.() ?? true)
+        );
+        const abandonIfStale = (): boolean => {
+          if (isCurrent()) return false;
+          for (
+            let index = this.pendingFrameMutationScans.length - 1;
+            index >= 0;
+            index -= 1
+          ) {
+            const candidate = this.pendingFrameMutationScans[index]!;
+            if (
+              candidate === scan ||
+              (
+                scan.resetGuard !== undefined &&
+                candidate.resetGuard === scan.resetGuard
+              )
+            ) {
+              this.pendingFrameMutationScans.splice(index, 1);
             }
           }
-          entry.shadowRoot = getOpenShadowRoot(element);
+          return true;
+        };
+        this.activeFrameMutationScanGuard = scan.resetGuard;
+        if (abandonIfStale()) continue;
+        if (scan.action === "register") {
+          const ownerObserved = this.rootObservers.has(scan.ownerRoot);
+          const rootAttached = scan.root === scan.ownerRoot ||
+            containsNode(scan.ownerRoot, scan.root);
+          if (abandonIfStale()) continue;
+          if (!ownerObserved || !rootAttached) {
+            this.pendingFrameMutationScans.shift();
+            continue;
+          }
         }
-        entry.childNodes = readChildNodes(entry.node);
-        entry.childCount = entry.childNodes?.length ?? 0;
-        continue;
-      }
-      if (entry.nextChildIndex < entry.childCount) {
-        const child = entry.childNodes?.[entry.nextChildIndex];
-        entry.nextChildIndex += 1;
-        if (child) {
-          scan.stack.push(createFrameTraversalEntry(child));
+        const entry = scan.stack[scan.stack.length - 1];
+        if (!entry) {
+          this.pendingFrameMutationScans.shift();
+          continue;
         }
-        continue;
-      }
-      if (!entry.shadowQueued) {
-        entry.shadowQueued = true;
-        if (entry.shadowRoot) {
-          scan.stack.push(createFrameTraversalEntry(entry.shadowRoot));
+        if (!entry.entered) {
+          entry.entered = true;
+          visitedNodes += 1;
+          if (scan.action === "register") {
+            const excluded = this.isNodeExcluded(entry.node);
+            if (abandonIfStale()) continue;
+            if (excluded) {
+              scan.stack.pop();
+              continue;
+            }
+          }
+          const nodeType = entry.node.nodeType;
+          if (abandonIfStale()) continue;
+          if (nodeType === 1) {
+            const element = entry.node as Element;
+            const frameElement = isFrameElement(element);
+            if (abandonIfStale()) continue;
+            if (frameElement) {
+              if (scan.action === "register") {
+                this.registerDiscoveredFrame(element, isCurrent);
+              } else {
+                this.unregisterDiscoveredFrame(element);
+              }
+              if (abandonIfStale()) continue;
+            }
+            entry.shadowRoot = getOpenShadowRoot(element);
+            if (abandonIfStale()) continue;
+          }
+          const childNodes = readChildNodes(entry.node);
+          if (abandonIfStale()) continue;
+          entry.childNodes = childNodes;
+          entry.childCount = childNodes?.length ?? 0;
+          continue;
         }
-        continue;
+        if (entry.nextChildIndex < entry.childCount) {
+          const child = entry.childNodes?.[entry.nextChildIndex];
+          if (abandonIfStale()) continue;
+          entry.nextChildIndex += 1;
+          if (child) {
+            scan.stack.push(createFrameTraversalEntry(child));
+          }
+          continue;
+        }
+        if (!entry.shadowQueued) {
+          entry.shadowQueued = true;
+          if (entry.shadowRoot) {
+            scan.stack.push(createFrameTraversalEntry(entry.shadowRoot));
+          }
+          continue;
+        }
+        scan.stack.pop();
       }
-      scan.stack.pop();
+    } finally {
+      this.activeFrameMutationScanGuard = previousGuard;
     }
     if (
       this.pendingFrameMutationScans.length > 0 &&
@@ -4066,7 +4158,9 @@ export class DomTreeProvider {
     description: FrameDescription,
     nodeRef?: string,
     activateSubtree = false,
+    isCurrent: () => boolean = () => !this.disposed,
   ): void {
+    if (!isCurrent()) return;
     const parentFrameRef = description.parentFrameRef;
     if (parentFrameRef === undefined) {
       throwDomTreeError("internal-error");
@@ -4087,7 +4181,7 @@ export class DomTreeProvider {
       !this.inactiveFrameRefs.has(description.frameRef)
     ) {
       this.frameDocumentsByRef.set(description.frameRef, description.document);
-      this.observeRoot(description.document);
+      this.observeRoot(description.document, isCurrent);
     }
   }
 
