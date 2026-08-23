@@ -2647,6 +2647,7 @@ describe("startPanelRuntime", () => {
         port.emitMessage(selectedA);
         port.emitMessage(inspectStarted("inspect-a", 4));
       }
+      port.emitMessage(selectedA);
       port.emitMessage(resolutionMessage({
         inspectMessageId: "inspect-a",
         resolutionGeneration: 5,
@@ -2677,6 +2678,97 @@ describe("startPanelRuntime", () => {
       runtime.dispose();
     },
   );
+
+  it("fully clears an inspect-first equal selection clear", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(inspectStarted("inspect-before-clear", 7));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-before-clear",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-before-clear", 5));
+    expect(runtime.sourcePaneController.open("match-1")).toBe(true);
+
+    port.emitMessage(selectionCleared("selected-r7", 7));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-before-clear",
+      resolutionGeneration: 6,
+      selectedMatchCount: 2,
+      document: { label: "late.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-before-clear", 6));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    const presentationCount = port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    )).length;
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    ))).toHaveLength(presentationCount);
+    runtime.dispose();
+  });
+
+  it("rejects an equal inspect after conflicting DOM identity", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-a",
+      "button#a.primary",
+      4,
+    ));
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-b",
+      "button#b.primary",
+      4,
+    ));
+
+    port.emitMessage(inspectStarted("inspect-conflict-b", 4));
+    port.emitMessage(resolutionMessage({
+      inspectMessageId: "inspect-conflict-b",
+      resolutionGeneration: 5,
+      selectedMatchCount: 2,
+      document: { label: "card.scss", languageId: "scss" },
+    }));
+    port.emitMessage(sourceMatches("inspect-conflict-b", 5));
+
+    expect(dom.element("selected-element-summary").value).toBe(
+      "Selected: button#a.primary",
+    );
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-a",
+    )).toBeDefined();
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-b",
+    )).toBeUndefined();
+    expect(dom.element("resolution-status").value).toBe(
+      "Select an element to inspect",
+    );
+    expect(runtime.sourcePaneController.open("match-1")).toBe(false);
+    const presentationCount = port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    )).length;
+    expect(runtime.settingsController.setIdeHighlightEnabled(false)).toBe(true);
+    expect(port.sent.filter((message) => (
+      isRecord(message) && message.type === "pin-op.presentation.settings"
+    ))).toHaveLength(presentationCount);
+    runtime.dispose();
+  });
 
   it("keeps an equal-revision selection clear authoritative", async () => {
     const runtime = createRuntime();
@@ -2868,6 +2960,53 @@ describe("startPanelRuntime", () => {
     expect(port.sent.filter((message) => (
       isRecord(message) && message.type === "pin-op.presentation.settings"
     ))).toHaveLength(presentationCount);
+    runtime.dispose();
+  });
+
+  it("preserves mismatch presentation when a newer selection clear arrives", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage(compatible());
+    port.emitMessage(tabState(true, true));
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "incompatible",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    });
+    port.emitMessage(selectionChangedWithRevision(
+      "selected-mismatch",
+      "button#mismatch",
+      4,
+    ));
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Extensions are incompatible",
+    );
+
+    port.emitMessage(selectionCleared("selected-mismatch", 7));
+
+    expect(dom.element("selected-element-summary").value).toBe("");
+    expect(dom.element("dom-tree-spacer").findByData(
+      "nodeRef",
+      "selected-mismatch",
+    )).toBeUndefined();
+    expect(dom.element("source-pane-root").text()).toContain(
+      "Extensions are incompatible",
+    );
+    expect(dom.element("source-pane-root").text()).not.toContain(
+      "Select an element to inspect",
+    );
     runtime.dispose();
   });
 

@@ -109,6 +109,61 @@ describe("DomTreeRecoveryCoordinator", () => {
     expect(nodeRefs(controller)).toEqual(["manual-root", "manual-selected"]);
   });
 
+  it("settles only the current recovery when the root request id factory throws", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [
+      node("old-selected", locator(1, 1)),
+    ], 4));
+    transport.cancellations.length = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({
+      controller,
+      transport,
+      createRequestId() {
+        throw new Error("request id unavailable");
+      },
+    });
+
+    await expect(coordinator.begin()).rejects.toThrow("request id unavailable");
+
+    expect(transport.requests).toEqual([]);
+    expect(controller.snapshot().recovering).toBe(false);
+    expect(controller.rows()).toEqual([]);
+    expect(transport.cancellations).toEqual([
+      "DOM tree recovery started",
+      "DOM recovery failed",
+    ]);
+  });
+
+  it.each(["cancel", "dispose"] as const)(
+    "does not request a root when the request id factory reentrantly %ss",
+    async (action) => {
+      const transport = new TestTransport();
+      const controller = createController(transport);
+      controller.handleEvent(selectionEvent(1, [
+        node("old-selected", locator(1, 1)),
+      ], 4));
+      let coordinator!: DomTreeRecoveryCoordinator;
+      coordinator = new DomTreeRecoveryCoordinator({
+        controller,
+        transport,
+        createRequestId() {
+          if (action === "cancel") {
+            coordinator.cancel("request id canceled");
+          } else {
+            coordinator.dispose();
+          }
+          return "root-after-cancel";
+        },
+      });
+
+      await coordinator.begin();
+
+      expect(transport.requests).toEqual([]);
+      expect(controller.snapshot().recovering).toBe(false);
+    },
+  );
+
   it("rejects a bounded locator response whose target omits recovery ownership", async () => {
     const transport = new TestTransport();
     const rootLocator = locator(1, 0);

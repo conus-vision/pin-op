@@ -54,12 +54,15 @@ export class DomTreeRecoveryCoordinator {
     if (!this.isActiveRecovery(token, contentSessionGeneration)) {
       return;
     }
-    const rootRequest: DomGetRootRequest = {
-      type: "dom.getRoot",
-      requestId: this.createRequestId(),
-    };
 
     try {
+      const rootRequest: DomGetRootRequest = {
+        type: "dom.getRoot",
+        requestId: this.createRequestId(),
+      };
+      if (!this.isActiveRecovery(token, contentSessionGeneration)) {
+        return;
+      }
       const rootResponse = await this.transport.request(rootRequest);
       if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;

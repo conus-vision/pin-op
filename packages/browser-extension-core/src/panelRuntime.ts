@@ -112,6 +112,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     readonly selectionRevision: number;
     readonly type: DomSelectionAuthorityEvent["type"];
     readonly fingerprint: string;
+    readonly conflicted: boolean;
   } | undefined;
   let activeInspectSelectionRevision: number | undefined;
   let settingsBinding: PanelSettingsBindingToken | undefined;
@@ -310,7 +311,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
           lastConsumedDomSelection?.documentEpoch === inspectDocumentEpoch &&
           lastConsumedDomSelection.selectionRevision ===
             inspectStarted.selectionRevision &&
-          lastConsumedDomSelection.type === "dom.selectionCleared"
+          (
+            lastConsumedDomSelection.type === "dom.selectionCleared" ||
+            lastConsumedDomSelection.conflicted
+          )
         )
       ) {
         return;
@@ -370,19 +374,18 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         }
       }
       treeController.handleEvent(domEvent);
-      if (
-        domEvent.type === "dom.selectionCleared" &&
-        selectionOwnership === "advanced"
-      ) {
+      if (domEvent.type === "dom.selectionCleared") {
         domRecoveryStatusGeneration += 1;
         activeInspectSelectionRevision = undefined;
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
-        sourcePaneView.setState({
-          kind: "empty",
-          statusText: "Select an element to inspect",
-        });
+        if (!mismatchBlocked) {
+          sourcePaneView.setState({
+            kind: "empty",
+            statusText: "Select an element to inspect",
+          });
+        }
         resetResolutionState();
       } else if (domEvent.type === "dom.selectionChanged") {
         const selected = domEvent.ancestorPath.at(-1);
@@ -704,15 +707,23 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       lastConsumed?.documentEpoch === event.documentEpoch &&
       lastConsumed.selectionRevision === event.selectionRevision
     ) {
-      return lastConsumed.fingerprint === fingerprint
-        ? "duplicate"
-        : "conflict";
+      if (lastConsumed.fingerprint === fingerprint) {
+        return "duplicate";
+      }
+      if (!lastConsumed.conflicted) {
+        lastConsumedDomSelection = Object.freeze({
+          ...lastConsumed,
+          conflicted: true,
+        });
+      }
+      return "conflict";
     }
     lastConsumedDomSelection = Object.freeze({
       documentEpoch: event.documentEpoch,
       selectionRevision: event.selectionRevision,
       type: event.type,
       fingerprint,
+      conflicted: false,
     });
     return ownership;
   }
