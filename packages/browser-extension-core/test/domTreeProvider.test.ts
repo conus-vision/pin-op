@@ -5651,6 +5651,111 @@ describe("DomTreeProvider", () => {
     expect(harness.pendingTimerCount()).toBe(0);
   });
 
+  it("fails closed when a removed registered frame hides its tag name", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(frame);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [frame]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(frame);
+    Object.defineProperty(frame, "tagName", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile removed frame tag name");
+      },
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [frame]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("fails closed when a removed shadow host hides a registered frame", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const host = createElement("section", document);
+    const shadowRoot = host.attachShadow();
+    const frame = createFrameElement(document, childDocument);
+    shadowRoot.append(frame);
+    const harness = createProviderHarness(document);
+    document.documentElement.append(host);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [host]),
+    ]);
+    harness.flushTimers();
+    expect(frame.loadListenerCount).toBe(1);
+
+    document.documentElement.remove(host);
+    Object.defineProperty(host, "shadowRoot", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile removed shadow root");
+      },
+    });
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [host]),
+    ]);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it("conservatively skips unreadable added frame topology", () => {
+    const document = createDocument();
+    const frameDocument = createDocument();
+    const hiddenFrameDocument = createDocument();
+    const frame = createFrameElement(document, frameDocument);
+    const host = createElement("section", document);
+    host.attachShadow().append(createFrameElement(document, hiddenFrameDocument));
+    Object.defineProperty(frame, "tagName", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile added frame tag name");
+      },
+    });
+    Object.defineProperty(host, "shadowRoot", {
+      configurable: true,
+      get: () => {
+        throw new Error("hostile added shadow root");
+      },
+    });
+    const harness = createProviderHarness(document);
+    document.documentElement.append(frame);
+    document.documentElement.append(host);
+
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [frame, host]),
+    ]);
+    expect(() => harness.flushTimers()).not.toThrow();
+
+    expect(() => harness.provider.getRoot()).not.toThrow();
+    expect(frame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      frameDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      hiddenFrameDocument as unknown as Document,
+    )).toBeUndefined();
+  });
+
   it("conservatively skips an unreadable added frame subtree", () => {
     const document = createDocument();
     const childDocument = createDocument();

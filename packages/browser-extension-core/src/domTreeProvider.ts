@@ -4603,17 +4603,27 @@ export class DomTreeProvider {
           if (abandonIfStale()) continue;
           if (nodeType === 1) {
             const element = entry.node as Element;
-            const frameElement = isFrameElement(element);
+            const frameElementRead = readFrameTraversalFrameElement(element);
+            if (!frameElementRead.ok) {
+              if (rejectTraversalRead()) return;
+              continue;
+            }
+            const frameElement = frameElementRead.value;
             if (abandonIfStale()) continue;
             if (frameElement) {
               if (scan.action === "register") {
-                this.registerDiscoveredFrame(element, isCurrent);
+                this.registerDiscoveredFrame(frameElement, isCurrent);
               } else {
-                this.unregisterDiscoveredFrame(element);
+                this.unregisterDiscoveredFrame(frameElement);
               }
               if (abandonIfStale()) continue;
             }
-            entry.shadowRoot = getOpenShadowRoot(element);
+            const shadowRootRead = readFrameTraversalOpenShadowRoot(element);
+            if (!shadowRootRead.ok) {
+              if (rejectTraversalRead()) return;
+              continue;
+            }
+            entry.shadowRoot = shadowRootRead.value;
             if (abandonIfStale()) continue;
           }
           const childListRead = readFrameTraversalChildList(entry.node);
@@ -5140,6 +5150,43 @@ function readFrameTraversalNodeType(
     return typeof nodeType === "number" && Number.isSafeInteger(nodeType)
       ? { ok: true, value: nodeType }
       : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readFrameTraversalFrameElement(
+  element: Element,
+): FrameTraversalRead<HTMLIFrameElement | undefined> {
+  try {
+    const tagName = (element as { readonly tagName?: unknown }).tagName;
+    if (typeof tagName !== "string") return { ok: false };
+    return {
+      ok: true,
+      value: tagName.toUpperCase() === "IFRAME"
+        ? element as HTMLIFrameElement
+        : undefined,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readFrameTraversalOpenShadowRoot(
+  element: Element,
+): FrameTraversalRead<ShadowRoot | undefined> {
+  try {
+    const shadowRoot = (element as { readonly shadowRoot?: unknown }).shadowRoot;
+    if (shadowRoot === null || shadowRoot === undefined) {
+      return { ok: true, value: undefined };
+    }
+    if (typeof shadowRoot !== "object") return { ok: false };
+    const mode = (shadowRoot as { readonly mode?: unknown }).mode;
+    if (typeof mode !== "string") return { ok: false };
+    return {
+      ok: true,
+      value: mode === "open" ? shadowRoot as ShadowRoot : undefined,
+    };
   } catch {
     return { ok: false };
   }
