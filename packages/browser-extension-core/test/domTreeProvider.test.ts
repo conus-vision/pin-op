@@ -482,6 +482,142 @@ describe("DomTreeProvider", () => {
       .toBe(true);
   });
 
+  it("bounds attribute-heavy child envelopes with one whole-response scan", () => {
+    const document = createDocument();
+    const attributeNames = Array.from(
+      { length: 16 },
+      (_, index) => `data-payload-${String(index).padStart(2, "0")}`,
+    );
+    const attributeValue = `${"v".repeat(2_047)}😀`;
+    for (let nodeIndex = 0; nodeIndex < 8; nodeIndex += 1) {
+      const child = createElement("article", document);
+      for (const name of attributeNames) child.setAttribute(name, attributeValue);
+      document.documentElement.append(child);
+    }
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    const work = measureDomEnvelopeSerialization("dom.children", () => (
+      provider.getChildren({
+        type: "dom.getChildren",
+        requestId: "bounded-children-work",
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      })
+    ));
+    const repeated = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "bounded-children-work",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    expect(work.envelopeCalls).toBeLessThanOrEqual(1);
+    expect(work.envelopeBytes).toBeLessThanOrEqual(
+      DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+    );
+    expect(utf8ByteLength(JSON.stringify(work.result))).toBeLessThanOrEqual(
+      DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+    );
+    expect(() => parseDomResponse(work.result)).not.toThrow();
+    expect(Object.isFrozen(work.result)).toBe(true);
+    expect(Object.isFrozen(work.result.nodes)).toBe(true);
+    expect(work.result.nodes).toEqual(repeated.nodes);
+    expect(work.result.nodes.some((node) => node.attributes.length === 16)).toBe(true);
+    expect(work.result.nodes.some((node) => node.attributes.length < 16)).toBe(true);
+    for (const node of work.result.nodes) {
+      expect(Object.isFrozen(node)).toBe(true);
+      expect(Object.isFrozen(node.attributes)).toBe(true);
+      expect(node.attributes.map(({ name }) => name)).toEqual(
+        attributeNames.slice(0, node.attributes.length),
+      );
+      for (const attribute of node.attributes) {
+        expect(Object.isFrozen(attribute)).toBe(true);
+        expect(attribute.value).toBe(attributeValue);
+        expect(containsUnpairedSurrogate(attribute.value)).toBe(false);
+      }
+    }
+  });
+
+  it("bounds attribute-heavy root envelopes with one whole-response scan", () => {
+    const document = createDocument();
+    const attributeNames = Array.from(
+      { length: 64 },
+      (_, index) => `data-root-${String(index).padStart(2, "0")}`,
+    );
+    const attributeValue = `${"r".repeat(2_047)}😀`;
+    for (const name of attributeNames) {
+      document.documentElement.setAttribute(name, attributeValue);
+    }
+    const provider = createProvider(document);
+
+    const work = measureDomEnvelopeSerialization("dom.root", () => provider.getRoot());
+    const repeated = provider.getRoot();
+
+    expect(work.envelopeCalls).toBeLessThanOrEqual(1);
+    expect(work.envelopeBytes).toBeLessThanOrEqual(
+      DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+    );
+    expect(utf8ByteLength(JSON.stringify(work.result))).toBeLessThanOrEqual(
+      DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+    );
+    expect(() => parseDomResponse(work.result)).not.toThrow();
+    expect(Object.isFrozen(work.result)).toBe(true);
+    expect(Object.isFrozen(work.result.node)).toBe(true);
+    expect(Object.isFrozen(work.result.node.attributes)).toBe(true);
+    expect(work.result.node).toEqual(repeated.node);
+    expect(work.result.node.attributes.length).toBeGreaterThan(0);
+    expect(work.result.node.attributes.length).toBeLessThan(64);
+    expect(work.result.node.attributes.map(({ name }) => name)).toEqual(
+      attributeNames.slice(0, work.result.node.attributes.length),
+    );
+    for (const attribute of work.result.node.attributes) {
+      expect(Object.isFrozen(attribute)).toBe(true);
+      expect(attribute.value).toBe(attributeValue);
+      expect(containsUnpairedSurrogate(attribute.value)).toBe(false);
+    }
+  });
+
+  it("paginates every row exactly once when mandatory labels force envelope row drops", () => {
+    const document = createDocument();
+    for (let index = 0; index < 50; index += 1) {
+      document.documentElement.append(createText(
+        `${String(index).padStart(2, "0")}${"\u0000".repeat(498)}`,
+      ));
+    }
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+    const nodeRefs: string[] = [];
+    let cursor: string | undefined;
+    let pageIndex = 0;
+    do {
+      const response = provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `row-drop-${pageIndex}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(() => parseDomResponse(response)).not.toThrow();
+      expect(utf8ByteLength(JSON.stringify(response))).toBeLessThanOrEqual(
+        DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+      );
+      expect(Object.isFrozen(response)).toBe(true);
+      expect(Object.isFrozen(response.nodes)).toBe(true);
+      expect(response.nodes.length).toBeGreaterThan(0);
+      if (pageIndex === 0) expect(response.nodes.length).toBeLessThan(50);
+      nodeRefs.push(...response.nodes.map(({ nodeRef }) => nodeRef));
+      cursor = response.nextCursor;
+      pageIndex += 1;
+    } while (cursor);
+
+    expect(nodeRefs).toHaveLength(50);
+    expect(new Set(nodeRefs).size).toBe(50);
+  });
+
   it("reserves the root envelope for a maximally escaped request identifier", () => {
     const document = createDocument();
     for (let index = 0; index < 64; index += 1) {
@@ -8373,6 +8509,40 @@ function createDocumentType(
   systemId = "",
 ): FakeDocumentType {
   return new FakeDocumentType(name, publicId, systemId);
+}
+
+function measureDomEnvelopeSerialization<Result>(
+  type: "dom.root" | "dom.children",
+  operation: () => Result,
+): {
+  readonly result: Result;
+  readonly envelopeCalls: number;
+  readonly envelopeBytes: number;
+} {
+  const originalStringify = JSON.stringify;
+  let envelopeCalls = 0;
+  let envelopeBytes = 0;
+  const stringify = ((value: unknown): string | undefined => {
+    const serialized = originalStringify(value);
+    if (
+      serialized !== undefined &&
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === type
+    ) {
+      envelopeCalls += 1;
+      envelopeBytes += utf8ByteLength(serialized);
+    }
+    return serialized;
+  }) as typeof JSON.stringify;
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation(stringify);
+  try {
+    const result = operation();
+    return { result, envelopeCalls, envelopeBytes };
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 function endsWithUnpairedSurrogate(value: string): boolean {

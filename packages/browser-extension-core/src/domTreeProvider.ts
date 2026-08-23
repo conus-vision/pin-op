@@ -13,6 +13,7 @@ import {
   type TopViewportRect,
   type ViewportRect,
 } from "./frameRegistry.js";
+import { utf8ByteLength } from "@pin-op/protocol";
 import {
   boundDomNodeViewPathForEnvelope,
   domProtocolEnvelopeWithinBudget,
@@ -1429,40 +1430,54 @@ export class DomTreeProvider {
   }
 
   private boundRootResponse(response: DomRootResponse): DomRootResponse {
-    let node = response.node;
-    let prologue = [...response.prologue];
-    let epilogue = [...response.epilogue];
+    let node = sizeDomNodeView(response.node);
+    let prologue = response.prologue.map(sizeDomNodeView);
+    let epilogue = response.epilogue.map(sizeDomNodeView);
     const limit = DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES -
       DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH * 6 - 64;
-    let candidate = freezeRootResponse(response, node, prologue, epilogue);
-    while (!serializedWithinBudget(candidate, limit)) {
-      let changed = false;
+    let serializedBytes = serializedRootResponseByteLength(
+      response,
+      node.serializedBytes,
+      prologue.map(({ serializedBytes }) => serializedBytes),
+      epilogue.map(({ serializedBytes }) => serializedBytes),
+    );
+    if (serializedBytes > limit) {
       const all = [node, ...prologue, ...epilogue];
-      for (let index = all.length - 1; index >= 0; index -= 1) {
-        const reduced = reduceOptionalNodeSnapshot(all[index]!);
-        if (reduced !== all[index]) {
-          if (index === 0) {
-            node = reduced;
-          } else if (index <= prologue.length) {
-            prologue[index - 1] = reduced;
-          } else {
-            epilogue[index - prologue.length - 1] = reduced;
-          }
-          changed = true;
-          break;
-        }
+      for (
+        let index = all.length - 1;
+        index >= 0 && serializedBytes > limit;
+        index -= 1
+      ) {
+        const before = all[index]!;
+        const reduced = reduceSizedOptionalNodeSnapshot(
+          before,
+          serializedBytes - limit,
+        );
+        all[index] = reduced;
+        serializedBytes -= before.serializedBytes - reduced.serializedBytes;
       }
-      if (!changed) {
-        if (epilogue.length > 0) {
-          epilogue.pop();
-        } else if (prologue.length > 0) {
-          prologue.pop();
-        } else {
-          throwDomTreeError("node-unavailable");
-        }
-      }
-      candidate = freezeRootResponse(response, node, prologue, epilogue);
+      node = all[0]!;
+      prologue = all.slice(1, response.prologue.length + 1);
+      epilogue = all.slice(response.prologue.length + 1);
     }
+    while (serializedBytes > limit) {
+      if (epilogue.length > 0) {
+        const removed = epilogue.pop()!;
+        serializedBytes -= removed.serializedBytes + (epilogue.length > 0 ? 1 : 0);
+      } else if (prologue.length > 0) {
+        const removed = prologue.pop()!;
+        serializedBytes -= removed.serializedBytes + (prologue.length > 0 ? 1 : 0);
+      } else {
+        throwDomTreeError("node-unavailable");
+      }
+    }
+    const candidate = freezeRootResponse(
+      response,
+      node.view,
+      prologue.map(({ view }) => view),
+      epilogue.map(({ view }) => view),
+    );
+    if (!serializedWithinBudget(candidate, limit)) throwDomTreeError("node-unavailable");
     return candidate;
   }
 
@@ -1473,35 +1488,54 @@ export class DomTreeProvider {
     readonly nodes: readonly DomNodeView[];
     readonly needsCursor: boolean;
   } {
-    const nodes = [...response.nodes];
+    const nodes = response.nodes.map(sizeDomNodeView);
     let needsCursor = hasMore;
-    const candidateResponse = (): DomChildrenResponse => freezeChildrenResponse({
-      ...response,
-      ...(needsCursor ? { nextCursor: "cursor-9007199254740991" } : {}),
-    }, nodes);
-    let candidate = candidateResponse();
-    while (!serializedWithinBudget(candidate)) {
-      let changed = false;
-      for (let index = nodes.length - 1; index >= 0; index -= 1) {
-        const reduced = reduceOptionalNodeSnapshot(nodes[index]!);
-        if (reduced !== nodes[index]) {
-          nodes[index] = reduced;
-          changed = true;
-          break;
-        }
+    let sizingCursor = needsCursor
+      ? "cursor-9007199254740991"
+      : response.nextCursor;
+    let serializedBytes = serializedChildrenResponseByteLength(
+      response,
+      nodes.map(({ serializedBytes }) => serializedBytes),
+      sizingCursor,
+    );
+    if (serializedBytes > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES) {
+      for (
+        let index = nodes.length - 1;
+        index >= 0 && serializedBytes > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES;
+        index -= 1
+      ) {
+        const before = nodes[index]!;
+        const reduced = reduceSizedOptionalNodeSnapshot(
+          before,
+          serializedBytes - DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
+        );
+        nodes[index] = reduced;
+        serializedBytes -= before.serializedBytes - reduced.serializedBytes;
       }
-      if (!changed && !needsCursor) {
-        needsCursor = true;
-        changed = true;
-      }
-      if (!changed && nodes.length > 1) {
-        nodes.pop();
-        changed = true;
-      }
-      if (!changed) throwDomTreeError("node-unavailable");
-      candidate = candidateResponse();
     }
-    return Object.freeze({ nodes: candidate.nodes, needsCursor });
+    if (serializedBytes > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES && !needsCursor) {
+      needsCursor = true;
+      sizingCursor = "cursor-9007199254740991";
+      serializedBytes = serializedChildrenResponseByteLength(
+        response,
+        nodes.map(({ serializedBytes }) => serializedBytes),
+        sizingCursor,
+      );
+    }
+    while (
+      serializedBytes > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES &&
+      nodes.length > 1
+    ) {
+      const removed = nodes.pop()!;
+      serializedBytes -= removed.serializedBytes + (nodes.length > 0 ? 1 : 0);
+    }
+    if (serializedBytes > DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES) {
+      throwDomTreeError("node-unavailable");
+    }
+    return Object.freeze({
+      nodes: Object.freeze(nodes.map(({ view }) => view)),
+      needsCursor,
+    });
   }
 
   private referenceNode(node: Node, scope: NodeScope): string {
@@ -4410,6 +4444,137 @@ function isRecoverableKind(
   kind: DomNodeView["kind"],
 ): kind is DomStableLocator["targetKind"] {
   return kind === "element" || kind === "shadow-root" || kind === "frame-document";
+}
+
+interface SizedDomNodeView {
+  readonly view: DomNodeView;
+  readonly serializedBytes: number;
+}
+
+function sizeDomNodeView(view: DomNodeView): SizedDomNodeView {
+  return Object.freeze({
+    view,
+    serializedBytes: requiredSerializedUtf8ByteLength(view),
+  });
+}
+
+function reduceSizedOptionalNodeSnapshot(
+  sized: SizedDomNodeView,
+  requiredSavings: number,
+): SizedDomNodeView {
+  let view = sized.view;
+  let serializedBytes = sized.serializedBytes;
+  if (view.attributes.length > 0) {
+    let retainedAttributeCount = view.attributes.length;
+    let attributeSavings = 0;
+    while (
+      retainedAttributeCount > 0 &&
+      attributeSavings < requiredSavings
+    ) {
+      const attribute = view.attributes[retainedAttributeCount - 1]!;
+      attributeSavings += requiredSerializedUtf8ByteLength(attribute) +
+        (retainedAttributeCount > 1 ? 1 : 0);
+      retainedAttributeCount -= 1;
+    }
+    view = Object.freeze({
+      ...view,
+      attributes: Object.freeze(view.attributes.slice(0, retainedAttributeCount)),
+    });
+    serializedBytes -= attributeSavings;
+    if (sized.serializedBytes - serializedBytes >= requiredSavings) {
+      return Object.freeze({ view, serializedBytes });
+    }
+  }
+
+  // After attributes, only four optional fields remain. Reserializing after each
+  // removal is a fixed bound independent of page-controlled collection sizes.
+  while (sized.serializedBytes - serializedBytes < requiredSavings) {
+    const reduced = reduceOptionalNodeSnapshot(view);
+    if (reduced === view) break;
+    const reducedBytes = requiredSerializedUtf8ByteLength(reduced);
+    if (reducedBytes > serializedBytes) throwDomTreeError("node-unavailable");
+    view = reduced;
+    serializedBytes = reducedBytes;
+  }
+  return Object.freeze({ view, serializedBytes });
+}
+
+function serializedRootResponseByteLength(
+  response: DomRootResponse,
+  nodeBytes: number,
+  prologueBytes: readonly number[],
+  epilogueBytes: readonly number[],
+): number {
+  return serializedJsonObjectByteLength([
+    serializedJsonMemberByteLength("type", response.type),
+    serializedJsonMemberByteLength("requestId", response.requestId),
+    serializedJsonMemberByteLength("documentEpoch", response.documentEpoch),
+    serializedKnownJsonMemberByteLength("node", nodeBytes),
+    serializedKnownJsonMemberByteLength(
+      "prologue",
+      serializedJsonArrayByteLength(prologueBytes),
+    ),
+    serializedKnownJsonMemberByteLength(
+      "epilogue",
+      serializedJsonArrayByteLength(epilogueBytes),
+    ),
+  ]);
+}
+
+function serializedChildrenResponseByteLength(
+  response: DomChildrenResponse,
+  nodeBytes: readonly number[],
+  nextCursor: string | undefined,
+): number {
+  const members = [
+    serializedJsonMemberByteLength("type", response.type),
+    serializedJsonMemberByteLength("requestId", response.requestId),
+    serializedJsonMemberByteLength("documentEpoch", response.documentEpoch),
+    serializedJsonMemberByteLength("nodeRef", response.nodeRef),
+    serializedJsonMemberByteLength("branchRevision", response.branchRevision),
+    serializedKnownJsonMemberByteLength(
+      "nodes",
+      serializedJsonArrayByteLength(nodeBytes),
+    ),
+  ];
+  if (nextCursor !== undefined) {
+    members.push(serializedJsonMemberByteLength("nextCursor", nextCursor));
+  }
+  return serializedJsonObjectByteLength(members);
+}
+
+function serializedJsonObjectByteLength(memberBytes: readonly number[]): number {
+  return 2 + memberBytes.reduce((total, bytes) => total + bytes, 0) +
+    Math.max(0, memberBytes.length - 1);
+}
+
+function serializedJsonArrayByteLength(itemBytes: readonly number[]): number {
+  return 2 + itemBytes.reduce((total, bytes) => total + bytes, 0) +
+    Math.max(0, itemBytes.length - 1);
+}
+
+function serializedJsonMemberByteLength(name: string, value: unknown): number {
+  return serializedKnownJsonMemberByteLength(
+    name,
+    requiredSerializedUtf8ByteLength(value),
+  );
+}
+
+function serializedKnownJsonMemberByteLength(
+  name: string,
+  valueBytes: number,
+): number {
+  return requiredSerializedUtf8ByteLength(name) + 1 + valueBytes;
+}
+
+function requiredSerializedUtf8ByteLength(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === "string") return utf8ByteLength(serialized);
+  } catch {
+    // Fall through to the same fail-closed provider error as envelope validation.
+  }
+  throwDomTreeError("node-unavailable");
 }
 
 function reduceOptionalNodeSnapshot(node: DomNodeView): DomNodeView {
