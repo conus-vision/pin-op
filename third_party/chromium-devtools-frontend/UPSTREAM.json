@@ -22,7 +22,7 @@
         {
           "path": "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
           "changeRecord": "PIN_OP_CHANGES.md#dom-tree",
-          "localSha256": "79a0fa7029445bce91889af6b21fea3d4e0350220150fe00478063979610aae5"
+          "localSha256": "13a888ecc9cf4faec200bcb6a0149c0de7ae726a7406c95b94201f5b69f75d40"
         }
       ]
     },

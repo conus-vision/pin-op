@@ -63,12 +63,12 @@ const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
   { browser: "chrome", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" },
   { browser: "chrome", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" },
   { browser: "chrome", path: "dist/devtools.js", sha256: "ac0f61ea56f48a815079b66b0a74dc03d6805ad6270ac87787bb6d93168d06ad" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "9920d4e4b8b67a98a98c112039f00598720b1b00cfbd277dbfcc7223fda6d92e" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" },
   { browser: "chrome", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" },
   { browser: "firefox", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" },
   { browser: "firefox", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" },
   { browser: "firefox", path: "dist/devtools.js", sha256: "0ab26b2a545063cf09643e3466da9d7c7842454e883d310f9240ea1c82a82144" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "9920d4e4b8b67a98a98c112039f00598720b1b00cfbd277dbfcc7223fda6d92e" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" },
   { browser: "firefox", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" },
 ]);
 

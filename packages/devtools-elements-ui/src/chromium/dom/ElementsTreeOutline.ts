@@ -58,13 +58,30 @@ const TREE_ROW_HEIGHT_PX = 20;
 const TREE_OVERSCAN_ROWS = 2;
 const ZERO_HEIGHT_FALLBACK_ROWS = 32;
 const MAX_VIRTUAL_EXTENT_PX = 33_554_432;
-const MAX_VIRTUAL_SPACER_ROWS = Math.floor(MAX_VIRTUAL_EXTENT_PX / TREE_ROW_HEIGHT_PX);
-const VIRTUAL_SPACER_ROW_SPANS = Object.freeze(
-  Array.from(
-    { length: Math.floor(Math.log2(MAX_VIRTUAL_SPACER_ROWS)) + 1 },
-    (_, index) => 2 ** (Math.floor(Math.log2(MAX_VIRTUAL_SPACER_ROWS)) - index),
-  ),
-);
+const MAX_VIRTUAL_SPACER_ROWS = 1_677_721;
+const VIRTUAL_SPACER_ROW_SPANS = [
+  1_048_576,
+  524_288,
+  262_144,
+  131_072,
+  65_536,
+  32_768,
+  16_384,
+  8_192,
+  4_096,
+  2_048,
+  1_024,
+  512,
+  256,
+  128,
+  64,
+  32,
+  16,
+  8,
+  4,
+  2,
+  1,
+] as const;
 
 export interface ElementsTreeOutlineOptions {
   readonly maxVisibleRows?: number;
