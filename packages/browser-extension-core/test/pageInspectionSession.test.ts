@@ -325,6 +325,46 @@ describe("PageInspectionSession", () => {
     });
   });
 
+  it("carries a published same-document root replacement into the controller", async () => {
+    let controller: DomTreeController | undefined;
+    const harness = createSessionHarness({
+      onEvent: (event) => controller?.handleEvent(event),
+    });
+    const requests: DomRequest[] = [];
+    controller = new DomTreeController({
+      transport: {
+        request: async (request) => {
+          requests.push(request);
+          const response = await harness.session.handle(request);
+          if (Array.isArray(response)) {
+            throw new Error("Expected a DOM response");
+          }
+          return response as DomResponse;
+        },
+        dispatch: () => undefined,
+        cancelPending: () => undefined,
+      },
+      createRequestId: () => `root-switch-${requests.length + 1}`,
+    });
+    await controller.loadRoot();
+    expect(controller.rows().map(({ nodeRef }) => nodeRef)).toEqual(["node-1"]);
+
+    harness.provider.rootNode = nodeView("replacement-root", "replacement");
+    harness.provider.emitInvalidation("node-1", 2);
+    harness.provider.emitMutationSettled();
+    await flushAsync();
+
+    expect(requests.filter(({ type }) => type === "dom.getRoot")).toHaveLength(2);
+    expect(controller.documentEpoch).toBe(3);
+    expect(controller.rows().map(({ nodeRef }) => nodeRef))
+      .toEqual(["replacement-root"]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 3,
+      focusedRef: "replacement-root",
+    });
+    expect(controller.snapshot().errorCode).toBeUndefined();
+  });
+
   it("uses one selection path for page clicks and tree commands", async () => {
     const harness = createSessionHarness();
     harness.session.enablePicker();
@@ -1793,6 +1833,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   public revealCount = 0;
   public resetCount = 0;
   public rootError: unknown;
+  public rootNode = nodeView("node-1", "html");
   public locatorError: unknown;
   public locatorResolution: {
     readonly node: DomNodeView;
@@ -1927,7 +1968,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
       type: "dom.root",
       requestId: "root",
       documentEpoch: this.currentDocumentEpoch,
-      node: nodeView("node-1", "html"),
+      node: this.rootNode,
       prologue: Object.freeze([]),
       epilogue: Object.freeze([]),
     });

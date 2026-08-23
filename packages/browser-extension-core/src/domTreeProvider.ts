@@ -220,6 +220,11 @@ interface SelectedNodeRefRead {
   readonly nodeRef: string | undefined;
 }
 
+interface PublishedRootPresentation {
+  readonly nodeRef: string;
+  readonly branchRevision: number;
+}
+
 interface ProviderMaterializationMetadata {
   readonly records: readonly (readonly [string, NodeRecord])[];
   readonly branchGenerations: readonly (readonly [string, number])[];
@@ -239,6 +244,7 @@ interface ProviderMaterializationMetadata {
   readonly pendingMutations: readonly PendingMutationRecord[];
   readonly pendingFrameMutationScans: readonly PendingFrameMutationScan[];
   readonly pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
+  readonly publishedRootPresentation: PublishedRootPresentation | undefined;
   readonly mutationTimer: DomTreeTimerHandle | undefined;
   readonly frameMutationScanTimer: DomTreeTimerHandle | undefined;
   readonly shadowScanTimer: DomTreeTimerHandle | undefined;
@@ -354,6 +360,7 @@ export class DomTreeProvider {
   private shadowScanOffset = 0;
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
+  private publishedRootPresentation: PublishedRootPresentation | undefined;
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -523,7 +530,23 @@ export class DomTreeProvider {
         [...response.prologue, ...response.epilogue],
         response.documentEpoch,
       );
-      if (!operation.publish(validate) || !operation.finalize(validate)) {
+      if (!operation.publish(validate) || !operation.finalize(validate, () => {
+        const previousRootRef = this.publishedRootPresentation?.nodeRef;
+        if (
+          previousRootRef &&
+          previousRootRef !== response.node.nodeRef &&
+          !this.records.has(previousRootRef) &&
+          !this.expandedBranches.has(previousRootRef)
+        ) {
+          this.branchGenerations.delete(previousRootRef);
+          this.exhaustedBranches.delete(previousRootRef);
+        }
+        this.publishedRootPresentation = Object.freeze({
+          nodeRef: response.node.nodeRef,
+          branchRevision: response.node.branchRevision,
+        });
+        return true;
+      })) {
         throwDomTreeError("node-unavailable");
       }
       committed = true;
@@ -1085,6 +1108,7 @@ export class DomTreeProvider {
     this.pendingMutations.length = 0;
     this.pendingFrameMutationScans.length = 0;
     this.pendingSelectedRemoval = undefined;
+    this.publishedRootPresentation = undefined;
     this.shadowScanOffset = 0;
     this.topDocument = topDocument;
     this.documentEpoch = documentEpoch;
@@ -1188,6 +1212,7 @@ export class DomTreeProvider {
     this.pendingMutations.length = 0;
     this.pendingFrameMutationScans.length = 0;
     this.pendingSelectedRemoval = undefined;
+    this.publishedRootPresentation = undefined;
     this.frameTracking = false;
   }
 
@@ -2037,7 +2062,9 @@ export class DomTreeProvider {
 
   private mutationTargetRef(target: Node): string | undefined {
     const direct = this.refsByNode.get(target);
-    if (direct || target !== this.topDocument) return direct;
+    if (target !== this.topDocument) return direct;
+    const publishedRootRef = this.publishedRootPresentation?.nodeRef;
+    if (publishedRootRef) return publishedRootRef;
     try {
       const documentElement = this.topDocument.documentElement;
       return documentElement
@@ -2092,7 +2119,11 @@ export class DomTreeProvider {
       branches.push({
         nodeRef,
         ...(branch ? { branch } : {}),
-        revision: branch?.revision ?? this.branchGenerations.get(nodeRef) ?? 1,
+        revision: branch?.revision ??
+          this.branchGenerations.get(nodeRef) ??
+          (this.publishedRootPresentation?.nodeRef === nodeRef
+            ? this.publishedRootPresentation.branchRevision
+            : 1),
       });
     };
     for (const nodeRef of nodeRefs) {
@@ -2117,6 +2148,12 @@ export class DomTreeProvider {
       const revision = entry.revision + 1;
       if (entry.branch) entry.branch.revision = revision;
       this.branchGenerations.set(entry.nodeRef, revision);
+      if (this.publishedRootPresentation?.nodeRef === entry.nodeRef) {
+        this.publishedRootPresentation = Object.freeze({
+          nodeRef: entry.nodeRef,
+          branchRevision: revision,
+        });
+      }
     }
     const invalidatedRefs = new Set(branches.map(({ nodeRef }) => nodeRef));
     for (const [cursor, record] of this.cursors) {
@@ -2150,6 +2187,9 @@ export class DomTreeProvider {
   private branchRevisionFor(nodeRef: string): number {
     return this.expandedBranches.get(nodeRef)?.revision
       ?? this.branchGenerations.get(nodeRef)
+      ?? (this.publishedRootPresentation?.nodeRef === nodeRef
+        ? this.publishedRootPresentation.branchRevision
+        : undefined)
       ?? 1;
   }
 
@@ -3035,6 +3075,7 @@ export class DomTreeProvider {
         this.pendingFrameMutationScans,
       ),
       pendingSelectedRemoval: this.pendingSelectedRemoval,
+      publishedRootPresentation: this.publishedRootPresentation,
       mutationTimer: this.mutationTimer,
       frameMutationScanTimer: this.frameMutationScanTimer,
       shadowScanTimer: this.shadowScanTimer,
@@ -3066,6 +3107,7 @@ export class DomTreeProvider {
       ...snapshotPendingFrameMutationScans(snapshot.pendingFrameMutationScans),
     );
     this.pendingSelectedRemoval = snapshot.pendingSelectedRemoval;
+    this.publishedRootPresentation = snapshot.publishedRootPresentation;
     this.mutationTimer = snapshot.mutationTimer;
     this.frameMutationScanTimer = snapshot.frameMutationScanTimer;
     this.shadowScanTimer = snapshot.shadowScanTimer;

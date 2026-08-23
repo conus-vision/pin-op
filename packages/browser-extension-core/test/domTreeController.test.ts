@@ -432,6 +432,234 @@ describe("DomTreeController", () => {
       });
   });
 
+  it.each(["root-first", "children-first"] as const)(
+    "atomically adopts a correlated same-epoch replacement root when %s settles",
+    async (order) => {
+      const transport = new TestTransport();
+      const oldRoot = locatedNode("old-root", locator(1), true, 1);
+      const oldChild = locatedNode("old-child", locator(2), false, 1);
+      transport.enqueue(rootResponse(oldRoot));
+      transport.enqueue(childrenResponse(oldRoot.nodeRef, 1, [oldChild], "old-cursor"));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      await controller.expand(oldRoot.nodeRef);
+      controller.handleEvent(selectionEvent(1, [oldRoot, oldChild]));
+      controller.handleEvent({
+        type: "dom.hoverChanged",
+        documentEpoch: 1,
+        nodeRef: oldChild.nodeRef,
+        summary: "old hover",
+      });
+
+      const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+      const staleOldChild = locatedNode("stale-old-child", locator(2, 1));
+      const freshChild = locatedNode("fresh-child", locator(2, 2));
+      const replacementResponse = deferred<DomResponse>();
+      const oldChildResponse = deferred<DomResponse>();
+      transport.enqueue(replacementResponse.promise);
+      transport.enqueue(oldChildResponse.promise);
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      const originalBatchId = controllerState(controller).branches
+        .get(oldRoot.nodeRef)?.pending?.reconciliationBatchId;
+      expect(originalBatchId).toEqual(expect.any(Number));
+
+      const freshChildren = deferred<DomResponse>();
+      transport.enqueue(freshChildren.promise);
+      if (order === "children-first") {
+        oldChildResponse.resolve(childrenResponse(
+          oldRoot.nodeRef,
+          2,
+          [staleOldChild],
+        ));
+        await flushAsync();
+      }
+      replacementResponse.resolve(rootResponse(
+        replacementRoot,
+        1,
+        [displayNode("new-doctype", "document-type", "html")],
+        [displayNode("new-trailing", "comment", "after")],
+      ));
+      await flushAsync();
+
+      const replacementRequests = transport.requests.filter((request) => (
+        request.type === "dom.getChildren" &&
+        request.nodeRef === replacementRoot.nodeRef &&
+        request.branchRevision === replacementRoot.branchRevision
+      ));
+      expect(replacementRequests).toHaveLength(1);
+      expect(controllerState(controller).reconciliationBatches.has(
+        originalBatchId ?? -1,
+      )).toBe(true);
+      expect(controllerState(controller).branches.get(replacementRoot.nodeRef)?.pending)
+        .toMatchObject({ reconciliationBatchId: originalBatchId });
+      expect(nodeRefs(controller)).toEqual([
+        "new-doctype",
+        replacementRoot.nodeRef,
+        "new-trailing",
+      ]);
+      expect(controller.focusedRef).toBe(replacementRoot.nodeRef);
+      expect(controller.snapshot()).toMatchObject({
+        documentEpoch: 1,
+        focusedRef: replacementRoot.nodeRef,
+      });
+      expect(controller.snapshot()).not.toHaveProperty("selectedRef");
+      expect(controller.snapshot()).not.toHaveProperty("hoveredRef");
+      expect(controller.snapshot()).not.toHaveProperty("revealRef");
+
+      if (order === "root-first") {
+        oldChildResponse.resolve(childrenResponse(
+          oldRoot.nodeRef,
+          2,
+          [staleOldChild],
+        ));
+        await flushAsync();
+      }
+      freshChildren.resolve(childrenResponse(
+        replacementRoot.nodeRef,
+        replacementRoot.branchRevision,
+        [freshChild],
+      ));
+      await flushAsync();
+
+      const state = controllerState(controller);
+      expect(nodeRefs(controller)).toEqual([
+        "new-doctype",
+        replacementRoot.nodeRef,
+        freshChild.nodeRef,
+        "new-trailing",
+      ]);
+      expect(controller.isExpanded(replacementRoot.nodeRef)).toBe(true);
+      expect(state.nodes.has(oldRoot.nodeRef)).toBe(false);
+      expect(state.nodes.has(oldChild.nodeRef)).toBe(false);
+      expect(state.nodes.has(staleOldChild.nodeRef)).toBe(false);
+      expect(state.branches.has(oldRoot.nodeRef)).toBe(false);
+      expect(state.quarantinedSubtrees.size).toBe(0);
+      expect(state.quarantineRootByNodeRef.size).toBe(0);
+      expect(state.revealPathRefs).toEqual([]);
+      expect(state.reconciliationBatches.size).toBe(0);
+      transport.dispatched.length = 0;
+      await controller.select(oldChild.nodeRef);
+      controller.hover(oldChild.nodeRef);
+      controller.focus(oldChild.nodeRef);
+      expect(transport.dispatched).toEqual([]);
+      expect(controller.focusedRef).toBe(replacementRoot.nodeRef);
+      const recovery = controller.beginRecovery();
+      expect(recovery.selectedLocator).toBeUndefined();
+      expect(recovery.focusAnchor?.locator).not.toEqual(oldChild.locator);
+      expect(recovery.expandedLocators).not.toContainEqual(oldRoot.locator);
+    },
+  );
+
+  it("retries a same-epoch replacement root after a documentElement gap", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), false, 1);
+    transport.enqueue(rootResponse(oldRoot));
+    const controller = createController(transport);
+    await controller.loadRoot();
+
+    transport.enqueue({
+      type: "dom.error",
+      requestId: "ignored-by-test-transport",
+      documentEpoch: 1,
+      code: "node-unavailable",
+    });
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual([oldRoot.nodeRef]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 1,
+      focusedRef: oldRoot.nodeRef,
+      errorCode: "node-unavailable",
+    });
+
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), false, 1);
+    transport.enqueue(rootResponse(replacementRoot));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 3 }],
+    });
+    await flushAsync();
+
+    expect(transport.requests.filter(({ type }) => type === "dom.getRoot"))
+      .toHaveLength(3);
+    expect(nodeRefs(controller)).toEqual([replacementRoot.nodeRef]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 1,
+      focusedRef: replacementRoot.nodeRef,
+    });
+    expect(controller.snapshot().errorCode).toBeUndefined();
+    expect(controllerState(controller).nodes.has(oldRoot.nodeRef)).toBe(false);
+  });
+
+  it.each(["wrong-request", "wrong-epoch", "malformed"] as const)(
+    "rejects a %s correlated replacement-root response",
+    async (outcome) => {
+      const transport = new TestTransport();
+      const oldRoot = locatedNode("old-root", locator(1), false, 1);
+      transport.enqueue(rootResponse(oldRoot));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      const replacementRoot = locatedNode("replacement-root", locator(1, 1), false, 1);
+
+      if (outcome === "wrong-request") {
+        transport.enqueueRaw({
+          ...rootResponse(replacementRoot),
+          requestId: "wrong-request",
+        });
+      } else if (outcome === "wrong-epoch") {
+        transport.enqueue(rootResponse(replacementRoot, 2));
+      } else {
+        transport.enqueue(rootResponse(
+          displayNode("replacement-root", "comment", "not a root"),
+        ));
+      }
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+
+      expect(nodeRefs(controller)).toEqual([oldRoot.nodeRef]);
+      expect(controller.snapshot()).toMatchObject({
+        documentEpoch: 1,
+        focusedRef: oldRoot.nodeRef,
+        errorCode: "internal-error",
+      });
+      expect(controllerState(controller).nodes.has(replacementRoot.nodeRef)).toBe(false);
+    },
+  );
+
+  it("does not accept a replacement root without a correlated refresh", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), false, 1);
+    transport.enqueue(rootResponse(oldRoot));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    transport.enqueue(rootResponse(locatedNode(
+      "unsolicited-root",
+      locator(1, 1),
+      false,
+      1,
+    )));
+
+    await controller.loadRoot();
+
+    expect(transport.requests).toHaveLength(1);
+    expect(nodeRefs(controller)).toEqual([oldRoot.nodeRef]);
+  });
+
   it("refreshes a collapsed visible child's structured count from its owner branch", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true, 1)));
@@ -4093,6 +4321,7 @@ function nodeRefs(controller: DomTreeController): string[] {
 }
 
 interface ControllerInternalState {
+  readonly revealPathRefs: readonly string[];
   readonly nodes: Map<string, {
     readonly view: DomNodeView;
     readonly parentRef?: string;

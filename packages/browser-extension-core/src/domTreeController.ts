@@ -1297,7 +1297,11 @@ export class DomTreeController {
       nodeRef === this.rootRef &&
       branchRevision > (this.rootSnapshotRevision ?? -1)
     ) {
-      void this.refreshRootSnapshot(nodeRef, branchRevision);
+      void this.refreshRootSnapshot(
+        nodeRef,
+        branchRevision,
+        reconciliationBatchId,
+      );
     }
     if (this.expanded.has(nodeRef) && this.hasLiveOwner(nodeRef)) {
       void this.fetchChildren(
@@ -1338,6 +1342,7 @@ export class DomTreeController {
   private async refreshRootSnapshot(
     nodeRef: string,
     requiredRevision: number,
+    reconciliationBatchId?: number,
   ): Promise<void> {
     if (
       this.disposed ||
@@ -1349,11 +1354,21 @@ export class DomTreeController {
       return;
     }
     if (this.rootRequest) {
-      await this.rootRequest.promise;
-      const currentRevision = this.branches.get(nodeRef)?.revision ??
-        this.nodes.get(nodeRef)?.view.branchRevision;
-      if (currentRevision !== undefined) {
-        await this.refreshRootSnapshot(nodeRef, currentRevision);
+      const waitingToken = {};
+      this.registerReconciliationToken(reconciliationBatchId, waitingToken);
+      try {
+        await this.rootRequest.promise;
+        const currentRevision = this.branches.get(nodeRef)?.revision ??
+          this.nodes.get(nodeRef)?.view.branchRevision;
+        if (currentRevision !== undefined) {
+          await this.refreshRootSnapshot(
+            nodeRef,
+            currentRevision,
+            reconciliationBatchId,
+          );
+        }
+      } finally {
+        this.settleReconciliationToken(reconciliationBatchId, waitingToken);
       }
       return;
     }
@@ -1368,6 +1383,7 @@ export class DomTreeController {
     const pendingTask = createPendingTask();
     const promise = pendingTask.promise;
     this.rootRequest = { token, promise };
+    this.registerReconciliationToken(reconciliationBatchId, token);
     const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
@@ -1395,9 +1411,13 @@ export class DomTreeController {
           response.type !== "dom.root" ||
           response.requestId !== request.requestId ||
           response.documentEpoch !== expectedEpoch ||
-          response.node.nodeRef !== nodeRef
+          !isRootElementView(response.node)
         ) {
           this.applyRootSnapshotError("internal-error");
+          return;
+        }
+        if (response.node.nodeRef !== nodeRef) {
+          this.adoptReplacementRoot(response, reconciliationBatchId);
           return;
         }
         const latestRevision = this.branches.get(nodeRef)?.revision ??
@@ -1410,15 +1430,18 @@ export class DomTreeController {
         }
         const pendingBatchId = this.branches.get(nodeRef)?.pending
           ?.reconciliationBatchId;
-        const reconciliationBatchId = (
-          pendingBatchId !== undefined &&
-          this.reconciliationBatches.has(pendingBatchId)
+        const childReconciliationBatchId = (
+          reconciliationBatchId !== undefined &&
+          this.reconciliationBatches.has(reconciliationBatchId)
         )
-          ? pendingBatchId
-          : undefined;
+          ? reconciliationBatchId
+          : pendingBatchId !== undefined &&
+            this.reconciliationBatches.has(pendingBatchId)
+            ? pendingBatchId
+            : undefined;
         // Keep ownership alive while upsert replaces the pending child refresh.
         const handoffToken = {};
-        this.registerReconciliationToken(reconciliationBatchId, handoffToken);
+        this.registerReconciliationToken(childReconciliationBatchId, handoffToken);
         try {
           this.rootSnapshotError = undefined;
           this.rootPrologue = Object.freeze([...response.prologue]);
@@ -1427,11 +1450,14 @@ export class DomTreeController {
           this.upsertNode(response.node, undefined);
           this.resumeOwnedExpandedBranches(
             [nodeRef],
-            reconciliationBatchId,
+            childReconciliationBatchId,
           );
           this.invalidateRows();
         } finally {
-          this.settleReconciliationToken(reconciliationBatchId, handoffToken);
+          this.settleReconciliationToken(
+            childReconciliationBatchId,
+            handoffToken,
+          );
         }
       } catch (error) {
         if (
@@ -1450,15 +1476,100 @@ export class DomTreeController {
           const latestRevision = this.branches.get(nodeRef)?.revision ??
             this.nodes.get(nodeRef)?.view.branchRevision;
           if (
+            this.rootRef === nodeRef &&
             latestRevision !== undefined &&
             latestRevision > requiredRevision
-          ) void this.refreshRootSnapshot(nodeRef, latestRevision);
+          ) {
+            void this.refreshRootSnapshot(
+              nodeRef,
+              latestRevision,
+              reconciliationBatchId,
+            );
+          }
+          this.settleReconciliationToken(reconciliationBatchId, token);
+        } else {
+          this.settleReconciliationToken(reconciliationBatchId, token);
         }
       }
     })();
     void task.then(pendingTask.resolve, pendingTask.reject);
     this.notify();
     return promise;
+  }
+
+  private adoptReplacementRoot(
+    response: DomRootResponse,
+    reconciliationBatchId?: number,
+  ): void {
+    const previousRootRef = this.rootRef;
+    if (!previousRootRef || response.node.nodeRef === previousRootRef) {
+      return;
+    }
+    const preserveExpandedRoot = this.expanded.has(previousRootRef) &&
+      response.node.expandable &&
+      !response.node.inaccessible;
+    const activeBatchId = reconciliationBatchId !== undefined &&
+      this.reconciliationBatches.has(reconciliationBatchId)
+      ? reconciliationBatchId
+      : undefined;
+    // The old child token may be the last remaining claimant. Hold the batch
+    // while every old authority edge is retired and the new child refresh is
+    // registered, so focus/presentation cannot settle between identities.
+    const handoffToken = {};
+    this.registerReconciliationToken(activeBatchId, handoffToken);
+    try {
+      const pendingBranches = [...this.branches.values()].flatMap((branch) => (
+        branch.pending ? [branch.pending] : []
+      ));
+      for (const branch of this.branches.values()) {
+        branch.pending = undefined;
+      }
+      this.nodes.clear();
+      this.branches.clear();
+      this.expanded.clear();
+      for (const batch of this.reconciliationBatches.values()) {
+        batch.candidates.clear();
+      }
+      this.quarantinedSubtrees.clear();
+      this.quarantineRootByNodeRef.clear();
+      this.revealPathRefs = Object.freeze([]);
+      this.rootRef = response.node.nodeRef;
+      this.rootPrologue = Object.freeze([...response.prologue]);
+      this.rootEpilogue = Object.freeze([...response.epilogue]);
+      this.rootSnapshotRevision = response.node.branchRevision;
+      this.rootSnapshotError = undefined;
+      this.selectedNodeRef = undefined;
+      this.focusedNodeRef = response.node.nodeRef;
+      this.recoveryFocusRef = undefined;
+      this.recoveryFocusRowType = undefined;
+      this.recoveredFocusRef = undefined;
+      this.hoveredNodeRef = undefined;
+      this.lastHoverRequest = undefined;
+      this.currentHoverSummary = undefined;
+      if (this.currentRevealRef !== undefined) {
+        this.currentRevealVersion += 1;
+      }
+      this.currentRevealRef = undefined;
+      this.currentError = undefined;
+      this.upsertNode(response.node, undefined);
+      if (preserveExpandedRoot) {
+        this.expanded.add(response.node.nodeRef);
+      }
+      this.invalidateRows();
+
+      for (const pending of pendingBranches) {
+        this.settleReconciliationToken(
+          pending.reconciliationBatchId,
+          pending.token,
+        );
+      }
+      this.resumeOwnedExpandedBranches(
+        preserveExpandedRoot ? [response.node.nodeRef] : [],
+        activeBatchId,
+      );
+    } finally {
+      this.settleReconciliationToken(activeBatchId, handoffToken);
+    }
   }
 
   private branchFor(view: DomNodeView): BranchState {
@@ -2571,6 +2682,13 @@ function isRecoverablePathView(view: DomNodeView): boolean {
 
 function isSelectableElementView(view: DomNodeView): boolean {
   return view.kind === "element" && view.selectable && !view.inaccessible;
+}
+
+function isRootElementView(view: DomNodeView): boolean {
+  return isSelectableElementView(view) &&
+    view.nodeType === 1 &&
+    view.relationship === "dom" &&
+    (view.locator === undefined || view.locator.targetKind === "element");
 }
 
 function sameDomNodeViewAuthority(
