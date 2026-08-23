@@ -5169,7 +5169,7 @@ export class DomTreeProvider {
       }
       if (
         collapsedNode &&
-        isShadowIncludingDescendant(collapsedNode, ownership.frameElement)
+        ownership.ownershipPath.includes(collapsedNode)
       ) {
         frameRefs.add(frameRef);
       }
@@ -6545,26 +6545,6 @@ function containsNode(root: Node, candidate: Node): boolean {
   } catch {
     return false;
   }
-}
-
-function isShadowIncludingDescendant(root: Node, candidate: Node): boolean {
-  const seen = new Set<Node>();
-  let current: Node | undefined = candidate;
-  for (
-    let depth = 0;
-    current && depth < MAX_SHADOW_CONTAINMENT_DEPTH;
-    depth += 1
-  ) {
-    if (current === root) {
-      return true;
-    }
-    if (seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    current = readShadowIncludingParent(current);
-  }
-  return false;
 }
 
 function isShadowRootHostedWithin(candidate: Node, root: Node): boolean {

@@ -5181,6 +5181,59 @@ describe("DomTreeProvider", () => {
     ]);
   });
 
+  it("uses frozen frame ownership when a collapsed descendant lies about its parent", () => {
+    const document = createDocument();
+    const ancestor = createElement("main", document);
+    const nestedDocument = createDocument();
+    const nestedFrame = createFrameElement(document, nestedDocument);
+    const unrelatedDocument = createDocument();
+    const unrelatedFrame = createFrameElement(document, unrelatedDocument);
+    document.documentElement.append(ancestor);
+    document.documentElement.append(unrelatedFrame);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const topChildren = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "deceptive-collapse-top-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    }).nodes;
+
+    ancestor.append(nestedFrame);
+    harness.observers[0]!.emit([mutationRecord(ancestor, [nestedFrame])]);
+    harness.flushTimers();
+    const nestedContext = harness.provider.frameAuthority
+      .getContextForDocument(nestedDocument as unknown as Document)!;
+    const unrelatedContext = harness.provider.frameAuthority
+      .getContextForDocument(unrelatedDocument as unknown as Document)!;
+    const nestedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(nestedDocument)
+    ))!;
+    const unrelatedObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(unrelatedDocument)
+    ))!;
+    const internals = harness.provider as unknown as {
+      readonly frameDocumentsByRef: ReadonlyMap<string, FakeDocument>;
+      readonly inactiveFrameRefs: ReadonlySet<string>;
+      readonly refsByNode: WeakMap<FakeNode, string>;
+    };
+    expect(internals.refsByNode.get(nestedFrame)).toBeUndefined();
+    Object.defineProperty(nestedFrame, "parentNode", {
+      configurable: true,
+      get: () => document,
+    });
+
+    harness.provider.collapse(topChildren[0]!.nodeRef, root.documentEpoch);
+
+    expect([nestedObserver.disconnectCount, unrelatedObserver.disconnectCount])
+      .toEqual([1, 0]);
+    expect(internals.frameDocumentsByRef.has(nestedContext.frameRef)).toBe(false);
+    expect(internals.frameDocumentsByRef.has(unrelatedContext.frameRef)).toBe(true);
+    expect(internals.inactiveFrameRefs.has(nestedContext.frameRef)).toBe(true);
+    expect(internals.inactiveFrameRefs.has(unrelatedContext.frameRef)).toBe(false);
+  });
+
   it("does not observe a collapsed iframe navigation until re-expansion", () => {
     const document = createDocument();
     const firstDocument = createDocument();
