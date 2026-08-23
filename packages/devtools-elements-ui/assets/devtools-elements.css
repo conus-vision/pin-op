@@ -118,6 +118,34 @@
   pointer-events: none;
 }
 
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk {
+  inline-size: 1px;
+  min-block-size: 0;
+  pointer-events: none;
+}
+
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--1 { block-size: 20px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--2 { block-size: 40px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--4 { block-size: 80px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--8 { block-size: 160px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--16 { block-size: 320px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--32 { block-size: 640px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--64 { block-size: 1280px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--128 { block-size: 2560px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--256 { block-size: 5120px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--512 { block-size: 10240px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--1024 { block-size: 20480px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--2048 { block-size: 40960px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--4096 { block-size: 81920px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--8192 { block-size: 163840px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--16384 { block-size: 327680px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--32768 { block-size: 655360px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--65536 { block-size: 1310720px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--131072 { block-size: 2621440px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--262144 { block-size: 5242880px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--524288 { block-size: 10485760px; }
+.pin-op-elements-inspector .elements-tree-virtual-spacer-chunk--1048576 { block-size: 20971520px; }
+
 .pin-op-elements-inspector .pin-op-elements-inspector__tree-row {
   position: relative;
   display: flex;

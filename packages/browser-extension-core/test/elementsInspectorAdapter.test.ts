@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { ElementsInspectorView } from "@pin-op/devtools-elements-ui";
 import { DomTreeController } from "../src/domTreeController.js";
 import { ElementsInspectorAdapter } from "../src/elementsInspectorAdapter.js";
+import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/support/fakeDocument.js";
 import type {
   DomNodeView,
   DomRequest,
@@ -48,8 +50,9 @@ describe("ElementsInspectorAdapter", () => {
     controller.focus("child");
 
     const snapshot = adapter.snapshot();
-    expect(snapshot.rows).toBe(controller.rows());
-    expect(adapter.snapshot().rows).toBe(controller.rows());
+    expect(snapshot.rows).not.toBe(controller.rows());
+    expect(adapter.snapshot().rows).toBe(snapshot.rows);
+    expect(controller.rows().map((row) => row.depth)).toEqual([1, 2]);
     expect(snapshot.rows.map((row) => ({
       type: row.type,
       nodeRef: row.nodeRef,
@@ -66,7 +69,7 @@ describe("ElementsInspectorAdapter", () => {
         type: "node",
         nodeRef: "root",
         parentRef: undefined,
-        depth: 1,
+        depth: 0,
         expanded: true,
         expandable: true,
         selected: false,
@@ -78,7 +81,7 @@ describe("ElementsInspectorAdapter", () => {
         type: "node",
         nodeRef: "child",
         parentRef: "root",
-        depth: 2,
+        depth: 1,
         expanded: false,
         expandable: false,
         selected: false,
@@ -92,6 +95,20 @@ describe("ElementsInspectorAdapter", () => {
     expect(Object.isFrozen(snapshot.rows[0])).toBe(true);
     expect(Object.isFrozen(snapshot.rows[0]?.node)).toBe(true);
     expect(publications).toBeGreaterThan(0);
+
+    const fakeDocument = new FakeDocument();
+    const mount = fakeDocument.createElement("main") as unknown as FakeElement;
+    fakeDocument.body.append(mount);
+    const view = new ElementsInspectorView(
+      fakeDocument.document,
+      mount as unknown as HTMLElement,
+      adapter,
+    );
+    const renderedRoot = mount.querySelector('[data-node-ref="root"]');
+    expect(renderedRoot?.getAttribute("aria-level")).toBe("1");
+    expect(renderedRoot?.getAttribute("data-depth")).toBe("0");
+    expect(renderedRoot?.querySelectorAll(".elements-tree-indent-guide")).toHaveLength(0);
+    view.dispose();
 
     unsubscribe();
     const before = publications;

@@ -65,16 +65,22 @@ const HTML_VOID_ELEMENTS = new Set([
   "wbr",
 ]);
 
+export interface TreeItemPosition {
+  readonly positionInSet: number;
+  readonly setSize: number;
+}
+
 export class ElementsTreeElement {
   public readonly element: HTMLElement;
 
   public constructor(
     document: Document,
     public readonly row: TreeRowSnapshot,
+    position?: TreeItemPosition,
   ) {
     this.element = row.type === "load-more"
-      ? renderLoadMoreRow(document, row)
-      : renderNodeRow(document, row);
+      ? renderLoadMoreRow(document, row, position)
+      : renderNodeRow(document, row, position);
   }
 
   public setFocused(focused: boolean): void {
@@ -87,10 +93,14 @@ export class ElementsTreeElement {
   }
 }
 
-function renderLoadMoreRow(document: Document, row: TreeRowSnapshot): HTMLElement {
+function renderLoadMoreRow(
+  document: Document,
+  row: TreeRowSnapshot,
+  position: TreeItemPosition | undefined,
+): HTMLElement {
   const element = createElement(document, "button", {
     className: "pin-op-elements-inspector__tree-row elements-tree-row elements-tree-load-more",
-    attributes: rowAttributes(row, {
+    attributes: rowAttributes(row, position, {
       "aria-label": "Load more DOM children",
       "data-action": "load-more",
       role: "treeitem",
@@ -105,7 +115,11 @@ function renderLoadMoreRow(document: Document, row: TreeRowSnapshot): HTMLElemen
   return element;
 }
 
-function renderNodeRow(document: Document, row: TreeRowSnapshot): HTMLElement {
+function renderNodeRow(
+  document: Document,
+  row: TreeRowSnapshot,
+  position: TreeItemPosition | undefined,
+): HTMLElement {
   const node = row.node;
   if (!node) {
     throw new Error("A DOM node tree row requires a structured node snapshot");
@@ -113,7 +127,7 @@ function renderNodeRow(document: Document, row: TreeRowSnapshot): HTMLElement {
 
   const element = createElement(document, "div", {
     className: "pin-op-elements-inspector__tree-row elements-tree-row",
-    attributes: rowAttributes(row, {
+    attributes: rowAttributes(row, position, {
       "aria-selected": String(row.selected),
       role: "treeitem",
     }),
@@ -140,6 +154,7 @@ function renderNodeRow(document: Document, row: TreeRowSnapshot): HTMLElement {
 
 function rowAttributes(
   row: TreeRowSnapshot,
+  position: TreeItemPosition | undefined,
   extra: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const attributes: Record<string, string> = {
@@ -152,6 +167,10 @@ function rowAttributes(
   };
   if (row.parentRef !== undefined) {
     attributes["data-parent-ref"] = row.parentRef;
+  }
+  if (position !== undefined) {
+    attributes["aria-posinset"] = String(position.positionInSet);
+    attributes["aria-setsize"] = String(position.setSize);
   }
   if (row.focused) attributes["data-focused"] = "true";
   return attributes;

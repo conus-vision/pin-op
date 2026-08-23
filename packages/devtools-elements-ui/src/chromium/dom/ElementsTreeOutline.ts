@@ -46,7 +46,10 @@ import type {
   TreeDataSource,
   TreeRowSnapshot,
 } from "../../contracts.js";
-import { ElementsTreeElement } from "./ElementsTreeElement.js";
+import {
+  ElementsTreeElement,
+  type TreeItemPosition,
+} from "./ElementsTreeElement.js";
 
 export const DEFAULT_MAX_VISIBLE_TREE_ROWS = 512;
 const MIN_VISIBLE_TREE_ROWS = 1;
@@ -55,6 +58,13 @@ const TREE_ROW_HEIGHT_PX = 20;
 const TREE_OVERSCAN_ROWS = 2;
 const ZERO_HEIGHT_FALLBACK_ROWS = 32;
 const MAX_VIRTUAL_EXTENT_PX = 33_554_432;
+const MAX_VIRTUAL_SPACER_ROWS = Math.floor(MAX_VIRTUAL_EXTENT_PX / TREE_ROW_HEIGHT_PX);
+const VIRTUAL_SPACER_ROW_SPANS = Object.freeze(
+  Array.from(
+    { length: Math.floor(Math.log2(MAX_VIRTUAL_SPACER_ROWS)) + 1 },
+    (_, index) => 2 ** (Math.floor(Math.log2(MAX_VIRTUAL_SPACER_ROWS)) - index),
+  ),
+);
 
 export interface ElementsTreeOutlineOptions {
   readonly maxVisibleRows?: number;
@@ -99,6 +109,7 @@ export class ElementsTreeOutline {
   private readonly renderedRows = new Map<string, ElementsTreeElement>();
   private readonly pendingCommands = new Set<string>();
   private allRows: readonly TreeRowSnapshot[] = [];
+  private itemPositions: ReadonlyMap<TreeRowSnapshot, TreeItemPosition> = new Map();
   private visibleRows: readonly TreeRowSnapshot[] = [];
   private windowStart = 0;
   private focusedRef: string | undefined;
@@ -170,6 +181,7 @@ export class ElementsTreeOutline {
       this.pendingCommands.clear();
       this.renderedRows.clear();
       this.allRows = [];
+      this.itemPositions = new Map();
       this.visibleRows = [];
       this.element.replaceChildren();
       this.element.remove();
@@ -189,6 +201,7 @@ export class ElementsTreeOutline {
       this.pendingCommands.clear();
       this.renderedRows.clear();
       this.allRows = [];
+      this.itemPositions = new Map();
       this.visibleRows = [];
       this.element.replaceChildren();
       this.element.remove();
@@ -230,6 +243,7 @@ export class ElementsTreeOutline {
     if (this.disposed || generation !== this.renderGeneration) return;
 
     this.allRows = snapshot.rows;
+    this.itemPositions = treeItemPositions(snapshot.rows);
     this.focusedRef = nextFocusedRef;
     const focusedIndex = this.focusedIndex();
     if (focusedIndex >= 0) this.revealIndex(focusedIndex);
@@ -251,34 +265,37 @@ export class ElementsTreeOutline {
       layout.windowStart,
       layout.windowStart + layout.windowRowCount,
     );
-    const rendered = visibleRows.map((row) => new ElementsTreeElement(
-      this.document,
-      row.nodeRef === this.focusedRef && !row.focused
+    const rendered = visibleRows.map((row) => {
+      const renderedRow = row.nodeRef === this.focusedRef && !row.focused
         ? { ...row, focused: true }
         : row.nodeRef !== this.focusedRef && row.focused
           ? { ...row, focused: false }
-          : row,
-    ));
+          : row;
+      return new ElementsTreeElement(
+        this.document,
+        renderedRow,
+        this.itemPositions.get(row),
+      );
+    });
 
     this.visibleRows = visibleRows;
     this.renderedRows.clear();
     for (const renderedRow of rendered) {
       this.renderedRows.set(renderedRow.row.nodeRef, renderedRow);
     }
-    this.element.setAttribute("aria-rowcount", String(this.allRows.length));
     this.element.setAttribute("data-rendered-row-count", String(rendered.length));
     const topSpacer = renderVirtualSpacer(
       this.document,
       "top",
-      extentForRows(layout.windowStart),
+      layout.windowStart,
     );
     const bottomSpacer = renderVirtualSpacer(
       this.document,
       "bottom",
-      extentForRows(Math.max(
+      Math.max(
         0,
         this.allRows.length - layout.windowStart - rendered.length,
-      )),
+      ),
     );
     this.element.replaceChildren(
       topSpacer,
@@ -739,22 +756,57 @@ function createResizeObserver(
 function renderVirtualSpacer(
   document: Document,
   position: "top" | "bottom",
-  blockSize: number,
+  rowCount: number,
 ): HTMLElement {
-  return createElement(document, "div", {
+  const spacer = createElement(document, "div", {
     className: "elements-tree-virtual-spacer",
     attributes: {
       "aria-hidden": "true",
       "data-part": "virtual-spacer",
       "data-position": position,
-      style: `block-size: ${blockSize}px`,
     },
   });
+  let remainingRows = normalizeVirtualSpacerRows(rowCount);
+  for (const span of VIRTUAL_SPACER_ROW_SPANS) {
+    if (remainingRows < span) continue;
+    spacer.append(createElement(document, "div", {
+      className: `elements-tree-virtual-spacer-chunk elements-tree-virtual-spacer-chunk--${span}`,
+      attributes: { "data-row-span": String(span) },
+    }));
+    remainingRows -= span;
+  }
+  return spacer;
+}
+
+function normalizeVirtualSpacerRows(rowCount: number): number {
+  if (!Number.isSafeInteger(rowCount) || rowCount <= 0) return 0;
+  return Math.min(MAX_VIRTUAL_SPACER_ROWS, rowCount);
 }
 
 function extentForRows(rowCount: number): number {
   if (!Number.isSafeInteger(rowCount) || rowCount <= 0) return 0;
   return Math.min(MAX_VIRTUAL_EXTENT_PX, rowCount * TREE_ROW_HEIGHT_PX);
+}
+
+function treeItemPositions(
+  rows: readonly TreeRowSnapshot[],
+): ReadonlyMap<TreeRowSnapshot, TreeItemPosition> {
+  const siblingGroups = new Map<string | undefined, TreeRowSnapshot[]>();
+  for (const row of rows) {
+    const siblings = siblingGroups.get(row.parentRef) ?? [];
+    siblings.push(row);
+    siblingGroups.set(row.parentRef, siblings);
+  }
+
+  const positions = new Map<TreeRowSnapshot, TreeItemPosition>();
+  for (const siblings of siblingGroups.values()) {
+    const setSize = siblings.length;
+    siblings.forEach((row, index) => positions.set(row, {
+      positionInSet: index + 1,
+      setSize,
+    }));
+  }
+  return positions;
 }
 
 function safeLayoutValue(read: () => number): number {

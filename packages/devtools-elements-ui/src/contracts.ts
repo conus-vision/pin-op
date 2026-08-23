@@ -37,6 +37,7 @@ export interface TreeRowSnapshot {
   readonly type: "node" | "load-more";
   readonly nodeRef: string;
   readonly parentRef?: string;
+  /** Zero-based visual depth within the neutral Elements tree. */
   readonly depth: number;
   readonly expanded: boolean;
   readonly expandable: boolean;

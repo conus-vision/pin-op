@@ -1,15 +1,27 @@
 import type {
   TreeDataSource,
   TreePresentationSnapshot,
+  TreeRowSnapshot,
 } from "@pin-op/devtools-elements-ui";
 import type { DomTreeController } from "./domTreeController.js";
 
 export class ElementsInspectorAdapter implements TreeDataSource {
+  private sourceRows: readonly TreeRowSnapshot[] | undefined;
+  private projectedRows: readonly TreeRowSnapshot[] = Object.freeze([]);
+
   public constructor(private readonly controller: DomTreeController) {}
 
   public snapshot(): TreePresentationSnapshot {
+    const sourceRows = this.controller.rows();
+    if (sourceRows !== this.sourceRows) {
+      this.sourceRows = sourceRows;
+      this.projectedRows = Object.freeze(sourceRows.map((row) => Object.freeze({
+        ...row,
+        depth: Math.max(0, row.depth - 1),
+      })));
+    }
     return Object.freeze({
-      rows: this.controller.rows(),
+      rows: this.projectedRows,
     });
   }
 

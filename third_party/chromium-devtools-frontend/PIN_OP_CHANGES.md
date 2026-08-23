@@ -31,6 +31,10 @@ every derived source.
   bounded snapshot and shifts that materialized window around controller-owned
   focus. In-flight expand/load/select commands are independently capped and
   deduplicated until settlement.
+- Describe virtualized rows with sibling-local `aria-posinset` and
+  `aria-setsize` values from the full immutable snapshot. Represent omitted-row
+  height with a bounded binary set of predeclared CSS chunks, never runtime
+  inline styles.
 
 <a id="rules"></a>
 ## Rules
@@ -56,4 +60,5 @@ every derived source.
   Chromium browser branding.
 - The retained DOM-tree subset includes disclosure/indent guides, syntax token
   colors, selection/hover/focus states, and load-more presentation, with
-  explicit dark, forced-color, and 320-pixel layouts.
+  explicit dark, forced-color, and 320-pixel layouts. Virtual spacing uses only
+  scoped, predeclared chunk classes.

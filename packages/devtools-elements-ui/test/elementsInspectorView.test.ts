@@ -117,13 +117,8 @@ describe("ElementsInspectorView", () => {
     expect(root.querySelector("[contenteditable]")).toBeNull();
     expect(root.querySelector("input, textarea, select")).toBeNull();
     expect(root.querySelector("script, style")).toBeNull();
-    const styledElements = [root, ...root.descendants()].filter(
-      (element) => element.hasAttribute("style"),
-    );
-    expect(styledElements.every((element) => (
-      element.getAttribute("data-part") === "virtual-spacer"
-      && /^(?:block-size|height): [0-9]+px$/.test(element.getAttribute("style") ?? "")
-    ))).toBe(true);
+    expect(root.hasAttribute("style")).toBe(false);
+    expect(root.querySelector("[style]")).toBeNull();
     expect(harness.document.innerHTMLAssignments()).toBe(0);
 
     const implementations = sourceFiles(path.join(packageRoot, "src"))

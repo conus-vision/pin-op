@@ -417,8 +417,44 @@ describe("ElementsTreeOutline", () => {
 
     expect(harness.root.querySelectorAll('[data-row-type="node"]')).toHaveLength(7);
     expect(harness.root.querySelector('[data-node-ref="node-7"]')).toBeNull();
-    expect(harness.root.getAttribute("aria-rowcount")).toBe("40");
+    expect(harness.root.getAttribute("aria-rowcount")).toBeNull();
     expect(harness.root.getAttribute("data-rendered-row-count")).toBe("7");
+    expect(row(harness.root, "node-0").getAttribute("aria-posinset")).toBe("1");
+    expect(row(harness.root, "node-0").getAttribute("aria-setsize")).toBe("40");
+    expect(row(harness.root, "node-6").getAttribute("aria-posinset")).toBe("7");
+    expect(row(harness.root, "node-6").getAttribute("aria-setsize")).toBe("40");
+  });
+
+  it("reports sibling-local ARIA positions for nodes and load-more rows", () => {
+    const harness = createOutline(presentation([
+      nodeRow("root", 0, elementNode("HTML"), {
+        expanded: true,
+        expandable: true,
+        focused: true,
+      }),
+      nodeRow("first", 1, elementNode("MAIN"), { parentRef: "root" }),
+      nodeRow("second", 1, elementNode("ASIDE"), { parentRef: "root" }),
+      {
+        type: "load-more",
+        nodeRef: "load-more:root",
+        parentRef: "root",
+        depth: 1,
+        expanded: false,
+        expandable: false,
+        selected: false,
+        focused: false,
+        hovered: false,
+      },
+    ]));
+
+    expect(row(harness.root, "root").getAttribute("aria-posinset")).toBe("1");
+    expect(row(harness.root, "root").getAttribute("aria-setsize")).toBe("1");
+    expect(row(harness.root, "first").getAttribute("aria-posinset")).toBe("1");
+    expect(row(harness.root, "first").getAttribute("aria-setsize")).toBe("3");
+    expect(row(harness.root, "second").getAttribute("aria-posinset")).toBe("2");
+    expect(row(harness.root, "second").getAttribute("aria-setsize")).toBe("3");
+    expect(row(harness.root, "load-more:root").getAttribute("aria-posinset")).toBe("3");
+    expect(row(harness.root, "load-more:root").getAttribute("aria-setsize")).toBe("3");
   });
 
   it("navigates the full snapshot and shifts the bounded materialized window", () => {
@@ -453,17 +489,24 @@ describe("ElementsTreeOutline", () => {
   });
 
   it("virtualizes from a real scroll viewport and reaches rows beyond the hard window", async () => {
-    const rows = Array.from({ length: 1_000 }, (_, index) => (
-      nodeRow(
-        `node-${index}`,
-        0,
-        elementNode(`PAGE-${index};block-size:999999px`),
-        { focused: index === 0 },
-      )
-    ));
+    const rows = [
+      nodeRow("branch", 0, elementNode("HTML"), {
+        expanded: true,
+        expandable: true,
+        focused: true,
+      }),
+      ...Array.from({ length: 1_000 }, (_, index) => (
+        nodeRow(
+          `node-${index}`,
+          1,
+          elementNode(`PAGE-${index};block-size:999999px`),
+          { parentRef: "branch" },
+        )
+      )),
+    ];
     const harness = createOutline(presentation(rows), { maxVisibleRows: 7 });
     harness.root.clientHeight = 100;
-    harness.root.scrollTop = 12_000;
+    harness.root.scrollTop = 12_020;
 
     harness.root.dispatch("scroll");
 
@@ -472,6 +515,8 @@ describe("ElementsTreeOutline", () => {
     expect(renderedRows.length).toBeGreaterThan(0);
     expect(renderedRows.length).toBeLessThanOrEqual(7);
     expect(row(harness.root, "node-600")).toBeDefined();
+    expect(row(harness.root, "node-600").getAttribute("aria-posinset")).toBe("601");
+    expect(row(harness.root, "node-600").getAttribute("aria-setsize")).toBe("1000");
     expect(focusedRef(harness.root)).toBe("node-600");
     expect(harness.backend.focused.at(-1)).toBe("node-600");
     expect(harness.root.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
@@ -480,9 +525,12 @@ describe("ElementsTreeOutline", () => {
       expect(spacer.getAttribute("aria-hidden")).toBe("true");
       expect(spacer.getAttribute("role")).toBeNull();
       expect(spacer.getAttribute("data-row-type")).toBeNull();
-      expect(spacer.getAttribute("style")).toMatch(/^(?:block-size|height): [0-9]+px$/);
-      expect(spacer.getAttribute("style")).not.toContain("999999");
+      expect(spacer.getAttribute("style")).toBeNull();
+      expect(spacer.querySelector("[style]")).toBeNull();
     }
+    expect(spacers.reduce((sum, spacer) => sum + virtualSpacerRows(spacer), 0)).toBe(
+      rows.length - renderedRows.length,
+    );
 
     harness.root.dispatch("click", { target: row(harness.root, "node-600") });
     await settle();
@@ -491,12 +539,12 @@ describe("ElementsTreeOutline", () => {
     dispatchKey(harness.root, "End");
     expect(focusedRef(harness.root)).toBe("node-999");
     expect(row(harness.root, "node-999")).toBeDefined();
-    expect(harness.root.scrollTop).toBeGreaterThan(12_000);
-    expect(harness.root.scrollTop).toBeLessThanOrEqual(19_900);
+    expect(harness.root.scrollTop).toBeGreaterThan(12_020);
+    expect(harness.root.scrollTop).toBeLessThanOrEqual(19_920);
 
     dispatchKey(harness.root, "Home");
-    expect(focusedRef(harness.root)).toBe("node-0");
-    expect(row(harness.root, "node-0")).toBeDefined();
+    expect(focusedRef(harness.root)).toBe("branch");
+    expect(row(harness.root, "branch")).toBeDefined();
     expect(harness.root.scrollTop).toBe(0);
   });
 
@@ -517,9 +565,14 @@ describe("ElementsTreeOutline", () => {
     expect(renderedCount).toBeLessThanOrEqual(32);
     expect(harness.root.scrollTop).toBeGreaterThanOrEqual(0);
     expect(harness.root.scrollTop).toBeLessThanOrEqual(20_000);
-    for (const spacer of harness.root.querySelectorAll('[data-part="virtual-spacer"]')) {
-      expect(spacer.getAttribute("style")).toMatch(/^(?:block-size|height): [0-9]+px$/);
+    const spacers = harness.root.querySelectorAll('[data-part="virtual-spacer"]');
+    for (const spacer of spacers) {
+      expect(spacer.getAttribute("style")).toBeNull();
+      expect(spacer.querySelector("[style]")).toBeNull();
     }
+    expect(spacers.reduce((sum, spacer) => sum + virtualSpacerRows(spacer), 0)).toBe(
+      rows.length - renderedCount,
+    );
 
     harness.root.clientHeight = -100;
     harness.root.scrollTop = Number.NaN;
@@ -1297,6 +1350,16 @@ function required<T>(value: T | null | undefined): T {
     throw new Error("Missing expected rendered element");
   }
   return value;
+}
+
+function virtualSpacerRows(spacer: FakeElement): number {
+  return spacer.querySelectorAll("[data-row-span]").reduce((total, chunk) => {
+    const span = Number(chunk.getAttribute("data-row-span"));
+    expect(Number.isSafeInteger(span)).toBe(true);
+    expect(span).toBeGreaterThan(0);
+    expect(chunk.className).toContain(`elements-tree-virtual-spacer-chunk--${span}`);
+    return total + span;
+  }, 0);
 }
 
 async function settle(): Promise<void> {
