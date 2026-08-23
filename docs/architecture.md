@@ -42,6 +42,15 @@ selection, refresh, and bridge routing remain Pin-op-owned. The checked-in
 upstream snapshot is provenance and reproduction input and is never imported by
 production code.
 
+The Inspector path exposes structured DOM node snapshots. They carry node type
+and name, bounded attribute names and values, bounded text and comment values,
+and document-type names with bounded public and system IDs. Document types and
+top-level comments are bounded display-only auxiliary rows; text and comment
+children are likewise non-selectable and have no stable locator. The legacy
+rollback renderer alone retains the temporary preformatted `label` field for
+its element-only presentation; that label is not the Inspector renderer's data
+authority.
+
 Chrome and Firefox copy the same two panel HTML entrypoints, core stylesheet,
 scoped `devtools-elements.css`, logo, and icons through one deterministic asset
 assembler. Both bundles emit the legacy `panel.js` rollback path and the
@@ -56,7 +65,7 @@ authority serves both page clicks and DOM-tree commands. It:
 
 - renders a style-isolated, pointer-inert, half-alpha box-model overlay only
   while a page element or DOM-tree row is hovered;
-- exposes element-only tree pages on demand;
+- exposes bounded tree pages on demand;
 - traverses the top document, open shadow roots, and same-origin frame
   documents;
 - represents cross-origin frames as inaccessible locked leaves and ignores

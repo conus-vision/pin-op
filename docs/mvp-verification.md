@@ -16,11 +16,12 @@ evidence.
 Both browsers were built with `PIN_OP_PANEL_VARIANT=inspector` and displayed the
 registered Pin-op DevTools tab. The shared `inspector-panel.html` runtime
 connected to the fixture and never exposed a visible Source tab. Chrome
-exercised the complete interactive checklist. Firefox exercised the same exact
-asset in its native custom tab for Link, Rules, picker, tree selection, Auto
-Refresh, IDE Highlight, forced colors, and Disconnect; the mutation, reload,
-layout, and keyboard cases were also repeated against that asset in an
-add-on-scoped DevTools harness.
+exercised the complete interactive checklist. Firefox used its registered native
+custom tab for the complete interactive checklist. The native Firefox Inspector
+panel covered Link, Rules, picker, tree selection, mutation, reload, Auto Refresh,
+IDE Highlight, resize, keyboard, forced colors, and Disconnect. The add-on-scoped
+DevTools harness provided supplementary target and asset confirmation; it was not
+a substitute for any listed native-panel check.
 
 | Check | Development-host result |
 | --- | --- |

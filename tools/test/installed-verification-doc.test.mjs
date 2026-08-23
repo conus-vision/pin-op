@@ -260,6 +260,60 @@ test("Inspector materials cover the lazy DOM tree and box-model overlay", () => 
   assert.match(materials, /multiple (?:source )?ranges/i);
 });
 
+test("architecture and security document structured Inspector DOM data and the legacy label boundary", () => {
+  for (const [name, guide] of [
+    ["architecture", architectureGuide],
+    ["security", securityGuide],
+  ]) {
+    assert.match(guide, /structured (?:DOM )?(?:node )?(?:snapshots|fields)/i, name);
+    assert.match(guide, /bounded attribute (?:names and values|values)/i, name);
+    assert.match(guide, /bounded (?:text and comment|text\/comment) values/i, name);
+    assert.match(
+      guide,
+      /document[- ]type[\s\S]{0,160}(?:public and system|public\/system) IDs/i,
+      name,
+    );
+    assert.match(
+      guide,
+      /legacy[\s\S]{0,160}preformatted\s+`label`[\s\S]{0,160}element-only/i,
+      name,
+    );
+  }
+});
+
+test("Checkpoint 1 evidence assigns every listed Firefox check to its native Inspector panel", () => {
+  const [, checkpointAndLater] = developmentGuide.split(
+    "## Checkpoint 1 Development-Host Evidence (2026-08-24)",
+  );
+  const [checkpointEvidence] = (checkpointAndLater ?? "").split(
+    "## Installed Product Verification",
+  );
+
+  assert.ok(checkpointEvidence, "Checkpoint 1 evidence is required");
+  assert.match(
+    checkpointEvidence,
+    /Firefox[\s\S]{0,240}registered native\s+(?:Inspector panel|custom tab)[\s\S]{0,240}complete interactive checklist/i,
+  );
+  for (const check of [
+    "mutation",
+    "reload",
+    "resize",
+    "keyboard",
+    "forced colors",
+    "Disconnect",
+  ]) {
+    assert.match(
+      checkpointEvidence,
+      new RegExp(`native Firefox Inspector\\s+panel[^.]{0,500}${check}`, "i"),
+      check,
+    );
+  }
+  assert.match(
+    checkpointEvidence,
+    /add-on-scoped\s+DevTools harness[\s\S]{0,180}(?:supplementary|not a substitute)/i,
+  );
+});
+
 test("source-resolution materials name fallback and fail-closed outcomes", () => {
   const materials = `${usageGuide}\n${architectureGuide}\n${installedGuide}`;
   assert.match(materials, /CSS fingerprint fallback/i);

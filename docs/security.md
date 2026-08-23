@@ -136,9 +136,14 @@ Node refs are useful only within that channel and current document/frame
 authority. Navigation, mutation, collapse, frame lifecycle changes, record
 pressure, and disposal invalidate stale refs and cursors.
 
-Tree labels are bounded plain text. They include tag, ID, classes, and approved
-attribute names but not DOM text or attribute values. The tree renders only
-element nodes plus explicit open-shadow and frame-document boundaries.
+The Inspector renderer consumes structured DOM node fields: node type and name,
+bounded attribute names and values, bounded text and comment values, and
+document-type names with bounded public and system IDs. Document-type, text,
+and comment rows are display-only, receive no stable locator, and cannot drive
+selection or the page overlay. Every page-provided name or value renders through
+text APIs. The legacy rollback renderer alone retains the temporary preformatted
+`label` field for its element-only labels; those labels include tag, ID, classes,
+and approved attribute names but not DOM text or attribute values.
 
 - Open shadow roots are traversed only when the platform exposes them.
 - Same-origin frame documents are registered under bounded frame authority.
@@ -185,7 +190,9 @@ sensitive data. Avoid sensitive pages unless sending these values to the linked
 local VS Code window is acceptable.
 
 The browser does not deliberately collect cookies, headers, form-control values,
-DOM text, workspace files, or source maps. Local VS Code plugins read workspace
+workspace files, or source maps. Browser-local structured tree fields, including
+bounded DOM text and comments, stay in the private inspected-tab channel and do
+not travel over the product WebSocket. Local VS Code plugins read workspace
 source and source maps only for local resolution. The IDE can return bounded
 excerpts from its active document for Source presentation: at most 32 excerpts,
 80 logical lines and 8 KiB per excerpt, in a 256 KiB message. Full documents,
