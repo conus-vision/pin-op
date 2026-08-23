@@ -97,6 +97,44 @@ describe("registerDevtoolsPanel", () => {
 
     expect(removed).toEqual(["runtime"]);
   });
+
+  it("registers only the explicitly selected Inspector panel page", async () => {
+    const created: string[] = [];
+    const registration = await registerDevtoolsPanel({
+      inspectedTabId: 42,
+      channelId: "channel-1",
+      sourceId: "firefox-source-1",
+      panelPage: "/dist/inspector-panel.html",
+      async createPanel(_title, _icon, page) {
+        created.push(page);
+        return {
+          addShownListener() {},
+          removeShownListener() {},
+        };
+      },
+      addRuntimeMessageListener: () => () => {},
+      async sendRuntimeMessage() {},
+    });
+
+    expect(created).toEqual([
+      "/dist/inspector-panel.html?channel=channel-1",
+    ]);
+    registration.dispose();
+  });
+
+  it("rejects an arbitrary panel page instead of weakening registration authority", async () => {
+    await expect(registerDevtoolsPanel({
+      inspectedTabId: 42,
+      channelId: "channel-1",
+      sourceId: "firefox-source-1",
+      panelPage: "/dist/attacker.html",
+      async createPanel() {
+        throw new Error("must not create");
+      },
+      addRuntimeMessageListener: () => () => {},
+      async sendRuntimeMessage() {},
+    } as never)).rejects.toThrow("Invalid DevTools panel registration");
+  });
 });
 
 describe("startDevtoolsRuntime", () => {
@@ -178,5 +216,31 @@ describe("startDevtoolsRuntime", () => {
     });
     await runtime.ready;
     expect(removed).toEqual(["unload", "shown", "runtime"]);
+  });
+
+  it("carries the compiled Inspector page through adapter startup", async () => {
+    const created: string[] = [];
+    const runtime = startDevtoolsRuntime({
+      inspectedTabId: 42,
+      sourcePrefix: "firefox",
+      panelPage: "/dist/inspector-panel.html",
+      createId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+      async createPanel(_title, _icon, page) {
+        created.push(page);
+        return { addShownListener() {}, removeShownListener() {} };
+      },
+      subscribeRuntimeMessages: () => () => {},
+      sendRuntimeMessage: async () => undefined,
+      subscribeUnload: () => () => {},
+    });
+
+    await runtime.ready;
+    expect(created).toEqual([
+      "/dist/inspector-panel.html?channel=id-1",
+    ]);
+    runtime.dispose();
   });
 });

@@ -78,6 +78,36 @@ describe("PanelSettingsController", () => {
     ]);
   });
 
+  it.each(["autoRefresh", "highlight"] as const)(
+    "does not dispatch %s changes after a subscriber replaces the binding",
+    (setting) => {
+      const dispatch = vi.fn();
+      const controller = readyController(dispatch);
+      expect(controller.beginInspect("inspect-current")).toBe(true);
+      dispatch.mockClear();
+      let replaced = false;
+      controller.subscribe(() => {
+        if (!replaced) {
+          replaced = true;
+          controller.beginBinding();
+        }
+      });
+
+      const accepted = setting === "autoRefresh"
+        ? controller.setAutoRefreshEnabled(false)
+        : controller.setIdeHighlightEnabled(false);
+
+      expect(replaced).toBe(true);
+      expect(accepted).toBe(false);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(controller.snapshot()).toMatchObject({
+        compatibility: "pending",
+        snapshotReady: false,
+        controlsEnabled: false,
+      });
+    },
+  );
+
   it("blocks on mismatch and requires compatible, a fresh snapshot, and a fresh inspect", () => {
     const dispatch = vi.fn();
     const { controller, binding } = readyControllerBinding(dispatch);

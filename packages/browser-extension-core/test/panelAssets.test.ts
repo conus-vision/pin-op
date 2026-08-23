@@ -3,8 +3,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const html = readFileSync(new URL("../assets/panel.html", import.meta.url), "utf8");
+const inspectorHtml = readFileSync(
+  new URL("../assets/inspector-panel.html", import.meta.url),
+  "utf8",
+);
 const css = readFileSync(new URL("../assets/panel.css", import.meta.url), "utf8");
 const $ = load(html);
+const inspector = load(inspectorHtml);
 const STATUS_TOKENS = [
   "--status-success",
   "--status-info",
@@ -13,6 +18,41 @@ const STATUS_TOKENS = [
 ] as const;
 
 describe("DevTools panel assets", () => {
+  it("ships a separate fixed Inspector asset with the existing toolbar contract", () => {
+    for (const id of [
+      "toolbar-features",
+      "connection-status",
+      "linked-code",
+      "link-controls",
+      "link-code",
+      "paste-button",
+      "link-button",
+      "disconnect-button",
+      "inspect-mode",
+      "auto-refresh-enabled",
+      "ide-highlight-enabled",
+      "protocol-mismatch",
+      "protocol-mismatch-versions",
+      "link-onboarding",
+      "inspector-workspace",
+      "inspector-elements-mount",
+      "operational-footer",
+      "selected-element-summary",
+      "resolution-status",
+      "panel-error",
+    ]) {
+      expect(inspector(`[id="${id}"]`)).toHaveLength(1);
+    }
+    expect(inspector("#source-tab, #source-pane, #source-pane-root")).toHaveLength(0);
+    expect(inspectorHtml).not.toMatch(/>\s*Source\s*</i);
+    expect(inspector("#inspector-elements-mount").attr("aria-label"))
+      .toBe("Elements inspector mount");
+    expect(inspector('link[href="./panel.css"]')).toHaveLength(1);
+    expect(inspector('link[href="./devtools-elements.css"]')).toHaveLength(1);
+    expect(inspector('script[src="./inspectorPanel.js"]')).toHaveLength(1);
+    expect(inspectorHtml).not.toContain("location.search");
+  });
+
   it("ships one compact toolbar with settings and unchanged connection controls", () => {
     expect(html.match(/class="panel-toolbar"/g)).toHaveLength(1);
     expect(openingTag("inspect-mode")).toMatch(/aria-label="Select an element"/);

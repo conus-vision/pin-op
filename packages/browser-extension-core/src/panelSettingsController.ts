@@ -46,6 +46,7 @@ export class PanelSettingsController {
   private current = initialModel;
   private inspectMessageId: string | undefined;
   private bindingToken: PanelSettingsBindingToken | undefined;
+  private updateRevision = 0;
 
   public constructor(private readonly dispatch: PanelSettingsDispatch) {}
 
@@ -161,7 +162,15 @@ export class PanelSettingsController {
     if (enabled === this.current.autoRefreshEnabled) {
       return true;
     }
-    this.update({ ...this.current, autoRefreshEnabled: enabled });
+    const binding = this.bindingToken;
+    const revision = this.update({
+      ...this.current,
+      autoRefreshEnabled: enabled,
+    });
+    if (binding === undefined || binding !== this.bindingToken ||
+      revision !== this.updateRevision) {
+      return false;
+    }
     this.dispatchTabSettings();
     return true;
   }
@@ -173,8 +182,19 @@ export class PanelSettingsController {
     if (enabled === this.current.ideHighlightEnabled) {
       return true;
     }
-    this.update({ ...this.current, ideHighlightEnabled: enabled });
+    const binding = this.bindingToken;
+    const revision = this.update({
+      ...this.current,
+      ideHighlightEnabled: enabled,
+    });
+    if (binding === undefined || binding !== this.bindingToken ||
+      revision !== this.updateRevision) {
+      return false;
+    }
     this.dispatchTabSettings();
+    if (binding !== this.bindingToken || revision !== this.updateRevision) {
+      return false;
+    }
     if (this.inspectMessageId) {
       this.dispatch(Object.freeze({
         type: "pin-op.presentation.settings",
@@ -194,6 +214,10 @@ export class PanelSettingsController {
     return this.current;
   }
 
+  public isCurrentBinding(token: PanelSettingsBindingToken): boolean {
+    return token === this.bindingToken;
+  }
+
   private dispatchTabSettings(): void {
     this.dispatch(Object.freeze({
       type: "pin-op.tab.settings",
@@ -202,7 +226,8 @@ export class PanelSettingsController {
     }));
   }
 
-  private update(model: PanelSettingsViewModel): void {
+  private update(model: PanelSettingsViewModel): number {
+    const revision = ++this.updateRevision;
     this.current = Object.freeze({ ...model });
     for (const listener of [...this.listeners]) {
       try {
@@ -211,6 +236,7 @@ export class PanelSettingsController {
         // A failed view must not prevent other panel surfaces from updating.
       }
     }
+    return revision;
   }
 }
 

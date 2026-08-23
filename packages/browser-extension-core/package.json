@@ -20,6 +20,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@pin-op/devtools-elements-ui": "workspace:*",
     "@pin-op/protocol": "workspace:*",
     "lucide": "0.468.0",
     "zod": "^3.25.76"

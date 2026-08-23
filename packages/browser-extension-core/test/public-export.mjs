@@ -32,9 +32,11 @@ import {
   DomTreeProvider,
   DomTreeProviderError,
   DomTreeView,
+  ElementsInspectorAdapter,
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  InspectorPanelView,
   PAGE_INSPECTION_SELECTION_INTERVAL_MS,
   PageInspectionSession,
   PageOverlay,
@@ -60,6 +62,7 @@ import {
   startContentScriptRuntime,
   startContentRefreshRuntime,
   startDevtoolsRuntime,
+  startInspectorPanelRuntime,
   startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
@@ -100,9 +103,11 @@ assert.equal(typeof DomTreeController, "function");
 assert.equal(typeof DomTreeProvider, "function");
 assert.equal(typeof DomTreeProviderError, "function");
 assert.equal(typeof DomTreeView, "function");
+assert.equal(typeof ElementsInspectorAdapter, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
+assert.equal(typeof InspectorPanelView, "function");
 assert.equal(PAGE_INSPECTION_SELECTION_INTERVAL_MS, 100);
 assert.equal(typeof PageInspectionSession, "function");
 assert.equal(typeof PageOverlay, "function");
@@ -128,6 +133,7 @@ assert.equal(typeof startBackgroundRuntime, "function");
 assert.equal(typeof startContentScriptRuntime, "function");
 assert.equal(typeof startContentRefreshRuntime, "function");
 assert.equal(typeof startDevtoolsRuntime, "function");
+assert.equal(typeof startInspectorPanelRuntime, "function");
 assert.equal(typeof startPanelRuntime, "function");
 assert.equal(typeof TabRefreshCoordinator, "function");
 assert.equal(typeof TabRefreshStateStore, "function");

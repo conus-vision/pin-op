@@ -3,10 +3,15 @@ export interface DevtoolsPanelHandle {
   removeShownListener(listener: () => void): void;
 }
 
+export type DevtoolsPanelPage =
+  | "/dist/panel.html"
+  | "/dist/inspector-panel.html";
+
 export interface DevtoolsRuntimeOptions {
   readonly inspectedTabId: number;
   readonly channelId: string;
   readonly sourceId: string;
+  readonly panelPage?: DevtoolsPanelPage;
   createPanel(
     title: string,
     icon: string,
@@ -20,6 +25,7 @@ export interface DevtoolsRuntimeOptions {
 export interface DevtoolsAdapterRuntimeOptions {
   readonly inspectedTabId: number;
   readonly sourcePrefix: string;
+  readonly panelPage?: DevtoolsPanelPage;
   readonly createId: () => string;
   readonly createPanel: DevtoolsRuntimeOptions["createPanel"];
   readonly subscribeRuntimeMessages: (
@@ -60,7 +66,7 @@ export async function registerDevtoolsPanel(
     panel = await options.createPanel(
       "Pin-op",
       "/dist/pin-op.svg",
-      `/dist/panel.html?channel=${encodeURIComponent(options.channelId)}`,
+      `${options.panelPage ?? "/dist/panel.html"}?channel=${encodeURIComponent(options.channelId)}`,
     );
     panel.addShownListener(onShown);
   } catch (error) {
@@ -119,6 +125,7 @@ export function startDevtoolsRuntime(
     inspectedTabId: options.inspectedTabId,
     channelId,
     sourceId,
+    ...(options.panelPage === undefined ? {} : { panelPage: options.panelPage }),
     createPanel: options.createPanel,
     addRuntimeMessageListener: options.subscribeRuntimeMessages,
     sendRuntimeMessage: options.sendRuntimeMessage,
@@ -142,7 +149,12 @@ function assertRegistrationOptions(options: DevtoolsRuntimeOptions): void {
     !Number.isSafeInteger(options.inspectedTabId) ||
     options.inspectedTabId < 0 ||
     !isIdentifier(options.channelId) ||
-    !isIdentifier(options.sourceId)
+    !isIdentifier(options.sourceId) ||
+    (
+      options.panelPage !== undefined &&
+      options.panelPage !== "/dist/panel.html" &&
+      options.panelPage !== "/dist/inspector-panel.html"
+    )
   ) {
     throw new Error("Invalid DevTools panel registration");
   }

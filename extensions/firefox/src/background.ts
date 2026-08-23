@@ -4,11 +4,16 @@ import {
   startBackgroundRuntime,
   type BackgroundMessageSender,
   type BackgroundRuntimePort,
+  type DevtoolsPanelPage,
 } from "@pin-op/browser-extension-core";
+
+declare const __PIN_OP_PANEL_PAGE__: unknown;
+
+const panelPage = compiledPanelPage();
 
 startBackgroundRuntime({
   expectedDevtoolsUrl: browser.runtime.getURL("dist/devtools.html"),
-  expectedPanelUrl: browser.runtime.getURL("dist/panel.html"),
+  expectedPanelUrl: browser.runtime.getURL(panelPage.slice(1)),
   storage: {
     get: (key) => browser.storage.session.get(key),
     set: (values) => browser.storage.session.set(values),
@@ -95,6 +100,16 @@ startBackgroundRuntime({
   onError: (error) =>
     console.error("Pin-op background:", sanitizeErrorMessage(error)),
 });
+
+function compiledPanelPage(): DevtoolsPanelPage {
+  const value = typeof __PIN_OP_PANEL_PAGE__ === "string"
+    ? __PIN_OP_PANEL_PAGE__
+    : "/dist/panel.html";
+  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") {
+    return value;
+  }
+  throw new Error("Invalid compiled panel page");
+}
 
 interface FirefoxMessageSender {
   readonly url?: string;

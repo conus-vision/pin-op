@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
@@ -45,6 +46,7 @@ export interface BrowserAdapterContractOptions {
   readonly importContentScript: () => Promise<unknown>;
   readonly importDevtools: () => Promise<unknown>;
   readonly importPanel: () => Promise<unknown>;
+  readonly importInspectorPanel: () => Promise<unknown>;
 }
 
 export interface BrowserPackageContractOptions {
@@ -83,6 +85,7 @@ export function createBrowserAdapterHarness() {
       contentRefresh: vi.fn(() => ({ dispose: vi.fn() })),
       devtools: vi.fn(() => ({ dispose: vi.fn() })),
       panel: vi.fn(() => ({ dispose: vi.fn() })),
+      inspectorPanel: vi.fn(() => ({ dispose: vi.fn() })),
     },
     sanitize: vi.fn((_error: unknown) => "sanitized error"),
     runtimeMessage,
@@ -532,6 +535,7 @@ export function describeBrowserAdapterContract(
         "createPanel",
         "inspectedTabId",
         "onError",
+        "panelPage",
         "sendRuntimeMessage",
         "sourcePrefix",
         "subscribeRuntimeMessages",
@@ -539,6 +543,7 @@ export function describeBrowserAdapterContract(
       ]);
       expect(options.inspectedTabId).toBe(91);
       expect(options.sourcePrefix).toBe(contract.sourcePrefix);
+      expect(options.panelPage).toBe("/dist/panel.html");
       expect(call(options.createId)).toBe("test-runtime-id");
 
       const panel = (await callAsync(
@@ -573,6 +578,37 @@ export function describeBrowserAdapterContract(
       const secret = new Error("secret DevTools stack");
       call(options.onError, secret);
       expectSanitizedLog(consoleError, "DevTools", secret, harness);
+    });
+
+    it("uses one fixed Inspector page for DevTools registration and background sender authority", async () => {
+      vi.stubGlobal("__PIN_OP_PANEL_PAGE__", "/dist/inspector-panel.html");
+
+      await contract.importBackground();
+      await contract.importDevtools();
+
+      const background = calledOptions(harness.starts.background);
+      const devtools = calledOptions(harness.starts.devtools);
+      expect(background.expectedPanelUrl).toBe(
+        `${contract.extensionOrigin}/dist/inspector-panel.html`,
+      );
+      expect(devtools.panelPage).toBe("/dist/inspector-panel.html");
+    });
+
+    it("starts the separate Inspector entry through the shared runtime only", async () => {
+      await contract.importInspectorPanel();
+
+      expect(harness.starts.inspectorPanel).toHaveBeenCalledOnce();
+      expect(harness.starts.panel).not.toHaveBeenCalled();
+      const options = calledOptions(harness.starts.inspectorPanel);
+      expectOptionKeys(options, [
+        "connectRuntimePort",
+        "document",
+        "locationSearch",
+        "onError",
+        "readClipboard",
+        "sendRuntimeMessage",
+        "subscribeUnload",
+      ]);
     });
 
     it("starts the shared panel runtime through narrow wrappers", async () => {
@@ -636,6 +672,7 @@ export function describeBrowserAdapterContract(
         "contentScript.ts",
         "devtools.ts",
         "panel.ts",
+        "inspectorPanel.ts",
       ]) {
         const source = readFileSync(
           new URL(`src/${name}`, contract.extensionRoot),
@@ -695,12 +732,56 @@ export function describeBrowserPackageContract(
       packaged?.dispose();
     });
 
+    it.each(["", "attacker", "Inspector"])(
+      "rejects panel variant %j before mutating build output",
+      (panelVariant) => {
+        const workspaceRoot = resolve(
+          fileURLToPath(new URL("../../", import.meta.url)),
+        );
+        const temporaryDirectory = mkdtempSync(
+          join(tmpdir(), ".pin-op-panel-variant-"),
+        );
+        try {
+          const buildRoot = stageBrowserExtensionProject(
+            workspaceRoot,
+            fileURLToPath(contract.extensionRoot),
+            temporaryDirectory,
+          );
+          const output = join(buildRoot, "dist");
+          const sentinel = join(output, "sentinel.txt");
+          mkdirSync(output, { recursive: true });
+          writeFileSync(sentinel, "retained", "utf8");
+
+          expect(() => execFileSync(
+            process.execPath,
+            [join(buildRoot, "esbuild.mjs")],
+            {
+              cwd: buildRoot,
+              env: { ...process.env, PIN_OP_PANEL_VARIANT: panelVariant },
+              stdio: "pipe",
+              timeout: 30_000,
+            },
+          )).toThrow();
+          expect(readFileSync(sentinel, "utf8")).toBe("retained");
+        } finally {
+          rmSync(temporaryDirectory, { recursive: true, force: true });
+        }
+      },
+    );
+
     it("ships the shared inspector panel from the real package", () => {
       const panel = packagedText(packaged, "dist/panel.html");
+      const inspectorPanel = packagedText(packaged, "dist/inspector-panel.html");
       const panelCss = packagedText(packaged, "dist/panel.css");
+      const elementsCss = packagedText(packaged, "dist/devtools-elements.css");
       const panelBundle = packagedText(packaged, "dist/panel.js");
+      const inspectorPanelBundle = packagedText(packaged, "dist/inspectorPanel.js");
 
       expect(panel).toBe(sharedAsset("panel.html"));
+      expect(inspectorPanel).toBe(sharedAsset("inspector-panel.html"));
+      expect(elementsCss).toBe(sharedElementsAsset("devtools-elements.css"));
+      expect(inspectorPanel).toContain('./inspectorPanel.js');
+      expect(inspectorPanelBundle).toContain("inspector-workspace");
       expect(panelCss).toBe(sharedAsset("panel.css"));
       expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
         Buffer.from(sharedAsset("pin-op.svg")),
@@ -854,9 +935,12 @@ export function describeBrowserPackageContract(
         "dist/contentScript.js",
         "dist/devtools.js",
         "dist/panel.js",
+        "dist/inspectorPanel.js",
         "dist/devtools.html",
         "dist/panel.html",
+        "dist/inspector-panel.html",
         "dist/panel.css",
+        "dist/devtools-elements.css",
         "dist/pin-op.svg",
         "dist/icons/pin-op-16.png",
         "dist/icons/pin-op-32.png",
@@ -1172,6 +1256,13 @@ function sharedAsset(name: string): string {
   );
 }
 
+function sharedElementsAsset(name: string): string {
+  return readFileSync(
+    new URL(`../../packages/devtools-elements-ui/assets/${name}`, import.meta.url),
+    "utf8",
+  );
+}
+
 function sharedAssetBytes(name: string): Buffer {
   return readFileSync(
     new URL(`../../packages/browser-extension-core/assets/${name}`, import.meta.url),
@@ -1191,12 +1282,14 @@ const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "BackgroundRuntimePort",
   "ContentInspectPort",
   "ContentScriptDocument",
+  "DevtoolsPanelPage",
   "PanelInspectPort",
   "sanitizeErrorMessage",
   "startBackgroundRuntime",
   "startContentScriptRuntime",
   "startContentRefreshBootstrapRuntime",
   "startDevtoolsRuntime",
+  "startInspectorPanelRuntime",
   "startPanelRuntime",
 ]);
 
@@ -1378,6 +1471,11 @@ function stageBrowserExtensionProject(
     workspaceRoot,
     stagedWorkspace,
     join("packages", "browser-extension-core", "assets"),
+  );
+  copyWorkspacePath(
+    workspaceRoot,
+    stagedWorkspace,
+    join("packages", "devtools-elements-ui", "assets"),
   );
   symlinkSync(
     join(extensionRoot, "node_modules"),

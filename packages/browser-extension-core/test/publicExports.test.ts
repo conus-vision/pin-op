@@ -37,9 +37,11 @@ import {
   DomTreeProvider,
   DomTreeProviderError,
   DomTreeView,
+  ElementsInspectorAdapter,
   DomProtocolError,
   FrameRegistry,
   InspectMode,
+  InspectorPanelView,
   PAGE_INSPECTION_SELECTION_INTERVAL_MS,
   PageInspectionSession,
   PageOverlay,
@@ -66,6 +68,7 @@ import {
   startContentScriptRuntime,
   startContentRefreshRuntime,
   startDevtoolsRuntime,
+  startInspectorPanelRuntime,
   startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
@@ -128,10 +131,12 @@ describe("browser extension core exports", () => {
     expect(DomTreeProvider).toBeTypeOf("function");
     expect(DomTreeProviderError).toBeTypeOf("function");
     expect(DomTreeView).toBeTypeOf("function");
+    expect(ElementsInspectorAdapter).toBeTypeOf("function");
     expect(DomProtocolError).toBeTypeOf("function");
     expect(FrameRegistry).toBeTypeOf("function");
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
+    expect(InspectorPanelView).toBeTypeOf("function");
     expect(PAGE_INSPECTION_SELECTION_INTERVAL_MS).toBe(100);
     expect(PageInspectionSession).toBeTypeOf("function");
     expect(PageOverlay).toBeTypeOf("function");
@@ -158,6 +163,7 @@ describe("browser extension core exports", () => {
     expect(startContentScriptRuntime).toBeTypeOf("function");
     expect(startContentRefreshRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
+    expect(startInspectorPanelRuntime).toBeTypeOf("function");
     expect(startPanelRuntime).toBeTypeOf("function");
     expect(TabRefreshCoordinator).toBeTypeOf("function");
     expect(TabRefreshStateStore).toBeTypeOf("function");

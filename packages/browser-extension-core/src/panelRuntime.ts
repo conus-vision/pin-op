@@ -8,6 +8,7 @@ import {
   createPanelIcons,
   PanelController,
   type PanelCommand,
+  type PanelView,
 } from "./panelController.js";
 import { DomTreeController } from "./domTreeController.js";
 import { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
@@ -33,12 +34,16 @@ import {
 import type { PanelInspectStartedState } from "./panelSessionTransport.js";
 import { DomPanelView, type PanelDocument } from "./panelView.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
-import { ResolutionPresenter } from "./resolutionPresenter.js";
+import {
+  ResolutionPresenter,
+  type ResolutionViewModel,
+} from "./resolutionPresenter.js";
 import { SourceNavigationController } from "./sourceNavigationController.js";
 import { SourcePaneController } from "./sourcePaneController.js";
 import {
   SourcePaneView,
   type SourcePaneDocument,
+  type SourcePaneViewState,
 } from "./sourcePaneView.js";
 import {
   createDevtoolsPanelPortName,
@@ -72,11 +77,52 @@ export interface PanelRuntime {
   dispose(): void;
 }
 
+interface RuntimePanelView extends PanelView {
+  renderResolution(model: ResolutionViewModel): void;
+  bindSettings(controller: PanelSettingsController): () => void;
+}
+
+interface RuntimeSourcePaneView {
+  setState(state: SourcePaneViewState): void;
+}
+
+interface PanelRuntimePresentationContext {
+  readonly sourcePaneController: SourcePaneController;
+  readonly sourceNavigationController: SourceNavigationController;
+  readonly settingsController: PanelSettingsController;
+  readonly treeController: DomTreeController;
+}
+
+interface PanelRuntimePresentationBinding {
+  readonly sourcePaneView: RuntimeSourcePaneView;
+  readonly removeSettingsBindings: () => void;
+  readonly removeSourceNavigationBindings: () => void;
+  readonly removeLayoutBindings: () => void;
+  disposePresentation(): void;
+}
+
+export interface PanelRuntimePresentation {
+  readonly view: RuntimePanelView;
+  attach(context: PanelRuntimePresentationContext): PanelRuntimePresentationBinding;
+}
+
+export type PanelRuntimePresentationFactory = (
+  options: PanelRuntimeOptions,
+  reportError: (error: unknown) => void,
+) => PanelRuntimePresentation;
+
 type DomSelectionAuthorityEvent =
   | DomSelectionChangedEvent
   | DomSelectionClearedEvent;
 
 export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
+  return startPanelRuntimeWithPresentation(options, createLegacyPresentation);
+}
+
+export function startPanelRuntimeWithPresentation(
+  options: PanelRuntimeOptions,
+  createPresentation: PanelRuntimePresentationFactory,
+): PanelRuntime {
   const channel = new URLSearchParams(options.locationSearch).get("channel") ?? "";
   if (!isValidDevtoolsChannel(channel)) {
     throw new Error("Invalid DevTools panel channel");
@@ -89,7 +135,8 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     }
   };
   const diagnostics = options.diagnostics ?? new PanelDiagnostics();
-  const view = new DomPanelView(options.document, reportError);
+  const presentation = createPresentation(options, reportError);
+  const view = presentation.view;
   const resolutionPresenter = new ResolutionPresenter();
   view.renderResolution(resolutionPresenter.snapshot());
   const stateListeners = new Set<(message: unknown) => void | Promise<void>>();
@@ -116,7 +163,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   } | undefined;
   let activeInspectSelectionRevision: number | undefined;
   let settingsBinding: PanelSettingsBindingToken | undefined;
+  let settingsBindingActivationAuthority: object | undefined;
   let compatibility: "pending" | "compatible" | "incompatible" = "pending";
+  let acceptedCompatibilityRouteAuthority: object | undefined;
+  let nonLinkedConnectionRouteAuthority: object | undefined;
   let mismatchBlocked = false;
   let deferredLinkedState: unknown;
 
@@ -131,22 +181,6 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       inspectTransport.dispatchPresentationSettings(message);
     }
   });
-  const sourcePaneView = new SourcePaneView({
-    document: options.document as unknown as SourcePaneDocument,
-    root: view.sourceRoot(),
-    controller: sourcePaneController,
-    onError: reportError,
-  });
-  sourcePaneView.setState({
-    kind: "empty",
-    statusText: "Select an element to inspect",
-  });
-  const layoutController = new PanelLayoutController({
-    createResizeObserver: options.createResizeObserver ?? browserResizeObserver,
-    storage: options.layoutStorage ?? browserSessionStorage(),
-  });
-  const removeSettingsBindings = view.bindSettings(settingsController);
-  const removeLayoutBindings = view.bindLayout(layoutController);
   inspectTransport = new PanelInspectTransport(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
@@ -172,8 +206,6 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   const sourceNavigationController = new SourceNavigationController(
     (message) => inspectTransport.dispatchSourceNavigation(message),
   );
-  const removeSourceNavigationBindings =
-    view.bindSourceNavigation(sourceNavigationController);
   treeController = new DomTreeController({
     transport: {
       request: (request) => inspectTransport.requestDom(request),
@@ -188,11 +220,21 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       request: (request) => inspectTransport.requestDom(request),
     },
   });
-  const treeView = new DomTreeView({
-    document: options.document,
-    controller: treeController,
+  const presentationBinding = presentation.attach({
+    sourcePaneController,
     sourceNavigationController,
-    onError: reportError,
+    settingsController,
+    treeController,
+  });
+  const {
+    sourcePaneView,
+    removeSettingsBindings,
+    removeSourceNavigationBindings,
+    removeLayoutBindings,
+  } = presentationBinding;
+  sourcePaneView.setState({
+    kind: "empty",
+    statusText: "Select an element to inspect",
   });
   const inspectController = new PanelInspectController((message) =>
     inspectTransport.send(message),
@@ -228,6 +270,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         }
       })
       .catch(async (error) => {
+        if (disposed) {
+          return;
+        }
         reportError(error);
         await controller.handleTransportDisconnect();
       });
@@ -242,58 +287,114 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
   }
 
   function routePanelMessage(message: unknown): void {
+    if (disposed) {
+      return;
+    }
+    currentSettingsBinding();
+    if (disposed) {
+      return;
+    }
     const compatibilityMessage = parseProtocolCompatibilityMessage(message);
     const tabState = parsePanelTabStateMessage(message);
     const inspectStarted = validatedInspectStarted(message);
     const domEvent = validatedDomEvent(message);
     const sourceMatches = parseProtocolData(message, SourceMatchesMessageSchema);
     const windowState = validatedWindowState(message);
+    if (windowState && windowState.state !== "linked") {
+      nonLinkedConnectionRouteAuthority = {};
+    }
     let forwardToStateListeners = true;
+    let compatibilityRouteAuthority: object | undefined;
     if (compatibilityMessage) {
-      if (!settingsBinding) {
+      const binding = currentSettingsBinding();
+      if (!binding) {
         return;
       }
+      if (
+        compatibilityMessage.compatible &&
+        mismatchBlocked &&
+        deferredLinkedState === undefined
+      ) {
+        return;
+      }
+      const previousAuthority = acceptedCompatibilityRouteAuthority;
+      const previousConnectionAuthority = nonLinkedConnectionRouteAuthority;
       if (!settingsController.acceptCompatibility(
-        settingsBinding,
+        binding,
         compatibilityMessage,
       )) {
+        isCurrentSettingsBinding(binding);
         return;
       }
+      if (
+        disposed ||
+        !isCurrentSettingsBinding(binding) ||
+        acceptedCompatibilityRouteAuthority !== previousAuthority ||
+        nonLinkedConnectionRouteAuthority !== previousConnectionAuthority
+      ) {
+        return;
+      }
+      compatibilityRouteAuthority = {};
+      acceptedCompatibilityRouteAuthority = compatibilityRouteAuthority;
+      const isCurrentRoute = (): boolean =>
+        !disposed &&
+        isCurrentSettingsBinding(binding) &&
+        acceptedCompatibilityRouteAuthority === compatibilityRouteAuthority &&
+        nonLinkedConnectionRouteAuthority === previousConnectionAuthority;
       compatibility = compatibilityMessage.compatible
         ? "compatible"
         : "incompatible";
       sourcePaneController.setCompatible(compatibilityMessage.compatible);
+      if (!isCurrentRoute()) {
+        return;
+      }
       if (!compatibilityMessage.compatible) {
-        sourcePaneView.setState({
-          kind: "incompatible",
-          statusText: "Extensions are incompatible",
-        });
         mismatchBlocked = true;
-        sourceNavigationController.invalidate();
-        settingsController.invalidateInspect();
+        deferredLinkedState = undefined;
+        clearLinkedInspectionState(true);
+        if (!isCurrentRoute()) {
+          return;
+        }
         notifyStateListeners({
           type: "pin-op.windowState",
           state: "incompatible",
-        });
+        }, isCurrentRoute);
+        if (!isCurrentRoute()) {
+          return;
+        }
       } else if (mismatchBlocked) {
         mismatchBlocked = false;
         sourcePaneView.setState({
           kind: "empty",
           statusText: "Select an element to inspect",
         });
+        if (!isCurrentRoute()) {
+          return;
+        }
         const linkedState = deferredLinkedState;
         deferredLinkedState = undefined;
         if (linkedState) {
-          notifyStateListeners(linkedState);
+          notifyStateListeners(linkedState, isCurrentRoute);
+          if (!isCurrentRoute()) {
+            return;
+          }
+          treeSessionActive = true;
+          void treeController.loadRoot();
         }
       }
     } else if (tabState) {
-      if (!settingsBinding) {
+      const binding = currentSettingsBinding();
+      if (!binding) {
         return;
       }
-      settingsController.acceptTabState(settingsBinding, tabState);
+      if (
+        !settingsController.acceptTabState(binding, tabState) ||
+        !isCurrentSettingsBinding(binding)
+      ) {
+        return;
+      }
     } else if (inspectStarted) {
-      if (compatibility === "incompatible") {
+      if (!currentSettingsBinding() || compatibility === "incompatible") {
         return;
       }
       const inspectDocumentEpoch = treeController.documentEpoch ??
@@ -335,6 +436,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         view.renderResolution(model);
       }
     } else if (domEvent) {
+      if (!currentSettingsBinding() || compatibility === "incompatible") {
+        return;
+      }
       let beginsSelection = false;
       let selectionOwnership: "current" | "advanced" | undefined;
       if (
@@ -468,11 +572,15 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       windowState.state === "offline" ||
       windowState.state === "reconnecting"
     )) {
-      acceptSettingsWindowState(windowState.state);
+      if (!acceptSettingsWindowState(windowState.state)) {
+        return;
+      }
       if (windowState.state === "linked") {
         deferredLinkedState = message;
         if (!settingsBinding) {
-          activatePanelBinding();
+          if (!activatePanelBinding()) {
+            return;
+          }
           deferredLinkedState = message;
         }
         if (mismatchBlocked) {
@@ -497,8 +605,10 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
           });
         }
       }
-      treeSessionActive = true;
-      void treeController.loadRoot();
+      if (!mismatchBlocked) {
+        treeSessionActive = true;
+        void treeController.loadRoot();
+      }
     } else if (parseInspectPortInvalidated(message)) {
       const shouldRecover = treeSessionActive;
       resetSelectionOwnership();
@@ -528,16 +638,21 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       windowState.state === "linking" ||
       windowState.state === "rateLimited"
     )) {
-      acceptSettingsWindowState(windowState.state);
+      if (!acceptSettingsWindowState(windowState.state)) {
+        return;
+      }
       deferredLinkedState = undefined;
       clearLinkedInspectionState();
     } else if (windowState?.state === "incompatible") {
-      if (!settingsBinding) {
-        activatePanelBinding();
+      if (!settingsBinding && !activatePanelBinding()) {
+        return;
       }
-      acceptSettingsWindowState(windowState.state);
+      if (!acceptSettingsWindowState(windowState.state)) {
+        return;
+      }
       compatibility = "incompatible";
       mismatchBlocked = true;
+      deferredLinkedState = undefined;
       clearLinkedInspectionState(true);
       sourcePaneController.setCompatible(false);
       sourcePaneView.setState({
@@ -545,7 +660,9 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
         statusText: "Extensions are incompatible",
       });
     } else if (windowState?.state === "error") {
-      acceptSettingsWindowState(windowState.state);
+      if (!acceptSettingsWindowState(windowState.state)) {
+        return;
+      }
       if (hasDisplayLinkCode(message)) {
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
@@ -558,7 +675,13 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
       }
     }
     if (forwardToStateListeners) {
-      notifyStateListeners(message);
+      notifyStateListeners(
+        message,
+        compatibilityRouteAuthority
+          ? () => acceptedCompatibilityRouteAuthority ===
+            compatibilityRouteAuthority
+          : undefined,
+      );
     }
   }
 
@@ -567,48 +690,135 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     return options.sendRuntimeMessage(message);
   }
 
-  function activatePanelBinding(): void {
-    settingsBinding = settingsController.beginBinding(mismatchBlocked);
-    sourcePaneController.beginBinding();
-    compatibility = mismatchBlocked ? "incompatible" : "pending";
-    if (!mismatchBlocked) {
-      deferredLinkedState = undefined;
+  function activatePanelBinding(): boolean {
+    if (disposed) {
+      return false;
     }
+    const previousBinding = settingsBinding;
+    const activationAuthority = {};
+    settingsBindingActivationAuthority = activationAuthority;
+    const binding = settingsController.beginBinding(mismatchBlocked);
+    if (disposed || settingsBindingActivationAuthority !== activationAuthority) {
+      return false;
+    }
+    if (!settingsController.isCurrentBinding(binding)) {
+      settingsBindingActivationAuthority = {};
+      if (settingsBinding === previousBinding) {
+        settingsBinding = undefined;
+        failClosedSettingsAuthority();
+      }
+      return false;
+    }
+    settingsBinding = binding;
+    sourcePaneController.beginBinding();
+    if (
+      disposed ||
+      settingsBindingActivationAuthority !== activationAuthority ||
+      !isCurrentSettingsBinding(binding)
+    ) {
+      return false;
+    }
+    compatibility = mismatchBlocked ? "incompatible" : "pending";
+    deferredLinkedState = undefined;
+    return true;
+  }
+
+  function currentSettingsBinding(): PanelSettingsBindingToken | undefined {
+    const binding = settingsBinding;
+    if (!binding) {
+      return undefined;
+    }
+    return isCurrentSettingsBinding(binding) ? binding : undefined;
+  }
+
+  function isCurrentSettingsBinding(
+    binding: PanelSettingsBindingToken,
+  ): boolean {
+    if (settingsBinding !== binding) {
+      return false;
+    }
+    if (settingsController.isCurrentBinding(binding)) {
+      return true;
+    }
+    settingsBinding = undefined;
+    settingsBindingActivationAuthority = {};
+    failClosedSettingsAuthority();
+    return false;
+  }
+
+  function failClosedSettingsAuthority(): void {
+    deferredLinkedState = undefined;
+    clearLinkedInspectionState(mismatchBlocked);
   }
 
   function acceptSettingsWindowState(
     state: BrowserWindowConnectionState,
-  ): void {
+  ): boolean {
     if (mismatchBlocked && (
       state === "linked" ||
       state === "offline" ||
       state === "reconnecting"
     )) {
-      return;
+      return true;
     }
     if (mismatchBlocked && state !== "incompatible") {
+      const previousBinding = settingsBinding;
+      settingsBindingActivationAuthority = {};
       settingsController.revokeBinding(true);
-      settingsBinding = undefined;
+      if (settingsBinding === previousBinding) {
+        settingsBinding = undefined;
+      } else if (settingsBinding !== undefined) {
+        return false;
+      }
       compatibility = "incompatible";
-      return;
+      return true;
     }
-    if (settingsBinding) {
-      settingsController.acceptWindowState(settingsBinding, state);
+    const binding = settingsBinding;
+    if (binding) {
+      const accepted = settingsController.acceptWindowState(binding, state);
+      if (!accepted) {
+        isCurrentSettingsBinding(binding);
+        return false;
+      }
+      if (state !== "linked" && state !== "incompatible") {
+        if (settingsBinding !== binding) {
+          return false;
+        }
+        settingsBindingActivationAuthority = {};
+        settingsBinding = undefined;
+        compatibility = "pending";
+        return true;
+      }
+      if (!isCurrentSettingsBinding(binding)) {
+        if (settingsBinding !== undefined) {
+          return false;
+        }
+      }
     }
     if (state !== "linked" && state !== "incompatible") {
-      settingsBinding = undefined;
+      settingsBindingActivationAuthority = {};
+      if (settingsBinding === binding) {
+        settingsBinding = undefined;
+      } else if (settingsBinding !== undefined) {
+        return false;
+      }
       compatibility = "pending";
     }
+    return true;
   }
 
   function disconnectFeatureControllers(preserveMismatch = false): void {
     sourcePaneController.disconnect();
-    if (settingsBinding && !preserveMismatch) {
-      settingsController.acceptWindowState(settingsBinding, "offline");
+    const previousBinding = settingsBinding;
+    settingsBindingActivationAuthority = {};
+    if (previousBinding && !preserveMismatch) {
+      settingsController.acceptWindowState(previousBinding, "offline");
     } else {
       settingsController.revokeBinding(preserveMismatch);
     }
-    settingsBinding = undefined;
+    if (settingsBinding === previousBinding) {
+      settingsBinding = undefined;
+    }
     compatibility = preserveMismatch ? "incompatible" : "pending";
     mismatchBlocked = preserveMismatch;
     sourcePaneView.setState(preserveMismatch
@@ -619,8 +829,14 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     }
   }
 
-  function notifyStateListeners(message: unknown): void {
+  function notifyStateListeners(
+    message: unknown,
+    isCurrent: () => boolean = () => true,
+  ): void {
     for (const listener of [...stateListeners]) {
+      if (!isCurrent()) {
+        return;
+      }
       void Promise.resolve(listener(message)).catch(reportError);
     }
   }
@@ -789,9 +1005,7 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
     disconnectFeatureControllers(false);
     diagnostics.clearResolution();
     recoveryCoordinator.dispose();
-    treeView.dispose();
-    sourcePaneView.dispose();
-    layoutController.dispose();
+    presentationBinding.disposePresentation();
     treeController.dispose();
     closePromise = controller
       .dispose()
@@ -809,13 +1023,16 @@ export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
 
   const ready = Promise.resolve()
     .then(() => {
+      if (disposed) {
+        return;
+      }
       try {
         (options.initializeIcons ?? createPanelIcons)();
       } catch (error) {
         reportError(error);
       }
     })
-    .then(() => controller.initialize())
+    .then(() => disposed ? undefined : controller.initialize())
     .then(ensurePanelPort)
     .catch(reportError);
 
@@ -979,4 +1196,54 @@ function browserSessionStorage(): PanelSessionStateStorage | undefined {
   } catch {
     return undefined;
   }
+}
+
+function createLegacyPresentation(
+  options: PanelRuntimeOptions,
+  reportError: (error: unknown) => void,
+): PanelRuntimePresentation {
+  const view = new DomPanelView(options.document, reportError);
+  return {
+    view,
+    attach(context) {
+      const sourcePaneView = new SourcePaneView({
+        document: options.document as unknown as SourcePaneDocument,
+        root: view.sourceRoot(),
+        controller: context.sourcePaneController,
+        onError: reportError,
+      });
+      const layoutController = new PanelLayoutController({
+        createResizeObserver:
+          options.createResizeObserver ?? browserResizeObserver,
+        storage: options.layoutStorage ?? browserSessionStorage(),
+      });
+      const removeSettingsBindings = view.bindSettings(
+        context.settingsController,
+      );
+      const removeLayoutBindings = view.bindLayout(layoutController);
+      const removeSourceNavigationBindings = view.bindSourceNavigation(
+        context.sourceNavigationController,
+      );
+      const treeView = new DomTreeView({
+        document: options.document,
+        controller: context.treeController,
+        sourceNavigationController: context.sourceNavigationController,
+        onError: reportError,
+      });
+      let disposed = false;
+      return {
+        sourcePaneView,
+        removeSettingsBindings,
+        removeSourceNavigationBindings,
+        removeLayoutBindings,
+        disposePresentation() {
+          if (disposed) return;
+          disposed = true;
+          treeView.dispose();
+          sourcePaneView.dispose();
+          layoutController.dispose();
+        },
+      };
+    },
+  };
 }

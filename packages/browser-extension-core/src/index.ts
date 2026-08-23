@@ -202,6 +202,7 @@ export type {
   DevtoolsAdapterRuntime,
   DevtoolsAdapterRuntimeOptions,
   DevtoolsPanelHandle,
+  DevtoolsPanelPage,
   DevtoolsRuntimeOptions,
 } from "./devtoolsRuntime.js";
 export { sanitizeErrorMessage } from "./errorSanitizer.js";
@@ -277,6 +278,7 @@ export type {
   DomTreeSnapshot,
   DomTreeTransport,
 } from "./domTreeController.js";
+export { ElementsInspectorAdapter } from "./elementsInspectorAdapter.js";
 export { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
 export type {
   DomTreeRecoveryCoordinatorOptions,
@@ -434,6 +436,13 @@ export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { DomPanelView } from "./panelView.js";
 export type { PanelDocument } from "./panelView.js";
+export { InspectorPanelView } from "./inspectorPanelView.js";
+export type { InspectorPanelDocument } from "./inspectorPanelView.js";
+export { startInspectorPanelRuntime } from "./inspectorPanelRuntime.js";
+export type {
+  InspectorPanelRuntime,
+  InspectorPanelRuntimeOptions,
+} from "./inspectorPanelRuntime.js";
 export { startPanelRuntime } from "./panelRuntime.js";
 export type {
   PanelRuntime,

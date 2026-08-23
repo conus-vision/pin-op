@@ -172,6 +172,9 @@ importers:
 
   packages/browser-extension-core:
     dependencies:
+      '@pin-op/devtools-elements-ui':
+        specifier: workspace:*
+        version: link:../devtools-elements-ui
       '@pin-op/protocol':
         specifier: workspace:*
         version: link:../protocol
