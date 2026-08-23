@@ -4255,6 +4255,42 @@ describe("DomTreeController", () => {
     expect(controller.snapshot().errorCode).toBeUndefined();
   });
 
+  it("preserves explicit same-ref focus from a synchronous refresh error callback", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const parent = locatedNode("parent", locator(2), true, 1);
+    const stale = locatedNode("stale", locator(3));
+    transport.enqueue(rootResponse(root));
+    transport.enqueue(childrenResponse(root.nodeRef, 1, [parent]));
+    transport.enqueue(childrenResponse(parent.nodeRef, 1, [stale]));
+    let controller!: DomTreeController;
+    const onError = vi.fn(() => controller.focus(parent.nodeRef));
+    controller = createController(transport, () => undefined, onError);
+    await controller.loadRoot();
+    await controller.expand(root.nodeRef);
+    await controller.expand(parent.nodeRef);
+    controller.focus(stale.nodeRef);
+    const failure = new Error("synchronous children failure");
+    transport.enqueueSynchronousThrow(failure);
+
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: parent.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    expect(onError).toHaveBeenCalledWith(failure);
+    expectSingleFocusedRow(controller, parent.nodeRef);
+    expect(controller.rows().find((row) => row.type === "load-more"))
+      .toMatchObject({
+        parentRef: parent.nodeRef,
+        label: "Load children",
+        loading: false,
+        focused: false,
+      });
+  });
+
   it("clears a load-more request that throws synchronously and permits retry", async () => {
     const transport = new TestTransport();
     const root = locatedNode("root", locator(1), true, 1);

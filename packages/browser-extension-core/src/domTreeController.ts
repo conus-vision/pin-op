@@ -1159,7 +1159,10 @@ export class DomTreeController {
     const moveFocusedServiceRow = focusedRow?.type === "load-more";
     let provisionalFocusRef: string | undefined;
     let firstPageFailed = false;
-    let firstPageFailureFallbackRef: string | undefined;
+    let firstPageFailureFallback: {
+      readonly nodeRef: string;
+      readonly focusIntentVersion: number;
+    } | undefined;
     const request: DomGetChildrenRequest = {
       type: "dom.getChildren",
       requestId: this.createRequestId(),
@@ -1194,7 +1197,7 @@ export class DomTreeController {
         if (response.type === "dom.error") {
           if (!cursor) {
             firstPageFailed = true;
-            firstPageFailureFallbackRef = this.failFirstPageRefresh(
+            firstPageFailureFallback = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1218,7 +1221,7 @@ export class DomTreeController {
         ) {
           if (!cursor) {
             firstPageFailed = true;
-            firstPageFailureFallbackRef = this.failFirstPageRefresh(
+            firstPageFailureFallback = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1277,7 +1280,7 @@ export class DomTreeController {
         ) {
           if (!cursor) {
             firstPageFailed = true;
-            firstPageFailureFallbackRef = this.failFirstPageRefresh(
+            firstPageFailureFallback = this.failFirstPageRefresh(
               currentBranch,
               nodeRef,
               pendingFocusAnchor,
@@ -1293,8 +1296,10 @@ export class DomTreeController {
             ? pendingFocusAnchor
             : this.focusAnchor(this.rows());
           const restoreRetryFocus = firstPageFailed &&
-            firstPageFailureFallbackRef !== undefined &&
-            this.focusedNodeRef === firstPageFailureFallbackRef;
+            firstPageFailureFallback !== undefined &&
+            this.focusedNodeRef === firstPageFailureFallback.nodeRef &&
+            this.focusIntentVersion ===
+              firstPageFailureFallback.focusIntentVersion;
           currentBranch.pending = undefined;
           this.settleReconciliationToken(reconciliationBatchId, token);
           this.invalidateRows();
@@ -2182,7 +2187,10 @@ export class DomTreeController {
     branch: BranchState,
     parentRef: string,
     focusAnchor: FocusAnchor,
-  ): string | undefined {
+  ): {
+    readonly nodeRef: string;
+    readonly focusIntentVersion: number;
+  } | undefined {
     const previousFocusedRef = this.focusedNodeRef;
     const previousChildren = [...branch.children];
     branch.children.length = 0;
@@ -2195,8 +2203,11 @@ export class DomTreeController {
     branch.nextCursor = undefined;
     this.invalidateRows();
     this.reconcileFocus(focusAnchor);
-    return this.focusedNodeRef !== previousFocusedRef
-      ? this.focusedNodeRef
+    return this.focusedNodeRef !== previousFocusedRef && this.focusedNodeRef
+      ? {
+          nodeRef: this.focusedNodeRef,
+          focusIntentVersion: this.focusIntentVersion,
+        }
       : undefined;
   }
 
