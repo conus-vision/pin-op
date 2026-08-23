@@ -77,6 +77,18 @@ test("browser notices deterministically include every Chromium-derived license i
     assert.equal(chromeNotices, firefoxNotices);
     assert.match(
       chromeNotices,
+      /Bundled package sections are generated from the inputs in esbuild's bundle metadata\./,
+    );
+    assert.match(
+      chromeNotices,
+      /Chromium-derived sections are generated from the pinned UPSTREAM\.json manifest, root license, and embedded source notices\./,
+    );
+    assert.doesNotMatch(
+      chromeNotices,
+      /^This list is generated from the inputs in esbuild's bundle metadata\.$/m,
+    );
+    assert.match(
+      chromeNotices,
       /## Chromium DevTools Frontend \(derived view code\)/,
     );
     assert.match(

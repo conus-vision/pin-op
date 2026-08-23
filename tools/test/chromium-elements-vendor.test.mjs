@@ -319,6 +319,38 @@ test("checked-in Chromium Elements provenance is exact and verifies offline", as
   );
 });
 
+test("every recorded Chromium-derived TypeScript target is pinned to LF", async () => {
+  const manifest = await readManifest();
+  const packagePrefix = "packages/devtools-elements-ui/";
+  const derivedTypeScriptTargets = manifest.files
+    .flatMap(({ derivedTargets }) => derivedTargets)
+    .filter(({ localSha256, path: targetPath }) => (
+      localSha256 !== "pending" && targetPath.endsWith(".ts")
+    ));
+  const attributes = await readFile(
+    path.join(REPO_ROOT, "packages/devtools-elements-ui/.gitattributes"),
+    "utf8",
+  );
+
+  assert.ok(derivedTypeScriptTargets.length > 0);
+  assert.match(attributes, /^src\/chromium\/\*\*\/\*\.ts text eol=lf$/m);
+  for (const target of derivedTypeScriptTargets) {
+    assert.ok(target.path.startsWith(packagePrefix), target.path);
+    const packageRelativePath = target.path.slice(packagePrefix.length);
+    assert.match(
+      packageRelativePath,
+      /^src\/chromium\/(?:[^/]+\/)*[^/]+\.ts$/,
+      `${target.path} must be covered by the pinned Chromium TypeScript glob`,
+    );
+    const bytes = await readFile(path.join(REPO_ROOT, ...target.path.split("/")));
+    assert.equal(
+      bytes.includes(13),
+      false,
+      `${target.path} must contain LF line endings only`,
+    );
+  }
+});
+
 test("only the exact full Chromium revision is accepted before network access", async (t) => {
   const invalidRevisions = [
     "main",

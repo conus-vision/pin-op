@@ -1,7 +1,8 @@
 # Third-Party Notices
 
 Pin-op includes the following bundled third-party software.
-This list is generated from the inputs in esbuild's bundle metadata.
+Bundled package sections are generated from the inputs in esbuild's bundle metadata.
+Chromium-derived sections are generated from the pinned UPSTREAM.json manifest, root license, and embedded source notices.
 
 ## lucide@0.468.0
 Declared license: ISC

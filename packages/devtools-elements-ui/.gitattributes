@@ -1,1 +1,2 @@
 assets/devtools-elements.css text eol=lf
+src/chromium/**/*.ts text eol=lf
