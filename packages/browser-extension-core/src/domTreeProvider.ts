@@ -433,6 +433,7 @@ export class DomTreeProvider {
     this.frameRegistry = new FrameRegistry(topDocument, {
       documentEpoch: this.documentEpoch,
       onLifecycle: (event) => this.handleFrameLifecycle(event),
+      onMutationSettled: () => this.drainDocumentResets(),
     });
     this.locatorService = this.createLocatorService(topDocument);
     this.frameAuthorityView = Object.freeze({
@@ -1118,7 +1119,18 @@ export class DomTreeProvider {
     });
     this.authorityGeneration += 1;
     this.pendingDocumentReset = request;
-    if (this.drainingDocumentResets) return;
+    this.drainDocumentResets();
+  }
+
+  private drainDocumentResets(): void {
+    if (
+      this.drainingDocumentResets ||
+      this.frameRegistry.mutationInProgress
+    ) return;
+    if (this.disposed) {
+      this.pendingDocumentReset = undefined;
+      return;
+    }
 
     this.drainingDocumentResets = true;
     let appliedResets = 0;

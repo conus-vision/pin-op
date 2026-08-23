@@ -63,6 +63,7 @@ export interface FrameRegistryOptions {
   readonly maxFrames?: number;
   readonly maxFrameEpoch?: number;
   readonly onLifecycle?: (event: FrameLifecycleEvent) => void;
+  readonly onMutationSettled?: () => void;
 }
 
 interface FrameRecord extends FrameIdentity {
@@ -131,6 +132,7 @@ export class FrameRegistry {
   private readonly maxFrames: number;
   private readonly maxFrameEpoch: number;
   private readonly onLifecycle: ((event: FrameLifecycleEvent) => void) | undefined;
+  private readonly onMutationSettled: (() => void) | undefined;
   private readonly contexts = new Map<string, FrameContext>();
   private readonly documentRefs = new Map<Document, string>();
   private readonly records = new Map<string, FrameRecord>();
@@ -141,6 +143,8 @@ export class FrameRegistry {
   private exhaustedFrameElements = new WeakSet<HTMLIFrameElement>();
   private state: FrameRegistryState = "active";
   private structuralRevision = 0;
+  private pendingDispose = false;
+  private notifyingMutationSettled = false;
 
   public constructor(topDocument: Document, options: FrameRegistryOptions = {}) {
     if (!isObject(topDocument)) {
@@ -156,6 +160,7 @@ export class FrameRegistry {
       "documentEpoch",
     );
     this.onLifecycle = options.onLifecycle;
+    this.onMutationSettled = options.onMutationSettled;
     this.top = this.createTopContext(topDocument, 1);
     this.contexts.set(this.top.frameRef, this.top);
     this.documentRefs.set(topDocument, this.top.frameRef);
@@ -163,6 +168,10 @@ export class FrameRegistry {
 
   public get topContext(): FrameContext | undefined {
     return this.state === "active" ? this.top : undefined;
+  }
+
+  public get mutationInProgress(): boolean {
+    return this.state === "mutating";
   }
 
   public getContext(frameRef: string): FrameContext | undefined {
@@ -403,13 +412,23 @@ export class FrameRegistry {
       this.nextFrameRef += 1;
       registeredRecord = record;
     } finally {
-      this.state = "active";
+      this.finishMutation();
     }
-    if (!registeredRecord) {
+    if (
+      !registeredRecord ||
+      !this.isActive() ||
+      this.records.get(registeredRecord.frameRef) !== registeredRecord ||
+      !registeredRecord.active ||
+      registeredRecord.documentEpoch !== this.documentEpoch
+    ) {
       return undefined;
     }
     this.emit("registered", registeredRecord);
-    return this.describe(registeredRecord);
+    return this.isActive() &&
+        this.records.get(registeredRecord.frameRef) === registeredRecord &&
+        registeredRecord.active
+      ? this.describe(registeredRecord)
+      : undefined;
   }
 
   public unregisterFrame(
@@ -434,7 +453,10 @@ export class FrameRegistry {
       this.bumpStructuralRevision();
       invalidated = this.removeSubtree(record);
     } finally {
-      this.state = "active";
+      this.finishMutation();
+    }
+    if (!this.isActive() || record.documentEpoch !== this.documentEpoch) {
+      return EMPTY_FRAME_IDENTITIES;
     }
     this.emit("removed", record, invalidated, false);
     return invalidated;
@@ -583,13 +605,22 @@ export class FrameRegistry {
       this.contexts.set(this.top.frameRef, this.top);
       this.documentRefs.set(topDocument, this.top.frameRef);
     } finally {
-      this.state = "active";
+      this.finishMutation();
     }
+    if (
+      !this.isActive() ||
+      this.documentEpoch !== nextDocumentEpoch ||
+      this.top?.document !== topDocument
+    ) return false;
     this.emitTop("reset");
     return true;
   }
 
   public dispose(): void {
+    if (this.state === "mutating") {
+      this.pendingDispose = true;
+      return;
+    }
     if (this.state !== "active") {
       return;
     }
@@ -601,6 +632,7 @@ export class FrameRegistry {
       this.documentRefs.clear();
       this.top = undefined;
     } finally {
+      this.pendingDispose = false;
       this.state = "disposed";
     }
   }
@@ -681,11 +713,37 @@ export class FrameRegistry {
         eventType = "navigated";
       }
     } finally {
-      this.state = "active";
+      this.finishMutation();
     }
-    if (eventType) {
+    if (
+      eventType &&
+      this.isActive() &&
+      record.documentEpoch === this.documentEpoch
+    ) {
       this.emit(eventType, record, invalidated);
     }
+  }
+
+  private finishMutation(): void {
+    this.state = "active";
+    if (this.pendingDispose) {
+      this.pendingDispose = false;
+      this.dispose();
+      return;
+    }
+    if (!this.onMutationSettled || this.notifyingMutationSettled) return;
+    this.notifyingMutationSettled = true;
+    try {
+      this.onMutationSettled();
+    } catch {
+      // Observer failures cannot disrupt frame bookkeeping.
+    } finally {
+      this.notifyingMutationSettled = false;
+    }
+  }
+
+  private isActive(): boolean {
+    return this.state === "active";
   }
 
   private installContext(record: FrameRecord): void {

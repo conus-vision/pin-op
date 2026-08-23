@@ -1644,6 +1644,122 @@ describe("DomTreeProvider", () => {
     )).toBeDefined();
   });
 
+  it("drains a newer reset accepted during a later frame-scan slice", () => {
+    const document = createDocument();
+    const intermediateDocument = createDocument();
+    for (let index = 0; index < 1_030; index += 1) {
+      intermediateDocument.documentElement.append(
+        createElement("section", intermediateDocument),
+      );
+    }
+    const intermediateChild = createDocument();
+    const intermediateFrame = createFrameElement(
+      intermediateDocument,
+      intermediateChild,
+    );
+    intermediateDocument.documentElement.append(intermediateFrame);
+    const latestDocument = createDocument();
+    const latestChild = createDocument();
+    latestDocument.documentElement.append(
+      createFrameElement(latestDocument, latestChild),
+    );
+    const lifecycle: FrameLifecycleEvent[] = [];
+    let provider!: DomTreeProvider;
+    let reentered = false;
+    let armed = false;
+    Object.defineProperty(intermediateFrame, "contentDocument", {
+      configurable: true,
+      get: () => {
+        intermediateFrame.contentDocumentReads += 1;
+        if (armed && !reentered) {
+          reentered = true;
+          provider.resetDocument(latestDocument as unknown as Document, 5);
+        }
+        return intermediateChild as unknown as Document;
+      },
+    });
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+    provider = harness.provider;
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    lifecycle.length = 0;
+    armed = true;
+
+    provider.resetDocument(intermediateDocument as unknown as Document, 4);
+    expect(provider.currentDocumentEpoch).toBe(4);
+    expect(reentered).toBe(false);
+
+    expect(() => harness.flushTimers()).not.toThrow();
+    harness.flushEffects();
+
+    expect(reentered).toBe(true);
+    expect(provider.currentDocumentEpoch).toBe(5);
+    expect(lifecycle.filter((event) => (
+      event.type === "registered" && event.documentEpoch === 4
+    ))).toEqual([]);
+    expect(lifecycle.filter((event) => (
+      event.type === "registered" && event.documentEpoch === 5
+    ))).toHaveLength(1);
+    expect(provider.frameAuthority.getContextForDocument(
+      intermediateChild as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      latestChild as unknown as Document,
+    )).toBeDefined();
+    expect((provider as unknown as {
+      readonly activeDocumentReset: unknown;
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
+      activeDocumentReset: undefined,
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
+  it("keeps frame authority terminal when listener registration disposes the provider", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+    const provider = harness.provider;
+    const addEventListener = frame.addEventListener.bind(frame);
+    let disposed = false;
+    frame.addEventListener = (type, listener) => {
+      addEventListener(type, listener);
+      if (!disposed && type === "load") {
+        disposed = true;
+        provider.dispose();
+      }
+    };
+
+    expect(() => provider.startFrameTracking()).not.toThrow();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(disposed).toBe(true);
+    expect(frame.loadListenerCount).toBe(0);
+    expect(lifecycle).toEqual([]);
+    expect(provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(provider.frameAuthority.getContext("frame-1")).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+
+    frame.dispatchLoad();
+    harness.flushTimers();
+    harness.flushEffects();
+    expect(lifecycle).toEqual([]);
+    expect(provider.frameAuthority.accessibleContexts()).toEqual([]);
+  });
+
   it("continues an authoritative reset-owned frame scan in later slices", () => {
     const document = createDocument();
     const replacementDocument = createDocument();
