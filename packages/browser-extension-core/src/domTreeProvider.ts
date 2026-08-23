@@ -57,6 +57,11 @@ const ELEMENT_LABEL_MAX_CLASSES = 4;
 const ELEMENT_LABEL_MAX_TOKEN_LENGTH = 64;
 const FRAME_MUTATION_SCAN_LIMIT = 1_024;
 const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
+const MUTATION_INTAKE_RECORD_LIMIT = 4_096;
+const MUTATION_INTAKE_NODE_LIMIT = 4_096;
+const MUTATION_RECORD_NODE_LIMIT = 256;
+const MUTATION_OVERFLOW_COALESCING_LIMIT = 128;
+const MUTATION_OVERFLOW_FRAME_VISIT_LIMIT = 4_096;
 // A reset hook may synchronously request another epoch. Bound the drain so a
 // hostile page cannot keep the provider on the stack forever.
 const DOCUMENT_RESET_APPLICATION_LIMIT = 16;
@@ -201,11 +206,26 @@ interface PendingFrameMutationScan {
   readonly root: Node;
   readonly stack: FrameTraversalEntry[];
   readonly resetGuard?: () => boolean;
+  readonly visitBudget?: FrameMutationVisitBudget;
+}
+
+interface FrameMutationVisitBudget {
+  remaining: number;
+  readonly failClosedOnExhaustion: boolean;
 }
 
 interface PendingMutationRecord {
   readonly observedRoot: Node;
-  readonly record: MutationRecord;
+  readonly type: "attributes" | "characterData" | "childList";
+  readonly target: Node;
+  readonly addedNodes: readonly Node[];
+  readonly removedNodes: readonly Node[];
+}
+
+interface PendingMutationOverflow {
+  readonly observedRoots: Set<Node>;
+  readonly targets: Set<Node>;
+  saturated: boolean;
 }
 
 interface MutationDrainAuthority {
@@ -259,6 +279,8 @@ interface ProviderMaterializationMetadata {
   readonly frameTracking: boolean;
   readonly shadowScanOffset: number;
   readonly pendingMutations: readonly PendingMutationRecord[];
+  readonly pendingMutationNodeCount: number;
+  readonly pendingMutationOverflow: PendingMutationOverflow | undefined;
   readonly pendingFrameMutationScans: readonly PendingFrameMutationScan[];
   readonly pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   readonly publishedRootPresentation: PublishedRootPresentation | undefined;
@@ -371,6 +393,8 @@ export class DomTreeProvider {
   ) | undefined;
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
+  private pendingMutationNodeCount = 0;
+  private pendingMutationOverflow: PendingMutationOverflow | undefined;
   private readonly pendingFrameMutationScans: PendingFrameMutationScan[] = [];
   private outwardEffectBuffer: ProviderOutwardEffect[] | undefined;
   private rollbackEffectSuppressionDepth = 0;
@@ -391,6 +415,7 @@ export class DomTreeProvider {
   private documentResetGeneration = 0;
   private drainingDocumentResets = false;
   private activeFrameMutationScanGuard: (() => boolean) | undefined;
+  private activeFrameMutationVisitBudget: FrameMutationVisitBudget | undefined;
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -1267,7 +1292,10 @@ export class DomTreeProvider {
     this.ownedFramesByRef.clear();
     this.inactiveFrameRefs.clear();
     this.pendingMutations.length = 0;
+    this.pendingMutationNodeCount = 0;
+    this.pendingMutationOverflow = undefined;
     this.pendingFrameMutationScans.length = 0;
+    this.activeFrameMutationVisitBudget = undefined;
     this.pendingSelectedRemoval = undefined;
     this.publishedRootPresentation = undefined;
     this.shadowScanOffset = 0;
@@ -1368,6 +1396,10 @@ export class DomTreeProvider {
     this.#dispose();
   }
 
+  #failClosedMutationOverflow(): void {
+    this.#dispose();
+  }
+
   #dispose(): void {
     if (this.disposed) {
       return;
@@ -1376,6 +1408,7 @@ export class DomTreeProvider {
     this.activeDocumentReset = undefined;
     this.pendingDocumentReset = undefined;
     this.activeFrameMutationScanGuard = undefined;
+    this.activeFrameMutationVisitBudget = undefined;
     this.authorityGeneration += 1;
     this.disposed = true;
     this.postCommitEffectBatches.length = 0;
@@ -1404,6 +1437,8 @@ export class DomTreeProvider {
     this.ownedFramesByRef.clear();
     this.inactiveFrameRefs.clear();
     this.pendingMutations.length = 0;
+    this.pendingMutationNodeCount = 0;
+    this.pendingMutationOverflow = undefined;
     this.pendingFrameMutationScans.length = 0;
     this.pendingSelectedRemoval = undefined;
     this.publishedRootPresentation = undefined;
@@ -2034,9 +2069,17 @@ export class DomTreeProvider {
     if (this.disposed) {
       return;
     }
-    for (const record of records) {
-      this.pendingMutations.push({ observedRoot, record });
+    const authority: MutationDrainAuthority = {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+    };
+    if (this.pendingMutationOverflow) {
+      this.coalesceMutationOverflow(observedRoot);
+    } else {
+      this.intakeMutationRecords(observedRoot, records, authority);
     }
+    if (!this.isMutationDrainAuthorityCurrent(authority)) return;
     if (this.mutationTimer !== undefined) {
       return;
     }
@@ -2044,6 +2087,195 @@ export class DomTreeProvider {
       this.mutationTimer = undefined;
       this.processMutations();
     }, 16);
+  }
+
+  private intakeMutationRecords(
+    observedRoot: Node,
+    records: readonly MutationRecord[],
+    authority: MutationDrainAuthority,
+  ): void {
+    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
+    let recordCount: number;
+    try {
+      recordCount = readSafeArrayLikeLength(records);
+    } catch {
+      if (isCurrent()) this.markMutationOverflow(observedRoot);
+      return;
+    }
+    const availableRecords = Math.max(
+      0,
+      MUTATION_INTAKE_RECORD_LIMIT - this.pendingMutations.length,
+    );
+    const acceptedRecordCount = Math.min(recordCount, availableRecords);
+    for (let index = 0; index < acceptedRecordCount; index += 1) {
+      if (!isCurrent()) return;
+      let record: MutationRecord | undefined;
+      try {
+        record = records[index];
+      } catch {
+        this.markMutationOverflow(observedRoot);
+        return;
+      }
+      if (!isCurrent()) return;
+      const snapshot = record
+        ? this.snapshotMutationRecord(observedRoot, record, authority)
+        : undefined;
+      if (!isCurrent()) return;
+      if (!snapshot) {
+        this.markMutationOverflow(observedRoot);
+        return;
+      }
+      this.pendingMutations.push(snapshot);
+      this.pendingMutationNodeCount +=
+        snapshot.addedNodes.length + snapshot.removedNodes.length;
+      if (this.pendingMutationOverflow) return;
+    }
+    if (recordCount > acceptedRecordCount && isCurrent()) {
+      this.markMutationOverflow(observedRoot);
+    }
+  }
+
+  private snapshotMutationRecord(
+    observedRoot: Node,
+    record: MutationRecord,
+    authority: MutationDrainAuthority,
+  ): PendingMutationRecord | undefined {
+    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
+    let type: unknown;
+    let target: unknown;
+    try {
+      type = record.type;
+      if (!isCurrent()) return undefined;
+      target = record.target;
+    } catch {
+      return undefined;
+    }
+    if (
+      !isCurrent() ||
+      (type !== "attributes" && type !== "characterData" && type !== "childList") ||
+      !target ||
+      typeof target !== "object"
+    ) {
+      return undefined;
+    }
+    if (type !== "childList") {
+      return Object.freeze({
+        observedRoot,
+        type,
+        target: target as Node,
+        addedNodes: Object.freeze([]) as readonly Node[],
+        removedNodes: Object.freeze([]) as readonly Node[],
+      });
+    }
+
+    let removedSource: unknown;
+    try {
+      removedSource = record.removedNodes;
+    } catch {
+      return undefined;
+    }
+    if (!isCurrent()) return undefined;
+    const copied: Node[] = [];
+    const copyNodes = (source: unknown): readonly Node[] | undefined => {
+      if (!source || typeof source !== "object") return undefined;
+      let length: number;
+      try {
+        length = readSafeArrayLikeLength(source as ArrayLike<unknown>);
+      } catch {
+        return undefined;
+      }
+      if (!isCurrent()) return undefined;
+      const recordCapacity = MUTATION_RECORD_NODE_LIMIT - copied.length;
+      const pendingCapacity = MUTATION_INTAKE_NODE_LIMIT -
+        this.pendingMutationNodeCount - copied.length;
+      const copyCount = Math.min(length, recordCapacity, pendingCapacity);
+      const result: Node[] = [];
+      for (let index = 0; index < copyCount; index += 1) {
+        if (!isCurrent()) return undefined;
+        let node: unknown;
+        try {
+          node = (source as ArrayLike<unknown>)[index];
+        } catch {
+          return undefined;
+        }
+        if (!isCurrent() || !node || typeof node !== "object") {
+          return undefined;
+        }
+        result.push(node as Node);
+        copied.push(node as Node);
+      }
+      if (length > copyCount) {
+        this.markMutationOverflow(observedRoot, target as Node);
+      }
+      return Object.freeze(result);
+    };
+    const removedNodes = copyNodes(removedSource);
+    if (!removedNodes || !isCurrent()) return undefined;
+    let addedNodes: readonly Node[] | undefined = Object.freeze([]) as readonly Node[];
+    if (!this.pendingMutationOverflow) {
+      let addedSource: unknown;
+      try {
+        addedSource = record.addedNodes;
+      } catch {
+        return undefined;
+      }
+      if (!isCurrent()) return undefined;
+      addedNodes = copyNodes(addedSource);
+    }
+    if (!addedNodes || !isCurrent()) return undefined;
+    return Object.freeze({
+      observedRoot,
+      type,
+      target: target as Node,
+      addedNodes,
+      removedNodes,
+    });
+  }
+
+  private markMutationOverflow(observedRoot: Node, target?: Node): void {
+    const overflow = this.pendingMutationOverflow ?? {
+      observedRoots: new Set<Node>(),
+      targets: new Set<Node>(),
+      saturated: false,
+    };
+    if (!this.pendingMutationOverflow) {
+      for (const pending of this.pendingMutations) {
+        if (overflow.observedRoots.size < MUTATION_OVERFLOW_COALESCING_LIMIT) {
+          overflow.observedRoots.add(pending.observedRoot);
+        } else {
+          overflow.saturated = true;
+        }
+        if (overflow.targets.size < MUTATION_OVERFLOW_COALESCING_LIMIT) {
+          overflow.targets.add(pending.target);
+        } else {
+          overflow.saturated = true;
+        }
+      }
+      this.pendingMutationOverflow = overflow;
+    }
+    this.coalesceMutationOverflow(observedRoot, target);
+  }
+
+  private coalesceMutationOverflow(observedRoot: Node, target?: Node): void {
+    const overflow = this.pendingMutationOverflow;
+    if (!overflow) return;
+    if (
+      overflow.observedRoots.has(observedRoot) ||
+      overflow.observedRoots.size < MUTATION_OVERFLOW_COALESCING_LIMIT
+    ) {
+      overflow.observedRoots.add(observedRoot);
+    } else {
+      overflow.saturated = true;
+    }
+    if (!target) return;
+    if (
+      overflow.targets.has(target) ||
+      overflow.targets.size < MUTATION_OVERFLOW_COALESCING_LIMIT
+    ) {
+      overflow.targets.add(target);
+    } else {
+      overflow.saturated = true;
+    }
   }
 
   private processMutations(): void {
@@ -2107,6 +2339,12 @@ export class DomTreeProvider {
   ): boolean {
     const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
     const records = this.pendingMutations.splice(0);
+    const overflow = this.pendingMutationOverflow;
+    this.pendingMutationNodeCount = 0;
+    this.pendingMutationOverflow = undefined;
+    if (overflow) {
+      return this.recoverMutationOverflow(authority, overflow);
+    }
     const affected = new Set<string>();
     const forcedAffected = new Set<string>();
     const selectedRemovalOwnerCandidates: string[] = [];
@@ -2117,7 +2355,7 @@ export class DomTreeProvider {
       if (!this.rootObservers.has(pending.observedRoot)) {
         continue;
       }
-      const mutation = pending.record;
+      const mutation = pending;
       if (this.isNodeExcluded(mutation.target)) {
         if (!isCurrent()) return false;
         continue;
@@ -2301,24 +2539,24 @@ export class DomTreeProvider {
       if (movedRoots.has(root.node)) {
         continue;
       }
-      this.pendingFrameMutationScans.push({
+      if (!this.enqueueFrameMutationScan({
         action: "unregister",
         ownerRoot: root.ownerRoot,
         root: root.node,
         stack: [createFrameTraversalEntry(root.node)],
-      });
+      })) return false;
     }
     for (const root of addedRoots) {
       if (!isCurrent()) return false;
       if (movedRoots.has(root.node)) {
         continue;
       }
-      this.pendingFrameMutationScans.push({
+      if (!this.enqueueFrameMutationScan({
         action: "register",
         ownerRoot: root.ownerRoot,
         root: root.node,
         stack: [createFrameTraversalEntry(root.node)],
-      });
+      })) return false;
     }
     if (removedRoots.length > 0 || addedRoots.length > 0) {
       this.processFrameMutationScanSlice();
@@ -2352,6 +2590,90 @@ export class DomTreeProvider {
     return isCurrent() &&
       this.invalidateBranches(affected, forcedAffected) &&
       isCurrent();
+  }
+
+  private recoverMutationOverflow(
+    authority: MutationDrainAuthority,
+    _overflow: PendingMutationOverflow,
+  ): boolean {
+    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
+    const failClosedIfCurrent = (): false => {
+      if (isCurrent()) this.#failClosedMutationOverflow();
+      return false;
+    };
+    if (!isCurrent()) return false;
+
+    const invalidatedBranches = Object.freeze([...this.expandedBranches.keys()]);
+    const publishedRootRef = this.publishedRootPresentation?.nodeRef;
+    if (!this.invalidateBranches(
+      invalidatedBranches,
+      publishedRootRef ? [publishedRootRef] : [],
+    ) || !isCurrent()) {
+      return failClosedIfCurrent();
+    }
+
+    const selected = this.readSelectedNodeRef();
+    if (!selected.valid || !isCurrent()) return failClosedIfCurrent();
+    if (selected.nodeRef) {
+      this.pendingSelectedRemoval ??= Object.freeze({
+        nodeRef: selected.nodeRef,
+        documentEpoch: this.documentEpoch,
+      });
+    }
+
+    if (this.frameMutationScanTimer !== undefined) {
+      const cancellation = this.cancelTimerSlot("frameMutationScanTimer");
+      if (!cancellation.current || !isCurrent()) return failClosedIfCurrent();
+    }
+    this.pendingFrameMutationScans.length = 0;
+
+    const ownedFrameElements = Object.freeze([
+      ...new Set([...this.ownedFramesByRef.values()].map(({ frameElement }) => (
+        frameElement
+      ))),
+    ].slice(0, MUTATION_INTAKE_RECORD_LIMIT));
+    for (const frameElement of ownedFrameElements) {
+      if (!isCurrent()) return false;
+      this.unregisterDiscoveredFrame(frameElement);
+      if (!isCurrent()) return failClosedIfCurrent();
+    }
+
+    if (!this.disconnectAllObservers(isCurrent) || !isCurrent()) {
+      return failClosedIfCurrent();
+    }
+    for (const nodeRef of invalidatedBranches) {
+      this.nodeRegistry.release(nodeRef, "expanded");
+    }
+    this.records.clear();
+    this.cursors.clear();
+    this.expandedBranches.clear();
+    this.exhaustedBranches.clear();
+    this.transientRecordRetentions.clear();
+    this.expandedShadowHosts.clear();
+    this.shadowRootRefs.clear();
+    this.frameDescriptions.clear();
+    this.frameDocumentsByRef.clear();
+    this.ownedFramesByRef.clear();
+    this.frameRefsByElement = new WeakMap<HTMLIFrameElement, string>();
+    this.inactiveFrameRefs.clear();
+    this.shadowScanOffset = 0;
+
+    const topDocument = authority.topDocument;
+    if (!topDocument) return failClosedIfCurrent();
+    this.observeRoot(topDocument, isCurrent);
+    if (!isCurrent() || !this.rootObservers.has(topDocument)) {
+      return failClosedIfCurrent();
+    }
+    if (this.frameTracking) {
+      const visitBudget: FrameMutationVisitBudget = {
+        remaining: MUTATION_OVERFLOW_FRAME_VISIT_LIMIT,
+        failClosedOnExhaustion: true,
+      };
+      this.queueFrameDiscovery(topDocument, isCurrent, visitBudget);
+      if (!isCurrent()) return failClosedIfCurrent();
+      this.processFrameMutationScanSlice();
+    }
+    return isCurrent();
   }
 
   private isMutationDrainAuthorityCurrent(
@@ -2393,21 +2715,32 @@ export class DomTreeProvider {
   }
 
   private flushMutationBarrier(): void {
+    const authority: MutationDrainAuthority = {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+    };
     for (const [root, observer] of this.rootObservers) {
+      if (!this.isMutationDrainAuthorityCurrent(authority)) return;
+      if (this.pendingMutationOverflow) {
+        this.coalesceMutationOverflow(root);
+        continue;
+      }
       try {
         const records = observer.takeRecords?.() ?? [];
-        for (const record of records) {
-          this.pendingMutations.push({ observedRoot: root, record });
-        }
+        if (!this.isMutationDrainAuthorityCurrent(authority)) return;
+        this.intakeMutationRecords(root, records, authority);
       } catch {
-        // Other observed roots remain authoritative if one adapter fails.
+        if (this.isMutationDrainAuthorityCurrent(authority)) {
+          this.markMutationOverflow(root);
+        }
       }
     }
     if (this.mutationTimer !== undefined) {
       const cancellation = this.cancelTimerSlot("mutationTimer");
       if (!cancellation.current) return;
     }
-    if (this.pendingMutations.length > 0) {
+    if (this.pendingMutations.length > 0 || this.pendingMutationOverflow) {
       this.processMutations();
     }
   }
@@ -3388,6 +3721,10 @@ export class DomTreeProvider {
       frameTracking: this.frameTracking,
       shadowScanOffset: this.shadowScanOffset,
       pendingMutations: [...this.pendingMutations],
+      pendingMutationNodeCount: this.pendingMutationNodeCount,
+      pendingMutationOverflow: snapshotPendingMutationOverflow(
+        this.pendingMutationOverflow,
+      ),
       pendingFrameMutationScans: snapshotPendingFrameMutationScans(
         this.pendingFrameMutationScans,
       ),
@@ -3418,6 +3755,10 @@ export class DomTreeProvider {
     this.frameTracking = snapshot.frameTracking;
     this.shadowScanOffset = snapshot.shadowScanOffset;
     this.pendingMutations.splice(0, this.pendingMutations.length, ...snapshot.pendingMutations);
+    this.pendingMutationNodeCount = snapshot.pendingMutationNodeCount;
+    this.pendingMutationOverflow = snapshotPendingMutationOverflow(
+      snapshot.pendingMutationOverflow,
+    );
     this.pendingFrameMutationScans.splice(
       0,
       this.pendingFrameMutationScans.length,
@@ -4053,6 +4394,7 @@ export class DomTreeProvider {
   private queueFrameDiscovery(
     document: Document,
     resetGuard = this.activeFrameMutationScanGuard,
+    visitBudget = this.activeFrameMutationVisitBudget,
   ): void {
     if (
       this.disposed ||
@@ -4063,19 +4405,29 @@ export class DomTreeProvider {
     ) {
       return;
     }
-    this.pendingFrameMutationScans.push({
+    if (!this.enqueueFrameMutationScan({
       action: "register",
       ownerRoot: document,
       root: document,
       stack: [createFrameTraversalEntry(document)],
       ...(resetGuard ? { resetGuard } : {}),
-    });
+      ...(visitBudget ? { visitBudget } : {}),
+    })) return;
     if (this.frameMutationScanTimer === undefined) {
       this.frameMutationScanTimer = this.scheduleTimeout(() => {
         this.frameMutationScanTimer = undefined;
         this.processFrameMutationScanSlice();
       }, 0);
     }
+  }
+
+  private enqueueFrameMutationScan(scan: PendingFrameMutationScan): boolean {
+    if (this.pendingFrameMutationScans.length >= MUTATION_INTAKE_NODE_LIMIT) {
+      this.#failClosedMutationOverflow();
+      return false;
+    }
+    this.pendingFrameMutationScans.push(scan);
+    return true;
   }
 
   private deferFrameDiscovery(authority: MutationDrainAuthority): void {
@@ -4109,6 +4461,7 @@ export class DomTreeProvider {
     let visitedNodes = 0;
     let operations = 0;
     const previousGuard = this.activeFrameMutationScanGuard;
+    const previousVisitBudget = this.activeFrameMutationVisitBudget;
     try {
       while (
         this.pendingFrameMutationScans.length > 0 &&
@@ -4141,6 +4494,7 @@ export class DomTreeProvider {
           return true;
         };
         this.activeFrameMutationScanGuard = scan.resetGuard;
+        this.activeFrameMutationVisitBudget = scan.visitBudget;
         if (abandonIfStale()) continue;
         if (scan.action === "register") {
           const ownerObserved = this.rootObservers.has(scan.ownerRoot);
@@ -4157,6 +4511,15 @@ export class DomTreeProvider {
           this.pendingFrameMutationScans.shift();
           continue;
         }
+        if (scan.visitBudget && scan.visitBudget.remaining <= 0) {
+          if (scan.visitBudget.failClosedOnExhaustion) {
+            this.#failClosedMutationOverflow();
+            return;
+          }
+          this.pendingFrameMutationScans.shift();
+          continue;
+        }
+        if (scan.visitBudget) scan.visitBudget.remaining -= 1;
         if (!entry.entered) {
           entry.entered = true;
           visitedNodes += 1;
@@ -4211,6 +4574,16 @@ export class DomTreeProvider {
       }
     } finally {
       this.activeFrameMutationScanGuard = previousGuard;
+      this.activeFrameMutationVisitBudget = previousVisitBudget;
+    }
+    const remainingScan = this.pendingFrameMutationScans[0];
+    if (
+      remainingScan?.visitBudget?.failClosedOnExhaustion &&
+      remainingScan.visitBudget.remaining <= 0 &&
+      remainingScan.stack.length > 0
+    ) {
+      this.#failClosedMutationOverflow();
+      return;
     }
     if (
       this.pendingFrameMutationScans.length > 0 &&
@@ -4782,6 +5155,18 @@ function readChildNodes(node: Node): ArrayLike<Node> | undefined {
   }
 }
 
+function readSafeArrayLikeLength(value: ArrayLike<unknown>): number {
+  const length = value.length;
+  if (
+    typeof length !== "number" ||
+    !Number.isSafeInteger(length) ||
+    length < 0
+  ) {
+    throw new TypeError("invalid array-like length");
+  }
+  return length;
+}
+
 function readNodeType(node: Node): number | undefined {
   try {
     const nodeType = (node as { readonly nodeType?: unknown }).nodeType;
@@ -5172,12 +5557,42 @@ function snapshotExpandedBranches(
 function snapshotPendingFrameMutationScans(
   scans: readonly PendingFrameMutationScan[],
 ): readonly PendingFrameMutationScan[] {
+  const budgetSnapshots = new Map<
+    FrameMutationVisitBudget,
+    FrameMutationVisitBudget
+  >();
   return Object.freeze(scans.map((scan) => Object.freeze({
     action: scan.action,
     ownerRoot: scan.ownerRoot,
     root: scan.root,
     stack: scan.stack.map((entry) => ({ ...entry })),
+    ...(scan.resetGuard ? { resetGuard: scan.resetGuard } : {}),
+    ...(scan.visitBudget
+      ? {
+          visitBudget: budgetSnapshots.get(scan.visitBudget) ?? (() => {
+            const snapshot = {
+              remaining: scan.visitBudget!.remaining,
+              failClosedOnExhaustion:
+                scan.visitBudget!.failClosedOnExhaustion,
+            };
+            budgetSnapshots.set(scan.visitBudget!, snapshot);
+            return snapshot;
+          })(),
+        }
+      : {}),
   })));
+}
+
+function snapshotPendingMutationOverflow(
+  overflow: PendingMutationOverflow | undefined,
+): PendingMutationOverflow | undefined {
+  return overflow
+    ? {
+        observedRoots: new Set(overflow.observedRoots),
+        targets: new Set(overflow.targets),
+        saturated: overflow.saturated,
+      }
+    : undefined;
 }
 
 function createElementLabel(element: Element): string {

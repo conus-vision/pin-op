@@ -848,6 +848,415 @@ describe("DomTreeProvider", () => {
     }).branchRevision).toBe(2);
   });
 
+  it("bounds and snapshots a 100k-record observer callback at intake", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    let indexedRecordReads = 0;
+    let targetReads = 0;
+    const repeatedRecord = new Proxy(
+      attributeMutationRecord(document.documentElement, "data-hostile"),
+      {
+        get(target, property, receiver) {
+          if (property === "target") targetReads += 1;
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      },
+    );
+    const records = repeatedIndexedList(
+      100_000,
+      repeatedRecord,
+      () => { indexedRecordReads += 1; },
+    );
+
+    harness.observers[0]!.emit(records);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly Array<Record<string, unknown>>;
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: {
+        observedRoots: ReadonlySet<Node>;
+        targets: ReadonlySet<Node>;
+      };
+    };
+    expect(indexedRecordReads).toBeGreaterThan(0);
+    expect(indexedRecordReads).toBeLessThanOrEqual(4_097);
+    expect(targetReads).toBeGreaterThan(0);
+    expect(targetReads).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutations).toHaveLength(4_096);
+    expect(state.pendingMutations[0]).not.toHaveProperty("record");
+    expect(state.pendingMutationNodeCount).toBe(0);
+    expect(state.pendingMutationOverflow?.observedRoots.size).toBeLessThanOrEqual(128);
+    expect(state.pendingMutationOverflow?.targets.size).toBeLessThanOrEqual(128);
+
+    let tailReads = 0;
+    const unreadTail = new Proxy([] as MutationRecord[], {
+      get(target, property, receiver) {
+        if (property === "length") {
+          tailReads += 1;
+          throw new Error("overflow tail inspected");
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    expect(() => harness.observers[0]!.emit(unreadTail)).not.toThrow();
+    expect(tailReads).toBe(0);
+  });
+
+  it("does not retain hostile MutationRecord or NodeList access until its timer", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const added = createElement("aside", document);
+    let armed = false;
+    let recordReads = 0;
+    let nodeReads = 0;
+    const addedNodes = repeatedIndexedList(1, added, () => {
+      nodeReads += 1;
+      if (armed) throw new Error("late NodeList read");
+    });
+    const record = new Proxy({
+      type: "childList",
+      target: document.documentElement,
+      addedNodes,
+      removedNodes: [] as readonly FakeNode[],
+    } as unknown as MutationRecord, {
+      get(target, property, receiver) {
+        recordReads += 1;
+        if (armed) throw new Error("late MutationRecord read");
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+
+    harness.observers[0]!.emit([record]);
+    expect(recordReads).toBeGreaterThan(0);
+    expect(nodeReads).toBe(1);
+
+    armed = true;
+    expect(() => harness.flushTimers()).not.toThrow();
+  });
+
+  it("bounds record intake from the synchronous takeRecords barrier", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    let indexedRecordReads = 0;
+    const record = attributeMutationRecord(
+      document.documentElement,
+      "data-barrier",
+    );
+    harness.observers[0]!.queue(repeatedIndexedList(
+      100_000,
+      record,
+      () => { indexedRecordReads += 1; },
+    ));
+
+    expect(() => harness.provider.getRoot()).not.toThrow();
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+      pendingMutationNodeCount: number;
+    };
+    expect(indexedRecordReads).toBeGreaterThan(0);
+    expect(indexedRecordReads).toBeLessThanOrEqual(4_097);
+    expect(state.pendingMutations).toHaveLength(0);
+    expect(state.pendingMutationNodeCount).toBe(0);
+  });
+
+  it("bounds hostile child-list traversal during observer intake", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const added = createElement("aside", document);
+    let indexedNodeReads = 0;
+    const hostileNodes = repeatedIndexedList(100_000, added, () => {
+      indexedNodeReads += 1;
+      if (indexedNodeReads > 300) {
+        throw new Error("unbounded NodeList traversal");
+      }
+    });
+    let tailGetterReads = 0;
+    const recordSource = {
+      type: "childList",
+      target: document.documentElement,
+      removedNodes: hostileNodes,
+    };
+    Object.defineProperty(recordSource, "addedNodes", {
+      get: () => {
+        tailGetterReads += 1;
+        throw new Error("overflow tail NodeList inspected");
+      },
+    });
+    const record = recordSource as unknown as MutationRecord;
+
+    expect(() => harness.observers[0]!.emit([record])).not.toThrow();
+    expect(indexedNodeReads).toBeGreaterThan(0);
+    expect(indexedNodeReads).toBeLessThanOrEqual(257);
+    expect(tailGetterReads).toBe(0);
+    expect(() => harness.flushTimers()).not.toThrow();
+  });
+
+  it("bounds copied child-list nodes across the complete pending drain", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    const added = createElement("aside", document);
+    let indexedNodeReads = 0;
+    const records = Array.from({ length: 17 }, () => ({
+      type: "childList",
+      target: document.documentElement,
+      addedNodes: repeatedIndexedList(256, added, () => {
+        indexedNodeReads += 1;
+      }),
+      removedNodes: [] as readonly FakeNode[],
+    } as unknown as MutationRecord));
+
+    harness.observers[0]!.emit(records.slice(0, 16));
+    harness.observers[0]!.emit(records.slice(16));
+
+    const state = harness.provider as unknown as {
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: unknown;
+    };
+    expect(indexedNodeReads).toBeGreaterThan(0);
+    expect(indexedNodeReads).toBeLessThanOrEqual(4_097);
+    expect(state.pendingMutationNodeCount).toBeLessThanOrEqual(4_096);
+    expect(state.pendingMutationOverflow).toBeDefined();
+  });
+
+  it("conservatively recovers branch, cursor, and selected authority after overflow", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const selected = createElement("button", document);
+    parent.append(selected);
+    document.documentElement.append(parent);
+    for (let index = 0; index < 50; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    let selectedRef: string | undefined;
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const removed: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: (branch) => invalidated.push(branch),
+      onSelectedNodeRemoved: (event) => removed.push(event),
+    });
+    const root = harness.provider.getRoot();
+    const rootPage = harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "overflow-root-page",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+    const parentView = rootPage.nodes[0]!;
+    const selectedView = onlyChild(
+      harness.provider,
+      parentView,
+      root.documentEpoch,
+      "overflow-parent-page",
+    );
+    selectedRef = selectedView.nodeRef;
+    expect(harness.provider.retainNode(
+      selectedRef,
+      root.documentEpoch,
+      "selected",
+    )).toBe(true);
+    expect(rootPage.nextCursor).toBeDefined();
+
+    parent.remove(selected);
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(removed).toEqual([{
+      nodeRef: selectedView.nodeRef,
+      documentEpoch: root.documentEpoch,
+    }]);
+    expect(harness.provider.resolveElement(
+      selectedView.nodeRef,
+      root.documentEpoch,
+    )).toBeUndefined();
+    expect(invalidated).toEqual(expect.arrayContaining([
+      { nodeRef: root.node.nodeRef, branchRevision: 2 },
+      { nodeRef: parentView.nodeRef, branchRevision: 2 },
+    ]));
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "overflow-stale-cursor",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+      cursor: rootPage.nextCursor,
+    })).toThrow();
+    expect(harness.provider.getRoot()).toMatchObject({
+      documentEpoch: root.documentEpoch,
+      node: {
+        nodeRef: root.node.nodeRef,
+        branchRevision: 2,
+      },
+    });
+  });
+
+  it("retires removed frames and rediscovers current frames after overflow", () => {
+    const document = createDocument();
+    const oldChildDocument = createDocument();
+    const oldFrame = createFrameElement(document, oldChildDocument);
+    document.documentElement.append(oldFrame);
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      oldChildDocument as unknown as Document,
+    )).toBeDefined();
+    lifecycle.length = 0;
+
+    const newChildDocument = createDocument();
+    const newFrame = createFrameElement(document, newChildDocument);
+    document.documentElement.remove(oldFrame);
+    document.documentElement.append(newFrame);
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+    harness.flushTimers();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(oldFrame.loadListenerCount).toBe(0);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      oldChildDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(newFrame.loadListenerCount).toBe(1);
+    expect(harness.provider.frameAuthority.getContextForDocument(
+      newChildDocument as unknown as Document,
+    )).toBeDefined();
+    expect(lifecycle.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["removed", "registered"]),
+    );
+  });
+
+  it("fails closed when overflow frame rediscovery exhausts its total visit budget", () => {
+    const document = createDocument();
+    const harness = createProviderHarness(document);
+    harness.provider.startFrameTracking();
+    harness.flushTimers();
+
+    for (let index = 0; index < 4_100; index += 1) {
+      document.documentElement.append(createElement("section", document));
+    }
+    const childDocument = createDocument();
+    document.documentElement.append(createFrameElement(document, childDocument));
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+    for (let slice = 0; slice < 8; slice += 1) {
+      harness.flushTimers();
+    }
+
+    expect(() => harness.provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+    expect(harness.provider.frameAuthority.accessibleContexts()).toEqual([]);
+    expect(harness.pendingTimerCount()).toBe(0);
+  });
+
+  it.each(["reset", "dispose"] as const)(
+    "clears bounded mutation overflow state on %s",
+    (action) => {
+      const document = createDocument();
+      const harness = createProviderHarness(document);
+      harness.observers[0]!.emit(repeatedIndexedList(
+        4_097,
+        attributeMutationRecord(document.documentElement, "data-overflow"),
+        () => undefined,
+      ));
+      const before = harness.provider as unknown as {
+        pendingMutationOverflow?: unknown;
+      };
+      expect(before.pendingMutationOverflow).toBeDefined();
+
+      if (action === "reset") {
+        harness.provider.resetDocument(createDocument() as unknown as Document, 4);
+      } else {
+        harness.provider.dispose();
+      }
+
+      const after = harness.provider as unknown as {
+        pendingMutations: readonly unknown[];
+        pendingMutationNodeCount: number;
+        pendingMutationOverflow?: unknown;
+      };
+      expect(after.pendingMutations).toEqual([]);
+      expect(after.pendingMutationNodeCount).toBe(0);
+      expect(after.pendingMutationOverflow).toBeUndefined();
+      expect(harness.pendingTimerCount()).toBe(0);
+    },
+  );
+
+  it("restores bounded mutation overflow coalescing on authority rollback", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const shadowRoot = host.attachShadow();
+    shadowRoot.append(createElement("button", document));
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document);
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "rollback-root-children",
+    );
+    const shadowView = onlyChild(
+      harness.provider,
+      hostView,
+      root.documentEpoch,
+      "rollback-host-children",
+    );
+    onlyChild(
+      harness.provider,
+      shadowView,
+      root.documentEpoch,
+      "rollback-shadow-children",
+    );
+    const shadowObserver = harness.observers.find((observer) => (
+      observer.observedTargets.includes(shadowRoot)
+    ))!;
+    harness.observers[0]!.emit(repeatedIndexedList(
+      4_097,
+      attributeMutationRecord(document.documentElement, "data-overflow"),
+      () => undefined,
+    ));
+    const state = harness.provider as unknown as AuthorityOperationInternals & {
+      pendingMutations: readonly unknown[];
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: {
+        observedRoots: ReadonlySet<Node>;
+      };
+    };
+    expect(state.pendingMutationOverflow?.observedRoots.size).toBe(1);
+    const pendingTimerCount = harness.pendingTimerCount();
+    const operation = state.beginProviderAuthorityOperation()!;
+
+    shadowObserver.emit([
+      attributeMutationRecord(host, "data-shadow-overflow"),
+    ]);
+    expect(state.pendingMutationOverflow?.observedRoots.size).toBe(2);
+    expect(operation.rollback()).toBe(true);
+
+    expect(state.pendingMutations).toHaveLength(4_096);
+    expect(state.pendingMutationNodeCount).toBe(0);
+    expect(state.pendingMutationOverflow?.observedRoots.size).toBe(1);
+    expect(harness.pendingTimerCount()).toBe(pendingTimerCount);
+  });
+
   it("revisions every affected branch before invalidation callbacks re-enter", () => {
     const document = createDocument();
     const firstParent = createElement("main", document);
@@ -9747,7 +10156,7 @@ function createProviderHarness(
 }
 
 class TestMutationObserver {
-  private records: MutationRecord[] = [];
+  private records: readonly MutationRecord[] = [];
   public readonly observedTargets: FakeNode[] = [];
   public readonly observedOptions: MutationObserverInit[] = [];
   public disconnectCount = 0;
@@ -9771,6 +10180,10 @@ class TestMutationObserver {
     const records = this.records;
     this.records = [];
     return records;
+  }
+
+  public queue(records: readonly MutationRecord[]): void {
+    this.records = records;
   }
 
   public emit(records: readonly MutationRecord[]): void {
@@ -9813,6 +10226,23 @@ function characterDataMutationRecord(target: FakeNode): MutationRecord {
     type: "characterData",
     target,
   } as unknown as MutationRecord;
+}
+
+function repeatedIndexedList<T>(
+  length: number,
+  value: T,
+  onIndexedRead: () => void,
+): readonly T[] {
+  return new Proxy([] as T[], {
+    get(target, property, receiver) {
+      if (property === "length") return length;
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        onIndexedRead();
+        return value;
+      }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
 }
 
 class FakeNode {
