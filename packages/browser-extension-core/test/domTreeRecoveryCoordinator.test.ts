@@ -7,6 +7,7 @@ import { DomTreeRecoveryCoordinator } from "../src/domTreeRecoveryCoordinator.js
 import type {
   DomChildrenResponse,
   DomErrorCode,
+  DomEvent,
   DomLocatorResponse,
   DomNodeView,
   DomRequest,
@@ -47,6 +48,31 @@ describe("DomTreeRecoveryCoordinator", () => {
       documentEpoch: 2,
       nodeRef: "new-selected",
     }]);
+  });
+
+  it("does not resolve or reselect after selection authority is cleared", async () => {
+    const transport = new TestTransport();
+    const selectedLocator = locator(1, 1);
+    const oldSelected = node("old-selected", selectedLocator);
+    const controller = createController(transport);
+    controller.handleEvent(selectionEvent(1, [oldSelected], 1));
+    const coordinator = createCoordinator(controller, transport);
+    const rootDeferred = deferred<DomResponse>();
+    const newSelected = node("new-selected", selectedLocator);
+    transport.enqueue(rootDeferred.promise);
+    transport.enqueue(locatorResponse(newSelected, [newSelected], 2));
+    const recovery = coordinator.begin();
+    await waitForRequests(transport, 1);
+
+    controller.handleEvent(selectionClearedEvent(1, oldSelected.nodeRef, 2));
+    rootDeferred.resolve(rootResponse(newSelected, 2));
+    await recovery;
+
+    expect(transport.requests.filter(isResolveRequest)).toEqual([]);
+    expect(transport.dispatched).toEqual([]);
+    expect(controller.snapshot()).toMatchObject({ recovering: false });
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
   });
 
   it("rejects a bounded locator response whose target omits recovery ownership", async () => {
@@ -798,6 +824,19 @@ function rootResponse(
     node: root,
     prologue: [],
     epilogue: [],
+  };
+}
+
+function selectionClearedEvent(
+  documentEpoch: number,
+  nodeRef: string,
+  selectionRevision: number,
+): DomEvent {
+  return {
+    type: "dom.selectionCleared",
+    documentEpoch,
+    selectionRevision,
+    nodeRef,
   };
 }
 

@@ -831,7 +831,7 @@ describe("DomTreeController", () => {
   });
 
   it.each(["same-root", "different-root", "error"] as const)(
-    "discards pending replacement intent after a %s root refresh",
+    "preserves discarded pending selection authority after a %s root refresh",
     async (outcome) => {
       const transport = new TestTransport();
       const oldRoot = locatedNode("old-root", locator(1), false, 1);
@@ -851,20 +851,16 @@ describe("DomTreeController", () => {
       controller.handleEvent(selectionEventWithRevision(
         1,
         [intendedRoot, intendedTarget],
-        8,
+        6,
       ));
       expect(controllerState(controller).pendingRootSelection)
-        .toMatchObject({ selectionRevision: 8 });
+        .toMatchObject({ selectionRevision: 6 });
 
+      const otherRoot = locatedNode("other-root", locator(1, 2), false, 1);
       if (outcome === "same-root") {
         response.resolve(rootResponse({ ...oldRoot, branchRevision: 2 }));
       } else if (outcome === "different-root") {
-        response.resolve(rootResponse(locatedNode(
-          "other-root",
-          locator(1, 2),
-          false,
-          1,
-        )));
+        response.resolve(rootResponse(otherRoot));
       } else {
         response.resolve({
           type: "dom.error",
@@ -879,8 +875,66 @@ describe("DomTreeController", () => {
       expect(controller.snapshot().selectedRef).toBeUndefined();
       expect(controllerState(controller).nodes.has(intendedTarget.nodeRef))
         .toBe(false);
+
+      const liveRoot = outcome === "different-root" ? otherRoot : oldRoot;
+      const staleTarget = locatedNode("stale-target", locator(3));
+      controller.handleEvent(selectionEventWithRevision(
+        1,
+        [liveRoot, staleTarget],
+        5,
+      ));
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controllerState(controller).nodes.has(staleTarget.nodeRef))
+        .toBe(false);
     },
   );
+
+  it("rejects a conflicting path at the accepted selection revision", () => {
+    const controller = createController(new TestTransport());
+    const root = locatedNode("root", locator(1), true, 1);
+    const accepted = locatedNode("accepted", locator(2));
+    const conflicting = locatedNode("conflicting", locator(3));
+    controller.handleEvent(selectionEventWithRevision(1, [root, accepted], 4));
+
+    controller.handleEvent(selectionEventWithRevision(1, [root, conflicting], 4));
+
+    expect(controller.snapshot()).toMatchObject({
+      selectedRef: accepted.nodeRef,
+      revealRef: accepted.nodeRef,
+    });
+    expect(controllerState(controller).nodes.has(conflicting.nodeRef)).toBe(false);
+  });
+
+  it("clears live and pending selection authority at a newer revision", async () => {
+    const transport = new TestTransport();
+    const root = locatedNode("root", locator(1), true, 1);
+    const selected = locatedNode("selected", locator(2));
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const pendingTarget = locatedNode("pending-target", locator(2, 1));
+    const rootResponseDeferred = deferred<DomResponse>();
+    const controller = createController(transport);
+    controller.handleEvent(selectionEventWithRevision(1, [root, selected], 4));
+    transport.enqueue(rootResponseDeferred.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: root.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, pendingTarget],
+      6,
+    ));
+
+    controller.handleEvent(selectionClearedEvent(1, selected.nodeRef, 7));
+
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controller.snapshot().revealRef).toBeUndefined();
+    expect(controllerState(controller).pendingRootSelection).toBeUndefined();
+    expect(controllerState(controller).revealPathRefs).toEqual([]);
+    expect(nodeRefs(controller)).toEqual([root.nodeRef]);
+  });
 
   it.each(["reset", "dispose", "recovery"] as const)(
     "clears pending replacement intent on %s",
@@ -3823,10 +3877,10 @@ describe("DomTreeController", () => {
       node("first"),
     ]));
 
-    controller.handleEvent(selectionEvent(1, [
+    controller.handleEvent(selectionEventWithRevision(1, [
       node("root", true, 1),
       node("second"),
-    ]));
+    ], 2));
 
     expect(controller.rows().find((row) => row.nodeRef === "root"))
       .toMatchObject({ branchRevision: 2 });
@@ -4735,6 +4789,19 @@ function selectionEventWithRevision(
   };
 }
 
+function selectionClearedEvent(
+  documentEpoch: number,
+  nodeRef: string,
+  selectionRevision: number,
+): DomEvent {
+  return {
+    type: "dom.selectionCleared",
+    documentEpoch,
+    selectionRevision,
+    nodeRef,
+  };
+}
+
 function nodeRefs(controller: DomTreeController): string[] {
   return controller.rows()
     .filter((row) => row.type === "node")
@@ -4748,6 +4815,10 @@ interface ControllerInternalState {
     readonly ancestorPath: readonly DomNodeView[];
   };
   readonly revealPathRefs: readonly string[];
+  readonly acceptedSelectionRevision?: number;
+  readonly recoverySnapshot?: {
+    readonly selectedLocator?: DomStableLocator;
+  };
   readonly nodes: Map<string, {
     readonly view: DomNodeView;
     readonly parentRef?: string;

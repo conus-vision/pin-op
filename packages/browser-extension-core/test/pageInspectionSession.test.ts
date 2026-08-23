@@ -667,9 +667,16 @@ describe("PageInspectionSession", () => {
     ))).toHaveLength(selectionEventCount);
 
     harness.provider.throwOnReveal = false;
+    const removalEventOffset = harness.events.length;
     harness.provider.remove("node-2");
     await expect(harness.session.republishSelection()).resolves.toBe(false);
     expect(harness.selections).toHaveLength(2);
+    expect(harness.events.slice(removalEventOffset)).toEqual([{
+      type: "dom.selectionCleared",
+      documentEpoch: 3,
+      selectionRevision: 2,
+      nodeRef: "node-2",
+    }]);
   });
 
   it("enforces the selection rate boundary only for page input", async () => {
@@ -773,9 +780,12 @@ describe("PageInspectionSession", () => {
     const harness = createSessionHarness();
     await harness.session.selectByRef("node-2", 3);
     harness.session.hoverByRef("node-2", 3);
+    const eventOffset = harness.events.length;
 
     harness.provider.remove("node-2");
+    harness.provider.emitInvalidation("node-1", 2);
     harness.provider.emitSelectedRemoval("node-2");
+    harness.provider.emitMutationSettled();
 
     expect(harness.provider.retentions).toEqual(expect.arrayContaining([
       { action: "release", nodeRef: "node-2", reason: "selected" },
@@ -784,6 +794,72 @@ describe("PageInspectionSession", () => {
     expect(harness.overlay.clearCount).toBeGreaterThan(0);
     await expect(harness.session.republishSelection()).resolves.toBe(false);
     expect(harness.selections).toHaveLength(1);
+    expect(harness.events.slice(eventOffset)).toEqual([
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 3,
+        selectionRevision: 2,
+        nodeRef: "node-2",
+      },
+      {
+        type: "dom.hoverChanged",
+        documentEpoch: 3,
+      },
+      {
+        type: "dom.invalidated",
+        documentEpoch: 3,
+        branches: [{ nodeRef: "node-1", branchRevision: 2 }],
+      },
+    ]);
+    const duplicateEventCount = harness.events.length;
+    harness.provider.emitSelectedRemoval("node-2");
+    expect(harness.events).toHaveLength(duplicateEventCount);
+  });
+
+  it("clears a reveal-only selection before refreshing its surviving owner", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    const eventOffset = harness.events.length;
+
+    harness.provider.remove("node-2");
+    harness.provider.emitInvalidation("node-1", 2);
+    harness.provider.emitSelectedRemoval("node-2");
+    harness.provider.emitMutationSettled();
+
+    expect(harness.events.slice(eventOffset)).toEqual([
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 3,
+        selectionRevision: 2,
+        nodeRef: "node-2",
+      },
+      {
+        type: "dom.invalidated",
+        documentEpoch: 3,
+        branches: [{ nodeRef: "node-1", branchRevision: 2 }],
+      },
+    ]);
+    await expect(harness.session.republishSelection()).resolves.toBe(false);
+  });
+
+  it("retains selection across a same-scope move invalidation", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    const eventOffset = harness.events.length;
+
+    harness.provider.emitInvalidation("node-1", 2);
+    harness.provider.emitMutationSettled();
+
+    expect(harness.events.slice(eventOffset)).toEqual([{
+      type: "dom.invalidated",
+      documentEpoch: 3,
+      branches: [{ nodeRef: "node-1", branchRevision: 2 }],
+    }]);
+    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual([
+      "node-2",
+      "node-2",
+    ]);
   });
 
   it("upgrades an unknown page hover when selection reveals the same element", async () => {
@@ -1314,7 +1390,12 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
     })).resolves.toEqual([]);
-    expect(harness.events).toEqual([]);
+    expect(harness.events).toEqual([{
+      type: "dom.selectionCleared",
+      documentEpoch: 3,
+      selectionRevision: 2,
+      nodeRef: "node-2",
+    }]);
   });
 
   it("does not collect a stale payload after live resolve invalidation", async () => {
@@ -1481,6 +1562,7 @@ describe("PageInspectionSession", () => {
     )).toBe(1);
     await harness.session.selectByRef("node-frame", 3);
     harness.session.hoverByRef("node-frame", 3);
+    const eventOffset = harness.events.length;
 
     harness.provider.remove("node-frame");
     harness.provider.setFrameContexts([]);
@@ -1495,6 +1577,18 @@ describe("PageInspectionSession", () => {
     ]));
     expect(harness.overlay.clearCount).toBeGreaterThan(0);
     await expect(harness.session.republishSelection()).resolves.toBe(false);
+    expect(harness.events.slice(eventOffset)).toEqual([
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 3,
+        selectionRevision: 2,
+        nodeRef: "node-frame",
+      },
+      {
+        type: "dom.hoverChanged",
+        documentEpoch: 3,
+      },
+    ]);
   });
 
   it("leaves a listener inert when frame removal cannot unregister it", () => {

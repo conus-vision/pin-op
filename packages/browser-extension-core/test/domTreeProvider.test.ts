@@ -3136,6 +3136,38 @@ describe("DomTreeProvider", () => {
     )).toThrowError("unknown-node");
   });
 
+  it("invalidates the nearest surviving reveal-only owner of a removed selection", () => {
+    const document = createDocument();
+    const parent = createElement("main", document);
+    const selected = createElement("button", document);
+    parent.append(selected);
+    document.documentElement.append(parent);
+    let selectedRef: string | undefined;
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const removed: Array<{ nodeRef: string; documentEpoch: number }> = [];
+    const harness = createProviderHarness(document, {
+      getSelectedNodeRef: () => selectedRef,
+      onInvalidated: (branch) => invalidated.push(branch),
+      onSelectedNodeRemoved: (event) => removed.push(event),
+    });
+    const revealed = harness.provider.revealElement(selected as unknown as Element);
+    const parentView = revealed.ancestorPath.at(-2)!;
+    selectedRef = revealed.nodeRef;
+
+    parent.remove(selected);
+    harness.observers[0]!.emit([mutationRecord(parent, [], [selected])]);
+    harness.flushTimers();
+
+    expect(removed).toEqual([{
+      nodeRef: revealed.nodeRef,
+      documentEpoch: revealed.documentEpoch,
+    }]);
+    expect(invalidated).toContainEqual({
+      nodeRef: parentView.nodeRef,
+      branchRevision: parentView.branchRevision + 1,
+    });
+  });
+
   it("notifies after retained hovered nodes reach their final moved or detached state", () => {
     const document = createDocument();
     const source = createElement("main", document);

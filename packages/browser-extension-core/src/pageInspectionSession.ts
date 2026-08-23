@@ -25,6 +25,7 @@ import {
   type DomResponse,
   type DomRootResponse,
   type DomHoverChangedEvent,
+  type DomSelectionClearedEvent,
   type DomSelectionChangedEvent,
 } from "./domProtocol.js";
 import type { DomStableLocator } from "./domStableLocator.js";
@@ -1446,7 +1447,6 @@ export class PageInspectionSession {
     ) {
       this.cancelPendingHoverFrame();
     }
-    this.selectionRevision += 1;
     const removedHover = this.hovered?.nodeRef === event.nodeRef;
     if (removedHover) {
       this.hoverRevision += 1;
@@ -1454,9 +1454,11 @@ export class PageInspectionSession {
       this.hovered = undefined;
       this.cancelPendingHoverFrame();
     }
-    this.provider.releaseNode(event.nodeRef, "selected");
-    this.selected = undefined;
+    const selectionCleared = this.clearSelectedAuthority(selected);
     this.restoreAuthoritativeOverlay();
+    if (selectionCleared) {
+      this.emitEvent(selectionCleared);
+    }
     if (removedHover) {
       this.emitEvent(Object.freeze({
         type: "dom.hoverChanged",
@@ -1466,15 +1468,27 @@ export class PageInspectionSession {
   }
 
   private clearUnavailableSelection(selected: SelectedState): void {
-    if (this.selected !== selected) {
-      return;
-    }
-    this.selectionRevision += 1;
-    this.provider.releaseNode(selected.nodeRef, "selected");
-    this.selected = undefined;
+    const selectionCleared = this.clearSelectedAuthority(selected);
+    if (!selectionCleared) return;
     if (!this.hovered) {
       this.clearOverlaySafely();
     }
+    this.emitEvent(selectionCleared);
+  }
+
+  private clearSelectedAuthority(
+    selected: SelectedState,
+  ): DomSelectionClearedEvent | undefined {
+    if (this.selected !== selected) return undefined;
+    this.selectionRevision += 1;
+    this.selected = undefined;
+    this.provider.releaseNode(selected.nodeRef, "selected");
+    return Object.freeze({
+      type: "dom.selectionCleared",
+      documentEpoch: selected.documentEpoch,
+      selectionRevision: this.selectionRevision,
+      nodeRef: selected.nodeRef,
+    });
   }
 
   private handleInvalidation(
@@ -1652,18 +1666,20 @@ export class PageInspectionSession {
     }
 
     const selected = this.selected;
+    let selectionCleared: DomSelectionClearedEvent | undefined;
     if (
       selected &&
       !this.isSelectedStateCurrent(selected) &&
       this.selected === selected
     ) {
-      this.selectionRevision += 1;
-      this.provider.releaseNode(selected.nodeRef, "selected");
-      this.selected = undefined;
+      selectionCleared = this.clearSelectedAuthority(selected);
     }
 
     if (hoverRemoved || selected !== this.selected) {
       this.restoreAuthoritativeOverlay();
+    }
+    if (selectionCleared) {
+      this.emitEvent(selectionCleared);
     }
     if (hoverRemoved) {
       this.emitEvent(this.createClearedHoverEvent());

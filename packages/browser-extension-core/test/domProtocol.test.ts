@@ -532,6 +532,19 @@ describe("DOM protocol", () => {
       nodeRef: "node-1",
       ancestorPath,
     });
+    const selectionCleared = parseDomEvent({
+      type: "dom.selectionCleared",
+      documentEpoch: 1,
+      selectionRevision: 5,
+      nodeRef: "node-1",
+    });
+    expect(selectionCleared).toEqual({
+      type: "dom.selectionCleared",
+      documentEpoch: 1,
+      selectionRevision: 5,
+      nodeRef: "node-1",
+    });
+    expect(Object.isFrozen(selectionCleared)).toBe(true);
     expect(parseDomEvent({
       type: "dom.invalidated",
       documentEpoch: 1,
@@ -541,6 +554,31 @@ describe("DOM protocol", () => {
       documentEpoch: 1,
       branches: [{ nodeRef: "node-1", branchRevision: 3 }],
     });
+  });
+
+  it("strictly rejects malformed selection-cleared authority events", () => {
+    for (const event of [
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 1,
+        selectionRevision: 2,
+      },
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 1,
+        selectionRevision: 2,
+        nodeRef: "node-1",
+        extra: true,
+      },
+      {
+        type: "dom.selectionCleared",
+        documentEpoch: 1,
+        selectionRevision: 2,
+        nodeRef: "",
+      },
+    ]) {
+      expect(() => parseDomEvent(event)).toThrow(DomProtocolError);
+    }
   });
 
   it("rejects cross-tab and unknown request fields", () => {
@@ -753,6 +791,18 @@ describe("DOM protocol", () => {
         selectionRevision: value,
         nodeRef: "node-1",
         ancestorPath: [nodeView()],
+      })).toThrow(DomProtocolError);
+      expect(() => parseDomEvent({
+        type: "dom.selectionCleared",
+        documentEpoch: 1,
+        selectionRevision: value,
+        nodeRef: "node-1",
+      })).toThrow(DomProtocolError);
+      expect(() => parseDomEvent({
+        type: "dom.selectionCleared",
+        documentEpoch: value,
+        selectionRevision: 1,
+        nodeRef: "node-1",
       })).toThrow(DomProtocolError);
     }
   });

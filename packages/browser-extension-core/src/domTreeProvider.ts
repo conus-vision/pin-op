@@ -2200,7 +2200,10 @@ export class DomTreeProvider {
           rootAuxiliaryChanged ||= mutation.target === this.topDocument &&
             (removedType === 8 || removedType === 10);
           const invalidated = this.nodeRegistry.invalidateSubtree(removed);
-          if (!isCurrent() || !this.releaseInvalidatedRefs(invalidated)) {
+          if (
+            !isCurrent() ||
+            !this.releaseInvalidatedRefs(invalidated, true, forcedAffected)
+          ) {
             return false;
           }
         }
@@ -2320,7 +2323,10 @@ export class DomTreeProvider {
       this.disconnectObserversWithin(root.node);
       if (!isCurrent()) return false;
       const invalidated = this.nodeRegistry.invalidateSubtree(root.node);
-      if (!isCurrent() || !this.releaseInvalidatedRefs(invalidated)) {
+      if (
+        !isCurrent() ||
+        !this.releaseInvalidatedRefs(invalidated, true, forcedAffected)
+      ) {
         return false;
       }
     }
@@ -3825,6 +3831,7 @@ export class DomTreeProvider {
   private releaseInvalidatedRefs(
     nodeRefs: readonly string[],
     notifySelectedRemoval = true,
+    survivingPresentationOwners?: Set<string>,
   ): boolean {
     if (nodeRefs.length === 0) {
       return true;
@@ -3836,6 +3843,17 @@ export class DomTreeProvider {
     if (!selected.valid) return false;
     const selectedRef = selected.nodeRef;
     const selectedWasRemoved = selectedRef !== undefined && invalidated.has(selectedRef);
+    if (selectedWasRemoved && survivingPresentationOwners) {
+      let ownerRef = this.records.get(selectedRef)?.parentRef;
+      const visited = new Set<string>();
+      while (ownerRef && invalidated.has(ownerRef) && !visited.has(ownerRef)) {
+        visited.add(ownerRef);
+        ownerRef = this.records.get(ownerRef)?.parentRef;
+      }
+      if (ownerRef && this.records.has(ownerRef)) {
+        survivingPresentationOwners.add(ownerRef);
+      }
+    }
     for (const nodeRef of invalidated) {
       this.expandedBranches.delete(nodeRef);
       this.branchGenerations.delete(nodeRef);

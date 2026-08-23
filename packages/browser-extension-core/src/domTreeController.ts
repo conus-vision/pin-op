@@ -144,6 +144,15 @@ type DomSelectionChangedEvent = Extract<
   { readonly type: "dom.selectionChanged" }
 >;
 
+type DomSelectionClearedEvent = Extract<
+  DomEvent,
+  { readonly type: "dom.selectionCleared" }
+>;
+
+type DomSelectionAuthorityEvent =
+  | DomSelectionChangedEvent
+  | DomSelectionClearedEvent;
+
 interface ReconciliationBatchState {
   readonly pendingTokens: Set<object>;
   readonly candidates: Set<string>;
@@ -794,24 +803,31 @@ export class DomTreeController {
   }
 
   public handleEvent(event: DomEvent): void {
-    if (this.disposed || this.recovering) {
+    if (this.disposed) {
       return;
     }
-    let selectionEvent: DomSelectionChangedEvent | undefined;
-    if (event.type === "dom.selectionChanged") {
+    let selectionEvent: DomSelectionAuthorityEvent | undefined;
+    if (
+      event.type === "dom.selectionChanged" ||
+      event.type === "dom.selectionCleared"
+    ) {
       try {
         const parsed = parseDomEvent(event);
-        if (
-          parsed.type !== "dom.selectionChanged" ||
-          !isRecoverableSelectionPath(parsed.nodeRef, parsed.ancestorPath)
-        ) {
+        if (parsed.type === "dom.selectionChanged") {
+          if (!isRecoverableSelectionPath(parsed.nodeRef, parsed.ancestorPath)) {
+            return;
+          }
+          selectionEvent = parsed;
+        } else if (parsed.type === "dom.selectionCleared") {
+          selectionEvent = parsed;
+        } else {
           return;
         }
-        selectionEvent = parsed;
       } catch {
         return;
       }
     }
+    if (this.recovering && !selectionEvent) return;
     if (
       this.currentDocumentEpoch !== undefined &&
       event.documentEpoch < this.currentDocumentEpoch
@@ -828,9 +844,24 @@ export class DomTreeController {
       return;
     }
 
+    if (selectionEvent) {
+      if (
+        this.acceptedSelectionRevision !== undefined &&
+        selectionEvent.selectionRevision <= this.acceptedSelectionRevision
+      ) {
+        return;
+      }
+      this.acceptedSelectionRevision = selectionEvent.selectionRevision;
+    }
+
     switch (event.type) {
       case "dom.selectionChanged":
-        this.handleSelectionChanged(selectionEvent!);
+        if (!this.recovering) {
+          this.handleSelectionChanged(selectionEvent as DomSelectionChangedEvent);
+        }
+        return;
+      case "dom.selectionCleared":
+        this.handleSelectionCleared();
         return;
       case "dom.hoverChanged":
         this.currentHoverSummary = event.summary;
@@ -1307,25 +1338,9 @@ export class DomTreeController {
   }
 
   private handleSelectionChanged(event: DomSelectionChangedEvent): void {
-    const pending = this.pendingRootSelection;
-    if (pending && event.selectionRevision <= pending.selectionRevision) {
-      return;
-    }
-    if (
-      !pending &&
-      this.acceptedSelectionRevision !== undefined &&
-      event.selectionRevision < this.acceptedSelectionRevision
-    ) {
-      return;
-    }
-
     this.pendingRootSelection = undefined;
     const pathRootRef = event.ancestorPath[0]?.nodeRef;
     if (this.rootRef === undefined || pathRootRef === this.rootRef) {
-      this.acceptedSelectionRevision = Math.max(
-        this.acceptedSelectionRevision ?? event.selectionRevision,
-        event.selectionRevision,
-      );
       this.applySelection(event.nodeRef, event.ancestorPath);
       return;
     }
@@ -1334,6 +1349,38 @@ export class DomTreeController {
       return;
     }
     this.pendingRootSelection = event;
+  }
+
+  private handleSelectionCleared(): void {
+    const oldRevealPath = this.revealPathRefs;
+    this.pendingRootSelection = undefined;
+    this.selectedNodeRef = undefined;
+    this.recoverySnapshot = undefined;
+    this.recoveryFocusRef = undefined;
+    this.recoveryFocusRowType = undefined;
+    this.recoveredFocusRef = undefined;
+    if (this.recovering) {
+      this.cancelPending("DOM selection authority cleared");
+      this.generation += 1;
+      this.recovering = false;
+      this.frozenRows = undefined;
+    }
+    this.clearRevealEdges();
+    this.revealPathRefs = Object.freeze([]);
+    if (this.currentRevealRef !== undefined) {
+      this.currentRevealVersion += 1;
+    }
+    this.currentRevealRef = undefined;
+    for (const oldRef of [...oldRevealPath].reverse()) {
+      if (oldRef !== this.rootRef && !this.isPageChild(oldRef)) {
+        this.removeSubtree(oldRef);
+      }
+    }
+    if (this.focusedNodeRef && !this.hasLiveOwner(this.focusedNodeRef)) {
+      this.focusedNodeRef = this.rootRef;
+    }
+    this.invalidateRows();
+    this.notify();
   }
 
   private invalidateBranch(
@@ -1637,10 +1684,6 @@ export class DomTreeController {
         pendingSelection?.ancestorPath[0]?.nodeRef === response.node.nodeRef
       ) {
         this.pendingRootSelection = undefined;
-        this.acceptedSelectionRevision = Math.max(
-          this.acceptedSelectionRevision ?? pendingSelection.selectionRevision,
-          pendingSelection.selectionRevision,
-        );
         this.applySelection(
           pendingSelection.nodeRef,
           pendingSelection.ancestorPath,

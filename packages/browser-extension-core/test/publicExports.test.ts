@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { InspectorAttribute } from "../src/index.js";
+import type {
+  DomSelectionClearedEvent,
+  InspectorAttribute,
+} from "../src/index.js";
 import * as browserExtensionCore from "../src/index.js";
 import {
   BackgroundRouter,
@@ -74,6 +77,12 @@ import {
 describe("browser extension core exports", () => {
   it("exports transport, inspection, and DevTools runtimes", () => {
     const inspectorAttribute: InspectorAttribute = { name: "id", value: "main" };
+    const selectionCleared: DomSelectionClearedEvent = {
+      type: "dom.selectionCleared",
+      documentEpoch: 1,
+      selectionRevision: 2,
+      nodeRef: "node-1",
+    };
     const publicExports = browserExtensionCore as unknown as Record<
       string,
       unknown
@@ -89,6 +98,7 @@ describe("browser extension core exports", () => {
     expect(createDefaultTabRefreshState).toBeTypeOf("function");
     expect(captureTopScrollSnapshot).toBeTypeOf("function");
     expect(inspectorAttribute).toEqual({ name: "id", value: "main" });
+    expect(selectionCleared.type).toBe("dom.selectionCleared");
     expect(DOM_PROTOCOL_MAX_ANCESTOR_PATH_LENGTH).toBe(64);
     expect(DOM_PROTOCOL_MAX_ATTRIBUTES).toBe(64);
     expect(DOM_PROTOCOL_MAX_ATTRIBUTE_NAME_LENGTH).toBe(256);

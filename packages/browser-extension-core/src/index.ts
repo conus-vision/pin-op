@@ -247,6 +247,7 @@ export type {
   DomResponse,
   DomRootResponse,
   DomSelectRequest,
+  DomSelectionClearedEvent,
   DomSelectionChangedEvent,
 } from "./domProtocol.js";
 export {

@@ -58,7 +58,7 @@ export class DomTreeRecoveryCoordinator {
 
     try {
       const rootResponse = await this.transport.request(rootRequest);
-      if (!this.isCurrent(token, contentSessionGeneration)) {
+      if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }
       if (
@@ -89,7 +89,7 @@ export class DomTreeRecoveryCoordinator {
           token,
           contentSessionGeneration,
         );
-        if (!this.isCurrent(token, contentSessionGeneration)) {
+        if (!this.isActiveRecovery(token, contentSessionGeneration)) {
           return;
         }
         if (selected) {
@@ -124,7 +124,7 @@ export class DomTreeRecoveryCoordinator {
           token,
           contentSessionGeneration,
         );
-        if (!this.isCurrent(token, contentSessionGeneration)) {
+        if (!this.isActiveRecovery(token, contentSessionGeneration)) {
           return;
         }
         if (expanded) {
@@ -149,7 +149,7 @@ export class DomTreeRecoveryCoordinator {
           token,
           contentSessionGeneration,
         );
-        if (!this.isCurrent(token, contentSessionGeneration)) {
+        if (!this.isActiveRecovery(token, contentSessionGeneration)) {
           return;
         }
         if (focused) {
@@ -162,7 +162,7 @@ export class DomTreeRecoveryCoordinator {
       }
 
       await this.controller.hydrateRecoveredBranches();
-      if (!this.isCurrent(token, contentSessionGeneration)) {
+      if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }
       this.controller.finishRecovery();
@@ -179,7 +179,7 @@ export class DomTreeRecoveryCoordinator {
         this.recoveryToken = undefined;
       }
     } catch (error) {
-      if (!this.isCurrent(token, contentSessionGeneration)) {
+      if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }
       this.abortCurrent(
@@ -235,7 +235,7 @@ export class DomTreeRecoveryCoordinator {
       locator: stableLocator,
     };
     const response = await this.transport.request(request);
-    if (!this.isCurrent(token, contentSessionGeneration)) {
+    if (!this.isActiveRecovery(token, contentSessionGeneration)) {
       return undefined;
     }
     if (response.type === "dom.error") {
@@ -303,6 +303,16 @@ export class DomTreeRecoveryCoordinator {
     return !this.disposed &&
       this.recoveryToken === token &&
       this.contentSessionGeneration === contentSessionGeneration;
+  }
+
+  private isActiveRecovery(
+    token: object,
+    contentSessionGeneration: number,
+  ): boolean {
+    if (!this.isCurrent(token, contentSessionGeneration)) return false;
+    if (this.controller.snapshot().recovering) return true;
+    this.invalidateAttempt();
+    return false;
   }
 
   private ownsRecoveredSelection(

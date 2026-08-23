@@ -165,6 +165,13 @@ export interface DomSelectionChangedEvent {
   readonly ancestorPath: readonly DomNodeView[];
 }
 
+export interface DomSelectionClearedEvent {
+  readonly type: "dom.selectionCleared";
+  readonly documentEpoch: number;
+  readonly selectionRevision: number;
+  readonly nodeRef: string;
+}
+
 export interface DomInvalidatedEvent {
   readonly type: "dom.invalidated";
   readonly documentEpoch: number;
@@ -174,6 +181,7 @@ export interface DomInvalidatedEvent {
 export type DomEvent =
   | DomHoverChangedEvent
   | DomSelectionChangedEvent
+  | DomSelectionClearedEvent
   | DomInvalidatedEvent;
 
 export function truncateDomProtocolUtf16(
@@ -586,6 +594,24 @@ export function parseDomEvent(value: unknown): DomEvent {
           ancestorPath,
         });
       }
+    case "dom.selectionCleared":
+      assertKeys(record, [
+        "type",
+        "documentEpoch",
+        "selectionRevision",
+        "nodeRef",
+      ], [
+        "type",
+        "documentEpoch",
+        "selectionRevision",
+        "nodeRef",
+      ]);
+      return freeze({
+        type: "dom.selectionCleared",
+        documentEpoch: assertSafeNonnegativeInteger(record.documentEpoch),
+        selectionRevision: assertSafeNonnegativeInteger(record.selectionRevision),
+        nodeRef: assertIdentifier(record.nodeRef),
+      });
     case "dom.invalidated":
       assertKeys(record, ["type", "documentEpoch", "branches"], [
         "type",
