@@ -209,6 +209,12 @@ interface MutationDrainAuthority {
   readonly authorityGeneration: number;
 }
 
+interface DocumentResetRequest {
+  readonly topDocument: Document;
+  readonly documentEpoch: number;
+  readonly requestGeneration: number;
+}
+
 interface PendingElementMutationRoot {
   readonly node: Node;
   readonly ownerRoot: Node;
@@ -369,6 +375,10 @@ export class DomTreeProvider {
   private publishedRootPresentation: PublishedRootPresentation | undefined;
   private deferredFrameDiscovery: MutationDrainAuthority | undefined;
   private deferredFrameDiscoveryScheduled = false;
+  private activeDocumentReset: DocumentResetRequest | undefined;
+  private pendingDocumentReset: DocumentResetRequest | undefined;
+  private documentResetGeneration = 0;
+  private drainingDocumentResets = false;
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -1083,26 +1093,75 @@ export class DomTreeProvider {
 
   public resetDocument(topDocument: Document, documentEpoch: number): void {
     this.requireActive();
+    const acceptedEpoch = Math.max(
+      this.documentEpoch,
+      this.activeDocumentReset?.documentEpoch ?? -1,
+      this.pendingDocumentReset?.documentEpoch ?? -1,
+    );
     if (
       !topDocument ||
       typeof topDocument !== "object" ||
       !Number.isSafeInteger(documentEpoch) ||
-      documentEpoch <= this.documentEpoch
+      documentEpoch <= acceptedEpoch
     ) {
       throw new RangeError("documentEpoch must be greater than the current epoch");
     }
+    const request = Object.freeze({
+      topDocument,
+      documentEpoch,
+      requestGeneration: ++this.documentResetGeneration,
+    });
+    this.authorityGeneration += 1;
+    this.pendingDocumentReset = request;
+    if (this.drainingDocumentResets) return;
+
+    this.drainingDocumentResets = true;
+    try {
+      while (!this.disposed && this.pendingDocumentReset) {
+        const next = this.pendingDocumentReset;
+        this.pendingDocumentReset = undefined;
+        this.activeDocumentReset = next;
+        try {
+          this.applyDocumentReset(next);
+        } catch (error) {
+          if (this.isDocumentResetCurrent(next)) throw error;
+        } finally {
+          if (this.activeDocumentReset === next) {
+            this.activeDocumentReset = undefined;
+          }
+        }
+      }
+    } finally {
+      this.activeDocumentReset = undefined;
+      if (this.disposed) this.pendingDocumentReset = undefined;
+      this.drainingDocumentResets = false;
+    }
+  }
+
+  private applyDocumentReset(request: DocumentResetRequest): void {
+    const isCurrent = () => this.isDocumentResetCurrent(request);
+    if (!isCurrent()) return;
     const deferFrameDiscovery = this.frameTracking &&
       this.outwardEffectBuffer !== undefined;
     this.deferredFrameDiscovery = undefined;
-    this.authorityGeneration += 1;
     this.postCommitEffectBatches.length = 0;
-    if (!this.frameRegistry.resetTopDocument(topDocument, documentEpoch)) {
+    if (!this.frameRegistry.resetTopDocument(
+      request.topDocument,
+      request.documentEpoch,
+    )) {
+      if (!isCurrent()) return;
       throwDomTreeError("node-unavailable");
     }
-    this.locatorService = this.createLocatorService(topDocument);
-    this.nodeRegistry.resetDocument(documentEpoch);
+    if (!isCurrent()) return;
+    const locatorService = this.createLocatorService(request.topDocument);
+    if (!isCurrent()) return;
+    this.locatorService = locatorService;
+    this.nodeRegistry.resetDocument(request.documentEpoch);
+    if (!isCurrent()) return;
     this.cancelScheduledWork();
-    this.disconnectAllObservers();
+    if (!isCurrent()) return;
+    this.disconnectAllObservers(isCurrent);
+    if (!isCurrent()) return;
     this.records.clear();
     this.refsByNode = new WeakMap<Node, string>();
     this.cursors.clear();
@@ -1121,21 +1180,30 @@ export class DomTreeProvider {
     this.pendingSelectedRemoval = undefined;
     this.publishedRootPresentation = undefined;
     this.shadowScanOffset = 0;
-    this.topDocument = topDocument;
-    this.documentEpoch = documentEpoch;
-    this.observeRoot(topDocument);
+    this.topDocument = request.topDocument;
+    this.documentEpoch = request.documentEpoch;
+    this.observeRoot(request.topDocument, isCurrent);
+    if (!isCurrent()) return;
     if (this.frameTracking) {
       if (deferFrameDiscovery) {
         this.deferFrameDiscovery({
-          topDocument,
-          documentEpoch,
+          topDocument: request.topDocument,
+          documentEpoch: request.documentEpoch,
           authorityGeneration: this.authorityGeneration,
         });
       } else {
-        this.queueFrameDiscovery(topDocument);
+        this.queueFrameDiscovery(request.topDocument);
+        if (!isCurrent()) return;
         this.processFrameMutationScanSlice();
       }
     }
+  }
+
+  private isDocumentResetCurrent(request: DocumentResetRequest): boolean {
+    return !this.disposed &&
+      this.activeDocumentReset === request &&
+      this.pendingDocumentReset === undefined &&
+      this.documentResetGeneration === request.requestGeneration;
   }
 
   public collapse(nodeRef: string, documentEpoch: number): void {
@@ -1201,6 +1269,9 @@ export class DomTreeProvider {
     if (this.disposed) {
       return;
     }
+    this.documentResetGeneration += 1;
+    this.activeDocumentReset = undefined;
+    this.pendingDocumentReset = undefined;
     this.authorityGeneration += 1;
     this.disposed = true;
     this.postCommitEffectBatches.length = 0;
@@ -3553,8 +3624,13 @@ export class DomTreeProvider {
     }
   }
 
-  private observeRoot(root: Node): void {
-    if (this.isNodeExcluded(root) || this.rootObservers.has(root)) {
+  private observeRoot(
+    root: Node,
+    isCurrent: () => boolean = () => true,
+  ): void {
+    if (!isCurrent()) return;
+    const excluded = this.isNodeExcluded(root);
+    if (!isCurrent() || excluded || this.rootObservers.has(root)) {
       return;
     }
     let observer: DomTreeMutationObserver | undefined;
@@ -3572,6 +3648,10 @@ export class DomTreeProvider {
           ? this.queueMutations(root, records)
           : undefined
       ));
+      if (!isCurrent()) {
+        this.disconnectObserverInstance(root, observer);
+        return;
+      }
       this.observedRootByObserver.set(observer, root);
       observer.observe(root, {
         attributes: true,
@@ -3579,6 +3659,15 @@ export class DomTreeProvider {
         childList: true,
         subtree: true,
       });
+      if (!isCurrent()) {
+        if (
+          this.observedRootByObserver.get(observer) === root ||
+          this.rootObservers.get(root) === observer
+        ) {
+          this.disconnectObserverInstance(root, observer);
+        }
+        return;
+      }
       if (this.observedRootByObserver.get(observer) !== root) return;
       if (this.rootObservers.has(root)) {
         this.disconnectObserverInstance(root, observer);
@@ -4274,15 +4363,21 @@ export class DomTreeProvider {
     }
   }
 
-  private disconnectAllObservers(): void {
+  private disconnectAllObservers(
+    isCurrent: () => boolean = () => true,
+  ): boolean {
     for (const [observer, root] of [...this.observedRootByObserver]) {
       this.disconnectObserverInstance(root, observer);
+      if (!isCurrent()) return false;
     }
     for (const [root, observer] of [...this.rootObservers]) {
       this.disconnectObserverInstance(root, observer);
+      if (!isCurrent()) return false;
     }
+    if (!isCurrent()) return false;
     this.rootObservers.clear();
     this.observedRootByObserver.clear();
+    return isCurrent();
   }
 
   private disconnectObserver(root: Node): void {

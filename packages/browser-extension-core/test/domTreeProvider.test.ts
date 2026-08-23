@@ -1177,6 +1177,273 @@ describe("DomTreeProvider", () => {
     expect(frameView.label).toBe("iframe");
   });
 
+  it.each(["is-excluded", "create-observer", "observe"] as const)(
+    "serializes a newer framed reset reentered from the %s root-observer hook",
+    async (phase) => {
+      const document = createDocument();
+      const intermediateDocument = createDocument();
+      const latestDocument = createDocument();
+      const childDocument = createDocument();
+      const latestFrame = createFrameElement(latestDocument, childDocument);
+      latestDocument.documentElement.append(latestFrame);
+      const lifecycle: FrameLifecycleEvent[] = [];
+      const invalidated: string[] = [];
+      const settledEpochs: number[] = [];
+      let provider!: DomTreeProvider;
+      let armed = false;
+      let nestedResetCount = 0;
+      const reenterLatestReset = () => {
+        if (!armed) return;
+        armed = false;
+        nestedResetCount += 1;
+        provider.resetDocument(latestDocument as unknown as Document, 5);
+      };
+      const harness = createProviderHarness(document, {
+        createMutationObserver: (callback) => {
+          const observer = new TestMutationObserver(callback);
+          if (phase === "create-observer" && armed) {
+            reenterLatestReset();
+          }
+          if (phase === "observe") {
+            const observe = observer.observe.bind(observer);
+            observer.observe = (target, options) => {
+              observe(target, options);
+              if (target === intermediateDocument as unknown as Node) {
+                reenterLatestReset();
+              }
+            };
+          }
+          return observer;
+        },
+        isExcludedNode: (node) => {
+          if (
+            phase === "is-excluded" &&
+            node === intermediateDocument as unknown as Node
+          ) {
+            reenterLatestReset();
+          }
+          return false;
+        },
+        onInvalidated: ({ nodeRef }) => invalidated.push(nodeRef),
+        onFrameLifecycle: (event) => lifecycle.push(event),
+        onMutationSettled: () => settledEpochs.push(provider.currentDocumentEpoch),
+      });
+      provider = harness.provider;
+      provider.startFrameTracking();
+      harness.flushTimers();
+      harness.flushEffects();
+      lifecycle.length = 0;
+
+      const auxiliary = createComment("old-document");
+      document.append(auxiliary);
+      let epochAfterOuterReset: number | undefined;
+      document.onDocumentElementRead = () => {
+        document.onDocumentElementRead = undefined;
+        armed = true;
+        provider.resetDocument(intermediateDocument as unknown as Document, 4);
+        epochAfterOuterReset = provider.currentDocumentEpoch;
+      };
+      harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
+      harness.flushTimers();
+      await Promise.resolve();
+      harness.flushTimers();
+      harness.flushEffects();
+
+      expect(nestedResetCount).toBe(1);
+      expect(epochAfterOuterReset).toBe(5);
+      expect(provider.currentDocumentEpoch).toBe(5);
+      expect(invalidated).toEqual([]);
+      expect(settledEpochs).toEqual([]);
+      const registered = lifecycle.filter((event) => event.type === "registered");
+      expect(registered).toHaveLength(1);
+      expect(registered[0]).toMatchObject({ documentEpoch: 5 });
+      const contexts = provider.frameAuthority.accessibleContexts();
+      const latestTop = contexts.find((context) => (
+        context.document === latestDocument as unknown as Document
+      ));
+      const childContext = contexts.find((context) => (
+        context.document === childDocument as unknown as Document
+      ));
+      expect(latestTop).toBeDefined();
+      expect(childContext).toBeDefined();
+      expect(registered[0]?.frameRef).toBe(childContext?.frameRef);
+      const rootObservers = (provider as unknown as {
+        readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+      }).rootObservers;
+      expect(rootObservers.has(intermediateDocument as unknown as Node)).toBe(false);
+      expect(rootObservers.has(latestDocument as unknown as Node)).toBe(true);
+      expect(harness.observers.filter((observer) => (
+        observer.observedTargets.includes(intermediateDocument)
+      )).every((observer) => observer.disconnectCount === 1)).toBe(true);
+    },
+  );
+
+  it.each(["locator", "timer-cancel", "observer-disconnect"] as const)(
+    "keeps the latest reset authoritative after reentry during %s",
+    (phase) => {
+      const document = createDocument();
+      const intermediateDocument = createDocument();
+      const latestDocument = createDocument();
+      const childDocument = createDocument();
+      latestDocument.documentElement.append(
+        createFrameElement(latestDocument, childDocument),
+      );
+      const lifecycle: FrameLifecycleEvent[] = [];
+      const harness = createProviderHarness(document, {
+        onFrameLifecycle: (event) => lifecycle.push(event),
+      });
+      const provider = harness.provider;
+      provider.startFrameTracking();
+      harness.flushTimers();
+      harness.flushEffects();
+      lifecycle.length = 0;
+      const state = provider as unknown as {
+        mutationTimer: unknown;
+        cancelTimeout(handle: unknown): void;
+        createLocatorService(document: Document): unknown;
+        readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+      };
+      let armed = true;
+      let nestedResetCount = 0;
+      const reenterLatestReset = () => {
+        if (!armed) return;
+        armed = false;
+        nestedResetCount += 1;
+        provider.resetDocument(latestDocument as unknown as Document, 5);
+      };
+
+      if (phase === "locator") {
+        const createLocatorService = state.createLocatorService.bind(state);
+        state.createLocatorService = (topDocument) => {
+          if (topDocument === intermediateDocument as unknown as Document) {
+            reenterLatestReset();
+          }
+          return createLocatorService(topDocument);
+        };
+      } else if (phase === "timer-cancel") {
+        state.mutationTimer = 90210;
+        state.cancelTimeout = (handle) => {
+          if (handle === 90210) reenterLatestReset();
+        };
+      } else {
+        const initialObserver = harness.observers[0]!;
+        const disconnect = initialObserver.disconnect.bind(initialObserver);
+        initialObserver.disconnect = () => {
+          disconnect();
+          reenterLatestReset();
+        };
+      }
+
+      expect(() => provider.resetDocument(
+        intermediateDocument as unknown as Document,
+        4,
+      )).not.toThrow();
+      harness.flushTimers();
+      harness.flushEffects();
+
+      expect(nestedResetCount).toBe(1);
+      expect(provider.currentDocumentEpoch).toBe(5);
+      const registered = lifecycle.filter((event) => event.type === "registered");
+      expect(registered).toHaveLength(1);
+      expect(registered[0]).toMatchObject({ documentEpoch: 5 });
+      const childContext = provider.frameAuthority.accessibleContexts().find(
+        (context) => context.document === childDocument as unknown as Document,
+      );
+      expect(childContext?.frameRef).toBe(registered[0]?.frameRef);
+      expect(state.rootObservers.has(intermediateDocument as unknown as Node)).toBe(false);
+      expect(state.rootObservers.has(latestDocument as unknown as Node)).toBe(true);
+    },
+  );
+
+  it("stops an outer reset when an observer hook disposes the provider", () => {
+    const document = createDocument();
+    const intermediateDocument = createDocument();
+    let provider!: DomTreeProvider;
+    let armed = false;
+    const harness = createProviderHarness(document, {
+      isExcludedNode: (node) => {
+        if (
+          armed &&
+          node === intermediateDocument as unknown as Node
+        ) {
+          armed = false;
+          provider.dispose();
+        }
+        return false;
+      },
+    });
+    provider = harness.provider;
+    armed = true;
+
+    expect(() => provider.resetDocument(
+      intermediateDocument as unknown as Document,
+      4,
+    )).not.toThrow();
+
+    const rootObservers = (provider as unknown as {
+      readonly rootObservers: ReadonlyMap<Node, TestMutationObserver>;
+    }).rootObservers;
+    expect(rootObservers.size).toBe(0);
+    expect(harness.observers.filter((observer) => (
+      observer.observedTargets.includes(intermediateDocument)
+    )).every((observer) => observer.disconnectCount === 1)).toBe(true);
+    expect(() => provider.getRoot()).toThrowError(
+      expect.objectContaining({ code: "session-disposed" }),
+    );
+  });
+
+  it("queues a newer reset reentered while the frame registry is mutating", () => {
+    const document = createDocument();
+    const initialChildDocument = createDocument();
+    const initialFrame = createFrameElement(document, initialChildDocument);
+    document.documentElement.append(initialFrame);
+    const intermediateDocument = createDocument();
+    const latestDocument = createDocument();
+    const latestChildDocument = createDocument();
+    latestDocument.documentElement.append(
+      createFrameElement(latestDocument, latestChildDocument),
+    );
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+    const provider = harness.provider;
+    let armed = false;
+    let nestedResetCount = 0;
+    const removeEventListener = initialFrame.removeEventListener.bind(initialFrame);
+    initialFrame.removeEventListener = (type, listener) => {
+      if (armed && type === "load") {
+        armed = false;
+        nestedResetCount += 1;
+        provider.resetDocument(latestDocument as unknown as Document, 5);
+      }
+      removeEventListener(type, listener);
+    };
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    expect(initialFrame.loadListenerCount).toBe(1);
+    lifecycle.length = 0;
+    armed = true;
+
+    expect(() => provider.resetDocument(
+      intermediateDocument as unknown as Document,
+      4,
+    )).not.toThrow();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(nestedResetCount).toBe(1);
+    expect(provider.currentDocumentEpoch).toBe(5);
+    const registered = lifecycle.filter((event) => event.type === "registered");
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toMatchObject({ documentEpoch: 5 });
+    const childContext = provider.frameAuthority.accessibleContexts().find(
+      (context) => context.document === latestChildDocument as unknown as Document,
+    );
+    expect(childContext?.frameRef).toBe(registered[0]?.frameRef);
+  });
+
   it("bounds unpublished root namespaces across remove and re-add cycles", () => {
     const document = createDocument();
     const invalidated: string[] = [];
