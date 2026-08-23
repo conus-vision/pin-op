@@ -16,9 +16,22 @@
  * found in the LICENSE file.
  */
 
-/* Pin-op adaptation: shared read-only Inspector shell and scoped theme. */
+/*
+ * Pin-op adaptation: shared read-only Inspector shell and DOM tree, derived
+ * from front_end/panels/elements/elementsTreeOutline.css at revision
+ * a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280. All selectors remain scoped.
+ */
 
 .pin-op-elements-inspector {
+  --pin-op-elements-border: color-mix(in srgb, CanvasText 20%, Canvas);
+  --pin-op-elements-hover: color-mix(in srgb, Highlight 12%, Canvas);
+  --pin-op-elements-indent-guide: color-mix(in srgb, CanvasText 14%, transparent);
+  --pin-op-elements-token-attribute: #994500;
+  --pin-op-elements-token-comment: #236e25;
+  --pin-op-elements-token-doctype: #6b6b6b;
+  --pin-op-elements-token-tag: #881280;
+  --pin-op-elements-token-text: CanvasText;
+  --pin-op-elements-token-value: #1a1aa6;
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 38%);
@@ -49,14 +62,14 @@
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
-  border-inline-end: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-inline-end: 1px solid var(--pin-op-elements-border);
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__pane-title,
 .pin-op-elements-inspector .pin-op-elements-inspector__tabs {
   min-block-size: 28px;
   margin: 0;
-  border-block-end: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-block-end: 1px solid var(--pin-op-elements-border);
   font: inherit;
   font-weight: 600;
 }
@@ -94,16 +107,38 @@
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__tree {
-  padding-block: 2px;
+  padding-block: 0;
+  outline: none;
   font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
 }
 
+.pin-op-elements-inspector .elements-tree-virtual-spacer {
+  inline-size: 1px;
+  min-block-size: 0;
+  pointer-events: none;
+}
+
 .pin-op-elements-inspector .pin-op-elements-inspector__tree-row {
-  min-block-size: 20px;
-  padding: 2px 8px;
+  position: relative;
+  display: flex;
+  align-items: start;
+  inline-size: 100%;
+  block-size: 20px;
+  padding: 2px 8px 2px 2px;
+  border: 0;
   overflow: hidden;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  line-height: 16px;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: pre;
+}
+
+.pin-op-elements-inspector .pin-op-elements-inspector__tree-row:hover,
+.pin-op-elements-inspector .pin-op-elements-inspector__tree-row[data-hovered="true"] {
+  background: var(--pin-op-elements-hover);
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__tree-row[aria-selected="true"] {
@@ -119,4 +154,141 @@
 .pin-op-elements-inspector .pin-op-elements-inspector__tree-row[data-hovered="true"] {
   text-decoration: underline;
   text-decoration-style: dotted;
+}
+
+.pin-op-elements-inspector .elements-tree-indentation {
+  display: inline-flex;
+  align-self: stretch;
+  flex: none;
+}
+
+.pin-op-elements-inspector .elements-tree-indent-guide {
+  inline-size: 12px;
+  border-inline-end: 1px solid var(--pin-op-elements-indent-guide);
+}
+
+.pin-op-elements-inspector .elements-tree-disclosure,
+.pin-op-elements-inspector .elements-tree-disclosure-placeholder {
+  flex: none;
+  inline-size: 14px;
+  block-size: 16px;
+  margin: 0 2px 0 0;
+  padding: 0;
+  border: 0;
+  color: currentcolor;
+  background: transparent;
+}
+
+.pin-op-elements-inspector .elements-tree-disclosure {
+  position: relative;
+  cursor: default;
+}
+
+.pin-op-elements-inspector .elements-tree-disclosure::before {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 4px;
+  inline-size: 0;
+  block-size: 0;
+  border-block: 4px solid transparent;
+  border-inline-start: 5px solid currentcolor;
+  content: "";
+}
+
+.pin-op-elements-inspector .elements-tree-row[aria-expanded="true"] > .elements-tree-disclosure::before {
+  inset-block-start: 6px;
+  inset-inline-start: 3px;
+  border-block-start: 5px solid currentcolor;
+  border-block-end: 0;
+  border-inline: 4px solid transparent;
+}
+
+.pin-op-elements-inspector .elements-tree-disclosure:focus-visible,
+.pin-op-elements-inspector .elements-tree-load-more:focus-visible,
+.pin-op-elements-inspector .elements-tree-row:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: -2px;
+}
+
+.pin-op-elements-inspector .elements-tree-load-more {
+  cursor: pointer;
+  color: LinkText;
+}
+
+.pin-op-elements-inspector .highlight {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pin-op-elements-inspector .webkit-html-tag-name,
+.pin-op-elements-inspector .webkit-html-close-tag-name {
+  color: var(--pin-op-elements-token-tag);
+}
+
+.pin-op-elements-inspector .webkit-html-attribute-name {
+  color: var(--pin-op-elements-token-attribute);
+}
+
+.pin-op-elements-inspector .webkit-html-attribute-value {
+  color: var(--pin-op-elements-token-value);
+}
+
+.pin-op-elements-inspector .webkit-html-text-node,
+.pin-op-elements-inspector .webkit-html-frame-document,
+.pin-op-elements-inspector .webkit-html-fragment {
+  color: var(--pin-op-elements-token-text);
+}
+
+.pin-op-elements-inspector .webkit-html-comment {
+  color: var(--pin-op-elements-token-comment);
+}
+
+.pin-op-elements-inspector .webkit-html-doctype {
+  color: var(--pin-op-elements-token-doctype);
+}
+
+.pin-op-elements-inspector .elements-tree-ellipsis {
+  color: GrayText;
+}
+
+@media (prefers-color-scheme: dark) {
+  .pin-op-elements-inspector {
+    --pin-op-elements-token-attribute: #d19a66;
+    --pin-op-elements-token-comment: #7ec699;
+    --pin-op-elements-token-doctype: #a9a9a9;
+    --pin-op-elements-token-tag: #e2777a;
+    --pin-op-elements-token-value: #9cdcfe;
+  }
+}
+
+@media (forced-colors: active) {
+  .pin-op-elements-inspector .elements-tree-disclosure::before {
+    forced-color-adjust: none;
+    border-inline-start-color: ButtonText;
+  }
+
+  .pin-op-elements-inspector .elements-tree-row[aria-expanded="true"] > .elements-tree-disclosure::before {
+    border-block-start-color: ButtonText;
+    border-inline-color: transparent;
+  }
+
+  .pin-op-elements-inspector .pin-op-elements-inspector__tree-row[aria-selected="true"],
+  .pin-op-elements-inspector .pin-op-elements-inspector__tree-row[data-hovered="true"] {
+    forced-color-adjust: none;
+    color: HighlightText;
+    background: Highlight;
+  }
+}
+
+@media (max-width: 320px) {
+  .pin-op-elements-inspector {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(160px, 1fr) minmax(120px, 45%);
+  }
+
+  .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--pin-op-elements-border);
+  }
 }

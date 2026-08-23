@@ -20,6 +20,17 @@ every derived source.
   DOM rendering helpers.
 - Keep selection, expansion, lazy loading, focus, and hover read-only. Do not
   retain dormant edit or context-menu paths.
+- Preserve Chromium's document-type, tag, attribute, text, comment,
+  shadow-root, and frame-document syntax classes while rendering only bounded
+  immutable snapshots through text APIs.
+- Adapt disclosure and roving tree focus to delegated `TreeDataSource`
+  commands. Focus remains controller-owned; the renderer performs only the
+  immediate DOM-focus restoration required for keyboard continuity.
+- Bound local row materialization to 512 rows even when a caller violates the
+  controller's normal virtual-window contract. Navigation still uses the full
+  bounded snapshot and shifts that materialized window around controller-owned
+  focus. In-flight expand/load/select commands are independently capped and
+  deduplicated until settlement.
 
 <a id="rules"></a>
 ## Rules
@@ -43,3 +54,6 @@ every derived source.
   light, dark, high-contrast, narrow-panel, and keyboard-focus behavior.
 - Do not retain unscoped rules, remote resources, inline style behavior, or
   Chromium browser branding.
+- The retained DOM-tree subset includes disclosure/indent guides, syntax token
+  colors, selection/hover/focus states, and load-more presentation, with
+  explicit dark, forced-color, and 320-pixel layouts.

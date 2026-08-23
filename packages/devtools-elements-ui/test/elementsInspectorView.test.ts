@@ -87,7 +87,10 @@ describe("ElementsInspectorView", () => {
   it("renders and refreshes page-controlled text only as text", () => {
     const harness = createHarness();
     const initialText = "Hello <img src=x onerror=alert(1)>";
-    const textRow = required(harness.mount.querySelector('[data-node-ref="intro-text"]'));
+    const textRow = required(
+      harness.mount.querySelector('[data-node-ref="intro-text"]')
+        ?.querySelector(".webkit-html-text-node"),
+    );
 
     expect(textRow.textContent).toBe(initialText);
     expect(harness.document.createdTags()).not.toContain("img");
@@ -96,7 +99,8 @@ describe("ElementsInspectorView", () => {
     harness.backend.publish(withTextValue("Updated <script>alert(1)</script>"));
 
     const updatedText = required(
-      harness.mount.querySelector('[data-node-ref="intro-text"]'),
+      harness.mount.querySelector('[data-node-ref="intro-text"]')
+        ?.querySelector(".webkit-html-text-node"),
     );
     expect(updatedText.textContent).toBe("Updated <script>alert(1)</script>");
     expect(harness.document.createdTags()).not.toContain("script");
@@ -113,9 +117,13 @@ describe("ElementsInspectorView", () => {
     expect(root.querySelector("[contenteditable]")).toBeNull();
     expect(root.querySelector("input, textarea, select")).toBeNull();
     expect(root.querySelector("script, style")).toBeNull();
-    expect(
-      [root, ...root.descendants()].some((element) => element.hasAttribute("style")),
-    ).toBe(false);
+    const styledElements = [root, ...root.descendants()].filter(
+      (element) => element.hasAttribute("style"),
+    );
+    expect(styledElements.every((element) => (
+      element.getAttribute("data-part") === "virtual-spacer"
+      && /^(?:block-size|height): [0-9]+px$/.test(element.getAttribute("style") ?? "")
+    ))).toBe(true);
     expect(harness.document.innerHTMLAssignments()).toBe(0);
 
     const implementations = sourceFiles(path.join(packageRoot, "src"))
@@ -131,7 +139,6 @@ describe("ElementsInspectorView", () => {
     const renderedRows = required(
       harness.mount.querySelector('[data-part="dom-rows"]'),
     );
-    const beforeDispose = renderedRows.textContent;
     expect(harness.backend.listenerCount()).toBe(1);
 
     harness.view.dispose();
@@ -141,7 +148,8 @@ describe("ElementsInspectorView", () => {
     expect(harness.backend.listenerCount()).toBe(0);
     expect(harness.document.totalListeners()).toBe(0);
     expect(harness.mount.children).toHaveLength(0);
-    expect(renderedRows.textContent).toBe(beforeDispose);
+    expect(renderedRows.textContent).toBe("");
+    expect(renderedRows.children).toHaveLength(0);
   });
 
   it("does not commit rows when snapshot reentrancy disposes the view", () => {
@@ -150,18 +158,13 @@ describe("ElementsInspectorView", () => {
     const retainedRows = required(
       harness.mount.querySelector('[data-part="dom-rows"]'),
     );
-    const beforeText = retainedRows.textContent;
-    const beforeChildren = [...retainedRows.children];
     backend.beforeSnapshot = () => harness.view.dispose();
 
     backend.publish(withTextValue("must not commit after dispose"));
 
     expect(harness.mount.children).toHaveLength(0);
-    expect(retainedRows.textContent).toBe(beforeText);
-    expect(retainedRows.children).toHaveLength(beforeChildren.length);
-    beforeChildren.forEach((child, index) => {
-      expect(retainedRows.children[index]).toBe(child);
-    });
+    expect(retainedRows.textContent).toBe("");
+    expect(retainedRows.children).toHaveLength(0);
   });
 
   it("does not let an outer render overwrite a newer nested render", () => {
@@ -175,7 +178,10 @@ describe("ElementsInspectorView", () => {
     backend.publish(withTextValue("stale outer render"));
 
     expect(
-      required(rows.querySelector('[data-node-ref="intro-text"]')).textContent,
+      required(
+        rows.querySelector('[data-node-ref="intro-text"]')
+          ?.querySelector(".webkit-html-text-node"),
+      ).textContent,
     ).toBe("newer nested render");
   });
 

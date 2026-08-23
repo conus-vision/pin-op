@@ -8,6 +8,7 @@ export class FakeElementsBackend implements TreeDataSource {
   public readonly collapsed: string[] = [];
   public readonly loadedMore: string[] = [];
   public readonly selected: string[] = [];
+  public readonly focused: string[] = [];
   public readonly hovered: Array<string | undefined> = [];
   private readonly listeners = new Set<() => void>();
 
@@ -38,6 +39,10 @@ export class FakeElementsBackend implements TreeDataSource {
 
   public async select(nodeRef: string): Promise<void> {
     this.selected.push(nodeRef);
+  }
+
+  public focus(nodeRef: string): void {
+    this.focused.push(nodeRef);
   }
 
   public hover(nodeRef?: string): void {

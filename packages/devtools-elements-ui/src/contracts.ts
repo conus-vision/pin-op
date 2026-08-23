@@ -57,6 +57,7 @@ export interface TreeDataSource {
   collapse(nodeRef: string): void;
   loadMore(parentRef: string): Promise<void>;
   select(nodeRef: string): Promise<void>;
+  focus(nodeRef: string): void;
   hover(nodeRef?: string): void;
 }
 

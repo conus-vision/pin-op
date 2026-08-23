@@ -22,7 +22,7 @@
         {
           "path": "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
           "changeRecord": "PIN_OP_CHANGES.md#dom-tree",
-          "localSha256": "pending"
+          "localSha256": "2d12ac3dcbaeba784bed93c29afe27c40e651471f27ba61cfb706b248d2f0996"
         }
       ]
     },
@@ -43,7 +43,7 @@
         {
           "path": "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
           "changeRecord": "PIN_OP_CHANGES.md#dom-tree",
-          "localSha256": "pending"
+          "localSha256": "f01ce4ffd5c115f755fd22c997c71db5699600e222cc2413a2f911e67e7fc8be"
         }
       ]
     },
@@ -153,7 +153,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
+          "localSha256": "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d"
         }
       ]
     },
@@ -170,7 +170,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
+          "localSha256": "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d"
         }
       ]
     },
@@ -187,7 +187,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "e7f11bd78f6f43c29067bc0646f84fc843b19a01bc6231a2542c5c7acb364551"
+          "localSha256": "36cb01209e8a05cbf341d09b5e11b5d99d6aedc3f0738cb1f4308058558c013d"
         }
       ]
     }

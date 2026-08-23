@@ -25,6 +25,8 @@ export class FakeElement {
   public hidden = false;
   public tabIndex = -1;
   public disabled = false;
+  public clientHeight = 0;
+  public scrollTop = 0;
   public readonly children: FakeElement[] = [];
   public readonly dataset: Record<string, string> = {};
   public parentElement: FakeElement | undefined;
@@ -156,6 +158,10 @@ export class FakeElement {
     return event;
   }
 
+  public focus(_options?: FocusOptions): void {
+    this.owner.recordFocus(this);
+  }
+
   public contains(candidate: unknown): boolean {
     return candidate === this || this.children.some((child) => child.contains(candidate));
   }
@@ -196,10 +202,13 @@ export class FakeDocument {
   private readonly tags: string[] = [];
   private innerHtmlWrites = 0;
   private outerHtmlWrites = 0;
+  private focusedElement: FakeElement | null = null;
+  public beforeFocus: ((element: FakeElement) => void) | undefined;
 
   public constructor() {
     this.body = new FakeElement(this, "BODY");
     this.elements.add(this.body);
+    const owner = this;
     this.document = {
       body: this.body,
       createElement: (tagName: string) => this.createElement(tagName),
@@ -208,6 +217,9 @@ export class FakeDocument {
       ),
       querySelector: (selector: string) => this.querySelector(selector),
       querySelectorAll: (selector: string) => this.querySelectorAll(selector),
+      get activeElement() {
+        return owner.focusedElement;
+      },
     } as unknown as Document;
   }
 
@@ -249,6 +261,17 @@ export class FakeDocument {
       (total, element) => total + element.listenerCount(),
       0,
     );
+  }
+
+  public activeElement(): FakeElement | null {
+    return this.focusedElement;
+  }
+
+  public recordFocus(element: FakeElement): void {
+    this.focusedElement = element;
+    const beforeFocus = this.beforeFocus;
+    this.beforeFocus = undefined;
+    beforeFocus?.(element);
   }
 
   public recordInnerHtmlAssignment(): void {

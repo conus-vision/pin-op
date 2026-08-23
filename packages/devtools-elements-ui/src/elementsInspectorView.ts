@@ -1,4 +1,5 @@
-import type { TreeDataSource, TreeRowSnapshot } from "./contracts.js";
+import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
+import type { TreeDataSource } from "./contracts.js";
 
 const nextAriaIdSequence = new WeakMap<Document, number>();
 
@@ -7,15 +8,13 @@ export class ElementsInspectorView {
   public readonly domRoot: HTMLElement;
   public readonly rulesRoot: HTMLElement;
   public readonly sidebarExtensionMount: HTMLElement;
-  private readonly rowsRoot: HTMLElement;
-  private unsubscribe: (() => void) | undefined;
+  private readonly treeOutline: ElementsTreeOutline;
   private disposed = false;
-  private renderGeneration = 0;
 
   public constructor(
     private readonly document: Document,
     mount: HTMLElement,
-    private readonly treeDataSource: TreeDataSource,
+    treeDataSource: TreeDataSource,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -41,15 +40,7 @@ export class ElementsInspectorView {
         id: ariaIds.domTitle,
       },
     });
-    this.rowsRoot = this.createElement("div", {
-      className: "pin-op-elements-inspector__tree",
-      attributes: {
-        "aria-label": "DOM tree",
-        "data-part": "dom-rows",
-        role: "tree",
-      },
-    });
-    this.domRoot.append(domTitle, this.rowsRoot);
+    this.domRoot.append(domTitle);
 
     const sidebar = this.createElement("aside", {
       className: "pin-op-elements-inspector__sidebar",
@@ -98,13 +89,15 @@ export class ElementsInspectorView {
     sidebar.append(tabList, this.rulesRoot, this.sidebarExtensionMount);
     this.element.append(this.domRoot, sidebar);
 
-    this.unsubscribe = this.treeDataSource.subscribe(() => this.renderRows());
+    this.treeOutline = new ElementsTreeOutline(
+      document,
+      this.domRoot,
+      treeDataSource,
+    );
     try {
-      this.renderRows();
       mount.append(this.element);
     } catch (error) {
-      this.unsubscribe();
-      this.unsubscribe = undefined;
+      this.treeOutline.dispose();
       throw error;
     }
   }
@@ -112,50 +105,11 @@ export class ElementsInspectorView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.renderGeneration += 1;
-    const unsubscribe = this.unsubscribe;
-    this.unsubscribe = undefined;
     try {
-      unsubscribe?.();
+      this.treeOutline.dispose();
     } finally {
       this.element.remove();
     }
-  }
-
-  private renderRows(): void {
-    if (this.disposed) return;
-    const generation = ++this.renderGeneration;
-    const rows = this.treeDataSource.snapshot().rows.map((row) => (
-      this.renderRow(row)
-    ));
-    if (this.disposed || generation !== this.renderGeneration) return;
-    this.rowsRoot.replaceChildren(...rows);
-  }
-
-  private renderRow(row: TreeRowSnapshot): HTMLElement {
-    const element = this.createElement("div", {
-      className: "pin-op-elements-inspector__tree-row",
-      attributes: {
-        "aria-level": String(row.depth + 1),
-        "data-depth": String(row.depth),
-        "data-node-ref": row.nodeRef,
-        "data-row-type": row.type,
-        role: row.type === "node" ? "treeitem" : "status",
-      },
-    });
-    if (row.type === "load-more") {
-      element.textContent = "Load more";
-      return element;
-    }
-
-    element.setAttribute("aria-selected", String(row.selected));
-    if (row.expandable) {
-      element.setAttribute("aria-expanded", String(row.expanded));
-    }
-    if (row.focused) element.setAttribute("data-focused", "true");
-    if (row.hovered) element.setAttribute("data-hovered", "true");
-    element.textContent = row.node?.nodeValue ?? row.node?.nodeName ?? row.nodeRef;
-    return element;
   }
 
   private createElement(
