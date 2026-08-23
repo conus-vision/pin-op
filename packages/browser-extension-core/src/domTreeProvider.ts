@@ -367,6 +367,8 @@ export class DomTreeProvider {
   private mutationProcessingDepth = 0;
   private pendingSelectedRemoval: DomTreeSelectedNodeRemoval | undefined;
   private publishedRootPresentation: PublishedRootPresentation | undefined;
+  private deferredFrameDiscovery: MutationDrainAuthority | undefined;
+  private deferredFrameDiscoveryScheduled = false;
   private authorityGeneration = 0;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -1089,6 +1091,9 @@ export class DomTreeProvider {
     ) {
       throw new RangeError("documentEpoch must be greater than the current epoch");
     }
+    const deferFrameDiscovery = this.frameTracking &&
+      this.outwardEffectBuffer !== undefined;
+    this.deferredFrameDiscovery = undefined;
     this.authorityGeneration += 1;
     this.postCommitEffectBatches.length = 0;
     if (!this.frameRegistry.resetTopDocument(topDocument, documentEpoch)) {
@@ -1120,8 +1125,16 @@ export class DomTreeProvider {
     this.documentEpoch = documentEpoch;
     this.observeRoot(topDocument);
     if (this.frameTracking) {
-      this.queueFrameDiscovery(topDocument);
-      this.processFrameMutationScanSlice();
+      if (deferFrameDiscovery) {
+        this.deferFrameDiscovery({
+          topDocument,
+          documentEpoch,
+          authorityGeneration: this.authorityGeneration,
+        });
+      } else {
+        this.queueFrameDiscovery(topDocument);
+        this.processFrameMutationScanSlice();
+      }
     }
   }
 
@@ -1219,6 +1232,7 @@ export class DomTreeProvider {
     this.pendingFrameMutationScans.length = 0;
     this.pendingSelectedRemoval = undefined;
     this.publishedRootPresentation = undefined;
+    this.deferredFrameDiscovery = undefined;
     this.frameTracking = false;
   }
 
@@ -3811,6 +3825,33 @@ export class DomTreeProvider {
         this.processFrameMutationScanSlice();
       }, 0);
     }
+  }
+
+  private deferFrameDiscovery(authority: MutationDrainAuthority): void {
+    this.deferredFrameDiscovery = authority;
+    if (this.deferredFrameDiscoveryScheduled) return;
+    this.deferredFrameDiscoveryScheduled = true;
+    globalThis.queueMicrotask(() => this.flushDeferredFrameDiscovery());
+  }
+
+  private flushDeferredFrameDiscovery(): void {
+    this.deferredFrameDiscoveryScheduled = false;
+    const authority = this.deferredFrameDiscovery;
+    if (!authority || !this.isMutationDrainAuthorityCurrent(authority)) {
+      if (this.deferredFrameDiscovery === authority) {
+        this.deferredFrameDiscovery = undefined;
+      }
+      return;
+    }
+    if (this.outwardEffectBuffer !== undefined || this.mutationProcessingDepth > 0) {
+      this.deferFrameDiscovery(authority);
+      return;
+    }
+    this.deferredFrameDiscovery = undefined;
+    const topDocument = authority.topDocument;
+    if (!topDocument || !this.frameTracking) return;
+    this.queueFrameDiscovery(topDocument);
+    this.processFrameMutationScanSlice();
   }
 
   private processFrameMutationScanSlice(): void {

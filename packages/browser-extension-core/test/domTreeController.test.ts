@@ -660,6 +660,271 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual([oldRoot.nodeRef]);
   });
 
+  it("applies only the newest pending replacement-root selection after adoption", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), false, 1);
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const olderTarget = locatedNode("older-target", locator(2, 1));
+    const newestTarget = locatedNode("newest-target", locator(2, 2));
+    const replacementResponse = deferred<DomResponse>();
+    const selectedObservations: string[][] = [];
+    let controller!: DomTreeController;
+    transport.enqueue(rootResponse(oldRoot));
+    controller = createController(transport, () => {
+      if (controller.snapshot().selectedRef === newestTarget.nodeRef) {
+        selectedObservations.push(nodeRefs(controller));
+      }
+    });
+    await controller.loadRoot();
+    transport.enqueue(replacementResponse.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, olderTarget],
+      4,
+    ));
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, newestTarget],
+      6,
+    ));
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, olderTarget],
+      5,
+    ));
+
+    const pendingIntent = controllerState(controller).pendingRootSelection;
+    expect(pendingIntent).toMatchObject({
+      nodeRef: newestTarget.nodeRef,
+      selectionRevision: 6,
+    });
+    expect(Object.isFrozen(pendingIntent)).toBe(true);
+    expect(Object.isFrozen(pendingIntent?.ancestorPath)).toBe(true);
+
+    replacementResponse.resolve(rootResponse(
+      replacementRoot,
+      1,
+      [displayNode("replacement-doctype", "document-type", "html")],
+      [displayNode("replacement-tail", "comment", "tail")],
+    ));
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual([
+      "replacement-doctype",
+      replacementRoot.nodeRef,
+      newestTarget.nodeRef,
+      "replacement-tail",
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      selectedRef: newestTarget.nodeRef,
+      focusedRef: newestTarget.nodeRef,
+      revealRef: newestTarget.nodeRef,
+    });
+    expect(controllerState(controller).pendingRootSelection).toBeUndefined();
+    expect(selectedObservations.length).toBeGreaterThan(0);
+    expect(selectedObservations.every((nodeRefsAtSelection) => (
+      nodeRefsAtSelection.join(",") === [
+        "replacement-doctype",
+        replacementRoot.nodeRef,
+        newestTarget.nodeRef,
+        "replacement-tail",
+      ].join(",")
+    ))).toBe(true);
+
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, locatedNode("late-old-target", locator(2, 3))],
+      7,
+    ));
+    expect(controller.snapshot().selectedRef).toBe(newestTarget.nodeRef);
+    expect(controllerState(controller).nodes.has("late-old-target")).toBe(false);
+  });
+
+  it("keeps newer pending replacement intent over older current-root selection", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldTarget = locatedNode("old-target", locator(2));
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const replacementTarget = locatedNode("replacement-target", locator(2, 1));
+    const replacementResponse = deferred<DomResponse>();
+    transport.enqueue(rootResponse(oldRoot));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    transport.enqueue(replacementResponse.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, replacementTarget],
+      6,
+    ));
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldTarget],
+      5,
+    ));
+
+    expect(controller.snapshot().selectedRef).not.toBe(oldTarget.nodeRef);
+    expect(controllerState(controller).pendingRootSelection)
+      .toMatchObject({ selectionRevision: 6 });
+    replacementResponse.resolve(rootResponse(replacementRoot));
+    await flushAsync();
+
+    expect(controller.snapshot().selectedRef).toBe(replacementTarget.nodeRef);
+    expect(nodeRefs(controller)).toEqual([
+      replacementRoot.nodeRef,
+      replacementTarget.nodeRef,
+    ]);
+  });
+
+  it("lets a newer current-root selection clear pending replacement intent", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldTarget = locatedNode("old-target", locator(2));
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const replacementTarget = locatedNode("replacement-target", locator(2, 1));
+    const replacementResponse = deferred<DomResponse>();
+    transport.enqueue(rootResponse(oldRoot));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    transport.enqueue(replacementResponse.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [replacementRoot, replacementTarget],
+      5,
+    ));
+    expect(controllerState(controller).pendingRootSelection)
+      .toMatchObject({ selectionRevision: 5 });
+    controller.handleEvent(selectionEventWithRevision(
+      1,
+      [oldRoot, oldTarget],
+      6,
+    ));
+
+    expect(controller.snapshot().selectedRef).toBe(oldTarget.nodeRef);
+    expect(controllerState(controller).pendingRootSelection).toBeUndefined();
+    replacementResponse.resolve(rootResponse(replacementRoot));
+    await flushAsync();
+
+    expect(controller.snapshot().selectedRef).toBeUndefined();
+    expect(controllerState(controller).nodes.has(replacementTarget.nodeRef))
+      .toBe(false);
+  });
+
+  it.each(["same-root", "different-root", "error"] as const)(
+    "discards pending replacement intent after a %s root refresh",
+    async (outcome) => {
+      const transport = new TestTransport();
+      const oldRoot = locatedNode("old-root", locator(1), false, 1);
+      const intendedRoot = locatedNode("intended-root", locator(1, 1), true, 1);
+      const intendedTarget = locatedNode("intended-target", locator(2));
+      const response = deferred<DomResponse>();
+      transport.enqueue(rootResponse(oldRoot));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      transport.enqueue(response.promise);
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      controller.handleEvent(selectionEventWithRevision(
+        1,
+        [intendedRoot, intendedTarget],
+        8,
+      ));
+      expect(controllerState(controller).pendingRootSelection)
+        .toMatchObject({ selectionRevision: 8 });
+
+      if (outcome === "same-root") {
+        response.resolve(rootResponse({ ...oldRoot, branchRevision: 2 }));
+      } else if (outcome === "different-root") {
+        response.resolve(rootResponse(locatedNode(
+          "other-root",
+          locator(1, 2),
+          false,
+          1,
+        )));
+      } else {
+        response.resolve({
+          type: "dom.error",
+          requestId: "ignored-by-test-transport",
+          documentEpoch: 1,
+          code: "node-unavailable",
+        });
+      }
+      await flushAsync();
+
+      expect(controllerState(controller).pendingRootSelection).toBeUndefined();
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controllerState(controller).nodes.has(intendedTarget.nodeRef))
+        .toBe(false);
+    },
+  );
+
+  it.each(["reset", "dispose", "recovery"] as const)(
+    "clears pending replacement intent on %s",
+    async (transition) => {
+      const transport = new TestTransport();
+      const oldRoot = locatedNode("old-root", locator(1), false, 1);
+      const intendedRoot = locatedNode("intended-root", locator(1, 1), true, 1);
+      const intendedTarget = locatedNode("intended-target", locator(2));
+      const response = deferred<DomResponse>();
+      transport.enqueue(rootResponse(oldRoot));
+      const controller = createController(transport);
+      await controller.loadRoot();
+      transport.enqueue(response.promise);
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+      });
+      await flushAsync();
+      controller.handleEvent(selectionEventWithRevision(
+        1,
+        [intendedRoot, intendedTarget],
+        9,
+      ));
+      expect(controllerState(controller).pendingRootSelection)
+        .toMatchObject({ selectionRevision: 9 });
+
+      if (transition === "reset") {
+        controller.reset();
+      } else if (transition === "dispose") {
+        controller.dispose();
+      } else {
+        controller.beginRecovery();
+      }
+
+      expect(controllerState(controller).pendingRootSelection).toBeUndefined();
+      response.resolve(rootResponse(intendedRoot));
+      await flushAsync();
+      expect(controller.snapshot().selectedRef).toBeUndefined();
+      expect(controllerState(controller).nodes.has(intendedTarget.nodeRef))
+        .toBe(false);
+    },
+  );
+
   it("rejects a delayed selection path rooted at the retired root", async () => {
     const transport = new TestTransport();
     const oldRoot = locatedNode("old-root", locator(1), true, 1);
@@ -4455,6 +4720,21 @@ function selectionEvent(
   };
 }
 
+function selectionEventWithRevision(
+  documentEpoch: number,
+  ancestorPath: readonly DomNodeView[],
+  selectionRevision: number,
+  nodeRef = ancestorPath.at(-1)?.nodeRef ?? "missing",
+): DomEvent {
+  return {
+    type: "dom.selectionChanged",
+    documentEpoch,
+    selectionRevision,
+    nodeRef,
+    ancestorPath,
+  };
+}
+
 function nodeRefs(controller: DomTreeController): string[] {
   return controller.rows()
     .filter((row) => row.type === "node")
@@ -4462,6 +4742,11 @@ function nodeRefs(controller: DomTreeController): string[] {
 }
 
 interface ControllerInternalState {
+  readonly pendingRootSelection?: {
+    readonly nodeRef: string;
+    readonly selectionRevision: number;
+    readonly ancestorPath: readonly DomNodeView[];
+  };
   readonly revealPathRefs: readonly string[];
   readonly nodes: Map<string, {
     readonly view: DomNodeView;

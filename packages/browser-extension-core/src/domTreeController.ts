@@ -10,6 +10,7 @@ import {
   type DomRequest,
   type DomResponse,
   type DomRootResponse,
+  parseDomEvent,
 } from "./domProtocol.js";
 import {
   DOM_TREE_RECOVERY_MAX_EXPANDED,
@@ -138,6 +139,11 @@ interface PendingBranchRequest {
   readonly settle: () => void;
 }
 
+type DomSelectionChangedEvent = Extract<
+  DomEvent,
+  { readonly type: "dom.selectionChanged" }
+>;
+
 interface ReconciliationBatchState {
   readonly pendingTokens: Set<object>;
   readonly candidates: Set<string>;
@@ -196,7 +202,13 @@ export class DomTreeController {
   private currentError: DomErrorCode | undefined;
   private currentDocumentEpoch: number | undefined;
   private focusIntentVersion = 0;
-  private rootRequest: { readonly token: object; readonly promise: Promise<void> } | undefined;
+  private rootRequest: {
+    readonly token: object;
+    readonly promise: Promise<void>;
+    readonly refreshRootRef?: string;
+  } | undefined;
+  private pendingRootSelection: DomSelectionChangedEvent | undefined;
+  private acceptedSelectionRevision: number | undefined;
   private frozenRows: readonly DomTreeRow[] | undefined;
   private recoverySnapshot: DomTreeRecoverySnapshot | undefined;
   private recoveryFocusRef: string | undefined;
@@ -533,6 +545,7 @@ export class DomTreeController {
         }
       } finally {
         if (this.rootRequest?.token === token) {
+          this.pendingRootSelection = undefined;
           this.rootRequest = undefined;
           this.notify();
         }
@@ -784,11 +797,20 @@ export class DomTreeController {
     if (this.disposed || this.recovering) {
       return;
     }
-    if (
-      event.type === "dom.selectionChanged" &&
-      !isRecoverableSelectionPath(event.nodeRef, event.ancestorPath)
-    ) {
-      return;
+    let selectionEvent: DomSelectionChangedEvent | undefined;
+    if (event.type === "dom.selectionChanged") {
+      try {
+        const parsed = parseDomEvent(event);
+        if (
+          parsed.type !== "dom.selectionChanged" ||
+          !isRecoverableSelectionPath(parsed.nodeRef, parsed.ancestorPath)
+        ) {
+          return;
+        }
+        selectionEvent = parsed;
+      } catch {
+        return;
+      }
     }
     if (
       this.currentDocumentEpoch !== undefined &&
@@ -808,7 +830,7 @@ export class DomTreeController {
 
     switch (event.type) {
       case "dom.selectionChanged":
-        this.applySelection(event.nodeRef, event.ancestorPath);
+        this.handleSelectionChanged(selectionEvent!);
         return;
       case "dom.hoverChanged":
         this.currentHoverSummary = event.summary;
@@ -850,6 +872,8 @@ export class DomTreeController {
     this.disposed = true;
     this.generation += 1;
     this.rootRequest = undefined;
+    this.pendingRootSelection = undefined;
+    this.acceptedSelectionRevision = undefined;
     this.frozenRows = undefined;
     this.recoverySnapshot = undefined;
     this.recovering = false;
@@ -1282,6 +1306,36 @@ export class DomTreeController {
     this.notify();
   }
 
+  private handleSelectionChanged(event: DomSelectionChangedEvent): void {
+    const pending = this.pendingRootSelection;
+    if (pending && event.selectionRevision <= pending.selectionRevision) {
+      return;
+    }
+    if (
+      !pending &&
+      this.acceptedSelectionRevision !== undefined &&
+      event.selectionRevision < this.acceptedSelectionRevision
+    ) {
+      return;
+    }
+
+    this.pendingRootSelection = undefined;
+    const pathRootRef = event.ancestorPath[0]?.nodeRef;
+    if (this.rootRef === undefined || pathRootRef === this.rootRef) {
+      this.acceptedSelectionRevision = Math.max(
+        this.acceptedSelectionRevision ?? event.selectionRevision,
+        event.selectionRevision,
+      );
+      this.applySelection(event.nodeRef, event.ancestorPath);
+      return;
+    }
+
+    if (this.rootRequest?.refreshRootRef !== this.rootRef) {
+      return;
+    }
+    this.pendingRootSelection = event;
+  }
+
   private invalidateBranch(
     nodeRef: string,
     branchRevision: number,
@@ -1400,7 +1454,7 @@ export class DomTreeController {
     };
     const pendingTask = createPendingTask();
     const promise = pendingTask.promise;
-    this.rootRequest = { token, promise };
+    this.rootRequest = { token, promise, refreshRootRef: nodeRef };
     this.registerReconciliationToken(reconciliationBatchId, token);
     const task = (async (): Promise<void> => {
       try {
@@ -1489,6 +1543,7 @@ export class DomTreeController {
         }
       } finally {
         if (this.rootRequest?.token === token) {
+          this.pendingRootSelection = undefined;
           this.rootRequest = undefined;
           this.notify();
           const latestRevision = this.branches.get(nodeRef)?.revision ??
@@ -1577,6 +1632,22 @@ export class DomTreeController {
         preserveExpandedRoot ? [response.node.nodeRef] : [],
         activeBatchId,
       );
+      const pendingSelection = this.pendingRootSelection;
+      if (
+        pendingSelection?.ancestorPath[0]?.nodeRef === response.node.nodeRef
+      ) {
+        this.pendingRootSelection = undefined;
+        this.acceptedSelectionRevision = Math.max(
+          this.acceptedSelectionRevision ?? pendingSelection.selectionRevision,
+          pendingSelection.selectionRevision,
+        );
+        this.applySelection(
+          pendingSelection.nodeRef,
+          pendingSelection.ancestorPath,
+        );
+      } else {
+        this.pendingRootSelection = undefined;
+      }
     } finally {
       this.settleReconciliationToken(activeBatchId, handoffToken);
     }
@@ -2571,6 +2642,8 @@ export class DomTreeController {
 
   private clearLiveState(documentEpoch: number | undefined): void {
     this.rootRequest = undefined;
+    this.pendingRootSelection = undefined;
+    this.acceptedSelectionRevision = undefined;
     this.recoveryFocusRef = undefined;
     this.recoveryFocusRowType = undefined;
     this.recoveredFocusRef = undefined;

@@ -1118,6 +1118,65 @@ describe("DomTreeProvider", () => {
     });
   });
 
+  it("delivers replacement-frame discovery outside a reentered old mutation journal", async () => {
+    const document = createDocument();
+    const replacementDocument = createDocument();
+    const childDocument = createDocument();
+    const replacementFrame = createFrameElement(
+      replacementDocument,
+      childDocument,
+    );
+    replacementDocument.documentElement.append(replacementFrame);
+    const lifecycle: Array<{
+      readonly type: string;
+      readonly frameRef: string;
+      readonly documentEpoch: number;
+    }> = [];
+    const invalidated: string[] = [];
+    const settledEpochs: number[] = [];
+    let provider!: DomTreeProvider;
+    const harness = createProviderHarness(document, {
+      onInvalidated: ({ nodeRef }) => invalidated.push(nodeRef),
+      onFrameLifecycle: (event) => lifecycle.push(event),
+      onMutationSettled: () => settledEpochs.push(provider.currentDocumentEpoch),
+    });
+    provider = harness.provider;
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    lifecycle.length = 0;
+
+    const auxiliary = createComment("old-document");
+    document.append(auxiliary);
+    document.onDocumentElementRead = () => {
+      document.onDocumentElementRead = undefined;
+      provider.resetDocument(replacementDocument as unknown as Document, 4);
+    };
+    harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
+    harness.flushTimers();
+    await Promise.resolve();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(invalidated).toEqual([]);
+    expect(settledEpochs).toEqual([]);
+    expect(lifecycle).toHaveLength(1);
+    expect(lifecycle[0]).toMatchObject({
+      type: "registered",
+      documentEpoch: 4,
+    });
+    const childContext = provider.frameAuthority.accessibleContexts().find(
+      (context) => context.document === childDocument,
+    );
+    expect(childContext).toBeDefined();
+    expect(lifecycle[0]?.frameRef).toBe(childContext?.frameRef);
+    expect(provider.frameAuthority.getContext(childContext!.frameRef))
+      .toBe(childContext);
+    const root = provider.getRoot(4);
+    const frameView = onlyChild(provider, root.node, 4, "replacement-frame");
+    expect(frameView.label).toBe("iframe");
+  });
+
   it("bounds unpublished root namespaces across remove and re-add cycles", () => {
     const document = createDocument();
     const invalidated: string[] = [];
