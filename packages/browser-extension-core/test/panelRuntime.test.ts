@@ -3787,7 +3787,10 @@ function showReadySourceNavigation(
     documentEpoch: 1,
     selectionRevision,
     nodeRef,
-    ancestorPath: [domNode(nodeRef, "main")],
+    ancestorPath: [
+      domNode("selection-root", "html", true),
+      domNode(nodeRef, "main"),
+    ],
   });
   port.emitMessage(inspectStarted(inspectMessageId, selectionRevision));
   port.emitMessage(resolutionMessage({
@@ -3830,7 +3833,10 @@ function selectionChangedWithRevision(
     documentEpoch,
     selectionRevision,
     nodeRef,
-    ancestorPath: [domNode(nodeRef, label)],
+    ancestorPath: [
+      domNode("selection-root", "html", true),
+      domNode(nodeRef, label),
+    ],
   };
 }
 

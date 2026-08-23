@@ -203,6 +203,12 @@ interface PendingMutationRecord {
   readonly record: MutationRecord;
 }
 
+interface MutationDrainAuthority {
+  readonly topDocument: Document | undefined;
+  readonly documentEpoch: number;
+  readonly authorityGeneration: number;
+}
+
 interface PendingElementMutationRoot {
   readonly node: Node;
   readonly ownerRoot: Node;
@@ -1850,40 +1856,91 @@ export class DomTreeProvider {
   }
 
   private processMutations(): void {
+    const authority: MutationDrainAuthority = {
+      topDocument: this.topDocument,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+    };
+    const parentPublicationGuard = this.activePublicationGuard;
+    const mutationPublicationGuard = () => (
+      this.isMutationDrainAuthorityCurrent(authority) &&
+      (parentPublicationGuard?.() ?? true)
+    );
+    const parentEffectBuffer = this.outwardEffectBuffer;
+    const effectBuffer = parentEffectBuffer ?? [];
+    const ownsEffectBuffer = parentEffectBuffer === undefined;
+    const effectSavepoint = effectBuffer.length;
+    if (ownsEffectBuffer) {
+      this.outwardEffectBuffer = effectBuffer;
+    }
+    this.activePublicationGuard = mutationPublicationGuard;
+    let completed = false;
+    let committedEffects: readonly ProviderOutwardEffect[] = [];
     this.mutationProcessingDepth += 1;
     try {
-      this.processPendingMutationRecords();
+      completed = this.processPendingMutationRecords(authority);
     } finally {
       this.mutationProcessingDepth -= 1;
-      if (this.mutationProcessingDepth === 0) {
-        this.emitPendingSelectedRemoval();
-        this.emitMutationSettled();
+      if (
+        this.mutationProcessingDepth === 0 &&
+        completed &&
+        mutationPublicationGuard()
+      ) {
+        const selectedRemovalEmitted = this.emitPendingSelectedRemoval();
+        if (selectedRemovalEmitted && mutationPublicationGuard()) {
+          this.emitMutationSettled();
+        }
+      }
+      if (!completed || !mutationPublicationGuard()) {
+        effectBuffer.length = effectSavepoint;
+      } else if (ownsEffectBuffer) {
+        committedEffects = Object.freeze(effectBuffer.slice(effectSavepoint));
+      }
+      if (ownsEffectBuffer && this.outwardEffectBuffer === effectBuffer) {
+        this.outwardEffectBuffer = undefined;
+      }
+      if (this.activePublicationGuard === mutationPublicationGuard) {
+        this.activePublicationGuard = parentPublicationGuard;
+      }
+    }
+    if (ownsEffectBuffer) {
+      for (const effect of committedEffects) {
+        if (!this.isMutationDrainAuthorityCurrent(authority)) break;
+        if (!this.emitCommittedOutwardEffect(effect)) break;
       }
     }
   }
 
-  private processPendingMutationRecords(): void {
+  private processPendingMutationRecords(
+    authority: MutationDrainAuthority,
+  ): boolean {
+    const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
     const records = this.pendingMutations.splice(0);
     const affected = new Set<string>();
     const forcedAffected = new Set<string>();
     const addedRoots: PendingElementMutationRoot[] = [];
     const removedRoots: PendingElementMutationRoot[] = [];
     for (const pending of records) {
+      if (!isCurrent()) return false;
       if (!this.rootObservers.has(pending.observedRoot)) {
         continue;
       }
       const mutation = pending.record;
       if (this.isNodeExcluded(mutation.target)) {
+        if (!isCurrent()) return false;
         continue;
       }
+      if (!isCurrent()) return false;
       if (mutation.type === "characterData") {
         const targetRef = this.refsByNode.get(mutation.target);
         const targetRecord = targetRef ? this.records.get(targetRef) : undefined;
         const parent = readShadowIncludingParent(mutation.target);
+        if (!isCurrent()) return false;
         const parentRef = targetRecord?.parentRef ?? (
           parent ? this.refsByNode.get(parent) : undefined
         );
         const targetType = readNodeType(mutation.target);
+        if (!isCurrent()) return false;
         if (
           parentRef &&
           parent === this.topDocument &&
@@ -1897,8 +1954,10 @@ export class DomTreeProvider {
       }
       if (mutation.type === "attributes") {
         if (mutation.target.nodeType !== 1) {
+          if (!isCurrent()) return false;
           continue;
         }
+        if (!isCurrent()) return false;
         const targetRef = this.refsByNode.get(mutation.target);
         const targetRecord = targetRef
           ? this.records.get(targetRef)
@@ -1921,17 +1980,21 @@ export class DomTreeProvider {
         continue;
       }
       const targetRef = this.mutationTargetRef(mutation.target);
+      if (!isCurrent()) return false;
       const targetRecord = targetRef
         ? this.records.get(targetRef)
         : undefined;
       const targetScope = targetRecord?.scope ??
         this.scopeForMutationTarget(mutation.target);
+      if (!isCurrent()) return false;
       let logicalTreeChanged = false;
       let rootAuxiliaryChanged = false;
       const removedNodes = mutation.removedNodes;
       for (let index = 0; index < removedNodes.length; index += 1) {
+        if (!isCurrent()) return false;
         const removed = removedNodes[index];
         const removedType = removed ? readNodeType(removed) : undefined;
+        if (!isCurrent()) return false;
         if (removedType === 1) {
           removedRoots.push({
             node: removed,
@@ -1945,18 +2008,24 @@ export class DomTreeProvider {
           (removedType === 3 || removedType === 8 || removedType === 10) &&
           !this.isNodeExcluded(removed)
         ) {
+          if (!isCurrent()) return false;
           logicalTreeChanged = true;
           rootAuxiliaryChanged ||= mutation.target === this.topDocument &&
             (removedType === 8 || removedType === 10);
           const invalidated = this.nodeRegistry.invalidateSubtree(removed);
-          this.releaseInvalidatedRefs(invalidated);
+          if (!isCurrent() || !this.releaseInvalidatedRefs(invalidated)) {
+            return false;
+          }
         }
       }
       const addedNodes = mutation.addedNodes;
       for (let index = 0; index < addedNodes.length; index += 1) {
+        if (!isCurrent()) return false;
         const added = addedNodes[index];
         const addedType = added ? readNodeType(added) : undefined;
+        if (!isCurrent()) return false;
         if (addedType === 1 && added && !this.isNodeExcluded(added)) {
+          if (!isCurrent()) return false;
           addedRoots.push({
             node: added,
             ownerRoot: pending.observedRoot,
@@ -1969,6 +2038,7 @@ export class DomTreeProvider {
           (addedType === 3 || addedType === 8 || addedType === 10) &&
           !this.isNodeExcluded(added)
         ) {
+          if (!isCurrent()) return false;
           logicalTreeChanged = true;
           rootAuxiliaryChanged ||= mutation.target === this.topDocument &&
             (addedType === 8 || addedType === 10);
@@ -1997,11 +2067,13 @@ export class DomTreeProvider {
     }
     const movedRoots = new Set<Node>();
     for (const removed of removedRoots) {
+      if (!isCurrent()) return false;
       const movedRef = this.refsByNode.get(removed.node);
       const movedRecord = movedRef
         ? this.records.get(movedRef)
         : undefined;
       const finalScope = this.attachedScopeFor(removed.node);
+      if (!isCurrent()) return false;
       if (
         !movedRef ||
         !movedRecord ||
@@ -2016,6 +2088,7 @@ export class DomTreeProvider {
         movedRecord,
         finalScope,
       );
+      if (!isCurrent()) return false;
       if (!finalParentRef) {
         continue;
       }
@@ -2025,6 +2098,7 @@ export class DomTreeProvider {
       }
     }
     for (const root of removedRoots) {
+      if (!isCurrent()) return false;
       if (movedRoots.has(root.node)) {
         continue;
       }
@@ -2036,6 +2110,7 @@ export class DomTreeProvider {
       });
     }
     for (const root of addedRoots) {
+      if (!isCurrent()) return false;
       if (movedRoots.has(root.node)) {
         continue;
       }
@@ -2048,16 +2123,32 @@ export class DomTreeProvider {
     }
     if (removedRoots.length > 0 || addedRoots.length > 0) {
       this.processFrameMutationScanSlice();
+      if (!isCurrent()) return false;
     }
     for (const root of removedRoots) {
+      if (!isCurrent()) return false;
       if (movedRoots.has(root.node)) {
         continue;
       }
       this.disconnectObserversWithin(root.node);
+      if (!isCurrent()) return false;
       const invalidated = this.nodeRegistry.invalidateSubtree(root.node);
-      this.releaseInvalidatedRefs(invalidated);
+      if (!isCurrent() || !this.releaseInvalidatedRefs(invalidated)) {
+        return false;
+      }
     }
-    this.invalidateBranches(affected, forcedAffected);
+    return isCurrent() &&
+      this.invalidateBranches(affected, forcedAffected) &&
+      isCurrent();
+  }
+
+  private isMutationDrainAuthorityCurrent(
+    authority: MutationDrainAuthority,
+  ): boolean {
+    return !this.disposed &&
+      this.topDocument === authority.topDocument &&
+      this.documentEpoch === authority.documentEpoch &&
+      this.authorityGeneration === authority.authorityGeneration;
   }
 
   private mutationTargetRef(target: Node): string | undefined {
@@ -2066,10 +2157,24 @@ export class DomTreeProvider {
     const publishedRootRef = this.publishedRootPresentation?.nodeRef;
     if (publishedRootRef) return publishedRootRef;
     try {
-      const documentElement = this.topDocument.documentElement;
-      return documentElement
-        ? this.refsByNode.get(documentElement)
-        : undefined;
+      const topDocument = this.topDocument;
+      const documentElement = topDocument?.documentElement;
+      if (!topDocument || !documentElement) return undefined;
+      const nodeRef = this.refsByNode.get(documentElement);
+      const record = nodeRef ? this.records.get(nodeRef) : undefined;
+      const context = this.frameRegistry.topContext;
+      if (
+        !nodeRef ||
+        !record ||
+        record.kind !== "element" ||
+        !context ||
+        !sameNodeScope(record.scope, context) ||
+        this.nodeRegistry.resolve(nodeRef, record.scope) !== documentElement
+      ) {
+        if (nodeRef) this.evictRecordMetadata(nodeRef);
+        return undefined;
+      }
+      return nodeRef;
     } catch {
       return undefined;
     }

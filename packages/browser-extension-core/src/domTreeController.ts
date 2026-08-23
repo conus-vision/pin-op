@@ -135,6 +135,7 @@ interface PendingBranchRequest {
   readonly cursor?: string;
   readonly reconciliationBatchId?: number;
   readonly promise: Promise<void>;
+  readonly settle: () => void;
 }
 
 interface ReconciliationBatchState {
@@ -965,7 +966,12 @@ export class DomTreeController {
     };
     const pendingTask = createPendingTask();
     const promise = pendingTask.promise;
-    branch.pending = { token, revision, promise };
+    branch.pending = {
+      token,
+      revision,
+      promise,
+      settle: pendingTask.resolve,
+    };
     const task = (async (): Promise<void> => {
       try {
         const response = await this.transport.request(request);
@@ -1093,6 +1099,7 @@ export class DomTreeController {
       cursor,
       reconciliationBatchId,
       promise,
+      settle: pendingTask.resolve,
     };
     const task = (async (): Promise<void> => {
       try {
@@ -1234,6 +1241,10 @@ export class DomTreeController {
     if (!isRecoverableSelectionPath(nodeRef, ancestorPath)) {
       return;
     }
+    const pathRootRef = ancestorPath[0]?.nodeRef;
+    if (this.rootRef !== undefined && pathRootRef !== this.rootRef) {
+      return;
+    }
     this.recoveredFocusRef = undefined;
     this.replaceRevealPath(ancestorPath);
     const expandedAdoptedRefs: string[] = [];
@@ -1325,18 +1336,25 @@ export class DomTreeController {
       return false;
     }
     if (branch) {
-      if (branch.pending) {
-        this.settleReconciliationToken(
-          branch.pending.reconciliationBatchId,
-          branch.pending.token,
-        );
-      }
+      this.settlePendingBranchRequest(branch);
       branch.revision = branchRevision;
       branch.loaded = false;
       branch.nextCursor = undefined;
-      branch.pending = undefined;
     }
     return true;
+  }
+
+  private settlePendingBranchRequest(branch: BranchState): void {
+    const pending = branch.pending;
+    if (!pending) {
+      return;
+    }
+    branch.pending = undefined;
+    pending.settle();
+    this.settleReconciliationToken(
+      pending.reconciliationBatchId,
+      pending.token,
+    );
   }
 
   private async refreshRootSnapshot(
@@ -1518,11 +1536,8 @@ export class DomTreeController {
     const handoffToken = {};
     this.registerReconciliationToken(activeBatchId, handoffToken);
     try {
-      const pendingBranches = [...this.branches.values()].flatMap((branch) => (
-        branch.pending ? [branch.pending] : []
-      ));
-      for (const branch of this.branches.values()) {
-        branch.pending = undefined;
+      for (const branch of [...this.branches.values()]) {
+        this.settlePendingBranchRequest(branch);
       }
       this.nodes.clear();
       this.branches.clear();
@@ -1557,12 +1572,7 @@ export class DomTreeController {
       }
       this.invalidateRows();
 
-      for (const pending of pendingBranches) {
-        this.settleReconciliationToken(
-          pending.reconciliationBatchId,
-          pending.token,
-        );
-      }
+      this.cancelPending("DOM root replaced");
       this.resumeOwnedExpandedBranches(
         preserveExpandedRoot ? [response.node.nodeRef] : [],
         activeBatchId,
@@ -1626,12 +1636,7 @@ export class DomTreeController {
       return;
     }
     if (branch.pending) {
-      const pending = branch.pending;
-      branch.pending = undefined;
-      this.settleReconciliationToken(
-        pending.reconciliationBatchId,
-        pending.token,
-      );
+      this.settlePendingBranchRequest(branch);
     }
     const descendants = new Set([
       ...branch.children,
@@ -1657,12 +1662,7 @@ export class DomTreeController {
     const branch = this.branches.get(nodeRef);
     if (branch) {
       if (branch.pending) {
-        const pending = branch.pending;
-        branch.pending = undefined;
-        this.settleReconciliationToken(
-          pending.reconciliationBatchId,
-          pending.token,
-        );
+        this.settlePendingBranchRequest(branch);
       }
       const descendants = new Set([
         ...branch.children,
@@ -2131,11 +2131,7 @@ export class DomTreeController {
       if (!branch || !pending) {
         continue;
       }
-      branch.pending = undefined;
-      this.settleReconciliationToken(
-        pending.reconciliationBatchId,
-        pending.token,
-      );
+      this.settlePendingBranchRequest(branch);
     }
   }
 

@@ -1081,6 +1081,104 @@ describe("DomTreeProvider", () => {
     }
   });
 
+  it("aborts an old mutation drain when documentElement reentry resets authority", () => {
+    const document = createDocument();
+    const replacementDocument = createDocument();
+    const invalidated: string[] = [];
+    const frameEvents: string[] = [];
+    const settledEpochs: number[] = [];
+    let provider!: DomTreeProvider;
+    const harness = createProviderHarness(document, {
+      onInvalidated: ({ nodeRef }) => invalidated.push(nodeRef),
+      onFrameLifecycle: ({ frameRef }) => frameEvents.push(frameRef),
+      onMutationSettled: () => settledEpochs.push(provider.currentDocumentEpoch),
+    });
+    provider = harness.provider;
+    const auxiliary = createComment("old-document");
+    document.append(auxiliary);
+    document.onDocumentElementRead = () => {
+      document.onDocumentElementRead = undefined;
+      provider.resetDocument(replacementDocument as unknown as Document, 4);
+    };
+
+    harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
+    harness.flushTimers();
+
+    expect(provider.currentDocumentEpoch).toBe(4);
+    expect(invalidated).toEqual([]);
+    expect(frameEvents).toEqual([]);
+    expect(settledEpochs).toEqual([]);
+    expect(provider.getRoot(4).node.label).toBe("html");
+    expect((provider as unknown as {
+      readonly pendingMutations: readonly unknown[];
+      readonly pendingFrameMutationScans: readonly unknown[];
+    })).toMatchObject({
+      pendingMutations: [],
+      pendingFrameMutationScans: [],
+    });
+  });
+
+  it("bounds unpublished root namespaces across remove and re-add cycles", () => {
+    const document = createDocument();
+    const invalidated: string[] = [];
+    const harness = createProviderHarness(document, {
+      maxRecords: 2,
+      onInvalidated: ({ nodeRef }) => invalidated.push(nodeRef),
+    });
+    const rootElement = document.documentElement;
+    let revealed = harness.provider.revealElement(rootElement as unknown as Element);
+
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      document.remove(rootElement);
+      harness.observers[0]!.emit([
+        mutationRecord(document, [], [rootElement]),
+      ]);
+      harness.flushTimers();
+      document.append(rootElement);
+      harness.observers[0]!.emit([
+        mutationRecord(document, [rootElement]),
+      ]);
+      harness.flushTimers();
+      const previousRef = revealed.nodeRef;
+      revealed = harness.provider.revealElement(rootElement as unknown as Element);
+      expect(revealed.nodeRef).not.toBe(previousRef);
+    }
+
+    const state = harness.provider as unknown as {
+      readonly records: ReadonlyMap<string, unknown>;
+      readonly branchGenerations: ReadonlyMap<string, number>;
+      readonly publishedRootPresentation?: unknown;
+    };
+    expect(state.records.size).toBeLessThanOrEqual(2);
+    expect(state.branchGenerations.size).toBeLessThanOrEqual(2);
+    expect(state.publishedRootPresentation).toBeUndefined();
+    expect(new Set(invalidated).size).toBeLessThanOrEqual(2);
+  });
+
+  it("invalidates a legitimately materialized root auxiliary before root publication", () => {
+    const document = createDocument();
+    const invalidated: Array<{ nodeRef: string; branchRevision: number }> = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+    });
+    const revealed = harness.provider.revealElement(
+      document.documentElement as unknown as Element,
+    );
+    const auxiliary = createComment("prepublication");
+    document.append(auxiliary);
+
+    harness.observers[0]!.emit([mutationRecord(document, [auxiliary])]);
+    harness.flushTimers();
+
+    expect(invalidated).toEqual([{
+      nodeRef: revealed.nodeRef,
+      branchRevision: 2,
+    }]);
+    expect((harness.provider as unknown as {
+      readonly publishedRootPresentation?: unknown;
+    }).publishedRootPresentation).toBeUndefined();
+  });
+
   it("invalidates a parent page when a visible child becomes expandable", () => {
     const document = createDocument();
     const parent = createElement("main", document);
@@ -8603,12 +8701,15 @@ class FakeShadowRoot extends FakeNode {
 }
 
 class FakeDocument extends FakeNode {
+  public onDocumentElementRead: (() => void) | undefined;
+
   public constructor() {
     super(9, "#document");
     this.append(new FakeElement("HTML", this));
   }
 
   public get documentElement(): FakeElement {
+    this.onDocumentElementRead?.();
     return this.childNodes.find((child) => child.nodeType === 1) as FakeElement;
   }
 }

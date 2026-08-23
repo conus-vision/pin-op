@@ -660,6 +660,147 @@ describe("DomTreeController", () => {
     expect(nodeRefs(controller)).toEqual([oldRoot.nodeRef]);
   });
 
+  it("rejects a delayed selection path rooted at the retired root", async () => {
+    const transport = new TestTransport();
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldChild = locatedNode("old-child", locator(2), false, 1);
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), false, 1);
+    transport.enqueue(rootResponse(oldRoot));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    transport.enqueue(rootResponse(
+      replacementRoot,
+      1,
+      [displayNode("replacement-doctype", "document-type", "html")],
+    ));
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+    controller.handleEvent({
+      type: "dom.hoverChanged",
+      documentEpoch: 1,
+      nodeRef: replacementRoot.nodeRef,
+      summary: "replacement hover",
+    });
+
+    controller.handleEvent(selectionEvent(1, [oldRoot, oldChild]));
+
+    expect(nodeRefs(controller)).toEqual([
+      "replacement-doctype",
+      replacementRoot.nodeRef,
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 1,
+      focusedRef: replacementRoot.nodeRef,
+      hoveredRef: replacementRoot.nodeRef,
+      hoverSummary: "replacement hover",
+    });
+    expect(controller.snapshot()).not.toHaveProperty("selectedRef");
+    expect(controller.snapshot()).not.toHaveProperty("revealRef");
+    expect(controllerState(controller).nodes.has(oldRoot.nodeRef)).toBe(false);
+    expect(controllerState(controller).nodes.has(oldChild.nodeRef)).toBe(false);
+    await controller.select(oldChild.nodeRef);
+    controller.hover(oldChild.nodeRef);
+    controller.focus(oldChild.nodeRef);
+    expect(transport.dispatched).toEqual([]);
+    expect(controller.focusedRef).toBe(replacementRoot.nodeRef);
+  });
+
+  it("cancels and settles old branch requests before loading a replacement root", async () => {
+    const baseTransport = new TestTransport();
+    const timeline: string[] = [];
+    const transport: DomTreeTransport = {
+      request: (request) => {
+        timeline.push(
+          `request:${request.type}:${"nodeRef" in request ? request.nodeRef : "root"}`,
+        );
+        return baseTransport.request(request);
+      },
+      dispatch: (request) => baseTransport.dispatch(request),
+      cancelPending: (reason) => {
+        timeline.push(`cancel:${reason}`);
+        baseTransport.cancelPending(reason);
+      },
+    };
+    const oldRoot = locatedNode("old-root", locator(1), true, 1);
+    const oldChild = locatedNode("old-child", locator(2), false, 1);
+    baseTransport.enqueue(rootResponse(oldRoot));
+    baseTransport.enqueue(childrenResponse(
+      oldRoot.nodeRef,
+      1,
+      [oldChild],
+      "old-cursor",
+    ));
+    const controller = createController(transport);
+    await controller.loadRoot();
+    await controller.expand(oldRoot.nodeRef);
+
+    const hungLoadMoreResponse = deferred<DomResponse>();
+    baseTransport.enqueue(hungLoadMoreResponse.promise);
+    const oldLoadMore = controller.loadMore(oldRoot.nodeRef);
+    let oldLoadMoreSettled = false;
+    void oldLoadMore.then(
+      () => { oldLoadMoreSettled = true; },
+      () => { oldLoadMoreSettled = true; },
+    );
+    await flushAsync();
+
+    const replacementRoot = locatedNode("replacement-root", locator(1, 1), true, 1);
+    const replacementResponse = deferred<DomResponse>();
+    const staleRefreshResponse = deferred<DomResponse>();
+    const freshChildrenResponse = deferred<DomResponse>();
+    baseTransport.enqueue(replacementResponse.promise);
+    baseTransport.enqueue(staleRefreshResponse.promise);
+    baseTransport.enqueue(freshChildrenResponse.promise);
+    controller.handleEvent({
+      type: "dom.invalidated",
+      documentEpoch: 1,
+      branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+    });
+    await flushAsync();
+
+    replacementResponse.resolve(rootResponse(replacementRoot));
+    await flushAsync();
+
+    expect(oldLoadMoreSettled).toBe(true);
+    const cancellationIndex = timeline.indexOf("cancel:DOM root replaced");
+    const replacementChildrenIndex = timeline.indexOf(
+      "request:dom.getChildren:replacement-root",
+    );
+    expect(cancellationIndex).toBeGreaterThan(-1);
+    expect(replacementChildrenIndex).toBeGreaterThan(cancellationIndex);
+    expect(baseTransport.cancellations).toEqual(["DOM root replaced"]);
+
+    hungLoadMoreResponse.resolve(childrenResponse(
+      oldRoot.nodeRef,
+      1,
+      [locatedNode("late-load-more", locator(2, 2))],
+    ));
+    staleRefreshResponse.resolve(childrenResponse(
+      oldRoot.nodeRef,
+      2,
+      [locatedNode("late-refresh", locator(2, 3))],
+    ));
+    freshChildrenResponse.resolve(childrenResponse(
+      replacementRoot.nodeRef,
+      1,
+      [locatedNode("fresh-child", locator(2, 4))],
+    ));
+    await oldLoadMore;
+    await flushAsync();
+
+    expect(nodeRefs(controller)).toEqual([
+      replacementRoot.nodeRef,
+      "fresh-child",
+    ]);
+    expect(controllerState(controller).nodes.has("late-load-more")).toBe(false);
+    expect(controllerState(controller).nodes.has("late-refresh")).toBe(false);
+    expect(controllerState(controller).reconciliationBatches.size).toBe(0);
+  });
+
   it("refreshes a collapsed visible child's structured count from its owner branch", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true, 1)));

@@ -10,8 +10,10 @@ import { describe, expect, it } from "vitest";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   parseDomRequest,
+  type DomNodeView,
   type DomRequest,
 } from "../src/domProtocol.js";
+import { DomTreeController } from "../src/domTreeController.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
@@ -219,6 +221,140 @@ describe("PanelInspectTransport DOM integration", () => {
 
     port.emitMessage(locatorResponse(newWireRequest.requestId));
     await expect(reissued).resolves.toEqual(locatorResponse(request.requestId));
+  });
+
+  it("retires old controller queries before replacement-root children across repeated replacements", async () => {
+    const port = new FakePort();
+    const inspectTransport = new PanelInspectTransport(() => port);
+    const cancellations: Array<{
+      readonly reason: string;
+      readonly pending: ReturnType<typeof pendingDomCounts>;
+    }> = [];
+    let requestSequence = 0;
+    const controller = new DomTreeController({
+      transport: {
+        request: (request) => inspectTransport.requestDom(request),
+        dispatch: (request) => inspectTransport.dispatchDom(request),
+        cancelPending: (reason) => {
+          cancellations.push({
+            reason,
+            pending: pendingDomCounts(inspectTransport),
+          });
+          inspectTransport.cancelDomRequests(reason);
+        },
+      },
+      createRequestId: () => `replacement-${++requestSequence}`,
+    });
+    let currentRoot = controllerNode("root-0", true, 1);
+    let currentChild = controllerNode("child-0");
+    const initialRoot = controller.loadRoot();
+    const initialRootQuery = sentDomQuery(port);
+    port.emitMessage(controllerRootResponse(initialRootQuery.requestId, currentRoot));
+    await initialRoot;
+    const initialExpand = controller.expand(currentRoot.nodeRef);
+    const initialChildrenQuery = sentDomQuery(port);
+    port.emitMessage(controllerChildrenResponse(
+      initialChildrenQuery.requestId,
+      currentRoot.nodeRef,
+      1,
+      [currentChild],
+      "cursor-0",
+    ));
+    await initialExpand;
+
+    for (let replacement = 1; replacement <= 3; replacement += 1) {
+      const oldRoot = currentRoot;
+      const oldChild = currentChild;
+      const hungLoadMore = controller.loadMore(oldRoot.nodeRef);
+      const hungState = promiseState(hungLoadMore);
+      const hungQuery = sentDomQuery(port);
+      const invalidationStart = port.sent.length;
+
+      controller.handleEvent({
+        type: "dom.invalidated",
+        documentEpoch: 1,
+        branches: [{ nodeRef: oldRoot.nodeRef, branchRevision: 2 }],
+      });
+      await flushPanelTasks();
+
+      const invalidationQueries = port.sent
+        .slice(invalidationStart)
+        .map((_, index) => sentDomQuery(port, invalidationStart + index));
+      const rootQuery = invalidationQueries.find((query) => (
+        query.type === "dom.getRoot"
+      ));
+      const oldRefreshQuery = invalidationQueries.find((query) => (
+        query.type === "dom.getChildren" && query.nodeRef === oldRoot.nodeRef
+      ));
+      expect(rootQuery).toBeDefined();
+      expect(oldRefreshQuery).toBeDefined();
+
+      currentRoot = controllerNode(`root-${replacement}`, true, 1);
+      currentChild = controllerNode(`child-${replacement}`);
+      const replacementChildrenStart = port.sent.length;
+      port.emitMessage(controllerRootResponse(rootQuery!.requestId, currentRoot));
+      await flushPanelTasks();
+
+      expect(hungState.status).toBe("fulfilled");
+      expect(cancellations.at(-1)).toEqual({
+        reason: "DOM root replaced",
+        pending: { callerIds: 2, wireRequests: 2 },
+      });
+      const replacementChildrenQuery = sentDomQuery(
+        port,
+        replacementChildrenStart,
+      );
+      expect(replacementChildrenQuery).toMatchObject({
+        type: "dom.getChildren",
+        documentEpoch: 1,
+        nodeRef: currentRoot.nodeRef,
+        branchRevision: 1,
+      });
+      expect(pendingDomCounts(inspectTransport)).toEqual({
+        callerIds: 1,
+        wireRequests: 1,
+      });
+
+      port.emitMessage(controllerChildrenResponse(
+        hungQuery.requestId,
+        oldRoot.nodeRef,
+        1,
+        [controllerNode(`late-more-${replacement}`)],
+      ));
+      port.emitMessage(controllerChildrenResponse(
+        oldRefreshQuery!.requestId,
+        oldRoot.nodeRef,
+        2,
+        [controllerNode(`late-refresh-${replacement}`)],
+      ));
+      await flushPanelTasks();
+      expect(pendingDomCounts(inspectTransport)).toEqual({
+        callerIds: 1,
+        wireRequests: 1,
+      });
+
+      port.emitMessage(controllerChildrenResponse(
+        replacementChildrenQuery.requestId,
+        currentRoot.nodeRef,
+        1,
+        [currentChild],
+        `cursor-${replacement}`,
+      ));
+      await flushPanelTasks();
+
+      expect(pendingDomCounts(inspectTransport)).toEqual({
+        callerIds: 0,
+        wireRequests: 0,
+      });
+      expect(controller.rows().map((row) => row.nodeRef)).toEqual([
+        currentRoot.nodeRef,
+        currentChild.nodeRef,
+        `pin-op:load-more:${currentRoot.nodeRef}`,
+      ]);
+      expect(controller.rows().some((row) => row.nodeRef === oldChild.nodeRef)).toBe(false);
+    }
+
+    expect(cancellations).toHaveLength(3);
   });
 
   it("reuses a completed caller ID with a new wire ID", async () => {
@@ -722,6 +858,58 @@ function rootResponse(requestId: string) {
   };
 }
 
+function controllerNode(
+  nodeRef: string,
+  expandable = false,
+  branchRevision = 0,
+): DomNodeView {
+  return {
+    nodeRef,
+    kind: "element",
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: expandable ? 1 : 0,
+    relationship: "dom",
+    selectable: true,
+    label: nodeRef,
+    expandable,
+    branchRevision,
+    locator: stableLocator({
+      path: [pathSegment({ tagName: "div", id: nodeRef })],
+    }),
+  };
+}
+
+function controllerRootResponse(requestId: string, node: DomNodeView) {
+  return {
+    type: "dom.root" as const,
+    requestId,
+    documentEpoch: 1,
+    prologue: [],
+    epilogue: [],
+    node,
+  };
+}
+
+function controllerChildrenResponse(
+  requestId: string,
+  nodeRef: string,
+  branchRevision: number,
+  nodes: readonly DomNodeView[],
+  nextCursor?: string,
+) {
+  return {
+    type: "dom.children" as const,
+    requestId,
+    documentEpoch: 1,
+    nodeRef,
+    branchRevision,
+    nodes,
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
 function childrenRequest(requestId: string) {
   return {
     type: "dom.getChildren" as const,
@@ -904,6 +1092,13 @@ function promiseState(promise: Promise<unknown>): {
     },
   );
   return state;
+}
+
+async function flushPanelTasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function resolution(
