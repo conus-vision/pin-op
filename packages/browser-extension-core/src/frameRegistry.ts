@@ -170,6 +170,11 @@ export class FrameRegistry {
     return this.state === "mutating";
   }
 
+  protected settleProviderDocumentResetAfterMutation(): void {
+    // DomTreeProvider narrows this hook to an already accepted, newer document
+    // reset. Standalone registries keep mutation settlement side-effect free.
+  }
+
   public getContext(frameRef: string): FrameContext | undefined {
     if (this.state !== "active" || !isFrameRef(frameRef)) {
       return undefined;
@@ -725,7 +730,9 @@ export class FrameRegistry {
     if (this.pendingDispose) {
       this.pendingDispose = false;
       this.dispose();
+      return;
     }
+    this.settleProviderDocumentResetAfterMutation();
   }
 
   private isActive(): boolean {

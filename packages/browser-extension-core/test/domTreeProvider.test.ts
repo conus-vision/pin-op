@@ -1720,6 +1720,65 @@ describe("DomTreeProvider", () => {
     });
   });
 
+  it("settles a newer reset when frame navigation exits without lifecycle", () => {
+    const document = createDocument();
+    const childDocument = createDocument();
+    const frame = createFrameElement(document, childDocument);
+    document.documentElement.append(frame);
+    const latestDocument = createDocument();
+    const lifecycle: FrameLifecycleEvent[] = [];
+    const harness = createProviderHarness(document, {
+      onFrameLifecycle: (event) => lifecycle.push(event),
+    });
+    const provider = harness.provider;
+    provider.startFrameTracking();
+    harness.flushTimers();
+    harness.flushEffects();
+    expect(frame.loadListenerCount).toBe(1);
+    lifecycle.length = 0;
+
+    let reentered = false;
+    const wrongOwnerDocument = createDocument();
+    Object.defineProperty(frame, "ownerDocument", {
+      configurable: true,
+      get: () => {
+        if (!reentered) {
+          reentered = true;
+          provider.resetDocument(latestDocument as unknown as Document, 4);
+        }
+        return wrongOwnerDocument;
+      },
+    });
+
+    frame.dispatchLoad();
+    harness.flushTimers();
+    harness.flushEffects();
+
+    expect(reentered).toBe(true);
+    expect(provider.currentDocumentEpoch).toBe(4);
+    expect(lifecycle.filter((event) => event.type === "navigated")).toEqual([]);
+    expect(frame.loadListenerCount).toBe(0);
+    expect(provider.frameAuthority.getContextForDocument(
+      latestDocument as unknown as Document,
+    )).toBeDefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      childDocument as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.getContextForDocument(
+      document as unknown as Document,
+    )).toBeUndefined();
+    expect(provider.frameAuthority.accessibleContexts()).toHaveLength(1);
+    expect((provider as unknown as {
+      readonly activeDocumentReset: unknown;
+      readonly pendingDocumentReset: unknown;
+      readonly drainingDocumentResets: boolean;
+    })).toMatchObject({
+      activeDocumentReset: undefined,
+      pendingDocumentReset: undefined,
+      drainingDocumentResets: false,
+    });
+  });
+
   it("keeps frame authority terminal when listener registration disposes the provider", () => {
     const document = createDocument();
     const childDocument = createDocument();
