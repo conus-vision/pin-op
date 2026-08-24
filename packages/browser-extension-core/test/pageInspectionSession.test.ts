@@ -94,6 +94,12 @@ describe("PageInspectionSession", () => {
     expect(registry.checkForChanges).toHaveBeenCalledOnce();
     expect(firstApplicability.check).toHaveBeenCalledTimes(2);
 
+    const frameDocument = new FakeSessionDocument();
+    const context = frameContext(frameDocument, "frame-styles", 1);
+    harness.provider.setFrameContexts([context]);
+    harness.provider.emitFrameLifecycle("registered", context);
+    expect(registry.invalidate).toHaveBeenCalledWith("frame-lifecycle");
+
     harness.session.clearOverlayForRefresh();
     expect(registry.invalidate).toHaveBeenCalledWith("soft-refresh");
     const applicabilityOptions = createApplicabilityObserver.mock.calls[0]?.[0] as {

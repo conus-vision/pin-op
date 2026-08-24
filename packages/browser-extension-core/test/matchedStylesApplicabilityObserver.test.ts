@@ -132,6 +132,38 @@ describe("MatchedStylesApplicabilityObserver", () => {
     expect(document.view.dispatchEvent).not.toHaveBeenCalled();
   });
 
+  it("rotates non-overlapping windows without invalidating a stable large result", () => {
+    const document = documentHarness(eventTargetHarness());
+    const active = new Set<string>();
+    const candidates = Array.from(
+      { length: APPLICABILITY_LIMITS.candidatesPerPass + 1 },
+      (_, index) => {
+        const selector = `.stable-${index}`;
+        active.add(selector);
+        return candidate(`stable-${index}`, document, selector);
+      },
+    );
+    const changes: unknown[] = [];
+    const observer = createObserver(document, changes);
+    observer.setSelection(matchable(document, active), candidates);
+
+    const results = [
+      observer.check(),
+      observer.check(),
+      observer.check(),
+      observer.check(),
+    ];
+
+    expect(results.map(({ candidatesVisited }) => candidatesVisited)).toEqual([
+      APPLICABILITY_LIMITS.candidatesPerPass,
+      1,
+      APPLICABILITY_LIMITS.candidatesPerPass,
+      1,
+    ]);
+    expect(results.every(({ changed }) => !changed)).toBe(true);
+    expect(changes).toEqual([]);
+  });
+
   it("rotates bounded applicability work and provides a deterministic manual refresh fallback", () => {
     const root = eventTargetHarness();
     const document = documentHarness(root);
@@ -150,14 +182,60 @@ describe("MatchedStylesApplicabilityObserver", () => {
     expect(first.nextCursor).toBe(APPLICABILITY_LIMITS.candidatesPerPass);
     active.add(`.state-${APPLICABILITY_LIMITS.candidatesPerPass}`);
     const second = observer.check();
-    expect(second.candidatesVisited).toBeGreaterThan(0);
-    expect(second.changed).toBe(true);
+    expect(second.candidatesVisited).toBe(1);
+    expect(second.changed).toBe(false);
+
+    active.delete(`.state-${APPLICABILITY_LIMITS.candidatesPerPass}`);
+    expect(observer.check().changed).toBe(false);
+    expect(observer.check().changed).toBe(true);
 
     active.add(".state-0");
     const invalidationsBeforeManual = changes.length;
     observer.manualRefresh();
     expect(changes).toHaveLength(invalidationsBeforeManual + 1);
     expect(changes.at(-1)).toMatchObject({ reason: "manual-refresh" });
+  });
+
+  it("marks context-list truncation partial", () => {
+    const document = documentHarness(eventTargetHarness());
+    const observer = createObserver(document, []);
+    observer.setSelection(matchable(document, new Set([".card"])), [candidate(
+      "contexts",
+      document,
+      ".card",
+      Array.from({ length: 33 }, (_, index) => ({
+        kind: "layer" as const,
+        text: `layer-${index}`,
+      })),
+    )]);
+
+    expect(observer.check().partial).toBe(true);
+  });
+
+  it("marks composed-ancestor truncation partial", () => {
+    const document = documentHarness(eventTargetHarness());
+    let selected: Element | null = null;
+    for (let index = 0; index < APPLICABILITY_LIMITS.composedAncestors + 1; index += 1) {
+      selected = matchable(document, new Set([".card"]), selected);
+    }
+    const observer = createObserver(document, []);
+    observer.setSelection(selected!, [candidate("ancestors", document, ".card")]);
+
+    expect(observer.check().partial).toBe(true);
+  });
+
+  it("marks selector-list truncation partial", () => {
+    const document = documentHarness(eventTargetHarness());
+    const selectors = Array.from(
+      { length: APPLICABILITY_LIMITS.selectorsPerRule + 1 },
+      (_, index) => `.selector-${index}`,
+    );
+    const observer = createObserver(document, []);
+    observer.setSelection(matchable(document, new Set([selectors[0]!])), [
+      candidate("selectors", document, selectors.join(",")),
+    ]);
+
+    expect(observer.check().partial).toBe(true);
   });
 
   it("tears down every observer/listener/media registration and ignores later callbacks", async () => {

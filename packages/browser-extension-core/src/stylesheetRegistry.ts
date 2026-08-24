@@ -149,10 +149,13 @@ export class StylesheetRegistry {
   private disposed = false;
   private inventoryDirty = true;
   private inventory: InventoryState | undefined;
+  private inventoryStructureDigest = "";
   private scopeReferences = new WeakMap<object, string>();
   private sheetReferences = new WeakMap<object, string>();
+  private ownerReferences = new WeakMap<object, string>();
   private nextScopeReference = 0;
   private nextSheetReference = 0;
+  private nextOwnerReference = 0;
   private identityGeneration = 0;
   private fingerprint: StylesheetFingerprint;
   private readonly ruleReferences: RuleReferenceRegistry;
@@ -238,6 +241,20 @@ export class StylesheetRegistry {
   public checkForChanges(): boolean {
     this.requireLive();
     this.ensureInventory();
+    const currentStructureDigest = inventoryStructureDigest(
+      this.document,
+      (scope) => this.scopeRef(scope),
+      (sheet) => this.sheetRef(sheet),
+      (owner) => this.ownerRef(owner),
+    );
+    if (currentStructureDigest !== this.inventoryStructureDigest) {
+      this.inventoryDirty = true;
+      this.refreshInventory();
+      this.fingerprint.reset();
+      this.fingerprint.scan(this.inventory!.entries);
+      this.advance("inventory-structure-change", "stylesheet");
+      return true;
+    }
     const result = this.fingerprint.scan(this.inventory!.entries);
     if (!result.changed) return false;
     this.inventoryDirty = true;
@@ -310,8 +327,10 @@ export class StylesheetRegistry {
     this.stylesRevision = 0;
     this.scopeReferences = new WeakMap();
     this.sheetReferences = new WeakMap();
+    this.ownerReferences = new WeakMap();
     this.nextScopeReference = 0;
     this.nextSheetReference = 0;
+    this.nextOwnerReference = 0;
     this.identityGeneration += 1;
     this.inventory = undefined;
     this.inventoryDirty = true;
@@ -350,6 +369,12 @@ export class StylesheetRegistry {
     );
     this.inventory = state;
     this.inventoryDirty = false;
+    this.inventoryStructureDigest = inventoryStructureDigest(
+      this.document,
+      (scope) => this.scopeRef(scope),
+      (sheet) => this.sheetRef(sheet),
+      (owner) => this.ownerRef(owner),
+    );
     if (!previousScopes || !sameObjectArray(previousScopes, state.scopes)) {
       this.installMutationObserver(state.scopes);
     }
@@ -371,6 +396,14 @@ export class StylesheetRegistry {
     return created;
   }
 
+  private ownerRef(owner: object): string {
+    const existing = this.ownerReferences.get(owner);
+    if (existing) return existing;
+    const created = `owner-${this.nextOwnerReference++}`;
+    this.ownerReferences.set(owner, created);
+    return created;
+  }
+
   private installMutationObserver(scopes: readonly StylesheetScope[]): void {
     this.disconnectMutationObserver();
     const create = this.options.createMutationObserver ??
@@ -378,11 +411,17 @@ export class StylesheetRegistry {
     if (!create) return;
     let observer: StylesheetMutationObserver | undefined;
     try {
-      observer = create(() => {
+      observer = create((records) => {
         if (this.disposed) return;
-        this.inventoryDirty = true;
-        this.fingerprint.reset();
-        this.advance("stylesheet-dom-mutation", "stylesheet");
+        const kind = classifyStylesheetMutations(records);
+        if (!kind) return;
+        if (kind === "stylesheet") {
+          this.inventoryDirty = true;
+          this.fingerprint.reset();
+          this.advance("stylesheet-dom-mutation", "stylesheet");
+        } else {
+          this.advance("stylesheet-dom-applicability", "applicability");
+        }
       });
       this.mutationObserver = observer;
       for (const scope of scopes) {
@@ -526,19 +565,98 @@ function inventoryStylesheets(
   });
 }
 
-function discoverScopes(document: Document, state: MutableInventory): StylesheetScope[] {
+function inventoryStructureDigest(
+  document: Document,
+  scopeRefFor: (scope: object) => string,
+  sheetRefFor: (sheet: object) => string,
+  ownerRefFor: (owner: object) => string,
+): string {
+  const scopes = discoverScopes(document);
+  const uniqueSheets = new Set<object>();
+  const parts: string[] = [`scope-count:${scopes.length}`];
+  let pairCount = 0;
+  let truncated = false;
+  for (const scope of scopes) {
+    const scopeRef = scopeRefFor(scope);
+    const seen = new Set<object>();
+    let sourceOrder = 0;
+    parts.push(`scope:${scopeRef}:${scopeKind(scope)}`);
+    const append = (
+      kind: "owner" | "external" | "adopted",
+      candidates: readonly {
+        readonly sheet: object;
+        readonly owner?: object;
+      }[],
+    ): void => {
+      for (const { sheet, owner } of candidates) {
+        if (seen.has(sheet)) continue;
+        if (pairCount >= STYLESHEET_LIMITS.scopeSheetPairsPerSession) {
+          truncated = true;
+          return;
+        }
+        if (
+          !uniqueSheets.has(sheet) &&
+          uniqueSheets.size >= STYLESHEET_LIMITS.uniqueSheetObjectsPerSession
+        ) {
+          truncated = true;
+          continue;
+        }
+        seen.add(sheet);
+        uniqueSheets.add(sheet);
+        parts.push([
+          scopeRef,
+          String(sourceOrder),
+          kind,
+          sheetRefFor(sheet),
+          owner ? ownerRefFor(owner) : "",
+        ].join(":"));
+        sourceOrder += 1;
+        pairCount += 1;
+      }
+    };
+    const owned = readOwnerSheets(scope);
+    if (scopeKind(scope) === "shadow-root") {
+      append("owner", owned);
+    }
+    append("external", readScopeStyleSheets(scope).map((sheet) => ({
+      sheet,
+      ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
+    })));
+    if (scopeKind(scope) === "document") {
+      append("owner", owned);
+    }
+    append("adopted", readAdoptedSheets(scope).map((sheet) => ({
+      sheet,
+      ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
+    })));
+  }
+  parts.push(
+    `pairs:${pairCount}`,
+    `unique:${uniqueSheets.size}`,
+    truncated ? "truncated" : "complete",
+  );
+  return digestStructureParts(parts);
+}
+
+function discoverScopes(
+  document: Document,
+  state?: MutableInventory,
+): StylesheetScope[] {
+  const scopes = state?.scopes ?? [];
   const queue: StylesheetScope[] = [document];
   const seen = new Set<object>();
   while (queue.length > 0) {
     const scope = queue.shift()!;
     if (seen.has(scope)) continue;
-    if (state.scopes.length >= STYLESHEET_LIMITS.scopesPerSession) {
-      state.omittedScopeCount += 1 + queue.length;
-      addDiagnostic(state, { code: "scope-limit" });
+    if (scopes.length >= STYLESHEET_LIMITS.scopesPerSession) {
+      if (state) {
+        state.omittedScopeCount += 1 + queue.length;
+        addDiagnostic(state, { code: "scope-limit" });
+      }
       break;
     }
     seen.add(scope);
-    state.scopes.push(scope);
+    scopes.push(scope);
     for (const node of safeQueryAll(scope, "*")) {
       const shadow = safeObjectProperty(node, "shadowRoot");
       if (shadow && safeStringProperty(shadow, "mode") !== "closed") {
@@ -550,7 +668,7 @@ function discoverScopes(document: Document, state: MutableInventory): Stylesheet
       }
     }
   }
-  return state.scopes;
+  return scopes;
 }
 
 function addSheetTree(
@@ -802,16 +920,28 @@ function sameDeclarations(nativeRule: object, node: Rule): boolean {
 }
 
 function sameGroup(nativeRule: object, node: AtRule): boolean {
-  const header = (safeStringProperty(nativeRule, "cssText") ?? "")
-    .split("{")[0]!
-    .trim()
-    .toLowerCase();
-  const expectedName = node.name.toLowerCase();
-  if (header && !header.startsWith(`@${expectedName}`)) return false;
-  const nativeCondition = safeStringProperty(nativeRule, "conditionText") ??
-    safeNestedString(nativeRule, "media", "mediaText") ?? "";
-  return !nativeCondition || normalizeCssValue(nativeCondition) ===
-    normalizeCssValue(node.params);
+  const cssText = safeStringProperty(nativeRule, "cssText");
+  if (
+    cssText === undefined ||
+    cssText.length > STYLESHEET_LIMITS.inlineTextBytesPerSheet ||
+    utf8ByteLength(cssText) > STYLESHEET_LIMITS.inlineTextBytesPerSheet
+  ) {
+    return false;
+  }
+
+  let parsed: ReturnType<typeof postcss.parse>;
+  try {
+    parsed = postcss.parse(cssText, { from: undefined });
+  } catch {
+    return false;
+  }
+  const nativeNodes = (parsed.nodes ?? []).filter(({ type }) => type !== "comment");
+  if (nativeNodes.length !== 1) return false;
+  const nativeNode = nativeNodes[0]!;
+  if (nativeNode.type !== "atrule" || nativeNode.nodes === undefined) return false;
+
+  return nativeNode.name.toLowerCase() === node.name.toLowerCase() &&
+    normalizeCssValue(nativeNode.params) === normalizeCssValue(node.params);
 }
 
 function sourceRange(node: ChildNode): GeneratedRuleRange | undefined {
@@ -1005,6 +1135,68 @@ function safeQueryAll(scope: object, selector: string): object[] {
   }
 }
 
+function classifyStylesheetMutations(
+  records: readonly unknown[],
+): "stylesheet" | "applicability" | undefined {
+  let sawMutation = false;
+  for (const record of records) {
+    if (typeof record !== "object" || record === null) continue;
+    const type = safeStringProperty(record, "type");
+    const target = safeObjectProperty(record, "target");
+    if (!type || !target) continue;
+    sawMutation = true;
+    if (type === "attributes") {
+      const attributeName = safeStringProperty(record, "attributeName") ?? "";
+      if (
+        ["media", "disabled", "rel", "href", "title"].includes(attributeName) &&
+        isStylesheetOwner(target)
+      ) {
+        return "stylesheet";
+      }
+      continue;
+    }
+    if (type === "characterData") {
+      const parent = safeObjectProperty(target, "parentElement") ??
+        safeObjectProperty(target, "parentNode");
+      if (parent && isStylesheetOwner(parent)) return "stylesheet";
+      continue;
+    }
+    if (type === "childList") {
+      if (isStylesheetOwner(target)) return "stylesheet";
+      for (const key of ["addedNodes", "removedNodes"] as const) {
+        const nodes = safeObjectProperty(record, key);
+        if (!nodes) continue;
+        for (const node of boundedObjectList(
+          nodes,
+          STYLESHEET_LIMITS.scopeSheetPairsPerSession,
+        )) {
+          if (containsStylesheetStructure(node)) return "stylesheet";
+        }
+      }
+    }
+  }
+  return sawMutation ? "applicability" : undefined;
+}
+
+function containsStylesheetStructure(node: object): boolean {
+  if (isStylesheetOwner(node)) return true;
+  const tagName = safeTagName(node);
+  if (tagName === "IFRAME" || tagName === "FRAME") return true;
+  const shadow = safeObjectProperty(node, "shadowRoot");
+  if (shadow && safeStringProperty(shadow, "mode") !== "closed") return true;
+  const frameDocument = safeObjectProperty(node, "contentDocument");
+  if (frameDocument && isDocumentScope(frameDocument)) return true;
+  return safeQueryAll(
+    node,
+    "style,link[rel~='stylesheet'],iframe,frame",
+  ).some((descendant) => containsStylesheetStructure(descendant));
+}
+
+function isStylesheetOwner(node: object): boolean {
+  const tagName = safeTagName(node);
+  return tagName === "STYLE" || tagName === "LINK";
+}
+
 function isPinOpOwned(owner: object): boolean {
   return hasOwnerAttribute(owner, "data-pin-op-runtime-artifact") ||
     hasOwnerAttribute(owner, "data-pin-op-pseudo-preview");
@@ -1073,17 +1265,21 @@ function safeNumberProperty(value: object, key: PropertyKey): number | undefined
   }
 }
 
-function safeNestedString(
-  value: object,
-  key: PropertyKey,
-  nestedKey: PropertyKey,
-): string | undefined {
-  const nested = safeObjectProperty(value, key);
-  return nested ? safeStringProperty(nested, nestedKey) : undefined;
-}
-
 function normalizeCssValue(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function digestStructureParts(parts: readonly string[]): string {
+  let hash = 0x811c9dc5;
+  for (const part of parts) {
+    for (let index = 0; index < part.length; index += 1) {
+      hash ^= part.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= 0xff;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function addDiagnostic(

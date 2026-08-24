@@ -80,6 +80,62 @@ describe("StylesheetRegistry", () => {
     ))).toBe(false);
   });
 
+  it("detects eventless adopted stylesheet add, remove, and reorder", () => {
+    const first = sheet(null, [styleRule(".first", "color: red")]);
+    const second = sheet(null, [styleRule(".second", "color: blue")]);
+    const third = sheet(null, [styleRule(".third", "color: green")]);
+    const document = scope("document", [], [first, second], []);
+    const registry = createRegistry(document);
+
+    document.adoptedStyleSheets.reverse();
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.map(({ sheet }) => sheet)).toEqual([
+      second,
+      first,
+    ]);
+
+    document.adoptedStyleSheets.pop();
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.map(({ sheet }) => sheet)).toEqual([
+      second,
+    ]);
+
+    document.adoptedStyleSheets.push(third);
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.map(({ sheet }) => sheet)).toEqual([
+      second,
+      third,
+    ]);
+  });
+
+  it("detects eventless open-shadow insertion and frame document replacement", () => {
+    const nodes: object[] = [];
+    const document = scope("document", [], [], nodes);
+    const registry = createRegistry(document);
+    const shadowSheet = sheet(null, [styleRule(".shadow", "color: blue")]);
+    const shadow = scope("shadow", [shadowSheet], [], []);
+
+    nodes.push(host(shadow));
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.some(({ scope }) => scope === shadow)).toBe(true);
+
+    const firstFrame = scope("document", [
+      sheet("https://frame.test/first.css", []),
+    ], [], []);
+    const secondFrame = scope("document", [
+      sheet("https://frame.test/second.css", []),
+    ], [], []);
+    const frame = { contentDocument: firstFrame };
+    nodes.push(frame);
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.some(({ scope }) => scope === firstFrame)).toBe(true);
+
+    frame.contentDocument = secondFrame;
+    expect(registry.checkForChanges()).toBe(true);
+    expect(registry.snapshot().entries.some(({ scope }) => scope === firstFrame)).toBe(false);
+    expect(registry.snapshot().entries.some(({ scope }) => scope === secondFrame)).toBe(true);
+  });
+
   it("maps bounded inline owner ranges only after complete CSSOM/AST proof", () => {
     const validSheet = sheet(null, [
       styleRule(".card", "color: red; margin: 0 !important"),
@@ -131,6 +187,30 @@ describe("StylesheetRegistry", () => {
       .toEqual({});
     expect(entries.find(({ sheet }) => sheet === external)?.generatedRanges)
       .toEqual({});
+  });
+
+  it.each([
+    ["media", "screen", "print"],
+    ["supports", "(display: grid)", "(display: block)"],
+    ["layer", "theme", "alternate"],
+    ["scope", "(.layout)", "(.other)"],
+    ["container", "sidebar (width > 10px)", "main (width > 20px)"],
+    ["starting-style", "", "unexpected"],
+    ["future-group", "alpha", "beta"],
+  ])("rejects an unproven @%s grouping prelude", (name, expected, actual) => {
+    const nested = styleRule(".card", "color: red");
+    const nativeGroup: FakeRule = {
+      cssText: `@${name}${actual ? ` ${actual}` : ""} { ${nested.cssText} }`,
+      cssRules: [nested],
+    };
+    const grouped = sheet(null, [nativeGroup]);
+    const source = `@${name}${expected ? ` ${expected}` : ""} { .card { color: red; } }`;
+    const owner = styleOwner(source, grouped);
+    const document = scope("document", [grouped], [], [owner]);
+
+    const entry = createRegistry(document).snapshot().entries[0];
+
+    expect(entry?.generatedRanges).toEqual({});
   });
 
   it("bounds inaccessible, oversized, hostile, and session-global inventory", () => {
@@ -248,7 +328,12 @@ describe("StylesheetRegistry", () => {
     });
 
     document.styleSheets.push(sheet("https://example.test/new.css", []));
-    mutationCallback?.([{ type: "childList" }]);
+    mutationCallback?.([{
+      type: "childList",
+      target: document,
+      addedNodes: [{ tagName: "STYLE" }],
+      removedNodes: [],
+    }]);
     expect(registry.revisions).toMatchObject({
       stylesheetRevision: 4,
       stylesRevision: 4,
@@ -264,6 +349,45 @@ describe("StylesheetRegistry", () => {
     expect(disconnect).toHaveBeenCalledOnce();
     mutationCallback?.([{ type: "childList" }]);
     expect(invalidations).toHaveLength(5);
+  });
+
+  it("classifies unrelated DOM mutations as applicability-only and preserves rule refs", () => {
+    let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
+    const nativeRule = styleRule(".card", "color: red");
+    const app = sheet(null, [nativeRule]);
+    const owner = styleOwner(".card { color: red; }", app);
+    const document = scope("document", [app], [], [owner]);
+    const registry = createRegistry(document, {
+      createMutationObserver(callback) {
+        mutationCallback = callback;
+        return { observe: vi.fn(), disconnect: vi.fn() };
+      },
+    });
+    const entry = registry.snapshot().entries[0]!;
+    const ruleRef = registry.referenceRule(entry, "0", nativeRule);
+
+    mutationCallback?.([{
+      type: "childList",
+      target: { tagName: "DIV" },
+      addedNodes: [{ tagName: "SPAN" }],
+      removedNodes: [],
+    }]);
+
+    expect(registry.revisions).toMatchObject({
+      stylesheetRevision: 0,
+      stylesRevision: 1,
+    });
+    expect(registry.resolveRule(ruleRef)).toBe(nativeRule);
+
+    mutationCallback?.([{
+      type: "characterData",
+      target: { parentElement: owner },
+    }]);
+    expect(registry.revisions).toMatchObject({
+      stylesheetRevision: 1,
+      stylesRevision: 2,
+    });
+    expect(registry.resolveRule(ruleRef)).toBeUndefined();
   });
 
   it("polls only while active, rotates partial fingerprints, and resets identity on navigation", () => {

@@ -73,12 +73,32 @@ interface MediaRegistration {
   readonly listener: EventListener;
 }
 
+interface StoredApplicabilityCandidate extends ApplicabilityCandidate {
+  readonly inputTruncated: boolean;
+}
+
+interface BoundedAncestors {
+  readonly values: readonly Element[];
+  readonly truncated: boolean;
+}
+
+interface ParsedSelectorList {
+  readonly selectors: readonly string[];
+  readonly truncated: boolean;
+}
+
+const CANDIDATES_PER_SELECTION = 65_536;
+const CONTEXTS_PER_CANDIDATE = 32;
+const CANDIDATE_KEY_LENGTH = 256;
+const SELECTOR_TEXT_LENGTH = 16_384;
+const CONTEXT_TEXT_LENGTH = 4096;
+
 /** Observes events only; it never dispatches page input/focus events. */
 export class MatchedStylesApplicabilityObserver {
   private selected: Element | undefined;
-  private candidates: readonly ApplicabilityCandidate[] = Object.freeze([]);
+  private candidates: readonly StoredApplicabilityCandidate[] = Object.freeze([]);
+  private candidatesTruncated = false;
   private cursor = 0;
-  private initialized = false;
   private disposed = false;
   private pendingSignal = false;
   private signalGeneration = 0;
@@ -111,18 +131,38 @@ export class MatchedStylesApplicabilityObserver {
     this.requireLive();
     this.detachAll();
     this.selected = element;
-    this.candidates = Object.freeze(candidates.slice(0, 65_536).map((candidate) => (
-      Object.freeze({
-        key: boundedKey(candidate.key),
-        scope: candidate.scope,
-        selectorText: boundedSelector(candidate.selectorText),
-        contexts: Object.freeze(candidate.contexts.slice(0, 32).map((context) => (
-          Object.freeze({ kind: context.kind, text: boundedContext(context.text) })
-        ))),
-      })
-    )));
+    this.candidatesTruncated = candidates.length > CANDIDATES_PER_SELECTION;
+    this.candidates = Object.freeze(candidates
+      .slice(0, CANDIDATES_PER_SELECTION)
+      .map((candidate) => {
+        const key = typeof candidate.key === "string" ? candidate.key : "";
+        const selectorText = typeof candidate.selectorText === "string"
+          ? candidate.selectorText
+          : "";
+        const contexts = Array.isArray(candidate.contexts)
+          ? candidate.contexts
+          : [];
+        const contextTextTruncated = contexts.some(({ text }) => (
+          typeof text === "string" && text.length > CONTEXT_TEXT_LENGTH
+        ));
+        return Object.freeze({
+          key: key.slice(0, CANDIDATE_KEY_LENGTH),
+          scope: candidate.scope,
+          selectorText: selectorText.slice(0, SELECTOR_TEXT_LENGTH),
+          contexts: Object.freeze(contexts
+            .slice(0, CONTEXTS_PER_CANDIDATE)
+            .map((context) => Object.freeze({
+              kind: context.kind,
+              text: boundedContext(context.text),
+            }))),
+          inputTruncated:
+            key.length > CANDIDATE_KEY_LENGTH ||
+            selectorText.length > SELECTOR_TEXT_LENGTH ||
+            contexts.length > CONTEXTS_PER_CANDIDATE ||
+            contextTextTruncated,
+        });
+      }));
     this.cursor = 0;
-    this.initialized = false;
     this.windows.clear();
     this.signalGeneration += 1;
     this.pendingSignal = false;
@@ -135,21 +175,22 @@ export class MatchedStylesApplicabilityObserver {
     this.requireLive();
     const selected = this.selected;
     if (!selected) return emptyResult();
-    const ancestors = composedAncestors(selected);
+    const ancestorScan = composedAncestors(selected);
+    const ancestors = ancestorScan.values;
     const total = this.candidates.length;
     if (total === 0) {
-      const digest = digestStrings([String(ancestors.length)]);
+      const windowDigest = digestStrings([String(ancestors.length)]);
       const previous = this.windows.get(0);
-      const changed = this.initialized && previous !== undefined && previous !== digest;
-      this.windows.set(0, digest);
-      this.initialized = true;
+      const changed = previous !== undefined && previous !== windowDigest;
+      this.windows.set(0, windowDigest);
+      const digest = aggregateWindowDigest(total, this.windows);
       if (changed && this.suppressInvalidation === 0) {
         this.emit({ reason: "applicability-change" });
       }
       return freezeResult({
         digest,
         changed,
-        partial: false,
+        partial: this.candidatesTruncated || ancestorScan.truncated,
         candidatesVisited: 0,
         ancestorsVisited: ancestors.length,
         nextCursor: 0,
@@ -157,14 +198,20 @@ export class MatchedStylesApplicabilityObserver {
       });
     }
 
-    const start = this.cursor % total;
-    const count = Math.min(total, APPLICABILITY_LIMITS.candidatesPerPass);
+    const start = this.cursor >= 0 && this.cursor < total ? this.cursor : 0;
+    const count = Math.min(
+      total - start,
+      APPLICABILITY_LIMITS.candidatesPerPass,
+    );
     const matches: ApplicabilityMatch[] = [];
     const parts: string[] = [`ancestors:${ancestors.length}`];
+    let scanTruncated = this.candidatesTruncated || ancestorScan.truncated;
     for (let offset = 0; offset < count; offset += 1) {
-      const candidateIndex = (start + offset) % total;
+      const candidateIndex = start + offset;
       const candidate = this.candidates[candidateIndex]!;
-      const selectors = parseSelectorList(candidate.selectorText);
+      const parsedSelectors = parseSelectorList(candidate.selectorText);
+      const selectors = parsedSelectors.selectors;
+      scanTruncated ||= candidate.inputTruncated || parsedSelectors.truncated;
       const groupApplicability = candidate.contexts.map((context) => (
         this.groupApplicability(context, candidate.scope)
       ));
@@ -193,17 +240,13 @@ export class MatchedStylesApplicabilityObserver {
         }
       }
     }
-    const digest = digestStrings(parts);
+    const windowDigest = digestStrings(parts);
     const previous = this.windows.get(start);
-    const changed = this.initialized && (
-      previous !== undefined
-        ? previous !== digest
-        : matches.length > 0
-    );
-    this.windows.set(start, digest);
-    const partial = total > count;
-    this.cursor = partial ? (start + count) % total : 0;
-    this.initialized = true;
+    const changed = previous !== undefined && previous !== windowDigest;
+    this.windows.set(start, windowDigest);
+    const partial = scanTruncated || total > count;
+    this.cursor = start + count >= total ? 0 : start + count;
+    const digest = aggregateWindowDigest(total, this.windows);
     if (changed && this.suppressInvalidation === 0) {
       this.emit({ reason: "applicability-change" });
     }
@@ -244,6 +287,7 @@ export class MatchedStylesApplicabilityObserver {
     this.disposed = true;
     this.selected = undefined;
     this.candidates = Object.freeze([]);
+    this.candidatesTruncated = false;
     this.windows.clear();
   }
 
@@ -418,17 +462,26 @@ export class MatchedStylesApplicabilityObserver {
   }
 }
 
-function composedAncestors(element: Element): Element[] {
+function composedAncestors(element: Element): BoundedAncestors {
   const result: Element[] = [];
   const seen = new Set<object>();
   let current: Element | undefined = element;
-  while (current && result.length < APPLICABILITY_LIMITS.composedAncestors) {
+  while (current) {
     if (seen.has(current)) break;
+    if (result.length >= APPLICABILITY_LIMITS.composedAncestors) {
+      return Object.freeze({
+        values: Object.freeze(result),
+        truncated: true,
+      });
+    }
     seen.add(current);
     result.push(current);
     current = nextComposedAncestor(current);
   }
-  return result;
+  return Object.freeze({
+    values: Object.freeze(result),
+    truncated: false,
+  });
 }
 
 function nextComposedAncestor(element: Element): Element | undefined {
@@ -441,16 +494,21 @@ function nextComposedAncestor(element: Element): Element | undefined {
   return host as Element | undefined;
 }
 
-function parseSelectorList(selectorText: string): readonly string[] {
+function parseSelectorList(selectorText: string): ParsedSelectorList {
   try {
-    return Object.freeze(selectorParser()
-      .astSync(selectorText)
-      .nodes
-      .slice(0, APPLICABILITY_LIMITS.selectorsPerRule)
+    const nodes = selectorParser().astSync(selectorText).nodes;
+    return Object.freeze({
+      selectors: Object.freeze(nodes
+        .slice(0, APPLICABILITY_LIMITS.selectorsPerRule)
       .map((selector) => selector.toString().trim())
-      .filter(Boolean));
+        .filter(Boolean)),
+      truncated: nodes.length > APPLICABILITY_LIMITS.selectorsPerRule,
+    });
   } catch {
-    return Object.freeze([]);
+    return Object.freeze({
+      selectors: Object.freeze([]),
+      truncated: false,
+    });
   }
 }
 
@@ -544,16 +602,20 @@ function defaultMutationObserver(): MatchedStylesApplicabilityObserverOptions["c
     : undefined;
 }
 
-function boundedKey(value: string): string {
-  return typeof value === "string" ? value.slice(0, 256) : "";
-}
-
-function boundedSelector(value: string): string {
-  return typeof value === "string" ? value.slice(0, 16_384) : "";
-}
-
 function boundedContext(value: string): string {
-  return typeof value === "string" ? value.slice(0, 4096) : "";
+  return typeof value === "string" ? value.slice(0, CONTEXT_TEXT_LENGTH) : "";
+}
+
+function aggregateWindowDigest(
+  total: number,
+  windows: ReadonlyMap<number, string>,
+): string {
+  return digestStrings([
+    `total:${total}`,
+    ...[...windows.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([start, digest]) => `${start}:${digest}`),
+  ]);
 }
 
 function digestStrings(values: readonly string[]): string {

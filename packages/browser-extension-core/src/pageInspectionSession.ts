@@ -364,11 +364,6 @@ export class PageInspectionSession {
       onSelect: (element) => this.selectPageElement(element),
       onError: (error) => this.reportError(error),
     });
-    this.trackedDocuments.add(options.document);
-    this.attachPageLeaveListener(options.document);
-    this.provider.startFrameTracking();
-    this.syncFrameDocuments();
-
     const createStylesheetRegistry = options.createStylesheetRegistry ?? (
       (registryOptions: StylesheetRegistryOptions) => new StylesheetRegistry(
         registryOptions,
@@ -391,6 +386,10 @@ export class PageInspectionSession {
       options.document,
     );
     this.stylesPollingEnabled = options.contentSessionId !== undefined;
+    this.trackedDocuments.add(options.document);
+    this.attachPageLeaveListener(options.document);
+    this.provider.startFrameTracking();
+    this.syncFrameDocuments();
     if (this.stylesPollingEnabled) {
       this.startStylesPolling();
     }
@@ -1718,6 +1717,7 @@ export class PageInspectionSession {
     if (this.disposed || this.resettingDocument) {
       return;
     }
+    this.stylesheetRegistry.invalidate("frame-lifecycle");
     this.syncFrameDocuments();
     this.reconcileRetainedAuthority();
   }
