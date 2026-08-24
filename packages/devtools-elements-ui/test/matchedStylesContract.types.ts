@@ -9,6 +9,7 @@ import type {
   RulesDataSource,
   RulesDiagnosticSnapshot,
   RulesPresentationSnapshot,
+  SourceLinkDelegate,
 } from "../src/index.js";
 
 const declarationState: DeclarationState = "winning-known-author";
@@ -85,6 +86,55 @@ inheritedRule.matchedRules.push(rule);
 // @ts-expect-error Diagnostics are immutable snapshot data.
 matchedStyles.diagnostics.push(diagnostic);
 
+// @ts-expect-error Declaration values are immutable snapshot data.
+declaration.value = "blue";
+// @ts-expect-error Declaration states are immutable snapshot data.
+declaration.state = "inactive";
+// @ts-expect-error Context text is immutable snapshot data.
+context.text = "(width >= 80rem)";
+// @ts-expect-error Context kinds are immutable snapshot data.
+context.kind = "supports";
+// @ts-expect-error Generated source labels are immutable snapshot data.
+generatedSource.label = "other.css";
+// @ts-expect-error Generated source line positions are immutable snapshot data.
+generatedSource.lineNumber = 18;
+// @ts-expect-error Generated source column positions are immutable snapshot data.
+generatedSource.columnNumber = 6;
+// @ts-expect-error Rule selector text is immutable snapshot data.
+rule.selectorText = "body";
+// @ts-expect-error A rule's generated source object is immutable snapshot data.
+rule.generatedSource = generatedSource;
+// @ts-expect-error Inherited node references are immutable snapshot data.
+inheritedRule.nodeRef = "body";
+// @ts-expect-error Inherited inline-style objects are immutable snapshot data.
+inheritedRule.inlineStyle = rule;
+// @ts-expect-error Matched inline-style objects are immutable snapshot data.
+matchedStyles.inlineStyle = rule;
+// @ts-expect-error Document epochs are immutable snapshot data.
+matchedStyles.documentEpoch = 2;
+// @ts-expect-error Selection revisions are immutable snapshot data.
+matchedStyles.selectionRevision = 3;
+// @ts-expect-error Style revisions are immutable snapshot data.
+matchedStyles.stylesRevision = 4;
+// @ts-expect-error Stylesheet revisions are immutable snapshot data.
+matchedStyles.stylesheetRevision = 5;
+// @ts-expect-error Selected node references are immutable snapshot data.
+matchedStyles.nodeRef = "html";
+// @ts-expect-error Inaccessible stylesheet counts are immutable snapshot data.
+matchedStyles.inaccessibleStylesheetCount = 0;
+// @ts-expect-error Omitted rule counts are immutable snapshot data.
+matchedStyles.omittedRuleCount = 1;
+// @ts-expect-error Diagnostic codes are immutable snapshot data.
+diagnostic.code = "other-code";
+// @ts-expect-error Diagnostic severities are immutable snapshot data.
+diagnostic.severity = "warning";
+// @ts-expect-error Diagnostic messages are immutable snapshot data.
+diagnostic.message = "Other message";
+// @ts-expect-error Presentation discriminants are immutable snapshot data.
+presentation.state = "ready";
+// @ts-expect-error Presentation payloads are immutable snapshot data.
+presentation.matchedStyles = matchedStyles;
+
 declare const cssStyleRule: CSSStyleRule;
 // @ts-expect-error CSSOM objects cannot cross the neutral matched-rule contract.
 const cssomRule: MatchedRuleSnapshot = cssStyleRule;
@@ -100,3 +150,57 @@ void cssomRule;
 void sourceWithUrl;
 void sourceWithPath;
 void sourceWithAuthority;
+
+type ForbiddenDomCssomObject =
+  | CSSRule
+  | CSSStyleDeclaration
+  | StyleSheet
+  | EventTarget
+  | Event
+  | Range
+  | Selection
+  | MediaList
+  | DOMTokenList;
+
+type ContainsForbiddenDomCssomObject<T, Seen = never> =
+  [T] extends [Seen]
+    ? false
+    : T extends ForbiddenDomCssomObject
+      ? true
+      : T extends (...args: infer Arguments) => infer Result
+        ? ContainsForbiddenDomCssomObject<Arguments[number] | Result, Seen | T>
+        : T extends readonly (infer Item)[]
+          ? ContainsForbiddenDomCssomObject<Item, Seen | T>
+          : T extends object
+            ? true extends {
+              [Key in keyof T]-?: ContainsForbiddenDomCssomObject<
+                T[Key],
+                Seen | T
+              >;
+            }[keyof T]
+              ? true
+              : false
+            : false;
+
+type ExportedRulesContract = {
+  readonly declaration: MatchedDeclarationSnapshot;
+  readonly context: RuleContextSnapshot;
+  readonly generatedSource: GeneratedRuleSourceSnapshot;
+  readonly rule: MatchedRuleSnapshot;
+  readonly inherited: InheritedRulesSnapshot;
+  readonly matchedStyles: MatchedStylesSnapshot;
+  readonly diagnostic: RulesDiagnosticSnapshot;
+  readonly presentation: RulesPresentationSnapshot;
+  readonly dataSource: RulesDataSource;
+  readonly sourceLink: SourceLinkDelegate;
+};
+
+type HasForbiddenDomCssomObject<T> =
+  true extends ContainsForbiddenDomCssomObject<T> ? true : false;
+type ExpectFalse<T extends false> = T;
+type NeutralRulesContractContainsNoDomCssom = ExpectFalse<
+  HasForbiddenDomCssomObject<ExportedRulesContract>
+>;
+
+declare const noDomCssomProof: NeutralRulesContractContainsNoDomCssom;
+void noDomCssomProof;

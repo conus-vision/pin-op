@@ -100,6 +100,27 @@ describe("matched styles contract", () => {
     harness.view.dispose();
     expect(rules.listenerCount()).toBe(0);
   });
+
+  it("cleans an eager Rules subscription when its initial snapshot throws", () => {
+    const snapshotError = new Error("initial Rules snapshot failed");
+    const rules = new EagerThrowingRulesDataSource(snapshotError);
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+    const treeBackend = new FakeElementsBackend(elementsSession.tree);
+
+    expect(() => new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      treeBackend,
+      rules,
+    )).toThrow(snapshotError);
+
+    expect(rules.listenerCount()).toBe(0);
+    expect(treeBackend.listenerCount()).toBe(0);
+    expect(document.totalListeners()).toBe(0);
+    expect(mount.children).toHaveLength(0);
+  });
 });
 
 class FakeRulesDataSource implements RulesDataSource {
@@ -124,6 +145,30 @@ class FakeRulesDataSource implements RulesDataSource {
     this.current = snapshot;
     for (const listener of [...this.listeners]) listener();
   }
+
+  public listenerCount(): number {
+    return this.listeners.size;
+  }
+}
+
+class EagerThrowingRulesDataSource implements RulesDataSource {
+  private readonly listeners = new Set<() => void>();
+
+  public constructor(private readonly snapshotError: Error) {}
+
+  public snapshot(): RulesPresentationSnapshot {
+    throw this.snapshotError;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    listener();
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  public filter(_query: string): void {}
 
   public listenerCount(): number {
     return this.listeners.size;

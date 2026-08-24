@@ -16,7 +16,6 @@ export class ElementsInspectorView {
   private unsubscribeRules: (() => void) | undefined;
   private rulesRenderRevision = 0;
   private disposed = false;
-  private readonly onRulesChange = (): void => this.renderRules();
 
   public constructor(
     private readonly document: Document,
@@ -103,7 +102,13 @@ export class ElementsInspectorView {
       treeDataSource,
     );
     try {
-      this.unsubscribeRules = rulesDataSource?.subscribe(this.onRulesChange);
+      if (rulesDataSource) {
+        let notificationsEnabled = false;
+        this.unsubscribeRules = rulesDataSource.subscribe(() => {
+          if (notificationsEnabled) this.renderRules();
+        });
+        notificationsEnabled = true;
+      }
       this.renderRules();
       mount.append(this.element);
     } catch (error) {
