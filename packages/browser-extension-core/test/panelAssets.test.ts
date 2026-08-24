@@ -54,6 +54,8 @@ describe("DevTools panel assets", () => {
     expect(inspector("#refresh-styles").attr("aria-label")).toBe("Refresh styles");
     expect(inspector("#refresh-styles").attr("title")).toBe("Refresh styles");
     expect(inspector("#refresh-styles").is(":disabled")).toBe(true);
+    expect(inspector("#refresh-styles [data-lucide=\"refresh-cw\"]"))
+      .toHaveLength(1);
     expect(inspectorHtml).not.toContain("location.search");
   });
 

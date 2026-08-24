@@ -19,6 +19,8 @@ describe("stylesProtocol", () => {
   it("parses the exact request, matched response, invalidation event, and every error code", () => {
     const request = stylesRequest();
     expect(parseStylesRequest(request)).toEqual(request);
+    const manualRequest = { ...request, manualRefresh: true as const };
+    expect(parseStylesRequest(manualRequest)).toEqual(manualRequest);
 
     const matched = matchedResponse();
     expect(parseStylesResponse(matched)).toEqual(matched);
@@ -74,6 +76,10 @@ describe("stylesProtocol", () => {
       stylesheetRevision: 3,
       reason: "page-controlled",
     })).toThrow(/styles protocol/i);
+    for (const manualRefresh of [false, 1, "true", null]) {
+      expect(() => parseStylesRequest({ ...stylesRequest(), manualRefresh }))
+        .toThrow(/styles protocol/i);
+    }
   });
 
   it("rejects invalid revision pairs and mismatched nested identities", () => {

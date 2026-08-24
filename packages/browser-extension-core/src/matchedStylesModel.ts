@@ -129,7 +129,7 @@ export class MatchedStylesModel {
   /** Requeries the current selection through the existing matched-style path. */
   public async refresh(): Promise<void> {
     if (this.disposed || !this.selection) return;
-    await this.load(this.selection);
+    await this.load(this.selection, true);
   }
 
   public invalidate(value: unknown): void {
@@ -206,7 +206,10 @@ export class MatchedStylesModel {
     this.listeners.clear();
   }
 
-  private async load(selection: MatchedStylesModelSelection): Promise<void> {
+  private async load(
+    selection: MatchedStylesModelSelection,
+    manualRefresh = false,
+  ): Promise<void> {
     this.cancelCurrent();
     const generation = ++this.generation;
     this.pendingReloadGeneration = undefined;
@@ -219,6 +222,7 @@ export class MatchedStylesModel {
       documentEpoch: selection.documentEpoch,
       nodeRef: selection.nodeRef,
       selectionRevision: selection.selectionRevision,
+      ...(manualRefresh ? { manualRefresh: true } : {}),
     });
     let response: StylesResponse;
     try {

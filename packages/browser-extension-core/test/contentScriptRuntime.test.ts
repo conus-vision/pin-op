@@ -37,10 +37,16 @@ describe("startContentScriptRuntime", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      manualRefresh: true,
     })).resolves.toMatchObject({ type: "styles.matched", requestId: "styles-1" });
-    expect(pageSession.handle).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(pageSession.handle).toHaveBeenLastCalledWith({
       type: "styles.getMatched",
-    }));
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      manualRefresh: true,
+    });
     await expect(runtimeMessages.emit({ type: "styles.evil", requestId: "x" }))
       .resolves.toBeUndefined();
 

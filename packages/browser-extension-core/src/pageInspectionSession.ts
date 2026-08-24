@@ -2221,6 +2221,7 @@ export class PageInspectionSession {
       return stylesError("unknown-node", parsed.requestId);
     }
     try {
+      if (parsed.manualRefresh) this.manualRefreshStylesApplicability();
       this.checkStylesheetsForMatchedQuery();
     } catch (error) {
       this.reportError(error);

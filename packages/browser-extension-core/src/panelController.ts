@@ -3,6 +3,7 @@ import { parseInspectPortInvalidated } from "./inspectPortProtocol.js";
 import {
   ClipboardPaste,
   MousePointer2,
+  RefreshCw,
   createIcons,
 } from "lucide";
 
@@ -109,6 +110,7 @@ export function createPanelIcons(): void {
     icons: {
       ClipboardPaste,
       MousePointer2,
+      RefreshCw,
     },
     attrs: {
       width: "15",

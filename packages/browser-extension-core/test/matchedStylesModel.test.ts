@@ -377,6 +377,7 @@ describe("MatchedStylesModel", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      manualRefresh: true,
     });
     expect(model.snapshot()).toMatchObject({
       state: "ready",
@@ -392,6 +393,46 @@ describe("MatchedStylesModel", () => {
     model.reset("advanced-selection");
     await model.refresh();
     expect(requests).toHaveLength(2);
+  });
+
+  it("generation-fences concurrent manual refreshes and disposal", async () => {
+    const pending: Array<ReturnType<typeof deferred<StylesResponse>>> = [];
+    const signals: AbortSignal[] = [];
+    let initial = true;
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      request(request, signal) {
+        requests.push(request);
+        signals.push(signal);
+        if (initial) {
+          initial = false;
+          return Promise.resolve(matchedResponse({ request }));
+        }
+        const next = deferred<StylesResponse>();
+        pending.push(next);
+        return next.promise;
+      },
+    });
+    await model.select(selectionIdentity());
+    expect(requests[0]).not.toHaveProperty("manualRefresh");
+
+    const first = model.refresh();
+    const second = model.refresh();
+    expect(signals[1]?.aborted).toBe(true);
+    expect(requests.slice(1)).toEqual([
+      expect.objectContaining({ manualRefresh: true }),
+      expect.objectContaining({ manualRefresh: true }),
+    ]);
+
+    pending[0]!.resolve(matchedResponse({ request: requests[1] }));
+    model.dispose();
+    expect(signals[2]?.aborted).toBe(true);
+    pending[1]!.reject(new Error("disposed refresh"));
+    await Promise.all([first, second]);
+
+    expect(model.snapshot().state).toBe("idle");
+    await model.refresh();
+    expect(requests).toHaveLength(3);
   });
 
   it("resets and cancels on recovery, inspect-port invalidation, navigation, lease replacement, compatibility failure, and disposal", async () => {

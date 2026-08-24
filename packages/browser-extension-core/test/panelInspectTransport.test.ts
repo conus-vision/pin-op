@@ -25,7 +25,10 @@ describe("PanelInspectTransport DOM integration", () => {
   it("rewrites styles request IDs and validates all echoed identities", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
-    const caller = stylesRequest("caller-styles");
+    const caller = {
+      ...stylesRequest("caller-styles"),
+      manualRefresh: true as const,
+    };
     const pending = transport.requestStyles(caller);
     const wire = port.sent.at(-1) as StylesGetMatchedRequest;
 
@@ -34,6 +37,7 @@ describe("PanelInspectTransport DOM integration", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      manualRefresh: true,
     });
     expect(wire.requestId).not.toBe(caller.requestId);
 

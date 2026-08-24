@@ -25,6 +25,7 @@ export interface StylesGetMatchedRequest {
   readonly documentEpoch: number;
   readonly nodeRef: string;
   readonly selectionRevision: number;
+  readonly manualRefresh?: true;
 }
 
 export interface StylesMatchedResponse {
@@ -136,14 +137,19 @@ export function parseStylesRequest(value: unknown): StylesRequest {
       "documentEpoch",
       "nodeRef",
       "selectionRevision",
-    ]);
+      "manualRefresh",
+    ], ["manualRefresh"]);
     if (read(record, "type") !== "styles.getMatched") fail();
+    if (has(record, "manualRefresh") && read(record, "manualRefresh") !== true) {
+      fail();
+    }
     return Object.freeze({
       type: "styles.getMatched",
       requestId: identifier(read(record, "requestId")),
       documentEpoch: revision(read(record, "documentEpoch")),
       nodeRef: identifier(read(record, "nodeRef")),
       selectionRevision: revision(read(record, "selectionRevision")),
+      ...(has(record, "manualRefresh") ? { manualRefresh: true as const } : {}),
     });
   } catch (error) {
     throw asProtocolError(error);

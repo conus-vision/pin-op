@@ -171,7 +171,9 @@ describe("startInspectorPanelRuntime", () => {
       documentEpoch: number;
       nodeRef: string;
       selectionRevision: number;
+      manualRefresh?: true;
     };
+    expect(initialRequest).not.toHaveProperty("manualRefresh");
     const initialResponse = stylesMatched(initialRequest, 9, 2);
     port.emitMessage({
       ...initialResponse,
@@ -198,6 +200,7 @@ describe("startInspectorPanelRuntime", () => {
       documentEpoch: 6,
       nodeRef: "selected-card",
       selectionRevision: 4,
+      manualRefresh: true,
     });
     expect(refreshRequest.requestId).not.toBe(initialRequest.requestId);
     const refreshResponse = stylesMatched(refreshRequest, 10, 2);
@@ -1795,8 +1798,11 @@ function stylesMatched(
   stylesheetRevision: number,
 ) {
   return {
-    ...request,
     type: "styles.matched" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
     stylesRevision,
     stylesheetRevision,
     styles: {

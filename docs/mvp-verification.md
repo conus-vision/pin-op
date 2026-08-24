@@ -135,8 +135,10 @@ timer throttling. Observation may be delayed in that state. Record the delay,
 then click the Pin-op toolbar button labelled **Refresh styles**
 (`#refresh-styles`). The button is browser-local, needs no IDE connection, and
 is disabled when there is no current selection. It requeries the exact current
-selection through the normal bounded stylesheet-fingerprint and applicability
-path. Wait for Rules to return to `ready` or `partial`, rerun the probe above,
+selection through the existing `styles.getMatched` request with the exact optional
+`manualRefresh: true` marker. That marker forces a bounded applicability rebaseline;
+the normal stylesheet-fingerprint path then detects sheet changes and recollects.
+Wait for Rules to return to `ready` or `partial`, rerun the probe above,
 and verify the expected revision pair and matching rule. A delayed background
 observation is not a failure if **Refresh styles** produces the correct result;
 an uncorrected manual refresh is a failure.

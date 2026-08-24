@@ -16,7 +16,10 @@ import type { StylesGetMatchedRequest } from "../src/stylesProtocol.js";
 describe("PanelSessionTransport", () => {
   it("routes matched-style queries only through the bound trusted tab and validates correlation", async () => {
     const sent: Array<{ tabId: number; message: unknown }> = [];
-    const request = stylesRequest("styles-a");
+    const request = {
+      ...stylesRequest("styles-a"),
+      manualRefresh: true as const,
+    };
     const transport = new PanelSessionTransport({
       async sendTabMessage(tabId, message) {
         sent.push({ tabId, message });

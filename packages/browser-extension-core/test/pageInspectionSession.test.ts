@@ -123,6 +123,127 @@ describe("PageInspectionSession", () => {
     });
   });
 
+  it("manual refresh invalidates truncated applicability only after exact authority validation", async () => {
+    let stylesRevision = 8;
+    const invalidateApplicability = vi.fn(() => {
+      stylesRevision += 1;
+    });
+    const registry = {
+      get revisions() {
+        return {
+          documentEpoch: 3,
+          stylesheetRevision: 3,
+          stylesRevision,
+        };
+      },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability,
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const manualRefresh = vi.fn();
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createApplicabilityObserver(options) {
+        const typed = options as MatchedStylesApplicabilityObserverOptions;
+        return {
+          setSelection: vi.fn(),
+          check: vi.fn(() => ({
+            changed: false,
+            partial: true,
+            candidatesVisited: 4_096,
+            nextCursor: 4_096,
+          })),
+          manualRefresh: manualRefresh.mockImplementation(() => {
+            typed.onInvalidated({ reason: "manual-refresh" });
+          }),
+          dispose: vi.fn(),
+        };
+      },
+      createMatchedStylesCollector: () => ({
+        collect(authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }) {
+          return {
+            ...authority,
+            rules: [{
+              ruleRef: "stable-rule",
+              selectorText: ".card",
+              matchingSelectorIndices: [0],
+              declarations: [],
+              contexts: [],
+            }],
+            inherited: [],
+            inaccessibleStylesheetCount: 0,
+            partial: true,
+            diagnostics: ["bounded-applicability-scan"],
+          };
+        },
+      }),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selected = harness.events.find((event) => event.type === "dom.selectionChanged");
+    const selectionRevision = selected?.type === "dom.selectionChanged"
+      ? selected.selectionRevision
+      : -1;
+    const request = {
+      type: "styles.getMatched" as const,
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    };
+
+    const normal = await harness.session.handle({
+      ...request,
+      requestId: "normal",
+    });
+    expect(manualRefresh).not.toHaveBeenCalled();
+    expect(normal).toMatchObject({
+      type: "styles.matched",
+      stylesRevision: 8,
+      stylesheetRevision: 3,
+      styles: { rules: [{ ruleRef: "stable-rule" }] },
+    });
+
+    for (const stale of [
+      { ...request, requestId: "stale-document", documentEpoch: 2 },
+      {
+        ...request,
+        requestId: "stale-selection",
+        selectionRevision: selectionRevision + 1,
+      },
+      { ...request, requestId: "unknown-node", nodeRef: "other-node" },
+    ]) {
+      await harness.session.handle({ ...stale, manualRefresh: true });
+    }
+    expect(manualRefresh).not.toHaveBeenCalled();
+    expect(invalidateApplicability).not.toHaveBeenCalled();
+
+    const refreshed = await harness.session.handle({
+      ...request,
+      requestId: "manual",
+      manualRefresh: true,
+    });
+    expect(manualRefresh).toHaveBeenCalledOnce();
+    expect(invalidateApplicability).toHaveBeenCalledWith("manual-refresh");
+    expect(refreshed).toMatchObject({
+      type: "styles.matched",
+      stylesRevision: 9,
+      stylesheetRevision: 3,
+      styles: {
+        partial: true,
+        rules: [{ ruleRef: "stable-rule" }],
+      },
+    });
+  });
+
   it("coalesces changed ready evidence into a current-selection inspect renewal", async () => {
     const renewals: unknown[] = [];
     let value = "red";

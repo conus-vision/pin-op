@@ -4194,12 +4194,25 @@ describe("BackgroundRouter", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      manualRefresh: true,
     });
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
     await flushMicrotasks();
     expect(messagesOfType(panel, "styles.matched")).toEqual([
       stylesMatched("styles-1"),
+    ]);
+    expect(harness.inspectCalls).toContainEqual([
+      "tab",
+      17,
+      {
+        type: "styles.getMatched",
+        requestId: "styles-1",
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+        manualRefresh: true,
+      },
     ]);
 
     await harness.router.routeMessage({
