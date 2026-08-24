@@ -171,6 +171,7 @@ interface BoundedValues<T> {
 interface BoundedValue<T> {
   readonly value: T;
   readonly truncated: boolean;
+  readonly sourceBytes: number;
 }
 
 interface WalkState {
@@ -470,13 +471,13 @@ function* walkRules(
     }
 
     const context = nestedStyleRule ? undefined : readRuleContext(rule);
-    const retainsContext = context && (
-      contexts.values.length < INSPECT_LIMITS.mediaConditions ||
-      (context.value.kind === "media" &&
-        media.values.length < INSPECT_LIMITS.mediaConditions)
-    );
-    if (retainsContext && !consumeWalkBytes(state, context.value.text)) return;
-    if (retainsContext && reachedWalkLimit(state)) return;
+    if (
+      context &&
+      !consumeWalkByteCount(state, context.sourceBytes)
+    ) {
+      return;
+    }
+    if (context && reachedWalkLimit(state)) return;
     let nestedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
     try {
       nestedRules = rule.cssRules;
@@ -489,7 +490,11 @@ function* walkRules(
     const nextMedia = context?.value.kind === "media"
       ? appendBounded(
         media,
-        { value: context.value.text, truncated: context.truncated },
+        {
+          value: context.value.text,
+          truncated: context.truncated,
+          sourceBytes: 0,
+        },
         INSPECT_LIMITS.mediaConditions,
       )
       : media;
@@ -676,17 +681,13 @@ function* walkImportedStylesheet(
   if (!consumeWalkBytes(state, sourceUrl)) return;
 
   const importContext = readImportMediaContext(rule);
-  const retainsImportContext = importContext && (
-    contexts.values.length < INSPECT_LIMITS.mediaConditions ||
-    media.values.length < INSPECT_LIMITS.mediaConditions
-  );
   if (
-    retainsImportContext &&
-    !consumeWalkBytes(state, importContext.value.text)
+    importContext &&
+    !consumeWalkByteCount(state, importContext.sourceBytes)
   ) {
     return;
   }
-  if (retainsImportContext && reachedWalkLimit(state)) return;
+  if (importContext && reachedWalkLimit(state)) return;
   let importedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
   try {
     importedRules = importedStylesheet.cssRules;
@@ -701,7 +702,11 @@ function* walkImportedStylesheet(
   const nextMedia = importContext
     ? appendBounded(
       media,
-      { value: importContext.value.text, truncated: importContext.truncated },
+      {
+        value: importContext.value.text,
+        truncated: importContext.truncated,
+        sourceBytes: 0,
+      },
       INSPECT_LIMITS.mediaConditions,
     )
     : media;
@@ -853,11 +858,21 @@ function readRuleContext(
   rule: GroupRuleSource,
 ): BoundedValue<CssRuleContextRecord> {
   const constructorName = readConstructorName(rule);
-  if (constructorName === "CSSMediaRule" || hasReadableMedia(rule)) {
-    const condition = readMediaCondition(rule);
+  const mediaCondition = (
+    constructorName === "CSSMediaRule" || hasProperty(rule, "media")
+  )
+    ? readMediaCondition(rule)
+    : undefined;
+  if (constructorName === "CSSMediaRule" || mediaCondition) {
+    const condition = mediaCondition ?? {
+      value: "",
+      truncated: false,
+      sourceBytes: 0,
+    };
     return {
       value: { kind: "media", text: condition.value },
       truncated: condition.truncated,
+      sourceBytes: condition.sourceBytes,
     };
   }
 
@@ -896,10 +911,11 @@ function readImportMediaContext(
   rule: RuleSource,
 ): BoundedValue<CssRuleContextRecord> | undefined {
   const condition = readMediaCondition(rule as MediaConditionSource);
-  return condition.value
+  return condition?.value
     ? {
       value: { kind: "media", text: condition.value },
       truncated: condition.truncated,
+      sourceBytes: condition.sourceBytes,
     }
     : undefined;
 }
@@ -914,31 +930,37 @@ function boundedContext(
       text: truncate(rawText, INSPECT_LIMITS.valueLength).trim(),
     },
     truncated: rawText.length > INSPECT_LIMITS.valueLength,
+    sourceBytes: utf8ByteLength(rawText),
   };
 }
 
 function readMediaCondition(
   rule: MediaConditionSource,
-): BoundedValue<string> {
+): BoundedValue<string> | undefined {
   try {
-    const media = rule.media;
-    if (
-      typeof media !== "object" ||
-      media === null ||
-      typeof media.mediaText !== "string"
-    ) {
-      return { value: "", truncated: false };
+    const conditionText = rule.conditionText;
+    if (typeof conditionText === "string") {
+      return boundedContextText(conditionText);
     }
-    const condition = typeof rule.conditionText === "string"
-      ? rule.conditionText
-      : media.mediaText;
-    return {
-      value: truncate(condition, INSPECT_LIMITS.valueLength).trim(),
-      truncated: condition.length > INSPECT_LIMITS.valueLength,
-    };
+    const media = rule.media;
+    if (typeof media !== "object" || media === null) {
+      return undefined;
+    }
+    const mediaText = media.mediaText;
+    return typeof mediaText === "string"
+      ? boundedContextText(mediaText)
+      : undefined;
   } catch {
-    return { value: "", truncated: false };
+    return undefined;
   }
+}
+
+function boundedContextText(rawText: string): BoundedValue<string> {
+  return {
+    value: truncate(rawText, INSPECT_LIMITS.valueLength).trim(),
+    truncated: rawText.length > INSPECT_LIMITS.valueLength,
+    sourceBytes: utf8ByteLength(rawText),
+  };
 }
 
 function appendBounded<T>(
@@ -1039,19 +1061,6 @@ function readConstructorName(rule: object): string {
   }
 }
 
-function hasReadableMedia(rule: object): boolean {
-  try {
-    const media = (rule as MediaConditionSource).media;
-    return (
-      typeof media === "object" &&
-      media !== null &&
-      typeof media.mediaText === "string"
-    );
-  } catch {
-    return false;
-  }
-}
-
 function readStringProperty(
   rule: object,
   property: PropertyKey,
@@ -1147,6 +1156,10 @@ function consumeWalkBytes(state: WalkState, value: string): boolean {
     markTruncation(state, "byte-limit");
     return false;
   }
+  return consumeWalkByteCount(state, bytes);
+}
+
+function consumeWalkByteCount(state: WalkState, bytes: number): boolean {
   if (bytes > state.workBudget.remainingBytes) {
     state.workBudget.remainingBytes = 0;
     markTruncation(state, "byte-limit");

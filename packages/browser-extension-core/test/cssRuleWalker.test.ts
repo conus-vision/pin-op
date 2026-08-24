@@ -362,6 +362,155 @@ describe("walkCssRules", () => {
       expect(walk.status.reasons, testCase.label).toContain("byte-limit");
     }
   });
+
+  it("charges dropped nested, branching, and import context getter reads once", () => {
+    const context = "x".repeat(INSPECT_LIMITS.valueLength);
+    const contextReadsBeforeStop = INSPECT_LIMITS.mediaConditions + 1;
+    const contextBytes = utf8ByteLength(context);
+    const inlineUrl = "inline-style://document/0";
+    const constructors = [
+      "CSSMediaRule",
+      "CSSSupportsRule",
+      "CSSLayerBlockRule",
+      "CSSScopeRule",
+      "CSSContainerRule",
+    ] as const;
+
+    let nestedContextReads = 0;
+    let nestedChildReads = 0;
+    let nested: object = styleRule(".nested-leaf", { color: "red" });
+    for (let index = INSPECT_LIMITS.mediaConditions + 1; index >= 0; index -= 1) {
+      const child = nested;
+      const constructorName = constructors[index % constructors.length]!;
+      const rule: Record<string, unknown> = {
+        constructor: { name: constructorName },
+      };
+      Object.defineProperty(
+        rule,
+        constructorName === "CSSLayerBlockRule" ? "name" : "conditionText",
+        {
+          get() {
+            nestedContextReads += 1;
+            return context;
+          },
+        },
+      );
+      if (constructorName === "CSSMediaRule") {
+        rule.media = { mediaText: context };
+      }
+      Object.defineProperty(rule, "cssRules", {
+        get() {
+          nestedChildReads += 1;
+          return [child];
+        },
+      });
+      nested = rule;
+    }
+    const nestedBudget = createCssRuleWalkBudget();
+    nestedBudget.remainingBytes = utf8ByteLength(inlineUrl) +
+      contextReadsBeforeStop * contextBytes;
+    const nestedWalk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets: [sheet(null, [nested])] },
+      { workBudget: nestedBudget },
+    );
+    expect([...nestedWalk.records]).toHaveLength(0);
+    expect({ nestedContextReads, nestedChildReads }).toEqual({
+      nestedContextReads: contextReadsBeforeStop,
+      nestedChildReads: INSPECT_LIMITS.mediaConditions,
+    });
+    expect(nestedWalk.status.reasons).toContain("byte-limit");
+
+    let branchContextReads = 0;
+    let branchChildReads = 0;
+    const branches = Array.from(
+      { length: INSPECT_LIMITS.mediaConditions + 2 },
+      () => {
+        const rule: Record<string, unknown> = {
+          constructor: { name: "CSSSupportsRule" },
+        };
+        Object.defineProperty(rule, "conditionText", {
+          get() {
+            branchContextReads += 1;
+            return context;
+          },
+        });
+        Object.defineProperty(rule, "cssRules", {
+          get() {
+            branchChildReads += 1;
+            return [];
+          },
+        });
+        return rule;
+      },
+    );
+    const branchBudget = createCssRuleWalkBudget();
+    branchBudget.remainingBytes = utf8ByteLength(inlineUrl) +
+      contextReadsBeforeStop * contextBytes;
+    const branchWalk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets: [sheet(null, branches)] },
+      { workBudget: branchBudget },
+    );
+    expect([...branchWalk.records]).toHaveLength(0);
+    expect({ branchContextReads, branchChildReads }).toEqual({
+      branchContextReads: contextReadsBeforeStop,
+      branchChildReads: INSPECT_LIMITS.mediaConditions,
+    });
+    expect(branchWalk.status.reasons).toContain("byte-limit");
+
+    let importContextReads = 0;
+    let importChildReads = 0;
+    const importUrls = Array.from(
+      { length: INSPECT_LIMITS.mediaConditions + 2 },
+      (_, index) => `https://example.test/context-${index}.css`,
+    );
+    const importedSheets: Array<{
+      readonly href: string;
+      readonly cssRules: readonly object[];
+    }> = [];
+    const instrumentedImport = (index: number) => ({
+      href: importUrls[index]!,
+      styleSheet: importedSheets[index]!,
+      media: {
+        get mediaText() {
+          importContextReads += 1;
+          return context;
+        },
+      },
+    });
+    for (let index = 0; index < importUrls.length; index += 1) {
+      importedSheets.push({
+        href: importUrls[index]!,
+        get cssRules() {
+          importChildReads += 1;
+          return index + 1 < importUrls.length
+            ? [instrumentedImport(index + 1)]
+            : [];
+        },
+      });
+    }
+    const importBudget = createCssRuleWalkBudget();
+    importBudget.remainingBytes = utf8ByteLength(inlineUrl) +
+      importUrls.slice(0, contextReadsBeforeStop).reduce(
+        (total, value) => total + utf8ByteLength(value),
+        0,
+      ) + contextReadsBeforeStop * contextBytes;
+    const importWalk = walkCssRules(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [sheet(null, [instrumentedImport(0)])],
+      },
+      { workBudget: importBudget },
+    );
+    expect([...importWalk.records]).toHaveLength(0);
+    expect({ importContextReads, importChildReads }).toEqual({
+      importContextReads: contextReadsBeforeStop,
+      importChildReads: INSPECT_LIMITS.mediaConditions,
+    });
+    expect(importWalk.status.reasons).toContain("byte-limit");
+  });
 });
 
 function collectRecords(document: CssDocumentSource): {

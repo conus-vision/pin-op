@@ -1305,7 +1305,7 @@ describe("collectCssFacts", () => {
         styleSheets: [
           {
             href: exactLengthUrl(),
-            cssRules: [nestedRule(INSPECT_LIMITS.cssRuleDepth, true)],
+            cssRules: [nestedRule(INSPECT_LIMITS.mediaConditions, true)],
           },
         ],
       },
@@ -1316,6 +1316,18 @@ describe("collectCssFacts", () => {
     expect(fact?.metadata.sourceUrl).toHaveLength(INSPECT_LIMITS.urlLength);
     expect(fact?.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
     expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
+
+    const depthAtLimit = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{
+          href: "/deep.css",
+          cssRules: [nestedRule(INSPECT_LIMITS.cssRuleDepth, false)],
+        }],
+      },
+    );
+    expect(depthAtLimit.facts).toHaveLength(1);
 
     const beyondLimit = collectCssFacts(
       { matches: () => true },
@@ -1434,9 +1446,9 @@ function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
 
   for (let index = 0; index < depth; index += 1) {
     nested = mediaRule(
-      `screen-${index}${"x".repeat(
-        INSPECT_LIMITS.valueLength,
-      )}`,
+      `screen-${index}${oversizedMetadata
+        ? "x".repeat(INSPECT_LIMITS.valueLength)
+        : ""}`,
       [nested],
     );
   }
