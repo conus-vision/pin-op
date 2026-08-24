@@ -1,6 +1,8 @@
 import { INSPECT_LIMITS } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { MatchedStylesCollector } from "../src/matchedStylesCollector.js";
+import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
+import type { StyleDeclarationSource } from "../src/cssRuleWalker.js";
 import type {
   MatchedStylesCollectionAuthority,
   MatchedStylesStylesheetAuthority,
@@ -173,8 +175,13 @@ describe("MatchedStylesCollector", () => {
     expect(result.inherited).toHaveLength(32);
     expect(result.inherited[0]?.ancestorIndex).toBe(1);
     expect(result.inherited[31]?.ancestorIndex).toBe(32);
-    expect(result.inherited.flatMap(({ rules }) => rules).flatMap(({ declarations }) =>
-      declarations.map(({ property }) => property))).not.toContain("display");
+    const inheritedDeclarations = result.inherited
+      .flatMap(({ rules }) => rules)
+      .flatMap(({ declarations }) => declarations);
+    expect(inheritedDeclarations.map(({ property }) => property)).toContain("display");
+    expect(inheritedDeclarations.every(({ state, reason }) =>
+      state === "unknown" && reason === "inherited-author-declaration"))
+      .toBe(true);
     expect(result.partial).toBe(true);
     expect(result.diagnostics).toContain("ancestor-limit");
   });
@@ -354,6 +361,217 @@ describe("MatchedStylesCollector", () => {
     expect(assignedResult.partial).toBe(true);
     expect(assignedResult.diagnostics).toContain("unsupported-slotted-selector-scope");
   });
+
+  it("includes ancestor inline declarations with one shared inline ruleRef", () => {
+    const scope = documentScope();
+    const parent = element(scope, {
+      matches: new Set(),
+      inline: declaration({ color: "red", "--x": "y" }),
+      tagName: "PARENT",
+    });
+    const selected = element(scope, {
+      matches: new Set(),
+      parent,
+      tagName: "CHILD",
+    });
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, []),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited).toHaveLength(1);
+    const inline = result.inherited[0]!.rules[0]!;
+    expect(inline.selectorText).toBe("element.style");
+    expect(inline.declarations.map(({ property, value, state }) =>
+      [property, value, state])).toEqual([
+      ["color", "red", "unknown"],
+      ["--x", "y", "unknown"],
+    ]);
+    expect(inline.declarations.every(({ ruleRef }) => ruleRef === inline.ruleRef))
+      .toBe(true);
+  });
+
+  it("retains unclassified ancestor declarations conservatively as unknown", () => {
+    const scope = documentScope();
+    const parent = element(scope, {
+      matches: new Set([".parent"]),
+      tagName: "PARENT",
+    });
+    const selected = element(scope, { matches: new Set(), parent });
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, [styleRule(".parent", {
+        font: "16px sans-serif",
+        "list-style": "disc inside",
+        "pointer-events": "auto",
+        "font-variation-settings": '"wght" 600',
+      })])]),
+    ).collect(AUTHORITY)!;
+
+    const declarations = result.inherited[0]!.rules[0]!.declarations;
+    expect(declarations.map(({ property }) => property)).toEqual([
+      "font",
+      "list-style",
+      "pointer-events",
+      "font-variation-settings",
+    ]);
+    expect(declarations.every(({ state, reason }) =>
+      state === "unknown" && reason === "inherited-author-declaration"))
+      .toBe(true);
+  });
+
+  it("shares one declaration work budget across all 33 elements", () => {
+    const scope = documentScope();
+    let parent: ReturnType<typeof element> | null = null;
+    for (let index = 0; index < 32; index += 1) {
+      parent = element(scope, { matches: new Set([".shared"]), parent });
+    }
+    const selected = element(scope, { matches: new Set([".shared"]), parent });
+    const value = "v";
+    const names = Array.from({ length: 16 }, (_, index) => `--budget-${index}`);
+    let itemReads = 0;
+    let valueReads = 0;
+    const boundedStyle: StyleDeclarationSource = {
+      length: names.length,
+      item(index) {
+        itemReads += 1;
+        return names[index] ?? "";
+      },
+      getPropertyValue() {
+        valueReads += 1;
+        return value;
+      },
+      getPropertyPriority: () => "",
+    };
+    const nativeRule = {
+      selectorText: ".shared",
+      cssText: ".shared { --budget: value }",
+      style: boundedStyle,
+    };
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, [nativeRule])]),
+    ).collect(AUTHORITY)!;
+    const declarations = [
+      ...result.rules.flatMap(({ declarations }) => declarations),
+      ...result.inherited.flatMap(({ rules }) =>
+        rules.flatMap(({ declarations }) => declarations)),
+    ];
+
+    expect(declarations.length).toBeLessThanOrEqual(INSPECT_LIMITS.factsPerTarget);
+    expect(itemReads).toBeLessThanOrEqual(INSPECT_LIMITS.factsPerTarget);
+    expect(valueReads).toBeLessThanOrEqual(INSPECT_LIMITS.factsPerTarget);
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("facts-per-target-limit");
+  });
+
+  it("shares one byte work budget across all 33 elements", () => {
+    const scope = documentScope();
+    let parent: ReturnType<typeof element> | null = null;
+    for (let index = 0; index < 32; index += 1) {
+      parent = element(scope, { matches: new Set([".shared"]), parent });
+    }
+    const selected = element(scope, { matches: new Set([".shared"]), parent });
+    const value = "v".repeat(INSPECT_LIMITS.valueLength);
+    const names = Array.from({ length: 16 }, (_, index) => `--byte-${index}`);
+    let valueReads = 0;
+    const boundedStyle: StyleDeclarationSource = {
+      length: names.length,
+      item: (index) => names[index] ?? "",
+      getPropertyValue() {
+        valueReads += 1;
+        return value;
+      },
+      getPropertyPriority: () => "",
+    };
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, [{
+        selectorText: ".shared",
+        cssText: ".shared { --byte: value }",
+        style: boundedStyle,
+      }])]),
+    ).collect(AUTHORITY)!;
+
+    expect(valueReads * value.length).toBeLessThanOrEqual(
+      INSPECT_COLLECTION_MAX_BYTES + value.length,
+    );
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("byte-limit");
+  });
+
+  it("shares one rule work budget across all 33 elements", () => {
+    const scope = documentScope();
+    let matchReads = 0;
+    let parent: ReturnType<typeof element> | null = null;
+    for (let index = 0; index < 32; index += 1) {
+      parent = element(scope, {
+        matches: new Set(),
+        onMatch: () => matchReads += 1,
+        parent,
+      });
+    }
+    const selected = element(scope, {
+      matches: new Set(),
+      onMatch: () => matchReads += 1,
+      parent,
+    });
+    const rules = Array.from({ length: 128 }, (_, index) =>
+      styleRule(`.never-${index}`, { color: "red" }));
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, rules)]),
+    ).collect(AUTHORITY)!;
+
+    expect(matchReads).toBeLessThanOrEqual(INSPECT_LIMITS.cssRules);
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("css-rules-limit");
+  });
+
+  it("marks oversized and hostile inline declaration scans partial", () => {
+    const scope = documentScope();
+    const names = Array.from(
+      { length: INSPECT_LIMITS.declarationsPerRule + 1 },
+      (_, index) => `--inline-${index}`,
+    );
+    const oversized: StyleDeclarationSource = {
+      length: names.length,
+      item: (index) => names[index] ?? "",
+      getPropertyValue: () => "x",
+      getPropertyPriority: () => "",
+    };
+    const oversizedResult = collector(
+      element(scope, { matches: new Set(), inline: oversized }),
+      stylesheetAuthority(scope, []),
+    ).collect(AUTHORITY)!;
+    expect(oversizedResult.inline?.declarations).toHaveLength(
+      INSPECT_LIMITS.declarationsPerRule,
+    );
+    expect(oversizedResult.partial).toBe(true);
+    expect(oversizedResult.diagnostics).toContain("declarations-per-rule-limit");
+
+    const hostile: StyleDeclarationSource = {
+      length: 3,
+      item(index) {
+        if (index === 1) throw new Error("hostile indexed read");
+        return index === 0 ? "color" : "display";
+      },
+      getPropertyValue: () => "red",
+      getPropertyPriority: () => "",
+    };
+    const hostileResult = collector(
+      element(scope, { matches: new Set(), inline: hostile }),
+      stylesheetAuthority(scope, []),
+    ).collect(AUTHORITY)!;
+    expect(hostileResult.inline?.declarations.map(({ property }) => property))
+      .toEqual(["color", "display"]);
+    expect(hostileResult.partial).toBe(true);
+    expect(hostileResult.diagnostics).toContain("inline-declaration-unavailable");
+  });
 });
 
 function collector(
@@ -516,8 +734,9 @@ function element(
   root: object,
   options: {
     matches: Set<string>;
+    onMatch?: (selector: string) => void;
     throwSelectors?: Set<string>;
-    inline?: ReturnType<typeof declaration>;
+    inline?: StyleDeclarationSource;
     parent?: ReturnType<typeof element> | null;
     tagName?: string;
     assignedSlot?: ReturnType<typeof element> | null;
@@ -533,6 +752,7 @@ function element(
     style: options.inline ?? declaration({}),
     getRootNode: () => root,
     matches(selector: string) {
+      options.onMatch?.(selector);
       if (options.throwSelectors?.has(selector)) throw new Error("hostile matches");
       return selector.split(",").some((part) => options.matches.has(part.trim()));
     },

@@ -1,13 +1,15 @@
 import selectorParser from "postcss-selector-parser";
-import { INSPECT_LIMITS } from "@pin-op/protocol";
+import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
 import {
   classifyCascade,
   type CascadeCandidate,
   type SelectorSpecificity,
 } from "./cascadeClassifier.js";
 import {
+  createCssRuleWalkBudget,
   walkCssRules,
   type CssMatchedRuleWalkRecord,
+  type CssRuleWalkBudget,
   type CssRuleWalkRecord,
   type StyleDeclarationSource,
   type StylesheetSource,
@@ -82,49 +84,6 @@ interface DeclarationDraft {
   readonly candidate: CascadeCandidate;
 }
 
-const INHERITED_PROPERTIES = new Set([
-  "azimuth",
-  "border-collapse",
-  "border-spacing",
-  "caption-side",
-  "color",
-  "cursor",
-  "direction",
-  "empty-cells",
-  "font-family",
-  "font-feature-settings",
-  "font-kerning",
-  "font-language-override",
-  "font-optical-sizing",
-  "font-size",
-  "font-size-adjust",
-  "font-stretch",
-  "font-style",
-  "font-synthesis",
-  "font-variant",
-  "font-weight",
-  "hyphens",
-  "letter-spacing",
-  "line-height",
-  "list-style-image",
-  "list-style-position",
-  "list-style-type",
-  "orphans",
-  "quotes",
-  "tab-size",
-  "text-align",
-  "text-indent",
-  "text-rendering",
-  "text-shadow",
-  "text-transform",
-  "visibility",
-  "white-space",
-  "widows",
-  "word-break",
-  "word-spacing",
-  "writing-mode",
-]);
-
 /** Synchronous browser-local matched-author snapshot for one selected node. */
 export class MatchedStylesCollector {
   public constructor(private readonly options: MatchedStylesCollectorOptions) {}
@@ -151,8 +110,14 @@ export class MatchedStylesCollector {
     const diagnostics = new Set<string>(
       before.diagnostics.map(({ code }) => code),
     );
-    const direct = this.collectElement(selected.element, before, diagnostics);
-    const inline = this.collectInline(selected.element, diagnostics);
+    const workBudget = createCssRuleWalkBudget();
+    const inline = this.collectInline(selected.element, diagnostics, workBudget);
+    const direct = this.collectElement(
+      selected.element,
+      before,
+      diagnostics,
+      workBudget,
+    );
     const ancestors: InheritedMatchedRules[] = [];
     let ancestor = composedParent(selected.element);
     let ancestorIndex = 1;
@@ -163,8 +128,17 @@ export class MatchedStylesCollector {
         break;
       }
       visited.add(ancestor);
-      const collected = this.collectElement(ancestor, before, diagnostics);
-      const inheritedRules = buildRules(collected, true);
+      const ancestorInline = this.collectInline(ancestor, diagnostics, workBudget);
+      const collected = this.collectElement(
+        ancestor,
+        before,
+        diagnostics,
+        workBudget,
+      );
+      const inheritedRules = buildRules(
+        ancestorInline ? [ancestorInline, ...collected] : collected,
+        true,
+      );
       if (inheritedRules.length > 0) {
         ancestors.push({
           ancestorIndex,
@@ -226,6 +200,7 @@ export class MatchedStylesCollector {
     element: Element,
     snapshot: StylesheetRegistrySnapshot,
     diagnostics: Set<string>,
+    workBudget: CssRuleWalkBudget,
   ): RuleDraft[] {
     detectUnsupportedCrossRootSelectors(element, snapshot, diagnostics);
     let scopedEntries: readonly StylesheetRegistryEntry[];
@@ -254,6 +229,7 @@ export class MatchedStylesCollector {
       element,
       { pageUrl: pageUrlFor(element), styleSheets: roots },
       {
+        workBudget,
         referenceRule: (nativeStylesheet, _identity, rulePath, nativeRule) => {
           const entry = entryBySheet.get(nativeStylesheet);
           if (!entry) {
@@ -317,10 +293,11 @@ export class MatchedStylesCollector {
   private collectInline(
     element: Element,
     diagnostics: Set<string>,
+    workBudget: CssRuleWalkBudget,
   ): RuleDraft | undefined {
     const style = safeStyle(element);
     if (!style) return undefined;
-    const declarations = readInlineDeclarations(style);
+    const declarations = readInlineDeclarations(style, workBudget, diagnostics);
     if (declarations.length === 0) return undefined;
     let ruleRef: string;
     try {
@@ -370,7 +347,6 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
   let declarationOrder = 0;
   for (const rule of drafts) {
     for (const record of rule.declarations) {
-      if (inherited && !isInheritedProperty(record.property)) continue;
       declarationDrafts.push({
         rule,
         record,
@@ -649,7 +625,11 @@ function supportsActive(element: Element, condition: string): boolean | undefine
   }
 }
 
-function readInlineDeclarations(style: StyleDeclarationSource): Array<Pick<
+function readInlineDeclarations(
+  style: StyleDeclarationSource,
+  workBudget: CssRuleWalkBudget,
+  diagnostics: Set<string>,
+): Array<Pick<
   CssRuleWalkRecord,
   "property" | "value" | "important" | "valueTruncated"
 >> {
@@ -657,22 +637,57 @@ function readInlineDeclarations(style: StyleDeclarationSource): Array<Pick<
     CssRuleWalkRecord,
     "property" | "value" | "important" | "valueTruncated"
   >> = [];
-  let length = 0;
+  let declaredLength: number;
   try {
-    length = Math.min(
-      Number.isSafeInteger(style.length) && style.length >= 0 ? style.length : 0,
-      INSPECT_LIMITS.declarationsPerRule,
-    );
+    declaredLength = style.length;
   } catch {
+    diagnostics.add("inline-declaration-unavailable");
     return result;
   }
+  if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) {
+    diagnostics.add("inline-declaration-unavailable");
+    return result;
+  }
+  if (declaredLength === 0) return result;
+  if (workBudget.remainingRules <= 0) {
+    diagnostics.add("css-rules-limit");
+    return result;
+  }
+  workBudget.remainingRules -= 1;
+  if (declaredLength > INSPECT_LIMITS.declarationsPerRule) {
+    diagnostics.add("declarations-per-rule-limit");
+  }
+  if (declaredLength > workBudget.remainingDeclarations) {
+    diagnostics.add("facts-per-target-limit");
+  }
+  const length = Math.min(
+    declaredLength,
+    INSPECT_LIMITS.declarationsPerRule,
+    workBudget.remainingDeclarations,
+  );
   for (let index = 0; index < length; index += 1) {
+    workBudget.remainingDeclarations -= 1;
     try {
       const property = style.item(index);
+      if (typeof property !== "string") {
+        diagnostics.add("inline-declaration-unavailable");
+        continue;
+      }
+      if (!consumeInlineBytes(workBudget, property, diagnostics)) break;
       if (!property || property.length > INSPECT_LIMITS.propertyNameLength) continue;
       const priority = style.getPropertyPriority(property);
+      if (typeof priority !== "string") {
+        diagnostics.add("inline-declaration-unavailable");
+        continue;
+      }
+      if (!consumeInlineBytes(workBudget, priority, diagnostics)) break;
       if (priority !== "" && priority !== "important") continue;
       const rawValue = style.getPropertyValue(property);
+      if (typeof rawValue !== "string") {
+        diagnostics.add("inline-declaration-unavailable");
+        continue;
+      }
+      if (!consumeInlineBytes(workBudget, rawValue, diagnostics)) break;
       result.push({
         property,
         value: truncate(rawValue, INSPECT_LIMITS.valueLength).trim(),
@@ -680,10 +695,33 @@ function readInlineDeclarations(style: StyleDeclarationSource): Array<Pick<
         valueTruncated: rawValue.length > INSPECT_LIMITS.valueLength,
       });
     } catch {
+      diagnostics.add("inline-declaration-unavailable");
       continue;
     }
   }
   return result;
+}
+
+function consumeInlineBytes(
+  workBudget: CssRuleWalkBudget,
+  value: string,
+  diagnostics: Set<string>,
+): boolean {
+  let bytes: number;
+  try {
+    bytes = utf8ByteLength(value);
+  } catch {
+    workBudget.remainingBytes = 0;
+    diagnostics.add("byte-limit");
+    return false;
+  }
+  if (bytes > workBudget.remainingBytes) {
+    workBudget.remainingBytes = 0;
+    diagnostics.add("byte-limit");
+    return false;
+  }
+  workBudget.remainingBytes -= bytes;
+  return true;
 }
 
 function safeStyle(element: Element): StyleDeclarationSource | undefined {
@@ -768,10 +806,6 @@ function safeStringProperty(value: object, property: PropertyKey): string | unde
   } catch {
     return undefined;
   }
-}
-
-function isInheritedProperty(property: string): boolean {
-  return property.startsWith("--") || INHERITED_PROPERTIES.has(property.toLowerCase());
 }
 
 function localRulePath(rulePath: string): string {

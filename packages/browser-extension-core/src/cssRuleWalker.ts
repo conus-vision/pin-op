@@ -1,11 +1,13 @@
 import {
   INSPECT_LIMITS,
+  utf8ByteLength,
   type ProtocolErrorCode,
 } from "@pin-op/protocol";
 import {
   boundedLength,
   enumerateBounded,
   exactBoundedUrl,
+  INSPECT_COLLECTION_MAX_BYTES,
   truncate,
 } from "./inspectBounds.js";
 import type { RuleReferenceRegistry } from "./ruleReferenceRegistry.js";
@@ -116,6 +118,7 @@ export interface CssMatchedRuleWalkRecord {
 }
 
 export interface CssRuleWalkOptions {
+  readonly workBudget?: CssRuleWalkBudget;
   readonly ruleReferences?: Pick<RuleReferenceRegistry, "reference">;
   readonly referenceRule?: (
     stylesheet: StylesheetSource,
@@ -130,6 +133,7 @@ export interface CssRuleWalkOptions {
 export type CssRuleWalkTruncationReason =
   | "facts-per-target-limit"
   | "css-rules-limit"
+  | "byte-limit"
   | "declarations-per-rule-limit"
   | "stylesheets-limit"
   | "rule-depth-limit"
@@ -144,6 +148,14 @@ export interface CssRuleWalk {
   readonly records: IterableIterator<CssRuleWalkRecord>;
   readonly inaccessibleStylesheets: readonly InaccessibleStylesheet[];
   readonly status: CssRuleWalkStatus;
+}
+
+/** Mutable authority shared by every CSSOM walk contributing to one snapshot. */
+export interface CssRuleWalkBudget {
+  remainingStylesheets: number;
+  remainingRules: number;
+  remainingDeclarations: number;
+  remainingBytes: number;
 }
 
 interface StyleSelectorContext {
@@ -170,6 +182,7 @@ interface WalkState {
   readonly inaccessibleStylesheets: InaccessibleStylesheet[];
   readonly truncationReasons: CssRuleWalkTruncationReason[];
   readonly options: CssRuleWalkOptions;
+  readonly workBudget: CssRuleWalkBudget;
 }
 
 interface StylesheetWalkContext {
@@ -187,6 +200,15 @@ const EMPTY_CONTEXTS: BoundedValues<CssRuleContextRecord> = {
   truncated: false,
 };
 const CSS_SUPPORTS_RULE_TYPE = 12;
+
+export function createCssRuleWalkBudget(): CssRuleWalkBudget {
+  return {
+    remainingStylesheets: INSPECT_LIMITS.stylesheets,
+    remainingRules: INSPECT_LIMITS.cssRules,
+    remainingDeclarations: INSPECT_LIMITS.factsPerTarget,
+    remainingBytes: INSPECT_COLLECTION_MAX_BYTES,
+  };
+}
 
 /**
  * Creates a one-shot, bounded CSSOM traversal. Records are yielded lazily so a
@@ -207,6 +229,7 @@ export function walkCssRules(
     inaccessibleStylesheets,
     truncationReasons: [],
     options,
+    workBudget: options.workBudget ?? createCssRuleWalkBudget(),
   };
   const status: CssRuleWalkStatus = Object.freeze({
     get truncated() {
@@ -260,6 +283,7 @@ function* walkRootStylesheets(
     for (const stylesheet of enumerateStylesheetsBounded(stylesheets, state)) {
       state.nextRootIndex = rootIndex + 1;
       state.stylesheetsVisited += 1;
+      state.workBudget.remainingStylesheets -= 1;
       const stylesheetIdentity = reserveStylesheetIdentity(state);
 
       let sourceUrl: string | undefined;
@@ -275,6 +299,7 @@ function* walkRootStylesheets(
         rootIndex += 1;
         continue;
       }
+      if (!consumeWalkBytes(state, sourceUrl)) return;
 
       let rules: ArrayLike<RuleSource> | Iterable<RuleSource>;
       try {
@@ -354,13 +379,17 @@ function* walkRules(
   }
   if (reachedWalkLimit(state)) return;
 
-  const remainingRules = INSPECT_LIMITS.cssRules - state.rulesVisited;
+  const remainingRules = Math.min(
+    INSPECT_LIMITS.cssRules - state.rulesVisited,
+    state.workBudget.remainingRules,
+  );
   if (knownLengthExceeds(rules, remainingRules)) {
     markTruncation(state, "css-rules-limit");
   }
   for (const [ruleIndex, rule] of enumerateBounded(rules, remainingRules)) {
     if (reachedWalkLimit(state)) return;
     state.rulesVisited += 1;
+    state.workBudget.remainingRules -= 1;
     const rulePath = `${parentPath}.${ruleIndex}`;
 
     if (isImportRuleCandidate(rule)) {
@@ -383,9 +412,11 @@ function* walkRules(
     try {
       if (isStyleRule(rule)) {
         nestedStyleRule = true;
-        const selector = resolveStyleSelector(rule.selectorText, parentSelector);
+        const sourceSelector = rule.selectorText;
+        if (!consumeWalkBytes(state, sourceSelector)) return;
+        const selector = resolveStyleSelector(sourceSelector, parentSelector);
         if (!selector) {
-          notifySelectorUnavailable(state, rule.selectorText);
+          notifySelectorUnavailable(state, sourceSelector);
           continue;
         }
         if (hasScopeSensitiveSelector(selector.resolvedSelector)) {
@@ -488,25 +519,34 @@ function* walkDeclarations(
   contexts: BoundedValues<CssRuleContextRecord>,
   state: WalkState,
 ): IterableIterator<CssRuleWalkRecord> {
-  const remainingRecords = INSPECT_LIMITS.factsPerTarget - state.recordsEmitted;
+  const remainingRecords = Math.min(
+    INSPECT_LIMITS.factsPerTarget - state.recordsEmitted,
+    state.workBudget.remainingDeclarations,
+  );
   const declarationLimit = Math.min(
     INSPECT_LIMITS.declarationsPerRule,
     remainingRecords,
   );
   const declarationNames: string[] = [];
-  const declaredLength = style.length;
+  let declaredLength: number;
+  try {
+    declaredLength = style.length;
+  } catch {
+    return;
+  }
   const declarationCount = boundedLength(declaredLength, declarationLimit);
-  if (declaredLength > declarationLimit) {
-    markTruncation(
-      state,
-      declarationLimit < INSPECT_LIMITS.declarationsPerRule
-        ? "facts-per-target-limit"
-        : "declarations-per-rule-limit",
-    );
+  if (declaredLength > INSPECT_LIMITS.declarationsPerRule) {
+    markTruncation(state, "declarations-per-rule-limit");
+  }
+  if (declaredLength > remainingRecords) {
+    markTruncation(state, "facts-per-target-limit");
   }
   for (let index = 0; index < declarationCount; index += 1) {
+    state.workBudget.remainingDeclarations -= 1;
     try {
       const property = style.item(index);
+      if (typeof property !== "string") continue;
+      if (!consumeWalkBytes(state, property)) return;
       if (property && property.length <= INSPECT_LIMITS.propertyNameLength) {
         declarationNames.push(property);
       }
@@ -545,15 +585,19 @@ function* walkDeclarations(
   for (const property of declarationNames) {
     if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) return;
     try {
-      const important = readImportantPriority(style, property);
-      if (important === undefined) continue;
+      const priority = style.getPropertyPriority(property);
+      if (typeof priority !== "string") continue;
+      if (!consumeWalkBytes(state, priority)) return;
+      if (priority !== "" && priority !== "important") continue;
       const rawValue = style.getPropertyValue(property);
+      if (typeof rawValue !== "string") continue;
+      if (!consumeWalkBytes(state, rawValue)) return;
       const record: CssRuleWalkRecord = {
         selector: selector.sourceSelector,
         resolvedSelector: selector.resolvedSelector,
         property,
         value: truncate(rawValue, INSPECT_LIMITS.valueLength).trim(),
-        important,
+        important: priority === "important",
         valueTruncated: rawValue.length > INSPECT_LIMITS.valueLength,
         sourceUrl: stylesheet.sourceUrl,
         stylesheetIdentity: stylesheet.stylesheetIdentity,
@@ -584,14 +628,14 @@ function* walkImportedStylesheet(
 ): IterableIterator<CssRuleWalkRecord> {
   if (
     depth >= INSPECT_LIMITS.cssRuleDepth ||
-    state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
-    reachedWalkLimit(state)
+    reachedDocumentLimit(state)
   ) {
     return;
   }
 
   const stylesheetNamespace = state.stylesheetsVisited;
   state.stylesheetsVisited += 1;
+  state.workBudget.remainingStylesheets -= 1;
   const stylesheetIdentity = reserveStylesheetIdentity(state);
 
   let importedStylesheet: StylesheetSource;
@@ -623,6 +667,7 @@ function* walkImportedStylesheet(
     return;
   }
   if (!sourceUrl) return;
+  if (!consumeWalkBytes(state, sourceUrl)) return;
 
   let importedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
   try {
@@ -916,16 +961,6 @@ function hasScopeSensitiveSelector(selector: string): boolean {
   return /:host(?:-context)?\b|::slotted\b|(?:^|[^\\])&/i.test(selector);
 }
 
-function readImportantPriority(
-  style: StyleDeclarationSource,
-  property: string,
-): boolean | undefined {
-  const priority = style.getPropertyPriority(property);
-  if (priority === "") return false;
-  if (priority === "important") return true;
-  return undefined;
-}
-
 function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
   const candidate = rule as Partial<StyleRuleSource>;
   return (
@@ -1067,18 +1102,41 @@ function reserveStylesheetIdentity(state: WalkState): string {
 }
 
 function reachedWalkLimit(state: WalkState): boolean {
-  const factsLimit = state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget;
-  const rulesLimit = state.rulesVisited >= INSPECT_LIMITS.cssRules;
+  const factsLimit = state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget ||
+    state.workBudget.remainingDeclarations <= 0;
+  const rulesLimit = state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+    state.workBudget.remainingRules <= 0;
+  const byteLimit = state.workBudget.remainingBytes <= 0;
   if (factsLimit) markTruncation(state, "facts-per-target-limit");
   if (rulesLimit) markTruncation(state, "css-rules-limit");
-  return factsLimit || rulesLimit;
+  if (byteLimit) markTruncation(state, "byte-limit");
+  return factsLimit || rulesLimit || byteLimit;
 }
 
 function reachedDocumentLimit(state: WalkState): boolean {
   const walkLimit = reachedWalkLimit(state);
-  const stylesheetLimit = state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets;
+  const stylesheetLimit = state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
+    state.workBudget.remainingStylesheets <= 0;
   if (stylesheetLimit) markTruncation(state, "stylesheets-limit");
   return walkLimit || stylesheetLimit;
+}
+
+function consumeWalkBytes(state: WalkState, value: string): boolean {
+  let bytes: number;
+  try {
+    bytes = utf8ByteLength(value);
+  } catch {
+    state.workBudget.remainingBytes = 0;
+    markTruncation(state, "byte-limit");
+    return false;
+  }
+  if (bytes > state.workBudget.remainingBytes) {
+    state.workBudget.remainingBytes = 0;
+    markTruncation(state, "byte-limit");
+    return false;
+  }
+  state.workBudget.remainingBytes -= bytes;
+  return true;
 }
 
 function knownLengthExceeds(
