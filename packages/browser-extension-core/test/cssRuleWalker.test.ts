@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { INSPECT_LIMITS } from "@pin-op/protocol";
+import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
 import {
+  createCssRuleWalkBudget,
   walkCssRules,
   type CssDocumentSource,
   type CssRuleWalkRecord,
@@ -256,6 +257,110 @@ describe("walkCssRules", () => {
     expect(nextCalls).toBe(INSPECT_LIMITS.stylesheets);
     expect(returnCalls).toBe(1);
     expect(result.status.reasons).toContain("stylesheets-limit");
+  });
+
+  it("charges retained context bytes before they can be copied or evaluated", () => {
+    const context = "x".repeat(INSPECT_LIMITS.valueLength);
+    const importedUrl = "https://example.test/context-import.css";
+    const inlineUrl = "inline-style://document/0";
+    const selector = ".target";
+    const property = "color";
+    const cases = [
+      {
+        label: "media",
+        urls: [inlineUrl],
+        root: (child: object) => sheet(null, [group("CSSMediaRule", context, child)]),
+      },
+      {
+        label: "supports",
+        urls: [inlineUrl],
+        root: (child: object) => sheet(null, [group("CSSSupportsRule", context, child)]),
+      },
+      {
+        label: "layer",
+        urls: [inlineUrl],
+        root: (child: object) => sheet(null, [group("CSSLayerBlockRule", context, child)]),
+      },
+      {
+        label: "scope",
+        urls: [inlineUrl],
+        root: (child: object) => sheet(null, [group("CSSScopeRule", context, child)]),
+      },
+      {
+        label: "container",
+        urls: [inlineUrl],
+        root: (child: object) => sheet(null, [group("CSSContainerRule", context, child)]),
+      },
+      {
+        label: "import-media",
+        urls: [inlineUrl, importedUrl],
+        root(child: object) {
+          const imported = sheet(importedUrl, [child]);
+          return sheet(null, [importRule(importedUrl, imported, context)]);
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const urlBytes = testCase.urls.reduce(
+        (total, value) => total + utf8ByteLength(value),
+        0,
+      );
+      const contextBytes = utf8ByteLength(context);
+      let matchReads = 0;
+      let observerReads = 0;
+      let reservationReads = 0;
+      let valueReads = 0;
+      const child = {
+        selectorText: selector,
+        style: {
+          length: 1,
+          item: () => property,
+          getPropertyPriority: () => "",
+          getPropertyValue() {
+            valueReads += 1;
+            return "red";
+          },
+        },
+      };
+      const budget = createCssRuleWalkBudget();
+      budget.remainingBytes = urlBytes + contextBytes - 1;
+      const walk = walkCssRules(
+        {
+          matches() {
+            matchReads += 1;
+            return true;
+          },
+        },
+        {
+          pageUrl: "https://example.test/page",
+          styleSheets: [testCase.root(child)],
+        },
+        {
+          workBudget: budget,
+          referenceRule() {
+            reservationReads += 1;
+            return "rule-context";
+          },
+          onMatchedRule() {
+            observerReads += 1;
+          },
+        },
+      );
+      const records = [...walk.records];
+
+      expect(
+        { matchReads, observerReads, reservationReads, valueReads, records },
+        testCase.label,
+      ).toEqual({
+        matchReads: 0,
+        observerReads: 0,
+        reservationReads: 0,
+        valueReads: 0,
+        records: [],
+      });
+      expect(walk.status.reasons, testCase.label).toContain("byte-limit");
+    }
   });
 });
 

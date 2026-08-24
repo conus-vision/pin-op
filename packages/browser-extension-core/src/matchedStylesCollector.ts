@@ -295,7 +295,11 @@ export class MatchedStylesCollector {
     diagnostics: Set<string>,
     workBudget: CssRuleWalkBudget,
   ): RuleDraft | undefined {
-    const style = safeStyle(element);
+    if (workBudget.remainingBytes <= 0) {
+      diagnostics.add("byte-limit");
+      return undefined;
+    }
+    const style = safeStyle(element, diagnostics);
     if (!style) return undefined;
     const declarations = readInlineDeclarations(style, workBudget, diagnostics);
     if (declarations.length === 0) return undefined;
@@ -724,13 +728,17 @@ function consumeInlineBytes(
   return true;
 }
 
-function safeStyle(element: Element): StyleDeclarationSource | undefined {
+function safeStyle(
+  element: Element,
+  diagnostics: Set<string>,
+): StyleDeclarationSource | undefined {
   try {
     const style = (element as unknown as { readonly style?: unknown }).style;
     return typeof style === "object" && style !== null
       ? style as StyleDeclarationSource
       : undefined;
   } catch {
+    diagnostics.add("inline-declaration-unavailable");
     return undefined;
   }
 }

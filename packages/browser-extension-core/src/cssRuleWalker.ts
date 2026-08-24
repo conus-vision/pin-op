@@ -464,19 +464,25 @@ function* walkRules(
       continue;
     }
     if (!isGroupRule(rule)) continue;
-
-    let nestedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
-    try {
-      nestedRules = rule.cssRules;
-    } catch {
-      continue;
-    }
     if (depth >= INSPECT_LIMITS.cssRuleDepth) {
       markTruncation(state, "rule-depth-limit");
       continue;
     }
 
     const context = nestedStyleRule ? undefined : readRuleContext(rule);
+    const retainsContext = context && (
+      contexts.values.length < INSPECT_LIMITS.mediaConditions ||
+      (context.value.kind === "media" &&
+        media.values.length < INSPECT_LIMITS.mediaConditions)
+    );
+    if (retainsContext && !consumeWalkBytes(state, context.value.text)) return;
+    if (retainsContext && reachedWalkLimit(state)) return;
+    let nestedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+    try {
+      nestedRules = rule.cssRules;
+    } catch {
+      continue;
+    }
     const nextContexts = context
       ? appendBounded(contexts, context, INSPECT_LIMITS.mediaConditions)
       : contexts;
@@ -669,6 +675,18 @@ function* walkImportedStylesheet(
   if (!sourceUrl) return;
   if (!consumeWalkBytes(state, sourceUrl)) return;
 
+  const importContext = readImportMediaContext(rule);
+  const retainsImportContext = importContext && (
+    contexts.values.length < INSPECT_LIMITS.mediaConditions ||
+    media.values.length < INSPECT_LIMITS.mediaConditions
+  );
+  if (
+    retainsImportContext &&
+    !consumeWalkBytes(state, importContext.value.text)
+  ) {
+    return;
+  }
+  if (retainsImportContext && reachedWalkLimit(state)) return;
   let importedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
   try {
     importedRules = importedStylesheet.cssRules;
@@ -677,7 +695,6 @@ function* walkImportedStylesheet(
     return;
   }
 
-  const importContext = readImportMediaContext(rule);
   const nextContexts = importContext
     ? appendBounded(contexts, importContext, INSPECT_LIMITS.mediaConditions)
     : contexts;

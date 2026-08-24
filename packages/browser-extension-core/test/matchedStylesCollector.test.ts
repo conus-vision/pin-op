@@ -1,4 +1,4 @@
-import { INSPECT_LIMITS } from "@pin-op/protocol";
+import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { MatchedStylesCollector } from "../src/matchedStylesCollector.js";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
@@ -571,6 +571,86 @@ describe("MatchedStylesCollector", () => {
       .toEqual(["color", "display"]);
     expect(hostileResult.partial).toBe(true);
     expect(hostileResult.diagnostics).toContain("inline-declaration-unavailable");
+  });
+
+  it("does not touch ancestor inline style after the byte authority is exhausted", () => {
+    const scope = documentScope();
+    let styleReads = 0;
+    let lengthReads = 0;
+    let itemReads = 0;
+    let inlineReservations = 0;
+    const ancestorStyle: StyleDeclarationSource = {
+      get length() {
+        lengthReads += 1;
+        return 1;
+      },
+      item() {
+        itemReads += 1;
+        return "color";
+      },
+      getPropertyValue: () => "red",
+      getPropertyPriority: () => "",
+    };
+    const parent = element(scope, { matches: new Set() });
+    Object.defineProperty(parent, "style", {
+      get() {
+        styleReads += 1;
+        return ancestorStyle;
+      },
+    });
+    const selected = element(scope, {
+      matches: new Set([".selected"]),
+      parent,
+    });
+    const selector = ".selected";
+    const property = "--fill";
+    const fixedBytes = [
+      "inline-style://document/0",
+      selector,
+      property,
+    ].reduce((total, value) => total + utf8ByteLength(value), 0);
+    const fill = "v".repeat(INSPECT_COLLECTION_MAX_BYTES - fixedBytes);
+    const baseAuthority = stylesheetAuthority(scope, [stylesheet(null, [{
+      selectorText: selector,
+      cssText: `${selector} { ${property}: ... }`,
+      style: declaration({ [property]: fill }),
+    }])]);
+    const authority: MatchedStylesStylesheetAuthority = {
+      ...baseAuthority,
+      referenceInlineRule(native) {
+        inlineReservations += 1;
+        return baseAuthority.referenceInlineRule(native);
+      },
+    };
+
+    const result = collector(selected, authority).collect(AUTHORITY)!;
+
+    expect({ styleReads, lengthReads, itemReads, inlineReservations }).toEqual({
+      styleReads: 0,
+      lengthReads: 0,
+      itemReads: 0,
+      inlineReservations: 0,
+    });
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("byte-limit");
+  });
+
+  it("reports a throwing element.style getter as partial", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set() });
+    Object.defineProperty(selected, "style", {
+      get(): never {
+        throw new Error("hostile style getter");
+      },
+    });
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, []),
+    ).collect(AUTHORITY)!;
+
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("inline-declaration-unavailable");
   });
 });
 
