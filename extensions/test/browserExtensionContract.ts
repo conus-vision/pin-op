@@ -748,13 +748,31 @@ export function describeBrowserPackageContract(
 ): void {
   describe(`${contract.platformName} emitted package contract`, () => {
     let packaged: PackagedExtension;
+    let inspectorPackaged: PackagedExtension;
 
     beforeAll(() => {
-      packaged = buildPackagedExtension(contract);
-    }, 30_000);
+      const inheritedPanelVariant = process.env.PIN_OP_PANEL_VARIANT;
+      const inheritedPanelVariantWasSet = Object.hasOwn(
+        process.env,
+        "PIN_OP_PANEL_VARIANT",
+      );
+      try {
+        process.env.PIN_OP_PANEL_VARIANT = "inspector";
+        packaged = buildPackagedExtension(contract);
+        process.env.PIN_OP_PANEL_VARIANT = "legacy";
+        inspectorPackaged = buildPackagedExtension(contract, "inspector");
+      } finally {
+        if (inheritedPanelVariantWasSet) {
+          process.env.PIN_OP_PANEL_VARIANT = inheritedPanelVariant;
+        } else {
+          delete process.env.PIN_OP_PANEL_VARIANT;
+        }
+      }
+    }, 60_000);
 
     afterAll(() => {
       packaged?.dispose();
+      inspectorPackaged?.dispose();
     });
 
     it.each(["", "attacker", "Inspector"])(
@@ -920,7 +938,7 @@ export function describeBrowserPackageContract(
       )).not.toThrow();
     });
 
-    it("hashes the raw emitted legacy bundle bytes used for Zod provenance", () => {
+    it("keeps the ordinary build on the legacy panel and provenance", () => {
       const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
       const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
         (entry) => entry.browser === browser,
@@ -936,9 +954,40 @@ export function describeBrowserPackageContract(
         path,
         sha256,
       })));
-      for (const entry of expected) {
-        expect(entry.inspectorSha256).toMatch(/^[0-9a-f]{64}$/);
-      }
+      expect(compiledPanelPage(packaged)).toBe("/dist/panel.html");
+    });
+
+    it("builds and validates the inspector package with reviewed provenance", () => {
+      const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
+      const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
+        (entry) => entry.browser === browser,
+      );
+
+      expect(() => assertBrowserPackageRuntimeContract(
+        { files: new Map(inspectorPackaged.files) },
+        {
+          artifactLabel: `${contract.platformName} real emitted inspector package`,
+          metadataLabel: `${contract.platformName} real emitted inspector metadata`,
+          platform: browser,
+        },
+      )).not.toThrow();
+      expect(compiledPanelPage(inspectorPackaged)).toBe(
+        "/dist/inspector-panel.html",
+      );
+      expect(expected.map(({ path }) => ({
+        browser,
+        path,
+        sha256: createHash("sha256")
+          .update(packagedBytes(inspectorPackaged, path))
+          .digest("hex"),
+      }))).toEqual(expected.map(({ path, inspectorSha256 }) => ({
+        browser,
+        path,
+        sha256: inspectorSha256,
+      })));
+      expect(inspectorPackaged.checkoutAfter).toEqual(
+        inspectorPackaged.checkoutBefore,
+      );
     });
 
     it("rejects byte drift and copied constructor code in a real emitted bundle", () => {
@@ -1577,6 +1626,7 @@ interface PackagedManifest {
 
 function buildPackagedExtension(
   contract: BrowserPackageContractOptions,
+  panelVariant: "default" | "inspector" = "default",
 ): PackagedExtension {
   const extensionRoot = fileURLToPath(contract.extensionRoot);
   const workspaceRoot = resolve(
@@ -1597,8 +1647,14 @@ function buildPackagedExtension(
       extensionRoot,
       temporaryDirectory,
     );
+    const buildEnvironment = { ...process.env };
+    delete buildEnvironment.PIN_OP_PANEL_VARIANT;
+    if (panelVariant === "inspector") {
+      buildEnvironment.PIN_OP_PANEL_VARIANT = "inspector";
+    }
     execFileSync(process.execPath, [join(buildRoot, "esbuild.mjs")], {
       cwd: buildRoot,
+      env: buildEnvironment,
       stdio: "pipe",
       timeout: 30_000,
     });
@@ -1624,6 +1680,7 @@ function buildPackagedExtension(
       ],
       {
         cwd: buildRoot,
+        env: buildEnvironment,
         stdio: "pipe",
         timeout: 30_000,
       },
@@ -1657,6 +1714,40 @@ function packagedBytes(packaged: PackagedExtension, path: string): Buffer {
 
 function packagedText(packaged: PackagedExtension, path: string): string {
   return packagedBytes(packaged, path).toString("utf8");
+}
+
+function compiledPanelPage(packaged: PackagedExtension): string | undefined {
+  const sourceFile = ts.createSourceFile(
+    "dist/devtools.js",
+    packagedText(packaged, "dist/devtools.js"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  let panelPage: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      panelPage === undefined &&
+      ts.isFunctionDeclaration(node) &&
+      node.body?.getText(sourceFile).includes("Invalid compiled panel page")
+    ) {
+      for (const statement of node.body.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const declaration of statement.declarationList.declarations) {
+          if (
+            declaration.initializer &&
+            ts.isStringLiteralLike(declaration.initializer) &&
+            declaration.initializer.text.startsWith("/dist/")
+          ) {
+            panelPage = declaration.initializer.text;
+          }
+        }
+      }
+    }
+    if (panelPage === undefined) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return panelPage;
 }
 
 function sharedAsset(name: string): string {
