@@ -276,6 +276,13 @@ interface PendingRegistration extends RegistrationIdentity {
   promise: Promise<BackgroundRouteResult | undefined>;
 }
 
+interface StylesSelectionAuthority {
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly selected: boolean;
+}
+
 interface PanelPortRecord {
   readonly channel: string;
   readonly port: BackgroundRuntimePort;
@@ -289,6 +296,7 @@ interface PanelPortRecord {
   inspectTabId?: number;
   inspectWindowId?: number;
   contentSessionId?: ContentSessionId;
+  stylesSelectionAuthority?: StylesSelectionAuthority;
   panelSessionBinding?: { dispose(): void };
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
@@ -1708,6 +1716,7 @@ export class BackgroundRouter {
     }
     record.activationToken = undefined;
     record.bindingGeneration = undefined;
+    record.stylesSelectionAuthority = undefined;
     record.windowStateQueue = undefined;
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
@@ -1738,6 +1747,7 @@ export class BackgroundRouter {
     }
     record.contentRecoveryAvailable = false;
     record.contentSessionId = undefined;
+    record.stylesSelectionAuthority = undefined;
     const panelSessionBinding = this.panelSessions.bind(
       record.channel,
       binding.tabId,
@@ -1756,6 +1766,7 @@ export class BackgroundRouter {
             record.inspectSession === session
           ) {
             record.contentSessionId = contentSessionId;
+            record.stylesSelectionAuthority = undefined;
             record.contentRecoveryAvailable = true;
             record.inspectionFailedClosed = false;
           }
@@ -1782,6 +1793,7 @@ export class BackgroundRouter {
       return;
     }
     record.contentSessionId = undefined;
+    record.stylesSelectionAuthority = undefined;
     const binding = this.bindings.get(record.channel);
     const token = record.activationToken;
     const recover = reason === "documentDisconnected" &&
@@ -1815,6 +1827,7 @@ export class BackgroundRouter {
     record.inspectTabId = undefined;
     record.inspectWindowId = undefined;
     record.contentSessionId = undefined;
+    record.stylesSelectionAuthority = undefined;
     record.panelSessionBinding?.dispose();
     record.panelSessionBinding = undefined;
     record.contentRecoveryAvailable = false;
@@ -3036,6 +3049,7 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
+    this.observeStylesSelectionAuthority(record, event);
     this.panelSessions.publish(binding.channel, event);
     return okResult;
   }
@@ -3062,8 +3076,44 @@ export class BackgroundRouter {
       this.panelSessions.publish(binding.channel, event);
       return okResult;
     }
+    const authority = record.stylesSelectionAuthority;
+    if (
+      !authority?.selected ||
+      authority.documentEpoch !== event.documentEpoch ||
+      authority.nodeRef !== event.nodeRef ||
+      authority.selectionRevision !== event.selectionRevision
+    ) {
+      return undefined;
+    }
     const republished = await this.panelSessions.republishSelection(binding.channel);
     return republished ? okResult : undefined;
+  }
+
+  private observeStylesSelectionAuthority(
+    record: PanelPortRecord,
+    event: DomEvent,
+  ): void {
+    if (
+      event.type !== "dom.selectionChanged" &&
+      event.type !== "dom.selectionCleared"
+    ) {
+      return;
+    }
+    const current = record.stylesSelectionAuthority;
+    if (
+      current &&
+      (event.documentEpoch < current.documentEpoch ||
+        (event.documentEpoch === current.documentEpoch &&
+          event.selectionRevision <= current.selectionRevision))
+    ) {
+      return;
+    }
+    record.stylesSelectionAuthority = {
+      documentEpoch: event.documentEpoch,
+      nodeRef: event.nodeRef,
+      selectionRevision: event.selectionRevision,
+      selected: event.type === "dom.selectionChanged",
+    };
   }
 
   private queueWindowState(

@@ -4210,6 +4210,15 @@ describe("BackgroundRouter", () => {
       stylesheetRevision: 3,
     }]);
 
+    const currentSelection = {
+      ...selectionChangedWithRevision("node-2", 8),
+      documentEpoch: 4,
+    };
+    await harness.router.routeMessage(
+      domEventMessage("content-styles", currentSelection),
+      contentSender(17, 10),
+    );
+
     await harness.router.routeMessage({
       type: "pin-op.styles.event",
       contentSessionId: "stale-content",
@@ -4220,16 +4229,115 @@ describe("BackgroundRouter", () => {
         selectionRevision: 7,
       },
     }, { tab: { id: 17, windowId: 10 } });
+    for (const event of [
+      {
+        type: "styles.inspectPublicationRenewed" as const,
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 8,
+      },
+      {
+        type: "styles.inspectPublicationRenewed" as const,
+        documentEpoch: 4,
+        nodeRef: "node-2",
+        selectionRevision: 7,
+      },
+      {
+        type: "styles.inspectPublicationRenewed" as const,
+        documentEpoch: 3,
+        nodeRef: "node-2",
+        selectionRevision: 8,
+      },
+    ]) {
+      await harness.router.routeMessage({
+        type: "pin-op.styles.event",
+        contentSessionId: "content-styles",
+        event,
+      }, { tab: { id: 17, windowId: 10 } });
+    }
+    expect(harness.inspectCalls.filter((entry) =>
+      JSON.stringify(entry).includes("pin-op.inspect.republish")
+    )).toHaveLength(0);
     await harness.router.routeMessage({
       type: "pin-op.styles.event",
       contentSessionId: "content-styles",
       event: {
         type: "styles.inspectPublicationRenewed",
         documentEpoch: 4,
-        nodeRef: "node-1",
-        selectionRevision: 7,
+        nodeRef: "node-2",
+        selectionRevision: 8,
       },
     }, { tab: { id: 17, windowId: 10 } });
+    expect(harness.inspectCalls.filter((entry) =>
+      JSON.stringify(entry).includes("pin-op.inspect.republish")
+    )).toHaveLength(1);
+  });
+
+  it("rejects renewal authority retained from a retired content lease", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "pin-op.inspect.republish"
+          ? true
+          : undefined,
+    });
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    const firstLease = await harness.attachContentSession(17, "styles-lease-a");
+    await harness.router.routeMessage(
+      domEventMessage("styles-lease-a", {
+        ...selectionChangedWithRevision("node-a", 7),
+        documentEpoch: 4,
+      }),
+      contentSender(17, 10),
+    );
+
+    firstLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17, "styles-lease-b");
+    harness.inspectCalls.length = 0;
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "styles-lease-b",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-a",
+        selectionRevision: 7,
+      },
+    }, contentSender(17, 10));
+    await harness.router.routeMessage(
+      domEventMessage("styles-lease-b", {
+        ...selectionChangedWithRevision("node-b", 1),
+        documentEpoch: 5,
+      }),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "styles-lease-b",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-a",
+        selectionRevision: 7,
+      },
+    }, contentSender(17, 10));
+
+    expect(harness.inspectCalls.filter((entry) =>
+      JSON.stringify(entry).includes("pin-op.inspect.republish")
+    )).toHaveLength(0);
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "styles-lease-b",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 5,
+        nodeRef: "node-b",
+        selectionRevision: 1,
+      },
+    }, contentSender(17, 10));
     expect(harness.inspectCalls.filter((entry) =>
       JSON.stringify(entry).includes("pin-op.inspect.republish")
     )).toHaveLength(1);

@@ -220,6 +220,8 @@ export class MatchedStylesModel {
     } catch {
       if (!this.isCurrent(generation, controller)) return;
       this.controller = undefined;
+      if (this.reloadPendingFloor(generation, selection)) return;
+      this.pendingReloadGeneration = undefined;
       this.publish(Object.freeze({
         state: "error",
         generation,
@@ -240,6 +242,11 @@ export class MatchedStylesModel {
       return;
     }
     if (response.type === "styles.error") {
+      if (
+        (response.code === "cancelled" || response.code === "internal-error") &&
+        this.reloadPendingFloor(generation, selection)
+      ) return;
+      this.pendingReloadGeneration = undefined;
       this.publish(Object.freeze({
         state: "error",
         generation,
@@ -257,21 +264,7 @@ export class MatchedStylesModel {
         !revisionPairMeetsFloor(responseAuthority, floor)
       )
     ) {
-      if (
-        floor.documentEpoch === response.documentEpoch &&
-        this.pendingReloadGeneration === generation
-      ) {
-        this.pendingReloadGeneration = undefined;
-        this.notifyStylesheetReset(floor);
-        if (
-          !this.disposed &&
-          this.generation === generation &&
-          this.selection === selection
-        ) {
-          void this.load(selection);
-        }
-        return;
-      }
+      if (this.reloadPendingFloor(generation, selection)) return;
       this.pendingReloadGeneration = undefined;
       this.publish(Object.freeze({
         state: "error",
@@ -343,6 +336,28 @@ export class MatchedStylesModel {
     } catch {
       // Reset notification cannot expand rule identity authority.
     }
+  }
+
+  private reloadPendingFloor(
+    generation: number,
+    selection: MatchedStylesModelSelection,
+  ): boolean {
+    const floor = this.revisionAuthority;
+    if (
+      this.pendingReloadGeneration !== generation ||
+      !floor ||
+      floor.documentEpoch !== selection.documentEpoch
+    ) return false;
+    this.pendingReloadGeneration = undefined;
+    this.notifyStylesheetReset(floor);
+    if (
+      !this.disposed &&
+      this.generation === generation &&
+      this.selection === selection
+    ) {
+      void this.load(selection);
+    }
+    return true;
   }
 
   private clearRevisionAuthority(): void {

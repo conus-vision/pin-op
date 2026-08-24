@@ -41,6 +41,14 @@ import {
 
 const DOM_WIRE_REQUEST_ID_PREFIX = "domq-";
 const STYLES_WIRE_REQUEST_ID_PREFIX = "stylesq-";
+const DEFAULT_STYLES_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_STYLES_REQUEST_TIMEOUT_MS = 60_000;
+
+export interface PanelInspectTransportOptions {
+  readonly stylesRequestTimeoutMs?: number;
+  readonly setTimeout?: typeof globalThis.setTimeout;
+  readonly clearTimeout?: typeof globalThis.clearTimeout;
+}
 
 export class PanelInspectTransport {
   private readonly pendingInspect = new Map<
@@ -74,13 +82,23 @@ export class PanelInspectTransport {
   private nextRequestId = 1;
   private connection: PortConnection | undefined;
   private disposed = false;
+  private readonly stylesRequestTimeoutMs: number;
+  private readonly scheduleTimeout: typeof globalThis.setTimeout;
+  private readonly cancelTimeout: typeof globalThis.clearTimeout;
 
   public constructor(
     private readonly createPort: () => PanelInspectPort,
     private readonly onUnexpectedDisconnect: () => void = () => {},
     private readonly onUnhandledMessage: (message: unknown) => void = () => {},
     private readonly onConnectionActivated: () => void = () => {},
-  ) {}
+    options: PanelInspectTransportOptions = {},
+  ) {
+    this.stylesRequestTimeoutMs = validStylesRequestTimeout(
+      options.stylesRequestTimeoutMs,
+    );
+    this.scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
+    this.cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
+  }
 
   public connect(): void {
     if (this.disposed) {
@@ -214,19 +232,27 @@ export class PanelInspectTransport {
     const wireRequest = parseStylesRequest({ ...request, requestId: wireRequestId });
     return new Promise((resolve, reject) => {
       let active = true;
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
       const onAbort = (): void => {
-        if (!active || this.pendingStyles.get(wireRequestId)?.wireRequest !== wireRequest) {
-          return;
-        }
-        active = false;
-        this.pendingStyles.delete(wireRequestId);
-        this.pendingStylesCallerIds.delete(request.requestId);
-        reject(new Error("Styles request cancelled"));
+        const pending = this.takePendingStyles(wireRequestId, wireRequest);
+        pending?.reject(new Error("Styles request cancelled"));
       };
       const removeAbort = (): void => {
         if (!active) return;
         active = false;
-        signal?.removeEventListener("abort", onAbort);
+        if (timer !== undefined) {
+          try {
+            this.cancelTimeout(timer);
+          } catch {
+            // Timer authority is already revoked even if host cleanup fails.
+          }
+          timer = undefined;
+        }
+        try {
+          signal?.removeEventListener("abort", onAbort);
+        } catch {
+          // Abort listener cleanup is best effort after settlement.
+        }
       };
       this.pendingStylesCallerIds.add(request.requestId);
       this.pendingStyles.set(wireRequestId, {
@@ -236,8 +262,12 @@ export class PanelInspectTransport {
         resolve,
         reject,
       });
-      signal?.addEventListener("abort", onAbort, { once: true });
       try {
+        signal?.addEventListener("abort", onAbort, { once: true });
+        timer = this.scheduleTimeout(() => {
+          const pending = this.takePendingStyles(wireRequestId, wireRequest);
+          pending?.reject(new Error("Styles request timed out"));
+        }, this.stylesRequestTimeoutMs);
         connection.port.postMessage(wireRequest);
       } catch {
         this.closeConnection(connection, true);
@@ -425,12 +455,13 @@ export class PanelInspectTransport {
         pending &&
         isStylesResponseForRequest(pending.wireRequest, stylesResponse)
       ) {
-        this.pendingStyles.delete(stylesResponse.requestId);
-        this.pendingStylesCallerIds.delete(pending.callerRequest.requestId);
-        pending.removeAbort();
-        pending.resolve(Object.freeze({
+        const settled = this.takePendingStyles(
+          stylesResponse.requestId,
+          pending.wireRequest,
+        );
+        settled?.resolve(Object.freeze({
           ...stylesResponse,
-          requestId: pending.callerRequest.requestId,
+          requestId: settled.callerRequest.requestId,
         }));
       }
       return;
@@ -477,6 +508,26 @@ export class PanelInspectTransport {
     this.pendingInspect.clear();
     this.cancelDomRequests("Inspect connection is closed");
     this.cancelStylesRequests("Inspect connection is closed");
+  }
+
+  private takePendingStyles(
+    wireRequestId: string,
+    wireRequest: StylesGetMatchedRequest,
+  ): {
+    readonly callerRequest: StylesGetMatchedRequest;
+    readonly wireRequest: StylesGetMatchedRequest;
+    readonly removeAbort: () => void;
+    resolve(value: StylesResponse): void;
+    reject(reason: unknown): void;
+  } | undefined {
+    const pending = this.pendingStyles.get(wireRequestId);
+    if (!pending || pending.wireRequest !== wireRequest) {
+      return undefined;
+    }
+    this.pendingStyles.delete(wireRequestId);
+    this.pendingStylesCallerIds.delete(pending.callerRequest.requestId);
+    pending.removeAbort();
+    return pending;
   }
 }
 
@@ -721,4 +772,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isOpaqueId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function validStylesRequestTimeout(value: number | undefined): number {
+  const timeout = value ?? DEFAULT_STYLES_REQUEST_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeout) ||
+    timeout <= 0 ||
+    timeout > MAX_STYLES_REQUEST_TIMEOUT_MS
+  ) {
+    throw new RangeError("Styles request timeout is invalid");
+  }
+  return timeout;
 }

@@ -16,7 +16,10 @@ import {
 import { DomTreeController } from "../src/domTreeController.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
-import type { StylesGetMatchedRequest } from "../src/stylesProtocol.js";
+import {
+  STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
+  type StylesGetMatchedRequest,
+} from "../src/stylesProtocol.js";
 
 describe("PanelInspectTransport DOM integration", () => {
   it("rewrites styles request IDs and validates all echoed identities", async () => {
@@ -66,6 +69,145 @@ describe("PanelInspectTransport DOM integration", () => {
     second.emitMessage(stylesMatched(wire));
     await expect(current).resolves.toMatchObject({ requestId: "current" });
   });
+
+  it.each(["lost", "malformed", "oversized"] as const)(
+    "expires a %s styles response and releases every correlation",
+    async (responseKind) => {
+      const port = new FakePort();
+      const clock = new FakeClock();
+      const signal = new CountingAbortSignal();
+      const transport = new PanelInspectTransport(
+        () => port,
+        undefined,
+        undefined,
+        undefined,
+        {
+          stylesRequestTimeoutMs: 25,
+          setTimeout: clock.setTimeout,
+          clearTimeout: clock.clearTimeout,
+        },
+      );
+      const pending = transport.requestStyles(
+        stylesRequest("caller-timeout"),
+        signal as unknown as AbortSignal,
+      );
+      const state = promiseState(pending);
+      const wire = port.sent.at(-1) as StylesGetMatchedRequest;
+      if (responseKind === "malformed") {
+        port.emitMessage({
+          type: "styles.matched",
+          requestId: wire.requestId,
+        });
+      } else if (responseKind === "oversized") {
+        const oversized = {
+          ...stylesMatched(wire),
+          padding: "x".repeat(STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES),
+        };
+        expect(JSON.stringify(oversized).length).toBeGreaterThan(
+          STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
+        );
+        port.emitMessage(oversized);
+      }
+
+      clock.advanceBy(24);
+      await flushPanelTasks();
+      expect(state.status).toBe("pending");
+      expect(pendingStylesCounts(transport)).toEqual({
+        callerIds: 1,
+        wireRequests: 1,
+      });
+      expect(signal.listenerCount()).toBe(1);
+
+      clock.advanceBy(1);
+      await flushPanelTasks();
+      const timeoutSnapshot = {
+        state: { ...state },
+        correlations: pendingStylesCounts(transport),
+        abortListeners: signal.listenerCount(),
+        timers: clock.pendingCount(),
+      };
+      if (state.status === "pending") {
+        transport.cancelStylesRequests();
+        await flushPanelTasks();
+      }
+      expect(timeoutSnapshot).toEqual({
+        state: {
+          status: "rejected",
+          reason: "Styles request timed out",
+        },
+        correlations: { callerIds: 0, wireRequests: 0 },
+        abortListeners: 0,
+        timers: 0,
+      });
+
+      port.emitMessage(stylesMatched(wire));
+      await flushPanelTasks();
+      expect(state).toEqual({
+        status: "rejected",
+        reason: "Styles request timed out",
+      });
+
+      const reissued = transport.requestStyles(stylesRequest("caller-timeout"));
+      transport.cancelStylesRequests();
+      await expect(reissued).rejects.toThrow("Styles session changed");
+      expect(clock.pendingCount()).toBe(0);
+    },
+  );
+
+  it.each(["cancel", "dispose"] as const)(
+    "%s clears a pending styles timeout and abort listener",
+    async (action) => {
+      const port = new FakePort();
+      const clock = new FakeClock();
+      const signal = new CountingAbortSignal();
+      const transport = new PanelInspectTransport(
+        () => port,
+        undefined,
+        undefined,
+        undefined,
+        {
+          stylesRequestTimeoutMs: 25,
+          setTimeout: clock.setTimeout,
+          clearTimeout: clock.clearTimeout,
+        },
+      );
+      const pending = transport.requestStyles(
+        stylesRequest(`caller-${action}`),
+        signal as unknown as AbortSignal,
+      );
+      expect(clock.pendingCount()).toBe(1);
+      expect(signal.listenerCount()).toBe(1);
+
+      if (action === "cancel") {
+        transport.cancelStylesRequests();
+      } else {
+        transport.dispose();
+      }
+      await expect(pending).rejects.toThrow(
+        action === "cancel" ? "Styles session changed" : "Inspect connection is closed",
+      );
+      expect(clock.pendingCount()).toBe(0);
+      expect(signal.listenerCount()).toBe(0);
+      expect(pendingStylesCounts(transport)).toEqual({
+        callerIds: 0,
+        wireRequests: 0,
+      });
+    },
+  );
+
+  it("bounds an injected styles request timeout", () => {
+    const port = new FakePort();
+    for (const stylesRequestTimeoutMs of [0, 60_001, Number.NaN]) {
+      expect(() => new PanelInspectTransport(
+        () => port,
+        undefined,
+        undefined,
+        undefined,
+        { stylesRequestTimeoutMs },
+      )).toThrow(RangeError);
+    }
+  });
+
   it("correlates a validated DOM query without a panel-supplied tab ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
@@ -842,6 +984,73 @@ class FakeEvent<T extends (...args: never[]) => void> {
   }
 }
 
+class FakeClock {
+  private now = 0;
+  private nextId = 1;
+  private readonly timers = new Map<
+    number,
+    { readonly due: number; readonly callback: () => void }
+  >();
+
+  public readonly setTimeout = (
+    callback: () => void,
+    delay: number,
+  ): ReturnType<typeof setTimeout> => {
+    const id = this.nextId;
+    this.nextId += 1;
+    this.timers.set(id, { due: this.now + delay, callback });
+    return id as unknown as ReturnType<typeof setTimeout>;
+  };
+
+  public readonly clearTimeout = (timer: ReturnType<typeof setTimeout>): void => {
+    this.timers.delete(timer as unknown as number);
+  };
+
+  public advanceBy(delay: number): void {
+    const target = this.now + delay;
+    for (;;) {
+      const next = [...this.timers.entries()]
+        .filter(([, timer]) => timer.due <= target)
+        .sort(([leftId, left], [rightId, right]) =>
+          left.due - right.due || leftId - rightId
+        )[0];
+      if (!next) break;
+      const [id, timer] = next;
+      this.timers.delete(id);
+      this.now = timer.due;
+      timer.callback();
+    }
+    this.now = target;
+  }
+
+  public pendingCount(): number {
+    return this.timers.size;
+  }
+}
+
+class CountingAbortSignal {
+  public readonly aborted = false;
+  private readonly listeners = new Set<EventListenerOrEventListenerObject>();
+
+  public addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ): void {
+    if (type === "abort" && listener) this.listeners.add(listener);
+  }
+
+  public removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ): void {
+    if (type === "abort" && listener) this.listeners.delete(listener);
+  }
+
+  public listenerCount(): number {
+    return this.listeners.size;
+  }
+}
+
 function sourceNavigateCommand(direction: "previous" | "next") {
   return {
     type: "pin-op.source.navigate" as const,
@@ -1211,6 +1420,20 @@ function stylesRequest(requestId: string): StylesGetMatchedRequest {
     documentEpoch: 4,
     nodeRef: "node-1",
     selectionRevision: 7,
+  };
+}
+
+function pendingStylesCounts(transport: PanelInspectTransport): {
+  readonly callerIds: number;
+  readonly wireRequests: number;
+} {
+  const state = transport as unknown as {
+    readonly pendingStyles: ReadonlyMap<string, unknown>;
+    readonly pendingStylesCallerIds: ReadonlySet<string>;
+  };
+  return {
+    callerIds: state.pendingStylesCallerIds.size,
+    wireRequests: state.pendingStyles.size,
   };
 }
 

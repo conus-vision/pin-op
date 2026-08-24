@@ -130,6 +130,59 @@ describe("MatchedStylesModel", () => {
     expect(requests).toHaveLength(2);
   });
 
+  it.each([
+    "rejected-request",
+    "cancelled-error",
+    "internal-error",
+  ] as const)(
+    "retries one coalesced newer-floor load after %s",
+    async (outcome) => {
+      const requests: StylesGetMatchedRequest[] = [];
+      const pending: Array<ReturnType<typeof deferred<StylesResponse>>> = [];
+      const states: string[] = [];
+      const model = new MatchedStylesModel({
+        request(request) {
+          requests.push(request);
+          const next = deferred<StylesResponse>();
+          pending.push(next);
+          return next.promise;
+        },
+      });
+      model.subscribe((snapshot) => states.push(snapshot.state));
+
+      const first = model.select(selectionIdentity());
+      model.invalidate(stylesInvalidated(9, 3));
+      model.invalidate(stylesInvalidated(10, 3));
+      if (outcome === "rejected-request") {
+        pending[0]!.reject(new Error("lost styles response"));
+      } else {
+        pending[0]!.resolve({
+          type: "styles.error",
+          requestId: requests[0]!.requestId,
+          code: outcome === "cancelled-error" ? "cancelled" : "internal-error",
+        });
+      }
+      await first;
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(model.snapshot().state).toBe("loading");
+      expect(states).not.toContain("error");
+      pending[1]!.resolve(matchedResponse({
+        request: requests[1],
+        stylesRevision: 10,
+        stylesheetRevision: 3,
+      }));
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(model.snapshot()).toMatchObject({
+        state: "ready",
+        key: { stylesRevision: 10, stylesheetRevision: 3 },
+      });
+    },
+  );
+
   it("loads independently of IDE state and exposes idle/loading/ready/partial/error", async () => {
     const pending = deferred<StylesResponse>();
     const model = new MatchedStylesModel({
@@ -318,7 +371,7 @@ describe("MatchedStylesModel", () => {
       model.reset(reason);
       expect(signal?.aborted).toBe(true);
       expect(model.snapshot().state).toBe("idle");
-      pending.resolve(matchedResponse());
+      pending.reject(new Error("reset styles request"));
       await load;
       await flushAsync();
       expect(model.snapshot().state).toBe("idle");
@@ -338,7 +391,7 @@ describe("MatchedStylesModel", () => {
     expect(signal?.aborted).toBe(true);
     expect(model.snapshot().state).toBe("idle");
     await expect(model.select(selection())).rejects.toThrow(/disposed/i);
-    pending.resolve(matchedResponse());
+    pending.reject(new Error("disposed styles request"));
     await load;
   });
 
@@ -426,10 +479,12 @@ function matchedResponse(options: {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 async function flushAsync(): Promise<void> {
