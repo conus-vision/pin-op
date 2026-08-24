@@ -242,7 +242,8 @@ describe("StylesheetRegistry", () => {
     );
 
     const snapshot = createRegistry(document).snapshot();
-    expect(snapshot.entries).toHaveLength(
+    expect(snapshot.entries.length).toBeGreaterThan(0);
+    expect(snapshot.entries.length).toBeLessThanOrEqual(
       STYLESHEET_LIMITS.scopeSheetPairsPerSession,
     );
     expect(snapshot.partial).toBe(true);
@@ -334,6 +335,199 @@ describe("StylesheetRegistry", () => {
     expect(snapshot.partial).toBe(true);
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
       code: "rules-visited-limit",
+    }));
+  });
+
+  it("charges rejected CSSOM pulls to one session-global rule budget", () => {
+    let hostileSlotPulls = 0;
+    let secondSheetPulls = 0;
+    const hostileRules = new Proxy(
+      { length: STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot },
+      {
+        get(target, key, receiver) {
+          if (typeof key === "string" && /^\d+$/u.test(key)) {
+            hostileSlotPulls += 1;
+            throw new Error("hostile CSSOM slot");
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    const secondRules = new Proxy([styleRule(".second", "color: blue")], {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/u.test(key)) {
+          secondSheetPulls += 1;
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    let firstRuleRead = true;
+    let secondRuleRead = true;
+    const first = {
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      get cssRules() {
+        const rules = firstRuleRead ? hostileRules : [];
+        firstRuleRead = false;
+        return rules;
+      },
+    };
+    const second = {
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      get cssRules() {
+        const rules = secondRuleRead ? secondRules : [];
+        secondRuleRead = false;
+        return rules;
+      },
+    };
+
+    const snapshot = createRegistry(scope(
+      "document",
+      [first, second] as unknown as FakeSheet[],
+      [],
+      [],
+    )).snapshot();
+
+    expect({
+      hostileSlotPulls,
+      secondSheetPulls,
+      partial: snapshot.partial,
+      diagnosticCodes: snapshot.diagnostics.map(({ code }) => code),
+    }).toEqual({
+      hostileSlotPulls: STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
+      secondSheetPulls: 0,
+      partial: true,
+      diagnosticCodes: expect.arrayContaining(["rules-visited-limit"]),
+    });
+  });
+
+  it("charges nested inline-correlation pulls to the global rule budget", () => {
+    let nestedPulls = 0;
+    let secondSheetPulls = 0;
+    const nestedRules = new Proxy(
+      { length: STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot - 1 },
+      {
+        get(target, key, receiver) {
+          if (typeof key === "string" && /^\d+$/u.test(key)) {
+            nestedPulls += 1;
+            return Number(key);
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    let nestedRuleRead = true;
+    const grouped = {
+      conditionText: "screen",
+      cssText: "@media screen { .nested { color: red; } }",
+      get cssRules() {
+        const rules = nestedRuleRead ? nestedRules : [];
+        nestedRuleRead = false;
+        return rules;
+      },
+    };
+    const first = sheet(null, [grouped as unknown as FakeRule]);
+    const owner = styleOwner(
+      "@media screen { .nested { color: red; } }",
+      first,
+    );
+    const secondRules = new Proxy([styleRule(".second", "color: blue")], {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/u.test(key)) {
+          secondSheetPulls += 1;
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    let secondRuleRead = true;
+    const second = {
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      get cssRules() {
+        const rules = secondRuleRead ? secondRules : [];
+        secondRuleRead = false;
+        return rules;
+      },
+    };
+
+    const snapshot = createRegistry(scope(
+      "document",
+      [first, second] as unknown as FakeSheet[],
+      [],
+      [owner],
+    )).snapshot();
+
+    expect({
+      nestedPulls,
+      secondSheetPulls,
+      diagnosticCodes: snapshot.diagnostics.map(({ code }) => code),
+    }).toEqual({
+      nestedPulls: STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot - 1,
+      secondSheetPulls: 0,
+      diagnosticCodes: expect.arrayContaining(["rules-visited-limit"]),
+    });
+  });
+
+  it("shares one candidate-pull budget across all roots and stylesheet lists", () => {
+    const passPulls: number[] = [];
+    let activePass = -1;
+    const chargePull = (): void => {
+      passPulls[activePass] = (passPulls[activePass] ?? 0) + 1;
+    };
+    const shared = sheet(null, []);
+    const roots = Array.from(
+      { length: STYLESHEET_LIMITS.scopesPerSession },
+      (_, index) => scope(index === 0 ? "document" : "shadow", [], [], []),
+    );
+    const hosts = roots.slice(1).map((shadowRoot) => host(shadowRoot));
+    const ownerCandidates = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      () => ({ tagName: "DIV" }),
+    );
+    for (const [index, root] of roots.entries()) {
+      root.styleSheets = countedArrayLike(
+        Array.from(
+          { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+          () => shared,
+        ),
+        chargePull,
+      );
+      root.adoptedStyleSheets = countedArrayLike(
+        Array.from(
+          { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+          () => shared,
+        ),
+        chargePull,
+      );
+      root.querySelectorAll = (selector: string): object[] => {
+        if (selector === "*") {
+          if (index === 0) {
+            activePass += 1;
+            passPulls[activePass] = 0;
+            return countedArrayLike(hosts, chargePull);
+          }
+          return countedArrayLike([], chargePull);
+        }
+        if (selector.includes("style") || selector.includes("link")) {
+          return countedArrayLike(ownerCandidates, chargePull);
+        }
+        return countedArrayLike([], chargePull);
+      };
+    }
+
+    const snapshot = createRegistry(roots[0]!).snapshot();
+
+    expect(passPulls.length).toBeGreaterThanOrEqual(2);
+    expect(passPulls.every((pulls) => (
+      pulls <= STYLESHEET_LIMITS.scopeSheetPairsPerSession
+    ))).toBe(true);
+    expect(snapshot.partial).toBe(true);
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "scope-sheet-pair-limit",
     }));
   });
 
@@ -718,4 +912,13 @@ function trackedRuleIterable<T>(
       };
     },
   };
+}
+
+function countedArrayLike<T>(values: T[], onPull: () => void): T[] {
+  return new Proxy(values, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/u.test(key)) onPull();
+      return Reflect.get(target, key, receiver);
+    },
+  });
 }
