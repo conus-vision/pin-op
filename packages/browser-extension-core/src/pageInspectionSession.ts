@@ -55,11 +55,26 @@ import {
   type MatchedStylesApplicabilityObserverOptions,
 } from "./matchedStylesApplicabilityObserver.js";
 import {
+  MatchedStylesCollector,
+  type MatchedStylesCollectionAuthority,
+  type MatchedStylesCollectorOptions,
+} from "./matchedStylesCollector.js";
+import type { MatchedStyles } from "./matchedStylesTypes.js";
+import {
   StylesheetRegistry,
   type StylesheetInvalidationEvent,
   type StylesheetRegistryOptions,
   type StylesheetRevisionState,
 } from "./stylesheetRegistry.js";
+import {
+  parseStylesRequest,
+  parseStylesResponse,
+  type StylesErrorCode,
+  type StylesGetMatchedRequest,
+  type StylesInspectPublicationRenewedEvent,
+  type StylesRequest,
+  type StylesResponse,
+} from "./stylesProtocol.js";
 
 export const PAGE_INSPECTION_SELECTION_INTERVAL_MS = 100;
 
@@ -127,6 +142,9 @@ export interface PageInspectionSessionOptions {
   ) => boolean;
   readonly onEvent?: (event: DomEvent) => void;
   readonly onStylesInvalidated?: (event: StylesheetInvalidationEvent) => void;
+  readonly onStylesInspectPublicationRenewed?: (
+    event: StylesInspectPublicationRenewedEvent,
+  ) => void;
   readonly onError?: (error: unknown) => void;
   readonly now?: () => number;
   readonly requestAnimationFrame?: (callback: FrameRequestCallback) => number;
@@ -155,6 +173,9 @@ export interface PageInspectionSessionOptions {
   readonly createApplicabilityObserver?: (
     options: MatchedStylesApplicabilityObserverOptions,
   ) => PageInspectionApplicabilityObserver;
+  readonly createMatchedStylesCollector?: (
+    options: MatchedStylesCollectorOptions,
+  ) => PageInspectionMatchedStylesCollector;
 }
 
 export interface PageInspectionStylesheetRegistry {
@@ -166,6 +187,18 @@ export interface PageInspectionStylesheetRegistry {
   invalidateApplicability(reason?: string): void;
   resetDocument(document: Document, documentEpoch: number): void;
   dispose(): void;
+  snapshot?(): ReturnType<StylesheetRegistry["snapshot"]>;
+  entriesForElement?(element: Element): ReturnType<StylesheetRegistry["entriesForElement"]>;
+  referenceRule?(
+    entry: Parameters<StylesheetRegistry["referenceRule"]>[0],
+    rulePath: string,
+    nativeRule: object,
+  ): string;
+  referenceInlineRule?(element: Element): string;
+}
+
+export interface PageInspectionMatchedStylesCollector {
+  collect(authority: MatchedStylesCollectionAuthority): MatchedStyles | undefined;
 }
 
 export interface PageInspectionApplicabilityObserver {
@@ -272,6 +305,7 @@ export class PageInspectionSession {
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
   private readonly stylesheetRegistry: PageInspectionStylesheetRegistry;
+  private readonly matchedStylesCollector: PageInspectionMatchedStylesCollector;
   private applicabilityObserver: PageInspectionApplicabilityObserver;
   private readonly applicabilityFactory: NonNullable<
     PageInspectionSessionOptions["createApplicabilityObserver"]
@@ -297,6 +331,14 @@ export class PageInspectionSession {
   private pickerActive = false;
   private resettingDocument = false;
   private disposed = false;
+  private matchedStylesEvidence: {
+    readonly documentEpoch: number;
+    readonly nodeRef: string;
+    readonly selectionRevision: number;
+    readonly fingerprint: string;
+  } | undefined;
+  private stylesPublicationRenewalScheduled = false;
+  private stylesPublicationRenewalGeneration = 0;
   private readonly pendingInvalidationBranches = new Map<
     string,
     DomInvalidationBranch
@@ -376,6 +418,35 @@ export class PageInspectionSession {
       onInvalidated: (event) => this.handleStylesInvalidated(event),
       onError: (error) => this.reportError(error),
       now: options.now,
+    });
+    const createMatchedStylesCollector = options.createMatchedStylesCollector ?? (
+      (collectorOptions: MatchedStylesCollectorOptions) => (
+        new MatchedStylesCollector(collectorOptions)
+      )
+    );
+    this.matchedStylesCollector = createMatchedStylesCollector({
+      domTreeProvider: this.provider,
+      stylesheets: {
+        snapshot: () => requireStylesheetMethod(
+          this.stylesheetRegistry,
+          "snapshot",
+        )(),
+        entriesForElement: (element) => requireStylesheetMethod(
+          this.stylesheetRegistry,
+          "entriesForElement",
+        )(element),
+        referenceRule: (entry, rulePath, nativeRule) => requireStylesheetMethod(
+          this.stylesheetRegistry,
+          "referenceRule",
+        )(entry, rulePath, nativeRule),
+        referenceInlineRule: (element) => requireStylesheetMethod(
+          this.stylesheetRegistry,
+          "referenceInlineRule",
+        )(element),
+      },
+      isAuthorityCurrent: (authority) => this.isMatchedStylesAuthorityCurrent(
+        authority,
+      ),
     });
     this.applicabilityFactory = options.createApplicabilityObserver ?? (
       (observerOptions: MatchedStylesApplicabilityObserverOptions) => (
@@ -479,6 +550,7 @@ export class PageInspectionSession {
       this.hoverRevision += 1;
       this.mode.disable();
       this.selectionRevision += 1;
+      this.clearMatchedStylesEvidence();
       this.cancelPendingHoverFrame();
       if (this.hovered?.nodeRef) {
         this.provider.releaseNode(this.hovered.nodeRef, "hovered");
@@ -639,8 +711,11 @@ export class PageInspectionSession {
   }
 
   public async handle(
-    request: DomRequest,
-  ): Promise<DomResponse | readonly DomEvent[]> {
+    request: DomRequest | StylesRequest,
+  ): Promise<DomResponse | StylesResponse | readonly DomEvent[]> {
+    if (readRequestType(request) === "styles.getMatched") {
+      return this.handleStylesRequest(request);
+    }
     let parsed: DomRequest;
     try {
       parsed = parseDomRequest(request);
@@ -746,6 +821,7 @@ export class PageInspectionSession {
       return;
     }
     this.disposed = true;
+    this.clearMatchedStylesEvidence();
     this.clearPendingInvalidations();
     this.pickerActive = false;
     this.pickerRevision += 1;
@@ -991,6 +1067,7 @@ export class PageInspectionSession {
         return undefined;
       }
       this.selected = next;
+      this.clearMatchedStylesEvidence();
       this.applicabilityObserver.setSelection(next.element, []);
       this.applicabilityObserver.check();
       const authority: SelectionAuthorityToken = Object.freeze({
@@ -1615,6 +1692,7 @@ export class PageInspectionSession {
     if (this.selected !== selected) return undefined;
     this.selectionRevision += 1;
     this.selected = undefined;
+    this.clearMatchedStylesEvidence();
     this.applicabilityObserver.setSelection(undefined, []);
     this.provider.releaseNode(selected.nodeRef, "selected");
     return Object.freeze({
@@ -2093,6 +2171,138 @@ export class PageInspectionSession {
     }
   }
 
+  private handleStylesRequest(request: DomRequest | StylesRequest): StylesResponse {
+    let parsed: StylesGetMatchedRequest;
+    try {
+      parsed = parseStylesRequest(request);
+    } catch {
+      return stylesError("invalid-request", readRequestId(request));
+    }
+    if (this.disposed) return stylesError("cancelled", parsed.requestId);
+    if (parsed.documentEpoch !== this.provider.currentDocumentEpoch) {
+      return stylesError("stale-document", parsed.requestId);
+    }
+    const selected = this.selected;
+    if (!selected || parsed.selectionRevision !== this.selectionRevision) {
+      return stylesError("stale-selection", parsed.requestId);
+    }
+    if (parsed.nodeRef !== selected.nodeRef) {
+      return stylesError("unknown-node", parsed.requestId);
+    }
+    try {
+      this.checkStylesheetsForMatchedQuery();
+    } catch (error) {
+      this.reportError(error);
+      return stylesError("inaccessible", parsed.requestId);
+    }
+    const revisions = this.stylesheetRegistry.revisions;
+    const authority: MatchedStylesCollectionAuthority = Object.freeze({
+      documentEpoch: parsed.documentEpoch,
+      nodeRef: parsed.nodeRef,
+      selectionRevision: parsed.selectionRevision,
+      stylesRevision: revisions.stylesRevision,
+      stylesheetRevision: revisions.stylesheetRevision,
+    });
+    let styles: MatchedStyles | undefined;
+    try {
+      styles = this.matchedStylesCollector.collect(authority);
+    } catch (error) {
+      this.reportError(error);
+      return stylesError("inaccessible", parsed.requestId);
+    }
+    if (!styles) {
+      return this.isMatchedStylesAuthorityCurrent(authority)
+        ? stylesError("inaccessible", parsed.requestId)
+        : stylesError("cancelled", parsed.requestId);
+    }
+    let response: StylesResponse;
+    try {
+      response = parseStylesResponse({
+        type: "styles.matched",
+        requestId: parsed.requestId,
+        ...authority,
+        styles,
+      });
+    } catch (error) {
+      this.reportError(error);
+      return stylesError("inaccessible", parsed.requestId);
+    }
+    this.acceptMatchedStylesEvidence(styles, authority);
+    return response;
+  }
+
+  private isMatchedStylesAuthorityCurrent(
+    authority: MatchedStylesCollectionAuthority,
+  ): boolean {
+    if (
+      this.disposed ||
+      this.resettingDocument ||
+      this.provider.currentDocumentEpoch !== authority.documentEpoch ||
+      this.selectionRevision !== authority.selectionRevision ||
+      this.selected?.nodeRef !== authority.nodeRef
+    ) return false;
+    let revisions: StylesheetRevisionState;
+    try {
+      revisions = this.stylesheetRegistry.revisions;
+    } catch {
+      return false;
+    }
+    return revisions.documentEpoch === authority.documentEpoch &&
+      revisions.stylesRevision === authority.stylesRevision &&
+      revisions.stylesheetRevision === authority.stylesheetRevision;
+  }
+
+  private acceptMatchedStylesEvidence(
+    styles: MatchedStyles,
+    authority: MatchedStylesCollectionAuthority,
+  ): void {
+    if (!this.isMatchedStylesAuthorityCurrent(authority)) return;
+    const fingerprint = matchedStylesEvidenceFingerprint(styles);
+    if (!fingerprint) return;
+    const previous = this.matchedStylesEvidence;
+    this.matchedStylesEvidence = Object.freeze({
+      documentEpoch: authority.documentEpoch,
+      nodeRef: authority.nodeRef,
+      selectionRevision: authority.selectionRevision,
+      fingerprint,
+    });
+    if (
+      !previous ||
+      previous.documentEpoch !== authority.documentEpoch ||
+      previous.nodeRef !== authority.nodeRef ||
+      previous.selectionRevision !== authority.selectionRevision ||
+      previous.fingerprint === fingerprint ||
+      this.stylesPublicationRenewalScheduled
+    ) return;
+    this.stylesPublicationRenewalScheduled = true;
+    const generation = this.stylesPublicationRenewalGeneration;
+    globalThis.queueMicrotask(() => {
+      if (
+        !this.stylesPublicationRenewalScheduled ||
+        generation !== this.stylesPublicationRenewalGeneration
+      ) return;
+      this.stylesPublicationRenewalScheduled = false;
+      if (this.disposed || !this.isMatchedStylesAuthorityCurrent(authority)) return;
+      const event: StylesInspectPublicationRenewedEvent = Object.freeze({
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: authority.documentEpoch,
+        nodeRef: authority.nodeRef,
+        selectionRevision: authority.selectionRevision,
+      });
+      try {
+        this.options.onStylesInspectPublicationRenewed?.(event);
+      } catch (error) {
+        this.reportError(error);
+      }
+    });
+  }
+
+  private clearMatchedStylesEvidence(): void {
+    this.matchedStylesEvidence = undefined;
+    this.stylesPublicationRenewalScheduled = false;
+    this.stylesPublicationRenewalGeneration += 1;
+  }
+
   private readClock(): number | undefined {
     try {
       const value = this.now();
@@ -2266,6 +2476,78 @@ function errorResponse(
     ...(documentEpoch !== undefined ? { documentEpoch } : {}),
     code,
   });
+}
+
+function stylesError(
+  code: StylesErrorCode,
+  requestId?: string,
+): StylesResponse {
+  return Object.freeze({
+    type: "styles.error",
+    requestId: requestId ?? "invalid-styles-request",
+    code,
+  });
+}
+
+function readRequestType(value: unknown): string | undefined {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, "type");
+    return descriptor?.enumerable && Object.hasOwn(descriptor, "value") &&
+        typeof descriptor.value === "string"
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readRequestId(value: unknown): string | undefined {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, "requestId");
+    return descriptor?.enumerable && Object.hasOwn(descriptor, "value") &&
+        typeof descriptor.value === "string" &&
+        descriptor.value.length > 0 &&
+        descriptor.value.length <= 128
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function matchedStylesEvidenceFingerprint(styles: MatchedStyles): string | undefined {
+  try {
+    return JSON.stringify({
+      inline: styles.inline,
+      rules: styles.rules,
+      inherited: styles.inherited,
+      inaccessibleStylesheetCount: styles.inaccessibleStylesheetCount,
+      partial: styles.partial,
+      diagnostics: styles.diagnostics,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function requireStylesheetMethod<
+  K extends "snapshot" | "entriesForElement" | "referenceRule" |
+    "referenceInlineRule",
+>(
+  registry: PageInspectionStylesheetRegistry,
+  key: K,
+): NonNullable<PageInspectionStylesheetRegistry[K]> {
+  const method = registry[key];
+  if (typeof method !== "function") {
+    throw new Error(`Stylesheet registry ${key} is unavailable`);
+  }
+  return method.bind(registry) as NonNullable<PageInspectionStylesheetRegistry[K]>;
 }
 
 function requireNonnegativeNumber(value: number, name: string): number {

@@ -20,6 +20,16 @@ import {
 } from "./domProtocol.js";
 import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
+import {
+  isStylesResponseForRequest,
+  parseStylesEvent,
+  parseStylesRequest,
+  parseStylesResponse,
+  type StylesErrorCode,
+  type StylesGetMatchedRequest,
+  type StylesInvalidatedEvent,
+  type StylesResponse,
+} from "./stylesProtocol.js";
 
 export const DEFAULT_MAX_PANEL_SESSION_CHANNELS = 64;
 
@@ -145,6 +155,39 @@ export class PanelSessionTransport {
     }
   }
 
+  public async requestStyles(
+    channel: string,
+    request: StylesGetMatchedRequest,
+  ): Promise<StylesResponse> {
+    let parsed: StylesGetMatchedRequest;
+    try {
+      parsed = parseStylesRequest(request);
+    } catch {
+      return stylesError("invalid-request", readRequestId(request));
+    }
+    const binding = this.channels.get(channel);
+    if (!binding) return stylesError("cancelled", parsed.requestId);
+    let raw: unknown;
+    try {
+      raw = await this.options.sendTabMessage(binding.tabId, parsed);
+    } catch {
+      return this.channels.get(channel) === binding
+        ? stylesError("internal-error", parsed.requestId)
+        : stylesError("cancelled", parsed.requestId);
+    }
+    if (this.channels.get(channel) !== binding) {
+      return stylesError("cancelled", parsed.requestId);
+    }
+    try {
+      const response = parseStylesResponse(raw);
+      return isStylesResponseForRequest(parsed, response)
+        ? response
+        : stylesError("internal-error", parsed.requestId);
+    } catch {
+      return stylesError("internal-error", parsed.requestId);
+    }
+  }
+
   public republishSelection(channel: string): Promise<boolean> {
     const binding = this.channels.get(channel);
     if (!binding) {
@@ -178,6 +221,7 @@ export class PanelSessionTransport {
     channel: string,
     message:
       | DomEvent
+      | StylesInvalidatedEvent
       | ResolutionMessage
       | PeerStateMessage
       | SourceMatchesMessage
@@ -248,6 +292,7 @@ export class PanelSessionTransport {
 function parsePublishedMessage(
   message:
     | DomEvent
+    | StylesInvalidatedEvent
     | ResolutionMessage
     | PeerStateMessage
     | SourceMatchesMessage
@@ -257,6 +302,12 @@ function parsePublishedMessage(
     return parseDomEvent(message);
   } catch {
     // Non-DOM bridge messages use the generic proxy-safe protocol snapshot.
+  }
+  try {
+    const event = parseStylesEvent(message);
+    if (event.type === "styles.invalidated") return event;
+  } catch {
+    // Non-local bridge messages continue below.
   }
   return parseProtocolData(message, {
     safeParse(value):
@@ -287,6 +338,7 @@ function parsePublishedMessage(
 
 type PublishedPanelMessage =
   | DomEvent
+  | StylesInvalidatedEvent
   | ResolutionMessage
   | PeerStateMessage
   | SourceMatchesMessage
@@ -299,6 +351,17 @@ function domError(
   return Object.freeze({
     type: "dom.error",
     ...(requestId ? { requestId } : {}),
+    code,
+  });
+}
+
+function stylesError(
+  code: StylesErrorCode,
+  requestId = "invalid-styles-request",
+): StylesResponse {
+  return Object.freeze({
+    type: "styles.error",
+    requestId,
     code,
   });
 }

@@ -1,9 +1,10 @@
 import type { CssDocumentSource } from "./collectCssFacts.js";
-import { parseDomRequest, type DomEvent, type DomRequest } from "./domProtocol.js";
+import type { DomEvent, DomRequest } from "./domProtocol.js";
 import type { LocationSource } from "./inspectPayload.js";
 import {
   createInspectContentLeasePortName,
   isValidContentSessionId,
+  parseInspectorLocalRequest,
   type ContentSessionId,
   type ContentInspectPort,
 } from "./inspectPortProtocol.js";
@@ -16,6 +17,11 @@ import {
   type PageInspectionSelection,
   type PageInspectionSessionOptions,
 } from "./pageInspectionSession.js";
+import {
+  parseStylesEvent,
+  type StylesEvent,
+  type StylesRequest,
+} from "./stylesProtocol.js";
 import {
   parseContentRefreshBootstrapRequest,
   parseContentRefreshBootstrapResult,
@@ -130,7 +136,7 @@ export interface ContentRefreshBootstrapRuntime {
 export interface ContentPageInspectionSession {
   enablePicker(): void;
   disablePicker(): void;
-  handle(request: DomRequest): Promise<unknown>;
+  handle(request: DomRequest | StylesRequest): Promise<unknown>;
   republishSelection(): Promise<boolean>;
   clearOverlayForRefresh?(): void;
   dispose(): void;
@@ -190,6 +196,23 @@ export function startContentScriptRuntime(
     },
     onEvent: (event) =>
       publishDomEvent(options, contentSessionId, event, reportError),
+    onStylesInvalidated: (event) => publishStylesEvent(
+      options,
+      contentSessionId,
+      {
+        type: "styles.invalidated",
+        documentEpoch: event.documentEpoch,
+        stylesRevision: event.stylesRevision,
+        stylesheetRevision: event.stylesheetRevision,
+      },
+      reportError,
+    ),
+    onStylesInspectPublicationRenewed: (event) => publishStylesEvent(
+      options,
+      contentSessionId,
+      event,
+      reportError,
+    ),
     onError: reportError,
   });
   const clearOverlayForRefresh = (): void => session.clearOverlayForRefresh?.();
@@ -222,11 +245,8 @@ export function startContentScriptRuntime(
       runtime.dispose();
       return undefined;
     }
-    try {
-      return session.handle(parseDomRequest(message));
-    } catch {
-      return undefined;
-    }
+    const request = parseInspectorLocalRequest(message);
+    return request ? session.handle(request) : undefined;
   });
 
   let leasePort: ContentInspectPort | undefined;
@@ -682,6 +702,25 @@ function publishDomEvent(
     type: "pin-op.dom.event",
     contentSessionId,
     event,
+  }).catch(reportError);
+}
+
+function publishStylesEvent(
+  options: ContentScriptRuntimeOptions,
+  contentSessionId: ContentSessionId,
+  event: StylesEvent,
+  reportError: (error: unknown) => void,
+): void {
+  let parsed: StylesEvent;
+  try {
+    parsed = parseStylesEvent(event);
+  } catch {
+    return;
+  }
+  void options.sendRuntimeMessage({
+    type: "pin-op.styles.event",
+    contentSessionId,
+    event: parsed,
   }).catch(reportError);
 }
 

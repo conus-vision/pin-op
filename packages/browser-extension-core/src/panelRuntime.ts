@@ -54,6 +54,10 @@ import {
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
+import type {
+  StylesGetMatchedRequest,
+  StylesResponse,
+} from "./stylesProtocol.js";
 
 export interface PanelRuntimeOptions {
   readonly locationSearch: string;
@@ -91,6 +95,13 @@ interface PanelRuntimePresentationContext {
   readonly sourceNavigationController: SourceNavigationController;
   readonly settingsController: PanelSettingsController;
   readonly treeController: DomTreeController;
+  readonly requestStyles: (
+    request: StylesGetMatchedRequest,
+    signal: AbortSignal,
+  ) => Promise<StylesResponse>;
+  readonly subscribeInspectorMessages: (
+    listener: (message: unknown) => void,
+  ) => () => void;
 }
 
 interface PanelRuntimePresentationBinding {
@@ -225,6 +236,12 @@ export function startPanelRuntimeWithPresentation(
     sourceNavigationController,
     settingsController,
     treeController,
+    requestStyles: (request, signal) =>
+      inspectTransport.requestStyles(request, signal),
+    subscribeInspectorMessages(listener) {
+      stateListeners.add(listener);
+      return () => stateListeners.delete(listener);
+    },
   });
   const {
     sourcePaneView,

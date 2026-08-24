@@ -130,6 +130,60 @@ export type {
   RuleReferenceGeneration,
   RuleReferenceScope,
 } from "./ruleReferenceRegistry.js";
+export {
+  MATCHED_STYLES_MAX_ANCESTORS,
+  MatchedStylesCollector,
+} from "./matchedStylesCollector.js";
+export type {
+  MatchedStylesCollectionAuthority,
+  MatchedStylesCollectorOptions,
+  MatchedStylesNodeAuthority,
+  MatchedStylesStylesheetAuthority,
+} from "./matchedStylesCollector.js";
+export type {
+  GeneratedMatchedRuleSource,
+  InheritedMatchedRules,
+  MatchedDeclaration,
+  MatchedDeclarationReason,
+  MatchedDeclarationState,
+  MatchedRule,
+  MatchedStyles,
+} from "./matchedStylesTypes.js";
+export { MatchedStylesModel } from "./matchedStylesModel.js";
+export type {
+  MatchedStylesModelOptions,
+  MatchedStylesModelSelection,
+  MatchedStylesModelSnapshot,
+  MatchedStylesModelState,
+  MatchedStylesResetReason,
+} from "./matchedStylesModel.js";
+export {
+  STYLES_PROTOCOL_MAX_CONTEXTS,
+  STYLES_PROTOCOL_MAX_DECLARATIONS_PER_RULE,
+  STYLES_PROTOCOL_MAX_DIAGNOSTICS,
+  STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  STYLES_PROTOCOL_MAX_INHERITED_GROUPS,
+  STYLES_PROTOCOL_MAX_MATCHING_SELECTOR_INDICES,
+  STYLES_PROTOCOL_MAX_RULES,
+  STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
+  StylesProtocolError,
+  isStylesResponseForRequest,
+  parseStylesEvent,
+  parseStylesRequest,
+  parseStylesResponse,
+  stylesProtocolEnvelopeWithinBudget,
+} from "./stylesProtocol.js";
+export type {
+  StylesErrorCode,
+  StylesErrorResponse,
+  StylesEvent,
+  StylesGetMatchedRequest,
+  StylesInspectPublicationRenewedEvent,
+  StylesInvalidatedEvent,
+  StylesMatchedResponse,
+  StylesRequest,
+  StylesResponse,
+} from "./stylesProtocol.js";
 export { DomNodeRegistry } from "./domNodeRegistry.js";
 export type {
   DomNodeRegistryOptions,
@@ -364,9 +418,12 @@ export {
   DEVTOOLS_CHANNEL_MAX_LENGTH,
   DEVTOOLS_PANEL_PORT_PREFIX,
   INSPECT_CONTENT_LEASE_PORT_PREFIX,
+  INSPECTOR_LOCAL_REQUEST_TYPES,
+  isInspectorLocalRequestType,
   isValidContentSessionId,
   isValidDevtoolsChannel,
   parseInspectContentLeasePortName,
+  parseInspectorLocalRequest,
   parseDevtoolsPanelPortName,
   parseInspectControllerCommand,
   parseInspectPortInvalidated,

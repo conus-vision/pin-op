@@ -8,6 +8,11 @@ import type {
   PanelSourceOpenCommand,
   PanelToBackgroundInspectPortMessage,
 } from "../src/inspectPortProtocol.js";
+import type {
+  StylesGetMatchedRequest,
+  StylesInvalidatedEvent,
+  StylesMatchedResponse,
+} from "../src/stylesProtocol.js";
 
 declare const sourceNavigationState: SourceNavigationStateMessage;
 
@@ -36,5 +41,16 @@ const panelMessages: readonly PanelToBackgroundInspectPortMessage[] = [
   presentationSettings,
 ];
 
+declare const stylesRequest: StylesGetMatchedRequest;
+declare const stylesResponse: StylesMatchedResponse;
+declare const stylesInvalidated: StylesInvalidatedEvent;
+const stylesPanelRequest: PanelToBackgroundInspectPortMessage = stylesRequest;
+const stylesPanelResponses: readonly BackgroundToPanelInspectPortMessage[] = [
+  stylesResponse,
+  stylesInvalidated,
+];
+
 void sourceMatchesBackgroundMessage;
 void panelMessages;
+void stylesPanelRequest;
+void stylesPanelResponses;

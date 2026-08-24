@@ -4161,6 +4161,111 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "dom.root")).toEqual([domRoot("root-1")]);
   });
 
+  it("routes strict matched styles and trusted invalidation/renewal events without IDE resolution", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (isRecord(message) && message.type === "styles.getMatched") {
+          return stylesMatched(String(message.requestId));
+        }
+        if (isRecord(message) && message.type === "pin-op.inspect.republish") {
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-styles");
+    panel.emitMessage({
+      type: "styles.getMatched",
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    });
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "styles.matched")).toEqual([
+      stylesMatched("styles-1"),
+    ]);
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-styles",
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 4,
+        stylesRevision: 9,
+        stylesheetRevision: 3,
+      },
+    }, { tab: { id: 17, windowId: 10 } });
+    expect(messagesOfType(panel, "styles.invalidated")).toEqual([{
+      type: "styles.invalidated",
+      documentEpoch: 4,
+      stylesRevision: 9,
+      stylesheetRevision: 3,
+    }]);
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "stale-content",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+      },
+    }, { tab: { id: 17, windowId: 10 } });
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-styles",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+      },
+    }, { tab: { id: 17, windowId: 10 } });
+    expect(harness.inspectCalls.filter((entry) =>
+      JSON.stringify(entry).includes("pin-op.inspect.republish")
+    )).toHaveLength(1);
+  });
+
+  it("rejects malformed or unlisted styles requests without tab dispatch", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    harness.inspectCalls.length = 0;
+    panel.emitMessage({
+      type: "styles.getMatched",
+      requestId: "styles-invalid",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      tabId: 99,
+    });
+    panel.emitMessage({
+      type: "styles.setProperty",
+      requestId: "styles-write",
+    });
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "styles.error")).toEqual([{
+      type: "styles.error",
+      requestId: "styles-invalid",
+      code: "invalid-request",
+    }]);
+    expect(harness.inspectCalls).toEqual([]);
+  });
+
   it("waits for recovered content injection before routing a DOM query", async () => {
     const recoveryInjectionStarted = deferred<void>();
     const releaseRecoveryInjection = deferred<void>();
@@ -7757,6 +7862,30 @@ function domResolveLocator(requestId: string) {
       targetKind: "element" as const,
       boundaries: [],
       path: [{ tagName: "button", siblingIndex: 0, id: "save" }],
+    },
+  };
+}
+
+function stylesMatched(requestId: string) {
+  return {
+    type: "styles.matched" as const,
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    stylesRevision: 8,
+    stylesheetRevision: 3,
+    styles: {
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      stylesRevision: 8,
+      stylesheetRevision: 3,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
     },
   };
 }

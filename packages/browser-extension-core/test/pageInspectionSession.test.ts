@@ -53,6 +53,157 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageInspectionSession", () => {
+  it("collects matched styles for the exact current selection and returns strict lifecycle errors", async () => {
+    const harness = createSessionHarness();
+    await harness.session.selectByRef("node-2", 3);
+    const selected = harness.events.find((event) => event.type === "dom.selectionChanged");
+    expect(selected?.type).toBe("dom.selectionChanged");
+    const selectionRevision = selected?.type === "dom.selectionChanged"
+      ? selected.selectionRevision
+      : -1;
+
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "styles-current",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    })).resolves.toMatchObject({
+      type: "styles.matched",
+      requestId: "styles-current",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+      styles: { rules: [], inherited: [] },
+    });
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "styles-stale-document",
+      documentEpoch: 2,
+      nodeRef: "node-2",
+      selectionRevision,
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-stale-document",
+      code: "stale-document",
+    });
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "styles-stale-selection",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selectionRevision + 1,
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-stale-selection",
+      code: "stale-selection",
+    });
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "styles-unknown-node",
+      documentEpoch: 3,
+      nodeRef: "node-other",
+      selectionRevision,
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-unknown-node",
+      code: "unknown-node",
+    });
+    harness.session.dispose();
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "styles-disposed",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-disposed",
+      code: "cancelled",
+    });
+  });
+
+  it("coalesces changed ready evidence into a current-selection inspect renewal", async () => {
+    const renewals: unknown[] = [];
+    let value = "red";
+    const registry = {
+      revisions: { documentEpoch: 3, stylesheetRevision: 1, stylesRevision: 2 },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect(authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }) {
+          return {
+            ...authority,
+            rules: [{
+              ruleRef: "rule-1",
+              selectorText: ".test",
+              matchingSelectorIndices: [0],
+              declarations: [{
+                ruleRef: "rule-1",
+                property: "color",
+                value,
+                important: false,
+                valueTruncated: false,
+                state: "winning-known-author" as const,
+                reason: "highest-precedence-known-author-declaration" as const,
+              }],
+              contexts: [],
+              source: { rulePath: "0" },
+            }],
+            inherited: [],
+            inaccessibleStylesheetCount: 0,
+            partial: false,
+            diagnostics: [],
+          };
+        },
+      }),
+      onStylesInspectPublicationRenewed: (event) => renewals.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selected = harness.events.find((event) => event.type === "dom.selectionChanged");
+    const selectionRevision = selected?.type === "dom.selectionChanged"
+      ? selected.selectionRevision
+      : -1;
+    const request = {
+      type: "styles.getMatched" as const,
+      requestId: "styles-1",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    };
+    await harness.session.handle(request);
+    await harness.session.handle({ ...request, requestId: "styles-2" });
+    await Promise.resolve();
+    expect(renewals).toEqual([]);
+
+    value = "blue";
+    const blue = harness.session.handle({ ...request, requestId: "styles-3" });
+    value = "green";
+    const green = harness.session.handle({ ...request, requestId: "styles-4" });
+    await Promise.all([blue, green]);
+    await Promise.resolve();
+    expect(renewals).toEqual([{
+      type: "styles.inspectPublicationRenewed",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    }]);
+    expect(harness.selections).toHaveLength(1);
+  });
   it("owns stylesheet polling and applicability lifecycle for the active content lease", async () => {
     const registry = {
       revisions: {
@@ -2018,7 +2169,9 @@ function createSessionHarness(overrides: {
   readonly contentSessionId?: string;
   readonly createStylesheetRegistry?: (options: unknown) => unknown;
   readonly createApplicabilityObserver?: (options: unknown) => unknown;
+  readonly createMatchedStylesCollector?: (options: unknown) => unknown;
   readonly onStylesInvalidated?: (event: unknown) => void;
+  readonly onStylesInspectPublicationRenewed?: (event: unknown) => void;
 } = {}) {
   const document = new FakeSessionDocument();
   const root = element("HTML", "root", document);
@@ -2057,7 +2210,10 @@ function createSessionHarness(overrides: {
     },
     createStylesheetRegistry: overrides.createStylesheetRegistry,
     createApplicabilityObserver: overrides.createApplicabilityObserver,
+    createMatchedStylesCollector: overrides.createMatchedStylesCollector,
     onStylesInvalidated: overrides.onStylesInvalidated,
+    onStylesInspectPublicationRenewed:
+      overrides.onStylesInspectPublicationRenewed,
     createInspectPayload: overrides.createInspectPayload ?? (
       (selected) => payload(selected.id)
     ),

@@ -11,6 +11,54 @@ import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/
 describe("startInspectorPanelRuntime", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("owns an IDE-independent matched-style model and resets it on inspect invalidation", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+
+    const first = runtime.matchedStylesModel.select({
+      documentEpoch: 1,
+      nodeRef: "node-card",
+      selectionRevision: 2,
+      stylesRevision: 3,
+      stylesheetRevision: 1,
+    });
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    port.emitMessage(stylesMatched(request, 3, 1));
+    await first;
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("ready");
+
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 1,
+      stylesRevision: 4,
+      stylesheetRevision: 1,
+    });
+    await Promise.resolve();
+    const reload = lastMessage(port.sent, "styles.getMatched") as typeof request;
+    expect(reload.requestId).not.toBe(request.requestId);
+    port.emitMessage(stylesMatched(reload, 4, 1));
+    await Promise.resolve();
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "ready",
+      key: { stylesRevision: 4, stylesheetRevision: 1 },
+    });
+
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    runtime.dispose();
+  });
+
   it("uses the shared panel ownership while mounting only the neutral Inspector shell", async () => {
     const harness = createHarness();
     const runtime = harness.start();
@@ -1385,4 +1433,34 @@ function deferred<T>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function stylesMatched(
+  request: {
+    readonly requestId: string;
+    readonly documentEpoch: number;
+    readonly nodeRef: string;
+    readonly selectionRevision: number;
+  },
+  stylesRevision: number,
+  stylesheetRevision: number,
+) {
+  return {
+    ...request,
+    type: "styles.matched" as const,
+    stylesRevision,
+    stylesheetRevision,
+    styles: {
+      documentEpoch: request.documentEpoch,
+      nodeRef: request.nodeRef,
+      selectionRevision: request.selectionRevision,
+      stylesRevision,
+      stylesheetRevision,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    },
+  };
 }

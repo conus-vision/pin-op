@@ -5,9 +5,9 @@ import {
 } from "@pin-op/protocol";
 import type {
   DomEvent,
-  DomRequest,
   DomResponse,
 } from "./domProtocol.js";
+import { parseDomRequest, type DomRequest } from "./domProtocol.js";
 import type {
   PanelTabSettingsCommand,
   PanelTabStateMessage,
@@ -15,6 +15,14 @@ import type {
   RefreshExecutionCommand,
 } from "./refreshRuntimeProtocol.js";
 import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
+import {
+  parseStylesRequest,
+  type StylesRequest,
+} from "./stylesProtocol.js";
+import type {
+  StylesInvalidatedEvent,
+  StylesResponse,
+} from "./stylesProtocol.js";
 
 export {
   parsePanelTabSettingsCommand,
@@ -36,6 +44,20 @@ export const INSPECT_CONTENT_LEASE_PORT_PREFIX =
 export const CONTENT_SESSION_ID_MAX_LENGTH = 128;
 export const DEVTOOLS_PANEL_PORT_PREFIX = "pin-op.devtools.";
 export const DEVTOOLS_CHANNEL_MAX_LENGTH = 128;
+
+export const INSPECTOR_LOCAL_REQUEST_TYPES = Object.freeze([
+  "dom.getRoot",
+  "dom.getChildren",
+  "dom.resolveLocator",
+  "dom.select",
+  "dom.hover",
+  "dom.clearHover",
+  "styles.getMatched",
+] as const);
+
+const INSPECTOR_LOCAL_REQUEST_TYPE_SET: ReadonlySet<string> = new Set(
+  INSPECTOR_LOCAL_REQUEST_TYPES,
+);
 
 export interface InspectPortRequest {
   readonly type: "pin-op.inspect.setEnabled";
@@ -88,7 +110,8 @@ export type PanelToBackgroundInspectPortMessage =
   | PanelSourceOpenCommand
   | PanelPresentationSettingsCommand
   | PanelTabSettingsCommand
-  | DomRequest;
+  | DomRequest
+  | StylesRequest;
 
 /** Messages sent from the trusted background port to the DevTools panel. */
 export type BackgroundToPanelInspectPortMessage =
@@ -99,20 +122,25 @@ export type BackgroundToPanelInspectPortMessage =
   | SourceMatchesMessage
   | SourceNavigationStateMessage
   | DomResponse
-  | DomEvent;
+  | DomEvent
+  | StylesResponse
+  | StylesInvalidatedEvent;
 
 /** Messages sent from the trusted background port to the content-script lease. */
 export type BackgroundToContentInspectPortMessage =
   | InspectPortRequest
   | RefreshExecutionCommand
-  | DomRequest;
+  | DomRequest
+  | StylesRequest;
 
 /** Messages sent from the content-script lease to its trusted background port. */
 export type ContentToBackgroundInspectPortMessage =
   | InspectPortResult
   | InspectPortInvalidated
   | DomResponse
-  | DomEvent;
+  | DomEvent
+  | StylesResponse
+  | StylesInvalidatedEvent;
 
 export interface InspectPortEvent<T> {
   addListener(listener: T): void;
@@ -133,6 +161,25 @@ export interface PanelInspectPort extends BackgroundInspectPort {
 export interface ContentInspectPort {
   readonly onDisconnect: InspectPortEvent<() => void>;
   disconnect(): void;
+}
+
+export function parseInspectorLocalRequest(
+  value: unknown,
+): DomRequest | StylesRequest | undefined {
+  const type = readExactDataType(value);
+  if (!type || !INSPECTOR_LOCAL_REQUEST_TYPE_SET.has(type)) return undefined;
+  try {
+    return type === "styles.getMatched"
+      ? parseStylesRequest(value)
+      : parseDomRequest(value);
+  } catch {
+    return undefined;
+  }
+}
+
+export function isInspectorLocalRequestType(value: unknown): boolean {
+  return typeof value === "string" &&
+    INSPECTOR_LOCAL_REQUEST_TYPE_SET.has(value);
 }
 
 export function createInspectContentLeasePortName(
@@ -387,4 +434,19 @@ function isResolutionGeneration(value: unknown): value is number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function readExactDataType(value: unknown): string | undefined {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, "type");
+    return descriptor?.enumerable && Object.hasOwn(descriptor, "value") &&
+        typeof descriptor.value === "string"
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

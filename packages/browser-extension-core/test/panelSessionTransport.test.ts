@@ -11,8 +11,50 @@ import {
   type DomRequest,
 } from "../src/domProtocol.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
+import type { StylesGetMatchedRequest } from "../src/stylesProtocol.js";
 
 describe("PanelSessionTransport", () => {
+  it("routes matched-style queries only through the bound trusted tab and validates correlation", async () => {
+    const sent: Array<{ tabId: number; message: unknown }> = [];
+    const request = stylesRequest("styles-a");
+    const transport = new PanelSessionTransport({
+      async sendTabMessage(tabId, message) {
+        sent.push({ tabId, message });
+        return stylesMatched(request);
+      },
+      postPanelMessage: vi.fn(),
+    });
+    const binding = transport.bind("panel-a", 7);
+    await expect(transport.requestStyles("panel-a", request))
+      .resolves.toEqual(stylesMatched(request));
+    expect(sent).toEqual([{ tabId: 7, message: request }]);
+
+    binding.dispose();
+    await expect(transport.requestStyles("panel-a", request)).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-a",
+      code: "cancelled",
+    });
+  });
+
+  it("drops mismatched style identities and stale replies after channel replacement", async () => {
+    const pending = deferred<unknown>();
+    const request = stylesRequest("styles-a");
+    const transport = new PanelSessionTransport({
+      sendTabMessage: async () => await pending.promise,
+      postPanelMessage: vi.fn(),
+    });
+    const first = transport.bind("panel-a", 7);
+    const result = transport.requestStyles("panel-a", request);
+    first.dispose();
+    transport.bind("panel-a", 8);
+    pending.resolve(stylesMatched({ ...request, nodeRef: "wrong" }));
+    await expect(result).resolves.toEqual({
+      type: "styles.error",
+      requestId: "styles-a",
+      code: "cancelled",
+    });
+  });
   it("binds DOM requests to the registered channel tab", async () => {
     const sent: Array<{ tabId: number; message: unknown }> = [];
     const transport = new PanelSessionTransport({
@@ -572,4 +614,44 @@ function sourceMatches(): SourceMatchesMessage {
     omittedMatchCount: 0,
     metadata: {},
   };
+}
+
+function stylesRequest(requestId: string): StylesGetMatchedRequest {
+  return {
+    type: "styles.getMatched",
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+  };
+}
+
+function stylesMatched(request: StylesGetMatchedRequest) {
+  return {
+    type: "styles.matched" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 8,
+    stylesheetRevision: 3,
+    styles: {
+      documentEpoch: request.documentEpoch,
+      nodeRef: request.nodeRef,
+      selectionRevision: request.selectionRevision,
+      stylesRevision: 8,
+      stylesheetRevision: 3,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve };
 }

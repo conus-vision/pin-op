@@ -29,8 +29,18 @@ import {
 } from "./inspectPortProtocol.js";
 import { parseLinkCode } from "./linkCode.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
+import {
+  STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  isStylesResponseForRequest,
+  parseStylesEvent,
+  parseStylesRequest,
+  parseStylesResponse,
+  type StylesGetMatchedRequest,
+  type StylesResponse,
+} from "./stylesProtocol.js";
 
 const DOM_WIRE_REQUEST_ID_PREFIX = "domq-";
+const STYLES_WIRE_REQUEST_ID_PREFIX = "stylesq-";
 
 export class PanelInspectTransport {
   private readonly pendingInspect = new Map<
@@ -50,6 +60,17 @@ export class PanelInspectTransport {
     }
   >();
   private readonly pendingDomCallerIds = new Set<string>();
+  private readonly pendingStyles = new Map<
+    string,
+    {
+      readonly callerRequest: StylesGetMatchedRequest;
+      readonly wireRequest: StylesGetMatchedRequest;
+      readonly removeAbort: () => void;
+      resolve(value: StylesResponse): void;
+      reject(reason: unknown): void;
+    }
+  >();
+  private readonly pendingStylesCallerIds = new Set<string>();
   private nextRequestId = 1;
   private connection: PortConnection | undefined;
   private disposed = false;
@@ -161,6 +182,69 @@ export class PanelInspectTransport {
     }
   }
 
+  public requestStyles(
+    message: unknown,
+    signal?: AbortSignal,
+  ): Promise<StylesResponse> {
+    if (this.disposed) {
+      return Promise.reject(new Error("Inspect connection is closed"));
+    }
+    let request: StylesGetMatchedRequest;
+    try {
+      request = parseStylesRequest(message);
+    } catch {
+      return Promise.reject(new Error("Invalid styles request"));
+    }
+    if (this.pendingStylesCallerIds.has(request.requestId)) {
+      return Promise.reject(new Error("Duplicate styles request"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new Error("Styles request cancelled"));
+    }
+    let connection: PortConnection;
+    try {
+      connection = this.connection ?? this.openConnection();
+    } catch {
+      return Promise.reject(new Error("Inspect connection is closed"));
+    }
+    const wireRequestId = nextStylesWireRequestId(connection);
+    if (!wireRequestId) {
+      return Promise.reject(new Error("Styles request ID space exhausted"));
+    }
+    const wireRequest = parseStylesRequest({ ...request, requestId: wireRequestId });
+    return new Promise((resolve, reject) => {
+      let active = true;
+      const onAbort = (): void => {
+        if (!active || this.pendingStyles.get(wireRequestId)?.wireRequest !== wireRequest) {
+          return;
+        }
+        active = false;
+        this.pendingStyles.delete(wireRequestId);
+        this.pendingStylesCallerIds.delete(request.requestId);
+        reject(new Error("Styles request cancelled"));
+      };
+      const removeAbort = (): void => {
+        if (!active) return;
+        active = false;
+        signal?.removeEventListener("abort", onAbort);
+      };
+      this.pendingStylesCallerIds.add(request.requestId);
+      this.pendingStyles.set(wireRequestId, {
+        callerRequest: request,
+        wireRequest,
+        removeAbort,
+        resolve,
+        reject,
+      });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        connection.port.postMessage(wireRequest);
+      } catch {
+        this.closeConnection(connection, true);
+      }
+    });
+  }
+
   public dispatchSourceNavigation(message: unknown): void {
     if (this.disposed) {
       throw new Error("Inspect connection is closed");
@@ -215,6 +299,16 @@ export class PanelInspectTransport {
     this.pendingDomCallerIds.clear();
   }
 
+  public cancelStylesRequests(reason = "Styles session changed"): void {
+    const error = new Error(reason);
+    for (const pending of this.pendingStyles.values()) {
+      pending.removeAbort();
+      pending.reject(error);
+    }
+    this.pendingStyles.clear();
+    this.pendingStylesCallerIds.clear();
+  }
+
   public dispose(): void {
     if (this.disposed) {
       return;
@@ -238,6 +332,7 @@ export class PanelInspectTransport {
     const connection: PortConnection = {
       port,
       nextDomRequestSequence: 1,
+      nextStylesRequestSequence: 1,
       onMessage: (message) => this.handleMessage(connection, message),
       onDisconnect: () => this.handleDisconnect(connection),
     };
@@ -323,6 +418,24 @@ export class PanelInspectTransport {
       return;
     }
 
+    const stylesResponse = validatedStylesResponse(message);
+    if (stylesResponse) {
+      const pending = this.pendingStyles.get(stylesResponse.requestId);
+      if (
+        pending &&
+        isStylesResponseForRequest(pending.wireRequest, stylesResponse)
+      ) {
+        this.pendingStyles.delete(stylesResponse.requestId);
+        this.pendingStylesCallerIds.delete(pending.callerRequest.requestId);
+        pending.removeAbort();
+        pending.resolve(Object.freeze({
+          ...stylesResponse,
+          requestId: pending.callerRequest.requestId,
+        }));
+      }
+      return;
+    }
+
     const pushMessage = validatedPushMessage(message);
     if (pushMessage) {
       this.forwardUnhandled(pushMessage);
@@ -363,14 +476,24 @@ export class PanelInspectTransport {
     }
     this.pendingInspect.clear();
     this.cancelDomRequests("Inspect connection is closed");
+    this.cancelStylesRequests("Inspect connection is closed");
   }
 }
 
 interface PortConnection {
   readonly port: PanelInspectPort;
   nextDomRequestSequence: number | undefined;
+  nextStylesRequestSequence: number | undefined;
   readonly onMessage: (message: unknown) => void;
   readonly onDisconnect: () => void;
+}
+
+function validatedStylesResponse(message: unknown): StylesResponse | undefined {
+  try {
+    return parseStylesResponse(message);
+  } catch {
+    return undefined;
+  }
 }
 
 function validatedDomRequest(message: unknown): DomRequest | undefined {
@@ -421,6 +544,24 @@ function nextDomWireRequestId(
   return requestId;
 }
 
+function nextStylesWireRequestId(
+  connection: PortConnection,
+): string | undefined {
+  const sequence = connection.nextStylesRequestSequence;
+  if (sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 1) {
+    return undefined;
+  }
+  const requestId = `${STYLES_WIRE_REQUEST_ID_PREFIX}${sequence}`;
+  if (requestId.length > STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH) {
+    connection.nextStylesRequestSequence = undefined;
+    return undefined;
+  }
+  connection.nextStylesRequestSequence = sequence === Number.MAX_SAFE_INTEGER
+    ? undefined
+    : sequence + 1;
+  return requestId;
+}
+
 function cloneDomQueryWithRequestId(
   request: DomQuery,
   requestId: string,
@@ -444,6 +585,11 @@ function validatedPushMessage(message: unknown): unknown | undefined {
     return parseDomEvent(message);
   } catch {
     // Continue through the other strict message families.
+  }
+  try {
+    return parseStylesEvent(message);
+  } catch {
+    // Continue through the public bridge message families.
   }
   const resolution = ResolutionMessageSchema.safeParse(message);
   if (resolution.success) {

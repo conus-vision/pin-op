@@ -4,6 +4,9 @@ import {
   createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectContentLeasePortName,
+  INSPECTOR_LOCAL_REQUEST_TYPES,
+  isInspectorLocalRequestType,
+  parseInspectorLocalRequest,
   parsePanelPresentationSettingsCommand,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
@@ -15,6 +18,40 @@ import {
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
 describe("panel inspect transport", () => {
+  it("keeps a closed exact allowlist for browser-local DOM and styles requests", () => {
+    expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("dom.getRoot");
+    expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("styles.getMatched");
+    expect(isInspectorLocalRequestType("styles.getMatched")).toBe(true);
+    expect(isInspectorLocalRequestType("styles.setProperty")).toBe(false);
+    expect(parseInspectorLocalRequest({
+      type: "styles.getMatched",
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    })).toMatchObject({ type: "styles.getMatched", requestId: "styles-1" });
+    expect(parseInspectorLocalRequest({
+      type: "styles.getMatched",
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      tabId: 99,
+    })).toBeUndefined();
+    expect(parseInspectorLocalRequest({
+      type: "styles.setProperty",
+      requestId: "write-1",
+    })).toBeUndefined();
+
+    let getterCalls = 0;
+    expect(parseInspectorLocalRequest({
+      get type() {
+        getterCalls += 1;
+        return "styles.getMatched";
+      },
+    })).toBeUndefined();
+    expect(getterCalls).toBe(0);
+  });
   it("creates and parses strict document-scoped content lease names", () => {
     expect(createInspectContentLeasePortName("content-session-1")).toBe(
       "pin-op.inspect.contentLease.content-session-1",

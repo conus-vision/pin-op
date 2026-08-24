@@ -7,6 +7,86 @@ import {
 import { createInspectContentLeasePortName } from "../src/inspectPortProtocol.js";
 
 describe("startContentScriptRuntime", () => {
+  it("parses exact styles requests and publishes only strict styles lifecycle events", async () => {
+    const runtimeMessages = messageHarness();
+    const pageSession = pageSessionHarness();
+    const sent: unknown[] = [];
+    let sessionOptions: Record<string, unknown> | undefined;
+    pageSession.handle.mockImplementation(async (request: { type?: string; requestId?: string }) => (
+      request.type === "styles.getMatched"
+        ? stylesMatchedResponse(request.requestId ?? "missing")
+        : rootResponse(request.requestId ?? "missing")
+    ));
+    const runtime = startContentScriptRuntime({
+      globalScope: {},
+      document: documentHarness().document,
+      location: locationSource(),
+      connectRuntimePort: () => portHarness().port,
+      sendRuntimeMessage: async (message) => { sent.push(message); },
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      createContentSessionId: () => "content-styles",
+      createPageInspectionSession(options) {
+        sessionOptions = options as unknown as Record<string, unknown>;
+        return pageSession.session;
+      },
+    });
+
+    await expect(runtimeMessages.emit({
+      type: "styles.getMatched",
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    })).resolves.toMatchObject({ type: "styles.matched", requestId: "styles-1" });
+    expect(pageSession.handle).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "styles.getMatched",
+    }));
+    await expect(runtimeMessages.emit({ type: "styles.evil", requestId: "x" }))
+      .resolves.toBeUndefined();
+
+    const onStylesInvalidated = sessionOptions?.onStylesInvalidated as
+      | ((event: unknown) => void)
+      | undefined;
+    const onStylesInspectPublicationRenewed =
+      sessionOptions?.onStylesInspectPublicationRenewed as
+        | ((event: unknown) => void)
+        | undefined;
+    onStylesInvalidated?.({
+      documentEpoch: 4,
+      stylesRevision: 9,
+      stylesheetRevision: 3,
+      reason: "fingerprint-change",
+      kind: "stylesheet",
+    });
+    onStylesInspectPublicationRenewed?.({
+      type: "styles.inspectPublicationRenewed",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    });
+    await flushAsync();
+    expect(sent).toContainEqual({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-styles",
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 4,
+        stylesRevision: 9,
+        stylesheetRevision: 3,
+      },
+    });
+    expect(sent).toContainEqual({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-styles",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+      },
+    });
+    runtime.dispose();
+  });
   it("is idempotent, owns the inspect lease, and cleans up listeners", async () => {
     const runtimeMessages = messageHarness();
     const leasePort = portHarness();
@@ -1054,6 +1134,30 @@ function rootResponse(requestId: string) {
       expandable: true,
       branchRevision: 0,
       locator: elementLocator("html"),
+    },
+  };
+}
+
+function stylesMatchedResponse(requestId: string) {
+  return {
+    type: "styles.matched" as const,
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    stylesRevision: 8,
+    stylesheetRevision: 3,
+    styles: {
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      stylesRevision: 8,
+      stylesheetRevision: 3,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
     },
   };
 }

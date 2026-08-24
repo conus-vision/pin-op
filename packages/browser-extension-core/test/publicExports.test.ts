@@ -42,6 +42,8 @@ import {
   FrameRegistry,
   InspectMode,
   InspectorPanelView,
+  MatchedStylesCollector,
+  MatchedStylesModel,
   PAGE_INSPECTION_SELECTION_INTERVAL_MS,
   PageInspectionSession,
   PageOverlay,
@@ -49,6 +51,7 @@ import {
   PanelSettingsController,
   ResolutionPresenter,
   RuleReferenceRegistry,
+  STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
   SourceNavigationController,
   SourcePaneController,
   formatResolutionFooter,
@@ -58,6 +61,9 @@ import {
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
+  parseStylesEvent,
+  parseStylesRequest,
+  parseStylesResponse,
   parsePanelTabSettingsCommand,
   parseContentRefreshCommand,
   refreshExternalStylesheets,
@@ -139,6 +145,8 @@ describe("browser extension core exports", () => {
     expect(createPanelIcons).toBeTypeOf("function");
     expect(InspectMode).toBeTypeOf("function");
     expect(InspectorPanelView).toBeTypeOf("function");
+    expect(MatchedStylesCollector).toBeTypeOf("function");
+    expect(MatchedStylesModel).toBeTypeOf("function");
     expect(PAGE_INSPECTION_SELECTION_INTERVAL_MS).toBe(100);
     expect(PageInspectionSession).toBeTypeOf("function");
     expect(PageOverlay).toBeTypeOf("function");
@@ -146,6 +154,10 @@ describe("browser extension core exports", () => {
     expect(parseDomEvent).toBeTypeOf("function");
     expect(parseDomRequest).toBeTypeOf("function");
     expect(parseDomResponse).toBeTypeOf("function");
+    expect(parseStylesEvent).toBeTypeOf("function");
+    expect(parseStylesRequest).toBeTypeOf("function");
+    expect(parseStylesResponse).toBeTypeOf("function");
+    expect(STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES).toBe(512 * 1024);
     expect(parsePanelTabSettingsCommand).toBeTypeOf("function");
     expect(parseContentRefreshCommand).toBeTypeOf("function");
     expect(refreshExternalStylesheets).toBeTypeOf("function");

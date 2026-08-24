@@ -30,7 +30,6 @@ import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isSelectionRevision,
   parseDomEvent,
-  parseDomRequest,
   parseDomResponse,
   type DomEvent,
   type DomErrorCode,
@@ -54,6 +53,7 @@ import {
   isValidContentSessionId,
   isValidDevtoolsChannel,
   parseInspectContentLeasePortName,
+  parseInspectorLocalRequest,
   parseDevtoolsPanelPortName,
   parseInspectPortRequest,
   parsePanelPresentationSettingsCommand,
@@ -67,6 +67,14 @@ import {
   type PanelSourceNavigateCommand,
 } from "./inspectPortProtocol.js";
 import { PanelSessionTransport } from "./panelSessionTransport.js";
+import {
+  STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+  parseStylesEvent,
+  parseStylesResponse,
+  type StylesErrorCode,
+  type StylesEvent,
+  type StylesGetMatchedRequest,
+} from "./stylesProtocol.js";
 import {
   createPanelTabStateMessage,
   type ProtocolCompatibilityMessage,
@@ -513,6 +521,15 @@ export class BackgroundRouter {
       return this.publishContentDomEvent(
         domEvent.event,
         domEvent.contentSessionId,
+        sender,
+      );
+    }
+
+    const stylesEvent = parseContentStylesEventMessage(message);
+    if (stylesEvent) {
+      return this.publishContentStylesEvent(
+        stylesEvent.event,
+        stylesEvent.contentSessionId,
         sender,
       );
     }
@@ -2144,17 +2161,25 @@ export class BackgroundRouter {
         this.publishSourceNavigation(record, activationToken, navigation);
         return;
       }
-      let domRequest: DomRequest;
-      try {
-        domRequest = parseDomRequest(message);
-      } catch {
-        const requestId = readDomQueryRequestId(message);
-        if (requestId) {
-          this.postDomQueryError(record, requestId, "invalid-request");
-        }
+      const inspectorRequest = parseInspectorLocalRequest(message);
+      if (inspectorRequest?.type === "styles.getMatched") {
+        this.queueStylesRequest(record, activationToken, inspectorRequest);
         return;
       }
-      this.queueDomRequest(record, activationToken, domRequest);
+      if (inspectorRequest) {
+        this.queueDomRequest(record, activationToken, inspectorRequest);
+        return;
+      }
+      const stylesRequestId = readInspectorQueryRequestId(
+        message,
+        "styles.getMatched",
+      );
+      if (stylesRequestId) {
+        this.postStylesQueryError(record, stylesRequestId, "invalid-request");
+        return;
+      }
+      const requestId = readInspectorQueryRequestId(message);
+      if (requestId) this.postDomQueryError(record, requestId, "invalid-request");
       return;
     }
     const operation = record.inspectCommandTail.then(async () => {
@@ -2594,6 +2619,85 @@ export class BackgroundRouter {
     });
   }
 
+  private queueStylesRequest(
+    record: PanelPortRecord,
+    activationToken: object,
+    request: StylesGetMatchedRequest,
+  ): void {
+    const settle = (code: StylesErrorCode): void => {
+      this.postStylesQueryError(record, request.requestId, code);
+    };
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (!binding || !this.isCurrentActivation(record, activationToken, binding)) {
+        settle("cancelled");
+        return;
+      }
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      if (
+        refreshed !== binding ||
+        record.activationToken !== activationToken ||
+        !record.inspectSession ||
+        !record.panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settle("cancelled");
+        return;
+      }
+      const inspectSession = record.inspectSession;
+      const panelSessionBinding = record.panelSessionBinding;
+      await inspectSession.whenIdle();
+      if (
+        record.inspectSession !== inspectSession ||
+        record.panelSessionBinding !== panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settle("cancelled");
+        return;
+      }
+      const response = await this.panelSessions.requestStyles(
+        record.channel,
+        request,
+      );
+      if (
+        record.inspectSession !== inspectSession ||
+        record.panelSessionBinding !== panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        settle("cancelled");
+        return;
+      }
+      this.postToCurrentPort(record, activationToken, response);
+    });
+    record.inspectCommandTail = operation.catch((error) => {
+      this.reportError(error);
+      settle("internal-error");
+    });
+  }
+
+  private postStylesQueryError(
+    record: PanelPortRecord,
+    requestId: string,
+    code: StylesErrorCode,
+  ): void {
+    if (this.panelPorts.get(record.channel) !== record) return;
+    let response: ReturnType<typeof parseStylesResponse>;
+    try {
+      response = parseStylesResponse({ type: "styles.error", requestId, code });
+    } catch {
+      return;
+    }
+    try {
+      record.port.postMessage(response);
+    } catch {
+      // A disconnected original port rejects its own pending panel request.
+    }
+  }
+
   private postDomQueryError(
     record: PanelPortRecord,
     requestId: string,
@@ -2934,6 +3038,32 @@ export class BackgroundRouter {
     }
     this.panelSessions.publish(binding.channel, event);
     return okResult;
+  }
+
+  private async publishContentStylesEvent(
+    event: StylesEvent,
+    contentSessionId: ContentSessionId,
+    sender: BackgroundMessageSender,
+  ): Promise<BackgroundRouteResult | undefined> {
+    const senderTab = validatedSenderTab(sender);
+    if (!senderTab) return undefined;
+    const channel = this.channelByTab.get(senderTab.id);
+    const binding = channel ? this.bindings.get(channel) : undefined;
+    const record = channel ? this.panelPorts.get(channel) : undefined;
+    if (
+      !binding ||
+      !record ||
+      !record.inspectSession ||
+      record.contentSessionId !== contentSessionId ||
+      record.bindingGeneration !== binding.generation ||
+      (senderTab.windowId !== undefined && senderTab.windowId !== binding.windowId)
+    ) return undefined;
+    if (event.type === "styles.invalidated") {
+      this.panelSessions.publish(binding.channel, event);
+      return okResult;
+    }
+    const republished = await this.panelSessions.republishSelection(binding.channel);
+    return republished ? okResult : undefined;
   }
 
   private queueWindowState(
@@ -3751,6 +3881,11 @@ interface ContentDomEventEnvelope {
   readonly event: DomEvent;
 }
 
+interface ContentStylesEventEnvelope {
+  readonly contentSessionId: ContentSessionId;
+  readonly event: StylesEvent;
+}
+
 function parseElementSelectedMessage(
   value: unknown,
 ): ContentSelectionEnvelope | undefined {
@@ -3817,6 +3952,25 @@ function parseContentDomEventMessage(
     return {
       contentSessionId: value.contentSessionId,
       event: parseDomEvent(value.event),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseContentStylesEventMessage(
+  value: unknown,
+): ContentStylesEventEnvelope | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["type", "contentSessionId", "event"]) ||
+    value.type !== "pin-op.styles.event" ||
+    !isValidContentSessionId(value.contentSessionId)
+  ) return undefined;
+  try {
+    return {
+      contentSessionId: value.contentSessionId,
+      event: parseStylesEvent(value.event),
     };
   } catch {
     return undefined;
@@ -3911,7 +4065,10 @@ function domQueryRequestId(request: DomRequest): string | undefined {
     : undefined;
 }
 
-function readDomQueryRequestId(value: unknown): string | undefined {
+function readInspectorQueryRequestId(
+  value: unknown,
+  expectedType?: "styles.getMatched",
+): string | undefined {
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       return undefined;
@@ -3935,14 +4092,17 @@ function readDomQueryRequestId(value: unknown): string | undefined {
     }
     const type = typeDescriptor.value;
     const requestId = requestIdDescriptor.value;
-    return (
-      type === "dom.getRoot" ||
-      type === "dom.getChildren" ||
-      type === "dom.resolveLocator"
-    ) &&
+    const isAllowedType = expectedType
+      ? type === expectedType
+      : type === "dom.getRoot" ||
+        type === "dom.getChildren" ||
+        type === "dom.resolveLocator";
+    return isAllowedType &&
         typeof requestId === "string" &&
         requestId.length > 0 &&
-        requestId.length <= DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH
+        requestId.length <= (expectedType
+          ? STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH
+          : DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH)
       ? requestId
       : undefined;
   } catch {

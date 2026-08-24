@@ -37,6 +37,8 @@ import {
   FrameRegistry,
   InspectMode,
   InspectorPanelView,
+  MatchedStylesCollector,
+  MatchedStylesModel,
   PAGE_INSPECTION_SELECTION_INTERVAL_MS,
   PageInspectionSession,
   PageOverlay,
@@ -44,6 +46,7 @@ import {
   PanelSettingsController,
   ResolutionPresenter,
   RuleReferenceRegistry,
+  STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
   SourcePaneController,
   formatResolutionFooter,
   presentResolution,
@@ -51,6 +54,9 @@ import {
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
+  parseStylesEvent,
+  parseStylesRequest,
+  parseStylesResponse,
   parsePanelTabSettingsCommand,
   parseContentRefreshCommand,
   refreshExternalStylesheets,
@@ -110,6 +116,8 @@ assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
 assert.equal(typeof InspectMode, "function");
 assert.equal(typeof InspectorPanelView, "function");
+assert.equal(typeof MatchedStylesCollector, "function");
+assert.equal(typeof MatchedStylesModel, "function");
 assert.equal(PAGE_INSPECTION_SELECTION_INTERVAL_MS, 100);
 assert.equal(typeof PageInspectionSession, "function");
 assert.equal(typeof PageOverlay, "function");
@@ -117,6 +125,7 @@ assert.equal(typeof PanelController, "function");
 assert.equal(typeof PanelSettingsController, "function");
 assert.equal(typeof ResolutionPresenter, "function");
 assert.equal(typeof RuleReferenceRegistry, "function");
+assert.equal(STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES, 512 * 1024);
 assert.equal(typeof SourcePaneController, "function");
 assert.equal(typeof formatResolutionFooter, "function");
 assert.equal(typeof presentResolution, "function");
@@ -124,6 +133,9 @@ assert.equal(typeof parseLinkCode, "function");
 assert.equal(typeof parseDomEvent, "function");
 assert.equal(typeof parseDomRequest, "function");
 assert.equal(typeof parseDomResponse, "function");
+assert.equal(typeof parseStylesEvent, "function");
+assert.equal(typeof parseStylesRequest, "function");
+assert.equal(typeof parseStylesResponse, "function");
 assert.equal(typeof parsePanelTabSettingsCommand, "function");
 assert.equal(typeof parseContentRefreshCommand, "function");
 assert.equal(typeof refreshExternalStylesheets, "function");

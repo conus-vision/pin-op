@@ -16,8 +16,56 @@ import {
 import { DomTreeController } from "../src/domTreeController.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
+import type { StylesGetMatchedRequest } from "../src/stylesProtocol.js";
 
 describe("PanelInspectTransport DOM integration", () => {
+  it("rewrites styles request IDs and validates all echoed identities", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const caller = stylesRequest("caller-styles");
+    const pending = transport.requestStyles(caller);
+    const wire = port.sent.at(-1) as StylesGetMatchedRequest;
+
+    expect(wire).toMatchObject({
+      type: "styles.getMatched",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    });
+    expect(wire.requestId).not.toBe(caller.requestId);
+
+    port.emitMessage(stylesMatched({ ...wire, nodeRef: "wrong" }));
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    port.emitMessage(stylesMatched(wire));
+    await expect(pending).resolves.toMatchObject({
+      type: "styles.matched",
+      requestId: caller.requestId,
+      nodeRef: caller.nodeRef,
+    });
+  });
+
+  it("rejects stale-port styles replies, duplicate caller IDs, and pending work on disconnect", async () => {
+    const first = new FakePort();
+    const second = new FakePort();
+    const ports = [first, second];
+    const transport = new PanelInspectTransport(() => ports.shift()!);
+    const firstPending = transport.requestStyles(stylesRequest("same"));
+    await expect(transport.requestStyles(stylesRequest("same")))
+      .rejects.toThrow(/duplicate/i);
+    first.onDisconnect.emit();
+    await expect(firstPending).rejects.toThrow(/closed/i);
+
+    const current = transport.requestStyles(stylesRequest("current"));
+    const wire = second.sent.at(-1) as StylesGetMatchedRequest;
+    first.emitMessage(stylesMatched({ ...wire, requestId: "stylesq-1" }));
+    await Promise.resolve();
+    second.emitMessage(stylesMatched(wire));
+    await expect(current).resolves.toMatchObject({ requestId: "current" });
+  });
   it("correlates a validated DOM query without a panel-supplied tab ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
@@ -1153,5 +1201,39 @@ function sourceNavigationState(
     selectedMatchCount,
     ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
+  };
+}
+
+function stylesRequest(requestId: string): StylesGetMatchedRequest {
+  return {
+    type: "styles.getMatched",
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+  };
+}
+
+function stylesMatched(request: StylesGetMatchedRequest) {
+  return {
+    type: "styles.matched" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 8,
+    stylesheetRevision: 3,
+    styles: {
+      documentEpoch: request.documentEpoch,
+      nodeRef: request.nodeRef,
+      selectionRevision: request.selectionRevision,
+      stylesRevision: 8,
+      stylesheetRevision: 3,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    },
   };
 }
