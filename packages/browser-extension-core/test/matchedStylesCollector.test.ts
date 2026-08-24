@@ -1,3 +1,4 @@
+import { INSPECT_LIMITS } from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { MatchedStylesCollector } from "../src/matchedStylesCollector.js";
 import type {
@@ -251,6 +252,108 @@ describe("MatchedStylesCollector", () => {
     current = false;
     expect(matched.collect(AUTHORITY)).toBeUndefined();
   });
+
+  it("reads ownerless sheet disabled/media applicability hostile-safely on every collection", () => {
+    const scope = documentScope({
+      media: new Map([["print", false], ["screen", true]]),
+    });
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const disabled = Object.assign(
+      stylesheet(null, [styleRule(".card", { color: "red" })]),
+      { disabled: true, media: { mediaText: "" } },
+    );
+    const mutableMedia = Object.assign(
+      stylesheet(null, [styleRule(".card", { opacity: "0.5" })]),
+      { disabled: false, media: { mediaText: "print" } },
+    );
+    const hostileMedia = Object.assign(
+      stylesheet(null, [styleRule(".card", { "z-index": "2" })]),
+      { disabled: false },
+    );
+    Object.defineProperty(hostileMedia, "media", {
+      get(): never {
+        throw new Error("hostile media getter");
+      },
+    });
+    const authority = stylesheetAuthority(
+      scope,
+      [disabled, mutableMedia, hostileMedia],
+      [],
+      "adopted",
+    );
+    const matched = collector(selected, authority);
+
+    expect(matched.collect(AUTHORITY)!.rules.map(
+      ({ declarations }) => declarations[0]?.state,
+    )).toEqual(["inactive", "inactive", "unknown"]);
+
+    disabled.disabled = false;
+    mutableMedia.media.mediaText = "screen";
+    expect(matched.collect(AUTHORITY)!.rules.map(
+      ({ declarations }) => declarations[0]?.state,
+    )).toEqual(["winning-known-author", "winning-known-author", "unknown"]);
+  });
+
+  it("surfaces shared-walker fact truncation instead of claiming completeness", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const rules = Array.from({ length: 3 }, (_, ruleIndex) => styleRule(
+      ".card",
+      Object.fromEntries(Array.from(
+        { length: INSPECT_LIMITS.declarationsPerRule },
+        (_, declarationIndex) => [
+          `--r${ruleIndex}-${declarationIndex}`,
+          `${declarationIndex}`,
+        ],
+      )),
+    ));
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, rules)]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.rules.flatMap(({ declarations }) => declarations)).toHaveLength(
+      INSPECT_LIMITS.factsPerTarget,
+    );
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("facts-per-target-limit");
+  });
+
+  it("detects unsupported :host and ::slotted rules across actual roots", () => {
+    const document = documentScope();
+    const shadow = shadowScope(document);
+    const hostElement = element(document, {
+      matches: new Set(),
+      shadowRoot: shadow,
+      tagName: "PIN-HOST",
+    });
+    shadow.host = hostElement;
+    const slot = element(shadow, { matches: new Set(), tagName: "SLOT" });
+    const assigned = element(document, {
+      matches: new Set([".light"]),
+      assignedSlot: slot,
+      tagName: "SPAN",
+    });
+    const shadowSheet = stylesheet(null, [
+      styleRule(":host", { color: "red" }),
+      styleRule("::slotted(.light)", { color: "blue" }),
+    ]);
+    const authority = multiScopeStylesheetAuthority([
+      { scope: document, roots: [] },
+      { scope: shadow, roots: [shadowSheet] },
+    ]);
+
+    const hostResult = collector(hostElement, authority).collect(AUTHORITY)!;
+    expect(hostResult.rules).toEqual([]);
+    expect(hostResult.partial).toBe(true);
+    expect(hostResult.diagnostics).toContain("unsupported-host-selector-scope");
+
+    const assignedResult = collector(assigned, authority).collect(AUTHORITY)!;
+    expect(assignedResult.rules).toEqual([]);
+    expect(assignedResult.partial).toBe(true);
+    expect(assignedResult.diagnostics).toContain("unsupported-slotted-selector-scope");
+  });
 });
 
 function collector(
@@ -281,9 +384,16 @@ function stylesheetAuthority(
   scope: ReturnType<typeof documentScope>,
   roots: ReturnType<typeof stylesheet>[],
   imports: ReturnType<typeof stylesheet>[] = [],
+  rootKind: StylesheetRegistryEntry["kind"] = "external",
 ): MatchedStylesStylesheetAuthority & { snapshot: () => StylesheetRegistrySnapshot } {
   const entries = [
-    ...roots.map((sheet, index) => entry(scope, sheet, index, `root-${index}`)),
+    ...roots.map((sheet, index) => entry(
+      scope,
+      sheet,
+      index,
+      `root-${index}`,
+      rootKind,
+    )),
     ...imports.map((sheet, index) => entry(
       scope,
       sheet,
@@ -305,6 +415,35 @@ function stylesheetAuthority(
     snapshot: () => snapshot(entries),
     entriesForElement: (candidate) =>
       (candidate as unknown as { root: object }).root === scope ? entries : [],
+    referenceRule: (_entry, _path, native) => reference(native),
+    referenceInlineRule: (native) => reference(native),
+  };
+}
+
+function multiScopeStylesheetAuthority(
+  groups: readonly {
+    scope: ReturnType<typeof documentScope> | ReturnType<typeof shadowScope>;
+    roots: ReturnType<typeof stylesheet>[];
+  }[],
+): MatchedStylesStylesheetAuthority {
+  const entries = groups.flatMap(({ scope, roots }, groupIndex) => roots.map(
+    (sheet, index) => entry(scope, sheet, index, `g${groupIndex}-${index}`),
+  ));
+  const refs = new WeakMap<object, string>();
+  let nextRef = 0;
+  const reference = (native: object) => {
+    const current = refs.get(native);
+    if (current) return current;
+    const created = `rule-${++nextRef}`;
+    refs.set(native, created);
+    return created;
+  };
+  return {
+    snapshot: () => snapshot(entries),
+    entriesForElement: (candidate) => {
+      const root = (candidate as unknown as { root: object }).root;
+      return entries.filter(({ scope }) => scope === root);
+    },
     referenceRule: (_entry, _path, native) => reference(native),
     referenceInlineRule: (native) => reference(native),
   };
@@ -364,6 +503,15 @@ function documentScope(options: {
   };
 }
 
+function shadowScope(ownerDocument: ReturnType<typeof documentScope>) {
+  return {
+    nodeType: 11,
+    mode: "open",
+    ownerDocument,
+    host: undefined as ReturnType<typeof element> | undefined,
+  };
+}
+
 function element(
   root: object,
   options: {
@@ -372,13 +520,16 @@ function element(
     inline?: ReturnType<typeof declaration>;
     parent?: ReturnType<typeof element> | null;
     tagName?: string;
+    assignedSlot?: ReturnType<typeof element> | null;
+    shadowRoot?: ReturnType<typeof shadowScope> | null;
   },
 ) {
   return {
     root,
     tagName: options.tagName ?? "ARTICLE",
     parentElement: options.parent ?? null,
-    assignedSlot: null,
+    assignedSlot: options.assignedSlot ?? null,
+    shadowRoot: options.shadowRoot ?? null,
     style: options.inline ?? declaration({}),
     getRootNode: () => root,
     matches(selector: string) {

@@ -227,6 +227,7 @@ export class MatchedStylesCollector {
     snapshot: StylesheetRegistrySnapshot,
     diagnostics: Set<string>,
   ): RuleDraft[] {
+    detectUnsupportedCrossRootSelectors(element, snapshot, diagnostics);
     let scopedEntries: readonly StylesheetRegistryEntry[];
     try {
       scopedEntries = this.options.stylesheets.entriesForElement(element);
@@ -309,6 +310,7 @@ export class MatchedStylesCollector {
     if (walk.inaccessibleStylesheets.length > 0) {
       diagnostics.add("stylesheet-inaccessible");
     }
+    for (const reason of walk.status.reasons) diagnostics.add(reason);
     return drafts.filter(({ declarations }) => declarations.length > 0);
   }
 
@@ -466,10 +468,43 @@ function ownerActive(
   element: Element,
   entry: StylesheetRegistryEntry,
 ): boolean | undefined {
+  const sheetApplicability = sheetActive(element, entry.sheet);
   const state = entry.ownerState;
-  if (!state) return true;
-  if (state.disabled || state.alternate) return false;
-  return state.media.trim() ? mediaActive(element, state.media) : true;
+  if (!state) return sheetApplicability;
+  const ownerApplicability = state.disabled || state.alternate
+    ? false
+    : state.media.trim()
+      ? mediaActive(element, state.media)
+      : true;
+  return combineApplicability(sheetApplicability, ownerApplicability);
+}
+
+function sheetActive(element: Element, sheet: CSSStyleSheet): boolean | undefined {
+  let disabled: unknown;
+  try {
+    disabled = (sheet as unknown as { readonly disabled?: unknown }).disabled;
+  } catch {
+    return undefined;
+  }
+  if (disabled === true) return false;
+  if (disabled !== undefined && disabled !== false) return undefined;
+
+  let media: unknown;
+  try {
+    media = (sheet as unknown as { readonly media?: unknown }).media;
+  } catch {
+    return undefined;
+  }
+  if (media === undefined || media === null) return true;
+  if (typeof media !== "object") return undefined;
+  let mediaText: unknown;
+  try {
+    mediaText = (media as { readonly mediaText?: unknown }).mediaText;
+  } catch {
+    return undefined;
+  }
+  if (typeof mediaText !== "string") return undefined;
+  return mediaText.trim() ? mediaActive(element, mediaText) : true;
 }
 
 function combineApplicability(
@@ -678,6 +713,58 @@ function composedParent(element: Element): Element | undefined {
     const root = element.getRootNode();
     const host = (root as ShadowRoot).host;
     return typeof host === "object" && host !== null ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function detectUnsupportedCrossRootSelectors(
+  element: Element,
+  snapshot: StylesheetRegistrySnapshot,
+  diagnostics: Set<string>,
+): void {
+  let shadowRoot: object | undefined;
+  try {
+    const candidate = (element as unknown as { readonly shadowRoot?: unknown }).shadowRoot;
+    if (typeof candidate === "object" && candidate !== null) shadowRoot = candidate;
+  } catch {
+    diagnostics.add("cross-root-scope-unavailable");
+  }
+  if (
+    shadowRoot &&
+    safeStringProperty(shadowRoot, "mode") !== "closed" &&
+    snapshot.entries.some(({ scope }) => scope === shadowRoot)
+  ) {
+    diagnostics.add("unsupported-host-selector-scope");
+  }
+
+  let assignedSlot: object | undefined;
+  try {
+    const candidate = (element as unknown as { readonly assignedSlot?: unknown }).assignedSlot;
+    if (typeof candidate === "object" && candidate !== null) assignedSlot = candidate;
+  } catch {
+    diagnostics.add("cross-root-scope-unavailable");
+  }
+  if (!assignedSlot) return;
+  let slotRoot: object | undefined;
+  try {
+    const getRootNode = (assignedSlot as { readonly getRootNode?: unknown }).getRootNode;
+    const candidate = typeof getRootNode === "function"
+      ? getRootNode.call(assignedSlot)
+      : undefined;
+    if (typeof candidate === "object" && candidate !== null) slotRoot = candidate;
+  } catch {
+    diagnostics.add("cross-root-scope-unavailable");
+  }
+  if (slotRoot && snapshot.entries.some(({ scope }) => scope === slotRoot)) {
+    diagnostics.add("unsupported-slotted-selector-scope");
+  }
+}
+
+function safeStringProperty(value: object, property: PropertyKey): string | undefined {
+  try {
+    const candidate = (value as Record<PropertyKey, unknown>)[property];
+    return typeof candidate === "string" ? candidate : undefined;
   } catch {
     return undefined;
   }

@@ -66,6 +66,37 @@ const SHORTHAND_PROPERTIES = new Set([
   "transition",
 ]);
 
+const SHORTHAND_LONGHAND_RELATIONS: Readonly<Record<string, readonly string[]>> =
+  Object.freeze({
+    inset: Object.freeze(["top", "right", "bottom", "left"]),
+    "inset-block": Object.freeze(["inset-block-start", "inset-block-end"]),
+    "inset-inline": Object.freeze(["inset-inline-start", "inset-inline-end"]),
+    "border-color": Object.freeze([
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+    ]),
+    "border-style": Object.freeze([
+      "border-top-style",
+      "border-right-style",
+      "border-bottom-style",
+      "border-left-style",
+    ]),
+    "border-width": Object.freeze([
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+    ]),
+    "place-items": Object.freeze(["align-items", "justify-items"]),
+    "place-content": Object.freeze(["align-content", "justify-content"]),
+    "place-self": Object.freeze(["align-self", "justify-self"]),
+    gap: Object.freeze(["row-gap", "column-gap"]),
+    overflow: Object.freeze(["overflow-x", "overflow-y"]),
+    "flex-flow": Object.freeze(["flex-direction", "flex-wrap"]),
+  });
+
 /**
  * Classifies one declaration only against the author declarations present in
  * the same bounded snapshot. It deliberately never consults computed style.
@@ -168,6 +199,9 @@ function shorthandMayAffect(shorthand: string, property: string): boolean {
   const normalizedShorthand = shorthand.toLowerCase();
   const normalizedProperty = property.toLowerCase();
   if (normalizedShorthand === "all") return true;
+  if (SHORTHAND_LONGHAND_RELATIONS[normalizedShorthand]?.includes(normalizedProperty)) {
+    return true;
+  }
   if (normalizedProperty.startsWith(`${normalizedShorthand}-`)) return true;
   if (normalizedShorthand === "font") {
     return normalizedProperty.startsWith("font-") || normalizedProperty === "line-height";

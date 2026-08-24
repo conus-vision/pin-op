@@ -194,6 +194,9 @@ describe("walkCssRules", () => {
     );
     expect([...ruleWalk.records]).toEqual([]);
     expect(matchCalls).toBe(INSPECT_LIMITS.cssRules);
+    expect(ruleWalk.status.truncated).toBe(true);
+    expect(ruleWalk.status.reasons).toContain("css-rules-limit");
+    expect(Object.isFrozen(ruleWalk.status.reasons)).toBe(true);
 
     const declarations = Object.fromEntries(Array.from(
       { length: INSPECT_LIMITS.declarationsPerRule + 1 },
@@ -217,6 +220,10 @@ describe("walkCssRules", () => {
     );
     expect(bounded.records[0]?.contextsTruncated).toBe(true);
     expect(bounded.records[0]?.mediaTruncated).toBe(true);
+    expect(bounded.status.reasons).toEqual(expect.arrayContaining([
+      "declarations-per-rule-limit",
+      "context-limit",
+    ]));
   });
 
   it("does not pull a stylesheet beyond the global stylesheet limit", () => {
@@ -248,17 +255,20 @@ describe("walkCssRules", () => {
     expect(result.records).toEqual([]);
     expect(nextCalls).toBe(INSPECT_LIMITS.stylesheets);
     expect(returnCalls).toBe(1);
+    expect(result.status.reasons).toContain("stylesheets-limit");
   });
 });
 
 function collectRecords(document: CssDocumentSource): {
   records: CssRuleWalkRecord[];
   inaccessibleStylesheets: readonly unknown[];
+  status: ReturnType<typeof walkCssRules>["status"];
 } {
   const walk = walkCssRules({ matches: () => true }, document);
   return {
     records: [...walk.records],
     inaccessibleStylesheets: walk.inaccessibleStylesheets,
+    status: walk.status,
   };
 }
 

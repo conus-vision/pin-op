@@ -105,6 +105,41 @@ describe("classifyCascade", () => {
       reason: "animation-or-transition-cascade",
     });
   });
+
+  it.each([
+    ["top", "inset"],
+    ["border-top-color", "border-color"],
+    ["align-items", "place-items"],
+  ] as const)(
+    "keeps %s unknown when the unsupported %s shorthand can affect it",
+    (longhand, shorthand) => {
+      const earlierImportantLonghand = candidate({
+        property: longhand,
+        important: true,
+        sourceOrder: 1,
+      });
+      const laterShorthand = candidate({
+        property: shorthand,
+        important: false,
+        sourceOrder: 2,
+      });
+      expect(classifyCascade(
+        earlierImportantLonghand,
+        [earlierImportantLonghand, laterShorthand],
+      )).toEqual({ state: "unknown", reason: "unsupported-shorthand" });
+
+      const laterLonghand = candidate({ property: longhand, sourceOrder: 3 });
+      const earlierImportantShorthand = candidate({
+        property: shorthand,
+        important: true,
+        sourceOrder: 1,
+      });
+      expect(classifyCascade(
+        laterLonghand,
+        [earlierImportantShorthand, laterLonghand],
+      )).toEqual({ state: "unknown", reason: "unsupported-shorthand" });
+    },
+  );
 });
 
 function candidate(
