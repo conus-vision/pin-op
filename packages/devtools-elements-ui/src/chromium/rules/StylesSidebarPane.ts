@@ -1,0 +1,311 @@
+// Copyright 2021 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+/*
+ * Copyright (C) 2007 Apple Inc.  All rights reserved.
+ * Copyright (C) 2009 Joseph Pecoraro
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1.  Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ * 3.  Neither the name of Apple Computer, Inc. ("Apple") nor the names of
+ *     its contributors may be used to endorse or promote products derived
+ *     from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Pin-op adaptation of front_end/panels/elements/StylesSidebarPane.ts at
+ * Chromium DevTools revision a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280.
+ *
+ * Retains section ordering, filtering, roving focus, partial diagnostics, and
+ * familiar Rules presentation over a neutral immutable data source.
+ */
+
+import type {
+  MatchedStylesSnapshot,
+  RulesDataSource,
+  SourceLinkDelegate,
+} from "../../contracts.js";
+import {
+  StylePropertiesSection,
+  type RulesSectionKind,
+} from "./StylePropertiesSection.js";
+import {
+  createRulesElement,
+  normalizedFilter,
+} from "./StylePropertyUtils.js";
+
+export class StylesSidebarPane {
+  public readonly element: HTMLElement;
+  private readonly filterInput: HTMLInputElement;
+  private readonly sectionsRoot: HTMLElement;
+  private readonly diagnosticsRoot: HTMLElement;
+  private sections: readonly StylePropertiesSection[] = [];
+  private inheritedGroups: readonly RenderedInheritedGroup[] = [];
+  private query = "";
+  private disposed = false;
+  private readonly onFilterInputListener = (): void => this.onFilterInput();
+  private readonly onKeyDownListener = (event: Event): void => this.onKeyDown(event);
+
+  public constructor(
+    private readonly document: Document,
+    private readonly dataSource: RulesDataSource,
+    private readonly sourceLinkDelegate?: SourceLinkDelegate,
+  ) {
+    this.element = createRulesElement(document, "div", {
+      className: "styles-pane matched-styles read-only",
+      attributes: {
+        "aria-label": "Matched styles",
+        "aria-readonly": "true",
+        "data-part": "styles-sidebar-pane",
+      },
+    });
+    const toolbar = createRulesElement(document, "div", {
+      className: "styles-sidebar-pane-toolbar-container",
+      attributes: { "data-part": "rules-toolbar" },
+    });
+    this.filterInput = createRulesElement(document, "input", {
+      className: "styles-filter-input",
+      attributes: {
+        "aria-label": "Filter styles",
+        "data-part": "rules-filter",
+        placeholder: "Filter",
+        spellcheck: "false",
+        type: "search",
+      },
+    }) as HTMLInputElement;
+    toolbar.append(this.filterInput);
+    this.sectionsRoot = createRulesElement(document, "div", {
+      className: "styles-sections",
+      attributes: {
+        "aria-label": "Style rules",
+        "data-part": "rules-sections",
+        role: "list",
+      },
+    });
+    this.diagnosticsRoot = createRulesElement(document, "div", {
+      className: "rules-diagnostics",
+      attributes: {
+        "aria-live": "polite",
+        "data-part": "rules-diagnostics",
+      },
+    });
+    this.element.append(toolbar, this.sectionsRoot, this.diagnosticsRoot);
+    this.filterInput.addEventListener("input", this.onFilterInputListener);
+    this.sectionsRoot.addEventListener("keydown", this.onKeyDownListener);
+  }
+
+  public render(snapshot: MatchedStylesSnapshot): void {
+    if (this.disposed) return;
+    const sections: StylePropertiesSection[] = [];
+    const children: HTMLElement[] = [];
+    const inheritedGroups: RenderedInheritedGroup[] = [];
+    if (snapshot.inlineStyle) {
+      this.appendSection(
+        sections,
+        children,
+        snapshot.inlineStyle,
+        "inline",
+      );
+    }
+    for (const rule of snapshot.matchedRules) {
+      this.appendSection(sections, children, rule, "matched");
+    }
+    for (const inherited of snapshot.inherited) {
+      const groupHeading = createRulesElement(this.document, "div", {
+        className: "sidebar-separator inherited-separator",
+        text: `Inherited from ${inherited.nodeRef}`,
+        attributes: {
+          "data-inherited-group": inherited.nodeRef,
+          "data-part": "inherited-group",
+          role: "heading",
+        },
+      });
+      children.push(groupHeading);
+      const groupSections: StylePropertiesSection[] = [];
+      if (inherited.inlineStyle) {
+        groupSections.push(this.appendSection(
+          sections,
+          children,
+          inherited.inlineStyle,
+          "inherited",
+          inherited.nodeRef,
+        ));
+      }
+      for (const rule of inherited.matchedRules) {
+        groupSections.push(this.appendSection(
+          sections,
+          children,
+          rule,
+          "inherited",
+          inherited.nodeRef,
+        ));
+      }
+      inheritedGroups.push(Object.freeze({
+        element: groupHeading,
+        sections: Object.freeze(groupSections),
+      }));
+    }
+    if (sections.length === 0) {
+      children.push(createRulesElement(this.document, "p", {
+        className: "gray-info-message",
+        text: "No matching styles",
+        attributes: { role: "status" },
+      }));
+    }
+    this.sections = Object.freeze(sections);
+    this.inheritedGroups = Object.freeze(inheritedGroups);
+    this.sectionsRoot.replaceChildren(...children);
+    this.renderDiagnostics(snapshot);
+    this.applyFilter();
+  }
+
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.filterInput.removeEventListener("input", this.onFilterInputListener);
+    this.sectionsRoot.removeEventListener("keydown", this.onKeyDownListener);
+    this.sections = [];
+    this.inheritedGroups = [];
+    this.element.replaceChildren();
+    this.element.remove();
+  }
+
+  private appendSection(
+    sections: StylePropertiesSection[],
+    children: HTMLElement[],
+    rule: MatchedStylesSnapshot["matchedRules"][number],
+    kind: RulesSectionKind,
+    inheritedFrom?: string,
+  ): StylePropertiesSection {
+    const section = new StylePropertiesSection(this.document, rule, {
+      kind,
+      ...(inheritedFrom ? { inheritedFrom } : {}),
+      ...(this.sourceLinkDelegate
+        ? { sourceLinkDelegate: this.sourceLinkDelegate }
+        : {}),
+    });
+    sections.push(section);
+    children.push(section.element);
+    return section;
+  }
+
+  private renderDiagnostics(snapshot: MatchedStylesSnapshot): void {
+    const diagnostics: HTMLElement[] = [];
+    if (snapshot.inaccessibleStylesheetCount > 0) {
+      const count = snapshot.inaccessibleStylesheetCount;
+      diagnostics.push(this.notice(
+        `${count} stylesheet${count === 1 ? "" : "s"} inaccessible`,
+        "warning",
+      ));
+    }
+    if (snapshot.omittedRuleCount > 0) {
+      const count = snapshot.omittedRuleCount;
+      diagnostics.push(this.notice(
+        `${count} matching rule${count === 1 ? "" : "s"} omitted`,
+        "warning",
+      ));
+    }
+    for (const diagnostic of snapshot.diagnostics) {
+      diagnostics.push(createRulesElement(this.document, "p", {
+        className: `rules-diagnostic rules-diagnostic--${diagnostic.severity}`,
+        text: diagnostic.message,
+        attributes: {
+          "data-diagnostic-code": diagnostic.code,
+          "data-diagnostic-severity": diagnostic.severity,
+          role: diagnostic.severity === "error" ? "alert" : "status",
+        },
+      }));
+    }
+    this.diagnosticsRoot.replaceChildren(...diagnostics);
+  }
+
+  private notice(text: string, severity: "warning"): HTMLElement {
+    return createRulesElement(this.document, "p", {
+      className: "rules-diagnostic rules-diagnostic--warning",
+      text,
+      attributes: {
+        "data-diagnostic-severity": severity,
+        role: "status",
+      },
+    });
+  }
+
+  private onFilterInput(): void {
+    if (this.disposed) return;
+    this.query = this.filterInput.value;
+    try {
+      this.dataSource.filter(this.query);
+    } catch {
+      // Presentation filtering remains local and cannot change model authority.
+    }
+    this.applyFilter();
+  }
+
+  private applyFilter(): void {
+    const query = normalizedFilter(this.query);
+    const activeElement = this.document.activeElement;
+    const visible = this.sections.filter((section) => section.applyFilter(query));
+    for (const group of this.inheritedGroups) {
+      group.element.hidden = group.sections.every((section) => section.element.hidden);
+    }
+    const activeSection = visible.find((section) => (
+      section.element === activeElement || section.element.contains(activeElement)
+    ));
+    const tabStop = activeSection ?? visible[0];
+    for (const section of this.sections) {
+      section.setTabStop(section === tabStop);
+    }
+  }
+
+  private onKeyDown(event: Event): void {
+    if (this.disposed) return;
+    const key = (event as KeyboardEvent).key;
+    const visible = this.sections.filter((section) => !section.element.hidden);
+    if (visible.length === 0) return;
+    const current = visible.findIndex((section) => (
+      section.element === event.target || section.element.contains(event.target as Node)
+    ));
+    if (current < 0) return;
+    let next = current;
+    if (key === "ArrowDown" || key === "ArrowRight") {
+      next = (current + 1) % visible.length;
+    } else if (key === "ArrowUp" || key === "ArrowLeft") {
+      next = (current - 1 + visible.length) % visible.length;
+    } else if (key === "Home") {
+      next = 0;
+    } else if (key === "End") {
+      next = visible.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    for (const section of this.sections) section.setTabStop(false);
+    visible[next]?.setTabStop(true);
+    visible[next]?.focus();
+  }
+}
+
+interface RenderedInheritedGroup {
+  readonly element: HTMLElement;
+  readonly sections: readonly StylePropertiesSection[];
+}

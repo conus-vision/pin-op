@@ -46,6 +46,16 @@ every derived source.
   Pin-op rule snapshots and a narrow source-link delegate.
 - Do not carry editing, element-state mutation, AI assistance, computed/layout
   panes, host integration, or telemetry into the derived boundary.
+- Retain inline, matched-author, and inherited section ordering; selector-match
+  emphasis; ordered group context; declaration importance and proven cascade
+  states; generated public origin labels; local filtering; and roving section
+  focus.
+- Keep generated origins as plain unresolved text until a later exact source
+  authority is present. The derived modules contain no dormant declaration,
+  selector, value, color, shortcut, or rule mutation path.
+- Adapt `MatchedStylesModel` through `RulesDataSource` in the shared Inspector
+  runtime so selection and rendering remain browser-local and independent of
+  IDE source resolution.
 
 <a id="scoped-styles"></a>
 ## Scoped styles
@@ -62,3 +72,7 @@ every derived source.
   colors, selection/hover/focus states, and load-more presentation, with
   explicit dark, forced-color, and 320-pixel layouts. Virtual spacing uses only
   scoped, predeclared chunk classes.
+- The retained Rules subset includes the filter row, section/selectors,
+  contexts, public origin labels, declaration tokens, inherited separators,
+  partial diagnostics, proven-overridden line-through, unknown-state marker,
+  dark/forced-color variables, focus rings, and the 320-pixel stacked layout.

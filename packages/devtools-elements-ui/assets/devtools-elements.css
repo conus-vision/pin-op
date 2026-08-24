@@ -17,8 +17,9 @@
  */
 
 /*
- * Pin-op adaptation: shared read-only Inspector shell and DOM tree, derived
- * from front_end/panels/elements/elementsTreeOutline.css at revision
+ * Pin-op adaptation: shared read-only Inspector shell, DOM tree, and Rules,
+ * derived from front_end/panels/elements/elementsTreeOutline.css,
+ * stylesSidebarPane.css, and stylePropertiesTreeOutline.css at revision
  * a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280. All selectors remain scoped.
  */
 
@@ -32,6 +33,9 @@
   --pin-op-elements-token-tag: #881280;
   --pin-op-elements-token-text: CanvasText;
   --pin-op-elements-token-value: #1a1aa6;
+  --pin-op-elements-rules-meta: #5f6368;
+  --pin-op-elements-rules-property: #c80000;
+  --pin-op-elements-rules-value: #1a1aa6;
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 38%);
@@ -280,6 +284,177 @@
   color: GrayText;
 }
 
+.pin-op-elements-inspector .pin-op-elements-inspector__rules {
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
+
+.pin-op-elements-inspector .styles-pane {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  min-inline-size: 0;
+  color: inherit;
+  background: Canvas;
+}
+
+.pin-op-elements-inspector .styles-sidebar-pane-toolbar-container {
+  position: sticky;
+  z-index: 1;
+  inset-block-start: 0;
+  padding: 4px;
+  border-block-end: 1px solid var(--pin-op-elements-border);
+  background: Canvas;
+}
+
+.pin-op-elements-inspector .styles-filter-input {
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--pin-op-elements-border);
+  border-radius: 2px;
+  color: inherit;
+  background: Canvas;
+  font: inherit;
+}
+
+.pin-op-elements-inspector .styles-filter-input:focus-visible,
+.pin-op-elements-inspector .styles-section:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: -2px;
+}
+
+.pin-op-elements-inspector .styles-sections {
+  min-inline-size: 0;
+}
+
+.pin-op-elements-inspector .styles-section {
+  position: relative;
+  min-block-size: 18px;
+  min-inline-size: 0;
+  padding: 3px 6px 4px;
+  border-block-end: 1px solid var(--pin-op-elements-border);
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.pin-op-elements-inspector .styles-section-title,
+.pin-op-elements-inspector .ancestor-rule-list {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.pin-op-elements-inspector .ancestor-rule-list {
+  color: var(--pin-op-elements-rules-meta);
+}
+
+.pin-op-elements-inspector .rule-context {
+  display: block;
+}
+
+.pin-op-elements-inspector .styles-selector {
+  color: var(--pin-op-elements-rules-meta);
+}
+
+.pin-op-elements-inspector .simple-selector.selector-matches {
+  color: CanvasText;
+  font-weight: 600;
+}
+
+.pin-op-elements-inspector .simple-selector.filter-match,
+.pin-op-elements-inspector .rules-declaration.filter-match {
+  color: CanvasText;
+  background: var(--pin-op-elements-hover);
+}
+
+.pin-op-elements-inspector .styles-section-subtitle {
+  float: inline-end;
+  max-inline-size: 50%;
+  padding-inline-start: 8px;
+  overflow: hidden;
+  color: var(--pin-op-elements-rules-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-op-elements-inspector .style-properties {
+  display: block;
+  clear: both;
+  margin: 0;
+  padding: 2px 4px 0 14px;
+  list-style: none;
+}
+
+.pin-op-elements-inspector .rules-declaration {
+  min-block-size: 17px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.pin-op-elements-inspector .rules-declaration.overloaded {
+  text-decoration: line-through;
+}
+
+.pin-op-elements-inspector .rules-declaration-inactive,
+.pin-op-elements-inspector .rules-declaration-unknown,
+.pin-op-elements-inspector .rules-declaration.inherited {
+  opacity: 0.58;
+}
+
+.pin-op-elements-inspector .rules-declaration-unknown::before {
+  display: inline-block;
+  inline-size: 12px;
+  margin-inline-start: -12px;
+  color: var(--pin-op-elements-rules-meta);
+  content: "?";
+}
+
+.pin-op-elements-inspector .webkit-css-property {
+  color: var(--pin-op-elements-rules-property);
+}
+
+.pin-op-elements-inspector .value,
+.pin-op-elements-inspector .important {
+  color: var(--pin-op-elements-rules-value);
+}
+
+.pin-op-elements-inspector .important {
+  font-weight: 600;
+}
+
+.pin-op-elements-inspector .sidebar-pane-open-brace,
+.pin-op-elements-inspector .sidebar-pane-closing-brace,
+.pin-op-elements-inspector .styles-name-value-separator,
+.pin-op-elements-inspector .styles-semicolon {
+  color: CanvasText;
+}
+
+.pin-op-elements-inspector .sidebar-separator {
+  padding: 3px 6px;
+  border-block-end: 1px solid var(--pin-op-elements-border);
+  overflow: hidden;
+  color: var(--pin-op-elements-rules-meta);
+  background: var(--pin-op-elements-hover);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-op-elements-inspector .pin-op-elements-inspector__rules-message,
+.pin-op-elements-inspector .rules-diagnostic,
+.pin-op-elements-inspector .gray-info-message {
+  margin: 0;
+  padding: 5px 7px;
+  color: var(--pin-op-elements-rules-meta);
+  overflow-wrap: anywhere;
+}
+
+.pin-op-elements-inspector .rules-diagnostic--warning {
+  border-inline-start: 3px solid #b36b00;
+}
+
+.pin-op-elements-inspector .rules-diagnostic--error {
+  border-inline-start: 3px solid #b3261e;
+}
+
 @media (prefers-color-scheme: dark) {
   .pin-op-elements-inspector {
     --pin-op-elements-token-attribute: #d19a66;
@@ -287,6 +462,9 @@
     --pin-op-elements-token-doctype: #a9a9a9;
     --pin-op-elements-token-tag: #e2777a;
     --pin-op-elements-token-value: #9cdcfe;
+    --pin-op-elements-rules-meta: #a9a9a9;
+    --pin-op-elements-rules-property: #9cdcfe;
+    --pin-op-elements-rules-value: #ce9178;
   }
 }
 
@@ -307,6 +485,14 @@
     color: HighlightText;
     background: Highlight;
   }
+
+  .pin-op-elements-inspector .styles-filter-input:focus-visible,
+  .pin-op-elements-inspector .styles-section:focus-visible {
+    forced-color-adjust: none;
+    color: HighlightText;
+    background: Highlight;
+    outline-color: HighlightText;
+  }
 }
 
 @media (max-width: 320px) {
@@ -318,5 +504,12 @@
   .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
     border-inline-end: 0;
     border-block-end: 1px solid var(--pin-op-elements-border);
+  }
+
+  .pin-op-elements-inspector .styles-section-subtitle {
+    float: none;
+    display: block;
+    max-inline-size: 100%;
+    padding-inline-start: 0;
   }
 }

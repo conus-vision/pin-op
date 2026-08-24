@@ -65,6 +65,87 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("loads and renders Rules directly from the selected DOM node without source resolution", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    await flushAsync();
+
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    expect(request).toMatchObject({
+      documentEpoch: 6,
+      nodeRef: "selected-card",
+      selectionRevision: 4,
+    });
+    expect(harness.document.querySelector('[data-pane="rules"]')
+      ?.getAttribute("data-state")).toBe("loading");
+    expect(harness.sent).toEqual([
+      { type: "pin-op.panelReady", channel: "inspector-channel" },
+    ]);
+
+    const response = stylesMatched(request, 9, 2);
+    port.emitMessage({
+      ...response,
+      styles: {
+        ...response.styles,
+        rules: [{
+          ruleRef: "rule-card",
+          selectorText: ".selected-card",
+          matchingSelectorIndices: [0],
+          declarations: [{
+            ruleRef: "rule-card",
+            property: "color",
+            value: "rebeccapurple",
+            important: true,
+            valueTruncated: false,
+            state: "winning-known-author",
+            reason: "highest-precedence-known-author-declaration",
+          }],
+          contexts: [{ kind: "media", text: "screen" }],
+          source: {
+            sourceUrl: "https://example.test/app.css?build=1",
+            startLine: 17,
+            startColumn: 5,
+            endLine: 18,
+            endColumn: 2,
+            rulePath: "0.3",
+          },
+        }],
+      },
+    });
+    await flushAsync();
+
+    expect(harness.document.querySelector('[data-pane="rules"]')
+      ?.getAttribute("data-state")).toBe("ready");
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]')
+      ?.textContent).toContain(".selected-card");
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]')
+      ?.textContent).toContain("color: rebeccapurple !important;");
+    expect(harness.document.body.textContent).not.toContain("Source");
+
+    runtime.dispose();
+  });
+
   it("uses the shared panel ownership while mounting only the neutral Inspector shell", async () => {
     const harness = createHarness();
     const runtime = harness.start();

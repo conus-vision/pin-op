@@ -1,7 +1,9 @@
 import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
+import { StylesSidebarPane } from "./chromium/rules/StylesSidebarPane.js";
 import type {
   RulesDataSource,
   RulesPresentationSnapshot,
+  SourceLinkDelegate,
   TreeDataSource,
 } from "./contracts.js";
 
@@ -13,6 +15,8 @@ export class ElementsInspectorView {
   public readonly rulesRoot: HTMLElement;
   public readonly sidebarExtensionMount: HTMLElement;
   private readonly treeOutline: ElementsTreeOutline;
+  private rulesDataSource: RulesDataSource | undefined;
+  private rulesPane: StylesSidebarPane | undefined;
   private unsubscribeRules: (() => void) | undefined;
   private rulesRenderRevision = 0;
   private disposed = false;
@@ -21,7 +25,8 @@ export class ElementsInspectorView {
     private readonly document: Document,
     mount: HTMLElement,
     treeDataSource: TreeDataSource,
-    private readonly rulesDataSource?: RulesDataSource,
+    rulesDataSource?: RulesDataSource,
+    sourceLinkDelegate?: SourceLinkDelegate,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -83,6 +88,7 @@ export class ElementsInspectorView {
         "data-pane": "rules",
         id: ariaIds.rulesPanel,
         role: "tabpanel",
+        "aria-readonly": "true",
       },
     });
     this.sidebarExtensionMount = this.createElement("div", {
@@ -103,13 +109,10 @@ export class ElementsInspectorView {
     );
     try {
       if (rulesDataSource) {
-        let notificationsEnabled = false;
-        this.unsubscribeRules = rulesDataSource.subscribe(() => {
-          if (notificationsEnabled) this.renderRules();
-        });
-        notificationsEnabled = true;
+        this.bindRulesDataSource(rulesDataSource, sourceLinkDelegate);
+      } else {
+        this.renderRules();
       }
-      this.renderRules();
       mount.append(this.element);
     } catch (error) {
       try {
@@ -121,12 +124,51 @@ export class ElementsInspectorView {
     }
   }
 
+  public bindRulesDataSource(
+    dataSource: RulesDataSource,
+    sourceLinkDelegate?: SourceLinkDelegate,
+  ): void {
+    if (this.disposed) throw new Error("Elements Inspector is disposed");
+    if (this.rulesDataSource || this.rulesPane || this.unsubscribeRules) {
+      throw new Error("Rules data source is already bound");
+    }
+    const rulesPane = new StylesSidebarPane(
+      this.document,
+      dataSource,
+      sourceLinkDelegate,
+    );
+    let unsubscribe: (() => void) | undefined;
+    try {
+      let notificationsEnabled = false;
+      unsubscribe = dataSource.subscribe(() => {
+        if (notificationsEnabled) this.renderRules();
+      });
+      this.rulesDataSource = dataSource;
+      this.rulesPane = rulesPane;
+      this.unsubscribeRules = unsubscribe;
+      notificationsEnabled = true;
+      this.renderRules();
+    } catch (error) {
+      try {
+        unsubscribe?.();
+      } catch {
+        // Preserve the binding failure.
+      }
+      rulesPane.dispose();
+      this.rulesDataSource = undefined;
+      this.rulesPane = undefined;
+      this.unsubscribeRules = undefined;
+      throw error;
+    }
+  }
+
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     let disposeError: unknown;
     const unsubscribeRules = this.unsubscribeRules;
     this.unsubscribeRules = undefined;
+    this.rulesDataSource = undefined;
     try {
       unsubscribeRules?.();
     } catch (error) {
@@ -134,6 +176,13 @@ export class ElementsInspectorView {
     }
     try {
       this.treeOutline.dispose();
+    } catch (error) {
+      disposeError ??= error;
+    }
+    const rulesPane = this.rulesPane;
+    this.rulesPane = undefined;
+    try {
+      rulesPane?.dispose();
     } catch (error) {
       disposeError ??= error;
     } finally {
@@ -162,9 +211,24 @@ export class ElementsInspectorView {
         "Some styles could not be inspected",
         "status",
       ));
+      this.renderMatchedStyles(snapshot.matchedStyles);
+    } else if (snapshot.state === "ready") {
+      this.renderMatchedStyles(snapshot.matchedStyles);
     } else if (snapshot.state === "error") {
       this.rulesRoot.append(this.createRulesMessage(snapshot.message, "alert"));
     }
+  }
+
+  private renderMatchedStyles(
+    snapshot: Extract<
+      RulesPresentationSnapshot,
+      { readonly state: "ready" | "partial" }
+    >["matchedStyles"],
+  ): void {
+    const rulesPane = this.rulesPane;
+    if (!rulesPane || this.disposed) return;
+    rulesPane.render(snapshot);
+    if (!this.disposed) this.rulesRoot.append(rulesPane.element);
   }
 
   private createRulesMessage(
