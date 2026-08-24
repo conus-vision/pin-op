@@ -74,6 +74,7 @@ export interface PanelControllerOptions {
     listener: (message: unknown) => void | Promise<void>,
   ) => () => void;
   readonly clearLinkedState: () => void;
+  readonly allowInspectWithoutIde?: boolean;
 }
 
 type PanelCommandError =
@@ -125,6 +126,7 @@ export class PanelController {
   private readonly sendCommand: (message: PanelCommand) => Promise<unknown>;
   private readonly subscribeWindowState: PanelControllerOptions["subscribeWindowState"];
   private readonly clearLinkedState: () => void;
+  private readonly allowInspectWithoutIde: boolean;
   private removeViewBindings: (() => void) | undefined;
   private removeStateSubscription: (() => void) | undefined;
   private state: PanelOperationalState = "notLinked";
@@ -149,6 +151,7 @@ export class PanelController {
     this.sendCommand = options.sendCommand;
     this.subscribeWindowState = options.subscribeWindowState;
     this.clearLinkedState = options.clearLinkedState;
+    this.allowInspectWithoutIde = options.allowInspectWithoutIde ?? false;
   }
 
   public async initialize(): Promise<void> {
@@ -435,7 +438,7 @@ export class PanelController {
         this.view.writeLinkCode("");
       }
       this.errorText = undefined;
-    } else {
+    } else if (!this.canInspectInState(nextState)) {
       await this.disableInspect();
     }
     this.render();
@@ -445,7 +448,7 @@ export class PanelController {
     if (
       this.disposed ||
       (enabled &&
-        (this.state !== "connected" || this.busy))
+        (!this.canInspectInState(this.state) || this.busy))
     ) {
       this.render();
       return;
@@ -501,8 +504,7 @@ export class PanelController {
       (this.state === "notLinked" ||
         this.state === "rateLimited" ||
         this.state === "error");
-    const inspectDisabled =
-      this.busy || this.state !== "connected";
+    const inspectDisabled = this.busy || !this.canInspectInState(this.state);
     this.view.render({
       state: this.state,
       statusLabel: statusLabels[this.state],
@@ -521,6 +523,12 @@ export class PanelController {
 
   private isCurrent(generation: number): boolean {
     return !this.disposed && this.operationGeneration === generation;
+  }
+
+  private canInspectInState(state: PanelOperationalState): boolean {
+    return state === "connected" || (
+      this.allowInspectWithoutIde && state !== "incompatible"
+    );
   }
 
   private restoreDisconnect(generation: number): boolean {

@@ -70,6 +70,29 @@ describe("InspectorPanelView", () => {
     expect(backend.listenerCount()).toBe(0);
   });
 
+  it("keeps browser-local inspection visible beside usable IDE onboarding while unlinked", () => {
+    const harness = createHarness();
+    const backend = new StaticTreeDataSource({ rows: [] });
+    harness.view.mountTree(backend);
+
+    harness.view.render(unlinkedModel());
+
+    expect(harness.element("connection-status").value).toBe("Not linked");
+    expect(harness.element("link-controls").hidden).toBe(false);
+    expect(harness.element("link-onboarding").hidden).toBe(false);
+    expect(harness.element("link-code").disabled).toBe(false);
+    expect(harness.element("link-button").disabled).toBe(false);
+    expect(harness.element("toolbar-features").hidden).toBe(false);
+    expect(harness.element("inspect-mode").disabled).toBe(false);
+    expect(harness.element("inspector-workspace").hidden).toBe(false);
+    expect(harness.element("operational-footer").hidden).toBe(false);
+    expect(harness.view.domRoot.getAttribute("data-pane")).toBe("dom");
+    expect(harness.view.rulesRoot.getAttribute("data-pane")).toBe("rules");
+    expect(harness.view.sidebarExtensionMount.hidden).toBe(true);
+
+    harness.view.dispose();
+  });
+
   it("contains synchronous and asynchronous toolbar failures", async () => {
     const errors: unknown[] = [];
     const harness = createHarness((error) => errors.push(error));
@@ -186,6 +209,21 @@ function linkedModel(): PanelViewModel {
     disconnectButtonDisabled: false,
     inspectDisabled: false,
     inspectChecked: true,
+  };
+}
+
+function unlinkedModel(): PanelViewModel {
+  return {
+    state: "notLinked",
+    statusLabel: "Not linked",
+    showLinkControls: true,
+    showDisconnect: false,
+    linkInputDisabled: false,
+    linkButtonDisabled: false,
+    pasteButtonDisabled: false,
+    disconnectButtonDisabled: false,
+    inspectDisabled: false,
+    inspectChecked: false,
   };
 }
 

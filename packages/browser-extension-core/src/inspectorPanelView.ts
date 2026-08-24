@@ -212,11 +212,10 @@ export class InspectorPanelView implements PanelView {
     this.panelError.value = model.errorText ?? "";
     this.panelError.hidden = model.errorText === undefined;
 
-    const linkMode = model.showLinkControls;
-    this.toolbarFeatures.hidden = linkMode;
-    this.linkOnboarding.hidden = !linkMode;
-    this.workspace.hidden = linkMode;
-    this.operationalFooter.hidden = linkMode;
+    this.toolbarFeatures.hidden = false;
+    this.linkOnboarding.hidden = !model.showLinkControls;
+    this.workspace.hidden = false;
+    this.operationalFooter.hidden = false;
   }
 
   public renderResolution(model: ResolutionViewModel): void {

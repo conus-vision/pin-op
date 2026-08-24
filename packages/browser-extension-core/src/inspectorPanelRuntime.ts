@@ -88,6 +88,7 @@ function createInspectorPresentation(
   );
   return {
     view,
+    browserLocalInspection: true,
     attach(context) {
       const matchedStylesModel = new MatchedStylesModel({
         request: context.requestStyles,
@@ -116,6 +117,9 @@ function createInspectorPresentation(
         removeSettingsBindings,
         removeSourceNavigationBindings: noOp,
         removeLayoutBindings: noOp,
+        contentLeaseReplaced() {
+          matchedStylesModel.reset("content-lease-replaced");
+        },
         disposePresentation() {
           if (disposed) return;
           disposed = true;
@@ -355,8 +359,6 @@ function disconnectedResetReason(
     ) return undefined;
     return state.value === "incompatible"
       ? "compatibility-failure"
-      : state.value === "notLinked" || state.value === "error"
-      ? "content-lease-replaced"
       : undefined;
   } catch {
     return undefined;

@@ -146,6 +146,170 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("renders browser-local partial Rules before any IDE link state", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 12,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("unlinked-card", 12, 3));
+    await flushAsync();
+
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const response = stylesMatched(request, 5, 2);
+    port.emitMessage({
+      ...response,
+      styles: {
+        ...response.styles,
+        rules: [matchedRule("rule-unlinked", ".unlinked-card")],
+        inaccessibleStylesheetCount: 1,
+        partial: true,
+        diagnostics: ["stylesheet-inaccessible"],
+      },
+    });
+    await flushAsync();
+
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "partial",
+      key: {
+        documentEpoch: 12,
+        nodeRef: "unlinked-card",
+        selectionRevision: 3,
+      },
+    });
+    expect(harness.document.querySelector('[data-pane="rules"]')
+      ?.getAttribute("data-state")).toBe("partial");
+    expect(harness.document.querySelector('[data-rule-ref="rule-unlinked"]')
+      ?.textContent).toContain(".unlinked-card");
+    expect(harness.document.querySelector('[data-node-ref="unlinked-card"]'))
+      .not.toBeNull();
+    expect(harness.element("connection-status").dataset.state).toBe("notLinked");
+    expect(harness.element("link-controls").hidden).toBe(false);
+    expect(harness.element("link-onboarding").hidden).toBe(false);
+    expect(harness.element("link-code").disabled).toBe(false);
+    expect(harness.element("link-button").disabled).toBe(false);
+    expect(harness.element("toolbar-features").hidden).toBe(false);
+    expect(harness.element("inspect-mode").disabled).toBe(false);
+    expect(harness.element("inspector-workspace").hidden).toBe(false);
+    expect(harness.element("operational-footer").hidden).toBe(false);
+    expect(harness.document.querySelector('[data-part="sidebar-extension"]')
+      ?.hidden).toBe(true);
+    expect(harness.sent).toEqual([
+      { type: "pin-op.panelReady", channel: "inspector-channel" },
+    ]);
+
+    harness.element("inspect-mode").dispatch("click");
+    await flushAsync();
+    const enableInspect = lastMessage(port.sent, "pin-op.inspect.setEnabled");
+    expect(enableInspect.enabled).toBe(true);
+    port.emitMessage({
+      type: "pin-op.inspect.result",
+      requestId: enableInspect.requestId,
+      ok: true,
+    });
+    await waitForPressed(harness.element("inspect-mode"));
+    expect(harness.element("inspect-mode").getAttribute("aria-pressed"))
+      .toBe("true");
+
+    runtime.dispose();
+  });
+
+  it("retains browser-local Rules when the same content lease loses only its IDE link", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 13,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("retained-card", 13, 6));
+    await flushAsync();
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const response = stylesMatched(request, 8, 4);
+    port.emitMessage({
+      ...response,
+      styles: {
+        ...response.styles,
+        rules: [matchedRule("rule-retained", ".retained-card")],
+      },
+    });
+    await flushAsync();
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("ready");
+    const rootRequestCount = port.sent.filter((message) =>
+      isType(message, "dom.getRoot")
+    ).length;
+
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+    await flushAsync();
+
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "ready",
+      key: { nodeRef: "retained-card" },
+    });
+    expect(harness.document.querySelector('[data-rule-ref="rule-retained"]')
+      ?.textContent).toContain(".retained-card");
+    expect(harness.document.querySelector('[data-node-ref="retained-card"]'))
+      .not.toBeNull();
+    expect(harness.element("link-onboarding").hidden).toBe(false);
+    expect(harness.element("inspector-workspace").hidden).toBe(false);
+    expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
+      .toHaveLength(rootRequestCount);
+
+    port.emitMessage({ type: "pin-op.windowState", state: "error" });
+    await flushAsync();
+
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "ready",
+      key: { nodeRef: "retained-card" },
+    });
+    expect(harness.document.querySelector('[data-rule-ref="rule-retained"]'))
+      .not.toBeNull();
+    expect(harness.element("link-controls").hidden).toBe(false);
+    expect(harness.element("inspector-workspace").hidden).toBe(false);
+    expect(port.disconnected).toBe(false);
+
+    port.disconnect();
+    await waitForPortCount(harness.ports, 2);
+    const replacementPort = requiredPort(harness.ports, 1);
+
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    expect(replacementPort.sent.filter((message) => isType(message, "dom.getRoot")))
+      .toHaveLength(1);
+
+    runtime.dispose();
+  });
+
   it("uses the shared panel ownership while mounting only the neutral Inspector shell", async () => {
     const harness = createHarness();
     const runtime = harness.start();
@@ -515,7 +679,7 @@ describe("startInspectorPanelRuntime", () => {
 
     expect(injected).toBe(true);
     expect(replacementPort.sent.filter((message) => isType(message, "dom.getRoot")))
-      .toHaveLength(0);
+      .toHaveLength(1);
 
     replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
     replacementPort.emitMessage({
@@ -815,7 +979,7 @@ describe("startInspectorPanelRuntime", () => {
 
     expect(revokedBySubscriber).toBe(true);
     expect(runtime.settingsController.snapshot().compatibility).toBe("pending");
-    expect(harness.element("connection-status").dataset.state).toBe("incompatible");
+    expect(harness.element("connection-status").dataset.state).toBe("notLinked");
     expect(harness.element("resolution-status").value)
       .toBe("Select an element to inspect");
     runtime.dispose();
@@ -914,7 +1078,7 @@ describe("startInspectorPanelRuntime", () => {
       });
       await flushAsync();
       expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
-        .toHaveLength(0);
+        .toHaveLength(1);
 
       port.emitMessage({ type: "pin-op.windowState", state: "linked" });
       port.emitMessage({
@@ -1174,7 +1338,7 @@ describe("startInspectorPanelRuntime", () => {
 
     expect(replaced).toBe(true);
     expect(harness.element("resolution-status").value)
-      .toBe("Select an element to inspect");
+      .toBe("VS Code disconnected");
 
     port.emitMessage({ type: "pin-op.windowState", state: "linked" });
     port.emitMessage({
@@ -1186,7 +1350,7 @@ describe("startInspectorPanelRuntime", () => {
     expect(runtime.settingsController.snapshot().compatibility)
       .toBe("compatible");
     expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
-      .toHaveLength(rootRequestsBefore + 1);
+      .toHaveLength(rootRequestsBefore);
     runtime.dispose();
   });
 
@@ -1508,6 +1672,16 @@ async function waitForPortCount(
   throw new Error(`Timed out waiting for port count ${count}`);
 }
 
+async function waitForPressed(element: FakeElement): Promise<void> {
+  for (let index = 0; index < 32; index += 1) {
+    if (element.getAttribute("aria-pressed") === "true") {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error("Timed out waiting for Inspect mode");
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   resolve(value: T): void;
@@ -1549,5 +1723,23 @@ function stylesMatched(
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function matchedRule(ruleRef: string, selectorText: string) {
+  return {
+    ruleRef,
+    selectorText,
+    matchingSelectorIndices: [0],
+    declarations: [{
+      ruleRef,
+      property: "color",
+      value: "rebeccapurple",
+      important: false,
+      valueTruncated: false,
+      state: "winning-known-author" as const,
+      reason: "highest-precedence-known-author-declaration" as const,
+    }],
+    contexts: [],
   };
 }

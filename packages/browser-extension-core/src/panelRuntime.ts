@@ -109,11 +109,13 @@ interface PanelRuntimePresentationBinding {
   readonly removeSettingsBindings: () => void;
   readonly removeSourceNavigationBindings: () => void;
   readonly removeLayoutBindings: () => void;
+  contentLeaseReplaced(): void;
   disposePresentation(): void;
 }
 
 export interface PanelRuntimePresentation {
   readonly view: RuntimePanelView;
+  readonly browserLocalInspection: boolean;
   attach(context: PanelRuntimePresentationContext): PanelRuntimePresentationBinding;
 }
 
@@ -147,6 +149,7 @@ export function startPanelRuntimeWithPresentation(
   };
   const diagnostics = options.diagnostics ?? new PanelDiagnostics();
   const presentation = createPresentation(options, reportError);
+  const browserLocalInspection = presentation.browserLocalInspection;
   const view = presentation.view;
   const resolutionPresenter = new ResolutionPresenter();
   view.renderResolution(resolutionPresenter.snapshot());
@@ -180,6 +183,7 @@ export function startPanelRuntimeWithPresentation(
   let nonLinkedConnectionRouteAuthority: object | undefined;
   let mismatchBlocked = false;
   let deferredLinkedState: unknown;
+  let compatibilityFailureRouteDepth = 0;
 
   let inspectTransport!: PanelInspectTransport;
   const sourcePaneController = new SourcePaneController((message) =>
@@ -196,6 +200,7 @@ export function startPanelRuntimeWithPresentation(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
       const preserveMismatch = mismatchBlocked;
+      presentationBinding.contentLeaseReplaced();
       deactivateTreeSession();
       disconnectFeatureControllers(preserveMismatch);
       void controller.handleTransportDisconnect()
@@ -267,6 +272,7 @@ export function startPanelRuntimeWithPresentation(
       return () => stateListeners.delete(listener);
     },
     clearLinkedState: clearLinkedInspectionState,
+    allowInspectWithoutIde: browserLocalInspection,
   });
 
   function ensurePanelPort(): Promise<void> {
@@ -284,6 +290,10 @@ export function startPanelRuntimeWithPresentation(
       .then(() => {
         if (!disposed) {
           inspectTransport.connect();
+          if (browserLocalInspection && !mismatchBlocked) {
+            treeSessionActive = true;
+            void treeController.loadRoot();
+          }
         }
       })
       .catch(async (error) => {
@@ -336,19 +346,34 @@ export function startPanelRuntimeWithPresentation(
       }
       const previousAuthority = acceptedCompatibilityRouteAuthority;
       const previousConnectionAuthority = nonLinkedConnectionRouteAuthority;
-      if (!settingsController.acceptCompatibility(
-        binding,
-        compatibilityMessage,
-      )) {
-        isCurrentSettingsBinding(binding);
+      if (!compatibilityMessage.compatible) {
+        compatibilityFailureRouteDepth += 1;
+      }
+      let acceptedCompatibility = false;
+      let compatibilityRouteStillCurrent = false;
+      try {
+        acceptedCompatibility = settingsController.acceptCompatibility(
+          binding,
+          compatibilityMessage,
+        );
+        if (!acceptedCompatibility) {
+          isCurrentSettingsBinding(binding);
+        } else {
+          compatibilityRouteStillCurrent =
+            !disposed &&
+            isCurrentSettingsBinding(binding) &&
+            acceptedCompatibilityRouteAuthority === previousAuthority &&
+            nonLinkedConnectionRouteAuthority === previousConnectionAuthority;
+        }
+      } finally {
+        if (!compatibilityMessage.compatible) {
+          compatibilityFailureRouteDepth -= 1;
+        }
+      }
+      if (!acceptedCompatibility) {
         return;
       }
-      if (
-        disposed ||
-        !isCurrentSettingsBinding(binding) ||
-        acceptedCompatibilityRouteAuthority !== previousAuthority ||
-        nonLinkedConnectionRouteAuthority !== previousConnectionAuthority
-      ) {
+      if (!compatibilityRouteStillCurrent) {
         return;
       }
       compatibilityRouteAuthority = {};
@@ -453,7 +478,10 @@ export function startPanelRuntimeWithPresentation(
         view.renderResolution(model);
       }
     } else if (domEvent) {
-      if (!currentSettingsBinding() || compatibility === "incompatible") {
+      if (
+        (!browserLocalInspection && !currentSettingsBinding()) ||
+        compatibility === "incompatible"
+      ) {
         return;
       }
       let beginsSelection = false;
@@ -703,7 +731,9 @@ export function startPanelRuntimeWithPresentation(
   }
 
   async function sendPanelCommand(message: PanelCommand): Promise<unknown> {
-    deactivateTreeSession();
+    if (!browserLocalInspection) {
+      deactivateTreeSession();
+    }
     return options.sendRuntimeMessage(message);
   }
 
@@ -765,7 +795,10 @@ export function startPanelRuntimeWithPresentation(
 
   function failClosedSettingsAuthority(): void {
     deferredLinkedState = undefined;
-    clearLinkedInspectionState(mismatchBlocked);
+    clearLinkedInspectionState(
+      mismatchBlocked,
+      compatibilityFailureRouteDepth > 0,
+    );
   }
 
   function acceptSettingsWindowState(
@@ -875,7 +908,26 @@ export function startPanelRuntimeWithPresentation(
 
   function clearLinkedInspectionState(
     preserveMismatch = mismatchBlocked,
+    forceBrowserInspectionReset = false,
   ): void {
+    if (
+      browserLocalInspection &&
+      !preserveMismatch &&
+      !forceBrowserInspectionReset
+    ) {
+      activeInspectSelectionRevision = undefined;
+      sourceNavigationController.invalidate();
+      sourcePaneController.disconnect();
+      settingsController.invalidateInspect();
+      compatibility = "pending";
+      deferredLinkedState = undefined;
+      const model = resolutionPresenter.ideDisconnected();
+      diagnostics.recordIdeDisconnected();
+      if (model) {
+        view.renderResolution(model);
+      }
+      return;
+    }
     deactivateTreeSession();
     if (preserveMismatch) {
       enforceMismatchBlock();
@@ -1222,6 +1274,7 @@ function createLegacyPresentation(
   const view = new DomPanelView(options.document, reportError);
   return {
     view,
+    browserLocalInspection: false,
     attach(context) {
       const sourcePaneView = new SourcePaneView({
         document: options.document as unknown as SourcePaneDocument,
@@ -1253,6 +1306,7 @@ function createLegacyPresentation(
         removeSettingsBindings,
         removeSourceNavigationBindings,
         removeLayoutBindings,
+        contentLeaseReplaced() {},
         disposePresentation() {
           if (disposed) return;
           disposed = true;
