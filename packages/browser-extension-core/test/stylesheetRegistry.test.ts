@@ -136,6 +136,30 @@ describe("StylesheetRegistry", () => {
     expect(registry.snapshot().entries.some(({ scope }) => scope === secondFrame)).toBe(true);
   });
 
+  it("inventories document stylesheets beyond plain descendant discovery", () => {
+    const app = sheet("https://example.test/app.css", [
+      styleRule(".app", "color: red"),
+    ]);
+    const plainDescendants = Array.from(
+      { length: STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot + 1 },
+      () => ({ tagName: "DIV", childNodes: [] }),
+    );
+    const snapshot = createRegistry(scope(
+      "document",
+      [app],
+      [],
+      plainDescendants,
+    )).snapshot();
+
+    expect(snapshot.entries.map(({ sheet }) => sheet)).toContain(app);
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "scope-limit",
+    }));
+    expect(snapshot.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: "scope-sheet-pair-limit",
+    }));
+  });
+
   it("maps bounded inline owner ranges only after complete CSSOM/AST proof", () => {
     const validSheet = sheet(null, [
       styleRule(".card", "color: red; margin: 0 !important"),
@@ -473,10 +497,23 @@ describe("StylesheetRegistry", () => {
   });
 
   it("shares one candidate-pull budget across all roots and stylesheet lists", () => {
-    const passPulls: number[] = [];
+    const discoveryPassPulls: number[] = [];
+    const stylesheetPassPulls: number[] = [];
     let activePass = -1;
-    const chargePull = (): void => {
-      passPulls[activePass] = (passPulls[activePass] ?? 0) + 1;
+    const beginPass = (): void => {
+      activePass += 1;
+      discoveryPassPulls[activePass] = 0;
+      stylesheetPassPulls[activePass] = 0;
+    };
+    const chargeDiscoveryPull = (): void => {
+      discoveryPassPulls[activePass] = (
+        discoveryPassPulls[activePass] ?? 0
+      ) + 1;
+    };
+    const chargeStylesheetPull = (): void => {
+      stylesheetPassPulls[activePass] = (
+        stylesheetPassPulls[activePass] ?? 0
+      ) + 1;
     };
     const shared = sheet(null, []);
     const roots = Array.from(
@@ -494,37 +531,47 @@ describe("StylesheetRegistry", () => {
           { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
           () => shared,
         ),
-        chargePull,
+        chargeStylesheetPull,
       );
       root.adoptedStyleSheets = countedArrayLike(
         Array.from(
           { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
           () => shared,
         ),
-        chargePull,
+        chargeStylesheetPull,
       );
+      Object.defineProperty(root, "childNodes", {
+        configurable: true,
+        get() {
+          if (index === 0) beginPass();
+          return countedArrayLike(
+            index === 0 ? hosts : [],
+            chargeDiscoveryPull,
+          );
+        },
+      });
       root.querySelectorAll = (selector: string): object[] => {
         if (selector === "*") {
           if (index === 0) {
-            activePass += 1;
-            passPulls[activePass] = 0;
-            return countedArrayLike(hosts, chargePull);
+            beginPass();
+            return countedArrayLike(hosts, chargeDiscoveryPull);
           }
-          return countedArrayLike([], chargePull);
+          return countedArrayLike([], chargeDiscoveryPull);
         }
         if (selector.includes("style") || selector.includes("link")) {
-          return countedArrayLike(ownerCandidates, chargePull);
+          return countedArrayLike(ownerCandidates, chargeStylesheetPull);
         }
-        return countedArrayLike([], chargePull);
+        return countedArrayLike([], chargeStylesheetPull);
       };
     }
 
     const snapshot = createRegistry(roots[0]!).snapshot();
 
-    expect(passPulls.length).toBeGreaterThanOrEqual(2);
-    expect(passPulls.every((pulls) => (
-      pulls <= STYLESHEET_LIMITS.scopeSheetPairsPerSession
-    ))).toBe(true);
+    expect(discoveryPassPulls).toEqual([hosts.length, hosts.length]);
+    expect(stylesheetPassPulls).toEqual([
+      STYLESHEET_LIMITS.scopeSheetPairsPerSession,
+      STYLESHEET_LIMITS.scopeSheetPairsPerSession,
+    ]);
     expect(snapshot.partial).toBe(true);
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
       code: "scope-sheet-pair-limit",
@@ -856,6 +903,7 @@ function scope(
       matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
       CSS: { supports: () => true },
     } : undefined,
+    childNodes: nodes,
     querySelectorAll(selector: string) {
       if (selector === "*") return nodes;
       if (selector.includes("style") || selector.includes("link")) {

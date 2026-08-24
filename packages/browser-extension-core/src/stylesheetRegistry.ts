@@ -22,6 +22,11 @@ export const STYLESHEET_LIMITS = Object.freeze({
   fingerprintIntervalTargetMs: 1000,
 });
 
+const SCOPE_DISCOVERY_CANDIDATE_LIMIT = Math.min(
+  STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
+  STYLESHEET_LIMITS.scopeSheetPairsPerSession * STYLESHEET_LIMITS.scopesPerSession,
+);
+
 export type StylesheetScope = Document | ShadowRoot;
 export type StylesheetEntryKind = "external" | "owner" | "adopted" | "import";
 
@@ -145,6 +150,11 @@ interface CandidatePullBudget {
   pulls: number;
   partial: boolean;
   reported: boolean;
+}
+
+interface ScopeDiscoveryBudget {
+  pulls: number;
+  partial: boolean;
 }
 
 /** Browser-local inventory; native CSSOM values never leave this boundary. */
@@ -515,8 +525,8 @@ function inventoryStylesheets(
     rulesVisited: 0,
     candidateBudget: { pulls: 0, partial: false, reported: false },
   };
-  const scopes = discoverScopes(document, state, state.candidateBudget);
-  recordCandidatePartial(state);
+  const discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false };
+  const scopes = discoverScopes(document, state, discoveryBudget);
   for (const scope of scopes) {
     const scopeRef = scopeRefFor(scope);
     let sourceOrder = 0;
@@ -587,7 +597,8 @@ function inventoryStructureDigest(
     partial: false,
     reported: false,
   };
-  const scopes = discoverScopes(document, undefined, candidateBudget);
+  const discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false };
+  const scopes = discoverScopes(document, undefined, discoveryBudget);
   const uniqueSheets = new Set<object>();
   const parts: string[] = [`scope-count:${scopes.length}`];
   let pairCount = 0;
@@ -653,7 +664,9 @@ function inventoryStructureDigest(
   parts.push(
     `pairs:${pairCount}`,
     `unique:${uniqueSheets.size}`,
-    truncated || candidateBudget.partial ? "truncated" : "complete",
+    truncated || candidateBudget.partial || discoveryBudget.partial
+      ? "truncated"
+      : "complete",
   );
   return digestStructureParts(parts);
 }
@@ -661,18 +674,15 @@ function inventoryStructureDigest(
 function discoverScopes(
   document: Document,
   state?: MutableInventory,
-  candidateBudget: CandidatePullBudget = {
-    pulls: 0,
-    partial: false,
-    reported: false,
-  },
+  discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false },
 ): StylesheetScope[] {
   const scopes = state?.scopes ?? [];
   const queue: StylesheetScope[] = [document];
-  const seen = new Set<object>();
+  const seenScopes = new Set<object>();
+  const seenNodes = new Set<object>();
   while (queue.length > 0) {
     const scope = queue.shift()!;
-    if (seen.has(scope)) continue;
+    if (seenScopes.has(scope)) continue;
     if (scopes.length >= STYLESHEET_LIMITS.scopesPerSession) {
       if (state) {
         state.omittedScopeCount += 1 + queue.length;
@@ -680,19 +690,34 @@ function discoverScopes(
       }
       break;
     }
-    seen.add(scope);
+    seenScopes.add(scope);
     scopes.push(scope);
-    const descendants = safeQueryAll(scope, "*", candidateBudget);
-    for (const node of descendants.values) {
-      const shadow = safeObjectProperty(node, "shadowRoot");
-      if (shadow && safeStringProperty(shadow, "mode") !== "closed") {
-        queue.push(shadow as unknown as ShadowRoot);
+    const nodeStack: object[] = [scope];
+    while (nodeStack.length > 0) {
+      const parent = nodeStack.pop()!;
+      const children = readScopeDiscoveryChildren(parent, discoveryBudget);
+      for (const node of children.values) {
+        if (seenNodes.has(node)) continue;
+        seenNodes.add(node);
+        const shadow = safeObjectProperty(node, "shadowRoot");
+        if (shadow && safeStringProperty(shadow, "mode") !== "closed") {
+          queue.push(shadow as unknown as ShadowRoot);
+        }
+        const frameDocument = safeObjectProperty(node, "contentDocument");
+        if (frameDocument && isDocumentScope(frameDocument)) {
+          queue.push(frameDocument as unknown as Document);
+        }
+        nodeStack.push(node);
       }
-      const frameDocument = safeObjectProperty(node, "contentDocument");
-      if (frameDocument && isDocumentScope(frameDocument)) {
-        queue.push(frameDocument as unknown as Document);
+      if (remainingScopeDiscoveryPulls(discoveryBudget) === 0) {
+        if (nodeStack.length > 0) discoveryBudget.partial = true;
+        nodeStack.length = 0;
       }
     }
+  }
+  if (discoveryBudget.partial && state) {
+    state.omittedScopeCount += 1;
+    addDiagnostic(state, { code: "scope-limit" });
   }
   return scopes;
 }
@@ -1184,6 +1209,35 @@ function remainingCandidatePulls(budget: CandidatePullBudget): number {
     0,
     STYLESHEET_LIMITS.scopeSheetPairsPerSession - budget.pulls,
   );
+}
+
+function readScopeDiscoveryChildren(
+  node: object,
+  budget: ScopeDiscoveryBudget,
+): BoundedObjectScan {
+  const remaining = remainingScopeDiscoveryPulls(budget);
+  if (remaining === 0) {
+    budget.partial = true;
+    return emptyBoundedObjectScan(true);
+  }
+  let childNodes: unknown;
+  try {
+    childNodes = (node as { readonly childNodes?: unknown }).childNodes;
+  } catch {
+    budget.partial = true;
+    return emptyBoundedObjectScan(true, 1);
+  }
+  if (childNodes === undefined || childNodes === null) {
+    return emptyBoundedObjectScan();
+  }
+  const bounded = scanBoundedObjects(childNodes, remaining);
+  budget.pulls += bounded.pulls;
+  if (bounded.truncated || bounded.failures > 0) budget.partial = true;
+  return bounded;
+}
+
+function remainingScopeDiscoveryPulls(budget: ScopeDiscoveryBudget): number {
+  return Math.max(0, SCOPE_DISCOVERY_CANDIDATE_LIMIT - budget.pulls);
 }
 
 function recordCandidatePartial(
