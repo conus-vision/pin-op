@@ -117,6 +117,21 @@ export interface CssMatchedRuleWalkRecord {
   readonly ruleRef?: string;
 }
 
+/** Browser-local selector candidate observed before current applicability. */
+export interface CssStyleRuleCandidateRecord {
+  readonly nativeRule: object;
+  readonly nativeStylesheet: StylesheetSource;
+  readonly selector: string;
+  readonly resolvedSelector: string;
+  readonly sourceUrl: string;
+  readonly stylesheetIdentity: string;
+  readonly rulePath: string;
+  readonly media: readonly string[];
+  readonly mediaTruncated: boolean;
+  readonly contexts: readonly CssRuleContextRecord[];
+  readonly contextsTruncated: boolean;
+}
+
 export interface CssRuleWalkOptions {
   readonly workBudget?: CssRuleWalkBudget;
   readonly ruleReferences?: Pick<RuleReferenceRegistry, "reference">;
@@ -126,6 +141,7 @@ export interface CssRuleWalkOptions {
     rulePath: string,
     nativeRule: object,
   ) => string | undefined;
+  readonly onStyleRuleCandidate?: (record: CssStyleRuleCandidateRecord) => void;
   readonly onMatchedRule?: (record: CssMatchedRuleWalkRecord) => void;
   readonly onSelectorUnavailable?: (selector: string) => void;
 }
@@ -420,6 +436,19 @@ function* walkRules(
           notifySelectorUnavailable(state, sourceSelector);
           continue;
         }
+        notifyStyleRuleCandidate(state, {
+          nativeRule: rule,
+          nativeStylesheet: stylesheet.nativeStylesheet,
+          selector: selector.sourceSelector,
+          resolvedSelector: selector.resolvedSelector,
+          sourceUrl: stylesheet.sourceUrl,
+          stylesheetIdentity: stylesheet.stylesheetIdentity,
+          rulePath,
+          media: [...media.values],
+          mediaTruncated: media.truncated,
+          contexts: contexts.values.map((context) => ({ ...context })),
+          contextsTruncated: contexts.truncated,
+        });
         if (hasScopeSensitiveSelector(selector.resolvedSelector)) {
           notifySelectorUnavailable(state, selector.resolvedSelector);
         }
@@ -993,6 +1022,17 @@ function notifySelectorUnavailable(state: WalkState, selector: string): void {
     );
   } catch {
     // Diagnostics supplied by a caller cannot make page traversal fail.
+  }
+}
+
+function notifyStyleRuleCandidate(
+  state: WalkState,
+  record: CssStyleRuleCandidateRecord,
+): void {
+  try {
+    state.options.onStyleRuleCandidate?.(record);
+  } catch {
+    // Observer evidence cannot change the bounded stylesheet walk.
   }
 }
 

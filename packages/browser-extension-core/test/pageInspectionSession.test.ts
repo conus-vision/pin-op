@@ -406,6 +406,249 @@ describe("PageInspectionSession", () => {
     expect(styleInvalidations).toEqual([]);
   });
 
+  it("wires matched candidates into eventless applicability polling", async () => {
+    let poll: (() => void) | undefined;
+    let applicability = "placeholder" as "placeholder" | "valid";
+    let checked = false;
+    const selectorText = ".field:placeholder-shown, .field:valid";
+    const nativeRule = {
+      cssText: `${selectorText} { color: red; }`,
+      selectorText,
+      style: {
+        length: 1,
+        item: () => "color",
+        getPropertyValue: () => "red",
+        getPropertyPriority: () => "",
+      },
+    };
+    const initiallyUnmatchedRule = {
+      cssText: ".field:checked { outline: solid; }",
+      selectorText: ".field:checked",
+      style: {
+        length: 1,
+        item: () => "outline-style",
+        getPropertyValue: () => "solid",
+        getPropertyPriority: () => "",
+      },
+    };
+    const sheet = {
+      href: "https://example.test/eventless.css",
+      cssRules: [nativeRule, initiallyUnmatchedRule],
+      disabled: false,
+      media: { mediaText: "" },
+    };
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      contentSessionId: "content-eventless-applicability",
+      createStylesheetRegistry(options) {
+        const typed = options as StylesheetRegistryOptions;
+        (typed.document.styleSheets as unknown as object[]).push(sheet);
+        return new StylesheetRegistry({
+          ...typed,
+          setInterval(callback) {
+            poll = callback;
+            return 1;
+          },
+          clearInterval: vi.fn(),
+          createMutationObserver: () => ({
+            observe: vi.fn(),
+            disconnect: vi.fn(),
+          }),
+        });
+      },
+      createApplicabilityObserver(options) {
+        const typed = options as MatchedStylesApplicabilityObserverOptions;
+        return new MatchedStylesApplicabilityObserver({
+          ...typed,
+          createMutationObserver: () => ({
+            observe: vi.fn(),
+            disconnect: vi.fn(),
+          }),
+        });
+      },
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    (harness.card as typeof harness.card & { getRootNode(): object })
+      .getRootNode = () => harness.document;
+    harness.card.matches = (selector: string) => {
+      if (selector === selectorText) return true;
+      if (selector === ".field:placeholder-shown") {
+        return applicability === "placeholder";
+      }
+      if (selector === ".field:valid") return applicability === "valid";
+      if (selector === ".field:checked") return checked;
+      return false;
+    };
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.events.find((event) => (
+      event.type === "dom.selectionChanged"
+    ));
+    const selectionRevision = selection?.type === "dom.selectionChanged"
+      ? selection.selectionRevision
+      : -1;
+    const request = {
+      type: "styles.getMatched" as const,
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    };
+
+    const first = await harness.session.handle({
+      ...request,
+      requestId: "eventless-before",
+    });
+    expect(first).toMatchObject({
+      type: "styles.matched",
+      stylesRevision: 0,
+      stylesheetRevision: 0,
+      styles: {
+        rules: [{
+          selectorText,
+          matchingSelectorIndices: [0],
+        }],
+      },
+    });
+    const firstRuleRef = first.type === "styles.matched"
+      ? first.styles.rules[0]?.ruleRef
+      : undefined;
+
+    applicability = "valid";
+    expect(poll).toBeTypeOf("function");
+    poll?.();
+
+    expect(harness.session.styleRevisions).toEqual({
+      documentEpoch: 3,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+    });
+    expect(invalidations).toEqual([expect.objectContaining({
+      kind: "applicability",
+      reason: "applicability-change",
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+    })]);
+    const second = await harness.session.handle({
+      ...request,
+      requestId: "eventless-after",
+    });
+    expect(second).toMatchObject({
+      type: "styles.matched",
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      styles: {
+        rules: [{
+          ruleRef: firstRuleRef,
+          selectorText,
+          matchingSelectorIndices: [1],
+        }],
+      },
+    });
+
+    checked = true;
+    poll?.();
+    expect(harness.session.styleRevisions).toEqual({
+      documentEpoch: 3,
+      stylesRevision: 2,
+      stylesheetRevision: 0,
+    });
+    const third = await harness.session.handle({
+      ...request,
+      requestId: "eventless-initially-unmatched",
+    });
+    expect(third).toMatchObject({
+      type: "styles.matched",
+      stylesRevision: 2,
+      stylesheetRevision: 0,
+      styles: {
+        rules: [
+          { ruleRef: firstRuleRef, selectorText },
+          {
+            selectorText: ".field:checked",
+            matchingSelectorIndices: [0],
+          },
+        ],
+      },
+    });
+    harness.session.dispose();
+  });
+
+  it("cancels matched styles after reentrant candidate invalidation", async () => {
+    const selectorText = ".field:valid";
+    const nativeRule = {
+      cssText: `${selectorText} { color: red; }`,
+      selectorText,
+      style: {
+        length: 1,
+        item: () => "color",
+        getPropertyValue: () => "red",
+        getPropertyPriority: () => "",
+      },
+    };
+    const sheet = {
+      href: "https://example.test/reentrant-applicability.css",
+      cssRules: [nativeRule],
+      disabled: false,
+      media: { mediaText: "" },
+    };
+    let candidateCheckArmed = false;
+    const harness = createSessionHarness({
+      createStylesheetRegistry(options) {
+        const typed = options as StylesheetRegistryOptions;
+        (typed.document.styleSheets as unknown as object[]).push(sheet);
+        return new StylesheetRegistry({
+          ...typed,
+          createMutationObserver: () => ({
+            observe: vi.fn(),
+            disconnect: vi.fn(),
+          }),
+        });
+      },
+      createApplicabilityObserver(options) {
+        const typed = options as MatchedStylesApplicabilityObserverOptions;
+        return {
+          setSelection: vi.fn((
+            _element: Element | undefined,
+            candidates: readonly unknown[],
+          ) => {
+            candidateCheckArmed = candidates.length > 0;
+          }),
+          check: vi.fn(() => {
+            if (!candidateCheckArmed) return;
+            candidateCheckArmed = false;
+            typed.onInvalidated({ reason: "applicability-change" });
+          }),
+          dispose: vi.fn(),
+        };
+      },
+    });
+    (harness.card as typeof harness.card & { getRootNode(): object })
+      .getRootNode = () => harness.document;
+    harness.card.matches = (selector: string) => selector === selectorText;
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.events.find((event) => (
+      event.type === "dom.selectionChanged"
+    ));
+    const selectionRevision = selection?.type === "dom.selectionChanged"
+      ? selection.selectionRevision
+      : -1;
+
+    const response = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "reentrant-applicability",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision,
+    });
+
+    expect(response).toEqual({
+      type: "styles.error",
+      requestId: "reentrant-applicability",
+      code: "cancelled",
+    });
+    expect(response).not.toMatchObject({ type: "styles.matched" });
+    harness.session.dispose();
+  });
+
   it("routes one content mutation through the applicability observer only", async () => {
     let registryMutation: ((records: readonly unknown[]) => void) | undefined;
     let applicabilityMutation: ((records: readonly unknown[]) => void) | undefined;

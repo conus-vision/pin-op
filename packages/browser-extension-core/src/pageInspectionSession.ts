@@ -453,6 +453,14 @@ export class PageInspectionSession {
       isAuthorityCurrent: (authority) => this.isMatchedStylesAuthorityCurrent(
         authority,
       ),
+      onApplicabilityCandidates: (authority, candidates) => {
+        if (!this.isMatchedStylesAuthorityCurrent(authority)) return;
+        this.setMatchedApplicabilityCandidates(
+          authority.nodeRef,
+          authority.documentEpoch,
+          candidates,
+        );
+      },
     });
     this.applicabilityFactory = options.createApplicabilityObserver ?? (
       (observerOptions: MatchedStylesApplicabilityObserverOptions) => (

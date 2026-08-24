@@ -14,6 +14,9 @@ import {
   type StyleDeclarationSource,
   type StylesheetSource,
 } from "./cssRuleWalker.js";
+import type {
+  ApplicabilityCandidate,
+} from "./matchedStylesApplicabilityObserver.js";
 import type { DomTreeResolvedElement } from "./domTreeProvider.js";
 import { truncate } from "./inspectBounds.js";
 import type {
@@ -62,6 +65,10 @@ export interface MatchedStylesCollectorOptions {
   readonly isAuthorityCurrent?: (
     authority: MatchedStylesCollectionAuthority,
   ) => boolean;
+  readonly onApplicabilityCandidates?: (
+    authority: MatchedStylesCollectionAuthority,
+    candidates: readonly ApplicabilityCandidate[],
+  ) => void;
 }
 
 interface RuleDraft {
@@ -111,12 +118,14 @@ export class MatchedStylesCollector {
       before.diagnostics.map(({ code }) => code),
     );
     const workBudget = createCssRuleWalkBudget();
+    const applicabilityCandidates = new Map<string, ApplicabilityCandidate>();
     const inline = this.collectInline(selected.element, diagnostics, workBudget);
     const direct = this.collectElement(
       selected.element,
       before,
       diagnostics,
       workBudget,
+      applicabilityCandidates,
     );
     const ancestors: InheritedMatchedRules[] = [];
     let ancestor = composedParent(selected.element);
@@ -134,6 +143,7 @@ export class MatchedStylesCollector {
         before,
         diagnostics,
         workBudget,
+        applicabilityCandidates,
       );
       const inheritedRules = buildRules(
         ancestorInline ? [ancestorInline, ...collected] : collected,
@@ -193,7 +203,13 @@ export class MatchedStylesCollector {
       partial: before.partial || diagnostics.size > before.diagnostics.length,
       diagnostics: [...diagnostics],
     };
-    return deepFreeze(result);
+    const frozen = deepFreeze(result);
+    this.options.onApplicabilityCandidates?.(
+      authority,
+      Object.freeze([...applicabilityCandidates.values()]),
+    );
+    if (!this.isCurrent(authority)) return undefined;
+    return frozen;
   }
 
   private collectElement(
@@ -201,6 +217,7 @@ export class MatchedStylesCollector {
     snapshot: StylesheetRegistrySnapshot,
     diagnostics: Set<string>,
     workBudget: CssRuleWalkBudget,
+    applicabilityCandidates: Map<string, ApplicabilityCandidate>,
   ): RuleDraft[] {
     detectUnsupportedCrossRootSelectors(element, snapshot, diagnostics);
     let scopedEntries: readonly StylesheetRegistryEntry[];
@@ -244,6 +261,29 @@ export class MatchedStylesCollector {
           }
         },
         onSelectorUnavailable: () => diagnostics.add("selector-unavailable"),
+        onStyleRuleCandidate: (record) => {
+          const entry = entryBySheet.get(record.nativeStylesheet);
+          if (!entry) return;
+          let key: string | undefined;
+          try {
+            key = this.options.stylesheets.referenceRule(
+              entry,
+              record.rulePath,
+              record.nativeRule,
+            );
+          } catch {
+            diagnostics.add("rule-reference-unavailable");
+          }
+          if (!key || applicabilityCandidates.has(key)) return;
+          applicabilityCandidates.set(key, Object.freeze({
+            key,
+            scope: entry.scope,
+            selectorText: record.resolvedSelector,
+            contexts: Object.freeze(record.contexts.map((context) => (
+              Object.freeze({ ...context })
+            ))),
+          }));
+        },
         onMatchedRule: (record) => {
           if (!record.ruleRef) return;
           const entry = entryBySheet.get(record.nativeStylesheet);

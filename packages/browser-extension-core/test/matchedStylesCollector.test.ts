@@ -5,6 +5,7 @@ import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import type { StyleDeclarationSource } from "../src/cssRuleWalker.js";
 import type {
   MatchedStylesCollectionAuthority,
+  MatchedStylesCollectorOptions,
   MatchedStylesStylesheetAuthority,
 } from "../src/matchedStylesCollector.js";
 import type {
@@ -258,6 +259,44 @@ describe("MatchedStylesCollector", () => {
     expect(matched.collect({ ...AUTHORITY, stylesRevision: 12 })).toBeUndefined();
     current = false;
     expect(matched.collect(AUTHORITY)).toBeUndefined();
+  });
+
+  it("rechecks authority after publishing applicability candidates", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const stylesheets = stylesheetAuthority(scope, [
+      stylesheet(null, [styleRule(".card", { color: "red" })]),
+    ]);
+    let current = true;
+    let candidateCount = 0;
+    const matched = collector(
+      selected,
+      stylesheets,
+      () => current,
+      (_authority, candidates) => {
+        candidateCount = candidates.length;
+        current = false;
+      },
+    );
+
+    expect(matched.collect(AUTHORITY)).toBeUndefined();
+    expect(candidateCount).toBe(1);
+  });
+
+  it("fails closed when the applicability candidate callback throws", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const callbackError = new Error("applicability callback failed");
+    const matched = collector(
+      selected,
+      stylesheetAuthority(scope, [
+        stylesheet(null, [styleRule(".card", { color: "red" })]),
+      ]),
+      () => true,
+      () => { throw callbackError; },
+    );
+
+    expect(() => matched.collect(AUTHORITY)).toThrow(callbackError);
   });
 
   it("reads ownerless sheet disabled/media applicability hostile-safely on every collection", () => {
@@ -658,6 +697,7 @@ function collector(
   selected: ReturnType<typeof element>,
   stylesheets: MatchedStylesStylesheetAuthority,
   isAuthorityCurrent: (authority: MatchedStylesCollectionAuthority) => boolean = () => true,
+  onApplicabilityCandidates?: MatchedStylesCollectorOptions["onApplicabilityCandidates"],
 ) {
   return new MatchedStylesCollector({
     domTreeProvider: {
@@ -675,6 +715,7 @@ function collector(
     },
     stylesheets,
     isAuthorityCurrent,
+    onApplicabilityCandidates,
   });
 }
 
