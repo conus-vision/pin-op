@@ -51,6 +51,67 @@ from the active `card.scss`, and the `.featured` Open action moved VS Code to
 line 10, column 1. Firefox exercised Source in the wide split presentation. The
 Inspector asset was not made the store-build default.
 
+## Checkpoint 2 Rules Manual Gate (Pending)
+
+The checkpoint 2 automated suite verifies the shared CSSOM backend, immutable
+matched-style protocol/model, read-only Rules renderer, package markers, and the
+fixture facts that a normal page target exposes. The packaged Chrome smoke can
+drive that page target, but it cannot drive a DevTools extension panel. There is
+no geckodriver/BiDi panel harness in this repository. Therefore none of the
+native-panel rows below is claimed as performed until a tester records both a
+Chrome result and a Firefox result. Firefox must use its registered Pin-op
+DevTools tab; a package/asset assertion is not native Firefox runtime evidence.
+
+For this checkpoint only, build the unpacked browser extensions explicitly with
+the Inspector entrypoint:
+
+```powershell
+$env:PIN_OP_PANEL_VARIANT = "inspector"
+corepack pnpm --filter pin-op-chrome build
+corepack pnpm --filter pin-op-firefox build
+Remove-Item Env:PIN_OP_PANEL_VARIANT
+```
+
+Ordinary and store-candidate builds remain on the legacy default until the
+rollout checkpoint. After manual testing, rebuild without the environment
+variable if the same checkout will be used for ordinary packaging.
+
+Record the visible selector, declaration state, origin label, diagnostic, and
+revision probe for every row in each browser:
+
+| Rules case | Chrome | Firefox | Required observation |
+| --- | --- | --- | --- |
+| Document adopted sheet | Pending | Pending | `#document-adopted-target` includes the constructed document rule. |
+| Open-shadow adopted sheet | Pending | Pending | `.shadow-adopted-target` includes the shadow-root rule. |
+| One constructed sheet shared across roots | Pending | Pending | The shared declaration appears under both document and open-shadow selections with root-correct rule identity. |
+| Media and viewport changes | Pending | Pending | Active/inactive state changes without inventing unsupported cascade facts. |
+| Focus and pointer applicability | Pending | Pending | `:focus`/`:hover` applicability follows the fixture state and remains read-only. |
+| Sibling and slot mutation | Pending | Pending | The selected scope requeries after `toggleSiblingApplicability()` and `toggleSlottedApplicability()`. |
+| CSSOM mutation | Pending | Pending | `insertRule`, `deleteRule`, and `replaceSync` invalidate the current Rules result. |
+| Inaccessible and unknown data | Pending | Pending | Available rules remain visible; the panel shows a bounded partial diagnostic and never fabricates declarations or origins. |
+
+Run these two eventless matrices from the inspected page console while the
+corresponding target stays selected. Do not dispatch an event or edit a DOM
+attribute:
+
+1. Record `stylesheetRevision`, aggregate `stylesRevision`, and one current
+   `ruleRef`. Call `pinOpRulesFixture.toggleEventlessStylesheet()` to toggle
+   `CSSStyleSheet.disabled` and mutate its `MediaList`. After observation,
+   verify both revisions advance. Repeat once to restore the fixture.
+2. Record the same values, then call
+   `pinOpRulesFixture.toggleEventlessApplicability()`. This changes supported
+   `checked`, `indeterminate`, value/validity/placeholder state, and
+   `ElementInternals.states` where the browser exposes it, without an event or
+   attribute mutation. Verify the bounded applicability poll advances only
+   `stylesRevision`; `stylesheetRevision` and the matching `ruleRef` remain
+   unchanged. Record unsupported custom-state support as partial, not passed.
+
+Repeat both matrices with the fixture tab backgrounded long enough for browser
+timer throttling. Observation may be delayed in that state. Record the delay,
+then use Pin-op's manual Refresh and verify it deterministically recomputes the
+current selection. A delayed background observation is not a failure if manual
+Refresh produces the correct result; an uncorrected manual Refresh is a failure.
+
 ## Installed Product Verification
 
 Installed Pin-op needs no source checkout or terminal. There is no
@@ -205,6 +266,11 @@ The packaged Chrome artifact smoke is separate:
 corepack pnpm smoke:chrome-package
 ```
 
+That smoke asserts package markers (`styles.getMatched`, read-only Rules, and
+scoped Chromium CSS) plus fixture/runtime CSSOM facts. It does not automate the
+DevTools extension panel and cannot replace the pending Chrome/Firefox Rules
+manual gate above.
+
 On Linux, `smoke:chrome-package` requires a graphical session or Xvfb. Set
 `DISPLAY` or `WAYLAND_DISPLAY`, or run it under `xvfb-run -a`; the script refuses
 to launch Chrome without one of those display paths.
@@ -236,6 +302,11 @@ Keep `http://127.0.0.1:4173/` running. The fixture contains:
 - generated `dist/app.css`;
 - a CSSOM path-miss fingerprint case and duplicate-selector ambiguity;
 - inline, runtime-injected, virtual, CORS-readable, and inaccessible styles;
+- competing specificity, `!important`, inline, inherited, inactive
+  media/supports, nested-group, and duplicate-selector cases;
+- document/open-shadow adopted sheets and one constructed sheet shared across
+  document and shadow roots;
+- eventless stylesheet/applicability, sibling, slot, and CSSOM mutators;
 - multiline overlay geometry;
 - dynamic DOM mutation controls;
 - an open shadow root;

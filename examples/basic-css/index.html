@@ -50,6 +50,52 @@
         <div class="pin-op-inaccessible-external">
           Inaccessible external stylesheet
         </div>
+        <div id="specificity-target" class="specificity-target">
+          Competing specificity
+        </div>
+        <div id="important-target" class="important-target">
+          Important override
+        </div>
+        <div id="inherited-parent" class="inherited-parent">
+          Inherited parent
+          <span id="inherited-child" class="inherited-child">Inherited child</span>
+        </div>
+        <div id="inactive-media-rule" class="inactive-media-rule">
+          Inactive media rule
+        </div>
+        <div id="inactive-supports-rule" class="inactive-supports-rule">
+          Inactive supports rule
+        </div>
+        <div id="nested-group-rule" class="nested-group-rule">
+          Nested supports/media group
+        </div>
+        <div id="document-adopted-target" class="document-adopted-target shared-constructed-target constructed-mutation-target">
+          Document adopted and shared constructed sheets
+        </div>
+        <label>
+          <input id="selector-applicability-checkbox" class="selector-applicability-checkbox" type="checkbox" />
+          Eventless checked/indeterminate target
+        </label>
+        <input
+          id="selector-applicability-field"
+          class="selector-applicability-field"
+          type="text"
+          required
+          placeholder="Placeholder applicability target"
+        />
+        <pin-op-state-case
+          id="selector-applicability-custom"
+          class="selector-applicability-custom"
+        >Custom-state target</pin-op-state-case>
+        <div id="sibling-applicability-root">
+          <span class="sibling-applicability-anchor">Sibling anchor</span>
+          <span class="sibling-applicability-target">Sibling target</span>
+        </div>
+        <div id="slot-applicability-host">
+          <span id="slotted-applicability-node" class="slotted-applicability" slot="fixture-slot">
+            Slotted target
+          </span>
+        </div>
       </section>
 
       <section class="fixture-section" aria-labelledby="geometry-heading">
@@ -102,13 +148,148 @@
           padding: 0.5rem 0.75rem;
           border: 2px solid #7c3aed;
         }
+        .shadow-action:hover,
+        .shadow-action:focus {
+          --pin-op-selector-applicability: matched;
+        }
       `;
       const shadowAction = Object.assign(document.createElement("button"), {
         className: "shadow-action",
         textContent: "Shadow action",
         type: "button",
       });
-      root.replaceChildren(shadowStyle, shadowAction);
+      const shadowAdoptedTarget = Object.assign(document.createElement("div"), {
+        className: "shadow-adopted-target shared-constructed-target",
+        textContent: "Shadow adopted and shared constructed sheets",
+      });
+      root.replaceChildren(shadowStyle, shadowAction, shadowAdoptedTarget);
+
+      const documentAdoptedSheet = new CSSStyleSheet();
+      documentAdoptedSheet.replaceSync(`
+        .document-adopted-target {
+          border-block-end: 3px solid #1769aa;
+        }
+      `);
+      const shadowAdoptedSheet = new CSSStyleSheet();
+      shadowAdoptedSheet.replaceSync(`
+        .shadow-adopted-target {
+          outline: 2px solid #7c3aed;
+        }
+      `);
+      const sharedConstructedSheet = new CSSStyleSheet();
+      sharedConstructedSheet.replaceSync(`
+        .shared-constructed-target {
+          --pin-op-shared-constructed: ready;
+        }
+      `);
+      const mutableConstructedSheet = new CSSStyleSheet();
+      mutableConstructedSheet.replaceSync(`
+        .constructed-mutation-target {
+          color: #1769aa;
+        }
+      `);
+      document.adoptedStyleSheets = [
+        ...document.adoptedStyleSheets,
+        documentAdoptedSheet,
+        sharedConstructedSheet,
+        mutableConstructedSheet,
+      ];
+      root.adoptedStyleSheets = [
+        ...root.adoptedStyleSheets,
+        shadowAdoptedSheet,
+        sharedConstructedSheet,
+      ];
+
+      const slotHost = document.getElementById("slot-applicability-host");
+      const slotRoot = slotHost.attachShadow({ mode: "open" });
+      const slotStyle = document.createElement("style");
+      slotStyle.textContent = `
+        ::slotted(.slotted-applicability) {
+          text-decoration: underline;
+        }
+      `;
+      const fixtureSlot = document.createElement("slot");
+      fixtureSlot.name = "fixture-slot";
+      slotRoot.replaceChildren(slotStyle, fixtureSlot);
+
+      class PinOpStateCase extends HTMLElement {
+        constructor() {
+          super();
+          this.fixtureInternals = this.attachInternals();
+        }
+      }
+      customElements.define("pin-op-state-case", PinOpStateCase);
+      const customStateTarget = document.getElementById("selector-applicability-custom");
+      const supportsCustomStates =
+        typeof ElementInternals !== "undefined" &&
+        customStateTarget.fixtureInternals?.states;
+
+      let cssomMutationInserted = false;
+      let cssomReplacementAlternate = false;
+      function mutateConstructedSheet() {
+        if (cssomMutationInserted) {
+          mutableConstructedSheet.deleteRule(1);
+        } else {
+          mutableConstructedSheet.insertRule(
+            ".constructed-mutation-target { background: #eef6fc; }",
+            1,
+          );
+        }
+        cssomMutationInserted = !cssomMutationInserted;
+      }
+
+      function replaceConstructedSheet() {
+        cssomReplacementAlternate = !cssomReplacementAlternate;
+        mutableConstructedSheet.replaceSync(`
+          .constructed-mutation-target {
+            color: ${cssomReplacementAlternate ? "#7c3aed" : "#1769aa"};
+          }
+        `);
+        cssomMutationInserted = false;
+      }
+
+      function toggleEventlessStylesheet() {
+        const sheet = document.getElementById("eventless-stylesheet").sheet;
+        sheet.disabled = !sheet.disabled;
+        sheet.media.mediaText = sheet.media.mediaText === "all"
+          ? "(min-width: 1px)"
+          : "all";
+      }
+
+      function toggleEventlessApplicability() {
+        const checkbox = document.getElementById("selector-applicability-checkbox");
+        const field = document.getElementById("selector-applicability-field");
+        checkbox.checked = !checkbox.checked;
+        checkbox.indeterminate = !checkbox.indeterminate;
+        field.value = field.value ? "" : "valid";
+        field.setCustomValidity(field.value ? "" : "fixture-invalid");
+        if (supportsCustomStates) {
+          supportsCustomStates.toggle("pin-op-active");
+        }
+      }
+
+      function toggleSiblingApplicability() {
+        const siblingRoot = document.getElementById("sibling-applicability-root");
+        siblingRoot.append(siblingRoot.firstElementChild);
+      }
+
+      function toggleSlottedApplicability() {
+        const slotted = document.getElementById("slotted-applicability-node");
+        slotted.slot = slotted.slot ? "" : "fixture-slot";
+      }
+
+      window.pinOpRulesFixture = Object.freeze({
+        documentAdoptedSheet,
+        shadowAdoptedSheet,
+        sharedConstructedSheet,
+        mutableConstructedSheet,
+        mutateConstructedSheet,
+        replaceConstructedSheet,
+        toggleEventlessStylesheet,
+        toggleEventlessApplicability,
+        toggleSiblingApplicability,
+        toggleSlottedApplicability,
+      });
 
       let dynamicCardCount = 0;
       document.getElementById("add-dynamic-node").addEventListener("click", () => {
@@ -128,5 +309,18 @@
         clickCount.value = String(normalClicks);
       });
     </script>
+    <style id="eventless-stylesheet" media="all">
+      .selector-applicability-checkbox:checked,
+      .selector-applicability-checkbox:indeterminate,
+      .selector-applicability-field:placeholder-shown,
+      .selector-applicability-field:valid,
+      .selector-applicability-field:invalid,
+      .sibling-applicability-anchor + .sibling-applicability-target {
+        --pin-op-selector-applicability: matched;
+      }
+      .selector-applicability-custom:state(pin-op-active) {
+        --pin-op-selector-applicability: matched;
+      }
+    </style>
   </body>
 </html>

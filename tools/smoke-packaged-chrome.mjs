@@ -88,6 +88,15 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   const multiline = document.querySelector(".multiline-inline");
   const vendorLink = linkByPath("/vendor.css");
   const inaccessibleLink = linkByPath("/inaccessible.css");
+  const fixture = window.pinOpRulesFixture;
+  const shadowRoot = document.getElementById("open-shadow-host")?.shadowRoot;
+  const hasRule = (sheet, selector) => {
+    try {
+      return Boolean(sheet && findStyleRule(sheet.cssRules, selector));
+    } catch {
+      return false;
+    }
+  };
 
   return {
     ready: true,
@@ -98,6 +107,30 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
     inaccessibleHasCrossOrigin: inaccessibleLink?.hasAttribute("crossorigin") ?? null,
     multilineRectCount: multiline?.getClientRects().length ?? 0,
     pathMiss,
+    documentAdoptedRule: Array.from(document.adoptedStyleSheets ?? [])
+      .some((sheet) => hasRule(sheet, ".document-adopted-target")),
+    shadowAdoptedRule: Array.from(shadowRoot?.adoptedStyleSheets ?? [])
+      .some((sheet) => hasRule(sheet, ".shadow-adopted-target")),
+    sharedConstructedSheetCount: fixture?.sharedConstructedSheet
+      ? Number(document.adoptedStyleSheets.includes(fixture.sharedConstructedSheet)) +
+        Number(shadowRoot?.adoptedStyleSheets.includes(fixture.sharedConstructedSheet))
+      : 0,
+    applicabilityFixtureReady: Boolean(
+      fixture &&
+      document.getElementById("selector-applicability-checkbox") &&
+      document.getElementById("selector-applicability-field") &&
+      document.getElementById("selector-applicability-custom") &&
+      typeof fixture.toggleEventlessStylesheet === "function" &&
+      typeof fixture.toggleEventlessApplicability === "function" &&
+      typeof fixture.toggleSiblingApplicability === "function" &&
+      typeof fixture.toggleSlottedApplicability === "function"
+    ),
+    cssomMutationFixtureReady: Boolean(
+      fixture &&
+      document.querySelector(".constructed-mutation-target") &&
+      typeof fixture.mutateConstructedSheet === "function" &&
+      typeof fixture.replaceConstructedSheet === "function"
+    ),
   };
 })()`;
 
@@ -376,6 +409,23 @@ function assertFixtureRuntimeResult(result) {
     throw new Error(
       `Fixture path-miss CSSOM evidence expected outline-style:dashed, found ${JSON.stringify(result.pathMiss)}`,
     );
+  }
+  if (result.documentAdoptedRule !== true) {
+    throw new Error("Fixture document adopted stylesheet rule is unavailable");
+  }
+  if (result.shadowAdoptedRule !== true) {
+    throw new Error("Fixture shadow adopted stylesheet rule is unavailable");
+  }
+  if (result.sharedConstructedSheetCount !== 2) {
+    throw new Error(
+      `Fixture shared constructed sheet expected in 2 roots, found ${String(result.sharedConstructedSheetCount)}`,
+    );
+  }
+  if (result.applicabilityFixtureReady !== true) {
+    throw new Error("Fixture selector applicability controls are unavailable");
+  }
+  if (result.cssomMutationFixtureReady !== true) {
+    throw new Error("Fixture CSSOM mutation controls are unavailable");
   }
   return result;
 }

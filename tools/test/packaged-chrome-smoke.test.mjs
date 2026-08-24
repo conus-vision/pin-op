@@ -60,8 +60,11 @@ const panelBundleFixture = [
   'const opaqueMatchIdentity = "matchId";',
   'const resolveLocatorType = "dom.resolveLocator";',
 ].join("\n");
-const inspectorPanelBundleFixture =
-  'const inspectorWorkspace = "inspector-workspace";\n';
+const inspectorPanelBundleFixture = [
+  'const inspectorWorkspace = "inspector-workspace";',
+  'const matchedStylesRequest = "styles.getMatched";',
+  'const readOnlyRules = "aria-readonly Rules";',
+].join("\n");
 
 function createArchive(paths = CHROME_ARCHIVE_FILES) {
   const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
@@ -218,6 +221,21 @@ test("requires packaged inspector assets and semantic static markers", () => {
       "dom.resolveLocator",
       /locator recovery/i,
     ],
+    [
+      "dist/inspectorPanel.js",
+      "styles.getMatched",
+      /matched styles request/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "aria-readonly",
+      /read-only Rules/i,
+    ],
+    [
+      "dist/devtools-elements.css",
+      ".pin-op-elements-inspector",
+      /scoped Chromium CSS/i,
+    ],
   ];
 
   for (const [path, marker, expectedError] of cases) {
@@ -351,6 +369,11 @@ test("verifies fixture CSSOM access and multiline geometry through CDP", async (
               inaccessibleHasCrossOrigin: false,
               multilineRectCount: 2,
               pathMiss: { property: "outline-style", value: "dashed" },
+              documentAdoptedRule: true,
+              shadowAdoptedRule: true,
+              sharedConstructedSheetCount: 2,
+              applicabilityFixtureReady: true,
+              cssomMutationFixtureReady: true,
             },
           },
         };
@@ -366,6 +389,11 @@ test("verifies fixture CSSOM access and multiline geometry through CDP", async (
   );
 
   assert.equal(result.multilineRectCount, 2);
+  assert.equal(result.documentAdoptedRule, true);
+  assert.equal(result.shadowAdoptedRule, true);
+  assert.equal(result.sharedConstructedSheetCount, 2);
+  assert.equal(result.applicabilityFixtureReady, true);
+  assert.equal(result.cssomMutationFixtureReady, true);
   assert.equal(result.locationHref, "http://127.0.0.1:4173/");
   assert.equal(runtimeEvaluations, 2);
   assert.ok(calls.some(([method]) => method === "Page.navigate"));
@@ -391,6 +419,11 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
       { pathMiss: { property: "outline-style", value: "rgb(217, 119, 6)" } },
       /path-miss CSSOM evidence/i,
     ],
+    [{ documentAdoptedRule: false }, /document adopted stylesheet rule/i],
+    [{ shadowAdoptedRule: false }, /shadow adopted stylesheet rule/i],
+    [{ sharedConstructedSheetCount: 1 }, /shared constructed sheet expected in 2 roots/i],
+    [{ applicabilityFixtureReady: false }, /selector applicability controls/i],
+    [{ cssomMutationFixtureReady: false }, /CSSOM mutation controls/i],
   ]) {
     let closed = false;
     const cdp = {
@@ -414,6 +447,11 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
                 inaccessibleHasCrossOrigin: false,
                 multilineRectCount: 2,
                 pathMiss: { property: "outline-style", value: "dashed" },
+                documentAdoptedRule: true,
+                shadowAdoptedRule: true,
+                sharedConstructedSheetCount: 2,
+                applicabilityFixtureReady: true,
+                cssomMutationFixtureReady: true,
                 ...overrides,
               },
             },

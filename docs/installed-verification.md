@@ -164,6 +164,41 @@ For a match, the footer format is
 inaccessible-stylesheet count. Other exact outcomes are listed in the
 [usage guide](mvp-usage.md).
 
+## Read-Only Rules Backend
+
+This is a manual installed-panel matrix. Run it in both the installed Chrome
+package and the supported installed Firefox path; package tests and the Chrome
+page-target smoke do not constitute native DevTools-panel evidence.
+
+1. Select the specificity, `!important`, inline-style, inherited, inactive
+   media/supports, nested-group, and duplicate-selector fixture targets. Confirm
+   Rules distinguishes winning-known-author, overridden-known-author, inactive,
+   inherited, and explicitly unknown declarations without an editor, checkbox,
+   Add Rule, Add Property, or editable popover.
+2. Select the document adopted target, the open-shadow adopted target, and the
+   shared constructed target in both roots. Confirm each readable rule is shown
+   once in the correct scope. Select the inaccessible external target and
+   confirm a bounded partial diagnostic while proven rules remain usable.
+3. Resize the viewport and exercise focus/pointer, sibling, and slot state.
+   Confirm the current selection is requeried without changing its node
+   identity. Exercise `insertRule`, `deleteRule`, and `replaceSync` through
+   `window.pinOpRulesFixture` and confirm the Rules result invalidates.
+4. Without dispatching an event or changing a DOM attribute, record the current
+   `stylesheetRevision`, aggregate `stylesRevision`, and a `ruleRef`. Call
+   `pinOpRulesFixture.toggleEventlessStylesheet()`. Confirm both revisions
+   advance after the `CSSStyleSheet.disabled`/`MediaList` change.
+5. Record the values again and call
+   `pinOpRulesFixture.toggleEventlessApplicability()`. Confirm supported
+   checked, indeterminate, value/validity/placeholder, and custom-state changes
+   advance only `stylesRevision`; `stylesheetRevision` and `ruleRef` stay
+   unchanged. Record unsupported `ElementInternals.states` as partial.
+6. Repeat steps 4 and 5 in a browser-throttled background tab. Record any
+   observation delay, then press manual Refresh. Refresh must deterministically
+   produce the current Rules result even when background polling was delayed.
+
+Rules works without an IDE link. At this checkpoint generated origin labels are
+plain read-only text and are not clickable source navigation authorities.
+
 ## Source, Highlight, And Responsive Layout
 
 1. Confirm Source shows only bounded excerpts from the active IDE document,

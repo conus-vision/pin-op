@@ -61,6 +61,11 @@ const PANEL_BUNDLE_MARKERS = Object.freeze([
   ["opaque match identity", "matchId"],
   ["locator recovery", "dom.resolveLocator"],
 ]);
+const INSPECTOR_BUNDLE_MARKERS = Object.freeze([
+  ["matched styles request", "styles.getMatched"],
+  ["read-only Rules", "aria-readonly"],
+  ["Rules renderer", "Rules"],
+]);
 const VISIBILITY_PROPERTIES = new Set([
   "display",
   "visibility",
@@ -122,21 +127,22 @@ const MAX_STATIC_STRING_CANDIDATES = 32;
 const MAX_STATIC_STRING_LENGTH = 256;
 
 // zod@3.25.76 v3's describe helper clones schemas through this.constructor.
-// Trust only the sole helper in these exact esbuild outputs, hashing the raw
-// archived bytes. A dependency, esbuild, or bundle change that retains the
-// helper requires deliberate review and digest updates; helper-free bundles do
-// not depend on this provenance list.
+// PostCSS and postcss-selector-parser were reviewed at their pinned versions:
+// their constructor references clone typed AST nodes and wire prototypes; they
+// do not resolve or invoke the global Function/eval capabilities. Trust only
+// the sole Zod helper in these exact legacy/Inspector esbuild outputs, hashing
+// the raw archived bytes. Any retained helper requires deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" }),
-  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" }),
-  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "ac0f61ea56f48a815079b66b0a74dc03d6805ad6270ac87787bb6d93168d06ad" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" }),
-  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" }),
-  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" }),
-  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "0ab26b2a545063cf09643e3466da9d7c7842454e883d310f9240ea1c82a82144" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" }),
-  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "9d9ad86aa2a137cd305a8235d9ef6413a890efeda86eb12daa7efb1db4f8a9e5", inspectorSha256: "2c2559bf16b525cd072367394a3f624c3af0b9f6371b62628df7722919c607d5" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36", inspectorSha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "6c489192e384eb1de3c93367bb9d3f7259a89782dd3f4f981bf9f213c2d548d9", inspectorSha256: "738fba50a89da129a013fea16789fcbe700f01137e3778fa0d0b1513f39973a1" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d", inspectorSha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d" }),
+  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b", inspectorSha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "9d9ad86aa2a137cd305a8235d9ef6413a890efeda86eb12daa7efb1db4f8a9e5", inspectorSha256: "2c2559bf16b525cd072367394a3f624c3af0b9f6371b62628df7722919c607d5" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36", inspectorSha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "e47d06dd8dbe040450ae34683b1b8cf60ea3c43dc21e031663438e97e5a28e58", inspectorSha256: "da59f5ccd4353c10b15190bac89fdea1cd9e2e53d313dbd43327f026d1f0135e" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d", inspectorSha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d" }),
+  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b", inspectorSha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b" }),
 ]);
 
 export function assertBrowserPackageRuntimeContract(
@@ -192,7 +198,7 @@ export function assertBrowserPackageRuntimeContract(
     archive,
     artifactLabel,
     "dist/inspectorPanel.js",
-    [["Inspector runtime", "inspector-workspace"]],
+    [["Inspector runtime", "inspector-workspace"], ...INSPECTOR_BUNDLE_MARKERS],
   );
   assertTextMarkers(
     archive,
@@ -572,13 +578,25 @@ function assertStaticJavaScript(
     staticStringAliases,
     { platform, path, sourceSha256 },
   );
+  const provenance = { platform, path, sourceSha256 };
+  const reviewedAstClones = collectReviewedPostCssAstClones(
+    sourceFile,
+    checker,
+  );
+  const trustedAstClones = hasTrustedBundleProvenance(provenance) &&
+      reviewedAstClones.length === 2
+    ? new Set(reviewedAstClones)
+    : new Set();
 
   let violation;
+  const reject = (kind, node) => {
+    violation = { kind, node };
+  };
   const visit = (node) => {
     if (violation) return;
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        violation = "remote code loading";
+        reject("remote code loading", node);
         return;
       }
       const reflectedCapability = reflectedCodeCapability(
@@ -596,9 +614,12 @@ function assertStaticJavaScript(
         staticStringAliases,
       );
       if (capability) {
-        violation = capability === "importScripts"
-          ? "remote code loading"
-          : "dynamic code evaluation";
+        reject(
+          capability === "importScripts"
+            ? "remote code loading"
+            : "dynamic code evaluation",
+          node,
+        );
         return;
       }
     }
@@ -611,7 +632,11 @@ function assertStaticJavaScript(
         staticStringAliases,
       );
       if (capability === "Function" || capability === "eval") {
-        violation = "dynamic code evaluation";
+        if (trustedAstClones.has(node)) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+        reject("dynamic code evaluation", node);
         return;
       }
     }
@@ -624,9 +649,12 @@ function assertStaticJavaScript(
         staticStringAliases,
       );
       if (capability) {
-        violation = capability === "importScripts"
-          ? "remote code loading"
-          : "dynamic code evaluation";
+        reject(
+          capability === "importScripts"
+            ? "remote code loading"
+            : "dynamic code evaluation",
+          node,
+        );
         return;
       }
     }
@@ -642,17 +670,24 @@ function assertStaticJavaScript(
       staticStringAliases,
     );
     if (referencedCapability) {
-      violation = referencedCapability === "importScripts"
-        ? "remote code loading"
-        : "dynamic code evaluation";
+      reject(
+        referencedCapability === "importScripts"
+          ? "remote code loading"
+          : "dynamic code evaluation",
+        node,
+      );
       return;
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
   if (violation) {
+    const { line, character } = sourceFile.getLineAndCharacterOfPosition(
+      violation.node.getStart(sourceFile),
+    );
     throw new Error(
-      `${artifactLabel} ${path} contains ${violation} (sha256 ${sourceSha256})`,
+      `${artifactLabel} ${path} contains ${violation.kind} at ${line + 1}:${character + 1} ` +
+        `(sha256 ${sourceSha256})`,
     );
   }
 }
@@ -719,14 +754,9 @@ function collectStaticJavaScriptAliases(
   const schemaCloneAssignments = assignments.filter((assignment) =>
     isZodSchemaCloneConstructorAliasSyntax(assignment, checker)
   );
-  const hasTrustedBundleProvenance = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.some(
-    (entry) =>
-      entry.browser === provenance.platform &&
-      entry.path === provenance.path &&
-      entry.sha256 === provenance.sourceSha256,
-  );
+  const hasTrustedBundleProvenanceValue = hasTrustedBundleProvenance(provenance);
   const trustedSchemaCloneAssignment =
-    hasTrustedBundleProvenance && schemaCloneAssignments.length === 1
+    hasTrustedBundleProvenanceValue && schemaCloneAssignments.length === 1
       ? schemaCloneAssignments[0]
       : undefined;
 
@@ -762,6 +792,82 @@ function collectStaticJavaScriptAliases(
     }
     if (!changed) return;
   }
+}
+
+function hasTrustedBundleProvenance(provenance) {
+  return TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.some(
+    (entry) =>
+      entry.browser === provenance.platform &&
+      entry.path === provenance.path &&
+      (entry.sha256 === provenance.sourceSha256 ||
+        entry.inspectorSha256 === provenance.sourceSha256),
+  );
+}
+
+function collectReviewedPostCssAstClones(sourceFile, checker) {
+  const clones = [];
+  const visit = (node) => {
+    if (isReviewedPostCssAstCloneConstructor(node, checker)) clones.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return clones;
+}
+
+function isReviewedPostCssAstCloneConstructor(node, checker) {
+  if (
+    !ts.isNewExpression(node) ||
+    (node.arguments?.length ?? 0) !== 0 ||
+    node.typeArguments?.length
+  ) {
+    return false;
+  }
+  const constructor = staticMember(node.expression);
+  const receiver = constructor && unwrapStaticExpression(constructor.expression);
+  if (
+    constructor?.name !== "constructor" ||
+    !ts.isIdentifier(receiver) ||
+    !ts.isVariableDeclaration(node.parent) ||
+    node.parent.initializer !== node ||
+    !ts.isIdentifier(node.parent.name)
+  ) {
+    return false;
+  }
+
+  let owner = node.parent.parent;
+  while (owner && !ts.isFunctionLike(owner)) owner = owner.parent;
+  if (
+    !owner ||
+    owner.parameters.length !== 2 ||
+    !ts.isIdentifier(owner.parameters[0].name) ||
+    !owner.body ||
+    !ts.isBlock(owner.body)
+  ) {
+    return false;
+  }
+  const receiverSymbol = checker.getSymbolAtLocation(receiver);
+  if (
+    !receiverSymbol ||
+    receiverSymbol !== checker.getSymbolAtLocation(owner.parameters[0].name)
+  ) {
+    return false;
+  }
+
+  let copiesOwnProperties = false;
+  const inspect = (candidate) => {
+    if (
+      ts.isForInStatement(candidate) &&
+      ts.isIdentifier(unwrapStaticExpression(candidate.expression)) &&
+      checker.getSymbolAtLocation(unwrapStaticExpression(candidate.expression)) ===
+        receiverSymbol
+    ) {
+      copiesOwnProperties = true;
+      return;
+    }
+    ts.forEachChild(candidate, inspect);
+  };
+  inspect(owner.body);
+  return copiesOwnProperties;
 }
 
 function collectStaticStringAliases(assignments, checker, staticStringAliases) {

@@ -44,7 +44,13 @@ const panelBundle = [
   'const resolveLocatorType = "dom.resolveLocator";',
   "",
 ].join("\n");
-const inspectorPanelBundle = 'const inspectorWorkspace = "inspector-workspace";\n';
+const inspectorPanelBundle = [
+  'const inspectorWorkspace = "inspector-workspace";',
+  'const matchedStylesRequest = "styles.getMatched";',
+  'const rulesReadOnlyState = "aria-readonly";',
+  'const rulesRenderer = "Rules";',
+  "",
+].join("\n");
 const upstreamManifest = JSON.parse(
   readFileSync(
     resolve(repositoryRoot, "third_party/chromium-devtools-frontend/UPSTREAM.json"),
@@ -60,16 +66,16 @@ const upstreamRootLicense = readFileSync(
 // helper emitted by esbuild. Retaining that helper after dependency/build
 // changes requires a security review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "ac0f61ea56f48a815079b66b0a74dc03d6805ad6270ac87787bb6d93168d06ad" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" },
-  { browser: "firefox", path: "dist/background.js", sha256: "533e0e539e7d53312cfbc4e0873ae6177aadaa5b6404cdd79a5927460452eb68" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "ed88ec73f51d737b04eb741c9a55701747558445a1ac8c6489bdd324031f2f98" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "0ab26b2a545063cf09643e3466da9d7c7842454e883d310f9240ea1c82a82144" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "a4d19c6e8aa5c12ede7e514346c2631251227bacfcf4ce64332ab27221e6ac73" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "7f820d8f30eb654e05618410296d2c9941ac7114a55437d5f4eef0281abbb623" },
+  { browser: "chrome", path: "dist/background.js", sha256: "9d9ad86aa2a137cd305a8235d9ef6413a890efeda86eb12daa7efb1db4f8a9e5", inspectorSha256: "2c2559bf16b525cd072367394a3f624c3af0b9f6371b62628df7722919c607d5" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36", inspectorSha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "6c489192e384eb1de3c93367bb9d3f7259a89782dd3f4f981bf9f213c2d548d9", inspectorSha256: "738fba50a89da129a013fea16789fcbe700f01137e3778fa0d0b1513f39973a1" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d", inspectorSha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b", inspectorSha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b" },
+  { browser: "firefox", path: "dist/background.js", sha256: "9d9ad86aa2a137cd305a8235d9ef6413a890efeda86eb12daa7efb1db4f8a9e5", inspectorSha256: "2c2559bf16b525cd072367394a3f624c3af0b9f6371b62628df7722919c607d5" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36", inspectorSha256: "5d2ea742030cdf860025d8b81a26bc635f6b238c76d91a4dd4df6920477f1d36" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "e47d06dd8dbe040450ae34683b1b8cf60ea3c43dc21e031663438e97e5a28e58", inspectorSha256: "da59f5ccd4353c10b15190bac89fdea1cd9e2e53d313dbd43327f026d1f0135e" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d", inspectorSha256: "5f62456fa27bc2008978f1d4bcbef814148cb1be5ee34174bb64c988a8ed2e1d" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b", inspectorSha256: "ff4841efc9c12a9ebb46335f77a61c4b2a958de3316fc78ab932925b285fc39b" },
 ]);
 
 test("browser runtime contract pins zod@3.25.76 bundle provenance per browser and path", () => {

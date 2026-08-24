@@ -172,6 +172,38 @@ snapshot paths, changed permissions or host permissions, optional permissions,
 and any CSP drift. Both browser packages must carry the same complete Chromium
 root and embedded Apple/Pecoraro notice inventory.
 
+## Read-Only Rules And CSSOM Boundary
+
+Chrome and Firefox use the same browser-local `styles.getMatched` route,
+bounded CSS rule walker, stylesheet registry, applicability observer, and
+immutable Rules projection. Rules reads available author CSSOM and selected
+element state. It exposes no selector/property/value editor, declaration
+toggle, Add Rule, Add Property, editable popover, or DOM/CSS mutation command.
+The filter changes presentation only and cannot alter browser authority.
+
+The browser runtime does not fetch stylesheet URLs in the background. A
+cross-origin or otherwise unreadable stylesheet contributes only a bounded
+inaccessible count and partial diagnostic; Pin-op does not invent its rules,
+specificity, declarations, or source locations. Full stylesheet text, DOM
+nodes, browser-local `ruleRef` values, and adopted-sheet objects do not cross
+the public WebSocket merely to render Rules.
+
+The pinned browser runtime includes PostCSS `8.5.16` and
+`postcss-selector-parser` `7.1.0` for bounded parsing and selector analysis.
+Their bundled constructor uses were reviewed as typed AST cloning/prototype
+wiring, not global `Function` or `eval`. Package verification still rejects
+dynamic code evaluation and remote code loading, and accepts the existing Zod
+schema-clone helper only for exact reviewed legacy/Inspector bundle SHA-256
+provenance. Generated Chrome and Firefox notices include PostCSS and every
+bundled transitive license.
+
+Stylesheet identity changes advance `stylesheetRevision` and aggregate
+`stylesRevision`. Selector/group applicability changes advance only
+`stylesRevision` and preserve current rule identity. Browser timer throttling
+can delay bounded polling in a background tab, so manual Refresh is the
+deterministic recomputation fallback; throttling never authorizes a write or a
+fabricated result.
+
 ## Bounded Facts Sent To VS Code
 
 Only a valid selection creates protocol facts. Pin-op sends bounded facts

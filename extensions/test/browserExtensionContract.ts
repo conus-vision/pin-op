@@ -53,6 +53,7 @@ export interface BrowserAdapterContractOptions {
   readonly importDevtools: () => Promise<unknown>;
   readonly importPanel: () => Promise<unknown>;
   readonly importInspectorPanel: () => Promise<unknown>;
+  readonly expectedMatchedStylesRequestType: "styles.getMatched";
 }
 
 export interface BrowserPackageContractOptions {
@@ -60,6 +61,9 @@ export interface BrowserPackageContractOptions {
   readonly extensionRoot: URL;
   readonly buildTarget: string;
   readonly expectedInspectorAssets: readonly string[];
+  readonly expectedInspectorBundleMarkers: readonly string[];
+  readonly expectedChromiumCssScope: ".pin-op-elements-inspector";
+  readonly expectedNoticePackages: readonly string[];
 }
 
 export function createBrowserAdapterHarness() {
@@ -616,6 +620,20 @@ export function describeBrowserAdapterContract(
         "sendRuntimeMessage",
         "subscribeUnload",
       ]);
+
+      const matchedStylesModel = readFileSync(
+        new URL(
+          "../../packages/browser-extension-core/src/matchedStylesModel.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      expect(matchedStylesModel).toContain(
+        `type: "${contract.expectedMatchedStylesRequestType}"`,
+      );
+      expect(
+        readFileSync(new URL("src/inspectorPanel.ts", contract.extensionRoot), "utf8"),
+      ).not.toContain(contract.expectedMatchedStylesRequestType);
     });
 
     it("starts the shared panel runtime through narrow wrappers", async () => {
@@ -794,6 +812,9 @@ export function describeBrowserPackageContract(
         )].map((match) => match[1]),
       ).toEqual(["./panel.css", "./devtools-elements.css"]);
       expect(inspectorPanelBundle).toContain("inspector-workspace");
+      for (const marker of contract.expectedInspectorBundleMarkers) {
+        expect(inspectorPanelBundle, marker).toContain(marker);
+      }
       expect(panelCss).toBe(sharedAsset("panel.css"));
       expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
         Buffer.from(sharedAsset("pin-op.svg")),
@@ -899,7 +920,7 @@ export function describeBrowserPackageContract(
       )).not.toThrow();
     });
 
-    it("hashes the raw emitted bundle bytes used for Zod provenance", () => {
+    it("hashes the raw emitted legacy bundle bytes used for Zod provenance", () => {
       const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
       const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
         (entry) => entry.browser === browser,
@@ -910,7 +931,14 @@ export function describeBrowserPackageContract(
         sha256: createHash("sha256").update(packagedBytes(packaged, path)).digest("hex"),
       }));
 
-      expect(actual).toEqual(expected);
+      expect(actual).toEqual(expected.map(({ browser, path, sha256 }) => ({
+        browser,
+        path,
+        sha256,
+      })));
+      for (const entry of expected) {
+        expect(entry.inspectorSha256).toMatch(/^[0-9a-f]{64}$/);
+      }
     });
 
     it("rejects byte drift and copied constructor code in a real emitted bundle", () => {
@@ -928,8 +956,19 @@ export function describeBrowserPackageContract(
         "};" +
         "CopiedSchema.prototype.describe.call(LocalFunction, 'x')();\n",
       );
+      const constructorCloneExploit = Buffer.from(
+        "\nfunction cloneAttacker(value, parent) {" +
+        "const cloned = new value.constructor();" +
+        "for (const key in value) cloned[key] = value[key];" +
+        "return cloned;" +
+        "}\ncloneAttacker({ constructor: Function }, null);\n",
+      );
 
-      for (const mutation of [Buffer.from(" "), copiedExploit]) {
+      for (const mutation of [
+        Buffer.from(" "),
+        copiedExploit,
+        constructorCloneExploit,
+      ]) {
         const files = new Map(packaged.files);
         files.set(path, Buffer.concat([original, mutation]));
         expect(() => assertBrowserPackageRuntimeContract(
@@ -1031,7 +1070,10 @@ export function describeBrowserPackageContract(
       postcss.parse(elementsCss).walkRules((rule) => {
         for (const selector of rule.selectors) {
           expect(selector.trim(), rule.toString()).toMatch(
-            /^\.pin-op-elements-inspector(?:\b|\s|\.|#|:|\[|>|\+|~)/,
+            new RegExp(
+              `^${contract.expectedChromiumCssScope.replaceAll(".", "\\.")}` +
+                "(?:\\b|\\s|\\.|#|:|\\[|>|\\+|~)",
+            ),
           );
         }
       });
@@ -1195,6 +1237,19 @@ export function describeBrowserPackageContract(
       expect(new Set(websocketUrls)).toEqual(new Set(["ws://127.0.0.1:"]));
     });
 
+    it("checks in the generated runtime dependency notices", () => {
+      const emittedNotices = packagedText(packaged, "THIRD_PARTY_NOTICES");
+      const checkedInNotices = readFileSync(
+        new URL("THIRD_PARTY_NOTICES", contract.extensionRoot),
+        "utf8",
+      );
+
+      expect(checkedInNotices).toBe(emittedNotices);
+      for (const packageName of contract.expectedNoticePackages) {
+        expect(emittedNotices).toContain(`## ${packageName}`);
+      }
+    });
+
     it("keeps stylesheet inventory CSSOM-only without a network fallback", () => {
       const repositoryRoot = resolve(
         dirname(fileURLToPath(import.meta.url)),
@@ -1230,6 +1285,7 @@ export function describeBrowserPackageContract(
       expect(disallowedPackagedHttpUrls([
         "// https://comment.example.test/postcss-docs",
         "const svg = 'http://www.w3.org/2000/svg';",
+        "const localSelectorBase = 'http://localhost/';",
         "const sentinel = 'https://pin-op.invalid/';",
         "const endpoint = 'https://attacker.example.test/rules.css';",
       ].join("\n"))).toEqual([
@@ -1241,6 +1297,7 @@ export function describeBrowserPackageContract(
 
 const PACKAGED_HTTP_URL_ALLOWLIST = new Set([
   "http://www.w3.org/2000/svg",
+  "http://localhost/",
   "https://pin-op.invalid/",
 ]);
 

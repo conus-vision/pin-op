@@ -38,6 +38,20 @@ describe("basic CSS example server", () => {
         'class="pin-op-virtual-unmapped"',
         'class="pin-op-external-readable"',
         'class="pin-op-inaccessible-external"',
+        'id="specificity-target"',
+        'id="important-target"',
+        'id="inherited-parent"',
+        'id="inherited-child"',
+        'id="inactive-media-rule"',
+        'id="inactive-supports-rule"',
+        'id="nested-group-rule"',
+        'id="document-adopted-target"',
+        'class="document-adopted-target shared-constructed-target constructed-mutation-target"',
+        'id="selector-applicability-checkbox"',
+        'id="selector-applicability-field"',
+        'id="selector-applicability-custom"',
+        'id="sibling-applicability-root"',
+        'id="slotted-applicability-node"',
       ]) {
         expect(page).toContain(marker);
       }
@@ -49,9 +63,28 @@ describe("basic CSS example server", () => {
         'createElement("style")',
         'runtimeStyle.id = "runtime-injected-style"',
         'fixtureCard.addEventListener("click"',
+        "new CSSStyleSheet()",
+        "document.adoptedStyleSheets",
+        "root.adoptedStyleSheets",
+        "sharedConstructedSheet",
+        "toggleEventlessStylesheet",
+        "toggleEventlessApplicability",
+        "toggleSiblingApplicability",
+        "toggleSlottedApplicability",
+        ".insertRule(",
+        ".deleteRule(",
+        ".replaceSync(",
+        "cssomReplacementAlternate = !cssomReplacementAlternate",
+        "ElementInternals",
       ]) {
         expect(page).toContain(runtimeMarker);
       }
+      expect(page).toMatch(
+        /shadowStyle\.textContent = `[\s\S]*?\.shadow-action:hover,[\s\S]*?\.shadow-action:focus[\s\S]*?`;/,
+      );
+      expect(page).toMatch(
+        /\.sibling-applicability-anchor \+ \.sibling-applicability-target\s*\{[^}]*\}\s*\.selector-applicability-custom:state\(pin-op-active\)/,
+      );
       expect(page).toContain(servers.vendorCssUrl);
       expect(page).toContain(`href="${inaccessibleCssUrl}"`);
       const stylesheetLinks = [...page.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*>/g)]
@@ -87,6 +120,20 @@ describe("basic CSS example server", () => {
       expect(appCss).toContain("font-size: 16px");
       expect(appCss).toContain("line-height: 24px");
       expect(appCss).toContain("@media (min-width: 1px)");
+      expect(appCss).toMatch(
+        /\.specificity-target\s*\{[\s\S]*?\.fixture-section \.specificity-target\s*\{/,
+      );
+      expect(appCss).toMatch(
+        /\.important-target\s*\{[\s\S]*?color:\s*#[0-9a-f]+\s*!important;/i,
+      );
+      expect(appCss).toMatch(
+        /\.inherited-parent\s*\{[\s\S]*?font-family:/,
+      );
+      expect(appCss).toContain("@media (max-width: 1px)");
+      expect(appCss).toContain("@supports (display: pin-op-unsupported-value)");
+      expect(appCss).toMatch(
+        /@supports \(display: grid\)[\s\S]*?@media \(min-width: 1px\)[\s\S]*?\.nested-group-rule/,
+      );
       expect(sourceMap.file).toBe("app.css");
       expect(sourceMap.mappings.length).toBeGreaterThan(0);
       expect(sourceMap.sources).toEqual([
@@ -109,6 +156,10 @@ describe("basic CSS example server", () => {
       expect(localSources[2]).toContain("font-family: Arial, sans-serif");
       expect(localSources[2]).toContain("font-size: 16px");
       expect(localSources[2]).toContain("line-height: 24px");
+      expect(localSources[0]).toContain(".specificity-target");
+      expect(localSources[0]).toContain("!important");
+      expect(localSources[1]).toContain(".inherited-parent");
+      expect(localSources[1]).toContain("pin-op-unsupported-value");
 
       const servedFallback = await responseText(
         new URL("fallback.css", servers.pageUrl),

@@ -1,3 +1,5 @@
+@use "card";
+
 .layout {
   display: grid;
   gap: 1.5rem;
@@ -5,4 +7,31 @@
 
 .layout > .card {
   max-width: 32rem;
+}
+
+@include card.rules-cascade-fixtures;
+
+.inherited-parent {
+  font-family: Georgia, serif;
+  color: #5f6368;
+}
+
+@media (max-width: 1px) {
+  .inactive-media-rule {
+    outline: 4px solid #b42318;
+  }
+}
+
+@supports (display: pin-op-unsupported-value) {
+  .inactive-supports-rule {
+    display: pin-op-unsupported-value;
+  }
+}
+
+@supports (display: grid) {
+  @media (min-width: 1px) {
+    .nested-group-rule {
+      border-inline-start: 4px solid #267a4b;
+    }
+  }
 }

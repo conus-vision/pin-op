@@ -30,6 +30,7 @@ describeBrowserAdapterContract(
     importDevtools: () => import("../src/devtools.js"),
     importPanel: () => import("../src/panel.js"),
     importInspectorPanel: () => import("../src/inspectorPanel.js"),
+    expectedMatchedStylesRequestType: "styles.getMatched",
   },
   harness,
 );

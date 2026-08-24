@@ -10,3 +10,21 @@
 .featured {
   box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 18%);
 }
+
+@mixin rules-cascade-fixtures {
+  .specificity-target {
+    color: #5f6368;
+  }
+
+  .fixture-section .specificity-target {
+    color: #1769aa;
+  }
+
+  .fixture-section .important-target {
+    color: #b42318;
+  }
+
+  .important-target {
+    color: #267a4b !important;
+  }
+}

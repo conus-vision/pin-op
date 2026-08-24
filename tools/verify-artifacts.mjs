@@ -259,7 +259,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "pending",
+      localSha256: "4409c4a66552491af94b37aeaf25d594655b7eee7555ddd95ec00c5b224503c3",
     }],
   },
   {
@@ -268,7 +268,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "pending",
+      localSha256: "258c5a029b5135eb94fdbc8d24ad1fbbaa1e84ae843fa28045b860d91755cc9d",
     }],
   },
   {
@@ -277,7 +277,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "pending",
+      localSha256: "0fcb976c04ddc107ab372497fd2e1d816f9407500a4653ccc1b36028627bb1e9",
     }],
   },
   {
@@ -286,7 +286,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "pending",
+      localSha256: "a74c190d654652966d209ddeb5d763fdc3c5e29bbc4e77468d40c8ece39d4759",
     }],
   },
   {
@@ -295,7 +295,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "pending",
+      localSha256: "fa1652b5e6ec341854d8e745f20465f9ec20a0bdfadcee70aaccfd978b19528f",
     }],
   },
   {
@@ -304,7 +304,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
+      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
     }],
   },
   {
@@ -313,7 +313,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
+      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
     }],
   },
   {
@@ -322,7 +322,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "f1c082dab113839857f4cdf437aa988080b28f3257acbffb5fccdaec7dac9495",
+      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
     }],
   },
 ]);
