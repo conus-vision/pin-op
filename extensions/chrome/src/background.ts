@@ -12,6 +12,7 @@ declare const __PIN_OP_PANEL_PAGE__: unknown;
 const panelPage = compiledPanelPage();
 
 startBackgroundRuntime({
+  browserLocalInspection: panelPage === "/dist/inspector-panel.html",
   expectedDevtoolsUrl: browser.runtime.getURL("dist/devtools.html"),
   expectedPanelUrl: browser.runtime.getURL(panelPage.slice(1)),
   storage: {

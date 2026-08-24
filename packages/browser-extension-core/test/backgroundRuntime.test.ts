@@ -573,6 +573,48 @@ describe("startBackgroundRuntime", () => {
     expect(attachedTabs.remove).toHaveBeenCalledOnce();
   });
 
+  it("propagates browser-local inspection into an initial notLinked router session", async () => {
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const executeScript = vi.fn(async () => []);
+    const runtime = startBackgroundRuntime({
+      browserLocalInspection: true,
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/inspector-panel.html",
+      storage: memoryStorage(),
+      executeScript,
+      sendTabMessage: vi.fn(async () => undefined),
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+    });
+    const channel = "channel-local-runtime";
+
+    await messages.emit(
+      registerMessage(channel, 11, "firefox-local-runtime"),
+      devtoolsSender(),
+    );
+    ports.emit(new TestRuntimePort(
+      createDevtoolsPanelPortName(channel),
+      {
+        url: `moz-extension://pin-op/dist/inspector-panel.html?channel=${channel}`,
+      },
+    ));
+    await flushAsync();
+
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 11 },
+      files: ["dist/contentScript.js"],
+    });
+    runtime.dispose();
+  });
+
   it("removes only the closed browser window session record", async () => {
     const messages = eventHarness();
     const ports = eventHarness();

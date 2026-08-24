@@ -133,12 +133,12 @@ const MAX_STATIC_STRING_LENGTH = 256;
 // the sole Zod helper in these exact legacy/Inspector esbuild outputs, hashing
 // the raw archived bytes. Any retained helper requires deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "0826b29bd3ab587f8aefbe1d919eedafb2c21235c90ee1b85b64094a23ccbe42", inspectorSha256: "a3e48dc77e45cc1dff5566febafb66f32633329273a9203d90216781f2f79562" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "94b36522c2a3fbe6b3a228e4c22777a8012ff3083e0f42402b806d2075bcca94", inspectorSha256: "bd126fb39b0b44447610396c2085404bfc7b0e0af28875ffcd06c296efe51b8a" }),
   Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "94851871fd00ab16055d8b9d809a6ae3a4027f8643080474242a555fb0096580", inspectorSha256: "94851871fd00ab16055d8b9d809a6ae3a4027f8643080474242a555fb0096580" }),
   Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "337440b6c672e26a0582b5a4641dc887618bb8435bcacf055021ba35372c1f0f", inspectorSha256: "c4bf834f8324ae46a98de8c94a959834c0d6183cb42a4a6e3b08b51be5a94e9b" }),
   Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "ab4c9bc60ca7c3864b04339faa14dde37b9a209ceedb9f3bf8dbb03a8c3a0064", inspectorSha256: "ab4c9bc60ca7c3864b04339faa14dde37b9a209ceedb9f3bf8dbb03a8c3a0064" }),
   Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "d733bd6031224e7fd817402256ead1121a495aee935afb57d71c6ed11b6cfe2b", inspectorSha256: "d733bd6031224e7fd817402256ead1121a495aee935afb57d71c6ed11b6cfe2b" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "0826b29bd3ab587f8aefbe1d919eedafb2c21235c90ee1b85b64094a23ccbe42", inspectorSha256: "a3e48dc77e45cc1dff5566febafb66f32633329273a9203d90216781f2f79562" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "94b36522c2a3fbe6b3a228e4c22777a8012ff3083e0f42402b806d2075bcca94", inspectorSha256: "bd126fb39b0b44447610396c2085404bfc7b0e0af28875ffcd06c296efe51b8a" }),
   Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "94851871fd00ab16055d8b9d809a6ae3a4027f8643080474242a555fb0096580", inspectorSha256: "94851871fd00ab16055d8b9d809a6ae3a4027f8643080474242a555fb0096580" }),
   Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "5c8dd94024ad70b7ca464b5014205464685b84918aee667496395decdd5a6a1e", inspectorSha256: "802cc4375537aac9fc9d1689274efaffb0d93ba758374163ef63bc8f3c60f121" }),
   Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "ab4c9bc60ca7c3864b04339faa14dde37b9a209ceedb9f3bf8dbb03a8c3a0064", inspectorSha256: "ab4c9bc60ca7c3864b04339faa14dde37b9a209ceedb9f3bf8dbb03a8c3a0064" }),

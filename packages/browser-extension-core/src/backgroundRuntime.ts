@@ -27,6 +27,7 @@ import { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "./tabRefreshStateStore.js";
 
 export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
+  readonly browserLocalInspection?: boolean;
   readonly expectedDevtoolsUrl: string;
   readonly expectedPanelUrl: string;
   readonly storage: SessionStorage;
@@ -171,6 +172,7 @@ export function startBackgroundRuntime(
     options.onError?.(error),
   );
   const router = createBackgroundRouter({
+    browserLocalInspection: options.browserLocalInspection === true,
     expectedDevtoolsUrl: options.expectedDevtoolsUrl,
     expectedPanelUrl: options.expectedPanelUrl,
     getTab: options.getTab,

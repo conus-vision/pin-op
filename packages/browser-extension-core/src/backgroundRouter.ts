@@ -214,6 +214,7 @@ export interface BackgroundRouterSubscriptions {
 }
 
 export interface BackgroundRouterOptions {
+  readonly browserLocalInspection?: boolean;
   readonly expectedDevtoolsUrl?: string;
   readonly expectedPanelUrl?: string;
   readonly maxPanelPorts?: number;
@@ -373,6 +374,7 @@ const nullContentRefreshRuntime: BackgroundContentRefreshRuntime = Object.freeze
 });
 
 export class BackgroundRouter {
+  private readonly browserLocalInspection: boolean;
   private readonly expectedDevtoolsUrl: string | undefined;
   private readonly expectedPanelUrl: string | undefined;
   private readonly maxPanelPorts: number;
@@ -428,6 +430,7 @@ export class BackgroundRouter {
   private disposed = false;
 
   public constructor(options: BackgroundRouterOptions) {
+    this.browserLocalInspection = options.browserLocalInspection === true;
     this.expectedDevtoolsUrl = options.expectedDevtoolsUrl;
     this.expectedPanelUrl = options.expectedPanelUrl;
     this.maxPanelPorts = validPanelPortLimit(options.maxPanelPorts);
@@ -1802,7 +1805,10 @@ export class BackgroundRouter {
       token !== undefined &&
       binding !== undefined &&
       this.isCurrentActivation(record, token, binding) &&
-      maintainsInspectionSession(record.lastWindowState);
+      canRecoverInspectionSession(
+        record.lastWindowState,
+        this.browserLocalInspection,
+      );
     record.contentRecoveryAvailable = false;
     if (!recover) {
       record.inspectionFailedClosed = true;
@@ -3176,16 +3182,22 @@ export class BackgroundRouter {
         record.republishInFlightEpoch = undefined;
         record.republishedAvailabilityEpoch = 0;
         record.inspectionFailedClosed = false;
-        if (record.inspectSession || record.panelSessionBinding) {
-          this.disposeInspectionSession(record, false);
-        }
       } else if (state === "incompatible") {
         this.peerBlockedWindows.add(binding.windowId);
+      }
+      if (
+        state === "incompatible" ||
+        (state === "notLinked" && !this.browserLocalInspection)
+      ) {
         if (record.inspectSession || record.panelSessionBinding) {
           this.disposeInspectionSession(record, false);
         }
       } else if (
-        (state === "linking" || state === "linked") &&
+        (
+          this.browserLocalInspection ||
+          state === "linking" ||
+          state === "linked"
+        ) &&
         !record.inspectSession &&
         !record.inspectionFailedClosed
       ) {
@@ -4132,6 +4144,15 @@ function maintainsInspectionSession(
     state === "linked" ||
     state === "offline" ||
     state === "reconnecting";
+}
+
+function canRecoverInspectionSession(
+  state: BrowserWindowConnectionState | undefined,
+  browserLocalInspection: boolean,
+): boolean {
+  return browserLocalInspection
+    ? state !== undefined && state !== "incompatible"
+    : maintainsInspectionSession(state);
 }
 
 function domQueryRequestId(request: DomRequest): string | undefined {

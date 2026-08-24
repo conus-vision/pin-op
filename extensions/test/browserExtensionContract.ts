@@ -195,6 +195,7 @@ export function describeBrowserAdapterContract(
       expect(harness.starts.background).toHaveBeenCalledOnce();
       const options = calledOptions(harness.starts.background);
       expectOptionKeys(options, [
+        "browserLocalInspection",
         "executeScript",
         "expectedDevtoolsUrl",
         "expectedPanelUrl",
@@ -220,6 +221,7 @@ export function describeBrowserAdapterContract(
       expect(options.expectedPanelUrl).toBe(
         `${contract.extensionOrigin}/dist/panel.html`,
       );
+      expect(options.browserLocalInspection).toBe(false);
 
       const storage = options.storage as Record<string, unknown>;
       await callAsync(storage.get, "window-link.17");
@@ -602,6 +604,7 @@ export function describeBrowserAdapterContract(
       expect(background.expectedPanelUrl).toBe(
         `${contract.extensionOrigin}/dist/inspector-panel.html`,
       );
+      expect(background.browserLocalInspection).toBe(true);
       expect(devtools.panelPage).toBe("/dist/inspector-panel.html");
     });
 

@@ -5921,8 +5921,11 @@ describe("BackgroundRouter", () => {
     expect(windowStates(port).slice(-2)).toEqual(["linking", "linked"]);
   });
 
-  it("starts inspection only when linking and retains it while credentials remain", async () => {
-    const harness = createHarness({ initialPanelState: "notLinked" });
+  it("keeps legacy inspection link-gated when browser-local inspection is false", async () => {
+    const harness = createHarness({
+      browserLocalInspection: false,
+      initialPanelState: "notLinked",
+    });
     const port = await harness.registerAndConnect(
       "channel-1",
       17,
@@ -5963,6 +5966,105 @@ describe("BackgroundRouter", () => {
       { type: "pin-op.inspect.disposeSession" },
     ]);
     expect(port.disconnected).toBe(false);
+  });
+
+  it("starts browser-local DOM queries in the initial notLinked state", async () => {
+    const harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? domRoot(String(message.requestId))
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-local-not-linked",
+      17,
+      "source-local-not-linked",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(injectionCount(harness.inspectCalls)).toBe(1);
+    panel.emitMessage({ type: "dom.getRoot", requestId: "local-root" });
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.root")).toEqual([
+      domRoot("local-root"),
+    ]);
+    expect(messagesOfType(panel, "dom.error")).toEqual([]);
+  });
+
+  it("preserves browser-local inspection across non-incompatible states and cleans up on incompatibility", async () => {
+    const harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-local-state",
+      17,
+      "source-local-state",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    const contentLease = await harness.attachContentSession(
+      17,
+      "content-session-local-state",
+    );
+    const registration = harness.coordinator.registrations[0];
+
+    for (const state of [
+      "offline",
+      "reconnecting",
+      "rateLimited",
+      "error",
+      "linking",
+      "linked",
+      "notLinked",
+    ] as const) {
+      registration?.onStateChanged?.(state);
+      await flushMicrotasks();
+      await harness.inspectCoordinator.whenIdle(17);
+      expect(contentLease.disconnected, state).toBe(false);
+      expect(injectionCount(harness.inspectCalls), state).toBe(1);
+    }
+
+    registration?.onStateChanged?.("incompatible");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(contentLease.disconnected).toBe(true);
+    expect(harness.inspectCalls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "pin-op.inspect.disposeSession" },
+    ]);
+    expect(panel.disconnected).toBe(false);
+  });
+
+  it("recovers a browser-local content lease while still notLinked", async () => {
+    const harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-local-recovery",
+      17,
+      "source-local-recovery",
+    );
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    const contentLease = await harness.attachContentSession(
+      17,
+      "content-session-local-recovery",
+    );
+
+    contentLease.disconnect();
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(injectionCount(harness.inspectCalls)).toBe(2);
+    expect(messagesOfType(panel, "pin-op.inspect.invalidated")).toHaveLength(1);
   });
 
   it("recovers once per trusted content lease across repeated navigations", async () => {
@@ -6752,6 +6854,7 @@ describe("BackgroundRouter", () => {
 });
 
 interface HarnessOptions {
+  readonly browserLocalInspection?: boolean;
   readonly expectedDevtoolsUrl?: string;
   readonly maxPanelPorts?: number;
   readonly tabs?: ReadonlyMap<number, number>;
@@ -6894,6 +6997,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
   };
   harness.router = createBackgroundRouter({
+    browserLocalInspection: options.browserLocalInspection,
     expectedDevtoolsUrl: Object.hasOwn(options, "expectedDevtoolsUrl")
       ? options.expectedDevtoolsUrl
       : DEVTOOLS_URL,
