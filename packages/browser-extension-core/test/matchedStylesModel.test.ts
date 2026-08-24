@@ -9,6 +9,93 @@ import type {
 } from "../src/stylesProtocol.js";
 
 describe("MatchedStylesModel", () => {
+  it("retains an idle invalidation and adopts the exact response revision pair", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      async request(request) {
+        requests.push(request);
+        return matchedResponse({
+          request,
+          stylesRevision: 9,
+          stylesheetRevision: 3,
+        });
+      },
+    });
+
+    model.invalidate(stylesInvalidated(9, 3));
+    await model.select(selectionIdentity());
+
+    expect(requests).toEqual([{
+      type: "styles.getMatched",
+      requestId: "styles-model-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    }]);
+    expect(model.snapshot()).toMatchObject({
+      state: "ready",
+      key: {
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+        stylesRevision: 9,
+        stylesheetRevision: 3,
+      },
+    });
+  });
+
+  it("adopts a strictly newer raced response pair without restarting the initial load", async () => {
+    const pending = deferred<StylesResponse>();
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      request(request) {
+        requests.push(request);
+        return pending.promise;
+      },
+    });
+    model.invalidate(stylesInvalidated(9, 3));
+
+    const load = model.select(selectionIdentity());
+    model.invalidate(stylesInvalidated(10, 4));
+    pending.resolve(matchedResponse({
+      request: requests[0],
+      stylesRevision: 11,
+      stylesheetRevision: 4,
+      partial: true,
+      diagnostics: ["stylesheet-inaccessible"],
+    }));
+    await load;
+    await flushAsync();
+
+    expect(requests).toHaveLength(1);
+    expect(model.snapshot()).toMatchObject({
+      state: "partial",
+      key: { stylesRevision: 11, stylesheetRevision: 4 },
+      styles: { partial: true },
+    });
+  });
+
+  it("rejects a response revision pair below retained authority", async () => {
+    const model = new MatchedStylesModel({
+      async request(request) {
+        return matchedResponse({
+          request,
+          stylesRevision: 9,
+          stylesheetRevision: 3,
+        });
+      },
+    });
+    model.invalidate(stylesInvalidated(9, 3));
+    model.invalidate(stylesInvalidated(10, 4));
+
+    await model.select(selectionIdentity());
+
+    expect(model.snapshot()).toMatchObject({
+      state: "error",
+      errorCode: "internal-error",
+    });
+  });
+
   it("loads independently of IDE state and exposes idle/loading/ready/partial/error", async () => {
     const pending = deferred<StylesResponse>();
     const model = new MatchedStylesModel({
@@ -120,7 +207,9 @@ describe("MatchedStylesModel", () => {
   });
 
   it("ignores stale, cross-document, and non-monotonic invalidations", async () => {
-    const request = vi.fn(async () => matchedResponse());
+    const request = vi.fn(async (message: StylesGetMatchedRequest) =>
+      matchedResponse({ request: message })
+    );
     const model = new MatchedStylesModel({ request });
     await model.select(selection());
     model.invalidate(stylesInvalidated(7, 3));
@@ -132,24 +221,38 @@ describe("MatchedStylesModel", () => {
 
   it("preserves stylesheet identity on applicability-only invalidation and resets it only when stylesheet advances", async () => {
     const onStylesheetReset = vi.fn();
+    let responseStylesRevision = 8;
+    let responseStylesheetRevision = 3;
     const model = new MatchedStylesModel({
       onStylesheetReset,
       async request(request) {
         return matchedResponse({
           request,
-          stylesRevision: request.selectionRevision === 7 ? 8 : 9,
+          stylesRevision: responseStylesRevision,
+          stylesheetRevision: responseStylesheetRevision,
         });
       },
     });
     await model.select(selection());
+    responseStylesRevision = 9;
     model.invalidate(stylesInvalidated(9, 3));
     await flushAsync();
     expect(onStylesheetReset).not.toHaveBeenCalled();
+    expect(model.snapshot()).toMatchObject({
+      state: "ready",
+      key: { stylesRevision: 9, stylesheetRevision: 3 },
+    });
+    responseStylesRevision = 10;
+    responseStylesheetRevision = 4;
     model.invalidate(stylesInvalidated(10, 4));
     await flushAsync();
     expect(onStylesheetReset).toHaveBeenCalledWith({
       documentEpoch: 4,
       stylesheetRevision: 4,
+    });
+    expect(model.snapshot()).toMatchObject({
+      state: "ready",
+      key: { stylesRevision: 10, stylesheetRevision: 4 },
     });
   });
 
@@ -218,9 +321,15 @@ function selection(overrides: Partial<MatchedStylesModelSelection> = {}): Matche
     documentEpoch: 4,
     nodeRef: "node-1",
     selectionRevision: 7,
-    stylesRevision: 8,
-    stylesheetRevision: 3,
     ...overrides,
+  };
+}
+
+function selectionIdentity() {
+  return {
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
   };
 }
 

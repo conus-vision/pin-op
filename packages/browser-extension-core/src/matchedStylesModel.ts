@@ -20,6 +20,9 @@ export interface MatchedStylesModelSelection {
   readonly documentEpoch: number;
   readonly nodeRef: string;
   readonly selectionRevision: number;
+}
+
+export interface MatchedStylesModelKey extends MatchedStylesModelSelection {
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
 }
@@ -27,7 +30,7 @@ export interface MatchedStylesModelSelection {
 export interface MatchedStylesModelSnapshot {
   readonly state: MatchedStylesModelState;
   readonly generation: number;
-  readonly key?: MatchedStylesModelSelection;
+  readonly key?: MatchedStylesModelSelection | MatchedStylesModelKey;
   readonly styles?: MatchedStyles;
   readonly errorCode?: StylesErrorCode;
 }
@@ -63,6 +66,13 @@ export class MatchedStylesModel {
   private generation = 0;
   private nextRequestSequence = 1;
   private controller: AbortController | undefined;
+  private selection: MatchedStylesModelSelection | undefined;
+  private revisionAuthority: StylesRevisionAuthority | undefined;
+  private lastAcceptedKey: MatchedStylesModelKey | undefined;
+  private lastStylesheetReset: {
+    readonly documentEpoch: number;
+    readonly stylesheetRevision: number;
+  } | undefined;
   private invalidationQueued = false;
   private pendingInvalidation: StylesInvalidatedEvent | undefined;
   private disposed = false;
@@ -100,13 +110,23 @@ export class MatchedStylesModel {
   public async select(selection: MatchedStylesModelSelection): Promise<void> {
     this.requireLive();
     const key = freezeSelection(requireSelection(selection));
-    const current = this.state.key;
-    if (current && sameSelection(current, key) && this.state.state !== "error") return;
+    const current = this.selection;
+    if (current && sameSelection(current, key) && this.state.state !== "error") {
+      return;
+    }
+    if (
+      (current && current.documentEpoch !== key.documentEpoch) ||
+      (this.revisionAuthority &&
+        this.revisionAuthority.documentEpoch !== key.documentEpoch)
+    ) {
+      this.clearRevisionAuthority();
+    }
+    this.selection = key;
     await this.load(key);
   }
 
   public invalidate(value: unknown): void {
-    if (this.disposed || !this.state.key) return;
+    if (this.disposed) return;
     let event: StylesInvalidatedEvent;
     try {
       const parsed = parseStylesEvent(value);
@@ -115,19 +135,18 @@ export class MatchedStylesModel {
     } catch {
       return;
     }
-    const key = this.state.key;
-    if (
-      event.documentEpoch !== key.documentEpoch ||
-      event.stylesRevision <= key.stylesRevision ||
-      event.stylesheetRevision < key.stylesheetRevision ||
-      event.stylesheetRevision > event.stylesRevision
-    ) return;
-    const pending = this.pendingInvalidation;
-    if (
-      pending &&
-      (event.stylesRevision < pending.stylesRevision ||
-        event.stylesheetRevision < pending.stylesheetRevision)
-    ) return;
+    const selection = this.selection;
+    if (selection && event.documentEpoch !== selection.documentEpoch) return;
+    const authority = this.revisionAuthority;
+    if (authority) {
+      if (event.documentEpoch < authority.documentEpoch) return;
+      if (
+        event.documentEpoch === authority.documentEpoch &&
+        !strictlyNewerRevisionPair(event, authority)
+      ) return;
+    }
+    this.revisionAuthority = freezeRevisionAuthority(event);
+    if (!selection || this.state.state === "loading") return;
     this.pendingInvalidation = event;
     if (this.invalidationQueued) return;
     this.invalidationQueued = true;
@@ -140,23 +159,14 @@ export class MatchedStylesModel {
       }
       const latest = this.pendingInvalidation;
       this.pendingInvalidation = undefined;
-      const liveKey = this.state.key;
-      if (!latest || !liveKey || latest.documentEpoch !== liveKey.documentEpoch) return;
-      if (latest.stylesheetRevision > liveKey.stylesheetRevision) {
-        try {
-          this.options.onStylesheetReset?.({
-            documentEpoch: latest.documentEpoch,
-            stylesheetRevision: latest.stylesheetRevision,
-          });
-        } catch {
-          // Reset notification cannot expand rule identity authority.
-        }
-      }
-      void this.load(freezeSelection({
-        ...liveKey,
-        stylesRevision: latest.stylesRevision,
-        stylesheetRevision: latest.stylesheetRevision,
-      }));
+      const liveSelection = this.selection;
+      if (
+        !latest ||
+        !liveSelection ||
+        latest.documentEpoch !== liveSelection.documentEpoch
+      ) return;
+      this.notifyStylesheetReset(latest);
+      void this.load(liveSelection);
     });
   }
 
@@ -164,8 +174,8 @@ export class MatchedStylesModel {
     if (this.disposed) return;
     this.cancelCurrent();
     this.generation += 1;
-    this.pendingInvalidation = undefined;
-    this.invalidationQueued = false;
+    this.selection = undefined;
+    this.clearRevisionAuthority();
     this.publish(Object.freeze({ state: "idle", generation: this.generation }));
   }
 
@@ -174,24 +184,24 @@ export class MatchedStylesModel {
     this.cancelCurrent();
     this.disposed = true;
     this.generation += 1;
-    this.pendingInvalidation = undefined;
-    this.invalidationQueued = false;
+    this.selection = undefined;
+    this.clearRevisionAuthority();
     this.state = Object.freeze({ state: "idle", generation: this.generation });
     this.listeners.clear();
   }
 
-  private async load(key: MatchedStylesModelSelection): Promise<void> {
+  private async load(selection: MatchedStylesModelSelection): Promise<void> {
     this.cancelCurrent();
     const generation = ++this.generation;
     const controller = new AbortController();
     this.controller = controller;
-    this.publish(Object.freeze({ state: "loading", generation, key }));
+    this.publish(Object.freeze({ state: "loading", generation, key: selection }));
     const request: StylesGetMatchedRequest = Object.freeze({
       type: "styles.getMatched",
       requestId: this.createRequestId(),
-      documentEpoch: key.documentEpoch,
-      nodeRef: key.nodeRef,
-      selectionRevision: key.selectionRevision,
+      documentEpoch: selection.documentEpoch,
+      nodeRef: selection.nodeRef,
+      selectionRevision: selection.selectionRevision,
     });
     let response: StylesResponse;
     try {
@@ -202,7 +212,7 @@ export class MatchedStylesModel {
       this.publish(Object.freeze({
         state: "error",
         generation,
-        key,
+        key: selection,
         errorCode: "internal-error",
       }));
       return;
@@ -213,7 +223,7 @@ export class MatchedStylesModel {
       this.publish(Object.freeze({
         state: "error",
         generation,
-        key,
+        key: selection,
         errorCode: "internal-error",
       }));
       return;
@@ -222,23 +232,36 @@ export class MatchedStylesModel {
       this.publish(Object.freeze({
         state: "error",
         generation,
-        key,
+        key: selection,
         errorCode: response.code,
       }));
       return;
     }
+    const responseAuthority = freezeRevisionAuthority(response);
+    const floor = this.revisionAuthority;
     if (
-      response.stylesRevision !== key.stylesRevision ||
-      response.stylesheetRevision !== key.stylesheetRevision
+      floor &&
+      (
+        floor.documentEpoch !== response.documentEpoch ||
+        !revisionPairMeetsFloor(responseAuthority, floor)
+      )
     ) {
       this.publish(Object.freeze({
         state: "error",
         generation,
-        key,
+        key: selection,
         errorCode: "internal-error",
       }));
       return;
     }
+    this.notifyStylesheetReset(responseAuthority);
+    this.revisionAuthority = responseAuthority;
+    const key: MatchedStylesModelKey = Object.freeze({
+      ...selection,
+      stylesRevision: response.stylesRevision,
+      stylesheetRevision: response.stylesheetRevision,
+    });
+    this.lastAcceptedKey = key;
     this.publish(Object.freeze({
       state: response.styles.partial ? "partial" : "ready",
       generation,
@@ -268,6 +291,40 @@ export class MatchedStylesModel {
     }
   }
 
+  private notifyStylesheetReset(authority: StylesRevisionAuthority): void {
+    const previous = this.lastStylesheetReset;
+    const baseline = previous?.documentEpoch === authority.documentEpoch
+      ? previous.stylesheetRevision
+      : this.lastAcceptedKey?.documentEpoch === authority.documentEpoch
+      ? this.lastAcceptedKey.stylesheetRevision
+      : undefined;
+    if (baseline === undefined) {
+      this.lastStylesheetReset = Object.freeze({
+        documentEpoch: authority.documentEpoch,
+        stylesheetRevision: authority.stylesheetRevision,
+      });
+      return;
+    }
+    if (authority.stylesheetRevision <= baseline) return;
+    this.lastStylesheetReset = Object.freeze({
+      documentEpoch: authority.documentEpoch,
+      stylesheetRevision: authority.stylesheetRevision,
+    });
+    try {
+      this.options.onStylesheetReset?.(this.lastStylesheetReset);
+    } catch {
+      // Reset notification cannot expand rule identity authority.
+    }
+  }
+
+  private clearRevisionAuthority(): void {
+    this.revisionAuthority = undefined;
+    this.lastAcceptedKey = undefined;
+    this.lastStylesheetReset = undefined;
+    this.pendingInvalidation = undefined;
+    this.invalidationQueued = false;
+  }
+
   private isCurrent(generation: number, controller: AbortController): boolean {
     return !this.disposed &&
       this.generation === generation &&
@@ -292,6 +349,12 @@ export class MatchedStylesModel {
   }
 }
 
+interface StylesRevisionAuthority {
+  readonly documentEpoch: number;
+  readonly stylesRevision: number;
+  readonly stylesheetRevision: number;
+}
+
 function requireSelection(value: MatchedStylesModelSelection): MatchedStylesModelSelection {
   if (
     typeof value !== "object" ||
@@ -300,16 +363,21 @@ function requireSelection(value: MatchedStylesModelSelection): MatchedStylesMode
     value.nodeRef.length === 0 ||
     value.nodeRef.length > 128 ||
     !validRevision(value.documentEpoch) ||
-    !validRevision(value.selectionRevision) ||
-    !validRevision(value.stylesRevision) ||
-    !validRevision(value.stylesheetRevision) ||
-    value.stylesheetRevision > value.stylesRevision
+    !validRevision(value.selectionRevision)
   ) throw new TypeError("Invalid matched styles selection");
-  return value;
+  return Object.freeze({
+    documentEpoch: value.documentEpoch,
+    nodeRef: value.nodeRef,
+    selectionRevision: value.selectionRevision,
+  });
 }
 
 function freezeSelection(value: MatchedStylesModelSelection): MatchedStylesModelSelection {
-  return Object.freeze({ ...value });
+  return Object.freeze({
+    documentEpoch: value.documentEpoch,
+    nodeRef: value.nodeRef,
+    selectionRevision: value.selectionRevision,
+  });
 }
 
 function validRevision(value: number): boolean {
@@ -322,7 +390,33 @@ function sameSelection(
 ): boolean {
   return left.documentEpoch === right.documentEpoch &&
     left.nodeRef === right.nodeRef &&
-    left.selectionRevision === right.selectionRevision &&
-    left.stylesRevision === right.stylesRevision &&
-    left.stylesheetRevision === right.stylesheetRevision;
+    left.selectionRevision === right.selectionRevision;
+}
+
+function freezeRevisionAuthority(
+  value: StylesRevisionAuthority,
+): StylesRevisionAuthority {
+  return Object.freeze({
+    documentEpoch: value.documentEpoch,
+    stylesRevision: value.stylesRevision,
+    stylesheetRevision: value.stylesheetRevision,
+  });
+}
+
+function strictlyNewerRevisionPair(
+  candidate: StylesRevisionAuthority,
+  floor: StylesRevisionAuthority,
+): boolean {
+  return candidate.stylesRevision > floor.stylesRevision &&
+    candidate.stylesheetRevision >= floor.stylesheetRevision;
+}
+
+function revisionPairMeetsFloor(
+  candidate: StylesRevisionAuthority,
+  floor: StylesRevisionAuthority,
+): boolean {
+  return (
+    candidate.stylesRevision === floor.stylesRevision &&
+    candidate.stylesheetRevision === floor.stylesheetRevision
+  ) || strictlyNewerRevisionPair(candidate, floor);
 }

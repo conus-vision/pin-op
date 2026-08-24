@@ -18,12 +18,18 @@ describe("startInspectorPanelRuntime", () => {
     const port = requiredPort(harness.ports, 0);
     expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
 
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 1,
+      stylesRevision: 3,
+      stylesheetRevision: 1,
+    });
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+
     const first = runtime.matchedStylesModel.select({
       documentEpoch: 1,
       nodeRef: "node-card",
       selectionRevision: 2,
-      stylesRevision: 3,
-      stylesheetRevision: 1,
     });
     const request = lastMessage(port.sent, "styles.getMatched") as {
       requestId: string;

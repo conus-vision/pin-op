@@ -151,6 +151,7 @@ export type {
 } from "./matchedStylesTypes.js";
 export { MatchedStylesModel } from "./matchedStylesModel.js";
 export type {
+  MatchedStylesModelKey,
   MatchedStylesModelOptions,
   MatchedStylesModelSelection,
   MatchedStylesModelSnapshot,
