@@ -16,6 +16,14 @@ import {
   type PageInspectionSelection,
   type PageInspectionTreeProvider,
 } from "../src/pageInspectionSession.js";
+import {
+  StylesheetRegistry,
+  type StylesheetRegistryOptions,
+} from "../src/stylesheetRegistry.js";
+import {
+  MatchedStylesApplicabilityObserver,
+  type MatchedStylesApplicabilityObserverOptions,
+} from "../src/matchedStylesApplicabilityObserver.js";
 import { DomTreeProviderError } from "../src/domTreeProvider.js";
 import type {
   DomTreeElementIdentity,
@@ -124,6 +132,80 @@ describe("PageInspectionSession", () => {
     expect(nextApplicability.dispose).toHaveBeenCalledOnce();
     expect(registry.dispose).toHaveBeenCalledOnce();
     expect(styleInvalidations).toEqual([]);
+  });
+
+  it("routes one content mutation through the applicability observer only", async () => {
+    let registryMutation: ((records: readonly unknown[]) => void) | undefined;
+    let applicabilityMutation: ((records: readonly unknown[]) => void) | undefined;
+    let registry: StylesheetRegistry | undefined;
+    const nativeRule = {
+      cssText: ".card { color: red; }",
+      selectorText: ".card",
+      style: {
+        length: 1,
+        item: () => "color",
+        getPropertyValue: () => "red",
+        getPropertyPriority: () => "",
+      },
+    };
+    const sheet = {
+      href: "https://example.test/card.css",
+      cssRules: [nativeRule],
+      disabled: false,
+      media: { mediaText: "" },
+    };
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      contentSessionId: "content-mutation-owner",
+      createStylesheetRegistry(options) {
+        const typed = options as StylesheetRegistryOptions;
+        (typed.document.styleSheets as unknown as object[]).push(sheet);
+        registry = new StylesheetRegistry({
+          ...typed,
+          createMutationObserver(callback) {
+            registryMutation = callback;
+            return { observe: vi.fn(), disconnect: vi.fn() };
+          },
+        });
+        return registry;
+      },
+      createApplicabilityObserver(options) {
+        const typed = options as MatchedStylesApplicabilityObserverOptions;
+        return new MatchedStylesApplicabilityObserver({
+          ...typed,
+          createMutationObserver(callback) {
+            applicabilityMutation = callback;
+            return { observe: vi.fn(), disconnect: vi.fn() };
+          },
+        });
+      },
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const entry = registry!.snapshot().entries[0]!;
+    const ruleRef = registry!.referenceRule(entry, "0", nativeRule);
+    const record = {
+      type: "childList",
+      target: { tagName: "DIV" },
+      addedNodes: [{ tagName: "SPAN" }],
+      removedNodes: [],
+    };
+
+    registryMutation?.([record]);
+    applicabilityMutation?.([record]);
+    await Promise.resolve();
+
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesheetRevision: 0,
+      stylesRevision: 1,
+    });
+    expect(invalidations).toEqual([expect.objectContaining({
+      kind: "applicability",
+      reason: "observable-signal",
+      stylesheetRevision: 0,
+      stylesRevision: 1,
+    })]);
+    expect(registry!.resolveRule(ruleRef)).toBe(nativeRule);
   });
 
   it("streams every unique branch through bounded settlement chunks", async () => {

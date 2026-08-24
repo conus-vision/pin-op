@@ -351,7 +351,7 @@ describe("StylesheetRegistry", () => {
     expect(invalidations).toHaveLength(5);
   });
 
-  it("classifies unrelated DOM mutations as applicability-only and preserves rule refs", () => {
+  it("ignores unrelated DOM mutations and preserves rule refs", () => {
     let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
     const nativeRule = styleRule(".card", "color: red");
     const app = sheet(null, [nativeRule]);
@@ -375,7 +375,7 @@ describe("StylesheetRegistry", () => {
 
     expect(registry.revisions).toMatchObject({
       stylesheetRevision: 0,
-      stylesRevision: 1,
+      stylesRevision: 0,
     });
     expect(registry.resolveRule(ruleRef)).toBe(nativeRule);
 
@@ -385,7 +385,7 @@ describe("StylesheetRegistry", () => {
     }]);
     expect(registry.revisions).toMatchObject({
       stylesheetRevision: 1,
-      stylesRevision: 2,
+      stylesRevision: 1,
     });
     expect(registry.resolveRule(ruleRef)).toBeUndefined();
   });

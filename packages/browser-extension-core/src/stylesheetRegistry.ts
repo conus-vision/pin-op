@@ -414,14 +414,10 @@ export class StylesheetRegistry {
       observer = create((records) => {
         if (this.disposed) return;
         const kind = classifyStylesheetMutations(records);
-        if (!kind) return;
-        if (kind === "stylesheet") {
-          this.inventoryDirty = true;
-          this.fingerprint.reset();
-          this.advance("stylesheet-dom-mutation", "stylesheet");
-        } else {
-          this.advance("stylesheet-dom-applicability", "applicability");
-        }
+        if (kind !== "stylesheet") return;
+        this.inventoryDirty = true;
+        this.fingerprint.reset();
+        this.advance("stylesheet-dom-mutation", "stylesheet");
       });
       this.mutationObserver = observer;
       for (const scope of scopes) {
@@ -1137,14 +1133,12 @@ function safeQueryAll(scope: object, selector: string): object[] {
 
 function classifyStylesheetMutations(
   records: readonly unknown[],
-): "stylesheet" | "applicability" | undefined {
-  let sawMutation = false;
+): "stylesheet" | undefined {
   for (const record of records) {
     if (typeof record !== "object" || record === null) continue;
     const type = safeStringProperty(record, "type");
     const target = safeObjectProperty(record, "target");
     if (!type || !target) continue;
-    sawMutation = true;
     if (type === "attributes") {
       const attributeName = safeStringProperty(record, "attributeName") ?? "";
       if (
@@ -1175,7 +1169,7 @@ function classifyStylesheetMutations(
       }
     }
   }
-  return sawMutation ? "applicability" : undefined;
+  return undefined;
 }
 
 function containsStylesheetStructure(node: object): boolean {
