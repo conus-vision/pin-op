@@ -113,6 +113,23 @@ export type {
   StyleRuleSource,
   StylesheetSource,
 } from "./collectCssFacts.js";
+export { walkCssRules } from "./cssRuleWalker.js";
+export type {
+  CssRuleContextKind,
+  CssRuleContextRecord,
+  CssRuleWalk,
+  CssRuleWalkOptions,
+  CssRuleWalkRecord,
+} from "./cssRuleWalker.js";
+export {
+  RULE_REFERENCE_MAX_ENTRIES,
+  RULE_REFERENCE_MAX_LENGTH,
+  RuleReferenceRegistry,
+} from "./ruleReferenceRegistry.js";
+export type {
+  RuleReferenceGeneration,
+  RuleReferenceScope,
+} from "./ruleReferenceRegistry.js";
 export { DomNodeRegistry } from "./domNodeRegistry.js";
 export type {
   DomNodeRegistryOptions,

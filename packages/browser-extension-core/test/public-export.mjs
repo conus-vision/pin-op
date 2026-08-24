@@ -43,6 +43,7 @@ import {
   PanelController,
   PanelSettingsController,
   ResolutionPresenter,
+  RuleReferenceRegistry,
   SourcePaneController,
   formatResolutionFooter,
   presentResolution,
@@ -68,6 +69,7 @@ import {
   TabRefreshStateStore,
   TopScrollSnapshotLeaseStore,
   virtualTreeRows,
+  walkCssRules,
   WindowConnectionCoordinator,
 } from "@pin-op/browser-extension-core";
 
@@ -114,6 +116,7 @@ assert.equal(typeof PageOverlay, "function");
 assert.equal(typeof PanelController, "function");
 assert.equal(typeof PanelSettingsController, "function");
 assert.equal(typeof ResolutionPresenter, "function");
+assert.equal(typeof RuleReferenceRegistry, "function");
 assert.equal(typeof SourcePaneController, "function");
 assert.equal(typeof formatResolutionFooter, "function");
 assert.equal(typeof presentResolution, "function");
@@ -139,4 +142,5 @@ assert.equal(typeof TabRefreshCoordinator, "function");
 assert.equal(typeof TabRefreshStateStore, "function");
 assert.equal(typeof TopScrollSnapshotLeaseStore, "function");
 assert.equal(typeof virtualTreeRows, "function");
+assert.equal(typeof walkCssRules, "function");
 assert.equal(typeof WindowConnectionCoordinator, "function");

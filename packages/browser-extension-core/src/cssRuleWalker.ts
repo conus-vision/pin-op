@@ -1,0 +1,943 @@
+import {
+  INSPECT_LIMITS,
+  type ProtocolErrorCode,
+} from "@pin-op/protocol";
+import {
+  boundedLength,
+  enumerateBounded,
+  exactBoundedUrl,
+  truncate,
+} from "./inspectBounds.js";
+import type { RuleReferenceRegistry } from "./ruleReferenceRegistry.js";
+
+export interface MatchableElement {
+  matches(selector: string): boolean;
+}
+
+export interface StyleDeclarationSource {
+  readonly length: number;
+  item(index: number): string;
+  getPropertyValue(name: string): string;
+  getPropertyPriority(name: string): string;
+}
+
+export interface StyleRuleSource {
+  readonly selectorText: string;
+  readonly style: StyleDeclarationSource;
+  readonly cssRules?: ArrayLike<RuleSource> | Iterable<RuleSource>;
+}
+
+interface NestedDeclarationsSource {
+  readonly style: StyleDeclarationSource;
+}
+
+interface MediaConditionSource {
+  readonly conditionText?: string;
+  readonly media?: { readonly mediaText: string };
+}
+
+export interface GroupRuleSource extends MediaConditionSource {
+  readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+}
+
+interface ImportRuleSource extends MediaConditionSource {
+  readonly href?: string | null;
+  readonly styleSheet: StylesheetSource;
+}
+
+export type RuleSource = StyleRuleSource | GroupRuleSource | object;
+
+export interface StylesheetSource {
+  readonly href: string | null;
+  readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+}
+
+export interface CssDocumentSource {
+  readonly pageUrl: string;
+  readonly styleSheets: Iterable<StylesheetSource>;
+  readonly adoptedStyleSheets?: Iterable<StylesheetSource>;
+}
+
+export interface InaccessibleStylesheet {
+  readonly code: Extract<
+    ProtocolErrorCode,
+    "browser.stylesheetInaccessible"
+  >;
+  readonly sourceUrl: string;
+  readonly reason: string;
+}
+
+export type CssRuleContextKind =
+  | "media"
+  | "supports"
+  | "layer"
+  | "scope"
+  | "container"
+  | "starting-style"
+  | "unknown";
+
+export interface CssRuleContextRecord {
+  readonly kind: CssRuleContextKind;
+  readonly text: string;
+}
+
+/** Plain internal projection: it deliberately contains no DOM/CSSOM objects. */
+export interface CssRuleWalkRecord {
+  readonly selector: string;
+  readonly resolvedSelector: string;
+  readonly property: string;
+  readonly value: string;
+  readonly important: boolean;
+  readonly valueTruncated: boolean;
+  readonly sourceUrl: string;
+  readonly stylesheetIdentity: string;
+  readonly rulePath: string;
+  readonly media: readonly string[];
+  readonly mediaTruncated: boolean;
+  readonly contexts: readonly CssRuleContextRecord[];
+  readonly contextsTruncated: boolean;
+  readonly ruleRef?: string;
+}
+
+export interface CssRuleWalkOptions {
+  readonly ruleReferences?: Pick<RuleReferenceRegistry, "reference">;
+}
+
+export interface CssRuleWalk {
+  readonly records: IterableIterator<CssRuleWalkRecord>;
+  readonly inaccessibleStylesheets: readonly InaccessibleStylesheet[];
+}
+
+interface StyleSelectorContext {
+  readonly sourceSelector: string;
+  readonly resolvedSelector: string;
+}
+
+interface BoundedValues<T> {
+  readonly values: readonly T[];
+  readonly truncated: boolean;
+}
+
+interface BoundedValue<T> {
+  readonly value: T;
+  readonly truncated: boolean;
+}
+
+interface WalkState {
+  rulesVisited: number;
+  stylesheetsVisited: number;
+  recordsEmitted: number;
+  nextStylesheetIdentity: number;
+  nextRootIndex: number;
+  readonly inaccessibleStylesheets: InaccessibleStylesheet[];
+  readonly options: CssRuleWalkOptions;
+}
+
+interface StylesheetWalkContext {
+  readonly sourceUrl: string;
+  readonly stylesheetIdentity: string;
+}
+
+const EMPTY_MEDIA: BoundedValues<string> = {
+  values: [],
+  truncated: false,
+};
+const EMPTY_CONTEXTS: BoundedValues<CssRuleContextRecord> = {
+  values: [],
+  truncated: false,
+};
+
+/**
+ * Creates a one-shot, bounded CSSOM traversal. Records are yielded lazily so a
+ * consumer can stop without causing further page-controlled CSSOM reads.
+ */
+export function walkCssRules(
+  element: MatchableElement,
+  document: CssDocumentSource,
+  options: CssRuleWalkOptions = {},
+): CssRuleWalk {
+  const inaccessibleStylesheets: InaccessibleStylesheet[] = [];
+  const state: WalkState = {
+    rulesVisited: 0,
+    stylesheetsVisited: 0,
+    recordsEmitted: 0,
+    nextStylesheetIdentity: 0,
+    nextRootIndex: 0,
+    inaccessibleStylesheets,
+    options,
+  };
+  return {
+    records: walkDocument(element, document, state),
+    inaccessibleStylesheets,
+  };
+}
+
+function* walkDocument(
+  element: MatchableElement,
+  document: CssDocumentSource,
+  state: WalkState,
+): IterableIterator<CssRuleWalkRecord> {
+  let rootIndex = 0;
+  let regularSheets: Iterable<StylesheetSource>;
+  try {
+    regularSheets = document.styleSheets;
+  } catch {
+    return;
+  }
+  yield* walkRootStylesheets(element, regularSheets, rootIndex, state);
+  rootIndex = state.nextRootIndex;
+  if (reachedDocumentLimit(state)) return;
+
+  let adoptedSheets: Iterable<StylesheetSource> | undefined;
+  try {
+    adoptedSheets = document.adoptedStyleSheets;
+  } catch {
+    return;
+  }
+  if (!adoptedSheets) return;
+  yield* walkRootStylesheets(element, adoptedSheets, rootIndex, state);
+}
+
+function* walkRootStylesheets(
+  element: MatchableElement,
+  stylesheets: Iterable<StylesheetSource>,
+  startingRootIndex: number,
+  state: WalkState,
+): IterableIterator<CssRuleWalkRecord> {
+  let rootIndex = startingRootIndex;
+  try {
+    for (const stylesheet of stylesheets) {
+      if (reachedDocumentLimit(state)) return;
+      state.nextRootIndex = rootIndex + 1;
+      state.stylesheetsVisited += 1;
+      const stylesheetIdentity = reserveStylesheetIdentity(state);
+
+      let sourceUrl: string | undefined;
+      try {
+        sourceUrl = exactBoundedUrl(
+          stylesheet.href ?? `inline-style://document/${rootIndex}`,
+        );
+      } catch {
+        rootIndex += 1;
+        continue;
+      }
+      if (!sourceUrl) {
+        rootIndex += 1;
+        continue;
+      }
+
+      let rules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+      try {
+        rules = stylesheet.cssRules;
+      } catch (error) {
+        reportInaccessible(state, sourceUrl, error);
+        rootIndex += 1;
+        continue;
+      }
+
+      try {
+        yield* walkRules(
+          element,
+          rules,
+          { sourceUrl, stylesheetIdentity },
+          `${rootIndex}`,
+          EMPTY_MEDIA,
+          EMPTY_CONTEXTS,
+          undefined,
+          0,
+          state,
+          new Set([stylesheet]),
+        );
+      } catch (error) {
+        reportInaccessible(state, sourceUrl, error);
+      }
+      rootIndex += 1;
+    }
+  } catch {
+    return;
+  } finally {
+    state.nextRootIndex = rootIndex;
+  }
+}
+
+function* walkRules(
+  element: MatchableElement,
+  rules: ArrayLike<RuleSource> | Iterable<RuleSource>,
+  stylesheet: StylesheetWalkContext,
+  parentPath: string,
+  media: BoundedValues<string>,
+  contexts: BoundedValues<CssRuleContextRecord>,
+  parentSelector: StyleSelectorContext | undefined,
+  depth: number,
+  state: WalkState,
+  activeStylesheets: ReadonlySet<object>,
+): IterableIterator<CssRuleWalkRecord> {
+  if (depth > INSPECT_LIMITS.cssRuleDepth || reachedWalkLimit(state)) return;
+
+  const remainingRules = INSPECT_LIMITS.cssRules - state.rulesVisited;
+  for (const [ruleIndex, rule] of enumerateBounded(rules, remainingRules)) {
+    if (reachedWalkLimit(state)) return;
+    state.rulesVisited += 1;
+    const rulePath = `${parentPath}.${ruleIndex}`;
+
+    if (isImportRuleCandidate(rule)) {
+      yield* walkImportedStylesheet(
+        element,
+        rule,
+        stylesheet.sourceUrl,
+        media,
+        contexts,
+        depth,
+        state,
+        activeStylesheets,
+      );
+      if (reachedWalkLimit(state)) return;
+      continue;
+    }
+
+    let childSelector = parentSelector;
+    let nestedStyleRule = false;
+    try {
+      if (isStyleRule(rule)) {
+        nestedStyleRule = true;
+        const selector = resolveStyleSelector(rule.selectorText, parentSelector);
+        if (!selector) continue;
+        const matches = matchesSelector(element, selector.resolvedSelector);
+        if (matches === undefined) continue;
+        if (matches) {
+          yield* walkDeclarations(
+            rule,
+            rule.style,
+            selector,
+            stylesheet,
+            rulePath,
+            media,
+            contexts,
+            state,
+          );
+        }
+        childSelector = selector;
+        if (reachedWalkLimit(state)) return;
+      } else if (isNestedDeclarationsRule(rule) && parentSelector) {
+        const matches = matchesSelector(element, parentSelector.resolvedSelector);
+        if (matches === undefined) continue;
+        if (matches) {
+          yield* walkDeclarations(
+            rule,
+            rule.style,
+            parentSelector,
+            stylesheet,
+            rulePath,
+            media,
+            contexts,
+            state,
+          );
+        }
+      }
+    } catch {
+      continue;
+    }
+    if (!isGroupRule(rule)) continue;
+
+    let nestedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+    try {
+      nestedRules = rule.cssRules;
+    } catch {
+      continue;
+    }
+    if (depth >= INSPECT_LIMITS.cssRuleDepth) continue;
+
+    const context = nestedStyleRule ? undefined : readRuleContext(rule);
+    const nextContexts = context
+      ? appendBounded(contexts, context, INSPECT_LIMITS.mediaConditions)
+      : contexts;
+    const nextMedia = context?.value.kind === "media"
+      ? appendBounded(
+        media,
+        { value: context.value.text, truncated: context.truncated },
+        INSPECT_LIMITS.mediaConditions,
+      )
+      : media;
+    yield* walkRules(
+      element,
+      nestedRules,
+      stylesheet,
+      rulePath,
+      nextMedia,
+      nextContexts,
+      childSelector,
+      depth + 1,
+      state,
+      activeStylesheets,
+    );
+    if (reachedWalkLimit(state)) return;
+  }
+}
+
+function* walkDeclarations(
+  nativeRule: object,
+  style: StyleDeclarationSource,
+  selector: StyleSelectorContext,
+  stylesheet: StylesheetWalkContext,
+  rulePath: string,
+  media: BoundedValues<string>,
+  contexts: BoundedValues<CssRuleContextRecord>,
+  state: WalkState,
+): IterableIterator<CssRuleWalkRecord> {
+  const remainingRecords = INSPECT_LIMITS.factsPerTarget - state.recordsEmitted;
+  const declarationLimit = Math.min(
+    INSPECT_LIMITS.declarationsPerRule,
+    remainingRecords,
+  );
+  const declarationNames: string[] = [];
+  const declarationCount = boundedLength(style.length, declarationLimit);
+  for (let index = 0; index < declarationCount; index += 1) {
+    try {
+      const property = style.item(index);
+      if (property && property.length <= INSPECT_LIMITS.propertyNameLength) {
+        declarationNames.push(property);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  let ruleRef: string | undefined;
+  if (declarationNames.length > 0 && state.options.ruleReferences) {
+    ruleRef = state.options.ruleReferences.reference(
+      stylesheet.stylesheetIdentity,
+      rulePath,
+      nativeRule,
+    );
+  }
+  for (const property of declarationNames) {
+    if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) return;
+    try {
+      const important = readImportantPriority(style, property);
+      if (important === undefined) continue;
+      const rawValue = style.getPropertyValue(property);
+      const record: CssRuleWalkRecord = {
+        selector: selector.sourceSelector,
+        resolvedSelector: selector.resolvedSelector,
+        property,
+        value: truncate(rawValue, INSPECT_LIMITS.valueLength).trim(),
+        important,
+        valueTruncated: rawValue.length > INSPECT_LIMITS.valueLength,
+        sourceUrl: stylesheet.sourceUrl,
+        stylesheetIdentity: stylesheet.stylesheetIdentity,
+        rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
+        media: [...media.values],
+        mediaTruncated: media.truncated,
+        contexts: contexts.values.map((context) => ({ ...context })),
+        contextsTruncated: contexts.truncated,
+        ...(ruleRef ? { ruleRef } : {}),
+      };
+      state.recordsEmitted += 1;
+      yield record;
+    } catch {
+      continue;
+    }
+  }
+}
+
+function* walkImportedStylesheet(
+  element: MatchableElement,
+  rule: RuleSource,
+  containingSourceUrl: string,
+  media: BoundedValues<string>,
+  contexts: BoundedValues<CssRuleContextRecord>,
+  depth: number,
+  state: WalkState,
+  activeStylesheets: ReadonlySet<object>,
+): IterableIterator<CssRuleWalkRecord> {
+  if (
+    depth >= INSPECT_LIMITS.cssRuleDepth ||
+    state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
+    reachedWalkLimit(state)
+  ) {
+    return;
+  }
+
+  const stylesheetNamespace = state.stylesheetsVisited;
+  state.stylesheetsVisited += 1;
+  const stylesheetIdentity = reserveStylesheetIdentity(state);
+
+  let importedStylesheet: StylesheetSource;
+  try {
+    const candidate = (rule as Partial<ImportRuleSource>).styleSheet;
+    if (!isStylesheetSource(candidate)) return;
+    importedStylesheet = candidate;
+  } catch (error) {
+    reportInaccessible(
+      state,
+      diagnosticImportUrl(rule, containingSourceUrl),
+      error,
+    );
+    return;
+  }
+  if (activeStylesheets.has(importedStylesheet)) return;
+
+  let sourceUrl: string | undefined;
+  try {
+    sourceUrl = importedStylesheet.href === null
+      ? exactImportRuleUrl(rule)
+      : exactBoundedUrl(importedStylesheet.href);
+  } catch (error) {
+    reportInaccessible(
+      state,
+      diagnosticImportUrl(rule, containingSourceUrl),
+      error,
+    );
+    return;
+  }
+  if (!sourceUrl) return;
+
+  let importedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+  try {
+    importedRules = importedStylesheet.cssRules;
+  } catch (error) {
+    reportInaccessible(state, sourceUrl, error);
+    return;
+  }
+
+  const importContext = readImportMediaContext(rule);
+  const nextContexts = importContext
+    ? appendBounded(contexts, importContext, INSPECT_LIMITS.mediaConditions)
+    : contexts;
+  const nextMedia = importContext
+    ? appendBounded(
+      media,
+      { value: importContext.value.text, truncated: importContext.truncated },
+      INSPECT_LIMITS.mediaConditions,
+    )
+    : media;
+  const nextActiveStylesheets = new Set(activeStylesheets);
+  nextActiveStylesheets.add(importedStylesheet);
+  try {
+    yield* walkRules(
+      element,
+      importedRules,
+      { sourceUrl, stylesheetIdentity },
+      `${stylesheetNamespace}`,
+      nextMedia,
+      nextContexts,
+      undefined,
+      depth + 1,
+      state,
+      nextActiveStylesheets,
+    );
+  } catch (error) {
+    reportInaccessible(state, sourceUrl, error);
+  }
+}
+
+function resolveStyleSelector(
+  selector: string,
+  parent: StyleSelectorContext | undefined,
+): StyleSelectorContext | undefined {
+  if (selector.length === 0 || selector.length > INSPECT_LIMITS.selectorLength) {
+    return undefined;
+  }
+  const resolvedSelector = parent
+    ? resolveNestedSelector(selector, parent.resolvedSelector)
+    : lexicallyValidSelector(selector)
+      ? selector
+      : undefined;
+  return resolvedSelector
+    ? { sourceSelector: selector, resolvedSelector }
+    : undefined;
+}
+
+function resolveNestedSelector(
+  selector: string,
+  parentSelector: string,
+): string | undefined {
+  const replacement = `:is(${parentSelector})`;
+  let result = "";
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  let nestingSelectorFound = false;
+  let parentheses = 0;
+  let brackets = 0;
+  let topLevelComma = false;
+
+  for (const character of selector) {
+    if (escaped) {
+      if (result.length >= INSPECT_LIMITS.selectorLength) return undefined;
+      result += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      if (result.length >= INSPECT_LIMITS.selectorLength) return undefined;
+      result += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (result.length >= INSPECT_LIMITS.selectorLength) return undefined;
+      result += character;
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      if (result.length >= INSPECT_LIMITS.selectorLength) return undefined;
+      result += character;
+      quote = character;
+      continue;
+    }
+    if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) return undefined;
+      parentheses -= 1;
+    } else if (character === "[") {
+      brackets += 1;
+    } else if (character === "]") {
+      if (brackets === 0) return undefined;
+      brackets -= 1;
+    } else if (character === "," && parentheses === 0 && brackets === 0) {
+      topLevelComma = true;
+    }
+
+    const addition = character === "&" ? replacement : character;
+    if (result.length + addition.length > INSPECT_LIMITS.selectorLength) {
+      return undefined;
+    }
+    result += addition;
+    nestingSelectorFound ||= character === "&";
+  }
+  if (escaped || quote || parentheses !== 0 || brackets !== 0) return undefined;
+  if (nestingSelectorFound) return result;
+  if (topLevelComma) return undefined;
+  const descendantSelector = `${replacement} ${selector.trim()}`;
+  return descendantSelector.length <= INSPECT_LIMITS.selectorLength
+    ? descendantSelector
+    : undefined;
+}
+
+function lexicallyValidSelector(selector: string): boolean {
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  let parentheses = 0;
+  let brackets = 0;
+  for (const character of selector) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+    } else if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) return false;
+      parentheses -= 1;
+    } else if (character === "[") {
+      brackets += 1;
+    } else if (character === "]") {
+      if (brackets === 0) return false;
+      brackets -= 1;
+    }
+  }
+  return !escaped && !quote && parentheses === 0 && brackets === 0;
+}
+
+function readRuleContext(
+  rule: GroupRuleSource,
+): BoundedValue<CssRuleContextRecord> {
+  const constructorName = readConstructorName(rule);
+  if (constructorName === "CSSMediaRule" || hasReadableMedia(rule)) {
+    const condition = readMediaCondition(rule);
+    return {
+      value: { kind: "media", text: condition.value },
+      truncated: condition.truncated,
+    };
+  }
+
+  let kind: CssRuleContextKind;
+  switch (constructorName) {
+    case "CSSSupportsRule":
+      kind = "supports";
+      break;
+    case "CSSLayerBlockRule":
+      kind = "layer";
+      break;
+    case "CSSScopeRule":
+      kind = "scope";
+      break;
+    case "CSSContainerRule":
+      kind = "container";
+      break;
+    case "CSSStartingStyleRule":
+      kind = "starting-style";
+      break;
+    default:
+      kind = hasStringProperty(rule, "conditionText")
+        ? "supports"
+        : "unknown";
+  }
+
+  const rawText = kind === "starting-style"
+    ? ""
+    : kind === "layer"
+      ? readStringProperty(rule, "name") ?? readCssHeader(rule)
+      : readStringProperty(rule, "conditionText") ?? readCssHeader(rule);
+  return boundedContext(kind, rawText);
+}
+
+function readImportMediaContext(
+  rule: RuleSource,
+): BoundedValue<CssRuleContextRecord> | undefined {
+  const condition = readMediaCondition(rule as MediaConditionSource);
+  return condition.value
+    ? {
+      value: { kind: "media", text: condition.value },
+      truncated: condition.truncated,
+    }
+    : undefined;
+}
+
+function boundedContext(
+  kind: CssRuleContextKind,
+  rawText: string,
+): BoundedValue<CssRuleContextRecord> {
+  return {
+    value: {
+      kind,
+      text: truncate(rawText, INSPECT_LIMITS.valueLength).trim(),
+    },
+    truncated: rawText.length > INSPECT_LIMITS.valueLength,
+  };
+}
+
+function readMediaCondition(
+  rule: MediaConditionSource,
+): BoundedValue<string> {
+  try {
+    const media = rule.media;
+    if (
+      typeof media !== "object" ||
+      media === null ||
+      typeof media.mediaText !== "string"
+    ) {
+      return { value: "", truncated: false };
+    }
+    const condition = typeof rule.conditionText === "string"
+      ? rule.conditionText
+      : media.mediaText;
+    return {
+      value: truncate(condition, INSPECT_LIMITS.valueLength).trim(),
+      truncated: condition.length > INSPECT_LIMITS.valueLength,
+    };
+  } catch {
+    return { value: "", truncated: false };
+  }
+}
+
+function appendBounded<T>(
+  current: BoundedValues<T>,
+  next: BoundedValue<T>,
+  limit: number,
+): BoundedValues<T> {
+  const dropped = current.values.length >= limit;
+  return {
+    values: dropped ? current.values : [...current.values, next.value],
+    truncated: current.truncated || next.truncated || dropped,
+  };
+}
+
+function matchesSelector(
+  element: MatchableElement,
+  selector: string,
+): boolean | undefined {
+  try {
+    return element.matches(selector);
+  } catch {
+    return undefined;
+  }
+}
+
+function readImportantPriority(
+  style: StyleDeclarationSource,
+  property: string,
+): boolean | undefined {
+  const priority = style.getPropertyPriority(property);
+  if (priority === "") return false;
+  if (priority === "important") return true;
+  return undefined;
+}
+
+function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
+  const candidate = rule as Partial<StyleRuleSource>;
+  return (
+    typeof candidate.selectorText === "string" &&
+    typeof candidate.style === "object" &&
+    candidate.style !== null
+  );
+}
+
+function isImportRuleCandidate(rule: RuleSource): rule is ImportRuleSource {
+  return (
+    !hasProperty(rule, "selectorText") &&
+    !hasProperty(rule, "cssRules") &&
+    hasProperty(rule, "styleSheet")
+  );
+}
+
+function isStylesheetSource(value: unknown): value is StylesheetSource {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    hasProperty(value, "href") &&
+    hasProperty(value, "cssRules")
+  );
+}
+
+function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
+  return hasProperty(rule, "cssRules");
+}
+
+function isNestedDeclarationsRule(
+  rule: RuleSource,
+): rule is NestedDeclarationsSource {
+  if (hasProperty(rule, "selectorText") || hasProperty(rule, "cssRules")) {
+    return false;
+  }
+  const candidate = rule as Partial<NestedDeclarationsSource> & {
+    readonly constructor?: { readonly name?: unknown };
+  };
+  if (typeof candidate.style !== "object" || candidate.style === null) {
+    return false;
+  }
+  const constructorName = candidate.constructor?.name;
+  return (
+    constructorName === undefined ||
+    constructorName === "Object" ||
+    constructorName === "CSSNestedDeclarations"
+  );
+}
+
+function readConstructorName(rule: object): string {
+  try {
+    const constructor = (rule as {
+      readonly constructor?: { readonly name?: unknown };
+    }).constructor;
+    return typeof constructor?.name === "string" ? constructor.name : "";
+  } catch {
+    return "";
+  }
+}
+
+function hasReadableMedia(rule: object): boolean {
+  try {
+    const media = (rule as MediaConditionSource).media;
+    return (
+      typeof media === "object" &&
+      media !== null &&
+      typeof media.mediaText === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasStringProperty(rule: object, property: PropertyKey): boolean {
+  return readStringProperty(rule, property) !== undefined;
+}
+
+function readStringProperty(
+  rule: object,
+  property: PropertyKey,
+): string | undefined {
+  try {
+    const value = (rule as Record<PropertyKey, unknown>)[property];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readCssHeader(rule: object): string {
+  const cssText = readStringProperty(rule, "cssText") ?? "";
+  const blockStart = cssText.indexOf("{");
+  return (blockStart >= 0 ? cssText.slice(0, blockStart) : cssText).trim();
+}
+
+function exactImportRuleUrl(rule: RuleSource): string | undefined {
+  const href = (rule as Partial<ImportRuleSource>).href;
+  return typeof href === "string" ? exactBoundedUrl(href) : undefined;
+}
+
+function diagnosticImportUrl(
+  rule: RuleSource,
+  containingSourceUrl: string,
+): string {
+  try {
+    return exactImportRuleUrl(rule) ?? containingSourceUrl;
+  } catch {
+    return containingSourceUrl;
+  }
+}
+
+function reportInaccessible(
+  state: WalkState,
+  sourceUrl: string,
+  error: unknown,
+): void {
+  if (
+    state.inaccessibleStylesheets.length >=
+    INSPECT_LIMITS.inaccessibleStylesheets
+  ) {
+    return;
+  }
+  state.inaccessibleStylesheets.push({
+    code: "browser.stylesheetInaccessible",
+    sourceUrl,
+    reason: truncate(messageOf(error), INSPECT_LIMITS.valueLength),
+  });
+}
+
+function reserveStylesheetIdentity(state: WalkState): string {
+  const identity = `sheet-${state.nextStylesheetIdentity}`;
+  state.nextStylesheetIdentity += 1;
+  return identity;
+}
+
+function reachedWalkLimit(state: WalkState): boolean {
+  return (
+    state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget ||
+    state.rulesVisited >= INSPECT_LIMITS.cssRules
+  );
+}
+
+function reachedDocumentLimit(state: WalkState): boolean {
+  return (
+    reachedWalkLimit(state) ||
+    state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets
+  );
+}
+
+function hasProperty(value: object, property: PropertyKey): boolean {
+  try {
+    return property in value;
+  } catch {
+    return false;
+  }
+}
+
+function messageOf(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return "Stylesheet access failed";
+  }
+}

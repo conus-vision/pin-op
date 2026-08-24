@@ -48,6 +48,7 @@ import {
   PanelController,
   PanelSettingsController,
   ResolutionPresenter,
+  RuleReferenceRegistry,
   SourceNavigationController,
   SourcePaneController,
   formatResolutionFooter,
@@ -74,6 +75,7 @@ import {
   TabRefreshStateStore,
   TopScrollSnapshotLeaseStore,
   virtualTreeRows,
+  walkCssRules,
   WindowConnectionCoordinator,
 } from "../src/index.js";
 
@@ -152,6 +154,7 @@ describe("browser extension core exports", () => {
     expect(PanelController).toBeTypeOf("function");
     expect(PanelSettingsController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
+    expect(RuleReferenceRegistry).toBeTypeOf("function");
     expect(SourceNavigationController).toBeTypeOf("function");
     expect(SourcePaneController).toBeTypeOf("function");
     expect(formatResolutionFooter).toBeTypeOf("function");
@@ -169,6 +172,7 @@ describe("browser extension core exports", () => {
     expect(TabRefreshStateStore).toBeTypeOf("function");
     expect(TopScrollSnapshotLeaseStore).toBeTypeOf("function");
     expect(virtualTreeRows).toBeTypeOf("function");
+    expect(walkCssRules).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
 });

@@ -1329,6 +1329,74 @@ describe("collectCssFacts", () => {
     );
     expect(beyondLimit.facts).toEqual([]);
   });
+
+  it("preserves the legacy fact projection across mixed stylesheet traversal", () => {
+    const importedUrl = "https://example.test/imported.css?theme=night";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/app.css?v=100%",
+            cssRules: [
+              mediaRule("screen", [
+                {
+                  conditionText: "(display: grid)",
+                  cssRules: [
+                    styleRule(".external", { display: "grid !important" }),
+                  ],
+                },
+              ]),
+              importRule(importedUrl, {
+                href: importedUrl,
+                cssRules: [styleRule(".imported", { color: "purple" })],
+              }, "print"),
+            ],
+          },
+          {
+            href: null,
+            cssRules: [styleRule(".inline", { margin: "0" })],
+          },
+        ],
+      },
+    );
+
+    expect(result).toEqual({
+      facts: [
+        {
+          type: "css-rule",
+          selector: ".external",
+          property: "display",
+          value: "grid",
+          metadata: completeFactMetadata(
+            "https://example.test/app.css?v=100%",
+            "0.0.0.0",
+            ["screen"],
+            { important: true },
+          ),
+        },
+        {
+          type: "css-rule",
+          selector: ".imported",
+          property: "color",
+          value: "purple",
+          metadata: completeFactMetadata(importedUrl, "1.0", ["print"]),
+        },
+        {
+          type: "css-rule",
+          selector: ".inline",
+          property: "margin",
+          value: "0",
+          metadata: completeFactMetadata(
+            "inline-style://document/1",
+            "1.0",
+          ),
+        },
+      ],
+      inaccessibleStylesheets: [],
+    });
+  });
 });
 
 function completeFactMetadata(
