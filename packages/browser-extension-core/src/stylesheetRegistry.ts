@@ -350,6 +350,7 @@ export class StylesheetRegistry {
     this.stopPolling();
     this.disposed = true;
     this.disconnectMutationObserver();
+    this.fingerprint.reset();
     this.ruleReferences.dispose();
     this.inventory = undefined;
   }
@@ -519,7 +520,12 @@ function inventoryStylesheets(
         );
       }
     }
-    for (const sheet of readScopeStyleSheets(scope)) {
+    const scopeSheets = readScopeStyleSheets(scope);
+    if (scopeSheets.truncated) {
+      state.omittedScopeSheetPairCount += 1;
+      addDiagnostic(state, { code: "scope-sheet-pair-limit", scopeRef });
+    }
+    for (const sheet of scopeSheets.values) {
       const owner = safeOwnerNode(sheet);
       sourceOrder = addSheetTree(
         state,
@@ -543,7 +549,12 @@ function inventoryStylesheets(
         );
       }
     }
-    for (const sheet of readAdoptedSheets(scope)) {
+    const adoptedSheets = readAdoptedSheets(scope);
+    if (adoptedSheets.truncated) {
+      state.omittedScopeSheetPairCount += 1;
+      addDiagnostic(state, { code: "scope-sheet-pair-limit", scopeRef });
+    }
+    for (const sheet of adoptedSheets.values) {
       sourceOrder = addSheetTree(
         state, scope, scopeRef, sheet, "adopted", sourceOrder,
         safeOwnerNode(sheet), "", scopeRefFor, sheetRefFor, new Set(),
@@ -614,14 +625,18 @@ function inventoryStructureDigest(
     if (scopeKind(scope) === "shadow-root") {
       append("owner", owned);
     }
-    append("external", readScopeStyleSheets(scope).map((sheet) => ({
+    const scopeSheets = readScopeStyleSheets(scope);
+    truncated ||= scopeSheets.truncated;
+    append("external", scopeSheets.values.map((sheet) => ({
       sheet,
       ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
     })));
     if (scopeKind(scope) === "document") {
       append("owner", owned);
     }
-    append("adopted", readAdoptedSheets(scope).map((sheet) => ({
+    const adoptedSheets = readAdoptedSheets(scope);
+    truncated ||= adoptedSheets.truncated;
+    append("adopted", adoptedSheets.values.map((sheet) => ({
       sheet,
       ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
     })));
@@ -979,22 +994,26 @@ function readOwnerSheets(scope: StylesheetScope): Array<{
   return result;
 }
 
-function readScopeStyleSheets(scope: StylesheetScope): object[] {
+function readScopeStyleSheets(scope: StylesheetScope): BoundedObjectScan {
   try {
     const sheets = (scope as unknown as { readonly styleSheets?: unknown }).styleSheets;
-    return sheets ? boundedObjectList(sheets) : [];
+    return sheets
+      ? scanBoundedObjects(sheets, STYLESHEET_LIMITS.scopeSheetPairsPerSession)
+      : emptyBoundedObjectScan();
   } catch {
-    return [];
+    return emptyBoundedObjectScan(true);
   }
 }
 
-function readAdoptedSheets(scope: StylesheetScope): object[] {
+function readAdoptedSheets(scope: StylesheetScope): BoundedObjectScan {
   try {
     const sheets = (scope as unknown as { readonly adoptedStyleSheets?: unknown })
       .adoptedStyleSheets;
-    return sheets ? boundedObjectList(sheets) : [];
+    return sheets
+      ? scanBoundedObjects(sheets, STYLESHEET_LIMITS.scopeSheetPairsPerSession)
+      : emptyBoundedObjectScan();
   } catch {
-    return [];
+    return emptyBoundedObjectScan(true);
   }
 }
 
@@ -1003,7 +1022,12 @@ function readCssRules(sheet: object): object[] {
   if (!rules || (typeof rules !== "object" && typeof rules !== "function")) {
     throw new Error("cssRules unavailable");
   }
-  return boundedObjectList(rules);
+  const bounded = scanBoundedObjects(
+    rules,
+    STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
+  );
+  if (bounded.truncated) throw new Error("cssRules truncated");
+  return bounded.values;
 }
 
 function readCssRulesBounded(
@@ -1015,12 +1039,12 @@ function readCssRulesBounded(
     throw new Error("cssRules unavailable");
   }
   const knownLength = safeNumberProperty(Object(raw), "length");
-  const rules = boundedObjectList(raw, maximum);
+  const bounded = scanBoundedObjects(raw, maximum);
   return {
-    rules,
+    rules: bounded.values,
     truncated: knownLength !== undefined
       ? knownLength > maximum
-      : maximum === 0 || rules.length === maximum,
+      : bounded.truncated,
   };
 }
 
@@ -1035,34 +1059,101 @@ function safeOptionalCssRules(rule: object): object[] | undefined {
 
 function boundedObjectList(
   value: unknown,
-  maximum = STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot + 1,
+  maximum: number = STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
 ): object[] {
+  return scanBoundedObjects(value, maximum).values;
+}
+
+interface BoundedObjectScan {
+  readonly values: object[];
+  readonly pulls: number;
+  readonly truncated: boolean;
+}
+
+function emptyBoundedObjectScan(truncated = false): BoundedObjectScan {
+  return { values: [], pulls: 0, truncated };
+}
+
+function scanBoundedObjects(
+  value: unknown,
+  maximum: number,
+): BoundedObjectScan {
   const result: object[] = [];
-  if (maximum <= 0) return result;
-  if (
-    typeof value === "object" && value !== null &&
-    Symbol.iterator in value
-  ) {
-    try {
-      for (const item of value as Iterable<unknown>) {
+  const boundedMaximum = Number.isSafeInteger(maximum) && maximum > 0
+    ? maximum
+    : 0;
+  if (typeof value !== "object" || value === null) {
+    return { values: result, pulls: 0, truncated: false };
+  }
+  const knownLength = safeNumberProperty(value, "length");
+  if (knownLength !== undefined) {
+    const pulls = Math.min(knownLength, boundedMaximum);
+    for (let index = 0; index < pulls; index += 1) {
+      try {
+        const item = (value as ArrayLike<unknown>)[index];
         if (typeof item === "object" && item !== null) result.push(item);
-        if (result.length >= maximum) break;
+      } catch {
+        // A hostile slot consumes the same bounded pull as a readable slot.
       }
-      return result;
+    }
+    return {
+      values: result,
+      pulls,
+      truncated: knownLength > boundedMaximum,
+    };
+  }
+
+  let iterator: Iterator<unknown> | undefined;
+  let pulls = 0;
+  let completed = false;
+  const close = (): void => {
+    try {
+      const finish = iterator?.return;
+      if (typeof finish === "function") finish.call(iterator);
     } catch {
+      // Iterator cleanup cannot expand stylesheet authority.
+    }
+  };
+  try {
+    const iteratorMethod = (value as { readonly [Symbol.iterator]?: unknown })[
+      Symbol.iterator
+    ];
+    if (typeof iteratorMethod !== "function") {
+      return { values: result, pulls: 0, truncated: false };
+    }
+    const opened = iteratorMethod.call(value) as unknown;
+    if (
+      typeof opened !== "object" ||
+      opened === null ||
+      typeof (opened as { readonly next?: unknown }).next !== "function"
+    ) {
       throw new Error("hostile rule list");
     }
-  }
-  const length = Math.min(safeNumberProperty(Object(value), "length") ?? 0, maximum);
-  for (let index = 0; index < length; index += 1) {
-    try {
-      const item = (value as ArrayLike<unknown>)[index];
+    iterator = opened as Iterator<unknown>;
+    while (pulls < boundedMaximum) {
+      pulls += 1;
+      const step = iterator.next();
+      if (typeof step !== "object" || step === null) {
+        throw new Error("hostile rule list");
+      }
+      if (step.done === true) {
+        completed = true;
+        break;
+      }
+      const item = step.value;
       if (typeof item === "object" && item !== null) result.push(item);
-    } catch {
-      continue;
     }
+  } catch {
+    close();
+    throw new Error("hostile rule list");
   }
-  return result;
+  const truncated = !completed && pulls >= boundedMaximum;
+  if (truncated) close();
+  return {
+    values: result,
+    pulls,
+    truncated,
+  }
 }
 
 function publicStylesheetUrl(href: string | undefined, scope: StylesheetScope): string | undefined {

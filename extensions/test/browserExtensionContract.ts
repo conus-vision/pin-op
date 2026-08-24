@@ -1188,6 +1188,7 @@ export function describeBrowserPackageContract(
         .join("\n");
 
       expect(executableNetworkFetchPrimitives(scripts)).toEqual([]);
+      expect(disallowedPackagedHttpUrls(scripts)).toEqual([]);
       expect(scripts).toContain("WebSocket");
       const websocketUrls = scripts.match(/wss?:\/\/[^"'`\s${}]+/g) ?? [];
       expect(websocketUrls.length).toBeGreaterThan(0);
@@ -1218,8 +1219,70 @@ export function describeBrowserPackageContract(
         "globalThis.fetch('/proxied.css');",
         "new XMLHttpRequest();",
       ].join("\n"))).toEqual(["XMLHttpRequest", "fetch"]);
+      for (const [primitive, bypass] of [
+        ["fetch", "const load = globalThis.fetch; load('/alias.css');"],
+        ["fetch", "globalThis.fetch.call(globalThis, '/call.css');"],
+        ["fetch", "const load = globalThis['fetch']; load('/computed.css');"],
+        ["XMLHttpRequest", "const Request = window.XMLHttpRequest; new Request();"],
+      ] as const) {
+        expect(executableNetworkFetchPrimitives(bypass), bypass).toContain(primitive);
+      }
+      expect(disallowedPackagedHttpUrls([
+        "// https://comment.example.test/postcss-docs",
+        "const svg = 'http://www.w3.org/2000/svg';",
+        "const sentinel = 'https://pin-op.invalid/';",
+        "const endpoint = 'https://attacker.example.test/rules.css';",
+      ].join("\n"))).toEqual([
+        "https://attacker.example.test/rules.css",
+      ]);
     });
   });
+}
+
+const PACKAGED_HTTP_URL_ALLOWLIST = new Set([
+  "http://www.w3.org/2000/svg",
+  "https://pin-op.invalid/",
+]);
+
+function disallowedPackagedHttpUrls(source: string): readonly string[] {
+  const sourceFile = ts.createSourceFile(
+    "packaged-url-scan.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node) && !isConsoleDocumentationLiteral(node)) {
+      for (const match of node.text.matchAll(/https?:\/\/[^\s"'`\\<>]+/g)) {
+        const candidate = match[0];
+        if (!PACKAGED_HTTP_URL_ALLOWLIST.has(candidate)) found.add(candidate);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found].sort();
+}
+
+function isConsoleDocumentationLiteral(node: ts.StringLiteralLike): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current && !ts.isStatement(current)) {
+    if (
+      ts.isCallExpression(current) &&
+      ts.isPropertyAccessExpression(current.expression) &&
+      ts.isIdentifier(current.expression.expression) &&
+      current.expression.expression.text === "console" &&
+      ["debug", "error", "info", "log", "warn"].includes(
+        current.expression.name.text,
+      )
+    ) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function executableNetworkFetchPrimitives(source: string): readonly string[] {
@@ -1231,9 +1294,26 @@ function executableNetworkFetchPrimitives(source: string): readonly string[] {
     ts.ScriptKind.JS,
   );
   const found = new Set<string>();
+  const aliases = new Map<string, "fetch" | "XMLHttpRequest">();
   const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer
+    ) {
+      const primitive = globalNetworkFetchPrimitive(node.initializer, aliases);
+      if (primitive) aliases.set(node.name.text, primitive);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left)
+    ) {
+      const primitive = globalNetworkFetchPrimitive(node.right, aliases);
+      if (primitive) aliases.set(node.left.text, primitive);
+    }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-      const primitive = globalNetworkFetchPrimitive(node.expression);
+      const primitive = globalNetworkFetchPrimitive(node.expression, aliases);
       if (primitive) found.add(primitive);
     }
     ts.forEachChild(node, visit);
@@ -1243,27 +1323,51 @@ function executableNetworkFetchPrimitives(source: string): readonly string[] {
 }
 
 function globalNetworkFetchPrimitive(
-  expression: ts.LeftHandSideExpression,
+  expression: ts.Expression,
+  aliases: ReadonlyMap<string, "fetch" | "XMLHttpRequest"> = new Map(),
 ): "fetch" | "XMLHttpRequest" | undefined {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return globalNetworkFetchPrimitive(expression.expression, aliases);
+  }
   if (ts.isIdentifier(expression)) {
-    return expression.text === "fetch" || expression.text === "XMLHttpRequest"
-      ? expression.text
-      : undefined;
+    if (expression.text === "fetch" || expression.text === "XMLHttpRequest") {
+      return expression.text;
+    }
+    return aliases.get(expression.text);
   }
   if (ts.isPropertyAccessExpression(expression)) {
-    return isGlobalObjectIdentifier(expression.expression) &&
-        (expression.name.text === "fetch" || expression.name.text === "XMLHttpRequest")
-      ? expression.name.text
-      : undefined;
+    if (
+      isGlobalObjectIdentifier(expression.expression) &&
+      (expression.name.text === "fetch" || expression.name.text === "XMLHttpRequest")
+    ) {
+      return expression.name.text;
+    }
+    if (["apply", "bind", "call"].includes(expression.name.text)) {
+      return globalNetworkFetchPrimitive(expression.expression, aliases);
+    }
+    return undefined;
   }
   if (
     ts.isElementAccessExpression(expression) &&
-    isGlobalObjectIdentifier(expression.expression) &&
     expression.argumentExpression &&
     ts.isStringLiteralLike(expression.argumentExpression)
   ) {
     const name = expression.argumentExpression.text;
-    return name === "fetch" || name === "XMLHttpRequest" ? name : undefined;
+    if (
+      isGlobalObjectIdentifier(expression.expression) &&
+      (name === "fetch" || name === "XMLHttpRequest")
+    ) {
+      return name;
+    }
+    if (["apply", "bind", "call"].includes(name)) {
+      return globalNetworkFetchPrimitive(expression.expression, aliases);
+    }
   }
   return undefined;
 }

@@ -123,7 +123,7 @@ describe("StylesheetFingerprint", () => {
       media: { mediaText: "" },
       cssRules: rules,
     };
-    const scanner = new StylesheetFingerprint();
+    const scanner = new StylesheetFingerprint({ now: () => 0 });
     const candidate = entry(sheet, "scope", "huge", 0, owner({}));
 
     const first = scanner.scan([candidate]);
@@ -148,6 +148,67 @@ describe("StylesheetFingerprint", () => {
       scanner.scan([candidate]),
     ];
     expect(afterMutation.some(({ changed }) => changed)).toBe(true);
+  });
+
+  it("bounds iterable pulls and resumes without rereading a skipped prefix", () => {
+    const pulls: number[] = [];
+    const rules = trackedIterable(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot * 3,
+      (index) => ({ cssText: `.iterable-${index} { --n: ${index} }` }),
+      pulls,
+    );
+    const scanner = new StylesheetFingerprint({ now: () => 0 });
+    const candidate = entry({
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      cssRules: rules,
+    }, "iterable-scope", "iterable-sheet", 0, owner({}));
+
+    let before = total(pulls);
+    const first = scanner.scan([candidate]);
+    const firstPassPulls = total(pulls) - before;
+    expect(firstPassPulls).toBeLessThanOrEqual(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
+    );
+    expect(first.rulesVisited).toBe(firstPassPulls);
+
+    before = total(pulls);
+    const second = scanner.scan([candidate]);
+    const secondPassPulls = total(pulls) - before;
+    expect(secondPassPulls).toBeLessThanOrEqual(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
+    );
+    expect(second.rulesVisited).toBe(secondPassPulls);
+    expect(second.nextCursor.ruleOffset).toBe(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot * 2,
+    );
+  });
+
+  it("checks elapsed time while traversing a large nested iterable", () => {
+    const pulls: number[] = [];
+    const nested = trackedIterable(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot * 2,
+      (index) => ({ cssText: `.nested-${index} { --n: ${index} }` }),
+      pulls,
+    );
+    let clock = 0;
+    const scanner = new StylesheetFingerprint({
+      now: () => {
+        clock += 2;
+        return clock;
+      },
+    });
+    const result = scanner.scan([entry({
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      cssRules: [{ cssText: "@media screen {}", cssRules: nested }],
+    }, "nested-scope", "nested-sheet", 0, owner({}))]);
+
+    expect(result.partial).toBe(true);
+    expect(total(pulls)).toBeLessThan(32);
+    expect(result.rulesVisited).toBeGreaterThanOrEqual(total(pulls));
   });
 
   it("rotates after byte and elapsed-time truncation instead of multiplying budgets by root", () => {
@@ -254,3 +315,29 @@ type MutableEntry = Omit<StylesheetRegistryEntry, "sourceOrder" | "ownerState"> 
   sourceOrder: number;
   ownerState?: MutableOwnerState;
 };
+
+function trackedIterable<T>(
+  count: number,
+  valueAt: (index: number) => T,
+  pulls: number[],
+): Iterable<T> {
+  return {
+    [Symbol.iterator]() {
+      const iteratorIndex = pulls.push(0) - 1;
+      let index = 0;
+      return {
+        next(): IteratorResult<T> {
+          pulls[iteratorIndex]! += 1;
+          if (index >= count) return { done: true, value: undefined };
+          const value = valueAt(index);
+          index += 1;
+          return { done: false, value };
+        },
+      };
+    },
+  };
+}
+
+function total(values: readonly number[]): number {
+  return values.reduce((sum, value) => sum + value, 0);
+}

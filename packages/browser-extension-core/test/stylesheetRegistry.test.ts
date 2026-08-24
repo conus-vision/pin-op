@@ -257,6 +257,64 @@ describe("StylesheetRegistry", () => {
     );
   });
 
+  it("bounds primitive iterable pulls and safely closes throwing rule iterators", () => {
+    const primitivePulls: number[] = [];
+    let primitiveCloses = 0;
+    const primitiveRules = trackedRuleIterable(
+      STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot * 2,
+      (index) => index,
+      primitivePulls,
+      () => { primitiveCloses += 1; },
+    );
+    const primitiveSheet = {
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      cssRules: primitiveRules,
+    };
+
+    const primitiveRegistry = createRegistry(scope(
+      "document",
+      [primitiveSheet as unknown as FakeSheet],
+      [],
+      [],
+    ));
+    const primitiveSnapshot = primitiveRegistry.snapshot();
+
+    expect(primitivePulls.every((pulls) => (
+      pulls <= STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot
+    ))).toBe(true);
+    expect(primitiveSnapshot.partial).toBe(true);
+    expect(primitiveSnapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "rules-visited-limit",
+    }));
+    primitiveRegistry.dispose();
+    expect(primitiveCloses).toBe(primitivePulls.length);
+
+    const throwingPulls: number[] = [];
+    let throwingCloses = 0;
+    const throwingRules = trackedRuleIterable(
+      4,
+      () => {
+        throw new Error("hostile next");
+      },
+      throwingPulls,
+      () => { throwingCloses += 1; },
+    );
+    const throwingRegistry = createRegistry(scope("document", [{
+      href: null,
+      disabled: false,
+      media: { mediaText: "" },
+      cssRules: throwingRules,
+    } as unknown as FakeSheet], [], []));
+    const throwingSnapshot = throwingRegistry.snapshot();
+
+    expect(throwingPulls.every((pulls) => pulls === 1)).toBe(true);
+    expect(throwingCloses).toBe(throwingPulls.length);
+    expect(throwingSnapshot.partial).toBe(true);
+    throwingRegistry.dispose();
+  });
+
   it("shares the CSSOM rule-visit budget across every stylesheet scope pair", () => {
     const rulesPerSheet = Math.ceil(
       STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot * 0.75,
@@ -633,4 +691,31 @@ function elementIn(root: object, matching: Set<string>) {
     matches: (selector: string) => matching.has(selector),
     parentElement: null,
   } as unknown as Element;
+}
+
+function trackedRuleIterable<T>(
+  count: number,
+  valueAt: (index: number) => T,
+  pulls: number[],
+  onClose: () => void,
+): Iterable<T> {
+  return {
+    [Symbol.iterator]() {
+      const iteratorIndex = pulls.push(0) - 1;
+      let index = 0;
+      return {
+        next(): IteratorResult<T> {
+          pulls[iteratorIndex]! += 1;
+          if (index >= count) return { done: true, value: undefined };
+          const value = valueAt(index);
+          index += 1;
+          return { done: false, value };
+        },
+        return(): IteratorResult<T> {
+          onClose();
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
 }
