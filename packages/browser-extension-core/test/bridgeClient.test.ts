@@ -13,7 +13,7 @@ import {
   type ResolutionMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BrowserBridgeClient,
   InspectPublisher,
@@ -77,6 +77,43 @@ class FakeSocket {
 }
 
 describe("BrowserBridgeClient", () => {
+  it("binds default reconnect timers to the host global", () => {
+    const hostTimers = receiverSensitiveHostTimers();
+    vi.stubGlobal("setTimeout", hostTimers.setTimeout);
+    vi.stubGlobal("clearTimeout", hostTimers.clearTimeout);
+    let client: BrowserBridgeClient | undefined;
+
+    try {
+      const sockets: FakeSocket[] = [];
+      client = new BrowserBridgeClient({
+        url: "ws://127.0.0.1:48735",
+        windowId: 10,
+        sourceId: "host-timer",
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        messageId: () => "host-timer-message",
+      });
+      client.connect(CREDENTIALS);
+      const socket = sockets[0];
+      if (!socket) throw new Error("Expected a bridge socket");
+      socket.open();
+      authenticate(socket);
+
+      expect(() => socket.serverClose()).not.toThrow();
+      expect(hostTimers.pendingCount()).toBe(1);
+
+      client.disconnect();
+      client = undefined;
+      expect(hostTimers.pendingCount()).toBe(0);
+    } finally {
+      client?.disconnect();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("links with a leading-zero PIN and connects only after authentication", () => {
     const harness = createHarness();
 
@@ -983,6 +1020,33 @@ describe("BrowserBridgeClient", () => {
 });
 
 describe("InspectPublisher", () => {
+  it("binds default debounce timers to the host global", () => {
+    const hostTimers = receiverSensitiveHostTimers();
+    vi.stubGlobal("setTimeout", hostTimers.setTimeout);
+    vi.stubGlobal("clearTimeout", hostTimers.clearTimeout);
+    let publisher: InspectPublisher | undefined;
+
+    try {
+      const sent: string[] = [];
+      publisher = new InspectPublisher({
+        send: (payload) => sent.push(
+          payload.targets[0]?.subject.selector ?? "",
+        ),
+      });
+
+      expect(() => publisher?.publish(selection(".card"))).not.toThrow();
+      expect(sent).toEqual([".card"]);
+      expect(hostTimers.pendingCount()).toBe(1);
+
+      publisher.dispose();
+      publisher = undefined;
+      expect(hostTimers.pendingCount()).toBe(0);
+    } finally {
+      publisher?.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("deduplicates selections and sends only the latest pending value per 100ms", () => {
     const timers: Array<() => void> = [];
     const delays: number[] = [];
@@ -1080,6 +1144,37 @@ function createHarness(
       }
       timers.delete(entry[0]);
       entry[1]();
+    },
+  };
+}
+
+function receiverSensitiveHostTimers() {
+  let nextId = 0;
+  const callbacks = new Map<number, () => void>();
+  return {
+    setTimeout(
+      this: unknown,
+      callback: () => void,
+      _delay: number,
+    ): ReturnType<typeof setTimeout> {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: setTimeout receiver");
+      }
+      const id = ++nextId;
+      callbacks.set(id, callback);
+      return id as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout(
+      this: unknown,
+      timer: ReturnType<typeof setTimeout>,
+    ): void {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: clearTimeout receiver");
+      }
+      callbacks.delete(timer as unknown as number);
+    },
+    pendingCount(): number {
+      return callbacks.size;
     },
   };
 }

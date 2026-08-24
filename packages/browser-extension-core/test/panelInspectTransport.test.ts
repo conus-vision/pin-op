@@ -6,7 +6,7 @@ import {
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   parseDomRequest,
@@ -22,6 +22,55 @@ import {
 } from "../src/stylesProtocol.js";
 
 describe("PanelInspectTransport DOM integration", () => {
+  it("binds default styles request timers to the host global", async () => {
+    const port = new FakePort();
+    const pendingTimers = new Map<number, TimerHandler>();
+    let nextTimer = 1;
+    const hostSetTimeout = function (
+      this: unknown,
+      handler: TimerHandler,
+    ): ReturnType<typeof globalThis.setTimeout> {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: setTimeout receiver");
+      }
+      const timer = nextTimer;
+      nextTimer += 1;
+      pendingTimers.set(timer, handler);
+      return timer as unknown as ReturnType<typeof globalThis.setTimeout>;
+    };
+    const hostClearTimeout = function (
+      this: unknown,
+      timer?: ReturnType<typeof globalThis.setTimeout>,
+    ): void {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: clearTimeout receiver");
+      }
+      if (timer !== undefined) {
+        pendingTimers.delete(timer as unknown as number);
+      }
+    };
+    vi.stubGlobal("setTimeout", hostSetTimeout);
+    vi.stubGlobal("clearTimeout", hostClearTimeout);
+
+    try {
+      const transport = new PanelInspectTransport(() => port);
+      const pending = transport.requestStyles(stylesRequest("host-timer"));
+      const state = promiseState(pending);
+      await flushPanelTasks();
+
+      expect(state).toEqual({ status: "pending" });
+      expect(port.sent).toHaveLength(1);
+      expect(pendingTimers.size).toBe(1);
+
+      const wire = port.sent[0] as StylesGetMatchedRequest;
+      port.emitMessage(stylesMatched(wire));
+      await expect(pending).resolves.toMatchObject({ requestId: "host-timer" });
+      expect(pendingTimers.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("rewrites styles request IDs and validates all echoed identities", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);

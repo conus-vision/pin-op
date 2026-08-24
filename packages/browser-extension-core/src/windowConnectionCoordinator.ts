@@ -221,8 +221,10 @@ export class WindowConnectionCoordinator {
     this.store = options.store;
     this.createClient =
       options.createClient ?? ((clientOptions) => new BrowserBridgeClient(clientOptions));
-    this.scheduleTimer = options.setTimeout ?? setTimeout;
-    this.cancelScheduledTimer = options.clearTimeout ?? clearTimeout;
+    this.scheduleTimer = options.setTimeout ??
+      ((callback, delay) => globalThis.setTimeout(callback, delay));
+    this.cancelScheduledTimer = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
   }
 
   public async linkWindow(

@@ -44,6 +44,14 @@ const STYLES_WIRE_REQUEST_ID_PREFIX = "stylesq-";
 const DEFAULT_STYLES_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_STYLES_REQUEST_TIMEOUT_MS = 60_000;
 
+type PanelScheduleTimeout = (
+  callback: () => void,
+  delay: number,
+) => ReturnType<typeof globalThis.setTimeout>;
+type PanelCancelTimeout = (
+  timer: ReturnType<typeof globalThis.setTimeout>,
+) => void;
+
 export interface PanelInspectTransportOptions {
   readonly stylesRequestTimeoutMs?: number;
   readonly setTimeout?: typeof globalThis.setTimeout;
@@ -83,8 +91,8 @@ export class PanelInspectTransport {
   private connection: PortConnection | undefined;
   private disposed = false;
   private readonly stylesRequestTimeoutMs: number;
-  private readonly scheduleTimeout: typeof globalThis.setTimeout;
-  private readonly cancelTimeout: typeof globalThis.clearTimeout;
+  private readonly scheduleTimeout: PanelScheduleTimeout;
+  private readonly cancelTimeout: PanelCancelTimeout;
 
   public constructor(
     private readonly createPort: () => PanelInspectPort,
@@ -96,8 +104,10 @@ export class PanelInspectTransport {
     this.stylesRequestTimeoutMs = validStylesRequestTimeout(
       options.stylesRequestTimeoutMs,
     );
-    this.scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
-    this.cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
+    this.scheduleTimeout = options.setTimeout ??
+      ((handler, timeout) => globalThis.setTimeout(handler, timeout));
+    this.cancelTimeout = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
   }
 
   public connect(): void {

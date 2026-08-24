@@ -10,6 +10,83 @@ import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("BackgroundContentRefreshCoordinator", () => {
+  it("binds default readiness timers to the host global", async () => {
+    const pendingTimers = new Map<number, TimerHandler>();
+    let nextTimer = 1;
+    const hostSetTimeout = function (
+      this: unknown,
+      handler: TimerHandler,
+    ): ReturnType<typeof globalThis.setTimeout> {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: setTimeout receiver");
+      }
+      const timer = nextTimer;
+      nextTimer += 1;
+      pendingTimers.set(timer, handler);
+      return timer as unknown as ReturnType<typeof globalThis.setTimeout>;
+    };
+    const hostClearTimeout = function (
+      this: unknown,
+      timer?: ReturnType<typeof globalThis.setTimeout>,
+    ): void {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: clearTimeout receiver");
+      }
+      if (timer !== undefined) {
+        pendingTimers.delete(timer as unknown as number);
+      }
+    };
+    vi.stubGlobal("setTimeout", hostSetTimeout);
+    vi.stubGlobal("clearTimeout", hostClearTimeout);
+
+    try {
+      const coordinator = new BackgroundContentRefreshCoordinator({
+        snapshotStorage: new SessionTopScrollSnapshotStorage(
+          new MemorySessionStorage(),
+        ),
+        executeContentScript: vi.fn(async () => undefined),
+        sendTopFrameMessage: vi.fn(async (_tabId, message: unknown) => ({
+          ...(message as object),
+          type: "pin-op.refresh.content.result",
+          accepted: true,
+          stylesheet: { attempted: 1, updated: 1, failed: 0 },
+        })),
+        reloadTab: vi.fn(),
+      });
+      authorize(coordinator, 19);
+      const pending = coordinator.dispatch(19, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: 1,
+        mode: "styles",
+      });
+      const state: {
+        status: "pending" | "fulfilled" | "rejected";
+        reason?: string;
+      } = { status: "pending" };
+      void pending.then(
+        () => { state.status = "fulfilled"; },
+        (error: unknown) => {
+          state.status = "rejected";
+          state.reason = error instanceof Error ? error.message : String(error);
+        },
+      );
+      await flushAsync();
+
+      expect(state).toEqual({ status: "pending" });
+      expect(pendingTimers.size).toBe(1);
+
+      await bind(
+        coordinator,
+        topSender(19, "https://example.test/page"),
+        "runtime-host-timer",
+      );
+      await expect(pending).resolves.toBeUndefined();
+      expect(pendingTimers.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("injects a missing top runtime and sends one exact bound command", async () => {
     const storage = new MemorySessionStorage();
     let coordinator: BackgroundContentRefreshCoordinator;

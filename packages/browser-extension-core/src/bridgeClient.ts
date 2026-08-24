@@ -196,8 +196,10 @@ export class BrowserBridgeClient {
       ...connectionSource,
       metadata: withoutBrowserRoutingMetadata(connectionSource.metadata),
     };
-    this.scheduleTimer = options.setTimeout ?? setTimeout;
-    this.cancelTimer = options.clearTimeout ?? clearTimeout;
+    this.scheduleTimer = options.setTimeout ??
+      ((callback, delay) => globalThis.setTimeout(callback, delay));
+    this.cancelTimer = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
   }
 
   public link(pin: string): void {
@@ -1068,8 +1070,10 @@ export class InspectPublisher {
     | undefined;
 
   public constructor(private readonly options: InspectPublisherOptions) {
-    this.schedule = options.setTimeout ?? setTimeout;
-    this.cancel = options.clearTimeout ?? clearTimeout;
+    this.schedule = options.setTimeout ??
+      ((callback, delay) => globalThis.setTimeout(callback, delay));
+    this.cancel = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
   }
 
   public publish(payload: InspectPayload): void {

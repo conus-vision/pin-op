@@ -21,6 +21,14 @@ import {
 const SNAPSHOT_KEY_PREFIX = "pin-op.top-scroll.";
 const DEFAULT_READY_TIMEOUT_MS = 1_500;
 
+type BackgroundScheduleTimeout = (
+  callback: () => void,
+  delay: number,
+) => ReturnType<typeof globalThis.setTimeout>;
+type BackgroundCancelTimeout = (
+  timer: ReturnType<typeof globalThis.setTimeout>,
+) => void;
+
 export interface ContentRefreshMessageSender {
   readonly url?: string;
   readonly frameId?: number;
@@ -122,8 +130,8 @@ export class BackgroundContentRefreshCoordinator {
   private readonly reloadTab: BackgroundContentRefreshCoordinatorOptions["reloadTab"];
   private readonly now: () => number;
   private readonly readyTimeoutMs: number;
-  private readonly schedule: typeof globalThis.setTimeout;
-  private readonly cancel: typeof globalThis.clearTimeout;
+  private readonly schedule: BackgroundScheduleTimeout;
+  private readonly cancel: BackgroundCancelTimeout;
   private readonly createRefreshCommandId: () => string;
   private readonly onError: BackgroundContentRefreshCoordinatorOptions["onError"];
   private readonly lifecycle = new Map<number, TabLifecycle>();
@@ -145,8 +153,10 @@ export class BackgroundContentRefreshCoordinator {
     this.reloadTab = options.reloadTab;
     this.now = options.now ?? Date.now;
     this.readyTimeoutMs = validTimeout(options.readyTimeoutMs);
-    this.schedule = options.setTimeout ?? globalThis.setTimeout;
-    this.cancel = options.clearTimeout ?? globalThis.clearTimeout;
+    this.schedule = options.setTimeout ??
+      ((handler, timeout) => globalThis.setTimeout(handler, timeout));
+    this.cancel = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
     this.createRefreshCommandId = options.createRefreshCommandId ??
       defaultRefreshCommandId;
     this.onError = options.onError;

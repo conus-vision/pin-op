@@ -50,6 +50,51 @@ const DEVTOOLS_URL = "moz-extension://pin-op/dist/devtools.html";
 const PANEL_URL = "moz-extension://pin-op/dist/panel.html";
 
 describe("WindowConnectionCoordinator", () => {
+  it("binds default reconnect timers to the host global", async () => {
+    const hostTimers = receiverSensitiveHostTimers();
+    vi.stubGlobal("setTimeout", hostTimers.setTimeout);
+    vi.stubGlobal("clearTimeout", hostTimers.clearTimeout);
+    let registration: { dispose(): void } | undefined;
+
+    try {
+      const createdClients: FakeWindowClient[] = [];
+      const coordinator = new WindowConnectionCoordinator({
+        store: new BrowserWindowLinkStore(new MemorySessionStorage()),
+        createClient: (options) => {
+          const client = new FakeWindowClient(options);
+          createdClients.push(client);
+          return client;
+        },
+      });
+      registration = coordinator.registerPanel({
+        windowId: 10,
+        tabId: 101,
+        sourceId: "panel-host-timer",
+      });
+      await coordinator.linkWindow(
+        10,
+        "4873507",
+        browserSource("window-host-timer"),
+      );
+      await flushMicrotasks();
+      const client = createdClients[0];
+      if (!client) throw new Error("Expected a window client");
+      client.emitCredentials(credentialsFor(windowLink()));
+      client.emitState("connected");
+      await flushMicrotasks();
+
+      expect(() => client.emitState("disconnected")).not.toThrow();
+      expect(hostTimers.pendingCount()).toBe(1);
+
+      registration.dispose();
+      registration = undefined;
+      expect(hostTimers.pendingCount()).toBe(0);
+    } finally {
+      registration?.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("opens one client for all panels in one browser window", async () => {
     const storage = new MemorySessionStorage({
       "pin-op.windowLink.10": windowLink({
@@ -2505,6 +2550,37 @@ function manualTimers() {
       }
       callbacks.delete(entry[0]);
       entry[1]();
+    },
+    pendingCount(): number {
+      return callbacks.size;
+    },
+  };
+}
+
+function receiverSensitiveHostTimers() {
+  let nextId = 0;
+  const callbacks = new Map<number, () => void>();
+  return {
+    setTimeout(
+      this: unknown,
+      callback: () => void,
+      _delay: number,
+    ): ReturnType<typeof setTimeout> {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: setTimeout receiver");
+      }
+      const id = ++nextId;
+      callbacks.set(id, callback);
+      return id as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout(
+      this: unknown,
+      timer: ReturnType<typeof setTimeout>,
+    ): void {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation: clearTimeout receiver");
+      }
+      callbacks.delete(timer as unknown as number);
     },
     pendingCount(): number {
       return callbacks.size;
