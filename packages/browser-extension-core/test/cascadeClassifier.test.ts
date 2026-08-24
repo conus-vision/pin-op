@@ -140,6 +140,59 @@ describe("classifyCascade", () => {
       )).toEqual({ state: "unknown", reason: "unsupported-shorthand" });
     },
   );
+
+  it.each([
+    ["column-count", "columns"],
+    ["column-width", "columns"],
+    ["grid-row-start", "grid-area"],
+    ["grid-column-end", "grid-area"],
+  ] as const)(
+    "fails closed for %s when %s expansion is unsupported",
+    (longhand, shorthand) => {
+      const importantLonghand = candidate({
+        property: longhand,
+        important: true,
+        sourceOrder: 1,
+      });
+      const laterShorthand = candidate({
+        property: shorthand,
+        sourceOrder: 2,
+      });
+      expect(classifyCascade(
+        importantLonghand,
+        [importantLonghand, laterShorthand],
+      )).toEqual({ state: "unknown", reason: "unsupported-shorthand" });
+
+      const earlierImportantShorthand = candidate({
+        property: shorthand,
+        important: true,
+        sourceOrder: 1,
+      });
+      const laterLonghand = candidate({ property: longhand, sourceOrder: 3 });
+      expect(classifyCascade(
+        laterLonghand,
+        [earlierImportantShorthand, laterLonghand],
+      )).toEqual({ state: "unknown", reason: "unsupported-shorthand" });
+    },
+  );
+
+  it("retains exact same-property proof when no active shorthand is present", () => {
+    const earlier = candidate({ property: "color", sourceOrder: 1 });
+    const later = candidate({ property: "color", sourceOrder: 2 });
+    expect(classifyCascade(earlier, [earlier, later]).state)
+      .toBe("overridden-known-author");
+    expect(classifyCascade(later, [earlier, later]).state)
+      .toBe("winning-known-author");
+  });
+
+  it("fails closed instead of relying on a partial shorthand relation table", () => {
+    const color = candidate({ property: "color" });
+    const unsupportedShorthand = candidate({ property: "margin" });
+    expect(classifyCascade(color, [color, unsupportedShorthand])).toEqual({
+      state: "unknown",
+      reason: "unsupported-shorthand",
+    });
+  });
 });
 
 function candidate(
