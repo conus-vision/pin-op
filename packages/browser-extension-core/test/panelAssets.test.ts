@@ -53,6 +53,52 @@ describe("DevTools panel assets", () => {
     expect(inspectorHtml).not.toContain("location.search");
   });
 
+  it("places compact Inspector onboarding in its own non-overlapping grid row", () => {
+    expect(inspector("main.panel-layout.inspector-panel-layout")).toHaveLength(1);
+    expect(inspector("#link-onboarding + #inspector-workspace")).toHaveLength(1);
+
+    const layout = ruleDeclarations(
+      /\.inspector-panel-layout\s*\{([^}]*)\}/s,
+      "Inspector panel layout",
+    );
+    expect(layout).toMatch(
+      /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"onboarding"\s*"workspace"\s*"footer";/s,
+    );
+    expect(layout).toMatch(
+      /grid-template-rows:\s*auto auto auto minmax\(0,\s*1fr\) auto;/,
+    );
+
+    const onboarding = ruleDeclarations(
+      /\.inspector-panel-layout\s+\.link-onboarding\s*\{([^}]*)\}/s,
+      "Inspector onboarding",
+    );
+    expect(onboarding).toMatch(/grid-area:\s*onboarding;/);
+    expect(onboarding).toMatch(/padding:\s*6px 10px;/);
+    expect(onboarding).not.toMatch(/position:\s*(?:absolute|fixed)/);
+    expect(onboarding).not.toMatch(/z-index\s*:/);
+    expect(css).toMatch(
+      /\.inspector-panel-layout\s+\.link-onboarding-content\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0,\s*1fr\);/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*420px\)\s*\{[\s\S]*?\.inspector-panel-layout\s+\.link-onboarding-content\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
+    );
+    expect(css).toMatch(
+      /\.panel-workspace\s*\{[^}]*grid-area:\s*workspace;[^}]*min-height:\s*0;/s,
+    );
+    expect($("main.panel-layout.inspector-panel-layout")).toHaveLength(0);
+  });
+
+  it("explains that browser inspection works before IDE linking", () => {
+    const onboardingText = inspector("#link-onboarding").text()
+      .replace(/\s+/g, " ")
+      .trim();
+
+    expect(onboardingText).toContain("Browser inspection is ready");
+    expect(onboardingText).toContain("Select an element now");
+    expect(onboardingText).toContain("Link VS Code to enable IDE actions");
+    expect(onboardingText).not.toContain("After linking, select an element");
+  });
+
   it("ships one compact toolbar with settings and unchanged connection controls", () => {
     expect(html.match(/class="panel-toolbar"/g)).toHaveLength(1);
     expect(openingTag("inspect-mode")).toMatch(/aria-label="Select an element"/);

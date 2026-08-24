@@ -90,6 +90,16 @@ input:disabled { cursor: default; opacity: 0.55; }
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
+.inspector-panel-layout {
+  grid-template-areas:
+    "toolbar"
+    "protocol"
+    "onboarding"
+    "workspace"
+    "footer";
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
 .panel-toolbar-scroll {
   grid-area: toolbar;
   min-width: 0;
@@ -211,6 +221,45 @@ input[type="text"] {
 .link-onboarding p {
   margin: 0 0 8px;
   line-height: 1.5;
+}
+
+.inspector-panel-layout .link-onboarding {
+  grid-area: onboarding;
+  min-height: 0;
+  padding: 6px 10px;
+  overflow: visible;
+  place-items: stretch;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.inspector-panel-layout .link-onboarding-content {
+  display: grid;
+  width: 100%;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+
+.inspector-panel-layout .link-onboarding h1 {
+  margin: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.inspector-panel-layout .link-onboarding p {
+  margin: 0;
+  line-height: 1.35;
+}
+
+@media (max-width: 420px) {
+  .inspector-panel-layout .link-onboarding-content {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .inspector-panel-layout .link-onboarding h1 {
+    white-space: normal;
+  }
 }
 
 .panel-workspace {
