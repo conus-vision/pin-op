@@ -62,6 +62,112 @@ export interface TreeDataSource {
   hover(nodeRef?: string): void;
 }
 
+export type DeclarationState =
+  | "winning-known-author"
+  | "overridden-known-author"
+  | "inactive"
+  | "unknown";
+
+export interface MatchedDeclarationSnapshot {
+  readonly declarationRef: string;
+  readonly name: string;
+  readonly value: string;
+  readonly important: boolean;
+  readonly state: DeclarationState;
+  readonly stateReason?: string;
+}
+
+export type RuleContextKind =
+  | "media"
+  | "supports"
+  | "layer"
+  | "scope"
+  | "container"
+  | "starting-style"
+  | "unknown";
+
+export interface RuleContextSnapshot {
+  readonly kind: RuleContextKind;
+  readonly text: string;
+}
+
+/**
+ * Display-only public-web source provenance. The label is a URL basename;
+ * generated positions are 1-based when present.
+ */
+export interface GeneratedRuleSourceSnapshot {
+  readonly label: string;
+  readonly lineNumber?: number;
+  readonly columnNumber?: number;
+}
+
+export interface MatchedRuleSnapshot {
+  readonly ruleRef: string;
+  readonly selectorText: string;
+  readonly matchingSelectorIndices: readonly number[];
+  readonly declarations: readonly MatchedDeclarationSnapshot[];
+  readonly contexts: readonly RuleContextSnapshot[];
+  readonly generatedSource?: GeneratedRuleSourceSnapshot;
+}
+
+export interface InheritedRulesSnapshot {
+  readonly nodeRef: string;
+  readonly inlineStyle?: MatchedRuleSnapshot;
+  readonly matchedRules: readonly MatchedRuleSnapshot[];
+}
+
+export type RulesDiagnosticSeverity = "info" | "warning" | "error";
+
+export interface RulesDiagnosticSnapshot {
+  readonly code: string;
+  readonly severity: RulesDiagnosticSeverity;
+  readonly message: string;
+}
+
+export interface MatchedStylesSnapshot {
+  readonly documentEpoch: number;
+  readonly selectionRevision: number;
+  readonly stylesRevision: number;
+  readonly stylesheetRevision: number;
+  readonly nodeRef: string;
+  readonly inlineStyle?: MatchedRuleSnapshot;
+  readonly matchedRules: readonly MatchedRuleSnapshot[];
+  readonly inherited: readonly InheritedRulesSnapshot[];
+  readonly inaccessibleStylesheetCount: number;
+  readonly omittedRuleCount: number;
+  readonly diagnostics: readonly RulesDiagnosticSnapshot[];
+}
+
+export type RulesPresentationState =
+  | "empty"
+  | "loading"
+  | "ready"
+  | "partial"
+  | "error";
+
+export type RulesPresentationSnapshot =
+  | { readonly state: "empty" }
+  | { readonly state: "loading" }
+  | {
+    readonly state: "ready";
+    readonly matchedStyles: MatchedStylesSnapshot;
+  }
+  | {
+    readonly state: "partial";
+    readonly matchedStyles: MatchedStylesSnapshot;
+  }
+  | {
+    readonly state: "error";
+    readonly message: string;
+    readonly diagnostics: readonly RulesDiagnosticSnapshot[];
+  };
+
+export interface RulesDataSource {
+  snapshot(): RulesPresentationSnapshot;
+  subscribe(listener: () => void): () => void;
+  filter(query: string): void;
+}
+
 export interface SourceLinkDelegate {
   openRuleOrigin(ruleRef: string): void;
 }

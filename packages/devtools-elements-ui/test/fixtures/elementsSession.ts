@@ -1,5 +1,6 @@
 import type {
   InspectorNodeSnapshot,
+  RulesPresentationSnapshot,
   TreePresentationSnapshot,
   TreeRowSnapshot,
 } from "../../src/contracts.js";
@@ -163,13 +164,104 @@ const tree: TreePresentationSnapshot = {
   ],
 };
 
+const rules: RulesPresentationSnapshot = deepFreeze({
+  state: "ready",
+  matchedStyles: {
+    documentEpoch: 1,
+    selectionRevision: 7,
+    stylesRevision: 11,
+    stylesheetRevision: 4,
+    nodeRef: "body",
+    inlineStyle: {
+      ruleRef: "rule:inline:body",
+      selectorText: "element.style",
+      matchingSelectorIndices: [],
+      declarations: [
+        {
+          declarationRef: "declaration:inline:display",
+          name: "display",
+          value: "block",
+          important: false,
+          state: "winning-known-author",
+        },
+      ],
+      contexts: [],
+    },
+    matchedRules: [
+      {
+        ruleRef: "rule:app:17",
+        selectorText: "body.fixture, .fixture",
+        matchingSelectorIndices: [0, 1],
+        declarations: [
+          {
+            declarationRef: "declaration:app:color",
+            name: "color",
+            value: "rebeccapurple",
+            important: false,
+            state: "winning-known-author",
+          },
+          {
+            declarationRef: "declaration:app:margin",
+            name: "margin",
+            value: "0",
+            important: false,
+            state: "overridden-known-author",
+            stateReason: "Overridden by a later declaration",
+          },
+        ],
+        contexts: [
+          {
+            kind: "media",
+            text: "(width >= 40rem)",
+          },
+        ],
+        generatedSource: {
+          label: "app.css",
+          lineNumber: 17,
+          columnNumber: 5,
+        },
+      },
+    ],
+    inherited: [
+      {
+        nodeRef: "html",
+        matchedRules: [
+          {
+            ruleRef: "rule:base:2",
+            selectorText: "html",
+            matchingSelectorIndices: [0],
+            declarations: [
+              {
+                declarationRef: "declaration:base:font-family",
+                name: "font-family",
+                value: "system-ui",
+                important: false,
+                state: "winning-known-author",
+              },
+            ],
+            contexts: [],
+            generatedSource: {
+              label: "base.css",
+              lineNumber: 2,
+              columnNumber: 1,
+            },
+          },
+        ],
+      },
+    ],
+    inaccessibleStylesheetCount: 0,
+    omittedRuleCount: 0,
+    diagnostics: [],
+  },
+});
+
 export const elementsSession: {
   readonly tree: TreePresentationSnapshot;
-  readonly rules: readonly never[];
-} = {
+  readonly rules: RulesPresentationSnapshot;
+} = Object.freeze({
   tree,
-  rules: [],
-};
+  rules,
+});
 
 export function withTextValue(value: string): TreePresentationSnapshot {
   return {
@@ -195,4 +287,12 @@ function nodeRow(
     node: { ...node, nodeRef },
     ...overrides,
   };
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
 }

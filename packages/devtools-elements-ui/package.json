@@ -13,9 +13,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run && pnpm run build && node test/public-export.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "test": "vitest run && pnpm run typecheck && pnpm run build && node test/public-export.mjs",
+    "test:types": "tsc --noEmit -p test/types.tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm run test:types",
+    "lint": "pnpm run typecheck"
   },
   "devDependencies": {
     "postcss": "8.5.16"

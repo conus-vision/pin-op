@@ -1,5 +1,9 @@
 import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
-import type { TreeDataSource } from "./contracts.js";
+import type {
+  RulesDataSource,
+  RulesPresentationSnapshot,
+  TreeDataSource,
+} from "./contracts.js";
 
 const nextAriaIdSequence = new WeakMap<Document, number>();
 
@@ -9,12 +13,16 @@ export class ElementsInspectorView {
   public readonly rulesRoot: HTMLElement;
   public readonly sidebarExtensionMount: HTMLElement;
   private readonly treeOutline: ElementsTreeOutline;
+  private unsubscribeRules: (() => void) | undefined;
+  private rulesRenderRevision = 0;
   private disposed = false;
+  private readonly onRulesChange = (): void => this.renderRules();
 
   public constructor(
     private readonly document: Document,
     mount: HTMLElement,
     treeDataSource: TreeDataSource,
+    private readonly rulesDataSource?: RulesDataSource,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -95,9 +103,15 @@ export class ElementsInspectorView {
       treeDataSource,
     );
     try {
+      this.unsubscribeRules = rulesDataSource?.subscribe(this.onRulesChange);
+      this.renderRules();
       mount.append(this.element);
     } catch (error) {
-      this.treeOutline.dispose();
+      try {
+        this.dispose();
+      } catch {
+        // Preserve the constructor failure that prevented the view from mounting.
+      }
       throw error;
     }
   }
@@ -105,11 +119,61 @@ export class ElementsInspectorView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    let disposeError: unknown;
+    const unsubscribeRules = this.unsubscribeRules;
+    this.unsubscribeRules = undefined;
+    try {
+      unsubscribeRules?.();
+    } catch (error) {
+      disposeError = error;
+    }
     try {
       this.treeOutline.dispose();
+    } catch (error) {
+      disposeError ??= error;
     } finally {
       this.element.remove();
     }
+    if (disposeError !== undefined) throw disposeError;
+  }
+
+  private renderRules(): void {
+    if (this.disposed) return;
+    const revision = ++this.rulesRenderRevision;
+    const snapshot = this.rulesDataSource?.snapshot() ?? EMPTY_RULES_SNAPSHOT;
+    if (this.disposed || revision !== this.rulesRenderRevision) return;
+
+    this.rulesRoot.setAttribute("data-state", snapshot.state);
+    this.rulesRoot.setAttribute(
+      "aria-busy",
+      snapshot.state === "loading" ? "true" : "false",
+    );
+    this.rulesRoot.replaceChildren();
+
+    if (snapshot.state === "loading") {
+      this.rulesRoot.append(this.createRulesMessage("Loading styles", "status"));
+    } else if (snapshot.state === "partial") {
+      this.rulesRoot.append(this.createRulesMessage(
+        "Some styles could not be inspected",
+        "status",
+      ));
+    } else if (snapshot.state === "error") {
+      this.rulesRoot.append(this.createRulesMessage(snapshot.message, "alert"));
+    }
+  }
+
+  private createRulesMessage(
+    text: string,
+    role: "alert" | "status",
+  ): HTMLElement {
+    return this.createElement("p", {
+      className: "pin-op-elements-inspector__rules-message",
+      text,
+      attributes: {
+        "data-part": "rules-message",
+        role,
+      },
+    });
   }
 
   private createElement(
@@ -129,6 +193,10 @@ export class ElementsInspectorView {
     return element;
   }
 }
+
+const EMPTY_RULES_SNAPSHOT: RulesPresentationSnapshot = Object.freeze({
+  state: "empty",
+});
 
 interface InspectorAriaIds {
   readonly domTitle: string;
