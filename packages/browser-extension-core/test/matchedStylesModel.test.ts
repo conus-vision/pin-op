@@ -348,6 +348,52 @@ describe("MatchedStylesModel", () => {
     });
   });
 
+  it("requeries the exact current selection on manual refresh and is inert without one", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    let stylesRevision = 8;
+    let stylesheetRevision = 3;
+    const model = new MatchedStylesModel({
+      async request(request) {
+        requests.push(request);
+        return matchedResponse({
+          request,
+          stylesRevision,
+          stylesheetRevision,
+        });
+      },
+    });
+
+    await model.refresh();
+    expect(requests).toEqual([]);
+
+    await model.select(selectionIdentity());
+    stylesRevision = 9;
+    await model.refresh();
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual({
+      type: "styles.getMatched",
+      requestId: "styles-model-2",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    });
+    expect(model.snapshot()).toMatchObject({
+      state: "ready",
+      key: {
+        documentEpoch: 4,
+        nodeRef: "node-1",
+        selectionRevision: 7,
+        stylesRevision: 9,
+        stylesheetRevision: 3,
+      },
+    });
+
+    model.reset("advanced-selection");
+    await model.refresh();
+    expect(requests).toHaveLength(2);
+  });
+
   it("resets and cancels on recovery, inspect-port invalidation, navigation, lease replacement, compatibility failure, and disposal", async () => {
     for (const reason of [
       "recovery",

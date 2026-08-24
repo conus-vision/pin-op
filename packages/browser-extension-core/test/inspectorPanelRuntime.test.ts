@@ -146,6 +146,93 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("manually refreshes the current browser-local Rules query and exposes its revision probe", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    expect(harness.element("refresh-styles").disabled).toBe(true);
+
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    expect(harness.element("refresh-styles").disabled).toBe(false);
+
+    const initialRequest = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const initialResponse = stylesMatched(initialRequest, 9, 2);
+    port.emitMessage({
+      ...initialResponse,
+      styles: {
+        ...initialResponse.styles,
+        rules: [matchedRule("rule-stable", ".selected-card")],
+      },
+    });
+    await flushAsync();
+
+    const rulesRoot = harness.document.querySelector('[data-pane="rules"]');
+    expect(rulesRoot).not.toBeNull();
+    if (!rulesRoot) throw new Error("Missing Rules root");
+    expect(rulesRoot.getAttribute("data-document-epoch")).toBe("6");
+    expect(rulesRoot.getAttribute("data-selection-revision")).toBe("4");
+    expect(rulesRoot.getAttribute("data-styles-revision")).toBe("9");
+    expect(rulesRoot.getAttribute("data-stylesheet-revision")).toBe("2");
+    expect(rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule-stable");
+
+    harness.element("refresh-styles").dispatch("click");
+    await flushAsync();
+    const refreshRequest = lastMessage(port.sent, "styles.getMatched") as typeof initialRequest;
+    expect(refreshRequest).toMatchObject({
+      documentEpoch: 6,
+      nodeRef: "selected-card",
+      selectionRevision: 4,
+    });
+    expect(refreshRequest.requestId).not.toBe(initialRequest.requestId);
+    const refreshResponse = stylesMatched(refreshRequest, 10, 2);
+    port.emitMessage({
+      ...refreshResponse,
+      styles: {
+        ...refreshResponse.styles,
+        rules: [matchedRule("rule-stable", ".selected-card")],
+      },
+    });
+    await flushAsync();
+
+    expect(rulesRoot.getAttribute("data-styles-revision")).toBe("10");
+    expect(rulesRoot.getAttribute("data-stylesheet-revision")).toBe("2");
+    expect(rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule-stable");
+
+    port.emitMessage({
+      type: "dom.selectionCleared",
+      documentEpoch: 6,
+      selectionRevision: 5,
+      nodeRef: "selected-card",
+    });
+    await flushAsync();
+    expect(harness.element("refresh-styles").disabled).toBe(true);
+    const requestCount = port.sent.filter((message) => (
+      isType(message, "styles.getMatched")
+    )).length;
+    harness.element("refresh-styles").dispatch("click");
+    await flushAsync();
+    expect(port.sent.filter((message) => isType(message, "styles.getMatched")))
+      .toHaveLength(requestCount);
+
+    runtime.dispose();
+  });
+
   it("renders browser-local partial Rules before any IDE link state", async () => {
     const harness = createHarness();
     const runtime = harness.start();
@@ -1464,6 +1551,7 @@ const IDS = [
   "linked-code",
   "disconnect-button",
   "inspect-mode",
+  "refresh-styles",
   "auto-refresh-enabled",
   "ide-highlight-enabled",
   "protocol-mismatch",

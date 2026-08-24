@@ -13,6 +13,7 @@ import type {
   PanelSettingsController,
   PanelSettingsViewModel,
 } from "./panelSettingsController.js";
+import type { MatchedStylesModel } from "./matchedStylesModel.js";
 
 export type InspectorPanelDocument = PanelDocument & Document;
 
@@ -26,6 +27,7 @@ export class InspectorPanelView implements PanelView {
   private readonly linkedCode: InspectorPanelElement;
   private readonly disconnectButton: InspectorPanelElement;
   private readonly inspectToggle: InspectorPanelElement;
+  private readonly refreshStylesButton: InspectorPanelElement;
   private readonly autoRefreshToggle: InspectorPanelElement;
   private readonly ideHighlightToggle: InspectorPanelElement;
   private readonly connectionStatus: InspectorPanelElement;
@@ -39,6 +41,7 @@ export class InspectorPanelView implements PanelView {
   private readonly operationalFooter: InspectorPanelElement;
   private readonly panelError: InspectorPanelElement;
   private elementsView: ElementsInspectorView | undefined;
+  private removeStylesRefreshBinding: (() => void) | undefined;
   private disposed = false;
 
   public constructor(
@@ -54,6 +57,8 @@ export class InspectorPanelView implements PanelView {
     this.linkedCode = required(document, "linked-code");
     this.disconnectButton = required(document, "disconnect-button");
     this.inspectToggle = required(document, "inspect-mode");
+    this.refreshStylesButton = required(document, "refresh-styles");
+    this.refreshStylesButton.disabled = true;
     this.autoRefreshToggle = required(document, "auto-refresh-enabled");
     this.ideHighlightToggle = required(document, "ide-highlight-enabled");
     this.connectionStatus = required(document, "connection-status");
@@ -185,6 +190,46 @@ export class InspectorPanelView implements PanelView {
     }
   }
 
+  public bindStylesRefresh(
+    model: Pick<MatchedStylesModel, "refresh" | "snapshot" | "subscribe">,
+  ): () => void {
+    if (this.disposed) throw new Error("Inspector panel view is disposed");
+    if (this.removeStylesRefreshBinding) {
+      throw new Error("Styles refresh is already bound");
+    }
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    const refresh = (): void => {
+      if (!disposed) this.run(() => model.refresh());
+    };
+    const render = (): void => {
+      if (!disposed) {
+        this.refreshStylesButton.disabled = model.snapshot().key === undefined;
+      }
+    };
+    const remove = (): void => {
+      if (disposed) return;
+      disposed = true;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      this.refreshStylesButton.removeEventListener("click", refresh);
+      this.refreshStylesButton.disabled = true;
+      if (this.removeStylesRefreshBinding === remove) {
+        this.removeStylesRefreshBinding = undefined;
+      }
+    };
+    try {
+      this.refreshStylesButton.addEventListener("click", refresh);
+      render();
+      unsubscribe = model.subscribe(render);
+      this.removeStylesRefreshBinding = remove;
+      return remove;
+    } catch (error) {
+      remove();
+      throw error;
+    }
+  }
+
   public readLinkCode(): string {
     return this.linkCode.value;
   }
@@ -234,6 +279,7 @@ export class InspectorPanelView implements PanelView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.removeStylesRefreshBinding?.();
     const view = this.elementsView;
     this.elementsView = undefined;
     view?.dispose();

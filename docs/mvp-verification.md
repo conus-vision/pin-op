@@ -79,6 +79,30 @@ variable if the same checkout will be used for ordinary packaging.
 Record the visible selector, declaration state, origin label, diagnostic, and
 revision probe for every row in each browser:
 
+The revision probe is intentionally non-visual. In the Pin-op panel document
+(using the browser's extension/page debugger or the native-panel automation
+target), wait for the Rules root to become `ready` or `partial`, then evaluate:
+
+```js
+const rules = document.querySelector(
+  '[data-pane="rules"][data-state="ready"], ' +
+  '[data-pane="rules"][data-state="partial"]',
+);
+({
+  documentEpoch: rules?.dataset.documentEpoch,
+  selectionRevision: rules?.dataset.selectionRevision,
+  stylesRevision: rules?.dataset.stylesRevision,
+  stylesheetRevision: rules?.dataset.stylesheetRevision,
+  ruleRef: rules?.dataset.probeRuleRef,
+});
+```
+
+These values come from the same immutable matched-style snapshot that renders
+Rules. The probe attributes are removed while Rules is empty, loading, or in an
+error state, so never record a stale value. `data-probe-rule-ref` selects the
+first current matched rule (then inline or inherited fallback); individual rule
+sections continue to expose their exact `data-rule-ref` values.
+
 | Rules case | Chrome | Firefox | Required observation |
 | --- | --- | --- | --- |
 | Document adopted sheet | Pending | Pending | `#document-adopted-target` includes the constructed document rule. |
@@ -108,9 +132,14 @@ attribute:
 
 Repeat both matrices with the fixture tab backgrounded long enough for browser
 timer throttling. Observation may be delayed in that state. Record the delay,
-then use Pin-op's manual Refresh and verify it deterministically recomputes the
-current selection. A delayed background observation is not a failure if manual
-Refresh produces the correct result; an uncorrected manual Refresh is a failure.
+then click the Pin-op toolbar button labelled **Refresh styles**
+(`#refresh-styles`). The button is browser-local, needs no IDE connection, and
+is disabled when there is no current selection. It requeries the exact current
+selection through the normal bounded stylesheet-fingerprint and applicability
+path. Wait for Rules to return to `ready` or `partial`, rerun the probe above,
+and verify the expected revision pair and matching rule. A delayed background
+observation is not a failure if **Refresh styles** produces the correct result;
+an uncorrected manual refresh is a failure.
 
 ## Installed Product Verification
 

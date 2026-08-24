@@ -29,6 +29,7 @@ describe("DevTools panel assets", () => {
       "link-button",
       "disconnect-button",
       "inspect-mode",
+      "refresh-styles",
       "auto-refresh-enabled",
       "ide-highlight-enabled",
       "protocol-mismatch",
@@ -50,6 +51,9 @@ describe("DevTools panel assets", () => {
     expect(inspector('link[href="./panel.css"]')).toHaveLength(1);
     expect(inspector('link[href="./devtools-elements.css"]')).toHaveLength(1);
     expect(inspector('script[src="./inspectorPanel.js"]')).toHaveLength(1);
+    expect(inspector("#refresh-styles").attr("aria-label")).toBe("Refresh styles");
+    expect(inspector("#refresh-styles").attr("title")).toBe("Refresh styles");
+    expect(inspector("#refresh-styles").is(":disabled")).toBe(true);
     expect(inspectorHtml).not.toContain("location.search");
   });
 

@@ -128,6 +128,7 @@ const INSPECTOR_IDS = [
   "linked-code",
   "disconnect-button",
   "inspect-mode",
+  "refresh-styles",
   "auto-refresh-enabled",
   "ide-highlight-enabled",
   "protocol-mismatch",

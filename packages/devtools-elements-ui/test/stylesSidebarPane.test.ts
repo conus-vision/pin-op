@@ -150,6 +150,43 @@ describe("Chromium-derived read-only Rules renderer", () => {
     }
   });
 
+  it("exposes current revision authority and a stable Rules probe without visible noise", () => {
+    const initialStyles = richMatchedStyles();
+    const harness = createHarness(Object.freeze({
+      state: "ready",
+      matchedStyles: initialStyles,
+    }));
+
+    expect(harness.rulesRoot.getAttribute("data-document-epoch")).toBe("2");
+    expect(harness.rulesRoot.getAttribute("data-selection-revision")).toBe("5");
+    expect(harness.rulesRoot.getAttribute("data-styles-revision")).toBe("8");
+    expect(harness.rulesRoot.getAttribute("data-stylesheet-revision")).toBe("3");
+    expect(harness.rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule:card");
+
+    harness.rules.publish(Object.freeze({
+      state: "ready",
+      matchedStyles: deepFreeze({
+        ...initialStyles,
+        stylesRevision: 9,
+      }),
+    }));
+
+    expect(harness.rulesRoot.getAttribute("data-styles-revision")).toBe("9");
+    expect(harness.rulesRoot.getAttribute("data-stylesheet-revision")).toBe("3");
+    expect(harness.rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule:card");
+
+    harness.rules.publish(Object.freeze({ state: "loading" }));
+    for (const attribute of [
+      "data-document-epoch",
+      "data-selection-revision",
+      "data-styles-revision",
+      "data-stylesheet-revision",
+      "data-probe-rule-ref",
+    ]) {
+      expect(harness.rulesRoot.getAttribute(attribute)).toBeNull();
+    }
+  });
+
   it("filters locally and keeps Chromium-style keyboard focus among visible sections", () => {
     const harness = createHarness();
     const sectionsRoot = required(
@@ -264,6 +301,11 @@ class FakeRulesDataSource implements RulesDataSource {
 
   public filter(query: string): void {
     this.filterCalls.push(query);
+  }
+
+  public publish(snapshot: RulesPresentationSnapshot): void {
+    this.current = snapshot;
+    for (const listener of [...this.listeners]) listener();
   }
 }
 

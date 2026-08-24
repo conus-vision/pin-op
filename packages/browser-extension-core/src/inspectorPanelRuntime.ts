@@ -102,6 +102,7 @@ function createInspectorPresentation(
       let removeSettingsBindings: (() => void) | undefined;
       try {
         view.mountTree(adapter).bindRulesDataSource(rulesAdapter);
+        view.bindStylesRefresh(matchedStylesModel);
         removeSettingsBindings = view.bindSettings(
           context.settingsController,
         );

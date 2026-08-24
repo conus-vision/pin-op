@@ -126,6 +126,12 @@ export class MatchedStylesModel {
     await this.load(key);
   }
 
+  /** Requeries the current selection through the existing matched-style path. */
+  public async refresh(): Promise<void> {
+    if (this.disposed || !this.selection) return;
+    await this.load(this.selection);
+  }
+
   public invalidate(value: unknown): void {
     if (this.disposed) return;
     let event: StylesInvalidatedEvent;

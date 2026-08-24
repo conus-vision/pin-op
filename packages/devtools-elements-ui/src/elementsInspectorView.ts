@@ -202,6 +202,7 @@ export class ElementsInspectorView {
       "aria-busy",
       snapshot.state === "loading" ? "true" : "false",
     );
+    this.renderRulesProbe(snapshot);
     this.rulesRoot.replaceChildren();
 
     if (snapshot.state === "loading") {
@@ -217,6 +218,32 @@ export class ElementsInspectorView {
     } else if (snapshot.state === "error") {
       this.rulesRoot.append(this.createRulesMessage(snapshot.message, "alert"));
     }
+  }
+
+  private renderRulesProbe(snapshot: RulesPresentationSnapshot): void {
+    for (const attribute of RULES_PROBE_ATTRIBUTES) {
+      this.rulesRoot.removeAttribute(attribute);
+    }
+    if (snapshot.state !== "ready" && snapshot.state !== "partial") return;
+    const styles = snapshot.matchedStyles;
+    this.rulesRoot.setAttribute(
+      "data-document-epoch",
+      String(styles.documentEpoch),
+    );
+    this.rulesRoot.setAttribute(
+      "data-selection-revision",
+      String(styles.selectionRevision),
+    );
+    this.rulesRoot.setAttribute(
+      "data-styles-revision",
+      String(styles.stylesRevision),
+    );
+    this.rulesRoot.setAttribute(
+      "data-stylesheet-revision",
+      String(styles.stylesheetRevision),
+    );
+    const ruleRef = primaryRuleRef(styles);
+    if (ruleRef) this.rulesRoot.setAttribute("data-probe-rule-ref", ruleRef);
   }
 
   private renderMatchedStyles(
@@ -266,6 +293,30 @@ export class ElementsInspectorView {
 const EMPTY_RULES_SNAPSHOT: RulesPresentationSnapshot = Object.freeze({
   state: "empty",
 });
+
+const RULES_PROBE_ATTRIBUTES = Object.freeze([
+  "data-document-epoch",
+  "data-selection-revision",
+  "data-styles-revision",
+  "data-stylesheet-revision",
+  "data-probe-rule-ref",
+]);
+
+function primaryRuleRef(
+  styles: Extract<
+    RulesPresentationSnapshot,
+    { readonly state: "ready" | "partial" }
+  >["matchedStyles"],
+): string | undefined {
+  const matched = styles.matchedRules[0]?.ruleRef;
+  if (matched) return matched;
+  if (styles.inlineStyle) return styles.inlineStyle.ruleRef;
+  for (const inherited of styles.inherited) {
+    if (inherited.matchedRules[0]) return inherited.matchedRules[0].ruleRef;
+    if (inherited.inlineStyle) return inherited.inlineStyle.ruleRef;
+  }
+  return undefined;
+}
 
 interface InspectorAriaIds {
   readonly domTitle: string;
