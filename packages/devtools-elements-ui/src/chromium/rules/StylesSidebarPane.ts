@@ -53,6 +53,8 @@ import {
   normalizedFilter,
 } from "./StylePropertyUtils.js";
 
+const nextInheritedHeadingId = new WeakMap<Document, number>();
+
 export class StylesSidebarPane {
   public readonly element: HTMLElement;
   private readonly filterInput: HTMLInputElement;
@@ -96,9 +98,7 @@ export class StylesSidebarPane {
     this.sectionsRoot = createRulesElement(document, "div", {
       className: "styles-sections",
       attributes: {
-        "aria-label": "Style rules",
         "data-part": "rules-sections",
-        role: "list",
       },
     });
     this.diagnosticsRoot = createRulesElement(document, "div", {
@@ -118,33 +118,41 @@ export class StylesSidebarPane {
     const sections: StylePropertiesSection[] = [];
     const children: HTMLElement[] = [];
     const inheritedGroups: RenderedInheritedGroup[] = [];
+    const directRuleChildren: HTMLElement[] = [];
     if (snapshot.inlineStyle) {
       this.appendSection(
         sections,
-        children,
+        directRuleChildren,
         snapshot.inlineStyle,
         "inline",
       );
     }
     for (const rule of snapshot.matchedRules) {
-      this.appendSection(sections, children, rule, "matched");
+      this.appendSection(sections, directRuleChildren, rule, "matched");
+    }
+    if (directRuleChildren.length > 0) {
+      const directRulesList = this.createRuleList("Matched style rules", "matched");
+      directRulesList.append(...directRuleChildren);
+      children.push(directRulesList);
     }
     for (const inherited of snapshot.inherited) {
+      const headingId = allocateInheritedHeadingId(this.document);
       const groupHeading = createRulesElement(this.document, "div", {
         className: "sidebar-separator inherited-separator",
         text: `Inherited from ${inherited.nodeRef}`,
         attributes: {
-          "data-inherited-group": inherited.nodeRef,
-          "data-part": "inherited-group",
+          "aria-level": "3",
+          "data-part": "inherited-group-heading",
+          id: headingId,
           role: "heading",
         },
       });
-      children.push(groupHeading);
       const groupSections: StylePropertiesSection[] = [];
+      const groupRuleChildren: HTMLElement[] = [];
       if (inherited.inlineStyle) {
         groupSections.push(this.appendSection(
           sections,
-          children,
+          groupRuleChildren,
           inherited.inlineStyle,
           "inherited",
           inherited.nodeRef,
@@ -153,14 +161,31 @@ export class StylesSidebarPane {
       for (const rule of inherited.matchedRules) {
         groupSections.push(this.appendSection(
           sections,
-          children,
+          groupRuleChildren,
           rule,
           "inherited",
           inherited.nodeRef,
         ));
       }
+      if (groupSections.length === 0) continue;
+      const groupRulesList = this.createRuleList(
+        `Style rules inherited from ${inherited.nodeRef}`,
+        "inherited",
+      );
+      groupRulesList.append(...groupRuleChildren);
+      const group = createRulesElement(this.document, "section", {
+        className: "inherited-styles-group",
+        attributes: {
+          "aria-labelledby": headingId,
+          "data-inherited-group": inherited.nodeRef,
+          "data-part": "inherited-group",
+          role: "group",
+        },
+      });
+      group.append(groupHeading, groupRulesList);
+      children.push(group);
       inheritedGroups.push(Object.freeze({
-        element: groupHeading,
+        element: group,
         sections: Object.freeze(groupSections),
       }));
     }
@@ -206,6 +231,21 @@ export class StylesSidebarPane {
     sections.push(section);
     children.push(section.element);
     return section;
+  }
+
+  private createRuleList(
+    label: string,
+    kind: "matched" | "inherited",
+  ): HTMLElement {
+    return createRulesElement(this.document, "div", {
+      className: "rules-list",
+      attributes: {
+        "aria-label": label,
+        "data-list-kind": kind,
+        "data-part": "rules-list",
+        role: "list",
+      },
+    });
   }
 
   private renderDiagnostics(snapshot: MatchedStylesSnapshot): void {
@@ -308,4 +348,13 @@ export class StylesSidebarPane {
 interface RenderedInheritedGroup {
   readonly element: HTMLElement;
   readonly sections: readonly StylePropertiesSection[];
+}
+
+function allocateInheritedHeadingId(document: Document): string {
+  let sequence = nextInheritedHeadingId.get(document) ?? 1;
+  while (document.getElementById(`pin-op-rules-inherited-${sequence}`)) {
+    sequence += 1;
+  }
+  nextInheritedHeadingId.set(document, sequence + 1);
+  return `pin-op-rules-inherited-${sequence}`;
 }

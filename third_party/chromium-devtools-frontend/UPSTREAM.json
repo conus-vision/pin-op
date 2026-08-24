@@ -64,7 +64,7 @@
         {
           "path": "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
           "changeRecord": "PIN_OP_CHANGES.md#rules",
-          "localSha256": "232f268c2eab6938c1e928d434762871e1ac6b417bcfdddfd5f3c9d42df2286b"
+          "localSha256": "4409c4a66552491af94b37aeaf25d594655b7eee7555ddd95ec00c5b224503c3"
         }
       ]
     },

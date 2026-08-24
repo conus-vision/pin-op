@@ -102,6 +102,54 @@ describe("Chromium-derived read-only Rules renderer", () => {
     expect(harness.document.outerHTMLAssignments()).toBe(0);
   });
 
+  it("uses valid list ownership and labelled inherited groups", () => {
+    const harness = createHarness();
+    const ruleLists = harness.rulesRoot.querySelectorAll(
+      '[data-part="rules-list"]',
+    );
+
+    expect(ruleLists).toHaveLength(2);
+    for (const list of harness.rulesRoot.querySelectorAll('[role="list"]')) {
+      expect(list.children.every((child) => (
+        child.tagName === "LI" || child.getAttribute("role") === "listitem"
+      ))).toBe(true);
+    }
+
+    const inheritedGroup = required(
+      harness.rulesRoot.querySelector('[data-part="inherited-group"]'),
+    );
+    expect(inheritedGroup.tagName).toBe("SECTION");
+    expect(inheritedGroup.getAttribute("role")).toBe("group");
+
+    const headingId = required(inheritedGroup.getAttribute("aria-labelledby"));
+    const heading = required(
+      harness.document.document.getElementById(headingId) as unknown as FakeElement | null,
+    );
+    expect(inheritedGroup.contains(heading)).toBe(true);
+    expect(
+      /^H[1-6]$/.test(heading.tagName) || (
+        heading.getAttribute("role") === "heading" &&
+        heading.getAttribute("aria-level") !== null
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps empty Rules status content outside list ownership", () => {
+    const harness = createHarness(Object.freeze({
+      state: "ready",
+      matchedStyles: emptyMatchedStyles(),
+    }));
+    const status = required(harness.rulesRoot.querySelector('[role="status"]'));
+
+    expect(status.textContent).toBe("No matching styles");
+    expect(status.parentElement?.getAttribute("role")).not.toBe("list");
+    for (const list of harness.rulesRoot.querySelectorAll('[role="list"]')) {
+      expect(list.children.every((child) => (
+        child.tagName === "LI" || child.getAttribute("role") === "listitem"
+      ))).toBe(true);
+    }
+  });
+
   it("filters locally and keeps Chromium-style keyboard focus among visible sections", () => {
     const harness = createHarness();
     const sectionsRoot = required(
@@ -227,14 +275,16 @@ class FakeSourceLinkDelegate implements SourceLinkDelegate {
   }
 }
 
-function createHarness() {
+function createHarness(
+  snapshot: RulesPresentationSnapshot = Object.freeze({
+    state: "partial",
+    matchedStyles: richMatchedStyles(),
+  }),
+) {
   const document = new FakeDocument();
   const mount = document.createElement("main") as unknown as FakeElement;
   document.body.append(mount);
-  const rules = new FakeRulesDataSource(Object.freeze({
-    state: "partial",
-    matchedStyles: richMatchedStyles(),
-  }));
+  const rules = new FakeRulesDataSource(snapshot);
   const sourceLinks = new FakeSourceLinkDelegate();
   const view = new ElementsInspectorView(
     document.document,
@@ -251,6 +301,21 @@ function createHarness() {
     sourceLinks,
     view,
   };
+}
+
+function emptyMatchedStyles(): MatchedStylesSnapshot {
+  return deepFreeze({
+    documentEpoch: 2,
+    selectionRevision: 5,
+    stylesRevision: 8,
+    stylesheetRevision: 3,
+    nodeRef: "node:empty",
+    matchedRules: [],
+    inherited: [],
+    inaccessibleStylesheetCount: 0,
+    omittedRuleCount: 0,
+    diagnostics: [],
+  });
 }
 
 function richMatchedStyles(): MatchedStylesSnapshot {
