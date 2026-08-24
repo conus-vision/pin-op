@@ -48,6 +48,18 @@ import {
   PageOverlay,
   type PageOverlayOptions,
 } from "./pageOverlay.js";
+import {
+  MatchedStylesApplicabilityObserver,
+  type ApplicabilityCandidate,
+  type ApplicabilityCheckResult,
+  type MatchedStylesApplicabilityObserverOptions,
+} from "./matchedStylesApplicabilityObserver.js";
+import {
+  StylesheetRegistry,
+  type StylesheetInvalidationEvent,
+  type StylesheetRegistryOptions,
+  type StylesheetRevisionState,
+} from "./stylesheetRegistry.js";
 
 export const PAGE_INSPECTION_SELECTION_INTERVAL_MS = 100;
 
@@ -106,6 +118,7 @@ export interface PageInspectionMode {
 
 export interface PageInspectionSessionOptions {
   readonly document: PageInspectionDocument;
+  readonly contentSessionId?: string;
   readonly location: LocationSource | (() => LocationSource);
   readonly documentEpoch?: number;
   readonly selectionIntervalMs?: number;
@@ -113,6 +126,7 @@ export interface PageInspectionSessionOptions {
     selection: PageInspectionSelection,
   ) => boolean;
   readonly onEvent?: (event: DomEvent) => void;
+  readonly onStylesInvalidated?: (event: StylesheetInvalidationEvent) => void;
   readonly onError?: (error: unknown) => void;
   readonly now?: () => number;
   readonly requestAnimationFrame?: (callback: FrameRequestCallback) => number;
@@ -135,6 +149,34 @@ export interface PageInspectionSessionOptions {
   readonly createInspectMode?: (
     options: InspectModeOptions,
   ) => PageInspectionMode;
+  readonly createStylesheetRegistry?: (
+    options: StylesheetRegistryOptions,
+  ) => PageInspectionStylesheetRegistry;
+  readonly createApplicabilityObserver?: (
+    options: MatchedStylesApplicabilityObserverOptions,
+  ) => PageInspectionApplicabilityObserver;
+}
+
+export interface PageInspectionStylesheetRegistry {
+  readonly revisions: StylesheetRevisionState;
+  startPolling(applicabilityCheck?: (stylesheetChanged: boolean) => void): void;
+  stopPolling(): void;
+  checkForChanges(): boolean;
+  invalidate(reason?: string): void;
+  invalidateApplicability(reason?: string): void;
+  resetDocument(document: Document, documentEpoch: number): void;
+  dispose(): void;
+}
+
+export interface PageInspectionApplicabilityObserver {
+  setSelection(
+    element: Element | undefined,
+    candidates: readonly ApplicabilityCandidate[],
+  ): void;
+  check(): ApplicabilityCheckResult | { readonly changed: boolean };
+  rebaseline?(): ApplicabilityCheckResult | { readonly changed: boolean };
+  manualRefresh?(): void;
+  dispose(): void;
 }
 
 interface SelectedState extends DomTreeResolvedElement {
@@ -229,6 +271,12 @@ export class PageInspectionSession {
   private readonly overlayOptions: PageOverlayOptions;
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
+  private readonly stylesheetRegistry: PageInspectionStylesheetRegistry;
+  private applicabilityObserver: PageInspectionApplicabilityObserver;
+  private readonly applicabilityFactory: NonNullable<
+    PageInspectionSessionOptions["createApplicabilityObserver"]
+  >;
+  private readonly stylesPollingEnabled: boolean;
   private readonly trackedDocuments = new Set<InspectDocument>();
   private readonly pageLeaveRegistrations = new Map<
     InspectDocument,
@@ -320,10 +368,74 @@ export class PageInspectionSession {
     this.attachPageLeaveListener(options.document);
     this.provider.startFrameTracking();
     this.syncFrameDocuments();
+
+    const createStylesheetRegistry = options.createStylesheetRegistry ?? (
+      (registryOptions: StylesheetRegistryOptions) => new StylesheetRegistry(
+        registryOptions,
+      )
+    );
+    this.stylesheetRegistry = createStylesheetRegistry({
+      document: options.document,
+      contentSessionId: options.contentSessionId ?? "page-inspection-session",
+      documentEpoch: this.provider.currentDocumentEpoch,
+      onInvalidated: (event) => this.handleStylesInvalidated(event),
+      onError: (error) => this.reportError(error),
+      now: options.now,
+    });
+    this.applicabilityFactory = options.createApplicabilityObserver ?? (
+      (observerOptions: MatchedStylesApplicabilityObserverOptions) => (
+        new MatchedStylesApplicabilityObserver(observerOptions)
+      )
+    );
+    this.applicabilityObserver = this.createApplicabilityObserver(
+      options.document,
+    );
+    this.stylesPollingEnabled = options.contentSessionId !== undefined;
+    if (this.stylesPollingEnabled) {
+      this.startStylesPolling();
+    }
   }
 
   public get pickerEnabled(): boolean {
     return this.pickerActive && !this.disposed;
+  }
+
+  public get styleRevisions(): StylesheetRevisionState {
+    return this.stylesheetRegistry.revisions;
+  }
+
+  /** Called synchronously at the start of every matched-style query. */
+  public checkStylesheetsForMatchedQuery(): boolean {
+    if (this.disposed) return false;
+    const stylesheetChanged = this.stylesheetRegistry.checkForChanges();
+    if (stylesheetChanged && this.applicabilityObserver.rebaseline) {
+      this.applicabilityObserver.rebaseline();
+    } else {
+      this.applicabilityObserver.check();
+    }
+    return stylesheetChanged;
+  }
+
+  public setMatchedApplicabilityCandidates(
+    nodeRef: string,
+    documentEpoch: number,
+    candidates: readonly ApplicabilityCandidate[],
+  ): boolean {
+    if (
+      this.disposed ||
+      this.selected?.nodeRef !== nodeRef ||
+      this.selected.documentEpoch !== documentEpoch
+    ) {
+      return false;
+    }
+    this.applicabilityObserver.setSelection(this.selected.element, candidates);
+    this.applicabilityObserver.check();
+    return true;
+  }
+
+  public manualRefreshStylesApplicability(): void {
+    if (this.disposed) return;
+    this.applicabilityObserver.manualRefresh?.();
   }
 
   public enablePicker(): void {
@@ -377,6 +489,7 @@ export class PageInspectionSession {
         this.provider.releaseNode(this.selected.nodeRef, "selected");
       }
       this.selected = undefined;
+      this.applicabilityObserver.setSelection(undefined, []);
       this.lastSelectionAt = undefined;
 
       for (const tracked of this.trackedDocuments) {
@@ -395,10 +508,16 @@ export class PageInspectionSession {
         this.overlayOptions,
       );
       previousOverlay.dispose();
+      this.stylesheetRegistry.resetDocument(document, documentEpoch);
+      this.applicabilityObserver.dispose();
+      this.applicabilityObserver = this.createApplicabilityObserver(document);
     } finally {
       this.resettingDocument = false;
     }
     this.syncFrameDocuments();
+    if (this.stylesPollingEnabled) {
+      this.startStylesPolling();
+    }
   }
 
   public hover(element: InspectableElement): void {
@@ -445,6 +564,7 @@ export class PageInspectionSession {
       return;
     }
     this.clearHoverState("emit");
+    this.stylesheetRegistry.invalidate("soft-refresh");
   }
 
   public async selectByRef(
@@ -632,6 +752,16 @@ export class PageInspectionSession {
     this.pickerRevision += 1;
     this.hoverRevision += 1;
     this.selectionRevision += 1;
+    try {
+      this.applicabilityObserver.dispose();
+    } catch {
+      // Stylesheet cleanup below remains authoritative.
+    }
+    try {
+      this.stylesheetRegistry.dispose();
+    } catch {
+      // The session is terminal even when page CSSOM hooks are hostile.
+    }
     try {
       this.mode.dispose();
     } catch {
@@ -862,6 +992,8 @@ export class PageInspectionSession {
         return undefined;
       }
       this.selected = next;
+      this.applicabilityObserver.setSelection(next.element, []);
+      this.applicabilityObserver.check();
       const authority: SelectionAuthorityToken = Object.freeze({
         documentEpoch: next.documentEpoch,
         selectionRevision: operation,
@@ -922,6 +1054,8 @@ export class PageInspectionSession {
           }
         }
         this.selected = restored;
+        this.applicabilityObserver.setSelection(restored?.element, []);
+        this.applicabilityObserver.check();
         if (retainedNewSelection) {
           this.provider.releaseNode(next.nodeRef, "selected");
         }
@@ -1482,6 +1616,7 @@ export class PageInspectionSession {
     if (this.selected !== selected) return undefined;
     this.selectionRevision += 1;
     this.selected = undefined;
+    this.applicabilityObserver.setSelection(undefined, []);
     this.provider.releaseNode(selected.nodeRef, "selected");
     return Object.freeze({
       type: "dom.selectionCleared",
@@ -1907,6 +2042,54 @@ export class PageInspectionSession {
       );
     } catch {
       // Session state no longer authorizes callbacks from this document.
+    }
+  }
+
+  private createApplicabilityObserver(
+    document: Document,
+  ): PageInspectionApplicabilityObserver {
+    const cell: { current?: PageInspectionApplicabilityObserver } = {};
+    const observer = this.applicabilityFactory({
+      document,
+      onInvalidated: (event) => {
+        if (
+          this.disposed ||
+          this.resettingDocument ||
+          this.applicabilityObserver !== cell.current
+        ) {
+          return;
+        }
+        this.stylesheetRegistry.invalidateApplicability(event.reason);
+      },
+      onError: (error) => this.reportError(error),
+    });
+    cell.current = observer;
+    return observer;
+  }
+
+  private startStylesPolling(): void {
+    this.stylesheetRegistry.startPolling((stylesheetChanged) => {
+      if (this.disposed || this.resettingDocument) return;
+      if (stylesheetChanged && this.applicabilityObserver.rebaseline) {
+        this.applicabilityObserver.rebaseline();
+      } else {
+        this.applicabilityObserver.check();
+      }
+    });
+  }
+
+  private handleStylesInvalidated(event: StylesheetInvalidationEvent): void {
+    if (
+      this.disposed ||
+      this.resettingDocument ||
+      event.documentEpoch !== this.provider.currentDocumentEpoch
+    ) {
+      return;
+    }
+    try {
+      this.options.onStylesInvalidated?.(event);
+    } catch (error) {
+      this.reportError(error);
     }
   }
 

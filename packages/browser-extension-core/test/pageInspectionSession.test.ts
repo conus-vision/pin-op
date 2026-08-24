@@ -45,6 +45,81 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageInspectionSession", () => {
+  it("owns stylesheet polling and applicability lifecycle for the active content lease", async () => {
+    const registry = {
+      revisions: {
+        documentEpoch: 3,
+        stylesheetRevision: 0,
+        stylesRevision: 0,
+      },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const firstApplicability = {
+      setSelection: vi.fn(),
+      check: vi.fn(() => ({ changed: false })),
+      manualRefresh: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const nextApplicability = {
+      ...firstApplicability,
+      setSelection: vi.fn(),
+      check: vi.fn(() => ({ changed: false })),
+      dispose: vi.fn(),
+    };
+    const createApplicabilityObserver = vi.fn()
+      .mockReturnValueOnce(firstApplicability)
+      .mockReturnValueOnce(nextApplicability);
+    const styleInvalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      contentSessionId: "content-page-styles",
+      createStylesheetRegistry: () => registry,
+      createApplicabilityObserver,
+      onStylesInvalidated: (event) => styleInvalidations.push(event),
+    });
+
+    expect(registry.startPolling).toHaveBeenCalledOnce();
+    expect(registry.startPolling).toHaveBeenCalledWith(expect.any(Function));
+    await harness.session.selectByRef("node-2", 3);
+    expect(firstApplicability.setSelection).toHaveBeenLastCalledWith(
+      harness.card,
+      [],
+    );
+    expect(harness.session.checkStylesheetsForMatchedQuery()).toBe(false);
+    expect(registry.checkForChanges).toHaveBeenCalledOnce();
+    expect(firstApplicability.check).toHaveBeenCalledTimes(2);
+
+    harness.session.clearOverlayForRefresh();
+    expect(registry.invalidate).toHaveBeenCalledWith("soft-refresh");
+    const applicabilityOptions = createApplicabilityObserver.mock.calls[0]?.[0] as {
+      readonly onInvalidated: (event: { readonly reason: string }) => void;
+    };
+    applicabilityOptions.onInvalidated({ reason: "observable-signal" });
+    expect(registry.invalidateApplicability).toHaveBeenCalledWith(
+      "observable-signal",
+    );
+
+    const replacement = new FakeSessionDocument();
+    harness.session.resetDocument(
+      replacement as unknown as Document & { readonly styleSheets: [] },
+      4,
+    );
+    expect(registry.resetDocument).toHaveBeenCalledWith(replacement, 4);
+    expect(firstApplicability.dispose).toHaveBeenCalledOnce();
+    expect(createApplicabilityObserver).toHaveBeenCalledTimes(2);
+    expect(registry.startPolling).toHaveBeenCalledTimes(2);
+
+    harness.session.dispose();
+    expect(nextApplicability.dispose).toHaveBeenCalledOnce();
+    expect(registry.dispose).toHaveBeenCalledOnce();
+    expect(styleInvalidations).toEqual([]);
+  });
+
   it("streams every unique branch through bounded settlement chunks", async () => {
     const harness = createSessionHarness();
     for (
@@ -1852,6 +1927,10 @@ function createSessionHarness(overrides: {
   readonly onSelection?: (
     selection: PageInspectionSelection,
   ) => boolean;
+  readonly contentSessionId?: string;
+  readonly createStylesheetRegistry?: (options: unknown) => unknown;
+  readonly createApplicabilityObserver?: (options: unknown) => unknown;
+  readonly onStylesInvalidated?: (event: unknown) => void;
 } = {}) {
   const document = new FakeSessionDocument();
   const root = element("HTML", "root", document);
@@ -1878,6 +1957,7 @@ function createSessionHarness(overrides: {
       hash: "",
     },
     now: clock.now,
+    contentSessionId: overrides.contentSessionId,
     onError: overrides.onError,
     onEvent: (event) => {
       events.push(event);
@@ -1887,6 +1967,9 @@ function createSessionHarness(overrides: {
       selections.push(selection);
       return overrides.onSelection?.(selection) ?? true;
     },
+    createStylesheetRegistry: overrides.createStylesheetRegistry,
+    createApplicabilityObserver: overrides.createApplicabilityObserver,
+    onStylesInvalidated: overrides.onStylesInvalidated,
     createInspectPayload: overrides.createInspectPayload ?? (
       (selected) => payload(selected.id)
     ),

@@ -181,6 +181,12 @@ importers:
       lucide:
         specifier: 0.468.0
         version: 0.468.0
+      postcss:
+        specifier: 8.5.16
+        version: 8.5.16
+      postcss-selector-parser:
+        specifier: 7.1.0
+        version: 7.1.0
       zod:
         specifier: ^3.25.76
         version: 3.25.76

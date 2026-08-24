@@ -37,6 +37,7 @@ describe("startContentScriptRuntime", () => {
     expect(second).toBe(first);
     expect(runtimeMessages.subscribe).toHaveBeenCalledOnce();
     expect(createContentSessionId).toHaveBeenCalledOnce();
+    expect(sessionOptions?.contentSessionId).toBe("content-session-a");
 
     await runtimeMessages.emit({ type: "enableInspectMode" });
     expect(options.connectRuntimePort).toHaveBeenCalledWith(

@@ -182,6 +182,7 @@ export function startContentScriptRuntime(
     ((sessionOptions) => new PageInspectionSession(sessionOptions));
   const session = createSession({
     document: options.document as unknown as PageInspectionDocument,
+    contentSessionId,
     location: options.location,
     onSelection: (selection) => {
       publishSelection(options, contentSessionId, selection, reportError);

@@ -1187,21 +1187,90 @@ export function describeBrowserPackageContract(
         .map((path) => packagedText(packaged, path))
         .join("\n");
 
-      expect(scripts).not.toMatch(/\bfetch\s*\(/);
-      expect(scripts).not.toContain("XMLHttpRequest");
-      const httpUrls = scripts.match(/https?:\/\/[^"'`\s${}]+/g) ?? [];
-      expect(new Set(httpUrls)).toEqual(
-        new Set([
-          "http://www.w3.org/2000/svg",
-          "https://pin-op.invalid/",
-        ]),
-      );
+      expect(executableNetworkFetchPrimitives(scripts)).toEqual([]);
       expect(scripts).toContain("WebSocket");
       const websocketUrls = scripts.match(/wss?:\/\/[^"'`\s${}]+/g) ?? [];
       expect(websocketUrls.length).toBeGreaterThan(0);
       expect(new Set(websocketUrls)).toEqual(new Set(["ws://127.0.0.1:"]));
     });
+
+    it("keeps stylesheet inventory CSSOM-only without a network fallback", () => {
+      const repositoryRoot = resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../..",
+      );
+      const stylesheetRuntime = [
+        "stylesheetRegistry.ts",
+        "stylesheetFingerprint.ts",
+        "matchedStylesApplicabilityObserver.ts",
+      ].map((fileName) => readFileSync(resolve(
+        repositoryRoot,
+        "packages/browser-extension-core/src",
+        fileName,
+      ), "utf8")).join("\n");
+
+      expect(executableNetworkFetchPrimitives(stylesheetRuntime)).toEqual([]);
+      expect(stylesheetRuntime).not.toContain("host_permissions");
+      expect(stylesheetRuntime).not.toContain("optional_host_permissions");
+      expect(executableNetworkFetchPrimitives([
+        "const docs = 'https://example.test/postcss-migration';",
+        "fetch('https://example.test/inaccessible.css');",
+        "globalThis.fetch('/proxied.css');",
+        "new XMLHttpRequest();",
+      ].join("\n"))).toEqual(["XMLHttpRequest", "fetch"]);
+    });
   });
+}
+
+function executableNetworkFetchPrimitives(source: string): readonly string[] {
+  const sourceFile = ts.createSourceFile(
+    "packaged-network-scan.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const primitive = globalNetworkFetchPrimitive(node.expression);
+      if (primitive) found.add(primitive);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found].sort();
+}
+
+function globalNetworkFetchPrimitive(
+  expression: ts.LeftHandSideExpression,
+): "fetch" | "XMLHttpRequest" | undefined {
+  if (ts.isIdentifier(expression)) {
+    return expression.text === "fetch" || expression.text === "XMLHttpRequest"
+      ? expression.text
+      : undefined;
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    return isGlobalObjectIdentifier(expression.expression) &&
+        (expression.name.text === "fetch" || expression.name.text === "XMLHttpRequest")
+      ? expression.name.text
+      : undefined;
+  }
+  if (
+    ts.isElementAccessExpression(expression) &&
+    isGlobalObjectIdentifier(expression.expression) &&
+    expression.argumentExpression &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+  ) {
+    const name = expression.argumentExpression.text;
+    return name === "fetch" || name === "XMLHttpRequest" ? name : undefined;
+  }
+  return undefined;
+}
+
+function isGlobalObjectIdentifier(expression: ts.Expression): boolean {
+  return ts.isIdentifier(expression) &&
+    ["globalThis", "window", "self"].includes(expression.text);
 }
 
 const globalEvents = {
@@ -1688,6 +1757,11 @@ function stageBrowserExtensionProject(
     workspaceRoot,
     stagedWorkspace,
     join("packages", "devtools-elements-ui", "assets"),
+  );
+  symlinkSync(
+    join(workspaceRoot, "node_modules"),
+    join(temporaryDirectory, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
   );
   symlinkSync(
     join(extensionRoot, "node_modules"),
