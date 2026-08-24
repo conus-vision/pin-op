@@ -63,6 +63,17 @@ const presentation: RulesPresentationSnapshot = {
   state: "ready",
   matchedStyles,
 };
+const emptyPresentation: RulesPresentationSnapshot = { state: "empty" };
+const loadingPresentation: RulesPresentationSnapshot = { state: "loading" };
+const partialPresentation: RulesPresentationSnapshot = {
+  state: "partial",
+  matchedStyles,
+};
+const errorPresentation: RulesPresentationSnapshot = {
+  state: "error",
+  message: "Rules unavailable",
+  diagnostics: [diagnostic],
+};
 const dataSource: RulesDataSource = {
   snapshot: () => presentation,
   subscribe: (_listener) => () => {},
@@ -90,6 +101,14 @@ matchedStyles.diagnostics.push(diagnostic);
 declaration.value = "blue";
 // @ts-expect-error Declaration states are immutable snapshot data.
 declaration.state = "inactive";
+// @ts-expect-error Declaration references are immutable snapshot data.
+declaration.declarationRef = "declaration:other";
+// @ts-expect-error Declaration names are immutable snapshot data.
+declaration.name = "background";
+// @ts-expect-error Declaration importance is immutable snapshot data.
+declaration.important = true;
+// @ts-expect-error Declaration state reasons are immutable snapshot data.
+declaration.stateReason = "Other reason";
 // @ts-expect-error Context text is immutable snapshot data.
 context.text = "(width >= 80rem)";
 // @ts-expect-error Context kinds are immutable snapshot data.
@@ -102,12 +121,22 @@ generatedSource.lineNumber = 18;
 generatedSource.columnNumber = 6;
 // @ts-expect-error Rule selector text is immutable snapshot data.
 rule.selectorText = "body";
+// @ts-expect-error Rule references are immutable snapshot data.
+rule.ruleRef = "rule:other";
+// @ts-expect-error A rule's selector-index array property is immutable.
+rule.matchingSelectorIndices = [0];
+// @ts-expect-error A rule's declaration array property is immutable.
+rule.declarations = [declaration];
+// @ts-expect-error A rule's context array property is immutable.
+rule.contexts = [context];
 // @ts-expect-error A rule's generated source object is immutable snapshot data.
 rule.generatedSource = generatedSource;
 // @ts-expect-error Inherited node references are immutable snapshot data.
 inheritedRule.nodeRef = "body";
 // @ts-expect-error Inherited inline-style objects are immutable snapshot data.
 inheritedRule.inlineStyle = rule;
+// @ts-expect-error An inherited group's matched-rule array property is immutable.
+inheritedRule.matchedRules = [rule];
 // @ts-expect-error Matched inline-style objects are immutable snapshot data.
 matchedStyles.inlineStyle = rule;
 // @ts-expect-error Document epochs are immutable snapshot data.
@@ -124,6 +153,12 @@ matchedStyles.nodeRef = "html";
 matchedStyles.inaccessibleStylesheetCount = 0;
 // @ts-expect-error Omitted rule counts are immutable snapshot data.
 matchedStyles.omittedRuleCount = 1;
+// @ts-expect-error The matched-rule array property is immutable snapshot data.
+matchedStyles.matchedRules = [rule];
+// @ts-expect-error The inherited-group array property is immutable snapshot data.
+matchedStyles.inherited = [inheritedRule];
+// @ts-expect-error The diagnostic array property is immutable snapshot data.
+matchedStyles.diagnostics = [diagnostic];
 // @ts-expect-error Diagnostic codes are immutable snapshot data.
 diagnostic.code = "other-code";
 // @ts-expect-error Diagnostic severities are immutable snapshot data.
@@ -134,6 +169,22 @@ diagnostic.message = "Other message";
 presentation.state = "ready";
 // @ts-expect-error Presentation payloads are immutable snapshot data.
 presentation.matchedStyles = matchedStyles;
+// @ts-expect-error Empty presentation discriminants are immutable.
+emptyPresentation.state = "empty";
+// @ts-expect-error Loading presentation discriminants are immutable.
+loadingPresentation.state = "loading";
+// @ts-expect-error Partial presentation discriminants are immutable.
+partialPresentation.state = "partial";
+// @ts-expect-error Partial presentation payloads are immutable.
+partialPresentation.matchedStyles = matchedStyles;
+// @ts-expect-error Error presentation discriminants are immutable.
+errorPresentation.state = "error";
+// @ts-expect-error Error presentation messages are immutable.
+errorPresentation.message = "Other error";
+// @ts-expect-error Error presentation diagnostic array properties are immutable.
+errorPresentation.diagnostics = [diagnostic];
+// @ts-expect-error Error presentation diagnostics are readonly arrays.
+errorPresentation.diagnostics.push(diagnostic);
 
 declare const cssStyleRule: CSSStyleRule;
 // @ts-expect-error CSSOM objects cannot cross the neutral matched-rule contract.
