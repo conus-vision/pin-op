@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { startExampleServers } from "../../../examples/basic-css/server.mjs";
 
@@ -262,6 +263,92 @@ describe("basic CSS example server", () => {
       );
       const crossOriginCss = await responseText(crossOriginCssUrl);
       expect(crossOriginCss).toContain(".cross-origin-frame-target");
+    } finally {
+      await servers.stop();
+    }
+  });
+
+  it("mutates CustomStateSet through has and add/delete without events or attributes", async () => {
+    const servers = await startFixtureServers();
+
+    try {
+      const page = await responseText(servers.pageUrl);
+      const functionSource = page.match(
+        /(function toggleEventlessApplicability\(\) \{[\s\S]*?\n      \})\n\n      function toggleSiblingApplicability/,
+      )?.[1];
+
+      expect(functionSource).toBeDefined();
+      expect(functionSource).toContain(
+        'supportsCustomStates.has("pin-op-active")',
+      );
+      expect(functionSource).toContain(
+        'supportsCustomStates.add("pin-op-active")',
+      );
+      expect(functionSource).toContain(
+        'supportsCustomStates.delete("pin-op-active")',
+      );
+      expect(functionSource).not.toContain("supportsCustomStates.toggle(");
+
+      const activeStates = new Set<string>();
+      const stateCalls: string[] = [];
+      const eventCalls: string[] = [];
+      const attributeCalls: string[] = [];
+      const checkbox = {
+        checked: false,
+        indeterminate: false,
+        dispatchEvent: () => eventCalls.push("checkbox"),
+        setAttribute: () => attributeCalls.push("checkbox"),
+      };
+      const field = {
+        value: "",
+        customValidity: "",
+        dispatchEvent: () => eventCalls.push("field"),
+        setAttribute: () => attributeCalls.push("field"),
+        setCustomValidity(value: string) {
+          this.customValidity = value;
+        },
+      };
+      const supportsCustomStates = {
+        has(name: string) {
+          stateCalls.push(`has:${name}`);
+          return activeStates.has(name);
+        },
+        add(name: string) {
+          stateCalls.push(`add:${name}`);
+          activeStates.add(name);
+        },
+        delete(name: string) {
+          stateCalls.push(`delete:${name}`);
+          activeStates.delete(name);
+        },
+        toggle(name: string) {
+          stateCalls.push(`toggle:${name}`);
+        },
+      };
+
+      runInNewContext(
+        `${functionSource}\ntoggleEventlessApplicability();\ntoggleEventlessApplicability();`,
+        {
+          document: {
+            getElementById(id: string) {
+              return id === "selector-applicability-checkbox"
+                ? checkbox
+                : field;
+            },
+          },
+          supportsCustomStates,
+        },
+      );
+
+      expect(stateCalls).toEqual([
+        "has:pin-op-active",
+        "add:pin-op-active",
+        "has:pin-op-active",
+        "delete:pin-op-active",
+      ]);
+      expect(activeStates).toEqual(new Set());
+      expect(eventCalls).toEqual([]);
+      expect(attributeCalls).toEqual([]);
     } finally {
       await servers.stop();
     }

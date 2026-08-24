@@ -264,7 +264,11 @@
         field.value = field.value ? "" : "valid";
         field.setCustomValidity(field.value ? "" : "fixture-invalid");
         if (supportsCustomStates) {
-          supportsCustomStates.toggle("pin-op-active");
+          if (supportsCustomStates.has("pin-op-active")) {
+            supportsCustomStates.delete("pin-op-active");
+          } else {
+            supportsCustomStates.add("pin-op-active");
+          }
         }
       }
 
