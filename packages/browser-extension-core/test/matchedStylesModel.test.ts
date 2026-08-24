@@ -75,25 +75,59 @@ describe("MatchedStylesModel", () => {
     });
   });
 
-  it("rejects a response revision pair below retained authority", async () => {
+  it("discards a below-floor response and coalesces one follow-up for the current selection", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    const pending: Array<ReturnType<typeof deferred<StylesResponse>>> = [];
+    const states: string[] = [];
     const model = new MatchedStylesModel({
-      async request(request) {
-        return matchedResponse({
-          request,
-          stylesRevision: 9,
-          stylesheetRevision: 3,
-        });
+      request(request) {
+        requests.push(request);
+        const next = deferred<StylesResponse>();
+        pending.push(next);
+        return next.promise;
       },
     });
+    model.subscribe((snapshot) => states.push(snapshot.state));
+
+    const first = model.select(selectionIdentity());
     model.invalidate(stylesInvalidated(9, 3));
     model.invalidate(stylesInvalidated(10, 4));
+    model.invalidate(stylesInvalidated(11, 4));
+    pending[0]!.resolve(matchedResponse({
+      request: requests[0],
+      stylesRevision: 10,
+      stylesheetRevision: 4,
+    }));
+    await first;
+    await flushAsync();
 
-    await model.select(selectionIdentity());
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({
+      type: "styles.getMatched",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    });
+    expect(requests[1]!.requestId).not.toBe(requests[0]!.requestId);
+    expect(model.snapshot()).toMatchObject({ state: "loading" });
+    expect(states).not.toContain("error");
+    expect(states).not.toContain("ready");
+    expect(states).not.toContain("partial");
+
+    pending[1]!.resolve(matchedResponse({
+      request: requests[1],
+      stylesRevision: 11,
+      stylesheetRevision: 4,
+      partial: true,
+      diagnostics: ["stylesheet-inaccessible"],
+    }));
+    await flushAsync();
 
     expect(model.snapshot()).toMatchObject({
-      state: "error",
-      errorCode: "internal-error",
+      state: "partial",
+      key: { stylesRevision: 11, stylesheetRevision: 4 },
     });
+    expect(requests).toHaveLength(2);
   });
 
   it("loads independently of IDE state and exposes idle/loading/ready/partial/error", async () => {
@@ -143,6 +177,7 @@ describe("MatchedStylesModel", () => {
       },
     });
     const first = model.select(selection());
+    model.invalidate(stylesInvalidated(9, 3));
     const secondSelection = selection({ nodeRef: "node-2", selectionRevision: 8 });
     const second = model.select(secondSelection);
     expect(requests[0]!.signal.aborted).toBe(true);
@@ -152,8 +187,12 @@ describe("MatchedStylesModel", () => {
       request: requests[1]!.request,
       nodeRef: "node-2",
       selectionRevision: 8,
+      stylesRevision: 9,
+      stylesheetRevision: 3,
     }));
     await Promise.all([first, second]);
+    await flushAsync();
+    expect(requests).toHaveLength(2);
     expect(model.snapshot()).toMatchObject({
       state: "ready",
       key: secondSelection,
@@ -266,19 +305,24 @@ describe("MatchedStylesModel", () => {
     ] as const) {
       const pending = deferred<StylesResponse>();
       let signal: AbortSignal | undefined;
+      let requestCount = 0;
       const model = new MatchedStylesModel({
         request(_request, nextSignal) {
+          requestCount += 1;
           signal = nextSignal;
           return pending.promise;
         },
       });
       const load = model.select(selection());
+      model.invalidate(stylesInvalidated(9, 3));
       model.reset(reason);
       expect(signal?.aborted).toBe(true);
       expect(model.snapshot().state).toBe("idle");
       pending.resolve(matchedResponse());
       await load;
+      await flushAsync();
       expect(model.snapshot().state).toBe("idle");
+      expect(requestCount).toBe(1);
     }
 
     const pending = deferred<StylesResponse>();

@@ -75,6 +75,7 @@ export class MatchedStylesModel {
   } | undefined;
   private invalidationQueued = false;
   private pendingInvalidation: StylesInvalidatedEvent | undefined;
+  private pendingReloadGeneration: number | undefined;
   private disposed = false;
   private readonly listeners = new Set<
     (snapshot: MatchedStylesModelSnapshot) => void
@@ -146,7 +147,11 @@ export class MatchedStylesModel {
       ) return;
     }
     this.revisionAuthority = freezeRevisionAuthority(event);
-    if (!selection || this.state.state === "loading") return;
+    if (!selection) return;
+    if (this.state.state === "loading") {
+      this.pendingReloadGeneration = this.generation;
+      return;
+    }
     this.pendingInvalidation = event;
     if (this.invalidationQueued) return;
     this.invalidationQueued = true;
@@ -166,6 +171,11 @@ export class MatchedStylesModel {
         latest.documentEpoch !== liveSelection.documentEpoch
       ) return;
       this.notifyStylesheetReset(latest);
+      if (
+        this.disposed ||
+        generation !== this.generation ||
+        this.selection !== liveSelection
+      ) return;
       void this.load(liveSelection);
     });
   }
@@ -193,6 +203,7 @@ export class MatchedStylesModel {
   private async load(selection: MatchedStylesModelSelection): Promise<void> {
     this.cancelCurrent();
     const generation = ++this.generation;
+    this.pendingReloadGeneration = undefined;
     const controller = new AbortController();
     this.controller = controller;
     this.publish(Object.freeze({ state: "loading", generation, key: selection }));
@@ -246,6 +257,22 @@ export class MatchedStylesModel {
         !revisionPairMeetsFloor(responseAuthority, floor)
       )
     ) {
+      if (
+        floor.documentEpoch === response.documentEpoch &&
+        this.pendingReloadGeneration === generation
+      ) {
+        this.pendingReloadGeneration = undefined;
+        this.notifyStylesheetReset(floor);
+        if (
+          !this.disposed &&
+          this.generation === generation &&
+          this.selection === selection
+        ) {
+          void this.load(selection);
+        }
+        return;
+      }
+      this.pendingReloadGeneration = undefined;
       this.publish(Object.freeze({
         state: "error",
         generation,
@@ -254,6 +281,7 @@ export class MatchedStylesModel {
       }));
       return;
     }
+    this.pendingReloadGeneration = undefined;
     this.notifyStylesheetReset(responseAuthority);
     this.revisionAuthority = responseAuthority;
     const key: MatchedStylesModelKey = Object.freeze({
@@ -323,6 +351,7 @@ export class MatchedStylesModel {
     this.lastStylesheetReset = undefined;
     this.pendingInvalidation = undefined;
     this.invalidationQueued = false;
+    this.pendingReloadGeneration = undefined;
   }
 
   private isCurrent(generation: number, controller: AbortController): boolean {
