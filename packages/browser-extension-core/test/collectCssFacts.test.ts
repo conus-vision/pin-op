@@ -29,6 +29,7 @@ describe("collectCssFacts", () => {
         property: "color",
         value: "red",
         metadata: {
+          ruleRef: expect.stringMatching(/^rule-/),
           sourceUrl: "/complete.css",
           media: [],
           mediaTruncated: false,
@@ -43,6 +44,7 @@ describe("collectCssFacts", () => {
         property: "display",
         value: "grid",
         metadata: {
+          ruleRef: expect.stringMatching(/^rule-/),
           sourceUrl: "/complete.css",
           media: [],
           mediaTruncated: false,
@@ -1406,6 +1408,7 @@ function completeFactMetadata(
   overrides: Readonly<Record<string, unknown>> = {},
 ): CssRuleFact["metadata"] {
   return {
+    ruleRef: expect.stringMatching(/^rule-/),
     sourceUrl,
     media: [...media],
     mediaTruncated: false,

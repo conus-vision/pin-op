@@ -755,6 +755,24 @@ describe("StylesheetRegistry", () => {
     const currentEntry = registry.snapshot().entries[0]!;
     expect(registry.referenceRule(currentEntry, "0", nativeRule)).not.toBe(first);
   });
+
+  it("binds inline rule identity to the element and stylesheet generation", () => {
+    const document = scope("document", [], [], []);
+    const registry = createRegistry(document);
+    const firstElement = elementIn(document, new Set());
+    const secondElement = elementIn(document, new Set());
+
+    const first = registry.referenceInlineRule(firstElement);
+    expect(registry.referenceInlineRule(firstElement)).toBe(first);
+    expect(registry.referenceInlineRule(secondElement)).not.toBe(first);
+    expect(registry.resolveRule(first)).toBe(firstElement);
+
+    registry.invalidateApplicability("inline-selector-state");
+    expect(registry.referenceInlineRule(firstElement)).toBe(first);
+    registry.resetDocument(document as unknown as Document, 4);
+    expect(registry.resolveRule(first)).toBeUndefined();
+    expect(registry.referenceInlineRule(firstElement)).not.toBe(first);
+  });
 });
 
 function createRegistry(

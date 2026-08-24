@@ -16,6 +16,8 @@ import {
   joinBounded,
   type InspectByteBudget,
 } from "./inspectBounds.js";
+import type { MatchedStyles } from "./matchedStylesTypes.js";
+import { projectMatchedStylesToCssFacts } from "./matchedStylesProjection.js";
 
 export interface LocationSource {
   readonly href: string;
@@ -36,6 +38,7 @@ export function createInspectPayload(
   element: InspectableElement,
   document: CssDocumentSource,
   location: LocationSource,
+  matchedStyles?: MatchedStyles,
 ): InspectPayloadWithDiagnostics {
   const pageUrl = boundedPageUrl(location.href);
   const budget = createInspectByteBudget();
@@ -46,6 +49,7 @@ export function createInspectPayload(
     document,
     pageUrl,
     budget,
+    matchedStyles,
   );
   const parent = element.parentElement
     ? collectTarget(
@@ -55,6 +59,8 @@ export function createInspectPayload(
         document,
         pageUrl,
         budget,
+        matchedStyles,
+        1,
       )
     : undefined;
   const collected = parent ? [selected, parent] : [selected];
@@ -75,7 +81,8 @@ export function createInspectPayload(
         INSPECT_LIMITS.routeLength,
       ),
       metadata: {
-        inaccessibleStylesheetCount: inaccessibleStylesheets.length,
+        inaccessibleStylesheetCount: matchedStyles?.inaccessibleStylesheetCount ??
+          inaccessibleStylesheets.length,
       },
     },
     metadata: {},
@@ -90,16 +97,26 @@ function collectTarget(
   document: CssDocumentSource,
   pageUrl: string,
   budget: InspectByteBudget,
+  matchedStyles?: MatchedStyles,
+  inheritedAncestorIndex?: number,
 ): CollectedTarget {
   const subject = createElementSnapshot(element, pageUrl, budget);
-  const collection = collectCssFacts(
-    element,
-    {
-      pageUrl,
-      styleSheets: document.styleSheets,
-    },
-    budget,
-  );
+  const collection = matchedStyles
+    ? projectMatchedStylesToCssFacts(
+      matchedStyles,
+      budget,
+      inheritedAncestorIndex === undefined
+        ? {}
+        : { inheritedAncestorIndex },
+    )
+    : collectCssFacts(
+      element,
+      {
+        pageUrl,
+        styleSheets: document.styleSheets,
+      },
+      budget,
+    );
   return {
     role,
     depth,

@@ -1,0 +1,458 @@
+import { describe, expect, it } from "vitest";
+import { MatchedStylesCollector } from "../src/matchedStylesCollector.js";
+import type {
+  MatchedStylesCollectionAuthority,
+  MatchedStylesStylesheetAuthority,
+} from "../src/matchedStylesCollector.js";
+import type {
+  StylesheetRegistryEntry,
+  StylesheetRegistrySnapshot,
+} from "../src/stylesheetRegistry.js";
+
+const AUTHORITY = Object.freeze({
+  documentEpoch: 7,
+  selectionRevision: 11,
+  stylesRevision: 13,
+  stylesheetRevision: 5,
+  nodeRef: "node-selected",
+});
+
+describe("MatchedStylesCollector", () => {
+  it("returns one fixed, deeply frozen authority shape for inline and matched rules", () => {
+    const scope = documentScope();
+    const selected = element(scope, {
+      matches: new Set([".card", ".featured", "article"]),
+      inline: declaration({ color: "purple", "--theme": "night" }),
+    });
+    const sheet = stylesheet("https://example.test/a.css", [
+      styleRule("article, .card, .featured", {
+        color: "red",
+        display: "block",
+      }),
+      styleRule("#never, .card", { color: "blue !important" }),
+    ]);
+    const stylesheets = stylesheetAuthority(scope, [sheet]);
+    const matchedCollector = collector(selected, stylesheets);
+
+    const result = matchedCollector.collect(AUTHORITY)!;
+
+    expect(result).toMatchObject({
+      ...AUTHORITY,
+      inline: {
+        selectorText: "element.style",
+        matchingSelectorIndices: [],
+        declarations: [
+          expect.objectContaining({ property: "color", value: "purple" }),
+          expect.objectContaining({
+            property: "--theme",
+            state: "unknown",
+            reason: "custom-property-cascade",
+          }),
+        ],
+      },
+      rules: [
+        {
+          ruleRef: expect.stringMatching(/^rule-/),
+          selectorText: "article, .card, .featured",
+          matchingSelectorIndices: [0, 1, 2],
+          declarations: [
+            expect.objectContaining({
+              property: "color",
+              state: "overridden-known-author",
+            }),
+            expect.objectContaining({
+              property: "display",
+              state: "winning-known-author",
+            }),
+          ],
+          contexts: [],
+          source: {
+            sourceUrl: "https://example.test/a.css",
+            rulePath: "0.0",
+          },
+        },
+        {
+          ruleRef: expect.stringMatching(/^rule-/),
+          selectorText: "#never, .card",
+          matchingSelectorIndices: [1],
+          declarations: [expect.objectContaining({
+            property: "color",
+            value: "blue",
+            important: true,
+            state: "winning-known-author",
+          })],
+          contexts: [],
+          source: {
+            sourceUrl: "https://example.test/a.css",
+            rulePath: "0.1",
+          },
+        },
+      ],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    });
+    expect(result.rules[0]!.ruleRef).not.toBe(result.rules[1]!.ruleRef);
+    expect(result.rules[0]!.declarations.every(
+      (declaration) => declaration.ruleRef === result.rules[0]!.ruleRef,
+    )).toBe(true);
+    expectDeepFrozen(result);
+  });
+
+  it("retains ordered nested/import contexts, inactive conditions, and duplicate rules", () => {
+    const scope = documentScope({
+      media: new Map([["print", false], ["screen", true]]),
+      supports: new Map([
+        ["(display: grid)", true],
+        ["(display: subgrid)", false],
+      ]),
+    });
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const imported = stylesheet("https://example.test/imported.css", [
+      supportsRule("(display: grid)", [styleRule(".card", { display: "grid" })]),
+    ]);
+    const first = stylesheet("https://example.test/first.css", [
+      importRule(imported, "screen"),
+      mediaRule("print", [styleRule(".card", { color: "gray" })]),
+      supportsRule("(display: subgrid)", [styleRule(".card", { opacity: "0.5" })]),
+      styleRule(".card", { color: "red" }),
+    ]);
+    const second = stylesheet("https://example.test/second.css", [
+      styleRule(".card", { color: "blue" }),
+    ]);
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [first, second], [imported]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.rules.map((rule) => [
+      rule.selectorText,
+      rule.contexts,
+      rule.declarations[0]?.state,
+    ])).toEqual([
+      [".card", [
+        { kind: "media", text: "screen" },
+        { kind: "supports", text: "(display: grid)" },
+      ], "winning-known-author"],
+      [".card", [{ kind: "media", text: "print" }], "inactive"],
+      [".card", [{ kind: "supports", text: "(display: subgrid)" }], "inactive"],
+      [".card", [], "overridden-known-author"],
+      [".card", [], "winning-known-author"],
+    ]);
+    expect(new Set(result.rules.map(({ ruleRef }) => ruleRef))).toHaveLength(5);
+  });
+
+  it("collects inheritable declarations from at most 32 composed ancestors", () => {
+    const scope = documentScope();
+    let ancestor: ReturnType<typeof element> | null = null;
+    for (let index = 34; index >= 1; index -= 1) {
+      ancestor = element(scope, {
+        matches: new Set([`.ancestor-${index}`]),
+        parent: ancestor,
+        tagName: `A${index}`,
+      });
+    }
+    const selected = element(scope, {
+      matches: new Set([".selected"]),
+      parent: ancestor,
+    });
+    const rules = Array.from({ length: 34 }, (_, index) =>
+      styleRule(`.ancestor-${index + 1}`, {
+        color: `rgb(${index}, 0, 0)`,
+        display: "block",
+        "--ancestor": `${index}`,
+      }));
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, rules)]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited).toHaveLength(32);
+    expect(result.inherited[0]?.ancestorIndex).toBe(1);
+    expect(result.inherited[31]?.ancestorIndex).toBe(32);
+    expect(result.inherited.flatMap(({ rules }) => rules).flatMap(({ declarations }) =>
+      declarations.map(({ property }) => property))).not.toContain("display");
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("ancestor-limit");
+  });
+
+  it("fails closed for exact scope, hostile selectors, unsupported groups, and partial inventory", () => {
+    const selectedScope = documentScope();
+    const otherScope = documentScope();
+    const selected = element(selectedScope, {
+      matches: new Set([
+        ".card",
+        ":host",
+        "::slotted(.card)",
+        ":is(.shell) > .card",
+      ]),
+      throwSelectors: new Set([":broken("]),
+    });
+    const selectedSheet = stylesheet(null, [
+      styleRule(":broken(", { color: "red" }),
+      styleRule(":host", { color: "green" }),
+      styleRule("::slotted(.card)", { color: "yellow" }),
+      {
+        ...styleRule(".shell", {}),
+        cssRules: [styleRule("& > .card", { color: "orange" })],
+      },
+      groupRule("CSSLayerBlockRule", "theme", [
+        styleRule(".card", { color: "blue" }),
+      ]),
+      groupRule("CSSScopeRule", "(.shell)", [
+        styleRule(".card", { border: "1px solid" }),
+      ]),
+      groupRule("CSSContainerRule", "card (width > 1px)", [
+        styleRule(".card", { padding: "1px" }),
+      ]),
+    ]);
+    const otherSheet = stylesheet(null, [styleRule(".card", { opacity: "0" })]);
+    const stylesheets = stylesheetAuthority(selectedScope, [selectedSheet]);
+    const selectedEntries = stylesheets.snapshot().entries;
+    stylesheets.snapshot = () => snapshot([
+      ...selectedEntries,
+      entry(otherScope, otherSheet, 1, "root-1"),
+    ], {
+      inaccessibleStylesheetCount: 2,
+      partial: true,
+      diagnostics: [{ code: "rules-visited-limit" }],
+    });
+
+    const result = collector(selected, stylesheets).collect(AUTHORITY)!;
+
+    expect(result.rules.flatMap(({ declarations }) => declarations.map(({ property }) => property)))
+      .not.toContain("opacity");
+    expect(result.rules.map(({ declarations }) => declarations[0]?.reason)).toEqual([
+      "unsupported-selector-specificity",
+      "unsupported-selector-specificity",
+      "unsupported-selector-specificity",
+      "unsupported-cascade-layer",
+      "unsupported-cascade-scope",
+      "unsupported-container-query",
+    ]);
+    expect(result.inaccessibleStylesheetCount).toBe(2);
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("selector-unavailable");
+    expect(result.diagnostics).toContain("rules-visited-limit");
+  });
+
+  it("rejects stale document/revision/selection authority before publication", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const stylesheets = stylesheetAuthority(scope, [
+      stylesheet(null, [styleRule(".card", { color: "red" })]),
+    ]);
+    let current = true;
+    const matched = collector(selected, stylesheets, () => current);
+    expect(matched.collect({ ...AUTHORITY, documentEpoch: 6 })).toBeUndefined();
+    expect(matched.collect({ ...AUTHORITY, stylesRevision: 12 })).toBeUndefined();
+    current = false;
+    expect(matched.collect(AUTHORITY)).toBeUndefined();
+  });
+});
+
+function collector(
+  selected: ReturnType<typeof element>,
+  stylesheets: MatchedStylesStylesheetAuthority,
+  isAuthorityCurrent: (authority: MatchedStylesCollectionAuthority) => boolean = () => true,
+) {
+  return new MatchedStylesCollector({
+    domTreeProvider: {
+      resolveElement(nodeRef, documentEpoch) {
+        return nodeRef === AUTHORITY.nodeRef && documentEpoch === AUTHORITY.documentEpoch
+          ? {
+            element: selected as unknown as Element,
+            nodeRef,
+            documentEpoch,
+            frameRef: "frame-top",
+            frameEpoch: 1,
+          }
+          : undefined;
+      },
+    },
+    stylesheets,
+    isAuthorityCurrent,
+  });
+}
+
+function stylesheetAuthority(
+  scope: ReturnType<typeof documentScope>,
+  roots: ReturnType<typeof stylesheet>[],
+  imports: ReturnType<typeof stylesheet>[] = [],
+): MatchedStylesStylesheetAuthority & { snapshot: () => StylesheetRegistrySnapshot } {
+  const entries = [
+    ...roots.map((sheet, index) => entry(scope, sheet, index, `root-${index}`)),
+    ...imports.map((sheet, index) => entry(
+      scope,
+      sheet,
+      roots.length + index,
+      `import-${index}`,
+      "import",
+    )),
+  ];
+  const refs = new WeakMap<object, string>();
+  let nextRef = 0;
+  const reference = (native: object) => {
+    const existing = refs.get(native);
+    if (existing) return existing;
+    const value = `rule-${++nextRef}`;
+    refs.set(native, value);
+    return value;
+  };
+  return {
+    snapshot: () => snapshot(entries),
+    entriesForElement: (candidate) =>
+      (candidate as unknown as { root: object }).root === scope ? entries : [],
+    referenceRule: (_entry, _path, native) => reference(native),
+    referenceInlineRule: (native) => reference(native),
+  };
+}
+
+function snapshot(
+  entries: StylesheetRegistryEntry[],
+  overrides: Partial<StylesheetRegistrySnapshot> = {},
+): StylesheetRegistrySnapshot {
+  return {
+    documentEpoch: AUTHORITY.documentEpoch,
+    stylesheetRevision: AUTHORITY.stylesheetRevision,
+    stylesRevision: AUTHORITY.stylesRevision,
+    entries,
+    uniqueSheetObjectCount: entries.length,
+    inaccessibleStylesheetCount: 0,
+    omittedScopeCount: 0,
+    omittedScopeSheetPairCount: 0,
+    partial: false,
+    diagnostics: [],
+    ...overrides,
+  };
+}
+
+function entry(
+  scope: object,
+  sheet: ReturnType<typeof stylesheet>,
+  sourceOrder: number,
+  identity: string,
+  kind: StylesheetRegistryEntry["kind"] = "external",
+): StylesheetRegistryEntry {
+  return {
+    scope: scope as Document,
+    scopeRef: "scope-test",
+    scopeKind: "document",
+    sheet: sheet as unknown as CSSStyleSheet,
+    sheetRef: identity,
+    sheetIdentity: identity,
+    kind,
+    sourceOrder,
+    sourceUrl: sheet.href ?? undefined,
+    rulePathPrefix: kind === "import" ? "0" : "",
+    generatedRanges: {},
+  };
+}
+
+function documentScope(options: {
+  media?: Map<string, boolean>;
+  supports?: Map<string, boolean>;
+} = {}) {
+  return {
+    nodeType: 9,
+    defaultView: {
+      matchMedia: (query: string) => ({ matches: options.media?.get(query) ?? true }),
+      CSS: { supports: (query: string) => options.supports?.get(query) ?? true },
+    },
+  };
+}
+
+function element(
+  root: object,
+  options: {
+    matches: Set<string>;
+    throwSelectors?: Set<string>;
+    inline?: ReturnType<typeof declaration>;
+    parent?: ReturnType<typeof element> | null;
+    tagName?: string;
+  },
+) {
+  return {
+    root,
+    tagName: options.tagName ?? "ARTICLE",
+    parentElement: options.parent ?? null,
+    assignedSlot: null,
+    style: options.inline ?? declaration({}),
+    getRootNode: () => root,
+    matches(selector: string) {
+      if (options.throwSelectors?.has(selector)) throw new Error("hostile matches");
+      return selector.split(",").some((part) => options.matches.has(part.trim()));
+    },
+  };
+}
+
+function stylesheet(href: string | null, cssRules: object[]) {
+  return { href, cssRules };
+}
+
+function styleRule(selectorText: string, values: Record<string, string>) {
+  return {
+    selectorText,
+    cssText: `${selectorText} { ... }`,
+    style: declaration(values),
+  };
+}
+
+function declaration(values: Record<string, string>) {
+  const entries = Object.entries(values).map(([property, raw]) => ({
+    property,
+    value: raw.replace(/\s*!important$/i, ""),
+    priority: /\s*!important$/i.test(raw) ? "important" : "",
+  }));
+  return {
+    length: entries.length,
+    item: (index: number) => entries[index]?.property ?? "",
+    getPropertyValue: (property: string) =>
+      entries.find((entry) => entry.property === property)?.value ?? "",
+    getPropertyPriority: (property: string) =>
+      entries.find((entry) => entry.property === property)?.priority ?? "",
+  };
+}
+
+function mediaRule(conditionText: string, cssRules: object[]) {
+  return namedRule("CSSMediaRule", {
+    conditionText,
+    media: { mediaText: conditionText },
+    cssText: `@media ${conditionText} {}`,
+    cssRules,
+  });
+}
+
+function supportsRule(conditionText: string, cssRules: object[]) {
+  return namedRule("CSSSupportsRule", {
+    type: 12,
+    conditionText,
+    cssText: `@supports ${conditionText} {}`,
+    cssRules,
+  });
+}
+
+function groupRule(name: string, conditionText: string, cssRules: object[]) {
+  return namedRule(name, { conditionText, name: conditionText, cssText: `@x ${conditionText} {}`, cssRules });
+}
+
+function importRule(imported: ReturnType<typeof stylesheet>, media: string) {
+  return {
+    href: imported.href,
+    styleSheet: imported,
+    media: { mediaText: media },
+    cssText: `@import ${imported.href}`,
+  };
+}
+
+function namedRule(name: string, value: object) {
+  return Object.assign(Object.create({ constructor: { name } }), value);
+}
+
+function expectDeepFrozen(value: unknown): void {
+  if (typeof value !== "object" || value === null) return;
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const nested of Object.values(value)) expectDeepFrozen(nested);
+}

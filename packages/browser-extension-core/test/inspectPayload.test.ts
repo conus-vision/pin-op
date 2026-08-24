@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import { createInspectPayload } from "../src/inspectPayload.js";
 import type { InspectableElement } from "../src/inspectMode.js";
+import type { MatchedStyles } from "../src/matchedStylesTypes.js";
 
 describe("createInspectPayload", () => {
   it("collects selected and immediate-parent targets independently", () => {
@@ -43,6 +44,29 @@ describe("createInspectPayload", () => {
 
     expect(payload.targets).toHaveLength(1);
     expect(payload.targets[0]?.role).toBe("selected");
+  });
+
+  it("projects selected and inherited facts from one supplied matched authority", () => {
+    const parent = element("main", "", ["layout"], null);
+    const selected = element("article", "", ["card"], parent);
+    const matched = matchedStylesFixture();
+    const hostileDocument = {
+      pageUrl: "http://localhost:3000/page",
+      get styleSheets(): never {
+        throw new Error("inspect payload must not re-walk CSSOM");
+      },
+    };
+
+    const payload = createInspectPayload(
+      selected,
+      hostileDocument,
+      locationSource(),
+      matched,
+    );
+
+    expect(payload.targets[0]?.facts[0]?.metadata.ruleRef).toBe("rule-selected");
+    expect(payload.targets[1]?.facts[0]?.metadata.ruleRef).toBe("rule-parent");
+    expect(payload.context.metadata).toEqual({ inaccessibleStylesheetCount: 3 });
   });
 
   it("keeps shared rules in both targets and deduplicates browser errors", () => {
@@ -305,5 +329,44 @@ function locationSource() {
     pathname: "/page",
     search: "?mode=dev",
     hash: "#card",
+  };
+}
+
+function matchedStylesFixture(): MatchedStyles {
+  const matchedRule = (
+    ruleRef: string,
+    selectorText: string,
+    property: string,
+  ) => ({
+    ruleRef,
+    selectorText,
+    matchingSelectorIndices: [0],
+    declarations: [{
+      ruleRef,
+      property,
+      value: "red",
+      important: false,
+      valueTruncated: false,
+      state: "winning-known-author" as const,
+      reason: "highest-precedence-known-author-declaration" as const,
+    }],
+    contexts: [],
+    source: { sourceUrl: "/dist/app.css", rulePath: "0.0" },
+  });
+  return {
+    documentEpoch: 1,
+    selectionRevision: 1,
+    stylesRevision: 1,
+    stylesheetRevision: 1,
+    nodeRef: "node-selected",
+    rules: [matchedRule("rule-selected", ".card", "color")],
+    inherited: [{
+      ancestorIndex: 1,
+      elementName: "main",
+      rules: [matchedRule("rule-parent", ".layout", "color")],
+    }],
+    inaccessibleStylesheetCount: 3,
+    partial: true,
+    diagnostics: ["stylesheet-inaccessible"],
   };
 }

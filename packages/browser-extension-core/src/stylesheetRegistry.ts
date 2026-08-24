@@ -246,6 +246,17 @@ export class StylesheetRegistry {
     return this.ruleReferences.reference(entry.sheetIdentity, rulePath, nativeRule);
   }
 
+  public referenceInlineRule(element: Element): string {
+    this.requireLive();
+    this.ensureInventory();
+    const root = safeRoot(element);
+    if (!root || !this.inventory!.scopes.includes(root)) {
+      throw new Error("inline style element is outside the current inventory");
+    }
+    const scopeRef = this.scopeRef(root);
+    return this.ruleReferences.reference(`${scopeRef}-inline`, "0", element);
+  }
+
   public resolveRule(ruleRef: string): object | undefined {
     this.requireLive();
     return this.ruleReferences.resolve(ruleRef, {

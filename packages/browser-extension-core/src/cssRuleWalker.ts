@@ -99,8 +99,32 @@ export interface CssRuleWalkRecord {
   readonly ruleRef?: string;
 }
 
+/** Browser-local observer record; native values must never be serialized. */
+export interface CssMatchedRuleWalkRecord {
+  readonly nativeRule: object;
+  readonly nativeStylesheet: StylesheetSource;
+  readonly selector: string;
+  readonly resolvedSelector: string;
+  readonly sourceUrl: string;
+  readonly stylesheetIdentity: string;
+  readonly rulePath: string;
+  readonly media: readonly string[];
+  readonly mediaTruncated: boolean;
+  readonly contexts: readonly CssRuleContextRecord[];
+  readonly contextsTruncated: boolean;
+  readonly ruleRef?: string;
+}
+
 export interface CssRuleWalkOptions {
   readonly ruleReferences?: Pick<RuleReferenceRegistry, "reference">;
+  readonly referenceRule?: (
+    stylesheet: StylesheetSource,
+    stylesheetIdentity: string,
+    rulePath: string,
+    nativeRule: object,
+  ) => string | undefined;
+  readonly onMatchedRule?: (record: CssMatchedRuleWalkRecord) => void;
+  readonly onSelectorUnavailable?: (selector: string) => void;
 }
 
 export interface CssRuleWalk {
@@ -136,6 +160,7 @@ interface WalkState {
 interface StylesheetWalkContext {
   readonly sourceUrl: string;
   readonly stylesheetIdentity: string;
+  readonly nativeStylesheet: StylesheetSource;
 }
 
 const EMPTY_MEDIA: BoundedValues<string> = {
@@ -239,7 +264,7 @@ function* walkRootStylesheets(
         yield* walkRules(
           element,
           rules,
-          { sourceUrl, stylesheetIdentity },
+          { sourceUrl, stylesheetIdentity, nativeStylesheet: stylesheet },
           `${rootIndex}`,
           EMPTY_MEDIA,
           EMPTY_CONTEXTS,
@@ -327,9 +352,18 @@ function* walkRules(
       if (isStyleRule(rule)) {
         nestedStyleRule = true;
         const selector = resolveStyleSelector(rule.selectorText, parentSelector);
-        if (!selector) continue;
+        if (!selector) {
+          notifySelectorUnavailable(state, rule.selectorText);
+          continue;
+        }
+        if (hasScopeSensitiveSelector(selector.resolvedSelector)) {
+          notifySelectorUnavailable(state, selector.resolvedSelector);
+        }
         const matches = matchesSelector(element, selector.resolvedSelector);
-        if (matches === undefined) continue;
+        if (matches === undefined) {
+          notifySelectorUnavailable(state, selector.resolvedSelector);
+          continue;
+        }
         if (matches) {
           yield* walkDeclarations(
             rule,
@@ -346,7 +380,10 @@ function* walkRules(
         if (reachedWalkLimit(state)) return;
       } else if (isNestedDeclarationsRule(rule) && parentSelector) {
         const matches = matchesSelector(element, parentSelector.resolvedSelector);
-        if (matches === undefined) continue;
+        if (matches === undefined) {
+          notifySelectorUnavailable(state, parentSelector.resolvedSelector);
+          continue;
+        }
         if (matches) {
           yield* walkDeclarations(
             rule,
@@ -429,13 +466,32 @@ function* walkDeclarations(
   }
 
   let ruleRef: string | undefined;
-  if (declarationNames.length > 0 && state.options.ruleReferences) {
-    ruleRef = state.options.ruleReferences.reference(
+  if (declarationNames.length > 0) {
+    ruleRef = state.options.referenceRule?.(
+      stylesheet.nativeStylesheet,
+      stylesheet.stylesheetIdentity,
+      rulePath,
+      nativeRule,
+    ) ?? state.options.ruleReferences?.reference(
       stylesheet.stylesheetIdentity,
       rulePath,
       nativeRule,
     );
   }
+  state.options.onMatchedRule?.({
+    nativeRule,
+    nativeStylesheet: stylesheet.nativeStylesheet,
+    selector: selector.sourceSelector,
+    resolvedSelector: selector.resolvedSelector,
+    sourceUrl: stylesheet.sourceUrl,
+    stylesheetIdentity: stylesheet.stylesheetIdentity,
+    rulePath,
+    media: [...media.values],
+    mediaTruncated: media.truncated,
+    contexts: contexts.values.map((context) => ({ ...context })),
+    contextsTruncated: contexts.truncated,
+    ...(ruleRef ? { ruleRef } : {}),
+  });
   for (const property of declarationNames) {
     if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) return;
     try {
@@ -543,7 +599,11 @@ function* walkImportedStylesheet(
     yield* walkRules(
       element,
       importedRules,
-      { sourceUrl, stylesheetIdentity },
+      {
+        sourceUrl,
+        stylesheetIdentity,
+        nativeStylesheet: importedStylesheet,
+      },
       `${stylesheetNamespace}`,
       nextMedia,
       nextContexts,
@@ -790,6 +850,20 @@ function matchesSelector(
   } catch {
     return undefined;
   }
+}
+
+function notifySelectorUnavailable(state: WalkState, selector: string): void {
+  try {
+    state.options.onSelectorUnavailable?.(
+      truncate(selector, INSPECT_LIMITS.selectorLength),
+    );
+  } catch {
+    // Diagnostics supplied by a caller cannot make page traversal fail.
+  }
+}
+
+function hasScopeSensitiveSelector(selector: string): boolean {
+  return /:host(?:-context)?\b|::slotted\b|(?:^|[^\\])&/i.test(selector);
 }
 
 function readImportantPriority(
