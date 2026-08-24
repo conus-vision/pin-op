@@ -61,6 +61,7 @@ import {
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
   type ContentSessionId,
+  type InspectRepublishRequest,
   type PanelInspectPort,
   type PanelPresentationSettingsCommand,
   type PanelSourceOpenCommand,
@@ -3085,7 +3086,16 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
-    const republished = await this.panelSessions.republishSelection(binding.channel);
+    const republished = await this.panelSessions.republishSelection(
+      binding.channel,
+      Object.freeze({
+        type: "pin-op.inspect.republish",
+        contentSessionId,
+        documentEpoch: event.documentEpoch,
+        nodeRef: event.nodeRef,
+        selectionRevision: event.selectionRevision,
+      }),
+    );
     return republished ? okResult : undefined;
   }
 
@@ -3358,17 +3368,19 @@ export class BackgroundRouter {
     const token = record.activationToken;
     const binding = this.bindings.get(record.channel);
     const session = record.inspectSession;
+    const republishRequest = this.currentRepublishRequest(record);
     if (
       !token ||
       !binding ||
       !session ||
+      !republishRequest ||
       binding.windowId !== windowId ||
       !this.isCurrentActivation(record, token, binding)
     ) {
       return;
     }
     record.republishInFlightEpoch = epoch;
-    void this.panelSessions.republishSelection(record.channel)
+    void this.panelSessions.republishSelection(record.channel, republishRequest)
       .then((republished) => {
         if (
           record.republishInFlightEpoch !== epoch ||
@@ -3846,6 +3858,21 @@ export class BackgroundRouter {
     const generation = this.nextGeneration;
     this.nextGeneration += 1;
     return generation;
+  }
+
+  private currentRepublishRequest(
+    record: PanelPortRecord,
+  ): InspectRepublishRequest | undefined {
+    const contentSessionId = record.contentSessionId;
+    const authority = record.stylesSelectionAuthority;
+    if (!contentSessionId || !authority?.selected) return undefined;
+    return Object.freeze({
+      type: "pin-op.inspect.republish",
+      contentSessionId,
+      documentEpoch: authority.documentEpoch,
+      nodeRef: authority.nodeRef,
+      selectionRevision: authority.selectionRevision,
+    });
   }
 
   private reportError(error: unknown): void {

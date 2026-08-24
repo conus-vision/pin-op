@@ -18,7 +18,11 @@ import {
   type DomRequest,
   type DomResponse,
 } from "./domProtocol.js";
-import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
+import {
+  isValidDevtoolsChannel,
+  parseInspectRepublishRequest,
+  type InspectRepublishRequest,
+} from "./inspectPortProtocol.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
 import {
   isStylesResponseForRequest,
@@ -57,6 +61,7 @@ export interface PanelInspectStartedState {
 interface PanelSessionBinding {
   readonly tabId: number;
   republish?: Promise<boolean>;
+  republishRequest?: InspectRepublishRequest;
   republishToken?: object;
 }
 
@@ -188,12 +193,20 @@ export class PanelSessionTransport {
     }
   }
 
-  public republishSelection(channel: string): Promise<boolean> {
+  public republishSelection(
+    channel: string,
+    requestValue: InspectRepublishRequest,
+  ): Promise<boolean> {
+    const request = parseInspectRepublishRequest(requestValue);
     const binding = this.channels.get(channel);
-    if (!binding) {
+    if (!binding || !request) {
       return Promise.resolve(false);
     }
-    if (binding.republish) {
+    if (
+      binding.republish &&
+      binding.republishRequest &&
+      sameRepublishRequest(binding.republishRequest, request)
+    ) {
       return binding.republish;
     }
     const republishToken = {};
@@ -201,7 +214,7 @@ export class PanelSessionTransport {
     const pending = (async (): Promise<boolean> => {
       try {
         const result = await this.options.sendTabMessage(binding.tabId, {
-          type: "pin-op.inspect.republish",
+          ...request,
         });
         return this.channels.get(channel) === binding && result !== false;
       } catch {
@@ -209,11 +222,13 @@ export class PanelSessionTransport {
       } finally {
         if (binding.republishToken === republishToken) {
           binding.republish = undefined;
+          binding.republishRequest = undefined;
           binding.republishToken = undefined;
         }
       }
     })();
     binding.republish = pending;
+    binding.republishRequest = request;
     return pending;
   }
 
@@ -287,6 +302,16 @@ export class PanelSessionTransport {
       // A panel disconnect owns channel disposal.
     }
   }
+}
+
+function sameRepublishRequest(
+  left: InspectRepublishRequest,
+  right: InspectRepublishRequest,
+): boolean {
+  return left.contentSessionId === right.contentSessionId &&
+    left.documentEpoch === right.documentEpoch &&
+    left.nodeRef === right.nodeRef &&
+    left.selectionRevision === right.selectionRevision;
 }
 
 function parsePublishedMessage(

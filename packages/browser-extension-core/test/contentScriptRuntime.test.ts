@@ -331,6 +331,22 @@ describe("startContentScriptRuntime", () => {
       },
     });
 
+    const republishRequest = {
+      type: "pin-op.inspect.republish",
+      contentSessionId,
+      documentEpoch: 4,
+      nodeRef: "node-a",
+      selectionRevision: 7,
+    };
+    await runtimeMessages.emit(republishRequest);
+    expect(pageSession.republishSelection).toHaveBeenCalledOnce();
+    expect(pageSession.republishSelection).toHaveBeenCalledWith(
+      republishRequest,
+    );
+    await expect(runtimeMessages.emit({
+      ...republishRequest,
+      contentSessionId: "retired-content-session",
+    })).resolves.toBe(false);
     await runtimeMessages.emit({ type: "pin-op.inspect.republish" });
     expect(pageSession.republishSelection).toHaveBeenCalledOnce();
 

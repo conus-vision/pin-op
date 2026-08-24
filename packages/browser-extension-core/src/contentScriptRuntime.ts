@@ -4,9 +4,11 @@ import type { LocationSource } from "./inspectPayload.js";
 import {
   createInspectContentLeasePortName,
   isValidContentSessionId,
+  parseInspectRepublishRequest,
   parseInspectorLocalRequest,
   type ContentSessionId,
   type ContentInspectPort,
+  type InspectRepublishRequest,
 } from "./inspectPortProtocol.js";
 import {
   type InspectDocument,
@@ -137,7 +139,7 @@ export interface ContentPageInspectionSession {
   enablePicker(): void;
   disablePicker(): void;
   handle(request: DomRequest | StylesRequest): Promise<unknown>;
-  republishSelection(): Promise<boolean>;
+  republishSelection(request: InspectRepublishRequest): Promise<boolean>;
   clearOverlayForRefresh?(): void;
   dispose(): void;
 }
@@ -235,8 +237,10 @@ export function startContentScriptRuntime(
       }
       return undefined;
     }
-    if (isExactTypeMessage(message, "pin-op.inspect.republish")) {
-      return session.republishSelection().catch((error) => {
+    const republishRequest = parseInspectRepublishRequest(message);
+    if (republishRequest) {
+      if (republishRequest.contentSessionId !== contentSessionId) return false;
+      return session.republishSelection(republishRequest).catch((error) => {
         reportError(error);
         return false;
       });

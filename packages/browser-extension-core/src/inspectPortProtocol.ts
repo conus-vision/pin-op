@@ -7,7 +7,11 @@ import type {
   DomEvent,
   DomResponse,
 } from "./domProtocol.js";
-import { parseDomRequest, type DomRequest } from "./domProtocol.js";
+import {
+  isSelectionRevision,
+  parseDomRequest,
+  type DomRequest,
+} from "./domProtocol.js";
 import type {
   PanelTabSettingsCommand,
   PanelTabStateMessage,
@@ -83,6 +87,14 @@ export interface InspectPortInvalidated {
   readonly reason: "documentDisconnected";
 }
 
+export interface InspectRepublishRequest {
+  readonly type: "pin-op.inspect.republish";
+  readonly contentSessionId: ContentSessionId;
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+}
+
 export interface PanelSourceNavigateCommand {
   readonly type: "pin-op.source.navigate";
   readonly inspectMessageId: string;
@@ -129,6 +141,7 @@ export type BackgroundToPanelInspectPortMessage =
 /** Messages sent from the trusted background port to the content-script lease. */
 export type BackgroundToContentInspectPortMessage =
   | InspectPortRequest
+  | InspectRepublishRequest
   | RefreshExecutionCommand
   | DomRequest
   | StylesRequest;
@@ -268,6 +281,35 @@ export function parseInspectPortRequest(
     requestId: value.requestId,
     enabled: value.enabled,
   };
+}
+
+export function parseInspectRepublishRequest(
+  value: unknown,
+): InspectRepublishRequest | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "contentSessionId",
+    "documentEpoch",
+    "nodeRef",
+    "selectionRevision",
+  ]);
+  if (
+    !record ||
+    record.type !== "pin-op.inspect.republish" ||
+    !isValidContentSessionId(record.contentSessionId) ||
+    !isSelectionRevision(record.documentEpoch) ||
+    !isProtocolOpaqueId(record.nodeRef) ||
+    !isSelectionRevision(record.selectionRevision)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    contentSessionId: record.contentSessionId,
+    documentEpoch: record.documentEpoch,
+    nodeRef: record.nodeRef,
+    selectionRevision: record.selectionRevision,
+  });
 }
 
 export function parseInspectPortResult(

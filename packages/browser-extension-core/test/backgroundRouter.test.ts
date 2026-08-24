@@ -3753,6 +3753,7 @@ describe("BackgroundRouter", () => {
     );
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
+    await establishSelectionAuthority(harness);
 
     harness.peerStates.emit(10, peerState(false, 3));
     harness.peerStates.emit(10, peerState(true, 4));
@@ -3766,7 +3767,7 @@ describe("BackgroundRouter", () => {
     expect(harness.inspectCalls).toContainEqual([
       "tab",
       17,
-      { type: "pin-op.inspect.republish" },
+      inspectRepublishRequest(),
     ]);
   });
 
@@ -3775,6 +3776,7 @@ describe("BackgroundRouter", () => {
     await harness.registerAndConnect("channel-1", 17, "source-17");
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
+    await establishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
 
     harness.peerStates.emit(10, peerState(true, 1));
@@ -3788,6 +3790,7 @@ describe("BackgroundRouter", () => {
     await harness.registerAndConnect("channel-1", 17, "source-17");
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
+    await establishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
 
     harness.peerStates.emit(10, peerState(true, 1, "session-a"));
@@ -3855,6 +3858,7 @@ describe("BackgroundRouter", () => {
     await harness.registerAndConnect("channel-1", 17, "source-17");
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
+    await establishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
     const registration = harness.coordinator.registrations[0];
 
@@ -3877,6 +3881,7 @@ describe("BackgroundRouter", () => {
     await harness.registerAndConnect("channel-1", 17, "source-17");
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
+    await establishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
     const registration = harness.coordinator.registrations[0];
 
@@ -3919,6 +3924,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
+    await publishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
     const registration = harness.coordinator.registrations[0];
 
@@ -3968,6 +3974,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
+    await publishSelectionAuthority(harness);
     const firstId = harness.coordinator.published[0]?.inspectMessageId;
 
     harness.peerStates.emit(10, peerState(false, 1));
@@ -4021,6 +4028,7 @@ describe("BackgroundRouter", () => {
       selectedMessage(DEFAULT_CONTENT_SESSION_ID),
       contentSender(17, 10),
     );
+    await publishSelectionAuthority(harness);
     harness.peerStates.emit(10, peerState(true, 7));
     await flushMicrotasks();
     const initialPeerRepublishes = republishCallCount(harness.inspectCalls);
@@ -4112,6 +4120,7 @@ describe("BackgroundRouter", () => {
     );
     await harness.inspectCoordinator.whenIdle(17);
     await harness.inspectCoordinator.whenIdle(18);
+    await establishSelectionAuthority(harness);
     harness.inspectCalls.length = 0;
 
     harness.peerStates.emit(10, peerState(false, 1));
@@ -4124,7 +4133,7 @@ describe("BackgroundRouter", () => {
     ]);
     expect(messagesOfType(panelB, "peerState")).toEqual([]);
     expect(harness.inspectCalls).toEqual([
-      ["tab", 17, { type: "pin-op.inspect.republish" }],
+      ["tab", 17, inspectRepublishRequest()],
     ]);
   });
 
@@ -7576,6 +7585,41 @@ function selectedMessage(
     selectionRevision,
     payload,
   };
+}
+
+function inspectRepublishRequest(
+  contentSessionId = DEFAULT_CONTENT_SESSION_ID,
+  documentEpoch = 1,
+  nodeRef = "node-1",
+  selectionRevision = 1,
+) {
+  return {
+    type: "pin-op.inspect.republish" as const,
+    contentSessionId,
+    documentEpoch,
+    nodeRef,
+    selectionRevision,
+  };
+}
+
+async function publishSelectionAuthority(
+  harness: ReturnType<typeof createHarness>,
+  contentSessionId = DEFAULT_CONTENT_SESSION_ID,
+): Promise<void> {
+  await harness.router.routeMessage(
+    domEventMessage(
+      contentSessionId,
+      selectionChangedWithRevision("node-1", 1),
+    ),
+    contentSender(17, 10),
+  );
+}
+
+async function establishSelectionAuthority(
+  harness: ReturnType<typeof createHarness>,
+): Promise<void> {
+  await harness.attachContentSession(17, DEFAULT_CONTENT_SESSION_ID);
+  await publishSelectionAuthority(harness);
 }
 
 function selectedMessageWithRevision(

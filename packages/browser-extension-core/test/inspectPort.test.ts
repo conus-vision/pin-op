@@ -4,6 +4,7 @@ import {
   createInspectContentLeasePortName,
   parseDevtoolsPanelPortName,
   parseInspectContentLeasePortName,
+  parseInspectRepublishRequest,
   INSPECTOR_LOCAL_REQUEST_TYPES,
   isInspectorLocalRequestType,
   parseInspectorLocalRequest,
@@ -18,6 +19,35 @@ import {
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
 describe("panel inspect transport", () => {
+  it("parses only an exact selection-bound inspect republish request", () => {
+    const request = {
+      type: "pin-op.inspect.republish",
+      contentSessionId: "content-session-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+    };
+    expect(parseInspectRepublishRequest(request)).toEqual(request);
+    for (const invalid of [
+      { type: "pin-op.inspect.republish" },
+      { ...request, contentSessionId: "content/session" },
+      { ...request, nodeRef: "" },
+      { ...request, selectionRevision: -1 },
+      { ...request, tabId: 17 },
+    ]) {
+      expect(parseInspectRepublishRequest(invalid)).toBeUndefined();
+    }
+    let getterCalls = 0;
+    expect(parseInspectRepublishRequest({
+      ...request,
+      get nodeRef() {
+        getterCalls += 1;
+        return "node-1";
+      },
+    })).toBeUndefined();
+    expect(getterCalls).toBe(0);
+  });
+
   it("keeps a closed exact allowlist for browser-local DOM and styles requests", () => {
     expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("dom.getRoot");
     expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("styles.getMatched");

@@ -241,25 +241,42 @@ describe("PanelSessionTransport", () => {
     )).resolves.toEqual(response);
   });
 
-  it("coalesces concurrent selection republish for one channel binding", async () => {
-    let resolve!: (value: unknown) => void;
-    const response = new Promise<unknown>((next) => {
-      resolve = next;
-    });
-    const sendTabMessage = vi.fn(async () => response);
+  it("coalesces only the same selection-bound republish request", async () => {
+    const resolvers: Array<(value: unknown) => void> = [];
+    const sendTabMessage = vi.fn(async () => new Promise<unknown>((resolve) => {
+      resolvers.push(resolve);
+    }));
     const transport = new PanelSessionTransport({
       sendTabMessage,
       postPanelMessage: vi.fn(),
     });
     transport.bind("panel-a", 7);
+    const firstRequest = {
+      type: "pin-op.inspect.republish" as const,
+      contentSessionId: "content-a",
+      documentEpoch: 4,
+      nodeRef: "node-a",
+      selectionRevision: 7,
+    };
 
-    const first = transport.republishSelection("panel-a");
-    const second = transport.republishSelection("panel-a");
+    const first = transport.republishSelection("panel-a", firstRequest);
+    const second = transport.republishSelection("panel-a", firstRequest);
+    const replacement = transport.republishSelection("panel-a", {
+      ...firstRequest,
+      nodeRef: "node-b",
+      selectionRevision: 8,
+    });
 
-    expect(sendTabMessage).toHaveBeenCalledOnce();
-    resolve(true);
-    await expect(first).resolves.toBe(true);
-    await expect(second).resolves.toBe(true);
+    expect(sendTabMessage).toHaveBeenCalledTimes(2);
+    expect(sendTabMessage.mock.calls).toEqual([
+      [7, firstRequest],
+      [7, { ...firstRequest, nodeRef: "node-b", selectionRevision: 8 }],
+    ]);
+    resolvers[0]!(false);
+    resolvers[1]!(true);
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(false);
+    await expect(replacement).resolves.toBe(true);
   });
 
   it("publishes only validated events to the bound panel channel", () => {

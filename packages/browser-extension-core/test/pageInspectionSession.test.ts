@@ -718,8 +718,56 @@ describe("PageInspectionSession", () => {
     expect(harness.overlay.clearCount).toBe(clearCount + 1);
     expect(harness.provider.retentions.filter(({ action }) => action === "release"))
       .toEqual(releases);
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
+  });
+
+  it("revalidates delayed republish identity after selection, lease, and navigation replacement", async () => {
+    const contentSessionId = "content-republish-current";
+    const harness = createSessionHarness({ contentSessionId });
+    await harness.session.selectByRef("node-2", 3);
+    const retiredSelection = {
+      type: "pin-op.inspect.republish" as const,
+      contentSessionId,
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: 1,
+    };
+
+    await harness.session.selectByRef("node-1", 3);
+    await expect(harness.session.republishSelection(retiredSelection))
+      .resolves.toBe(false);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef))
+      .toEqual(["node-2", "node-1"]);
+
+    const currentSelection = {
+      ...retiredSelection,
+      nodeRef: "node-1",
+      selectionRevision: 2,
+    };
+    await expect(harness.session.republishSelection({
+      ...currentSelection,
+      contentSessionId: "retired-content-lease",
+    })).resolves.toBe(false);
+    expect(harness.selections).toHaveLength(2);
+
+    await expect(harness.session.republishSelection(currentSelection))
+      .resolves.toBe(true);
+    expect(harness.selections.at(-1)).toMatchObject({
+      nodeRef: "node-1",
+      documentEpoch: 3,
+      selectionRevision: 2,
+    });
+
+    harness.session.resetDocument(
+      new FakeSessionDocument() as unknown as Document & {
+        readonly styleSheets: [];
+      },
+      4,
+    );
+    await expect(harness.session.republishSelection(currentSelection))
+      .resolves.toBe(false);
+    expect(harness.selections).toHaveLength(3);
   });
 
   it("does not display a selected element after hover leaves", async () => {
@@ -733,7 +781,7 @@ describe("PageInspectionSession", () => {
 
     expect(harness.overlay.shown).toHaveLength(shownBeforeLeave);
     expect(harness.overlay.clearCount).toBeGreaterThan(0);
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
     expect(harness.selections.map(({ nodeRef }) => nodeRef))
       .toEqual(["node-2", "node-2"]);
   });
@@ -799,7 +847,7 @@ describe("PageInspectionSession", () => {
       nodeRef: "node-1",
       reason: "hovered",
     });
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
   });
 
   it("clears frame hover when the pointer exits an iframe document", () => {
@@ -847,7 +895,7 @@ describe("PageInspectionSession", () => {
       type: "dom.hoverChanged",
       documentEpoch: 3,
     });
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
   });
 
   it("cancels queued page hover before clearing the overlay for refresh", async () => {
@@ -862,7 +910,7 @@ describe("PageInspectionSession", () => {
     harness.clock.flushFrame();
 
     expect(harness.overlay.shown).toHaveLength(shownBeforeRefresh);
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2", "node-2"]);
   });
 
@@ -969,7 +1017,7 @@ describe("PageInspectionSession", () => {
     const revealCount = harness.provider.revealCount;
     harness.provider.throwOnReveal = true;
 
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
 
     expect(harness.provider.revealCount).toBe(revealCount);
     expect(harness.selections.map(({ nodeRef }) => nodeRef))
@@ -983,7 +1031,7 @@ describe("PageInspectionSession", () => {
     harness.provider.throwOnReveal = false;
     const removalEventOffset = harness.events.length;
     harness.provider.remove("node-2");
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     expect(harness.selections).toHaveLength(2);
     expect(harness.events.slice(removalEventOffset)).toEqual([{
       type: "dom.selectionCleared",
@@ -1052,7 +1100,7 @@ describe("PageInspectionSession", () => {
     expect(thenCalls).toBe(0);
     expect(harness.selections).toHaveLength(1);
     expect("element" in harness.selections[0]!).toBe(false);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     expect(thenCalls).toBe(0);
   });
 
@@ -1106,7 +1154,7 @@ describe("PageInspectionSession", () => {
       { action: "release", nodeRef: "node-2", reason: "hovered" },
     ]));
     expect(harness.overlay.clearCount).toBeGreaterThan(0);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     expect(harness.selections).toHaveLength(1);
     expect(harness.events.slice(eventOffset)).toEqual([
       {
@@ -1153,7 +1201,7 @@ describe("PageInspectionSession", () => {
         branches: [{ nodeRef: "node-1", branchRevision: 2 }],
       },
     ]);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
   });
 
   it("retains selection across a same-scope move invalidation", async () => {
@@ -1169,7 +1217,7 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       branches: [{ nodeRef: "node-1", branchRevision: 2 }],
     }]);
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual([
       "node-2",
       "node-2",
@@ -1326,7 +1374,7 @@ describe("PageInspectionSession", () => {
 
     expect(harness.selections).toEqual([]);
     expect(harness.provider.retentions).toEqual([]);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
   });
 
   it("updates picker documents on frame add, navigation, and removal", () => {
@@ -1378,7 +1426,7 @@ describe("PageInspectionSession", () => {
     expect(harness.provider.resetCount).toBe(1);
     expect(harness.overlay.clearCount).toBe(clearCountBeforeReset + 1);
     expect(harness.overlay.disposeCount).toBe(1);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     await harness.session.selectByRef("node-2", 3);
     expect(harness.selections).toHaveLength(1);
   });
@@ -1637,10 +1685,10 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
     })).resolves.toEqual([]);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
 
     accepted = true;
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
     expect(harness.selections).toHaveLength(3);
   });
 
@@ -1727,7 +1775,7 @@ describe("PageInspectionSession", () => {
       harness.provider.emitSelectedRemoval("node-2");
     };
 
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
 
     expect(payloadElements).toEqual([]);
     expect(harness.selections).toHaveLength(1);
@@ -1751,7 +1799,7 @@ describe("PageInspectionSession", () => {
       { action: "retain", nodeRef: "node-2", reason: "selected" },
     ]);
     harness.provider.onResolve = undefined;
-    await expect(harness.session.republishSelection()).resolves.toBe(true);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
   });
 
   it("authoritatively cancels a pending page-hover clear request", async () => {
@@ -1890,7 +1938,7 @@ describe("PageInspectionSession", () => {
       { action: "release", nodeRef: "node-frame", reason: "hovered" },
     ]));
     expect(harness.overlay.clearCount).toBeGreaterThan(0);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     expect(harness.events.slice(eventOffset)).toEqual([
       {
         type: "dom.selectionCleared",
@@ -1982,7 +2030,7 @@ describe("PageInspectionSession", () => {
     await flushAsync();
 
     expect(harness.selections.map(({ nodeRef }) => nodeRef)).toEqual(["node-2"]);
-    await expect(session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
   });
 
   it("rolls back retained authority when overlay rendering throws", async () => {
@@ -2000,7 +2048,7 @@ describe("PageInspectionSession", () => {
       { action: "retain", nodeRef: "node-2", reason: "selected" },
       { action: "release", nodeRef: "node-2", reason: "selected" },
     ]);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
   });
 
   it("fails closed when an element getter disables picker during page hover", () => {
@@ -2084,8 +2132,10 @@ describe("PageInspectionSession", () => {
     let session!: PageInspectionSession;
     let reentrantRepublish: Promise<boolean> | undefined;
     const harness = createSessionHarness({
-      onSelection: () => {
-        reentrantRepublish = session.republishSelection();
+      onSelection: (selection) => {
+        reentrantRepublish = session.republishSelection(
+          inspectRepublishRequest(selection),
+        );
         return true;
       },
     });
@@ -2143,7 +2193,7 @@ describe("PageInspectionSession", () => {
     expect(harness.provider.disposeCount).toBe(1);
     expect(harness.events).toHaveLength(eventCount);
     expect(harness.selections).toHaveLength(selectionCount);
-    await expect(harness.session.republishSelection()).resolves.toBe(false);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     await expect(harness.session.handle({
       type: "dom.getRoot",
       requestId: "disposed",
@@ -2173,6 +2223,7 @@ function createSessionHarness(overrides: {
   readonly onStylesInvalidated?: (event: unknown) => void;
   readonly onStylesInspectPublicationRenewed?: (event: unknown) => void;
 } = {}) {
+  const contentSessionId = overrides.contentSessionId ?? "page-inspection-session";
   const document = new FakeSessionDocument();
   const root = element("HTML", "root", document);
   const card = element("ARTICLE", "card", document, root);
@@ -2230,6 +2281,7 @@ function createSessionHarness(overrides: {
   return {
     card,
     clock,
+    contentSessionId,
     document,
     events,
     overlay,
@@ -2241,6 +2293,28 @@ function createSessionHarness(overrides: {
     selections,
     session,
   };
+}
+
+function inspectRepublishRequest(
+  selection: PageInspectionSelection | undefined,
+  contentSessionId = "page-inspection-session",
+) {
+  return {
+    type: "pin-op.inspect.republish" as const,
+    contentSessionId,
+    documentEpoch: selection?.documentEpoch ?? 3,
+    nodeRef: selection?.nodeRef ?? "missing-node",
+    selectionRevision: selection?.selectionRevision ?? 0,
+  };
+}
+
+function republishCurrentSelection(
+  harness: ReturnType<typeof createSessionHarness>,
+): Promise<boolean> {
+  return harness.session.republishSelection(inspectRepublishRequest(
+    harness.selections.at(-1),
+    harness.contentSessionId,
+  ));
 }
 
 class FakeTreeProvider implements PageInspectionTreeProvider {

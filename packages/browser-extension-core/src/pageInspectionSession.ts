@@ -29,6 +29,10 @@ import {
   type DomSelectionChangedEvent,
 } from "./domProtocol.js";
 import type { DomStableLocator } from "./domStableLocator.js";
+import {
+  parseInspectRepublishRequest,
+  type InspectRepublishRequest,
+} from "./inspectPortProtocol.js";
 import type {
   FrameContext,
   FrameIdentity,
@@ -290,6 +294,7 @@ interface PageLeaveRegistration {
 
 export class PageInspectionSession {
   private document: PageInspectionDocument;
+  private readonly contentSessionId: string;
   private readonly provider: PageInspectionTreeProvider;
   private overlay: PageInspectionOverlay;
   private readonly mode: PageInspectionMode;
@@ -349,6 +354,7 @@ export class PageInspectionSession {
 
   public constructor(private readonly options: PageInspectionSessionOptions) {
     this.document = options.document;
+    this.contentSessionId = options.contentSessionId ?? "page-inspection-session";
     this.selectionIntervalMs = requireNonnegativeNumber(
       options.selectionIntervalMs ?? PAGE_INSPECTION_SELECTION_INTERVAL_MS,
       "selectionIntervalMs",
@@ -413,7 +419,7 @@ export class PageInspectionSession {
     );
     this.stylesheetRegistry = createStylesheetRegistry({
       document: options.document,
-      contentSessionId: options.contentSessionId ?? "page-inspection-session",
+      contentSessionId: this.contentSessionId,
       documentEpoch: this.provider.currentDocumentEpoch,
       onInvalidated: (event) => this.handleStylesInvalidated(event),
       onError: (error) => this.reportError(error),
@@ -652,11 +658,21 @@ export class PageInspectionSession {
     });
   }
 
-  public async republishSelection(): Promise<boolean> {
+  public async republishSelection(
+    expected: InspectRepublishRequest,
+  ): Promise<boolean> {
+    const request = parseInspectRepublishRequest(expected);
     const selected = this.selected;
     if (
       this.disposed ||
+      !request ||
       !selected ||
+      (
+        request.contentSessionId !== this.contentSessionId ||
+        request.documentEpoch !== selected.documentEpoch ||
+        request.nodeRef !== selected.nodeRef ||
+        request.selectionRevision !== this.selectionRevision
+      ) ||
       this.selectionPreparing ||
       this.activeSelectionPublications > 0 ||
       this.republishingSelection
@@ -693,7 +709,11 @@ export class PageInspectionSession {
       }
       if (
         !payload ||
-        !this.isSelectionAuthorityCurrent(authority)
+        !this.isSelectionAuthorityCurrent(authority) ||
+        !this.isExpectedRepublishCurrent(
+          request,
+          authority,
+        )
       ) {
         return false;
       }
@@ -708,6 +728,17 @@ export class PageInspectionSession {
     } finally {
       this.republishingSelection = false;
     }
+  }
+
+  private isExpectedRepublishCurrent(
+    request: InspectRepublishRequest,
+    authority: SelectionAuthorityToken,
+  ): boolean {
+    return request.contentSessionId === this.contentSessionId &&
+      request.documentEpoch === authority.documentEpoch &&
+      request.nodeRef === authority.selected.nodeRef &&
+      request.selectionRevision === authority.selectionRevision &&
+      this.isSelectionAuthorityCurrent(authority);
   }
 
   public async handle(
