@@ -146,6 +146,7 @@ const EMPTY_CONTEXTS: BoundedValues<CssRuleContextRecord> = {
   values: [],
   truncated: false,
 };
+const CSS_SUPPORTS_RULE_TYPE = 12;
 
 /**
  * Creates a one-shot, bounded CSSOM traversal. Records are yielded lazily so a
@@ -206,8 +207,7 @@ function* walkRootStylesheets(
 ): IterableIterator<CssRuleWalkRecord> {
   let rootIndex = startingRootIndex;
   try {
-    for (const stylesheet of stylesheets) {
-      if (reachedDocumentLimit(state)) return;
+    for (const stylesheet of enumerateStylesheetsBounded(stylesheets, state)) {
       state.nextRootIndex = rootIndex + 1;
       state.stylesheetsVisited += 1;
       const stylesheetIdentity = reserveStylesheetIdentity(state);
@@ -257,6 +257,32 @@ function* walkRootStylesheets(
     return;
   } finally {
     state.nextRootIndex = rootIndex;
+  }
+}
+
+function* enumerateStylesheetsBounded(
+  stylesheets: Iterable<StylesheetSource>,
+  state: WalkState,
+): IterableIterator<StylesheetSource> {
+  const iterator = stylesheets[Symbol.iterator]();
+  let exhausted = false;
+  try {
+    while (!reachedDocumentLimit(state)) {
+      const result = iterator.next();
+      if (result.done) {
+        exhausted = true;
+        return;
+      }
+      yield result.value;
+    }
+  } finally {
+    if (!exhausted) {
+      try {
+        iterator.return?.();
+      } catch {
+        // Page-controlled iterator cleanup is best effort.
+      }
+    }
   }
 }
 
@@ -681,7 +707,7 @@ function readRuleContext(
       kind = "starting-style";
       break;
     default:
-      kind = hasStringProperty(rule, "conditionText")
+      kind = hasRuleType(rule, CSS_SUPPORTS_RULE_TYPE)
         ? "supports"
         : "unknown";
   }
@@ -850,10 +876,6 @@ function hasReadableMedia(rule: object): boolean {
   }
 }
 
-function hasStringProperty(rule: object, property: PropertyKey): boolean {
-  return readStringProperty(rule, property) !== undefined;
-}
-
 function readStringProperty(
   rule: object,
   property: PropertyKey,
@@ -863,6 +885,14 @@ function readStringProperty(
     return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function hasRuleType(rule: object, type: number): boolean {
+  try {
+    return (rule as { readonly type?: unknown }).type === type;
+  } catch {
+    return false;
   }
 }
 

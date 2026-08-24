@@ -89,6 +89,24 @@ describe("walkCssRules", () => {
     expect(records[0]?.contextsTruncated).toBe(false);
   });
 
+  it("keeps an unknown conditional group unknown despite conditionText", () => {
+    const conditionalUnknown = group(
+      "CSSFutureConditionRule",
+      "(future-feature: enabled)",
+      styleRule(".target", { color: "green" }),
+    );
+
+    const { records } = collectRecords({
+      pageUrl: "https://example.test/page",
+      styleSheets: [sheet("/future.css", [conditionalUnknown])],
+    });
+
+    expect(records[0]?.contexts).toEqual([{
+      kind: "unknown",
+      text: "(future-feature: enabled)",
+    }]);
+  });
+
   it("keeps nested selector ancestry while traversing grouping rules", () => {
     const selectors: string[] = [];
     const walk = walkCssRules(
@@ -199,6 +217,37 @@ describe("walkCssRules", () => {
     );
     expect(bounded.records[0]?.contextsTruncated).toBe(true);
     expect(bounded.records[0]?.mediaTruncated).toBe(true);
+  });
+
+  it("does not pull a stylesheet beyond the global stylesheet limit", () => {
+    let nextCalls = 0;
+    let returnCalls = 0;
+    const styleSheets = {
+      [Symbol.iterator]() {
+        return {
+          next() {
+            nextCalls += 1;
+            return {
+              done: false as const,
+              value: sheet(`/sheet-${nextCalls}.css`, []),
+            };
+          },
+          return() {
+            returnCalls += 1;
+            return { done: true as const, value: undefined };
+          },
+        };
+      },
+    };
+
+    const result = collectRecords({
+      pageUrl: "https://example.test/page",
+      styleSheets,
+    });
+
+    expect(result.records).toEqual([]);
+    expect(nextCalls).toBe(INSPECT_LIMITS.stylesheets);
+    expect(returnCalls).toBe(1);
   });
 });
 
