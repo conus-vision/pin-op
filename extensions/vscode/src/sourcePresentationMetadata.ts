@@ -87,6 +87,16 @@ export function sourceDocumentLabel(documentUri: unknown): string {
   }
 }
 
+export function rulesSourceDocumentMetadata(
+  documentUri: string,
+  languageId: "css" | "scss",
+): { readonly label: string; readonly languageId: "css" | "scss" } {
+  return {
+    label: sourceDocumentLabel(documentUri),
+    languageId,
+  };
+}
+
 export function normalizeLanguageId(value: unknown): string {
   if (typeof value !== "string") return "unknown";
   const cleaned = cleanText(value);

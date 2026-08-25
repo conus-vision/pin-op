@@ -1,11 +1,233 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalRulesSourceUri,
   classifyActiveDocumentSource,
+  exactWorkspaceUri,
   VsCodeSourceWorkspace,
+  type WorkspaceHost,
 } from "../src/sourcePlugins/sourceWorkspace.js";
 import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
 
 describe("VsCodeSourceWorkspace", () => {
+  it("collapses file aliases without collapsing non-file query identities", () => {
+    expect(canonicalRulesSourceUri(
+      "file:///workspace/shared.map?v=1#first",
+    )).toBe("file:///workspace/shared.map");
+    expect(canonicalRulesSourceUri(
+      "file:///workspace/shared.map?v=2#second",
+    )).toBe("file:///workspace/shared.map");
+
+    const first = "vscode-remote://ssh-remote+host/workspace/shared.map?v=1";
+    const second = "vscode-remote://ssh-remote+host/workspace/shared.map?v=2";
+    expect(canonicalRulesSourceUri(first)).toBe(first);
+    expect(canonicalRulesSourceUri(second)).toBe(second);
+    expect(canonicalRulesSourceUri(first)).not.toBe(
+      canonicalRulesSourceUri(second),
+    );
+  });
+
+  it("reads a bounded dirty document snapshot with its real numeric version", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const asUri = (value: string) => ({ toString: () => value });
+    let fileReads = 0;
+    const host = {
+      workspaceFolders: [{ uri: asUri("file:///workspace") }],
+      findFiles: async () => [],
+      joinPath: (base: { toString(): string }, ...segments: string[]) =>
+        asUri(`${base.toString()}/${segments.join("/")}`),
+      parseUri: asUri,
+      async readFile() {
+        fileReads += 1;
+        return new TextEncoder().encode("disk");
+      },
+      stat: async () => ({ size: 4 }),
+      openTextDocument: async () => ({
+        uri: asUri(target),
+        version: 17,
+        getText: () => ".card { color: red; }",
+      }),
+    } as WorkspaceHost & {
+      openTextDocument(uri: { toString(): string }): Promise<{
+        readonly uri: { toString(): string };
+        readonly version: number;
+        getText(): string;
+      }>;
+    };
+    const workspace = new VsCodeSourceWorkspace(host) as unknown as {
+      readRulesSourceSnapshot(
+        uri: string,
+        maxBytes: number,
+        signal?: AbortSignal,
+      ): Promise<{
+        readonly uri: string;
+        readonly text: string;
+        readonly documentVersion: number;
+      }>;
+    };
+
+    await expect(workspace.readRulesSourceSnapshot(
+      target,
+      64,
+      new AbortController().signal,
+    )).resolves.toEqual({
+      uri: target,
+      text: ".card { color: red; }",
+      documentVersion: 17,
+    });
+    expect(fileReads).toBe(0);
+  });
+
+  it("uses a small dirty buffer before statting its oversized disk file", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const asUri = (value: string) => ({ toString: () => value });
+    let stats = 0;
+    let opens = 0;
+    let fileReads = 0;
+    const dirtyDocument = {
+      uri: asUri(target),
+      version: 23,
+      getText: () => ".card { color: red; }",
+    };
+    const host = {
+      workspaceFolders: [{ uri: asUri("file:///workspace") }],
+      findFiles: async () => [],
+      joinPath: (base: { toString(): string }, ...segments: string[]) =>
+        asUri(`${base.toString()}/${segments.join("/")}`),
+      parseUri: asUri,
+      async readFile() {
+        fileReads += 1;
+        return new Uint8Array();
+      },
+      async stat() {
+        stats += 1;
+        return { size: 10_000 };
+      },
+      getOpenTextDocument: () => dirtyDocument,
+      async openTextDocument() {
+        opens += 1;
+        throw new Error("must not reopen a dirty buffer");
+      },
+    } as WorkspaceHost & {
+      getOpenTextDocument(uri: { toString(): string }): typeof dirtyDocument;
+      openTextDocument(uri: { toString(): string }): Promise<never>;
+    };
+    const workspace = new VsCodeSourceWorkspace(host);
+
+    await expect(workspace.readRulesSourceSnapshot(target, 64)).resolves
+      .toEqual({
+        uri: target,
+        text: ".card { color: red; }",
+        documentVersion: 23,
+      });
+    expect({ stats, opens, fileReads }).toEqual({
+      stats: 0,
+      opens: 0,
+      fileReads: 0,
+    });
+  });
+
+  it("rejects a declared oversized source before opening or reading it", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const asUri = (value: string) => ({ toString: () => value });
+    let opens = 0;
+    let fileReads = 0;
+    const host = {
+      workspaceFolders: [{ uri: asUri("file:///workspace") }],
+      findFiles: async () => [],
+      joinPath: (base: { toString(): string }, ...segments: string[]) =>
+        asUri(`${base.toString()}/${segments.join("/")}`),
+      parseUri: asUri,
+      async readFile() {
+        fileReads += 1;
+        return new Uint8Array();
+      },
+      stat: async () => ({ size: 65 }),
+      async openTextDocument() {
+        opens += 1;
+        throw new Error("must not open");
+      },
+    } as WorkspaceHost & {
+      openTextDocument(uri: { toString(): string }): Promise<never>;
+    };
+    const workspace = new VsCodeSourceWorkspace(host) as unknown as {
+      readRulesSourceSnapshot(
+        uri: string,
+        maxBytes: number,
+        signal?: AbortSignal,
+      ): Promise<unknown>;
+    };
+
+    await expect(workspace.readRulesSourceSnapshot(target, 64))
+      .rejects.toThrow(/size|limit|large/i);
+    expect(opens).toBe(0);
+    expect(fileReads).toBe(0);
+  });
+
+  it("post-checks UTF-8 bytes when stat understates snapshot size", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const asUri = (value: string) => ({ toString: () => value });
+    let opens = 0;
+    const host = {
+      workspaceFolders: [{ uri: asUri("file:///workspace") }],
+      findFiles: async () => [],
+      joinPath: (base: { toString(): string }, ...segments: string[]) =>
+        asUri(`${base.toString()}/${segments.join("/")}`),
+      parseUri: asUri,
+      readFile: async () => new Uint8Array(),
+      stat: async () => ({ size: 1 }),
+      async openTextDocument() {
+        opens += 1;
+        return {
+          uri: asUri(target),
+          version: 3,
+          getText: () => "ééé",
+        };
+      },
+    } as WorkspaceHost & {
+      openTextDocument(uri: { toString(): string }): Promise<{
+        readonly uri: { toString(): string };
+        readonly version: number;
+        getText(): string;
+      }>;
+    };
+    const workspace = new VsCodeSourceWorkspace(host) as unknown as {
+      readRulesSourceSnapshot(
+        uri: string,
+        maxBytes: number,
+        signal?: AbortSignal,
+      ): Promise<unknown>;
+    };
+
+    await expect(workspace.readRulesSourceSnapshot(target, 5))
+      .rejects.toThrow(/size|limit|large/i);
+    expect(opens).toBe(1);
+  });
+
+  it("grants reusable exact authority only to one in-workspace URI", () => {
+    const workspace = memorySourceWorkspace({
+      "file:///workspace/dist/app.css": "a{}",
+    });
+    const exact = {
+      uris: ["file:///workspace/dist/app.css"],
+      status: "exact",
+      strategy: "automatic",
+    } as const;
+
+    expect(exactWorkspaceUri(workspace, exact)).toBe(exact.uris[0]);
+    expect(exactWorkspaceUri(workspace, {
+      ...exact,
+      status: "unique-basename",
+    })).toBeUndefined();
+    expect(exactWorkspaceUri(workspace, {
+      ...exact,
+      uris: [...exact.uris, "file:///workspace/dist/other.css"],
+    })).toBeUndefined();
+    expect(exactWorkspaceUri(workspace, {
+      ...exact,
+      uris: ["file:///outside/app.css"],
+    })).toBeUndefined();
+  });
+
   it("classifies source resolution without exposing candidate paths", () => {
     const activeUri = "file:///workspace/dist/app.css";
 

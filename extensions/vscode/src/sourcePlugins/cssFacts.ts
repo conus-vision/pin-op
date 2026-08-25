@@ -2,6 +2,7 @@ import type { SelectionSnapshot } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
+  type InspectRuleContext,
   type InspectRuleEvidence,
   type RuntimeFact,
 } from "@pin-op/protocol";
@@ -13,6 +14,37 @@ export interface TargetCssFact {
   readonly fact: CssResolutionFact;
   readonly sourceUrl: string;
   readonly declarations: readonly CssDeclarationEvidence[];
+}
+
+export interface CompleteCssRuleEvidence {
+  readonly selector: string;
+  readonly declarations: readonly CssDeclarationEvidence[];
+  readonly contexts: readonly InspectRuleContext[];
+}
+
+export function completeCssRuleEvidence(
+  evidence: InspectRuleEvidence,
+): CompleteCssRuleEvidence | undefined {
+  const generated = evidence.generatedSource;
+  if (
+    !generated ||
+    evidence.declarationsTruncated ||
+    evidence.declarations.some((declaration) => declaration.valueTruncated) ||
+    generated.contextsTruncated ||
+    generated.unsupportedGroupContext
+  ) {
+    return undefined;
+  }
+  return {
+    selector: evidence.selector,
+    declarations: evidence.declarations.map((declaration) => ({
+      property: declaration.property,
+      value: declaration.value,
+      important: declaration.important,
+      valueComplete: true,
+    })),
+    contexts: generated.contexts,
+  };
 }
 
 /** IDE-local correlated view. Selector/source/context remain owned by evidence on wire. */

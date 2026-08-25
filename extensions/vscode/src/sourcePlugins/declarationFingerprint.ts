@@ -52,6 +52,31 @@ export function declarationsContainEvidence(
   return true;
 }
 
+export function completeDeclarationFingerprint(
+  declarations: readonly CssDeclarationEvidence[],
+): readonly NormalizedDeclaration[] | undefined {
+  if (declarations.some((declaration) => declaration.valueComplete === false)) {
+    return undefined;
+  }
+  const fingerprint = declarationFingerprint(declarations);
+  return declarations.length === 0 || fingerprint.length === declarations.length
+    ? fingerprint
+    : undefined;
+}
+
+export function equalDeclarationFingerprints(
+  left: readonly NormalizedDeclaration[],
+  right: readonly NormalizedDeclaration[],
+): boolean {
+  return left.length === right.length && left.every((entry, index) => {
+    const candidate = right[index];
+    return candidate !== undefined &&
+      entry.property === candidate.property &&
+      entry.value === candidate.value &&
+      entry.important === candidate.important;
+  });
+}
+
 export function normalizeCondition(value: string): string {
   return normalizeCssValue(value);
 }

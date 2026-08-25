@@ -10,12 +10,16 @@ import {
   RULE_EVIDENCE_LIMITS,
   canonicalizePublicStylesheetUrl,
   type CssRuleFact,
+  type InspectRuleEvidence,
   type InspectRuleEvidenceBatch,
   type InspectTarget,
 } from "@pin-op/protocol";
 import { collectCssFacts } from "../../../packages/browser-extension-core/src/collectCssFacts.js";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
-import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
+import {
+  completeCssRuleEvidence,
+  type CssResolutionFact,
+} from "../src/sourcePlugins/cssFacts.js";
 import {
   DOCUMENT_STYLESHEET_CACHE_LIMIT,
   GENERATED_STYLESHEET_CACHE_LIMIT,
@@ -32,6 +36,42 @@ import {
 } from "./support/correlatedCssFixture.js";
 
 describe("CssSourcePlugin", () => {
+  it("exposes only complete correlated evidence to reusable batch resolvers", () => {
+    const complete: InspectRuleEvidence = {
+      ruleRef: "complete-rule",
+      selector: ".card",
+      declarations: [{
+        property: "color",
+        value: "red",
+        important: true,
+        valueTruncated: false,
+      }],
+      declarationsTruncated: false,
+      generatedSource: {
+        sourceUrl: "http://localhost:4173/dist/app.css",
+        rulePath: "0.0",
+        contexts: [{ kind: "supports", conditionText: "(display: grid)" }],
+        contextsTruncated: false,
+        unsupportedGroupContext: false,
+      },
+    };
+
+    expect(completeCssRuleEvidence(complete)).toEqual({
+      selector: ".card",
+      declarations: [{
+        property: "color",
+        value: "red",
+        important: true,
+        valueComplete: true,
+      }],
+      contexts: [{ kind: "supports", conditionText: "(display: grid)" }],
+    });
+    expect(completeCssRuleEvidence({
+      ...complete,
+      declarationsTruncated: true,
+    })).toBeUndefined();
+  });
+
   it("rejects legacy selector-owned facts without correlated rule evidence", async () => {
     const legacyTarget = {
       role: "selected",

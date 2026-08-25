@@ -3,13 +3,102 @@ import type { SourceDocument } from "@pin-op/plugin-api";
 import { INSPECT_LIMITS } from "@pin-op/protocol";
 import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
 import {
+  findRuleByBrowserPath,
   findRulesByFingerprint,
+  findUniqueRuleByCompleteFingerprint,
   normalizeSelector,
   StylesheetAstCache,
 } from "../src/sourcePlugins/stylesheetAst.js";
 import type { CssDeclarationEvidence } from "../src/sourcePlugins/types.js";
 
 describe("stylesheet fingerprint lookup", () => {
+  it("records an exact half-open selector prelude and ordered typed contexts", () => {
+    const text = [
+      "@media (min-width: 40rem) {",
+      "  @supports (display: grid) {",
+      "    .card,",
+      "    .card--wide { color: red; }",
+      "  }",
+      "}",
+    ].join("\r\n");
+    const parsed = stylesheet(text);
+    const rule = parsed.rules[0]!;
+
+    expect(text.slice(
+      rule.selectorPreludeStartOffset,
+      rule.selectorPreludeEndOffset,
+    )).toBe(".card,\r\n    .card--wide ");
+    expect(rule.selectorPreludeRange).toEqual({
+      start: { line: 2, character: 4 },
+      end: { line: 3, character: 16 },
+    });
+    expect(rule.contexts).toEqual([
+      { kind: "media", conditionText: "(min-width:40rem)" },
+      { kind: "supports", conditionText: "(display:grid)" },
+    ]);
+    expect(rule.hasUnsupportedGroupingContext).toBe(false);
+  });
+
+  it("expands a nested SCSS selector against its containing style rule", () => {
+    const parsed = new StylesheetAstCache().parseText(
+      "file:///workspace/src/card.scss",
+      "scss",
+      [
+        ".card {",
+        "  &__title { color: red; }",
+        "}",
+      ].join("\n"),
+    );
+
+    expect(parsed.rules[1]?.expandedSelector).toBe(".card__title");
+  });
+
+  it("exposes exact path and unique complete-fingerprint lookup with supports context", () => {
+    const parsed = stylesheet([
+      "@supports (display: flex) { .card { color: red; } }",
+      "@supports (display: grid) { .card { color: red; } }",
+    ].join("\n"));
+    const expected = parsed.rules[1]!;
+
+    expect(findRuleByBrowserPath(parsed, "0.1.0")).toBe(expected);
+    expect(findUniqueRuleByCompleteFingerprint(parsed, {
+      selector: ".card",
+      declarations: [{ property: "color", value: "red" }],
+      contexts: [{ kind: "supports", conditionText: "(display:grid)" }],
+    })).toBe(expected);
+    expect(findUniqueRuleByCompleteFingerprint(parsed, {
+      selector: ".card",
+      declarations: [{ property: "color", value: "red" }],
+      contexts: [],
+    })).toBeUndefined();
+  });
+
+  it("never treats an invalid duplicate-property fingerprint as an empty rule", () => {
+    const parsed = stylesheet(
+      ".card { color: red; color: blue; }",
+    );
+
+    expect(findUniqueRuleByCompleteFingerprint(parsed, {
+      selector: ".card",
+      declarations: [],
+      contexts: [],
+    })).toBeUndefined();
+  });
+
+  it("treats a selector/context-compatible incomplete fingerprint as ambiguity", () => {
+    const parsed = stylesheet([
+      ".card { color: blue; color: red; }",
+      ".card { color: red; }",
+    ].join("\n"));
+
+    expect(findUniqueRuleByCompleteFingerprint(parsed, {
+      selector: ".card",
+      declarations: [{ property: "color", value: "red" }],
+      contexts: [],
+    })).toBeUndefined();
+  });
+
+
   it("returns one strong candidate with its complete CSS block range", () => {
     const text = [
       ".card {",

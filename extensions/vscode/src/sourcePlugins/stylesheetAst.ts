@@ -16,6 +16,7 @@ import type {
 } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
+  utf8ByteLength,
 } from "@pin-op/protocol";
 import { BoundedLruCache } from "./boundedLruCache.js";
 import {
@@ -24,9 +25,11 @@ import {
   type CssResolutionFact,
 } from "./cssFacts.js";
 import {
+  completeDeclarationFingerprint,
   declarationEvidenceFromFact,
   declarationFingerprint,
   declarationsContainEvidence,
+  equalDeclarationFingerprints,
   normalizeCondition,
 } from "./declarationFingerprint.js";
 import type {
@@ -38,10 +41,28 @@ export type StylesheetSyntax = "css" | "scss";
 
 export interface StylesheetRule {
   readonly selector: string;
+  readonly expandedSelector?: string;
   readonly range: SourceRange;
   readonly startOffset: number;
   readonly endOffset: number;
+  readonly selectorPreludeRange: SourceRange;
+  readonly selectorPreludeStartOffset: number;
+  readonly selectorPreludeEndOffset: number;
+  readonly contexts: readonly StylesheetRuleContext[];
+  readonly hasUnsupportedGroupingContext: boolean;
+  readonly hasCompleteDeclarationFingerprint: boolean;
   readonly fingerprint: RuleFingerprint;
+}
+
+export interface StylesheetRuleContext {
+  readonly kind: "media" | "supports";
+  readonly conditionText: string;
+}
+
+export interface CompleteRuleFingerprintEvidence {
+  readonly selector: string;
+  readonly declarations: readonly CssDeclarationEvidence[];
+  readonly contexts: readonly StylesheetRuleContext[];
 }
 
 type RuleIndex = ReadonlyMap<string, StylesheetRule | null>;
@@ -61,6 +82,22 @@ const FALLBACK_BUCKET_LIMIT = 32;
 const FALLBACK_ENTRY_LIMIT = INSPECT_LIMITS.cssRules * 2;
 export const DOCUMENT_STYLESHEET_CACHE_LIMIT = 32;
 export const GENERATED_STYLESHEET_CACHE_LIMIT = 32;
+export const RULES_STYLESHEET_MAX_BYTES = 2 * 1024 * 1024;
+export const RULES_STYLESHEET_MAX_RULES = INSPECT_LIMITS.cssRules;
+
+export interface StylesheetParseLimits {
+  readonly maxBytes?: number;
+  readonly maxRules?: number;
+}
+
+export class StylesheetParseLimitError extends Error {
+  public constructor(
+    public readonly limit: "bytes" | "rules",
+  ) {
+    super(`Stylesheet exceeded the Rules ${limit} limit`);
+    this.name = "StylesheetParseLimitError";
+  }
+}
 
 interface CachedDocumentStylesheet {
   readonly version: number;
@@ -101,13 +138,26 @@ export class StylesheetAstCache {
     uri: string,
     syntax: StylesheetSyntax,
     text: string,
+    limits?: StylesheetParseLimits,
   ): ParsedStylesheet {
+    if (
+      limits?.maxBytes !== undefined &&
+      utf8ByteLength(text) > limits.maxBytes
+    ) {
+      throw new StylesheetParseLimitError("bytes");
+    }
     const hash = hashText(text);
-    const key = `${syntax}:${uri}:${hash}`;
+    const key = `${syntax}:${uri}:${hash}:${limits?.maxBytes ?? ""}:` +
+      `${limits?.maxRules ?? ""}`;
     const cached = this.generated.get(key);
     if (cached) return cached;
 
-    const parsed = parseStylesheet(textDocument(uri, text), syntax, text);
+    const parsed = parseStylesheet(
+      textDocument(uri, text),
+      syntax,
+      text,
+      limits?.maxRules,
+    );
     this.generated.set(key, parsed);
     return parsed;
   }
@@ -233,14 +283,16 @@ function parseStylesheet(
   document: SourceDocument,
   syntax: StylesheetSyntax,
   text = document.getText(),
+  maxRules?: number,
 ): ParsedStylesheet {
   const root = syntax === "scss"
     ? parseScss(text, { from: document.uri })
     : postcss.parse(text, { from: document.uri });
+  enforceRuleNodeLimit(root, maxRules);
   const rules: StylesheetRule[] = [];
   const rulesByNode = new Map<Rule, StylesheetRule>();
   root.walkRules((node) => {
-    const rule = ruleFromNode(node, document);
+    const rule = ruleFromNode(node, document, syntax);
     if (!rule) return;
     rules.push(rule);
     rulesByNode.set(node, rule);
@@ -263,6 +315,18 @@ function parseStylesheet(
   };
 }
 
+function enforceRuleNodeLimit(root: Root, maxRules: number | undefined): void {
+  if (maxRules === undefined) return;
+  let ruleNodes = 0;
+  root.walk((node) => {
+    if (node.type !== "rule" && node.type !== "atrule") return;
+    ruleNodes += 1;
+    if (ruleNodes > maxRules) {
+      throw new StylesheetParseLimitError("rules");
+    }
+  });
+}
+
 function emptyIndexedStylesheet(
   document: SourceDocument,
   syntax: StylesheetSyntax,
@@ -282,26 +346,257 @@ function emptyIndexedStylesheet(
 function ruleFromNode(
   node: Rule,
   document: SourceDocument,
+  syntax: StylesheetSyntax,
 ): StylesheetRule | undefined {
   const start = node.source?.start?.offset;
   const end = node.source?.end?.offset;
   if (start === undefined || end === undefined || end <= start) {
     return undefined;
   }
+  const selectorEnd = findSelectorPreludeEnd(
+    document.getText(),
+    start,
+    end,
+  );
+  if (selectorEnd === undefined || selectorEnd <= start) return undefined;
+  const declarations = directDeclarations(node);
+  const normalizedDeclarations = declarationFingerprint(declarations);
   return {
     selector: node.selector,
+    ...(syntax === "scss"
+      ? { expandedSelector: expandScssSelector(node) }
+      : { expandedSelector: normalizeSelector(node.selector) }),
     range: {
       start: document.positionAt(start),
       end: document.positionAt(end),
     },
     startOffset: start,
     endOffset: end,
+    selectorPreludeRange: {
+      start: document.positionAt(start),
+      end: document.positionAt(selectorEnd),
+    },
+    selectorPreludeStartOffset: start,
+    selectorPreludeEndOffset: selectorEnd,
+    contexts: containingRuleContexts(node),
+    hasUnsupportedGroupingContext: hasUnsupportedGroupingContext(node),
+    hasCompleteDeclarationFingerprint: declarations.length === 0 ||
+      normalizedDeclarations.length === declarations.length,
     fingerprint: {
       selector: normalizeSelector(node.selector),
-      declarations: declarationFingerprint(directDeclarations(node)),
+      declarations: normalizedDeclarations,
       conditions: containingMedia(node).map(normalizeCondition),
     },
   };
+}
+
+function expandScssSelector(node: Rule): string | undefined {
+  const chain: Rule[] = [node];
+  let current: Container | Document | undefined = node.parent;
+  while (current) {
+    if (current.type === "rule") chain.unshift(current as Rule);
+    current = current.parent;
+  }
+  let selectors = selectorEntries(chain[0]!.selector);
+  if (!selectors) return undefined;
+  for (const child of chain.slice(1)) {
+    const children = selectorEntries(child.selector);
+    if (!children) return undefined;
+    const expanded: string[] = [];
+    for (const parent of selectors) {
+      for (const childSelector of children) {
+        const combined = expandNestedSelector(parent, childSelector);
+        if (!combined) return undefined;
+        expanded.push(combined);
+      }
+    }
+    selectors = expanded;
+  }
+  return normalizeSelector(selectors.join(","));
+}
+
+function selectorEntries(value: string): string[] | undefined {
+  try {
+    const root = selectorParser().astSync(value);
+    return root.nodes.length > 0
+      ? root.nodes.map((selector) => selector.toString())
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function expandNestedSelector(
+  parent: string,
+  child: string,
+): string | undefined {
+  try {
+    const root = selectorParser().astSync(child);
+    let nested = false;
+    root.walkNesting((nesting) => {
+      nested = true;
+      const parentRoot = selectorParser().astSync(parent);
+      const parentSelector = parentRoot.nodes[0];
+      if (!parentSelector) throw new Error("missing parent selector");
+      nesting.replaceWith(...parentSelector.nodes.map((entry) => entry.clone()));
+    });
+    return normalizeSelector(
+      nested ? root.toString() : `${parent} ${child}`,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function findRuleByBrowserPath(
+  stylesheet: ParsedStylesheet,
+  browserRulePath: unknown,
+): StylesheetRule | undefined {
+  const path = parseBrowserRulePath(browserRulePath);
+  if (path === undefined) return undefined;
+  return stylesheet.pathIndex.get(path) ?? undefined;
+}
+
+export function findRuleAtProtocolPosition(
+  stylesheet: ParsedStylesheet,
+  line: number,
+  column: number,
+): StylesheetRule | undefined {
+  if (!validSourcePosition(line, column)) return undefined;
+  const position = { line: line - 1, character: column - 1 };
+  const offset = stylesheet.document.offsetAt(position);
+  if (!samePosition(stylesheet.document.positionAt(offset), position)) {
+    return undefined;
+  }
+  const matches = stylesheet.rules.filter((rule) =>
+    rule.startOffset === offset && samePosition(rule.range.start, position)
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function findUniqueRuleByCompleteFingerprint(
+  stylesheet: ParsedStylesheet,
+  evidence: CompleteRuleFingerprintEvidence,
+): StylesheetRule | undefined {
+  const selector = normalizeSelector(evidence.selector);
+  const declarations = completeDeclarationFingerprint(evidence.declarations);
+  if (selector === undefined || declarations === undefined) return undefined;
+  const contexts = evidence.contexts.map((context) => ({
+    kind: context.kind,
+    conditionText: normalizeCondition(context.conditionText),
+  }));
+  const compatible = stylesheet.rules.filter((rule) =>
+    !rule.hasUnsupportedGroupingContext &&
+    (rule.expandedSelector ?? rule.fingerprint.selector) === selector &&
+    equalRuleContexts(contexts, rule.contexts)
+  );
+  if (compatible.some((rule) => !rule.hasCompleteDeclarationFingerprint)) {
+    return undefined;
+  }
+  const matches = compatible.filter((rule) =>
+    equalDeclarationFingerprints(
+      declarations,
+      rule.fingerprint.declarations,
+    )
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function equalRuleContexts(
+  left: readonly StylesheetRuleContext[],
+  right: readonly StylesheetRuleContext[],
+): boolean {
+  return left.length === right.length && left.every((entry, index) => {
+    const candidate = right[index];
+    return candidate !== undefined &&
+      entry.kind === candidate.kind &&
+      entry.conditionText === candidate.conditionText;
+  });
+}
+
+function findSelectorPreludeEnd(
+  text: string,
+  start: number,
+  end: number,
+): number | undefined {
+  let quote = "";
+  let escaped = false;
+  let comment = false;
+  let squareDepth = 0;
+  let roundDepth = 0;
+  for (let index = start; index < end; index += 1) {
+    const character = text[index]!;
+    const next = text[index + 1];
+    if (comment) {
+      if (character === "*" && next === "/") {
+        comment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+    } else if (character === "/" && next === "*") {
+      comment = true;
+      index += 1;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "[") {
+      squareDepth += 1;
+    } else if (character === "]") {
+      squareDepth = Math.max(0, squareDepth - 1);
+    } else if (character === "(") {
+      roundDepth += 1;
+    } else if (character === ")") {
+      roundDepth = Math.max(0, roundDepth - 1);
+    } else if (
+      character === "{" && squareDepth === 0 && roundDepth === 0
+    ) {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function containingRuleContexts(node: Rule): readonly StylesheetRuleContext[] {
+  const contexts: StylesheetRuleContext[] = [];
+  let current: Container | Document | undefined = node.parent;
+  while (current) {
+    if (current.type === "atrule") {
+      const atRule = current as AtRule;
+      const kind = atRule.name.toLowerCase();
+      if (kind === "media" || kind === "supports") {
+        contexts.unshift({
+          kind,
+          conditionText: normalizeCondition(atRule.params),
+        });
+      }
+    }
+    current = current.parent;
+  }
+  return contexts;
+}
+
+function hasUnsupportedGroupingContext(node: Rule): boolean {
+  let current: Container | Document | undefined = node.parent;
+  while (current) {
+    if (current.type === "atrule") {
+      const kind = (current as AtRule).name.toLowerCase();
+      if (kind !== "media" && kind !== "supports") return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function hashText(text: string): string {

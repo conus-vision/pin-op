@@ -16,6 +16,15 @@ import {
 } from "./support/correlatedCssFixture.js";
 
 describe("ScssSourcePlugin", () => {
+  it("retains the active-file SourcePlugin contract beside batch rule resolution", () => {
+    const plugin = new ScssSourcePlugin();
+
+    expect(plugin.documentSelectors).toEqual([
+      { languageId: "scss", scheme: "file" },
+    ]);
+    expect(plugin.supportedFactKinds).toEqual(["css-rule"]);
+  });
+
   it("maps selected and parent rules to complete blocks in layout.scss", async () => {
     const fixture = await fixtureFiles();
     const activeUri = "file:///workspace/examples/basic-css/src/layout.scss";

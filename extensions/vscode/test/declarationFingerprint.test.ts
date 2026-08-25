@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  completeDeclarationFingerprint,
   declarationEvidenceFromFact,
   declarationFingerprint,
+  equalDeclarationFingerprints,
 } from "../src/sourcePlugins/declarationFingerprint.js";
 import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
 import type { CssDeclarationEvidence } from "../src/sourcePlugins/types.js";
@@ -140,6 +142,31 @@ describe("declarationFingerprint", () => {
     ])).toEqual([
       { property: "color", value: "red", important: true },
     ]);
+  });
+
+  it("distinguishes a complete exact fingerprint from invalid or partial evidence", () => {
+    const exact = completeDeclarationFingerprint([
+      { property: "color", value: "red", important: true },
+      { property: "display", value: "grid", important: false },
+    ]);
+
+    expect(exact).toBeDefined();
+    expect(equalDeclarationFingerprints(exact!, declarationFingerprint([
+      { property: "display", value: "grid" },
+      { property: "color", value: "red", important: true },
+    ]))).toBe(true);
+    expect(equalDeclarationFingerprints(exact!, declarationFingerprint([
+      { property: "display", value: "grid" },
+      { property: "color", value: "red", important: false },
+    ]))).toBe(false);
+    expect(completeDeclarationFingerprint([
+      { property: "color", value: "red", valueComplete: false },
+    ])).toBeUndefined();
+    expect(completeDeclarationFingerprint([
+      { property: "color", value: "red" },
+      { property: "color", value: "blue" },
+    ])).toBeUndefined();
+    expect(completeDeclarationFingerprint([])).toEqual([]);
   });
 
 });

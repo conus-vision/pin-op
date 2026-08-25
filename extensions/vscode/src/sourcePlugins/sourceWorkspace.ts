@@ -3,10 +3,39 @@ import type {
   SourceUriResolution,
   SourceWorkspace,
 } from "@pin-op/plugin-api";
+import { utf8ByteLength } from "@pin-op/protocol";
 import type { ActiveDocumentSourceKind } from "./types.js";
 
 export interface UriLike {
   toString(): string;
+}
+
+export interface RulesSourceDocumentLike {
+  readonly uri: UriLike;
+  readonly version: number;
+  getText(): string;
+}
+
+export interface RulesSourceSnapshot {
+  readonly uri: string;
+  readonly text: string;
+  readonly documentVersion: number;
+}
+
+export interface RulesSourceSnapshotWorkspace extends SourceWorkspace {
+  currentRulesSourceGeneration(): number;
+  readRulesSourceSnapshot(
+    uri: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<RulesSourceSnapshot>;
+}
+
+export class RulesSourceSnapshotLimitError extends Error {
+  public constructor() {
+    super("Rules source exceeds the byte limit");
+    this.name = "RulesSourceSnapshotLimitError";
+  }
 }
 
 export interface WorkspaceHost {
@@ -16,6 +45,9 @@ export interface WorkspaceHost {
   parseUri(value: string): UriLike;
   readFile(uri: UriLike): PromiseLike<Uint8Array>;
   stat(uri: UriLike): PromiseLike<unknown>;
+  getOpenTextDocument?(uri: UriLike): RulesSourceDocumentLike | undefined;
+  openTextDocument?(uri: UriLike): PromiseLike<RulesSourceDocumentLike>;
+  currentRulesSourceGeneration?(): number;
 }
 
 interface WorkspaceFolderIdentity {
@@ -36,6 +68,67 @@ interface WorkspaceFolderSelection {
 }
 
 const EXCLUDED_WORKSPACE_PATHS = "**/{node_modules,.git}/**";
+
+export function raceWithAbort<T>(
+  operation: PromiseLike<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const pending = Promise.resolve(operation);
+  if (!signal) return pending;
+  if (signal.aborted) {
+    void pending.catch(() => undefined);
+    return Promise.reject(workspaceAbortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(workspaceAbortError()));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+export function exactWorkspaceUri(
+  workspace: Pick<SourceWorkspace, "isWorkspaceUri">,
+  resolution: SourceUriResolution,
+): string | undefined {
+  if (resolution.status !== "exact" || resolution.uris.length !== 1) {
+    return undefined;
+  }
+  const uri = resolution.uris[0];
+  return uri !== undefined && workspace.isWorkspaceUri(uri) ? uri : undefined;
+}
+
+export function canonicalRulesSourceUri(uri: string): string | undefined {
+  try {
+    const canonical = new URL(uri);
+    if (canonical.protocol === "file:") {
+      canonical.search = "";
+      canonical.hash = "";
+    }
+    return canonical.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export function rulesSourceSnapshotWorkspace(
+  workspace: SourceWorkspace,
+): RulesSourceSnapshotWorkspace | undefined {
+  const candidate = workspace as Partial<RulesSourceSnapshotWorkspace>;
+  return typeof candidate.readRulesSourceSnapshot === "function" &&
+      typeof candidate.currentRulesSourceGeneration === "function"
+    ? candidate as RulesSourceSnapshotWorkspace
+    : undefined;
+}
 
 export function classifyActiveDocumentSource(
   resolution: SourceUriResolution,
@@ -80,6 +173,56 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     }
     const parsed = this.host.parseUri(filePathUri(uri) ?? uri);
     return new TextDecoder().decode(await this.host.readFile(parsed));
+  }
+
+  public currentRulesSourceGeneration(): number {
+    const generation = this.host.currentRulesSourceGeneration?.();
+    if (
+      typeof generation !== "number" ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0
+    ) {
+      throw new Error("Rules source generation is unavailable");
+    }
+    return generation;
+  }
+
+  public async readRulesSourceSnapshot(
+    uri: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<RulesSourceSnapshot> {
+    if (!this.isWorkspaceUri(uri)) {
+      throw new Error(`URI is outside the workspace: ${uri}`);
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      throw new Error("Rules source byte limit is invalid");
+    }
+    const parsed = this.host.parseUri(filePathUri(uri) ?? uri);
+    if (signal?.aborted) throw workspaceAbortError();
+    const openDocument = this.host.getOpenTextDocument?.(parsed);
+    if (openDocument) {
+      return rulesSourceSnapshot(openDocument, uri, maxBytes, signal);
+    }
+    const stat = await raceWithAbort(
+      Promise.resolve().then(() => this.host.stat(parsed)),
+      signal,
+    );
+    const declaredSize = declaredFileSize(stat);
+    if (declaredSize === undefined) {
+      throw new Error("Rules source declared size is unavailable");
+    }
+    if (declaredSize > maxBytes) {
+      throw new RulesSourceSnapshotLimitError();
+    }
+    if (!this.host.openTextDocument) {
+      throw new Error("Rules source document snapshots are unavailable");
+    }
+    const document = await raceWithAbort(
+      Promise.resolve().then(() => this.host.openTextDocument!(parsed)),
+      signal,
+    );
+    return rulesSourceSnapshot(document, uri, maxBytes, signal);
   }
 
   public async resolveSourceUri(
@@ -474,4 +617,49 @@ function isNotFoundError(error: unknown): boolean {
   }
   const code = (error as { readonly code?: unknown }).code;
   return code === "ENOENT" || code === "FileNotFound";
+}
+
+function rulesSourceSnapshot(
+  document: RulesSourceDocumentLike,
+  requestedUri: string,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): RulesSourceSnapshot {
+  if (
+    !sameCanonicalUri(document.uri.toString(), requestedUri) ||
+    !Number.isSafeInteger(document.version) ||
+    document.version < 0
+  ) {
+    throw new Error("Rules source document snapshot is invalid");
+  }
+  const text = document.getText();
+  if (utf8ByteLength(text) > maxBytes) {
+    throw new RulesSourceSnapshotLimitError();
+  }
+  if (signal?.aborted) throw workspaceAbortError();
+  return Object.freeze({
+    uri: canonicalRulesSourceUri(document.uri.toString()) ??
+      document.uri.toString(),
+    text,
+    documentVersion: document.version,
+  });
+}
+
+function declaredFileSize(value: unknown): number | undefined {
+  if (
+    typeof value !== "object" || value === null ||
+    !("size" in value)
+  ) {
+    return undefined;
+  }
+  const size = (value as { readonly size?: unknown }).size;
+  return typeof size === "number" && Number.isSafeInteger(size) && size >= 0
+    ? size
+    : undefined;
+}
+
+function workspaceAbortError(): Error {
+  const error = new Error("Workspace operation was aborted");
+  error.name = "AbortError";
+  return error;
 }
