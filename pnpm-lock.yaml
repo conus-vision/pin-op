@@ -187,6 +187,9 @@ importers:
       postcss-selector-parser:
         specifier: 7.1.0
         version: 7.1.0
+      postcss-value-parser:
+        specifier: 4.2.0
+        version: 4.2.0
       zod:
         specifier: ^3.25.76
         version: 3.25.76
