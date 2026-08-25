@@ -764,8 +764,14 @@ describe("PanelInspectTransport DOM integration", () => {
       selectionRevision: 4,
       expectedRuleRefs: ["rule-1"],
     } as const;
+    const rulesInvalidated = {
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+    } as const;
 
     port.emitMessage(inspectStarted);
+    port.emitMessage(rulesInvalidated);
     port.emitMessage(selection);
     port.emitMessage(currentResolution);
     port.emitMessage(currentPeerState);
@@ -781,6 +787,8 @@ describe("PanelInspectTransport DOM integration", () => {
       selectionRevision: Number.MAX_SAFE_INTEGER + 1,
     });
     port.emitMessage({ ...inspectStarted, extra: true });
+    port.emitMessage({ ...rulesInvalidated, rulesGeneration: -1 });
+    port.emitMessage({ ...rulesInvalidated, extra: true });
     port.emitMessage({ ...selection, tabId: 999 });
     port.emitMessage({ ...currentResolution, resolutionGeneration: -1 });
     port.emitMessage({ ...currentPeerState, connected: "yes" });
@@ -790,6 +798,7 @@ describe("PanelInspectTransport DOM integration", () => {
 
     expect(received).toEqual([
       inspectStarted,
+      rulesInvalidated,
       selection,
       currentResolution,
       currentPeerState,

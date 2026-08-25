@@ -225,6 +225,16 @@ describe("startInspectorPanelRuntime", () => {
     });
 
     port.emitMessage({
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-rules",
+      rulesGeneration: 2,
+    });
+    await flushAsync();
+    expect(harness.document.querySelector(
+      '[data-rule-origin="rule-card"]',
+    )?.tagName).toBe("BUTTON");
+
+    port.emitMessage({
       protocolVersion: PROTOCOL_VERSION,
       type: "source.navigate",
       messageId: "navigate-unrelated",
@@ -238,6 +248,16 @@ describe("startInspectorPanelRuntime", () => {
     await flushAsync();
     expect(harness.document.querySelector('[data-rule-origin="rule-card"]')
       ?.tagName).toBe("BUTTON");
+
+    port.emitMessage({
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-rules",
+      rulesGeneration: 1,
+    });
+    await flushAsync();
+    expect(harness.document.querySelector(
+      '[data-rule-origin="rule-card"]',
+    )?.tagName).toBe("SPAN");
 
     port.emitMessage({
       type: "styles.invalidated",

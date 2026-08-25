@@ -118,6 +118,12 @@ export interface PanelRulesOpenCommand {
   readonly openAuthorityId: string;
 }
 
+export interface PanelRulesSourcesInvalidatedState {
+  readonly type: "pin-op.rules.invalidated";
+  readonly inspectMessageId: string;
+  readonly rulesGeneration: number;
+}
+
 export interface PanelInspectStartedState {
   readonly type: "pin-op.inspect.started";
   readonly inspectMessageId: string;
@@ -149,6 +155,7 @@ export type BackgroundToPanelInspectPortMessage =
   | PanelTabStateMessage
   | ProtocolCompatibilityMessage
   | PanelInspectStartedState
+  | PanelRulesSourcesInvalidatedState
   | RulesSourcesMessage
   | SourceMatchesMessage
   | SourceNavigationStateMessage
@@ -457,6 +464,30 @@ export function parsePanelRulesOpenCommand(
     inspectMessageId: record.inspectMessageId,
     rulesGeneration: record.rulesGeneration,
     openAuthorityId: record.openAuthorityId,
+  });
+}
+
+export function parsePanelRulesSourcesInvalidatedState(
+  value: unknown,
+): PanelRulesSourcesInvalidatedState | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "inspectMessageId",
+    "rulesGeneration",
+  ]);
+  if (
+    !record ||
+    record.type !== "pin-op.rules.invalidated" ||
+    !isProtocolOpaqueId(record.inspectMessageId) ||
+    !isResolutionGeneration(record.rulesGeneration) ||
+    record.rulesGeneration === 0
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    inspectMessageId: record.inspectMessageId,
+    rulesGeneration: record.rulesGeneration,
   });
 }
 

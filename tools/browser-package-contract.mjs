@@ -163,16 +163,16 @@ const MAX_STATIC_STRING_LENGTH = 256;
 // outputs, hashing the raw archived bytes. Any retained helper requires
 // deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" }),
-  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" }),
-  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "38404fbb8bbbe434231565682af16c32ae5ffac658dd54ab2f481b4d6b553c32", inspectorSha256: "fef22769ab29686be498eaa5a870178cdd58a13f68e76d2c2ec688d4677f1610" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" }),
-  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" }),
-  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" }),
-  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "458c82f6ac2e2a5b0b3ae6e1e83575aa720419ded4e4d757db1d7540e180772b", inspectorSha256: "7b36afe701bc924aee1bcb81ce8ab4d24b649f9eb96ffc922c3ba6cdead2af18" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" }),
-  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "868d40a59950bc2fbb529f84810c100693d7a32af22f9e3ee730222494be5835", inspectorSha256: "0f7b7256943f5cf63733fb0b36dfb8897e27067ed36bc271abc8643b3ab618e1" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" }),
+  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "387dd88fb6ac0abf80144e87005c2762fe30be7e2ed8210c4ff3f36239229e1f", inspectorSha256: "a8e8ae8008c7487e342cb582acd4c2bbe70ce6c17c37e0adde1d20c537038dd7" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" }),
+  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" }),
 ]);
 
 export function assertRulesSourceJavaScriptContract(

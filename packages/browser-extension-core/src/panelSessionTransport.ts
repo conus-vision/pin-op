@@ -22,6 +22,7 @@ import {
 import {
   isValidDevtoolsChannel,
   parsePanelInspectStartedState,
+  parsePanelRulesSourcesInvalidatedState,
   parseInspectRepublishRequest,
   type InspectRepublishRequest,
 } from "./inspectPortProtocol.js";
@@ -280,6 +281,25 @@ export class PanelSessionTransport {
       this.options.postPanelMessage(channel, state);
     } catch {
       // A panel disconnect owns channel disposal.
+    }
+  }
+
+  public publishRulesInvalidated(
+    channel: string,
+    inspectMessageId: string,
+    rulesGeneration: number,
+  ): boolean {
+    if (!this.channels.has(channel)) return false;
+    const state = parsePanelRulesSourcesInvalidatedState({
+      type: "pin-op.rules.invalidated",
+      inspectMessageId,
+      rulesGeneration,
+    });
+    if (!state) return false;
+    try {
+      return this.options.postPanelMessage(channel, state) !== false;
+    } catch {
+      return false;
     }
   }
 

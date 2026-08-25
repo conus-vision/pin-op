@@ -142,6 +142,27 @@ export class RulesSourcesController {
     }));
   }
 
+  public invalidatePublication(
+    inspectMessageId: string,
+    rulesGeneration: number,
+  ): void {
+    const authority = this.authority;
+    if (
+      this.disposed ||
+      this.state !== "ready" ||
+      !authority ||
+      !isOpaqueId(inspectMessageId) ||
+      !Number.isSafeInteger(rulesGeneration) ||
+      rulesGeneration <= 0 ||
+      rulesGeneration > RESOLUTION_LIMITS.generation ||
+      authority.inspectMessageId !== inspectMessageId ||
+      authority.rulesGeneration !== rulesGeneration
+    ) {
+      return;
+    }
+    this.invalidate("transport-invalidation");
+  }
+
   public invalidate(_reason: RulesSourcesInvalidationReason): void {
     if (this.disposed) return;
     const nextState = this.compatible ? "stale" : "incompatible";

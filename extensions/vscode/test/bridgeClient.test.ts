@@ -34,11 +34,13 @@ class FakeSocket {
   closed = false;
   readyState = 0;
   sendError: Error | undefined;
+  onSend: ((payload: string) => void) | undefined;
 
   send(payload: string): void {
     if (this.sendError) throw this.sendError;
     if (this.readyState !== 1) throw new Error("socket is not open");
     this.sent.push(payload);
+    this.onSend?.(payload);
   }
 
   close(): void {
@@ -876,6 +878,66 @@ describe("BridgeClient", () => {
     harness.sockets[0].message(rulesOpenMessage());
 
     expect(opened).toEqual([rulesOpenMessage(), rulesOpenMessage()]);
+  });
+
+  it("authorizes a synchronous Rules open during local publication delivery", () => {
+    const harness = createHarness();
+    const opened = vi.fn();
+    harness.client.onRulesOpen(opened);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(inspectMessage());
+    harness.sockets[0].onSend = (payload) => {
+      const message = JSON.parse(payload) as { type?: string };
+      if (message.type === "rules.sources") {
+        harness.sockets[0].message(rulesOpenMessage());
+      }
+    };
+
+    expect(harness.client.sendRulesSources(rulesSourcesInput())).toBe(true);
+
+    expect(opened).toHaveBeenCalledOnce();
+    expect(opened).toHaveBeenCalledWith(rulesOpenMessage());
+  });
+
+  it("keeps a reentrant newer Rules publication current", () => {
+    const harness = createHarness();
+    const opened: RulesOpenMessage[] = [];
+    harness.client.onRulesOpen((message) => opened.push(message));
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(inspectMessage());
+    let nested = false;
+    harness.sockets[0].onSend = (payload) => {
+      const message = JSON.parse(payload) as {
+        type?: string;
+        rulesGeneration?: number;
+      };
+      if (message.type === "rules.sources" && !nested) {
+        nested = true;
+        expect(harness.client.sendRulesSources(rulesSourcesInput({
+          rulesGeneration: 2,
+          sources: [{
+            ...rulesSourcesInput().sources[0]!,
+            openAuthorityId: "authority-2",
+          }],
+        }))).toBe(true);
+      }
+    };
+
+    expect(harness.client.sendRulesSources(rulesSourcesInput())).toBe(true);
+    harness.sockets[0].message(rulesOpenMessage());
+    harness.sockets[0].message(rulesOpenMessage(SESSION_ID, {
+      rulesGeneration: 2,
+      openAuthorityId: "authority-2",
+    }));
+
+    expect(opened).toEqual([rulesOpenMessage(SESSION_ID, {
+      rulesGeneration: 2,
+      openAuthorityId: "authority-2",
+    })]);
   });
 
   it("does not resurrect Rules authorities across reconnect", () => {

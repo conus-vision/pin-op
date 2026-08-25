@@ -382,15 +382,24 @@ export class BridgeClient {
       this.createRulesSourcesMessage(sources, randomUUID()),
     );
     if (this.currentInspectMessageId !== message.inspectMessageId) return false;
-    if (!this.sendAuthenticatedMessage(message)) return false;
-    this.currentRulesRoute = {
+    const previous = this.currentRulesRoute;
+    const candidate = Object.freeze({
       inspectMessageId: message.inspectMessageId,
       rulesGeneration: message.rulesGeneration,
       authorityIds: new Set(
         message.sources.map((source) => source.openAuthorityId),
       ),
-    };
-    return true;
+    });
+    this.currentRulesRoute = candidate;
+    if (this.sendAuthenticatedMessage(message)) return true;
+    if (this.currentRulesRoute === candidate) {
+      this.currentRulesRoute =
+        this.currentInspectMessageId === message.inspectMessageId &&
+          previous?.inspectMessageId === message.inspectMessageId
+          ? previous
+          : undefined;
+    }
+    return false;
   }
 
   rulesSourcesEnvelopeBytes(sources: RulesSourcesInput): number {

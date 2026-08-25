@@ -3825,7 +3825,13 @@ export class BackgroundRouter {
       prepared.rollback();
       return;
     }
-    prepared.commit();
+    if (!prepared.commit()) {
+      this.panelSessions.publishRulesInvalidated(
+        prepared.channel,
+        parsed.inspectMessageId,
+        parsed.rulesGeneration,
+      );
+    }
   }
 
   private receivePeerState(

@@ -439,6 +439,34 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{ channel: "panel-a", message: sources }]);
   });
 
+  it("publishes only strict local generation-scoped Rules invalidation", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+
+    expect(transport.publishRulesInvalidated("panel-a", "inspect-1", 2))
+      .toBe(true);
+    expect(transport.publishRulesInvalidated("panel-missing", "inspect-1", 2))
+      .toBe(false);
+    expect(transport.publishRulesInvalidated("panel-a", "", 2)).toBe(false);
+    expect(transport.publishRulesInvalidated("panel-a", "inspect-1", -1))
+      .toBe(false);
+
+    expect(published).toEqual([{
+      channel: "panel-a",
+      message: {
+        type: "pin-op.rules.invalidated",
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 2,
+      },
+    }]);
+  });
+
   it("publishes a bounded correlated inspect start only to its bound panel", () => {
     const published: Array<{ channel: string; message: unknown }> = [];
     const transport = new PanelSessionTransport({

@@ -4550,6 +4550,115 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "rules.sources")).toEqual([complete]);
   });
 
+  it("reconciles a Rules publication invalidated reentrantly during panel delivery", async () => {
+    const correlations = new InspectCorrelationStore();
+    let panel: FakePort | undefined;
+    let invalidateDuringDelivery = false;
+    const panelSessions = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        panel?.postMessage(message);
+        if (
+          invalidateDuringDelivery &&
+          (message as { type?: string }).type === "rules.sources"
+        ) {
+          invalidateDuringDelivery = false;
+          correlations.disposeChannel(channel);
+        }
+        return true;
+      },
+    });
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      panelSessionTransport: panelSessions,
+    });
+    panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-reentrant");
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-reentrant", rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    invalidateDuringDelivery = true;
+
+    harness.rulesSources.emit(
+      trustedIdePeer(),
+      rulesSourcesMessage("inspect-1", 1),
+    );
+
+    expect(messagesOfType(panel, "rules.sources")).toHaveLength(1);
+    expect(messagesOfType(panel, "pin-op.rules.invalidated")).toEqual([{
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+    }]);
+    expect(correlations.authorizeRulesOpen({
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    })).toBeUndefined();
+  });
+
+  it("scopes reentrant Rules reconciliation behind a newer delivered generation", async () => {
+    const correlations = new InspectCorrelationStore();
+    let panel: FakePort | undefined;
+    let afterDelivery: (() => void) | undefined;
+    const panelSessions = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(_channel, message) {
+        panel?.postMessage(message);
+        const callback = afterDelivery;
+        afterDelivery = undefined;
+        callback?.();
+        return true;
+      },
+    });
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      panelSessionTransport: panelSessions,
+    });
+    panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-newer");
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-newer", rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    const context = trustedIdePeer();
+    harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+    afterDelivery = () => {
+      harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 3));
+    };
+
+    harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 2));
+
+    expect(messagesOfType(panel, "rules.sources").map((message) =>
+      (message as RulesSourcesMessage).rulesGeneration
+    )).toEqual([1, 2, 3]);
+    expect(messagesOfType(panel, "pin-op.rules.invalidated")).toEqual([{
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+    }]);
+    expect(correlations.authorizeRulesOpen({
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 3,
+      openAuthorityId: "open-rule-a",
+    })).toBeDefined();
+  });
+
   it("authorizes repeat Rules opens only for the current panel, generation, and IDE", async () => {
     const correlations = new InspectCorrelationStore();
     const harness = createHarness({ inspectCorrelationStore: correlations });

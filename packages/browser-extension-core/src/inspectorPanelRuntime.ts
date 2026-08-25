@@ -34,6 +34,7 @@ import { parseDomEvent } from "./domProtocol.js";
 import {
   parsePanelInspectStartedState,
   parseInspectPortInvalidated,
+  parsePanelRulesSourcesInvalidatedState,
   parseProtocolCompatibilityMessage,
 } from "./inspectPortProtocol.js";
 import { parseStylesEvent } from "./stylesProtocol.js";
@@ -188,6 +189,14 @@ function routeRulesSourcesLifecycle(
     controller.beginInspect(
       inspectStarted.inspectMessageId,
       new Set(inspectStarted.expectedRuleRefs),
+    );
+    return;
+  }
+  const rulesInvalidated = parsePanelRulesSourcesInvalidatedState(message);
+  if (rulesInvalidated) {
+    controller.invalidatePublication(
+      rulesInvalidated.inspectMessageId,
+      rulesInvalidated.rulesGeneration,
     );
     return;
   }

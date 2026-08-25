@@ -11,6 +11,7 @@ import {
   parsePanelPresentationSettingsCommand,
   parsePanelInspectStartedState,
   parsePanelRulesOpenCommand,
+  parsePanelRulesSourcesInvalidatedState,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
@@ -335,6 +336,26 @@ describe("panel inspect transport", () => {
     expect(() => parsePanelInspectStartedState(accessor)).not.toThrow();
     expect(parsePanelInspectStartedState(accessor)).toBeUndefined();
     expect(getterCalls).toBe(0);
+  });
+
+  it("parses only an exact generation-scoped Rules invalidation", () => {
+    const state = {
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+    } as const;
+
+    expect(parsePanelRulesSourcesInvalidatedState(state)).toEqual(state);
+    for (const candidate of [
+      { ...state, inspectMessageId: "" },
+      { ...state, inspectMessageId: "x".repeat(129) },
+      { ...state, rulesGeneration: -1 },
+      { ...state, rulesGeneration: 1.5 },
+      { ...state, rulesGeneration: Number.MAX_SAFE_INTEGER + 1 },
+      { ...state, path: "/secret.scss" },
+    ]) {
+      expect(parsePanelRulesSourcesInvalidatedState(candidate)).toBeUndefined();
+    }
   });
 
   it("snapshots source commands without inherited fields or accessor execution", () => {

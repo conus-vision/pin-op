@@ -21,6 +21,7 @@ import {
   parseInspectPortResult,
   parsePanelPresentationSettingsCommand,
   parsePanelRulesOpenCommand,
+  parsePanelRulesSourcesInvalidatedState,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
@@ -704,6 +705,10 @@ function validatedPushMessage(message: unknown): unknown | undefined {
   const inspectStarted = parsePanelInspectStartedState(message);
   if (inspectStarted) {
     return inspectStarted;
+  }
+  const rulesInvalidated = parsePanelRulesSourcesInvalidatedState(message);
+  if (rulesInvalidated) {
+    return rulesInvalidated;
   }
   return validatedLocalPanelState(message);
 }

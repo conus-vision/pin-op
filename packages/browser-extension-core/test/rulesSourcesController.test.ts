@@ -161,6 +161,43 @@ describe("RulesSourcesController", () => {
     }))).toBe("published");
   });
 
+  it("invalidates only the exact Rules publication rejected after delivery", () => {
+    const sent = vi.fn();
+    const controller = readyController(sent);
+
+    controller.invalidatePublication("inspect-1", 1);
+
+    expect(controller.status()).toBe("stale");
+    expect(controller.originFor("rule-1")).toBeUndefined();
+    controller.open("rule-1");
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("does not let stale reconciliation clobber a newer generation or inspect", () => {
+    const controller = readyController();
+    expect(controller.accept(rulesSources({
+      rulesGeneration: 2,
+      sources: [source({ openAuthorityId: "authority-2" })],
+    }))).toBe("published");
+
+    controller.invalidatePublication("inspect-1", 1);
+    expect(controller.status()).toBe("ready");
+    expect(controller.originFor("rule-1")).toBeDefined();
+
+    controller.beginInspect("inspect-2", new Set(["rule-2"]));
+    expect(controller.accept(rulesSources({
+      inspectMessageId: "inspect-2",
+      sources: [source({
+        ruleRef: "rule-2",
+        openAuthorityId: "authority-new-inspect",
+      })],
+    }))).toBe("published");
+    controller.invalidatePublication("inspect-1", 2);
+
+    expect(controller.status()).toBe("ready");
+    expect(controller.originFor("rule-2")).toBeDefined();
+  });
+
   it.each([
     "disconnect",
     "stylesheet-refresh",
