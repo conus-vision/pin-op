@@ -15,8 +15,8 @@ browser core. The panel owns:
 - one toolbar row with the visual page picker, tab-local **Auto Refresh** and
   **IDE Highlight** controls, and the unchanged connection controls/code;
 - a virtualized, lazy DOM tree;
-- a responsive Source pane containing bounded active-document excerpts for the
-  Selected element and its immediate Parent;
+- on the legacy rollback page, a responsive Source pane containing bounded
+  active-document excerpts for the Selected element and its immediate Parent;
 - the selected-element summary, exact IDE resolution footer, and selected-match
   source navigation controls.
 
@@ -41,6 +41,11 @@ branding. `DomTreeProvider`, `DomTreeController`, page inspection, overlay,
 selection, refresh, and bridge routing remain Pin-op-owned. The checked-in
 upstream snapshot is provenance and reproduction input and is never imported by
 production code.
+
+The new Inspector sidebar contains read-only Rules and has no visible Source
+tab. Existing Source remains active-document-only in the legacy rollback panel.
+Remounting Source beside Rules and adding first-party PHP/template providers are
+future scope.
 
 The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,
@@ -99,9 +104,10 @@ once when activated.
 
 Protocol version `7` defines strict handshake, inspection, targeted resolution,
 source presentation, presentation settings, auto-refresh, source navigation,
-peer state, error, and heartbeat messages. Every product message is validated
-before routing. Version 7 is breaking: a v6 peer is closed with WebSocket code
-`1002`, with no compatibility adapter or fallback.
+Rules source publication/opening, peer state, error, and heartbeat messages.
+Every product message is validated before routing. Version 7 is breaking: a v6
+peer is closed with WebSocket code `1002`, with no compatibility adapter or
+fallback.
 
 The bridge binds one managed port on `127.0.0.1`. A link request to that exact
 port exchanges the two-digit PIN for a role-bound browser token. The bridge does
@@ -114,19 +120,33 @@ linked browser connection cannot receive them. The bridge also publishes
 monotonically generated IDE peer state when IDE availability changes.
 Navigation, exact Source-open intents, presentation settings, and repeated
 cursor-state updates reuse the same exact inspect reply route and generation.
+Rules source publication has its own monotonic generation and complete expected
+`ruleRef` set. The bridge stores only route-local refs and current opaque open
+authority IDs; it never stores a workspace path, URI, full range, document
+version, source map, or editor command.
 
 ### VS Code Presenter
 
 Each local VS Code window starts its bridge automatically. The status bar shows
 the managed port and two-digit PIN and copies the ungrouped code on click.
 
-The presenter retains the latest valid selection and resolves it against only
-the active text document. It never switches editors. It owns Selected and Parent
-decorations, validates and deduplicates plugin ranges, updates Applicable
-Sources, creates bounded Source excerpts, and sends protocol-v7 resolution and
-source-presentation outcomes back to the originating panel. Clicking an excerpt
-returns only its opaque match ID; the IDE validates that private authority
-before revealing the exact range in the active document.
+The presenter retains the latest valid selection and resolves legacy Source and
+decorations against only the active text document. Passive inspection never
+switches editors. It owns Selected and Parent decorations, validates and
+deduplicates plugin ranges, updates Applicable Sources, creates bounded Source
+excerpts, and sends protocol-v7 resolution and source-presentation outcomes back
+to the originating panel. Clicking a legacy Source excerpt returns only its
+opaque match ID; the IDE validates that private authority before revealing the
+exact range in the active document.
+
+Separately, the Rules resolver verifies bounded generated CSS evidence against
+workspace-owned CSS ASTs and usable source maps. It publishes safe labels and
+opaque open authorities. An explicit Rules origin click may switch VS Code to a
+different exact CSS or SCSS block using that current IDE-issued opaque
+authority. Missing or invalid source maps expose only verified generated CSS;
+they never create an approximate SCSS target. The private full range,
+dependency hashes, workspace generation, document identity, and version remain
+IDE-owned and are revalidated around the editor host call.
 
 The presenter also observes changed saves. Direct CSS settles for 150 ms.
 SCSS, Sass, and Less wait for a 750 ms quiet period within a two-second build
@@ -207,6 +227,12 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
 5. The bridge routes that reply only to the browser connection that originated
    the inspect message; the panel renders the exact footer outcome and Source
    pane. Previous/Next remains Selected-only.
+6. Independently, the IDE resolves the complete correlated rule-evidence batch
+   and publishes a newer `rules.sources` generation through the same exact route.
+7. Rules replaces a generated label only with a verified CSS or source-mapped
+   SCSS label. An explicit origin click sends only `rules.open` correlation and
+   the opaque authority; the IDE may then switch files and reveal its private
+   exact block after pre/post revalidation.
 
 ### Refresh After Save
 
@@ -228,11 +254,13 @@ and box-model geometry stay inside the browser extension. They are not protocol
 facts and are not available to VS Code.
 
 The product WebSocket receives the bounded selection snapshot needed for source
-resolution: page context, selected/immediate-parent subjects, CSS facts, and
-inaccessible-stylesheet diagnostics. In the reverse direction it can carry at
-most 32 active-document excerpts, each capped at 80 logical lines and 8 KiB,
-inside a 256 KiB message. Full source documents, workspace paths and URIs,
-source maps, browser tab IDs, and browser-local locators do not cross it.
+resolution: page context, selected/immediate-parent subjects, CSS facts,
+correlated rule evidence, and inaccessible-stylesheet diagnostics. In the
+reverse direction it can carry at most 32 active-document excerpts, each capped
+at 80 logical lines and 8 KiB, inside a 256 KiB message, plus sanitized Rules
+origin labels/start positions and opaque IDs. Full source documents, workspace
+paths and URIs, full editor ranges, document versions, source maps, browser tab
+IDs, and browser-local locators do not cross it.
 
 ## Trust Boundaries
 
@@ -254,6 +282,12 @@ it inserts a cloned external top-document HTTP(S) stylesheet link, removes the
 old link only after the clone loads successfully, and retains the old link on
 failure. Reload mode uses the browser tab reload API. Neither refresh mode is a
 caller-supplied command.
+
+Rules navigation does not broaden the browser into workspace authority. Only a
+current IDE-issued opaque authority from an explicit origin click can request a
+file switch, and the IDE revalidates all private dependencies before cursor and
+reveal. No workspace URI/path, full range, document version, or command crosses
+the bridge.
 
 See [protocol.md](protocol.md), [security.md](security.md), and
 [../PRIVACY.md](../PRIVACY.md) for the complete contracts.

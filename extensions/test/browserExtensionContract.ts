@@ -836,6 +836,18 @@ export function describeBrowserPackageContract(
       for (const marker of contract.expectedInspectorBundleMarkers) {
         expect(inspectorPanelBundle, marker).toContain(marker);
       }
+      for (const marker of ["rules.sources", "pin-op.rules.open"]) {
+        expect(inspectorPanelBundle, marker).toContain(marker);
+      }
+      const backgroundBundle = packagedText(packaged, "dist/background.js");
+      for (const marker of [
+        "rules-sources",
+        "rules.sources",
+        "rules.open",
+        "pin-op.rules.open",
+      ]) {
+        expect(backgroundBundle, marker).toContain(marker);
+      }
       expect(panelCss).toBe(sharedAsset("panel.css"));
       expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
         Buffer.from(sharedAsset("pin-op.svg")),
@@ -937,6 +949,7 @@ export function describeBrowserPackageContract(
           artifactLabel: `${contract.platformName} real emitted package`,
           metadataLabel: `${contract.platformName} real emitted metadata`,
           platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
+          panelVariant: "legacy",
         },
       )).not.toThrow();
     });
@@ -972,6 +985,16 @@ export function describeBrowserPackageContract(
           artifactLabel: `${contract.platformName} real emitted inspector package`,
           metadataLabel: `${contract.platformName} real emitted inspector metadata`,
           platform: browser,
+          panelVariant: "legacy",
+        },
+      )).toThrow(/legacy panel|expected \/dist\/panel\.html/i);
+      expect(() => assertBrowserPackageRuntimeContract(
+        { files: new Map(inspectorPackaged.files) },
+        {
+          artifactLabel: `${contract.platformName} real emitted inspector package`,
+          metadataLabel: `${contract.platformName} real emitted inspector metadata`,
+          platform: browser,
+          panelVariant: "inspector",
         },
       )).not.toThrow();
       expect(compiledPanelPage(inspectorPackaged)).toBe(
@@ -1029,6 +1052,7 @@ export function describeBrowserPackageContract(
             artifactLabel: `${contract.platformName} altered emitted package`,
             metadataLabel: `${contract.platformName} altered emitted metadata`,
             platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
+            panelVariant: "legacy",
           },
         )).toThrow(/dynamic code evaluation/i);
       }

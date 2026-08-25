@@ -417,6 +417,7 @@ async function createProductionRefreshHarness(
   const pageRefreshListeners = new Set<
     (windowId: number, message: PageRefreshMessage) => void
   >();
+  let pageRefreshQuiescence = Promise.resolve();
   const registry = new ClientRegistry();
   const routes = new ReplyRouteRegistry();
   const storage = memoryStorage(options.persistedStates
@@ -485,6 +486,9 @@ async function createProductionRefreshHarness(
         for (const listener of pageRefreshListeners) {
           listener(WINDOW_ID, message);
         }
+        pageRefreshQuiescence = new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
         return true;
       },
       terminate() {},
@@ -567,6 +571,7 @@ async function createProductionRefreshHarness(
   });
 
   const settle = async (): Promise<void> => {
+    await pageRefreshQuiescence;
     const generation = bridgeRefreshes.at(-1)?.refreshGeneration;
     if (generation === undefined) {
       await Promise.resolve();

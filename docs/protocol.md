@@ -23,11 +23,12 @@ capabilities. Capability negotiation does not alter the protocol version. It
 authorizes only message families implemented by both endpoints and the bridge:
 
 - browser clients advertise `inspect`, `link`, `source-navigation`,
-  `auto-refresh`, `source-presentation`, and `presentation-settings`;
+  `auto-refresh`, `source-presentation`, `presentation-settings`, and
+  `rules-sources`;
 - an inspect-only simulator may advertise only `inspect`, while a simulator
   that sends navigation intents must also advertise `source-navigation`;
 - IDE clients advertise `resolution`, `source-navigation`, `auto-refresh`,
-  `source-presentation`, and `presentation-settings`.
+  `source-presentation`, `presentation-settings`, and `rules-sources`.
 
 The bridge stores the authenticated capability list and checks it again when
 routing optional messages. Advertising an unknown capability is invalid, and a
@@ -52,7 +53,8 @@ client cannot send or receive an optional message family without its capability.
     "source-navigation",
     "auto-refresh",
     "source-presentation",
-    "presentation-settings"
+    "presentation-settings",
+    "rules-sources"
   ],
   "metadata": {}
 }
@@ -200,16 +202,79 @@ sources, source-map failures, no or ambiguous rule matches, and bounded plugin
 or internal errors. Wire source locations are one-based; the local source
 plugin API converts them to zero-based, end-exclusive editor ranges.
 
-Protocol v7 also reserves strict `rules.sources` and `rules.open` envelopes for
-future correlated Rules-source navigation. `rules.sources` is IDE-authored and
-maps unique inspect `ruleRef` values to opaque `openAuthorityId` values, safe
-basename labels, CSS/SCSS language IDs, bounded one-based positions, and exact
-or source-map confidence. `rules.open` carries only the inspect ID, rules
-generation, and opaque authority ID; paths, URIs, URLs, ranges, commands, and
-rule refs are invalid. The `rules-sources` capability is intentionally dormant:
-current browser, simulator, bridge, and IDE endpoints do not advertise or route
-this family yet. Existing `source.matches`, `source.open`, and active-editor
-Source semantics remain separate.
+## Rules Source Navigation
+
+The current browser, bridge, and IDE endpoints advertise the `rules-sources`
+capability. After each inspect, the IDE resolves the complete bounded
+`ruleEvidence` batch and publishes a strictly newer complete generation through
+the exact originating inspect reply route:
+
+```json
+{
+  "protocolVersion": 7,
+  "type": "rules.sources",
+  "messageId": "rules-sources-1",
+  "sessionId": "default",
+  "source": { "role": "ide", "id": "vscode-window-1" },
+  "inspectMessageId": "inspect-42",
+  "rulesGeneration": 1,
+  "sources": [
+    {
+      "ruleRef": "rule-1",
+      "openAuthorityId": "opaque-rule-open-1",
+      "document": { "label": "card.scss", "languageId": "scss" },
+      "startLine": 41,
+      "startColumn": 3,
+      "confidence": "sourcemap"
+    }
+  ],
+  "unresolvedRuleCount": 0,
+  "metadata": {}
+}
+```
+
+Published `ruleRef` values must be unique members of the immutable inspect
+evidence set, and `sources.length + unresolvedRuleCount` must cover that set
+exactly. `rulesGeneration` is independent of active-document
+`resolutionGeneration`. A prepare/send/commit transition ensures a failed
+browser delivery does not replace the bridge's previous generation and
+allowlist.
+
+The browser renders only the safe document label, CSS/SCSS language, one-based
+start position, and confidence. An unresolved rule remains visible with its
+verified generated CSS origin when one exists, but it never receives an
+approximate SCSS authority. A missing, invalid, ambiguous, stale, or
+outside-workspace map cannot produce an SCSS origin.
+
+An explicit current Rules-origin click sends this minimal message:
+
+```json
+{
+  "protocolVersion": 7,
+  "type": "rules.open",
+  "messageId": "rules-open-1",
+  "sessionId": "default",
+  "inspectMessageId": "inspect-42",
+  "rulesGeneration": 1,
+  "openAuthorityId": "opaque-rule-open-1",
+  "metadata": {}
+}
+```
+
+`rules.open` has no `source` field and cannot contain a `ruleRef`, URL, URI,
+path, line, column, range, document version, or command. The bridge accepts it
+only from the originating capable browser and only for a current IDE-issued
+opaque authority. The IDE revalidates workspace ownership, dependency hashes,
+document identity, generation, and the private full range before and after the
+host opens the document. The explicit click may therefore switch VS Code to a
+different workspace CSS or SCSS file; passive inspection never does.
+
+There is no open acknowledgement message. Local transport acceptance cannot
+prove bridge-to-browser delivery, so stale or mismatched generations fail
+closed and a fresh inspect republishes authority. Existing `source.matches`,
+`source.open`, and active-document-only Source semantics remain separate. The
+new Inspector has no visible Source tab; Source remains available only in the
+legacy rollback panel until its later milestone.
 
 ## Auto Refresh
 
@@ -514,20 +579,24 @@ old link on failure. It cannot fill or submit forms or invoke page handlers, and
 it does not execute page commands or arbitrary page scripts received from VS
 Code or the WebSocket.
 
-The IDE extension can read the active workspace document and relevant local
-source maps through its source plugins. It can add editor decorations and move
-the primary cursor only after an explicit Previous/Next intent or a validated
-`source.open` produced by an explicit Source excerpt click. Passive selection
-and refresh do not move the cursor. It cannot edit or write source files, run a
-shell, execute an arbitrary workspace command, or send a caller-supplied command
-to change the inspected page. The browser cannot ask the IDE to execute
-arbitrary commands or edit files, and the IDE cannot execute page scripts.
+The IDE extension can read the active workspace document through source plugins
+and can read bounded workspace CSS, SCSS, and source-map dependencies through
+the Rules resolver. It can add editor decorations and move the primary cursor
+after an explicit Previous/Next intent, a validated active-document
+`source.open`, or an explicit Rules origin click carrying a current IDE-issued
+opaque authority. Only that Rules click may switch VS Code to another verified
+workspace source file. Passive selection and refresh do not move the cursor or
+switch editors. The IDE cannot edit or write source files, run a shell, execute
+an arbitrary workspace command, or send a caller-supplied command to change the
+inspected page. The browser cannot ask the IDE to execute arbitrary commands or
+edit files, and the IDE cannot execute page scripts.
 
-Only bounded inspect facts, bounded active-document excerpts, and protocol
-state cross the loopback WebSocket. Browser-local locators and node refs never
-cross it. Full source documents, editor ranges, local file paths and URIs,
-source maps, and browser tab IDs never cross in the reverse direction. Protocol
-7 exposes no arbitrary page-owned DOM writes, source writes, shell execution,
-workspace command execution, or reverse synchronization. Its only DOM changes
-are the extension-owned overlay and the typed stylesheet-link replacement
-described above.
+Only bounded inspect facts, bounded active-document excerpts, sanitized Rules
+origin labels/start positions, opaque IDs, and protocol state cross the
+loopback WebSocket. Browser-local locators and node refs never cross it. Full
+source documents, full editor ranges, local file paths and URIs, document
+versions, source maps, and browser tab IDs never cross in the reverse direction.
+Protocol 7 exposes no arbitrary page-owned DOM writes, source writes, shell
+execution, workspace command execution, or reverse synchronization. Its only
+DOM changes are the extension-owned overlay and the typed stylesheet-link
+replacement described above.

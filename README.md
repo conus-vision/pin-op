@@ -29,6 +29,9 @@ Pin-op carries bounded inspection facts and source excerpts. Bounded
 active-document excerpts cross the bridge and are not content-redacted, so they
 may contain sensitive code. Full documents, workspace paths or URIs, source
 maps, browser-local DOM references, and executable commands do not cross.
+Rules-origin messages add bounded protocol correlation and rule identity plus a
+sanitized label, one-based start position, confidence, and opaque open
+authority; they do not expose workspace identity.
 
 ## Quick Start
 
@@ -38,13 +41,19 @@ is terminal-free:
 1. Open your local project in VS Code. Pin-op starts automatically.
 2. Click the Pin-op status item to copy that VS Code window's seven-digit link code.
 3. Open Pin-op in Firefox or Chrome DevTools, paste the code, and select **Link**.
-4. Keep the source document you want to inspect active in VS Code.
+4. Keep the source document you want to highlight active in VS Code.
 5. Select an element with the page picker or the lazy DOM tree.
-6. Read the highlighted Selected and Parent ranges in VS Code, or open a bounded
-   match from the DevTools **Source** pane.
+6. Read highlighted Selected and Parent ranges, or use the legacy rollback
+   panel's bounded active-document Source excerpts.
 
 Each browser window links explicitly to one VS Code window. **Disconnect**
 unlinks only the current browser window.
+
+The opt-in Inspector candidate is built with
+`PIN_OP_PANEL_VARIANT=inspector`. In that candidate, an explicit current Rules
+origin click can open its exact verified CSS or source-mapped SCSS block.
+Ordinary/store artifacts keep the legacy rollback panel until the rollout
+checkpoint.
 
 ## Who It Is For
 
@@ -57,14 +66,25 @@ unlinks only the current browser window.
 
 - An Inspector-like page picker with a box-model overlay and lazy DOM tree.
 - Multiple complete CSS or source-mapped SCSS ranges highlighted in the active file.
+- In the opt-in Inspector candidate, exact Rules origins that can open a
+  verified CSS or source-mapped SCSS block.
 - Separate Selected and immediate Parent source decorations.
 - Bounded Source excerpts with exact navigation back to the IDE.
 - Auto Refresh for changed styles and tab reloads with scroll restoration after
   changed script, Vue, PHP, or HTML saves.
 - Explicit browser-window linking over a loopback-only WebSocket.
 
-Pin-op is read-only. It does not edit source, execute IDE commands, or switch
-the active editor.
+Pin-op is read-only. It does not edit source or execute caller-supplied IDE
+commands. In the opt-in Inspector candidate, an explicit Rules origin click may
+switch VS Code to a verified workspace file using a current IDE-issued opaque
+authority; passive inspection never switches editors. No workspace URI/path,
+full range, document version, or command crosses the bridge for this action.
+Missing or invalid source maps show verified generated CSS only, with no
+approximate SCSS origin.
+
+The new Inspector has no visible Source tab. Existing Source remains
+active-document-only in the legacy rollback panel. A remounted Source tab and
+first-party PHP/template providers remain future scope.
 
 ## Compatibility
 
@@ -99,7 +119,7 @@ installation and current evidence status.
 ## How It Works
 
 Protocol version `7` is an exact-match WebSocket contract for inspection,
-refresh, source presentation, settings, and navigation. Pin-op prefers exact
+refresh, source presentation, settings, and Rules navigation. Pin-op prefers exact
 CSS evidence, uses a conservative unique fingerprint fallback, and fails closed
 when source-map or document identity cannot be established safely.
 

@@ -7,6 +7,15 @@ Pin-op never loads plugin code or packages from the inspected workspace.
 Only CSS and SCSS plugins ship as production implementations today. The public
 API is intentionally general enough for framework and template integrations.
 
+This plugin API remains active-document-only. It supplies highlighting and the
+Existing Source experience in the legacy rollback panel; it does not mint
+cross-file Rules open authorities. The new Inspector has no visible Source tab.
+Its built-in Rules resolver owns exact workspace CSS/SCSS/source-map verification
+and only an explicit Rules origin click may switch VS Code using a current
+IDE-issued opaque authority. No workspace URI/path, full range, document
+version, or command crosses the bridge. First-party PHP/template providers and
+a new Source tab remain future scope.
+
 ## Extension Setup
 
 Declare the Pin-op core extension as a dependency. The canonical extension
@@ -430,6 +439,12 @@ reliably from final DOM alone. Component ownership, compilation, loops,
 conditionals, hooks, and server rendering erase source identity. Exact-looking
 DOM-only matches must remain `heuristic`; use source maps or instrumentation for
 stronger confidence.
+
+These framework sections define third-party authoring constraints, not shipped
+first-party providers. PHP, Twig, Blade, WordPress, ACF, and other template
+providers remain future scope. Missing or invalid CSS source maps in the built-in
+Rules resolver show verified generated CSS only, with no approximate SCSS
+origin.
 
 ## Versioning And Distribution
 

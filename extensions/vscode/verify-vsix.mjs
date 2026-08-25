@@ -4,6 +4,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRuntimeMetadata } from "../../tools/runtime-metadata.mjs";
 import {
+  assertRulesSourceJavaScriptContract,
+} from "../../tools/browser-package-contract.mjs";
+import {
   assertVsixBundleMatchesLocalBuild,
 } from "../../tools/vsix-bundle-parity.mjs";
 import {
@@ -74,7 +77,10 @@ parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
 const bundleBytes = entries.get("extension/dist/extension.cjs");
 assertVsixBundleMatchesLocalBuild(bundleBytes, "VSIX");
 const bundle = bundleBytes.toString("utf8");
-for (const capability of ["source-navigation", "source-presentation"]) {
+for (const capability of [
+  "source-navigation",
+  "source-presentation",
+]) {
   if (!bundle.includes(capability)) {
     throw new Error(`VSIX bundle is missing current ${capability} capability`);
   }
@@ -90,6 +96,13 @@ for (const marker of [
     throw new Error(`VSIX bundle is missing current ${marker} marker`);
   }
 }
+assertRulesSourceJavaScriptContract(bundle, "VSIX bundle", {
+  requiredStrings: [
+    ["Rules source capability", "rules-sources"],
+    ["Rules source publication", "rules.sources"],
+    ["Rules source open", "rules.open"],
+  ],
+});
 const runtimeRequires = [
   ...bundle.matchAll(/\brequire\((["'])([^"'./][^"']*)\1\)/g),
 ].map((match) => match[2]);

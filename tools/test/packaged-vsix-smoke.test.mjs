@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import AdmZip from "adm-zip";
+import * as browserPackageContract from "../browser-package-contract.mjs";
 import { assertVsCodeReadme } from "../vscode-extension-identity.mjs";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
 
@@ -33,6 +35,7 @@ const directVerifierPath = resolve(
   repositoryRoot,
   "extensions/vscode/verify-vsix.mjs",
 );
+const artifactVerifierPath = resolve(repositoryRoot, "tools/verify-artifacts.mjs");
 const productDescription =
   "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
 const readmeResultStatement =
@@ -182,8 +185,239 @@ test("installed VSIX smoke pins protocol 7 and current source capabilities", asy
   assert.match(source, /"source\.open"/);
   assert.match(source, /"source\.navigationState"/);
   assert.match(source, /"matchId"/);
+  assert.match(source, /"rules-sources"/);
+  assert.match(source, /"rules\.sources"/);
+  assert.match(source, /"rules\.open"/);
+  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V7_RULES_SOURCES_OK/);
   assert.match(source, /INSTALLED_VSIX_PROTOCOL_V7_OK/);
+  assert.doesNotMatch(source, /rules\.opened|RULES_OPEN_(?:ACK|OK)/);
   assert.doesNotMatch(source, /protocol[- _]?v?6/i);
+  assert.doesNotMatch(source, /--disable-extension-update-checks/);
+  assert.match(source, /installVerifiedVsix/);
+  assert.match(source, /assertRulesSourceJavaScriptContract/);
+  assert.match(source, /buildInstalledVsixSmokeHarnessSource/);
+  assert.match(
+    source,
+    /join\(harnessDirectory, "smoke\.cjs"\),\s*buildInstalledVsixSmokeHarnessSource\(expectedBundleSha256\)/s,
+  );
+  assert.match(source, /expectedBundleSha256/);
+  assert.match(source, /createHash/);
+  assert.match(source, /hasExactStringLiteral/);
+  assert.doesNotMatch(source, /hasExactProperty|missing exact inspectMessageId: property/);
+  assert.match(source, /forbiddenRulesOpenLiteral/);
+});
+
+test("installed VSIX smoke binds installed bundle bytes to the strict preflight", async () => {
+  const smokeModuleUrl = pathToFileURL(installedSmokePath);
+  smokeModuleUrl.searchParams.set("test", String(Date.now()));
+  const { buildInstalledVsixSmokeHarnessSource } = await import(
+    smokeModuleUrl.href
+  );
+  assert.equal(typeof buildInstalledVsixSmokeHarnessSource, "function");
+
+  await withTemporaryDirectory("pin-op-installed-vsix-harness-", async (directory) => {
+    const extensionDirectory = join(directory, "installed-extension");
+    const extensionDistDirectory = join(extensionDirectory, "dist");
+    const vscodeModuleDirectory = join(directory, "node_modules", "vscode");
+    const harnessPath = join(directory, "smoke.cjs");
+    const bundlePath = join(extensionDistDirectory, "extension.cjs");
+    const bundle = Buffer.from(JSON.stringify([
+      "source-navigation",
+      "source-presentation",
+      "source.matches",
+      "source.open",
+      "source.navigate",
+      "source.navigationState",
+      "matchId",
+      "rules-sources",
+      "rules.sources",
+      "rules.open",
+      "pin-op.rules.open",
+    ]));
+    const expectedBundleSha256 = createHash("sha256")
+      .update(bundle)
+      .digest("hex");
+    const fixtureKey = `__pinOpInstalledVsixSmoke${Date.now()}`;
+    let activationCount = 0;
+    const extension = {
+      extensionPath: extensionDirectory,
+      isActive: false,
+      async activate() {
+        activationCount += 1;
+        this.isActive = true;
+        return { registerSourcePlugin() {} };
+      },
+    };
+    globalThis[fixtureKey] = {
+      extensions: {
+        getExtension(extensionId) {
+          assert.equal(extensionId, "conus-vision.pin-op");
+          return extension;
+        },
+      },
+    };
+
+    try {
+      await Promise.all([
+        mkdir(extensionDistDirectory, { recursive: true }),
+        mkdir(vscodeModuleDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(
+          join(extensionDistDirectory, "runtime-metadata.json"),
+          JSON.stringify({ schemaVersion: 1, protocolVersion: 7 }),
+        ),
+        writeFile(bundlePath, bundle),
+        writeFile(
+          join(vscodeModuleDirectory, "index.js"),
+          `module.exports = globalThis[${JSON.stringify(fixtureKey)}];\n`,
+        ),
+        writeFile(
+          harnessPath,
+          buildInstalledVsixSmokeHarnessSource(expectedBundleSha256),
+        ),
+      ]);
+
+      const requireFromHarness = createRequire(harnessPath);
+      const harness = requireFromHarness(harnessPath);
+      await harness.run();
+      assert.equal(activationCount, 1);
+
+      await writeFile(
+        bundlePath,
+        Buffer.concat([bundle, Buffer.from("\n// tampered after install\n")]),
+      );
+      await assert.rejects(
+        () => harness.run(),
+        /installed Pin-op bundle SHA-256 mismatch/i,
+      );
+      assert.equal(activationCount, 1, "tampered bundle must fail before activate");
+    } finally {
+      delete globalThis[fixtureKey];
+    }
+  });
+});
+
+test("direct VSIX verifier requires the v7 Rules source contract", async () => {
+  for (const verifierPath of [directVerifierPath, artifactVerifierPath]) {
+    const source = await readFile(verifierPath, "utf8");
+
+    assert.match(source, /"rules-sources"/);
+    for (const marker of [
+      "rules.sources",
+      "rules.open",
+    ]) {
+      assert.ok(source.includes(`"${marker}"`), `${verifierPath}: ${marker}`);
+    }
+    assert.doesNotMatch(source, /rules\.opened/);
+    assert.match(source, /assertRulesSourceJavaScriptContract/);
+  }
+  const contractSource = await readFile(
+    resolve(repositoryRoot, "tools/browser-package-contract.mjs"),
+    "utf8",
+  );
+  for (const marker of [
+    "inspectMessageId",
+    "rulesGeneration",
+    "openAuthorityId",
+    "ruleRef",
+    "sources",
+    "unresolvedRuleCount",
+    "document",
+    "label",
+    "languageId",
+    "startLine",
+    "startColumn",
+    "confidence",
+    "metadata",
+  ]) {
+    assert.ok(contractSource.includes(`"${marker}"`), marker);
+  }
+  assert.match(contractSource, /forbiddenRulesOpenLiteral/);
+});
+
+test("strict Rules source marker contract rejects aliases, acknowledgements, and missing fields", () => {
+  const assertContract =
+    browserPackageContract.assertRulesSourceJavaScriptContract;
+  assert.equal(typeof assertContract, "function");
+  const requiredStrings = [
+    ["Rules source capability", "rules-sources"],
+    ["Rules source publication", "rules.sources"],
+    ["Rules source open", "rules.open"],
+  ];
+  const valid = [
+    'const types = ["rules-sources", "rules.sources", "rules.open"];',
+    "const publication = {",
+    "  inspectMessageId: 'inspect-1', rulesGeneration: 1,",
+    "  openAuthorityId: 'authority-1', ruleRef: {}, sources: [{",
+    "    document: { label: 'style.scss', languageId: 'scss' },",
+    "    startLine: 1, startColumn: 1, confidence: 'exact',",
+    "  }], unresolvedRuleCount: 0, metadata: {},",
+    "};",
+  ].join("\n");
+  assert.doesNotThrow(() => assertContract(valid, "strict fixture", {
+    requiredStrings,
+  }));
+  const shorthand = [
+    'const types = ["rules-sources", "rules.sources", "rules.open"];',
+    "const inspectMessageId = 'inspect-1', rulesGeneration = 1;",
+    "const openAuthorityId = 'authority-1', ruleRef = {};",
+    "const label = 'style.scss', languageId = 'scss';",
+    "const document = { label, languageId };",
+    "const startLine = 1, startColumn = 1, confidence = 'exact';",
+    "const sources = [{ document, startLine, startColumn, confidence }];",
+    "const unresolvedRuleCount = 0, metadata = {};",
+    "const publication = { inspectMessageId, rulesGeneration, openAuthorityId,",
+    "  ruleRef, sources, unresolvedRuleCount, metadata };",
+  ].join("\n");
+  const quoted = valid.replace(
+    /\b(inspectMessageId|rulesGeneration|openAuthorityId|ruleRef|sources|unresolvedRuleCount|document|label|languageId|startLine|startColumn|confidence|metadata):/g,
+    '"$1":',
+  );
+  for (const [name, fixture] of [
+    ["shorthand", shorthand],
+    ["quoted", quoted],
+    ["minified", shorthand.replace(/\s+/g, " ")],
+  ]) {
+    assert.doesNotThrow(
+      () => assertContract(fixture, `${name} strict fixture`, { requiredStrings }),
+      name,
+    );
+  }
+  for (const [name, mutation] of [
+    [
+      "panel alias only",
+      valid.replace('"rules.open"', '"pin-op.rules.open"'),
+    ],
+    [
+      "acknowledgement alias",
+      valid.replace('"rules.open"', '"rules.opened"'),
+    ],
+    [
+      "invented acknowledgement",
+      `${valid}\nconst inventedAck = "rules.opened";`,
+    ],
+    [
+      "missing nested field",
+      valid.replace("startColumn: 1,", ""),
+    ],
+    [
+      "missing metadata",
+      valid.replace("unresolvedRuleCount: 0, metadata: {},", "unresolvedRuleCount: 0,"),
+    ],
+    [
+      "comment-only marker",
+      valid.replace('"rules.open"', "0") + '\n// "rules.open"',
+    ],
+  ]) {
+    assert.throws(
+      () => assertContract(mutation, `strict fixture ${name}`, {
+        requiredStrings,
+      }),
+      /Rules source open|acknowledgement|startColumn|metadata/i,
+      name,
+    );
+  }
 });
 
 test("VS Code README uses the exact opening result statement", () => {

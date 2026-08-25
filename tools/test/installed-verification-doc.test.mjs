@@ -13,6 +13,12 @@ const architectureGuide = await readFile("docs/architecture.md", "utf8");
 const protocolGuide = await readFile("docs/protocol.md", "utf8");
 const securityGuide = await readFile("docs/security.md", "utf8");
 const vscodeReadme = await readFile("extensions/vscode/README.md", "utf8");
+const storeListings = await readFile("docs/store-listings.md", "utf8");
+const releaseGuide = await readFile("docs/release.md", "utf8");
+const sourcePluginGuide = await readFile(
+  "docs/source-plugin-authoring.md",
+  "utf8",
+);
 const activeIdentityPaths = [
   "README.md",
   "CHANGELOG.md",
@@ -79,6 +85,12 @@ const [sourcePresentationSection] = (sourcePresentationAndLater ?? "").split(
 );
 const [, readOnlySecuritySection] = protocolGuide.split(
   "## Read-Only Security Model",
+);
+const [, rulesSourcesAndLater] = protocolGuide.split(
+  "## Rules Source Navigation",
+);
+const [rulesSourcesSection] = (rulesSourcesAndLater ?? "").split(
+  "## Auto Refresh",
 );
 const securityDisclosureContracts = [
   {
@@ -214,6 +226,39 @@ test("normal Inspector workflow is explicit and scoped to one browser window", (
   assert.match(normalFlow, /exact footer outcome/i);
   assert.match(normalFlow, /Disconnect[\s\S]*only (?:the )?(?:current|linked|that) browser window/i);
   assert.doesNotMatch(normalFlow, /Change IDE|\bUnlink\b/);
+});
+
+test("ordinary installed artifacts keep Rules clicks out of the legacy flow", () => {
+  const [, legacyAndLater = ""] = installedGuide.split(
+    "## Ordinary/Store Legacy Panel Flow",
+  );
+  const [legacyFlow = ""] = legacyAndLater.split("\n## ");
+  assert.ok(legacyFlow, "ordinary/store legacy panel flow is required");
+  assert.match(legacyFlow, /ordinary\/store artifacts/i);
+  assert.match(legacyFlow, /legacy rollback panel/i);
+  assert.doesNotMatch(legacyFlow, /Rules origin|Rules-origin|PIN_OP_PANEL_VARIANT/i);
+
+  const [, candidateAndLater = ""] = installedGuide.split(
+    "## Checkpoint 3 Rules-Origin Installed Matrix",
+  );
+  const [candidateFlow = ""] = candidateAndLater.split("\n## ");
+  assert.match(candidateFlow, /PIN_OP_PANEL_VARIANT=inspector/);
+  assert.match(candidateFlow, /Rules-origin/i);
+});
+
+test("read-only Rules backend is scoped to unpacked Inspector candidates", () => {
+  const [, rulesAndLater = ""] = installedGuide.split(
+    "## Read-Only Rules Backend",
+  );
+  const [rulesBackend = ""] = rulesAndLater.split("\n## ");
+  assert.ok(rulesBackend, "read-only Rules backend section is required");
+  assert.match(rulesBackend, /unpacked/i);
+  assert.match(rulesBackend, /PIN_OP_PANEL_VARIANT=inspector/);
+  assert.match(rulesBackend, /ordinary\/store artifacts[\s\S]*legacy/i);
+  assert.doesNotMatch(
+    rulesBackend,
+    /run it in both the installed Chrome package[\s\S]*installed Firefox/i,
+  );
 });
 
 test("installed runbook covers source navigation and fail-closed recovery", () => {
@@ -373,6 +418,208 @@ test("protocol guide contains strict source navigation examples", () => {
   });
 });
 
+test("protocol guide publishes the strict current Rules source contract", () => {
+  assert.ok(rulesSourcesSection, "Rules Source Navigation section is required");
+  assert.deepEqual(jsonExample("rules.sources"), {
+    protocolVersion: 7,
+    type: "rules.sources",
+    messageId: "rules-sources-1",
+    sessionId: "default",
+    source: { role: "ide", id: "vscode-window-1" },
+    inspectMessageId: "inspect-42",
+    rulesGeneration: 1,
+    sources: [
+      {
+        ruleRef: "rule-1",
+        openAuthorityId: "opaque-rule-open-1",
+        document: { label: "card.scss", languageId: "scss" },
+        startLine: 41,
+        startColumn: 3,
+        confidence: "sourcemap",
+      },
+    ],
+    unresolvedRuleCount: 0,
+    metadata: {},
+  });
+  const open = jsonExample("rules.open");
+  assert.deepEqual(open, {
+    protocolVersion: 7,
+    type: "rules.open",
+    messageId: "rules-open-1",
+    sessionId: "default",
+    inspectMessageId: "inspect-42",
+    rulesGeneration: 1,
+    openAuthorityId: "opaque-rule-open-1",
+    metadata: {},
+  });
+  for (const forbidden of [
+    "ruleRef",
+    "uri",
+    "path",
+    "url",
+    "line",
+    "column",
+    "range",
+    "version",
+    "command",
+  ]) {
+    assert.equal(Object.hasOwn(open, forbidden), false, forbidden);
+  }
+  assert.match(rulesSourcesSection, /`rules-sources`\s+capability/i);
+  assert.match(rulesSourcesSection, /exact originating inspect reply route/i);
+  assert.doesNotMatch(rulesSourcesSection, /dormant|future correlated/i);
+});
+
+test("current product wording describes explicit opaque Rules navigation", () => {
+  const productMaterials = [
+    readme,
+    privacy,
+    vscodeReadme,
+    architectureGuide,
+    securityGuide,
+    protocolGuide,
+    usageGuide,
+    developmentGuide,
+    installedGuide,
+    storeListings,
+    releaseGuide,
+    sourcePluginGuide,
+  ].join("\n");
+
+  assert.match(
+    productMaterials,
+    /explicit Rules origin click[\s\S]*switch[\s\S]*VS Code[\s\S]*IDE-issued opaque authority/i,
+  );
+  assert.match(
+    productMaterials,
+    /no (?:workspace )?(?:URI|path)[\s\S]*full range[\s\S]*version[\s\S]*command[\s\S]*cross(?:es)? the (?:bridge|wire)/i,
+  );
+  assert.match(
+    productMaterials,
+    /missing or invalid source maps?[\s\S]*verified generated CSS[\s\S]*no (?:approximate|guessed) SCSS/i,
+  );
+  assert.match(
+    productMaterials,
+    /legacy rollback panel[\s\S]*Source[\s\S]*active-document-only/i,
+  );
+  assert.match(
+    productMaterials,
+    /new Inspector[\s\S]*no visible Source tab/i,
+  );
+  assert.match(
+    productMaterials,
+    /PHP[\s\S]*template[\s\S]*(?:future scope|future milestone)/i,
+  );
+  assert.doesNotMatch(
+    productMaterials,
+    /Rules works without an IDE link\. At this checkpoint generated origin labels are[\s\S]*not clickable/i,
+  );
+  assert.doesNotMatch(
+    productMaterials,
+    /Pin-op never switches source files automatically/i,
+  );
+});
+
+test("README keeps Rules-origin opening on the opt-in Inspector candidate", () => {
+  const [, quickStartAndLater = ""] = readme.split("## Quick Start");
+  const [quickStart = ""] = quickStartAndLater.split("\n## ");
+
+  assert.match(
+    readme,
+    /`PIN_OP_PANEL_VARIANT=inspector`[\s\S]*(?:candidate|opt-in)/i,
+  );
+  assert.match(
+    readme,
+    /ordinary\/store artifacts[\s\S]*legacy rollback panel/i,
+  );
+  assert.match(quickStart, /legacy rollback\s+panel[\s\S]*Source/i);
+  assert.doesNotMatch(quickStart, /Rules origin/i);
+});
+
+test("privacy wording accounts for the complete Rules publication envelope", () => {
+  assert.match(
+    privacy,
+    /Rules origin publication[\s\S]*authenticated protocol envelope[\s\S]*ruleRef[\s\S]*rulesGeneration[\s\S]*unresolvedRuleCount/i,
+  );
+  assert.doesNotMatch(privacy, /For Rules origins, VS Code sends only/i);
+  assert.match(privacy, /required empty metadata\s+object/i);
+  assert.doesNotMatch(privacy, /completion metadata/i);
+});
+
+test("privacy docs disclose bounded browser-local DOM text processing", () => {
+  for (const [name, document] of [
+    ["PRIVACY.md", privacy],
+    ["docs/installed-verification.md", installedGuide],
+  ]) {
+    assert.match(
+      document,
+      /bounded DOM text(?: and comments)?[\s\S]*(?:browser-local|private inspected-tab)[\s\S]*(?:does not|never|do not)[\s\S]*(?:product )?WebSocket/i,
+      name,
+    );
+    assert.doesNotMatch(
+      document,
+      /does not deliberately (?:collect|read)[^.\n]*DOM text/i,
+      name,
+    );
+  }
+});
+
+test("release separates unpacked Inspector checks from final legacy artifacts", () => {
+  const [, candidateAndLater = ""] = releaseGuide.split(
+    "## Verify Checkpoint 3 Unpacked Inspector Candidate",
+  );
+  const [candidateSection = ""] = candidateAndLater.split("\n## ");
+  const [, installedAndLater = ""] = releaseGuide.split(
+    "## Verify Installed Artifacts",
+  );
+  const [installedSection = ""] = installedAndLater.split("\n## ");
+
+  assert.match(candidateSection, /\$env:PIN_OP_PANEL_VARIANT\s*=\s*"inspector"/);
+  assert.match(candidateSection, /pin-op-chrome build/);
+  assert.match(candidateSection, /pin-op-firefox build/);
+  assert.match(candidateSection, /unpacked/i);
+  assert.doesNotMatch(installedSection, /PIN_OP_PANEL_VARIANT/);
+  assert.match(installedSection, /ordinary\/store artifacts[\s\S]*legacy rollback panel/i);
+});
+
+test("installed guide contains the honest Chrome and Firefox Rules-origin matrix", () => {
+  const [, matrixAndLater = ""] = installedGuide.split(
+    "## Checkpoint 3 Rules-Origin Installed Matrix",
+  );
+  const [matrix = ""] = matrixAndLater.split("\n## ");
+  assert.ok(matrix, "Checkpoint 3 Rules-Origin Installed Matrix is required");
+  assert.match(matrix, /Chrome/);
+  assert.match(matrix, /Firefox/);
+  for (const scenario of [
+    "Exact CSS",
+    "Inline-map SCSS",
+    "External-map SCSS",
+    "Nested SCSS",
+    "Selector/declaration split mapping",
+    "Invalid-map CSS fallback",
+    "Generated CSS edit",
+    "Map edit",
+    "Stale authority",
+    "Cross-file editor switch",
+    "Inspector without Source tab",
+    "Legacy Source",
+  ]) {
+    const row = matrix
+      .split(/\r?\n/)
+      .find((line) => line.startsWith(`| ${scenario} |`));
+    assert.ok(row, scenario);
+    const cells = row.split("|").map((cell) => cell.trim());
+    assert.equal(cells[2], "PARTIAL/HARNESS_BLOCKED", `${scenario} Chrome`);
+    assert.equal(cells[3], "PARTIAL/HARNESS_BLOCKED", `${scenario} Firefox`);
+  }
+  assert.match(
+    matrix,
+    /Evidence \(2026-08-25\):[\s\S]*Task 6[\s\S]*Task 7[\s\S]*native DevTools-to-installed-VS Code click[\s\S]*harness/i,
+  );
+  assert.doesNotMatch(matrix, /\|\s*Pending\s*\|/i);
+  assert.doesNotMatch(matrix, /\|\s*PASS\s*\|/i);
+});
+
 test("protocol guide exposes only bounded excerpts and opaque source-open authority", () => {
   assert.ok(sourcePresentationSection, "Source Presentation section is required");
   const matches = jsonExample("source.matches");
@@ -504,7 +751,7 @@ test("protocol guide states the read-only browser and IDE execution boundary", (
   );
   assert.match(
     readOnlySecuritySection,
-    /Full source documents[\s\S]*local file paths and URIs[\s\S]*source maps[\s\S]*never cross/i,
+    /Full\s+source documents[\s\S]*local file paths and URIs[\s\S]*source maps[\s\S]*never cross/i,
   );
   assert.doesNotMatch(
     readOnlySecuritySection,

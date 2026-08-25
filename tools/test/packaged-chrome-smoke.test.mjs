@@ -50,6 +50,10 @@ const elementsCssFixture = readFileSync(
   ),
   "utf8",
 );
+const packagedChromeSmokeSource = readFileSync(
+  new URL("../smoke-packaged-chrome.mjs", import.meta.url),
+  "utf8",
+);
 
 const panelBundleFixture = [
   'const sourcePresentationCapability = "source-presentation";',
@@ -64,7 +68,29 @@ const inspectorPanelBundleFixture = [
   'const inspectorWorkspace = "inspector-workspace";',
   'const matchedStylesRequest = "styles.getMatched";',
   'const readOnlyRules = "aria-readonly Rules";',
+  'const rulesSourcesPublication = "rules.sources";',
+  'const rulesOpenIntent = "pin-op.rules.open";',
+  'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
 ].join("\n");
+const backgroundBundleFixture = [
+  'const rulesSourcesCapability = "rules-sources";',
+  'const rulesSourcesType = "rules.sources";',
+  'const rulesOpenType = "rules.open";',
+  'const panelRulesOpenType = "pin-op.rules.open";',
+  'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
+].join("\n");
+
+function compiledPanelRuntime(panelPage) {
+  return [
+    "function compiledPanelPage() {",
+    `  const value = "${panelPage}";`,
+    '  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") return value;',
+    '  throw new Error("Invalid compiled panel page");',
+    "}",
+    "const activePanelPage = compiledPanelPage();",
+    "",
+  ].join("\n");
+}
 
 function createArchive(paths = CHROME_ARCHIVE_FILES) {
   const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
@@ -87,7 +113,9 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundleFixture));
   files.set(
     "dist/background.js",
-    Buffer.from("const packagedBackgroundRuntime = true;\n"),
+    Buffer.from(
+      `${backgroundBundleFixture}\n${compiledPanelRuntime("/dist/panel.html")}`,
+    ),
   );
   files.set(
     "dist/contentScript.js",
@@ -95,7 +123,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   );
   files.set(
     "dist/devtools.js",
-    Buffer.from("const packagedDevtoolsRuntime = true;\n"),
+    Buffer.from(compiledPanelRuntime("/dist/panel.html")),
   );
   files.set(
     "dist/runtime-metadata.json",
@@ -232,6 +260,120 @@ test("requires packaged inspector assets and semantic static markers", () => {
       /read-only Rules/i,
     ],
     [
+      "dist/inspectorPanel.js",
+      "rules.sources",
+      /Rules source publication/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "pin-op.rules.open",
+      /Rules source open intent/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "inspectMessageId:",
+      /Rules inspect correlation/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "rulesGeneration:",
+      /Rules generation/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "openAuthorityId:",
+      /Rules open authority/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "ruleRef:",
+      /Rules publication rule reference/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "sources:",
+      /Rules publication sources/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "unresolvedRuleCount:",
+      /Rules unresolved count/i,
+    ],
+    ...[
+      ["document:", /Rules source document/i],
+      ["label:", /Rules source label/i],
+      ["languageId:", /Rules source language/i],
+      ["startLine:", /Rules source start line/i],
+      ["startColumn:", /Rules source start column/i],
+      ["confidence:", /Rules source confidence/i],
+    ].map(([marker, expectedError]) => [
+      "dist/inspectorPanel.js",
+      marker,
+      expectedError,
+    ]),
+    [
+      "dist/background.js",
+      "rules-sources",
+      /Rules source capability/i,
+    ],
+    [
+      "dist/background.js",
+      "rules.sources",
+      /Rules source publication/i,
+    ],
+    [
+      "dist/background.js",
+      "rules.open",
+      /Rules source open/i,
+    ],
+    [
+      "dist/background.js",
+      "pin-op.rules.open",
+      /Rules source open intent/i,
+    ],
+    [
+      "dist/background.js",
+      "inspectMessageId:",
+      /Rules inspect correlation/i,
+    ],
+    [
+      "dist/background.js",
+      "rulesGeneration:",
+      /Rules generation/i,
+    ],
+    [
+      "dist/background.js",
+      "openAuthorityId:",
+      /Rules open authority/i,
+    ],
+    [
+      "dist/background.js",
+      "ruleRef:",
+      /Rules publication rule reference/i,
+    ],
+    [
+      "dist/background.js",
+      "sources:",
+      /Rules publication sources/i,
+    ],
+    [
+      "dist/background.js",
+      "unresolvedRuleCount:",
+      /Rules unresolved count/i,
+    ],
+    ...[
+      ["document:", /Rules source document/i],
+      ["label:", /Rules source label/i],
+      ["languageId:", /Rules source language/i],
+      ["startLine:", /Rules source start line/i],
+      ["startColumn:", /Rules source start column/i],
+      ["confidence:", /Rules source confidence/i],
+    ].map(([marker, expectedError]) => [
+      "dist/background.js",
+      marker,
+      expectedError,
+    ]),
+    [
       "dist/devtools-elements.css",
       ".pin-op-elements-inspector",
       /scoped Chromium CSS/i,
@@ -241,7 +383,15 @@ test("requires packaged inspector assets and semantic static markers", () => {
   for (const [path, marker, expectedError] of cases) {
     const archive = createArchive();
     const original = archive.files.get(path).toString("utf8");
-    archive.files.set(path, Buffer.from(original.replaceAll(marker, "")));
+    archive.files.set(
+      path,
+      Buffer.from(
+        original.replaceAll(
+          marker,
+          marker.endsWith(":") ? "missingContractMarker:" : "",
+        ),
+      ),
+    );
 
     assert.throws(
       () => validatePackagedChromeArchive(archive),
@@ -249,6 +399,94 @@ test("requires packaged inspector assets and semantic static markers", () => {
       `${path} must retain ${marker}`,
     );
   }
+});
+
+test("rejects literal local paths in packaged runtime bundles", () => {
+  const cases = [
+    ['const leaked = "file:///private/workspace/app.scss";', /local file URI/i],
+    ['const leaked = "C:\\\\private\\\\workspace\\\\app.scss";', /local drive path/i],
+    ['const leaked = "\\\\\\\\server\\\\share\\\\app.scss";', /local UNC path/i],
+  ];
+  for (const path of [
+    "dist/background.js",
+    "dist/contentScript.js",
+    "dist/devtools.js",
+    "dist/panel.js",
+    "dist/inspectorPanel.js",
+  ]) {
+    for (const [literal, expectedError] of cases) {
+      const archive = createArchive();
+      archive.files.set(
+        path,
+        Buffer.from(`${archive.files.get(path).toString("utf8")}\n${literal}\n`),
+      );
+      assert.throws(
+        () => validatePackagedChromeArchive(archive),
+        expectedError,
+        `${path} must reject ${literal}`,
+      );
+    }
+  }
+  for (const [path, leaked, expectedError] of [
+    [
+      "dist/devtools.js",
+      "//# sourceURL=file:///home/alice/private/devtools.js",
+      /local file URI/i,
+    ],
+    [
+      "dist/background.js",
+      "// built from /home/alice/private/background.ts",
+      /local POSIX path/i,
+    ],
+    [
+      "dist/panel.html",
+      "<!-- built from /Users/alice/private/panel.html -->",
+      /local POSIX path/i,
+    ],
+    [
+      "dist/panel.css",
+      "/* built from /workspace/private/panel.css */",
+      /local POSIX path/i,
+    ],
+  ]) {
+    const archive = createArchive();
+    archive.files.set(
+      path,
+      Buffer.from(`${archive.files.get(path).toString("utf8")}\n${leaked}\n`),
+    );
+    assert.throws(
+      () => validatePackagedChromeArchive(archive),
+      expectedError,
+      `${path} must reject ${leaked}`,
+    );
+  }
+});
+
+test("rejects Rules open aliases and acknowledgements", () => {
+  for (const mutate of [
+    (source) => source.replace('const rulesOpenType = "rules.open";\n', ""),
+    (source) => source.replace('"rules.open"', '"rules.opened"'),
+    (source) => `${source}\nconst inventedAck = "rules.opened";\n`,
+  ]) {
+    const archive = createArchive();
+    const source = archive.files.get("dist/background.js").toString("utf8");
+    archive.files.set("dist/background.js", Buffer.from(mutate(source)));
+    assert.throws(
+      () => validatePackagedChromeArchive(archive),
+      /Rules source open|Rules open acknowledgement|rules\.opened/i,
+    );
+  }
+});
+
+test("packaged Chrome smoke reports package-only v7 Rules evidence", () => {
+  assert.match(
+    packagedChromeSmokeSource,
+    /PACKAGED_CHROME_PROTOCOL_V7_RULES_SOURCES_OK/,
+  );
+  assert.match(packagedChromeSmokeSource, /Target\.createTarget/);
+  assert.match(packagedChromeSmokeSource, /fixture page target/i);
+  assert.doesNotMatch(packagedChromeSmokeSource, /RULES_OPEN_(?:ACK|OK)/);
+  assert.doesNotMatch(packagedChromeSmokeSource, /DevTools panel.*(?:click|open)/i);
 });
 
 test("requires exactly one packaged toolbar", () => {
@@ -322,6 +560,26 @@ test("rejects inline style blocks that hide the link code", () => {
   assert.throws(
     () => validatePackagedChromeArchive(archive),
     /(?:inline style|connection controls.*visible)/i,
+  );
+});
+
+test("rejects an Inspector entrypoint in the ordinary Chrome package", () => {
+  const archive = createArchive();
+  for (const path of ["dist/background.js", "dist/devtools.js"]) {
+    const source = archive.files.get(path).toString("utf8");
+    archive.files.set(
+      path,
+      Buffer.from(
+        source.replace(
+          compiledPanelRuntime("/dist/panel.html"),
+          compiledPanelRuntime("/dist/inspector-panel.html"),
+        ),
+      ),
+    );
+  }
+  assert.throws(
+    () => validatePackagedChromeArchive(archive),
+    /legacy panel|expected \/dist\/panel\.html/i,
   );
 });
 

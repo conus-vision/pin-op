@@ -15,6 +15,7 @@ import {
 } from "./browser-bundle-notices.mjs";
 import {
   assertBrowserPackageRuntimeContract,
+  assertRulesSourceJavaScriptContract,
 } from "./browser-package-contract.mjs";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 import {
@@ -268,7 +269,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "258c5a029b5135eb94fdbc8d24ad1fbbaa1e84ae843fa28045b860d91755cc9d",
+      localSha256: "2a23013161ed18920997793023f25a8fca5947bc036fcdf9310cf5da47e0c91f",
     }],
   },
   {
@@ -304,7 +305,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
+      localSha256: "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b",
     }],
   },
   {
@@ -313,7 +314,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
+      localSha256: "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b",
     }],
   },
   {
@@ -322,7 +323,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054",
+      localSha256: "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b",
     }],
   },
 ]);
@@ -709,6 +710,7 @@ export function validateBrowserArchive(archive, filename, browser) {
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
+    panelVariant: "legacy",
     platform: browser,
   });
 }
@@ -949,7 +951,10 @@ export function validateVsixArchive(archive, filename) {
   const bundleBytes = archive.files.get("extension/dist/extension.cjs");
   assertVsixBundleMatchesLocalBuild(bundleBytes, filename);
   const bundle = bundleBytes.toString("utf8");
-  for (const capability of ["source-navigation", "source-presentation"]) {
+  for (const capability of [
+    "source-navigation",
+    "source-presentation",
+  ]) {
     if (!bundle.includes(capability)) {
       throw new Error(
         `${filename} VSIX bundle is missing current ${capability} capability`,
@@ -967,6 +972,13 @@ export function validateVsixArchive(archive, filename) {
       throw new Error(`${filename} VSIX bundle is missing current ${marker} marker`);
     }
   }
+  assertRulesSourceJavaScriptContract(bundle, `${filename} VSIX bundle`, {
+    requiredStrings: [
+      ["Rules source capability", "rules-sources"],
+      ["Rules source publication", "rules.sources"],
+      ["Rules source open", "rules.open"],
+    ],
+  });
   const runtimeRequires = [
     ...bundle.matchAll(/\brequire\((["'])([^"'.\/][^"']*)\1\)/g),
   ].map((match) => match[2]);

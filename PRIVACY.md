@@ -23,9 +23,11 @@ personal data, secrets, or framework state. Do not inspect sensitive pages
 unless sending those values to the linked local VS Code window is acceptable.
 
 Pin-op does not deliberately collect cookies, request or response headers,
-form values, DOM text, or source-map contents. The browser side sends
-stylesheet identity and rule evidence. Local VS Code source plugins may read
-relevant workspace files and source maps to resolve the active document.
+form-control values, or source-map contents in the browser. The Inspector reads
+bounded DOM text and comments for browser-local structured rows, but does not
+send them over the product WebSocket. The browser side sends stylesheet
+identity and rule evidence. Local VS Code source plugins may read relevant
+workspace files and source maps to resolve the active document.
 
 For Source presentation, VS Code can send bounded excerpts from the active IDE
 document back to the explicitly linked browser window. An excerpt contains an
@@ -52,6 +54,16 @@ is code from the active document and may itself contain personal data or
 secrets. Do not use Source presentation on sensitive source unless sending that
 code to the linked browser window is acceptable.
 
+A Rules origin publication uses the standard authenticated protocol envelope
+and route correlation. Each resolved entry carries an opaque `ruleRef`, a
+sanitized basename label, CSS/SCSS language, one-based start position,
+confidence, and a current opaque open authority; the envelope also carries
+`rulesGeneration`, `unresolvedRuleCount`, and the required empty metadata
+object. No workspace URI/path, full range, document version, source-map path or
+content, or command crosses the bridge. After an explicit Rules origin click,
+the browser returns the inspect correlation, Rules generation, and opaque
+authority. There is no open acknowledgement carrying local data.
+
 ## Browser-Local Inspector Data
 
 The DOM tree stays browser-local. Element labels, browser-local node refs,
@@ -60,10 +72,14 @@ box-model overlay are exchanged only among the DevTools panel, extension
 background, and inspected-tab content runtime. They are not sent over the
 Pin-op product WebSocket.
 
-DOM tree labels show bounded tag, ID, class, and approved attribute names; they
-do not include attribute values or DOM text. Open shadow roots and same-origin
-frame documents can be traversed. Cross-origin frames become locked leaves and
-fail closed. Closed shadow roots are not traversed and fail closed.
+Structured Inspector rows can show bounded attribute names and values plus
+bounded DOM text and comments. Text and comment rows are display-only and have
+no stable locator. This data stays browser-local in the private inspected-tab
+channel and does not cross the product WebSocket. The legacy rollback renderer's
+element labels show bounded tag, ID, class, and approved attribute names, not
+attribute values or DOM text. Open shadow roots and same-origin frame documents
+can be traversed. Cross-origin frames become locked leaves and fail closed.
+Closed shadow roots are not traversed and fail closed.
 
 ## Clipboard And Session Storage
 
@@ -105,11 +121,19 @@ reject injection.
 ## Read-Only Design
 
 Pin-op does not write or edit page or workspace source and does not execute
-page, shell, workspace, or user-supplied commands. It highlights and opens
-source ranges only in the document already active in VS Code. Auto Refresh can
-replace eligible stylesheet links or reload the current participating tab; it
-does not edit page-owned source or application data. These commitments apply
-to Pin-op-operated components, not to separately installed source plugins.
+page, shell, workspace, or user-supplied commands. Passive inspection and the
+legacy Source flow highlight or reveal only the document already active in VS
+Code. An explicit Rules origin click may switch VS Code to a verified workspace
+CSS or SCSS file using a current IDE-issued opaque authority. Missing or invalid
+source maps expose verified generated CSS only, never an approximate SCSS
+location. Auto Refresh can replace eligible stylesheet links or reload the
+current participating tab; it does not edit page-owned source or application
+data. These commitments apply to Pin-op-operated components, not to separately
+installed source plugins.
+
+The new Inspector has no visible Source tab. Existing Source remains
+active-document-only in the legacy rollback panel; a new Source tab and
+first-party PHP/template providers remain a future milestone.
 
 ## Source Plugins
 

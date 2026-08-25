@@ -235,10 +235,10 @@ here. This document does not claim these checks were performed or passed.
 9. Select **Disconnect**. Confirm navigation controls are disabled or hidden,
    no stale route can update them, no old Previous/Next intent moves VS Code,
    and another linked browser window remains connected.
-10. Confirm the Source pane shows only bounded excerpts from the active IDE
-    document, with Selected expanded and immediate Parent collapsed. Click an
-    excerpt and confirm the cursor opens that exact range without switching the
-    active editor.
+10. In the legacy rollback panel, confirm the Source pane shows only bounded
+    excerpts from the active IDE document, with Selected expanded and immediate
+    Parent collapsed. Click an excerpt and confirm the cursor opens that exact
+    range without switching the active editor.
 11. Turn **IDE Highlight** off. Confirm decorations clear while Source excerpts
     and Selected-only navigation continue to work; turn it back on.
 12. With **Auto Refresh** on, change and save CSS, SCSS, JavaScript, TypeScript,
@@ -251,6 +251,33 @@ source-mapped SCSS, Source presentation, refresh behavior, exact footer
 outcomes, browser-window isolation, protocol mismatch, and session-only
 reconnect/cleanup as described in the
 [installed artifact verification guide](installed-verification.md).
+
+### Expected Inspector Rules-Origin Scenario
+
+These remain manual acceptance steps. Build and load Chrome and Firefox with
+`PIN_OP_PANEL_VARIANT=inspector`; ordinary/store artifacts retain the legacy
+default until the rollout checkpoint.
+
+1. Confirm the new Inspector shows DOM Tree and Rules with no visible Source tab.
+2. Verify exact CSS, inline-map SCSS, external-map SCSS, nested SCSS, and a
+   selector/declaration split map. Each current origin label must identify only
+   the verified generated CSS or exact original SCSS block.
+3. Explicitly click each origin. The click may switch VS Code across workspace
+   files using a current IDE-issued opaque authority and must reveal the complete
+   smallest exact block.
+4. Test an invalid map, generated-CSS edit, map edit, stale authority, and
+   cross-file editor switch. Missing or invalid maps show verified generated CSS
+   only; stale authority cannot move the cursor or reveal a range.
+5. Confirm no workspace URI/path, full range, document version, source-map path,
+   or command appears in browser/bridge diagnostics or wire capture.
+6. Switch back to the legacy rollback panel. Existing Source must remain
+   active-document-only and otherwise unchanged.
+
+Record Chrome and Firefox outcomes in the Checkpoint 3 matrix in
+`docs/installed-verification.md`. If the native UI harness cannot perform the
+cross-product click, record `PARTIAL/HARNESS_BLOCKED`; never promote automated
+package, bridge, browser-controller, or VS Code integration coverage to native
+`PASS`.
 
 ## Development And Source Workflow
 
@@ -297,10 +324,12 @@ The packaged Chrome artifact smoke is separate:
 corepack pnpm smoke:chrome-package
 ```
 
-That smoke asserts package markers (`styles.getMatched`, read-only Rules, and
-scoped Chromium CSS) plus fixture/runtime CSSOM facts. It does not automate the
-DevTools extension panel and cannot replace the pending Chrome/Firefox Rules
-manual gate above.
+That smoke asserts page/package markers (`styles.getMatched`, read-only Rules,
+`rules-sources`, `rules.sources`, `rules.open`, and scoped Chromium CSS) plus
+fixture/runtime CSSOM facts. Its CDP target is an ordinary fixture page: it does
+not open the DevTools extension panel, link VS Code, click a Rules origin, or
+receive an open acknowledgement. It cannot replace the pending Chrome/Firefox
+Rules manual gate above.
 
 On Linux, `smoke:chrome-package` requires a graphical session or Xvfb. Set
 `DISPLAY` or `WAYLAND_DISPLAY`, or run it under `xvfb-run -a`; the script refuses

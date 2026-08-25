@@ -62,9 +62,38 @@ const PANEL_BUNDLE_MARKERS = Object.freeze([
   ["locator recovery", "dom.resolveLocator"],
 ]);
 const INSPECTOR_BUNDLE_MARKERS = Object.freeze([
-  ["matched styles request", "styles.getMatched"],
   ["read-only Rules", "aria-readonly"],
   ["Rules renderer", "Rules"],
+]);
+const RULES_SOURCE_PROPERTY_MARKERS = Object.freeze([
+  ["Rules inspect correlation", "inspectMessageId"],
+  ["Rules generation", "rulesGeneration"],
+  ["Rules open authority", "openAuthorityId"],
+  ["Rules publication rule reference", "ruleRef"],
+  ["Rules publication sources", "sources"],
+  ["Rules unresolved count", "unresolvedRuleCount"],
+  ["Rules source document", "document"],
+  ["Rules source label", "label"],
+  ["Rules source language", "languageId"],
+  ["Rules source start line", "startLine"],
+  ["Rules source start column", "startColumn"],
+  ["Rules source confidence", "confidence"],
+  ["Rules metadata", "metadata"],
+]);
+const RUNTIME_TEXT_ASSET_PATHS = Object.freeze([
+  "manifest.json",
+  "dist/background.js",
+  "dist/contentScript.js",
+  "dist/devtools.html",
+  "dist/devtools.js",
+  "dist/devtools-elements.css",
+  "dist/inspector-panel.html",
+  "dist/inspectorPanel.js",
+  "dist/panel.css",
+  "dist/panel.html",
+  "dist/panel.js",
+  "dist/pin-op.svg",
+  "dist/runtime-metadata.json",
 ]);
 const VISIBILITY_PROPERTIES = new Set([
   "display",
@@ -134,22 +163,113 @@ const MAX_STATIC_STRING_LENGTH = 256;
 // outputs, hashing the raw archived bytes. Any retained helper requires
 // deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" }),
-  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" }),
-  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "9e6f943508e41629a2cc7a7d9756124095fddaf4c0e996208be4761eef5fa8d4", inspectorSha256: "115ffe993588c50114101876f748dec70680f4f0457a66c8939a82bfcd30bca7" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" }),
-  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" }),
-  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" }),
-  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "e1a15cce41ddadfb666fb93787ff6914134a504bf75eee3b40e0e5100fd26f10", inspectorSha256: "b7c7bba1865ec8c94b177ed9b86d96eb0a24e2503eef280a61a573cf4ef5e842" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" }),
-  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "38404fbb8bbbe434231565682af16c32ae5ffac658dd54ab2f481b4d6b553c32", inspectorSha256: "fef22769ab29686be498eaa5a870178cdd58a13f68e76d2c2ec688d4677f1610" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" }),
+  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "458c82f6ac2e2a5b0b3ae6e1e83575aa720419ded4e4d757db1d7540e180772b", inspectorSha256: "7b36afe701bc924aee1bcb81ce8ab4d24b649f9eb96ffc922c3ba6cdead2af18" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" }),
+  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" }),
 ]);
+
+export function assertRulesSourceJavaScriptContract(
+  source,
+  artifactLabel,
+  { requiredStrings = [] } = {},
+) {
+  const sourceFile = ts.createSourceFile(
+    `${artifactLabel}.js`,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (sourceFile.parseDiagnostics.length > 0) {
+    throw new Error(`${artifactLabel} contains invalid static JavaScript`);
+  }
+  const exactStrings = new Set();
+  const exactProperties = new Set();
+  const visit = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      exactStrings.add(node.text);
+    }
+    const propertyName = javaScriptPropertyName(node);
+    if (propertyName !== undefined) exactProperties.add(propertyName);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  for (const [label, marker] of requiredStrings) {
+    if (!exactStrings.has(marker)) {
+      throw new Error(
+        `${artifactLabel} ${label} is missing exact JavaScript string ${marker}`,
+      );
+    }
+  }
+  for (const [label, marker] of RULES_SOURCE_PROPERTY_MARKERS) {
+    if (!exactProperties.has(marker)) {
+      throw new Error(
+        `${artifactLabel} ${label} is missing exact JavaScript property ${marker}:`,
+      );
+    }
+  }
+  const forbiddenRulesOpenLiteral = [...exactStrings].find(
+    (value) => isForbiddenRulesOpenLiteral(value),
+  );
+  if (forbiddenRulesOpenLiteral !== undefined) {
+    throw new Error(
+      `${artifactLabel} contains forbidden Rules open acknowledgement ` +
+        forbiddenRulesOpenLiteral,
+    );
+  }
+}
+
+function javaScriptPropertyName(node) {
+  if (
+    ts.isPropertyAssignment(node) ||
+    ts.isShorthandPropertyAssignment(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  ) {
+    return staticPropertyName(node.name);
+  }
+  if (ts.isBindingElement(node)) {
+    return staticPropertyName(node.propertyName ?? node.name);
+  }
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (
+    ts.isElementAccessExpression(node) &&
+    node.argumentExpression &&
+    (ts.isStringLiteral(node.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))
+  ) {
+    return node.argumentExpression.text;
+  }
+  return undefined;
+}
+
+function isForbiddenRulesOpenLiteral(value) {
+  if (value === "rules.open" || value === "pin-op.rules.open") return false;
+  return /^(?:pin-op\.)?rules\.open[A-Za-z0-9._:-]+$/.test(value);
+}
 
 export function assertBrowserPackageRuntimeContract(
   archive,
-  { artifactLabel, metadataLabel, platform },
+  { artifactLabel, metadataLabel, platform, panelVariant },
 ) {
+  if (panelVariant !== "legacy" && panelVariant !== "inspector") {
+    throw new Error(`${artifactLabel} requires an explicit browser panel variant`);
+  }
+  const expectedPanelPage = panelVariant === "legacy"
+    ? "/dist/panel.html"
+    : "/dist/inspector-panel.html";
+  for (const path of ["dist/devtools.js", "dist/background.js"]) {
+    assertCompiledPanelPage(archive, artifactLabel, path, expectedPanelPage);
+  }
   assertStaticPanelResourceBoundary(
     archive,
     artifactLabel,
@@ -171,7 +291,13 @@ export function assertBrowserPackageRuntimeContract(
     "panel",
   );
   assertScopedChromiumCss(archive, artifactLabel);
-  assertBrowserBundlesAreStatic(archive, artifactLabel, platform);
+  assertNoLocalPathsInRuntimeAssets(archive, artifactLabel);
+  assertBrowserBundlesAreStatic(
+    archive,
+    artifactLabel,
+    platform,
+    panelVariant,
+  );
   assertTextMarkers(
     archive,
     artifactLabel,
@@ -201,6 +327,29 @@ export function assertBrowserPackageRuntimeContract(
     "dist/inspectorPanel.js",
     [["Inspector runtime", "inspector-workspace"], ...INSPECTOR_BUNDLE_MARKERS],
   );
+  assertRulesSourceJavaScriptContract(
+    archive.files.get("dist/inspectorPanel.js").toString("utf8"),
+    `${artifactLabel} dist/inspectorPanel.js`,
+    {
+      requiredStrings: [
+        ["matched styles request", "styles.getMatched"],
+        ["Rules source publication", "rules.sources"],
+        ["Rules source open intent", "pin-op.rules.open"],
+      ],
+    },
+  );
+  assertRulesSourceJavaScriptContract(
+    archive.files.get("dist/background.js").toString("utf8"),
+    `${artifactLabel} dist/background.js`,
+    {
+      requiredStrings: [
+        ["Rules source capability", "rules-sources"],
+        ["Rules source publication", "rules.sources"],
+        ["Rules source open", "rules.open"],
+        ["Rules source open intent", "pin-op.rules.open"],
+      ],
+    },
+  );
   assertTextMarkers(
     archive,
     artifactLabel,
@@ -211,6 +360,61 @@ export function assertBrowserPackageRuntimeContract(
     expectedProtocolVersion: 7,
     label: metadataLabel,
   });
+}
+
+function assertCompiledPanelPage(
+  archive,
+  artifactLabel,
+  path,
+  expectedPanelPage,
+) {
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${artifactLabel} is missing ${path}`);
+  }
+  const sourceFile = ts.createSourceFile(
+    path,
+    bytes.toString("utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (sourceFile.parseDiagnostics.length > 0) {
+    throw new Error(`${artifactLabel} ${path} contains invalid static JavaScript`);
+  }
+  let panelPage;
+  const visit = (node) => {
+    if (
+      panelPage === undefined &&
+      ts.isFunctionDeclaration(node) &&
+      node.body?.getText(sourceFile).includes("Invalid compiled panel page")
+    ) {
+      for (const statement of node.body.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const declaration of statement.declarationList.declarations) {
+          if (
+            declaration.initializer &&
+            (ts.isStringLiteral(declaration.initializer) ||
+              ts.isNoSubstitutionTemplateLiteral(declaration.initializer)) &&
+            declaration.initializer.text.startsWith("/dist/")
+          ) {
+            panelPage = declaration.initializer.text;
+          }
+        }
+      }
+    }
+    if (panelPage === undefined) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  if (panelPage !== expectedPanelPage) {
+    const expectedVariant = expectedPanelPage === "/dist/panel.html"
+      ? "legacy panel"
+      : "Inspector panel";
+    throw new Error(
+      `${artifactLabel} ${path} expected ${expectedVariant} ` +
+        `${expectedPanelPage}; found ${panelPage ?? "no compiled panel page"}`,
+    );
+  }
 }
 
 function assertStaticPanelResourceBoundary(
@@ -399,7 +603,102 @@ function assertScopedChromiumCss(archive, artifactLabel) {
   });
 }
 
-function assertBrowserBundlesAreStatic(archive, artifactLabel, platform) {
+const LOCAL_PATH_PATTERNS = Object.freeze([
+  [
+    "local file URI",
+    /(?:^|[^A-Za-z0-9+.-])(file:\/\/[^\s"'`<>]+)/m,
+  ],
+  [
+    "local Windows device path",
+    /(?:^|[\s"'`=(\[{,;])((?:\\\\|\/\/)[?.][\\/][^\s"'`<>]+)/m,
+  ],
+  [
+    "local drive path",
+    /(?:^|[^A-Za-z0-9])([A-Za-z]:[\\/]+[^\\/\s"'`<>][^\s"'`<>]*)/m,
+  ],
+  [
+    "local UNC path",
+    /(?:^|[\s"'`=(\[{,;])((?:\\\\|\/\/)[A-Za-z0-9][A-Za-z0-9._$-]*[\\/][^\\/\s"'`<>]+)/m,
+  ],
+  [
+    "local POSIX path",
+    /(?:^|[^A-Za-z0-9:/.])((?:\/Users\/[^/\s"'`<>]+|\/home\/[^/\s"'`<>]+|\/root|\/private|\/tmp|\/var\/folders\/[^/\s"'`<>]+|\/workspaces?(?:\/[^/\s"'`<>]+)?|\/mnt\/[A-Za-z]|\/opt|\/srv)\/[^\s"'`<>]+)/m,
+  ],
+]);
+
+function assertNoLocalPathsInRuntimeAssets(archive, artifactLabel) {
+  for (const path of RUNTIME_TEXT_ASSET_PATHS) {
+    const bytes = archive.files.get(path);
+    if (!Buffer.isBuffer(bytes)) {
+      throw new Error(`${artifactLabel} is missing ${path}`);
+    }
+    const text = bytes.toString("utf8");
+    const match = path.endsWith(".js")
+      ? findJavaScriptCommentLocalPath(text)
+      : findEmbeddedLocalPath(text);
+    if (!match) continue;
+    const { line, column } = lineAndColumnAt(text, match.index);
+    throw new Error(
+      `${artifactLabel} ${path} contains ${match.kind} at ${line}:${column}`,
+    );
+  }
+}
+
+function findJavaScriptCommentLocalPath(source) {
+  const sourceFile = ts.createSourceFile(
+    "runtime.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const seen = new Set();
+  const matches = [];
+  const inspectRanges = (ranges) => {
+    for (const range of ranges ?? []) {
+      if (seen.has(range.pos)) continue;
+      seen.add(range.pos);
+      const match = findEmbeddedLocalPath(source.slice(range.pos, range.end));
+      if (match) {
+        matches.push({ ...match, index: range.pos + match.index });
+      }
+    }
+  };
+  const visit = (node) => {
+    inspectRanges(ts.getLeadingCommentRanges(source, node.pos));
+    inspectRanges(ts.getTrailingCommentRanges(source, node.end));
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return matches.sort((left, right) => left.index - right.index)[0];
+}
+
+function findEmbeddedLocalPath(value) {
+  for (const [kind, pattern] of LOCAL_PATH_PATTERNS) {
+    const match = pattern.exec(value);
+    if (!match) continue;
+    const matchedPath = match[1];
+    return {
+      kind,
+      index: value.indexOf(matchedPath, match.index),
+    };
+  }
+  return undefined;
+}
+
+function lineAndColumnAt(value, index) {
+  const before = value.slice(0, index);
+  const line = before.split("\n").length;
+  const lastNewline = before.lastIndexOf("\n");
+  return { line, column: index - lastNewline };
+}
+
+function assertBrowserBundlesAreStatic(
+  archive,
+  artifactLabel,
+  platform,
+  panelVariant,
+) {
   for (const path of [
     "dist/background.js",
     "dist/contentScript.js",
@@ -415,6 +714,7 @@ function assertBrowserBundlesAreStatic(archive, artifactLabel, platform) {
     const sourceSha256 = createHash("sha256").update(bytes).digest("hex");
     assertStaticJavaScript(source, artifactLabel, path, {
       platform,
+      panelVariant,
       sourceSha256,
     });
     if (
@@ -554,7 +854,7 @@ function assertStaticJavaScript(
   source,
   artifactLabel,
   path,
-  { platform, sourceSha256 },
+  { platform, panelVariant, sourceSha256 },
 ) {
   const analysisPath = path.replaceAll("\\", "/");
   const sourceFile = ts.createSourceFile(
@@ -577,9 +877,9 @@ function assertStaticJavaScript(
     capabilityAliases,
     globalObjectAliases,
     staticStringAliases,
-    { platform, path, sourceSha256 },
+    { platform, panelVariant, path, sourceSha256 },
   );
-  const provenance = { platform, path, sourceSha256 };
+  const provenance = { platform, panelVariant, path, sourceSha256 };
   const reviewedAstClones = collectReviewedPostCssAstClones(
     sourceFile,
     checker,
@@ -595,6 +895,19 @@ function assertStaticJavaScript(
   };
   const visit = (node) => {
     if (violation) return;
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node)
+    ) {
+      const localPath = findEmbeddedLocalPath(node.text);
+      if (localPath) {
+        reject(localPath.kind, node);
+        return;
+      }
+    }
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         reject("remote code loading", node);
@@ -796,12 +1109,14 @@ function collectStaticJavaScriptAliases(
 }
 
 function hasTrustedBundleProvenance(provenance) {
+  const digestKey = provenance.panelVariant === "inspector"
+    ? "inspectorSha256"
+    : "sha256";
   return TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.some(
     (entry) =>
       entry.browser === provenance.platform &&
       entry.path === provenance.path &&
-      (entry.sha256 === provenance.sourceSha256 ||
-        entry.inspectorSha256 === provenance.sourceSha256),
+      entry[digestKey] === provenance.sourceSha256,
   );
 }
 

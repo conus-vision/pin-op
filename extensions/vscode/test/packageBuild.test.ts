@@ -29,6 +29,10 @@ const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
 const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
 const verifyScriptUrl = new URL("../verify-vsix.mjs", import.meta.url);
+const browserPackageContractUrl = new URL(
+  "../../../tools/browser-package-contract.mjs",
+  import.meta.url,
+);
 const extensionSourceUrl = new URL("../src/extension.ts", import.meta.url);
 const integrationBundlesUrl = new URL(
   "../dist/test/integration/",
@@ -107,6 +111,33 @@ describe("VS Code package build", () => {
     const verifyScript = readFileSync(verifyScriptUrl, "utf8");
     expect(verifyScript).toContain("expectedProtocolVersion: 7");
     expect(verifyScript).not.toContain("expectedProtocolVersion: 6");
+    expect(verifyScript).toContain('"rules-sources"');
+    for (const marker of ["rules.sources", "rules.open"]) {
+      expect(verifyScript).toContain(`"${marker}"`);
+    }
+    expect(verifyScript).not.toContain("rules.opened");
+    expect(verifyScript).toContain("assertRulesSourceJavaScriptContract");
+    const contractScript = readFileSync(browserPackageContractUrl, "utf8");
+    for (const marker of [
+      "rules.sources",
+      "rules.open",
+      "inspectMessageId",
+      "rulesGeneration",
+      "openAuthorityId",
+      "ruleRef",
+      "sources",
+      "unresolvedRuleCount",
+      "document",
+      "label",
+      "languageId",
+      "startLine",
+      "startColumn",
+      "confidence",
+      "metadata",
+    ]) {
+      expect(contractScript).toContain(`"${marker}"`);
+    }
+    expect(contractScript).toContain("forbiddenRulesOpenLiteral");
   });
 
   it("packages the current IDE capabilities and messages", () => {
@@ -226,6 +257,23 @@ describe("VS Code package build", () => {
     expect(smoke).toContain('"source.open"');
     expect(smoke).toContain('"source.navigationState"');
     expect(smoke).toContain('"matchId"');
+    expect(smoke).toContain('"rules-sources"');
+    expect(smoke).toContain('"rules.sources"');
+    expect(smoke).toContain('"rules.open"');
+    expect(smoke).toContain("INSTALLED_VSIX_PROTOCOL_V7_RULES_SOURCES_OK");
+    expect(smoke).not.toContain("rules.opened");
+    expect(smoke).toContain("installVerifiedVsix");
+    expect(smoke).toContain("assertRulesSourceJavaScriptContract");
+    expect(smoke).toContain("buildInstalledVsixSmokeHarnessSource");
+    expect(smoke).toMatch(
+      /join\(harnessDirectory, "smoke\.cjs"\),\s*buildInstalledVsixSmokeHarnessSource\(expectedBundleSha256\)/s,
+    );
+    expect(smoke).toContain("expectedBundleSha256");
+    expect(smoke).toContain("createHash");
+    expect(smoke).toContain("hasExactStringLiteral");
+    expect(smoke).not.toContain("hasExactProperty");
+    expect(smoke).not.toContain("missing exact inspectMessageId: property");
+    expect(smoke).toContain("forbiddenRulesOpenLiteral");
     expect(smoke).not.toContain("requiredRuntimeMarkers");
     expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
     expect(smoke).not.toMatch(/protocol[- _]?v?6/i);

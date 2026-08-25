@@ -109,7 +109,9 @@ session disposal invalidate stale work rather than reusing it.
 
 Pin-op sends one selected target and, when available, its immediate DOM
 parent. VS Code retains the latest valid selection and resolves it only against
-the active document. It does not open, close, or switch editor tabs.
+the active document. Passive highlighting does not open, close, or switch
+editor tabs. This active-document authority is also the basis of Existing
+Source in the legacy rollback panel; it is separate from Rules-origin opening.
 
 Source lookup is workspace-bound when the document or stylesheet URL path
 begins with an open workspace folder name. Pin-op strips that leading
@@ -143,14 +145,39 @@ the Selected decoration; only its immediate parent uses Parent. A single
 selection can create multiple source ranges for either role. `Applicable
 Sources` lists the same ranges without changing the active editor.
 
+## Rules Origins And Exact Open
+
+The new Inspector's read-only Rules rows first show a verified generated CSS
+origin when one is available. After the IDE proves the exact generated rule, a
+usable source map, one original SCSS file, and the smallest complete original
+block, the label upgrades atomically to that SCSS origin. Missing, invalid,
+ambiguous, stale, or outside-workspace source maps show verified generated CSS
+only, with no approximate SCSS label or authority.
+
+An explicit Rules origin click may switch VS Code to another verified workspace
+CSS or SCSS document using a current IDE-issued opaque authority. The IDE
+revalidates workspace ownership, document identity, private range, dependency
+hashes/versions, and Rules generation around the editor-host call. Passive
+selection never switches files, and stale authority cannot move the cursor or
+reveal a range.
+
+The wire carries only the inspect ID, independent Rules generation, safe
+basename label and one-based start position for display, confidence, and opaque
+authority ID. No workspace URI/path, full range, document version, source-map
+path/content, or command crosses the bridge. There is no open acknowledgement.
+
+The new Inspector has no visible Source tab. Existing Source remains
+active-document-only in the legacy rollback panel. A new Source tab and
+first-party PHP/template providers remain future scope.
+
 ## Source Pane And Navigation
 
-The DevTools Source pane shows bounded excerpts from the active IDE document
-only. Selected matches are expanded; the immediate Parent group is collapsed by
-default. A click sends only the excerpt's opaque match ID and moves the VS Code
-cursor to that exact current range after the IDE revalidates it. It cannot name
-or open an arbitrary path. Previous/Next remains Selected-only and does not
-include Parent matches.
+On the legacy rollback panel, the DevTools Source pane shows bounded excerpts
+from the active IDE document only. Selected matches are expanded; the immediate
+Parent group is collapsed by default. A click sends only the excerpt's opaque
+match ID and moves the VS Code cursor to that exact current range after the IDE
+revalidates it. It cannot name or open an arbitrary path. Previous/Next remains
+Selected-only and does not include Parent matches.
 
 The panel combines viewport breakpoints with its measured usable workspace. At
 680 px wide or wider, DOM and Source use side-by-side split when the workspace
@@ -196,8 +223,8 @@ tabs whose panel is closed.
 
 The browser and IDE extensions must both implement protocol v7. Protocol v6 is
 rejected with WebSocket close code `1002`; there is no fallback. On mismatch the
-panel keeps connection controls available but blocks inspection and source
-actions and shows:
+panel keeps connection controls available but blocks inspection, Rules-origin,
+and Source actions and shows:
 
 ```text
 Extensions are incompatible

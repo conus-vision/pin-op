@@ -40,4 +40,11 @@ test("rejects downgraded, malformed, and extended runtime metadata", () => {
     ),
     /test metadata has unexpected keys: marker/,
   );
+  assert.throws(
+    () => parseRuntimeMetadata(
+      '{"schemaVersion":1,"protocolVersion":7,"capabilities":["rules-sources"]}',
+      { label: "test metadata" },
+    ),
+    /test metadata has unexpected keys: capabilities/,
+  );
 });

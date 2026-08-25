@@ -49,8 +49,31 @@ const inspectorPanelBundle = [
   'const matchedStylesRequest = "styles.getMatched";',
   'const rulesReadOnlyState = "aria-readonly";',
   'const rulesRenderer = "Rules";',
+  'const rulesSourcesPublication = "rules.sources";',
+  'const rulesOpenIntent = "pin-op.rules.open";',
+  'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
   "",
 ].join("\n");
+const backgroundBundle = [
+  'const rulesSourcesCapability = "rules-sources";',
+  'const rulesSourcesType = "rules.sources";',
+  'const rulesOpenType = "rules.open";',
+  'const panelRulesOpenType = "pin-op.rules.open";',
+  'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
+  "",
+].join("\n");
+
+function compiledPanelRuntime(panelPage) {
+  return [
+    "function compiledPanelPage() {",
+    `  const value = "${panelPage}";`,
+    '  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") return value;',
+    '  throw new Error("Invalid compiled panel page");',
+    "}",
+    "const activePanelPage = compiledPanelPage();",
+    "",
+  ].join("\n");
+}
 const upstreamManifest = JSON.parse(
   readFileSync(
     resolve(repositoryRoot, "third_party/chromium-devtools-frontend/UPSTREAM.json"),
@@ -67,16 +90,16 @@ const upstreamRootLicense = readFileSync(
 // Retaining those helpers after dependency/build changes requires a security
 // review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "9e6f943508e41629a2cc7a7d9756124095fddaf4c0e996208be4761eef5fa8d4", inspectorSha256: "115ffe993588c50114101876f748dec70680f4f0457a66c8939a82bfcd30bca7" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" },
-  { browser: "firefox", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "e1a15cce41ddadfb666fb93787ff6914134a504bf75eee3b40e0e5100fd26f10", inspectorSha256: "b7c7bba1865ec8c94b177ed9b86d96eb0a24e2503eef280a61a573cf4ef5e842" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" },
+  { browser: "chrome", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "38404fbb8bbbe434231565682af16c32ae5ffac658dd54ab2f481b4d6b553c32", inspectorSha256: "fef22769ab29686be498eaa5a870178cdd58a13f68e76d2c2ec688d4677f1610" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" },
+  { browser: "firefox", path: "dist/background.js", sha256: "6b2b77aa33edb27026a3d80f90795211d76ab4eb58ad43021003f0a784e465a6", inspectorSha256: "d3390b546d67dbcc249d446bd5ff23d35005f49529d7238ffa6b98fcc396d456" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032", inspectorSha256: "0c6c683a8b69c4937c80ee3377065b51bd90c2081630e08e5f61964288183032" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "458c82f6ac2e2a5b0b3ae6e1e83575aa720419ded4e4d757db1d7540e180772b", inspectorSha256: "7b36afe701bc924aee1bcb81ce8ab4d24b649f9eb96ffc922c3ba6cdead2af18" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375", inspectorSha256: "ca8c05e26fa7de6d9a01c44ee6891d57261faae349ac0ff55cd5275ff035c375" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe", inspectorSha256: "99fcc0085b688009dbe7c9e57eb7b5431db6b41229cab36febe5c9f21b9a3dfe" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -203,6 +226,120 @@ const requiredMarkers = [
     path: "dist/panel.js",
     marker: "dom.resolveLocator",
   },
+  {
+    label: "Rules source publication",
+    path: "dist/inspectorPanel.js",
+    marker: "rules.sources",
+  },
+  {
+    label: "Rules source open intent",
+    path: "dist/inspectorPanel.js",
+    marker: "pin-op.rules.open",
+  },
+  {
+    label: "Rules inspect correlation",
+    path: "dist/inspectorPanel.js",
+    marker: "inspectMessageId:",
+  },
+  {
+    label: "Rules generation",
+    path: "dist/inspectorPanel.js",
+    marker: "rulesGeneration:",
+  },
+  {
+    label: "Rules open authority",
+    path: "dist/inspectorPanel.js",
+    marker: "openAuthorityId:",
+  },
+  {
+    label: "Rules publication rule reference",
+    path: "dist/inspectorPanel.js",
+    marker: "ruleRef:",
+  },
+  {
+    label: "Rules publication sources",
+    path: "dist/inspectorPanel.js",
+    marker: "sources:",
+  },
+  {
+    label: "Rules unresolved count",
+    path: "dist/inspectorPanel.js",
+    marker: "unresolvedRuleCount:",
+  },
+  ...[
+    ["Rules source document", "document:"],
+    ["Rules source label", "label:"],
+    ["Rules source language", "languageId:"],
+    ["Rules source start line", "startLine:"],
+    ["Rules source start column", "startColumn:"],
+    ["Rules source confidence", "confidence:"],
+  ].map(([label, marker]) => ({
+    label,
+    path: "dist/inspectorPanel.js",
+    marker,
+  })),
+  {
+    label: "Rules source capability",
+    path: "dist/background.js",
+    marker: "rules-sources",
+  },
+  {
+    label: "Rules source publication",
+    path: "dist/background.js",
+    marker: "rules.sources",
+  },
+  {
+    label: "Rules source open",
+    path: "dist/background.js",
+    marker: "rules.open",
+  },
+  {
+    label: "Rules source open intent",
+    path: "dist/background.js",
+    marker: "pin-op.rules.open",
+  },
+  {
+    label: "Rules inspect correlation",
+    path: "dist/background.js",
+    marker: "inspectMessageId:",
+  },
+  {
+    label: "Rules generation",
+    path: "dist/background.js",
+    marker: "rulesGeneration:",
+  },
+  {
+    label: "Rules open authority",
+    path: "dist/background.js",
+    marker: "openAuthorityId:",
+  },
+  {
+    label: "Rules publication rule reference",
+    path: "dist/background.js",
+    marker: "ruleRef:",
+  },
+  {
+    label: "Rules publication sources",
+    path: "dist/background.js",
+    marker: "sources:",
+  },
+  {
+    label: "Rules unresolved count",
+    path: "dist/background.js",
+    marker: "unresolvedRuleCount:",
+  },
+  ...[
+    ["Rules source document", "document:"],
+    ["Rules source label", "label:"],
+    ["Rules source language", "languageId:"],
+    ["Rules source start line", "startLine:"],
+    ["Rules source start column", "startColumn:"],
+    ["Rules source confidence", "confidence:"],
+  ].map(([label, marker]) => ({
+    label,
+    path: "dist/background.js",
+    marker,
+  })),
 ];
 
 test("browser artifact inventory includes the complete Inspector asset set", () => {
@@ -698,6 +835,31 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
+  test(`common ${browser} release verifier rejects an Inspector entrypoint`, () => {
+    const archive = browserArchive(browser);
+    for (const path of ["dist/background.js", "dist/devtools.js"]) {
+      const source = archive.files.get(path).toString("utf8");
+      archive.files.set(
+        path,
+        Buffer.from(
+          source.replace(
+            compiledPanelRuntime("/dist/panel.html"),
+            compiledPanelRuntime("/dist/inspector-panel.html"),
+          ),
+        ),
+      );
+    }
+
+    assert.throws(
+      () => validateBrowserArchive(
+        archive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /legacy panel|expected \/dist\/panel\.html/i,
+    );
+  });
+
   test(`common ${browser} artifact verifier rejects a copied schema clone constructor pattern`, () => {
     const archive = browserArchive(browser);
     const path = "dist/inspectorPanel.js";
@@ -968,13 +1130,142 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
+  test(`common ${browser} artifact verifier rejects literal local paths`, () => {
+    for (const [path, literal, expectedError] of [
+      [
+        "dist/inspectorPanel.js",
+        'const leaked = "file:///private/workspace/card.scss";',
+        /local file URI/i,
+      ],
+      [
+        "dist/background.js",
+        'const leaked = "C:\\\\private\\\\workspace\\\\card.scss";',
+        /local drive path/i,
+      ],
+      [
+        "dist/panel.js",
+        'const leaked = "\\\\\\\\server\\\\share\\\\card.scss";',
+        /local UNC path/i,
+      ],
+      [
+        "dist/panel.js",
+        'const leaked = "\\\\\\\\server\\\\_private\\\\card.scss";',
+        /local UNC path/i,
+      ],
+      [
+        "dist/contentScript.js",
+        'const leaked = "\\\\\\\\?\\\\C:\\\\private\\\\workspace\\\\card.scss";',
+        /local (?:Windows device|drive) path/i,
+      ],
+      [
+        "dist/contentScript.js",
+        'const leaked = "\\\\\\\\.\\\\pipe\\\\pin-op";',
+        /local Windows device path/i,
+      ],
+      [
+        "dist/contentScript.js",
+        String.raw`// built from \\.\pipe\pin-op`,
+        /local Windows device path/i,
+      ],
+      [
+        "dist/contentScript.js",
+        'const leaked = `prefix=file:///home/alice/${name}.scss`;',
+        /local file URI/i,
+      ],
+      [
+        "dist/devtools.js",
+        "//# sourceURL=file:///home/alice/private/devtools.js",
+        /local file URI/i,
+      ],
+      [
+        "dist/contentScript.js",
+        'const leaked = "prefix=C:\\\\Users\\\\alice\\\\private\\\\card.scss";',
+        /local drive path/i,
+      ],
+      [
+        "dist/background.js",
+        "// built from /home/alice/private/card.scss",
+        /local POSIX path/i,
+      ],
+      [
+        "dist/panel.html",
+        "<!-- built from /Users/alice/private/panel.html -->",
+        /local POSIX path/i,
+      ],
+      [
+        "dist/panel.css",
+        "/* built from /workspace/private/panel.css */",
+        /local POSIX path/i,
+      ],
+      [
+        "dist/pin-op.svg",
+        "<!-- built from /mnt/c/private/pin-op.svg -->",
+        /local POSIX path/i,
+      ],
+    ]) {
+      const archive = browserArchive(browser);
+      archive.files.set(
+        path,
+        Buffer.from(`${archive.files.get(path).toString("utf8")}\n${literal}\n`),
+      );
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        expectedError,
+      );
+    }
+  });
+
+  test(`common ${browser} artifact verifier allows package-relative and public paths`, () => {
+    const archive = browserArchive(browser);
+    archive.files.set(
+      "dist/devtools.js",
+      Buffer.from(
+        `${archive.files.get("dist/devtools.js").toString("utf8")}\n` +
+          'const safe = ["file:", "C:", "./card.scss", "/dist/panel.html", ' +
+          '"/assets/card.css", "https://example.test/home/card.css"];\n' +
+          'const cssEscape = /(^|\\\\+)?(\\\\[A-F0-9]{1,6})\\x20/;\n',
+      ),
+    );
+    assert.doesNotThrow(() => validateBrowserArchive(
+      archive,
+      `pin-op-${browser}-0.3.0.zip`,
+      browser,
+    ));
+  });
+
+  test(`common ${browser} artifact verifier rejects Rules aliases and acknowledgements`, () => {
+    for (const mutate of [
+      (source) => source.replace('const rulesOpenType = "rules.open";\n', ""),
+      (source) => source.replace('"rules.open"', '"rules.opened"'),
+      (source) => `${source}\nconst inventedAck = "rules.opened";\n`,
+    ]) {
+      const archive = browserArchive(browser);
+      const source = archive.files.get("dist/background.js").toString("utf8");
+      archive.files.set("dist/background.js", Buffer.from(mutate(source)));
+      assert.throws(
+        () => validateBrowserArchive(
+          archive,
+          `pin-op-${browser}-0.3.0.zip`,
+          browser,
+        ),
+        /Rules source open|Rules open acknowledgement|rules\.opened/i,
+      );
+    }
+  });
+
   for (const { label, path, marker } of requiredMarkers) {
     test(`common ${browser} artifact verifier requires ${label}`, () => {
       const archive = browserArchive(browser);
       const original = archive.files.get(path).toString("utf8");
       const withoutMarker = original.replaceAll(
         marker,
-        "missing-contract-marker",
+        marker.endsWith(":")
+          ? "missingContractMarker:"
+          : "missing-contract-marker",
       );
       assert.notEqual(withoutMarker, original);
       assert.equal(withoutMarker.includes(marker), false);
@@ -1474,7 +1765,16 @@ function browserArchive(browser) {
     "dist/contentScript.js",
     "dist/devtools.js",
   ]) {
-    files.set(path, Buffer.from(`// fixture ${path}\n`));
+    files.set(
+      path,
+      Buffer.from(
+        path === "dist/background.js"
+          ? `${backgroundBundle}\n${compiledPanelRuntime("/dist/panel.html")}`
+          : path === "dist/devtools.js"
+            ? compiledPanelRuntime("/dist/panel.html")
+            : `// fixture ${path}\n`,
+      ),
+    );
   }
   files.set("dist/panel.js", Buffer.from(panelBundle));
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));

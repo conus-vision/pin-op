@@ -264,6 +264,32 @@ This fail-closed rule intentionally replaces ad hoc manual release-asset recover
 It preserves the binding between the AMO-returned bytes, the trusted workflow run,
 the draft identity, and the later manual Firefox Stable test.
 
+## Verify Checkpoint 3 Unpacked Inspector Candidate
+
+This development gate is separate from verification of the downloaded
+ordinary/store artifacts. From the final committed checkout, build the unpacked
+browser candidates with the Inspector entrypoint:
+
+```powershell
+$env:PIN_OP_PANEL_VARIANT = "inspector"
+corepack pnpm --filter pin-op-chrome build
+corepack pnpm --filter pin-op-firefox build
+Remove-Item Env:PIN_OP_PANEL_VARIANT
+```
+
+Load `extensions/chrome` through Chrome's **Load unpacked** flow. Load
+`extensions/firefox/manifest.json` as a Firefox Temporary Add-on or use the
+documented `web-ext` development flow. Run the complete Rules-origin matrix in
+`docs/installed-verification.md`, including exact CSS, inline/external/nested
+and split-mapping SCSS, invalid-map fallback, CSS/map edits, stale authority,
+cross-file switching, and absence of a visible Source tab. This gate remains
+`PARTIAL/HARNESS_BLOCKED` until a native cross-product harness or manual run
+records the browser results; it is not signed-XPI or store-release evidence.
+
+Before ordinary packaging from the same checkout, rebuild without
+`PIN_OP_PANEL_VARIANT`. Setting the variable after an archive is built or
+downloaded cannot change that archive's panel entrypoint.
+
 ## Verify Installed Artifacts
 
 Download all six draft assets and validate `SHA256SUMS`. Complete
@@ -277,10 +303,20 @@ Download all six draft assets and validate `SHA256SUMS`. Complete
 5. in the active document, which must be the intended CSS or SCSS file, verify the
    visual picker and box-model overlay, lazy DOM tree boundaries, and
    selected-element plus immediate-parent multi-range highlighting;
-6. record the exact footer outcome, including `No active editor` and SCSS source-map
+6. confirm these final ordinary/store artifacts use the legacy rollback panel
+   and Existing Source remains active-document-only. Do not infer the unpacked
+   Inspector candidate's Rules-origin click from a downloaded ZIP or XPI. A new
+   Source tab and first-party PHP/template providers remain future scope;
+7. record the exact footer outcome, including `No active editor` and SCSS source-map
    failures, and confirm that **Disconnect** unlinks only that browser window;
-7. complete the two VS Code window and two browser window isolation checks;
-8. preserve the verification record with the sign run ID and exact XPI SHA-256.
+8. complete the two VS Code window and two browser window isolation checks;
+9. preserve the verification record with the sign run ID and exact XPI SHA-256.
+
+The packaged Chrome smoke opens only an ordinary fixture page and validates
+page/package markers. Task 6 VS Code integration and Task 7 browser UI tests do
+not replace the native cross-product click. `PARTIAL/HARNESS_BLOCKED` is not a
+release pass. Do not claim signed-XPI or public-release evidence until the
+separate signing and installed Stable checks above actually complete.
 
 Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
 

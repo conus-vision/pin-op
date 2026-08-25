@@ -60,6 +60,16 @@ test("store listings use ordered, attributed browser sections", () => {
       true,
       `${heading} must end with the exact attribution`,
     );
+    const rulesParagraph = content
+      .split(/\r?\n\r?\n/)
+      .find((paragraph) => /Rules origin click/i.test(paragraph));
+    assert.ok(rulesParagraph, `${heading} must describe Rules origin scope`);
+    assert.match(
+      rulesParagraph,
+      /opt-in\s+unpacked Inspector candidate/i,
+      `${heading} must not advertise Rules origin opening as store-default`,
+    );
+    assert.match(content, /store-default legacy rollback panel/i);
   }
 
   const escapedAttribution = escapeRegExp(attribution);
@@ -94,7 +104,7 @@ test("VS Code README preserves the seven-step protocol recovery workflow", () =>
   );
   assert.ok(
     safety.includes(
-      "Protocol v5 is rejected with WebSocket close code `1002`, with no fallback.",
+      "Protocol v6 is rejected with WebSocket close code `1002`, with no fallback.",
     ),
   );
   assert.ok(

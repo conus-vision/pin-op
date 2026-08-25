@@ -179,6 +179,7 @@ export function validatePackagedChromeArchive(archive) {
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: "Packaged Chrome",
     metadataLabel: "Packaged Chrome runtime metadata",
+    panelVariant: "legacy",
     platform: "chrome",
   });
   return manifest;
@@ -523,6 +524,9 @@ export async function smokePackagedChrome(artifactArgument) {
         );
         console.log(
           `PACKAGED_CHROME_FIXTURE_OK vendor=${fixtureResult.vendor.ruleCount} inaccessible=${fixtureResult.inaccessible.errorName} rects=${fixtureResult.multilineRectCount}`,
+        );
+        console.log(
+          "PACKAGED_CHROME_PROTOCOL_V7_RULES_SOURCES_OK package-contract-only",
         );
       } catch (error) {
         const primaryError = error instanceof Error ? error : new Error(String(error));

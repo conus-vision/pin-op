@@ -80,11 +80,14 @@ connection that sent it. IDE resolution replies are routed only to that
 connection. Cross-connection inspect-ID collisions, stale routes, wrong roles,
 and wrong sessions fail closed. Routes are bounded and removed with the client.
 
-Auto-refresh, source-presentation, presentation-settings, and source-navigation
-messages require their negotiated capabilities and reuse exact authenticated
-routes. Source-open carries only an opaque current match ID; presentation
-settings carry only the current correlation and IDE Highlight boolean. Neither
-message exposes an arbitrary file, range, path, URI, tab ID, or command.
+Auto-refresh, source-presentation, presentation-settings, source-navigation,
+and Rules-source messages require their negotiated capabilities and reuse exact
+authenticated routes. Legacy Source-open carries only an opaque current match
+ID; presentation settings carry only the current correlation and IDE Highlight
+boolean. `rules.sources` adds sanitized labels/start positions and IDE-issued
+opaque authority IDs; `rules.open` returns only the inspect ID, independent Rules
+generation, and one current authority ID. No message exposes an arbitrary file,
+workspace URI/path, full range, document version, tab ID, or command.
 
 Protocol v7 is an exact breaking contract. A v6 or otherwise incompatible peer
 is closed with WebSocket code `1002`; there is no adapter or downgrade fallback.
@@ -193,6 +196,19 @@ outer-to-inner media/supports contexts. Local paths, userinfo, fragments,
 non-public schemes, malformed URLs, unsupported ancestors, and truncated
 contexts fail closed for source resolution.
 
+The IDE independently verifies generated CSS against a workspace-owned AST and
+accepts SCSS only through an exact usable source map and original AST proof.
+Missing, invalid, ambiguous, stale, or outside-workspace maps show verified
+generated CSS only, with no approximate SCSS authority. The browser sees only a
+safe label, language, one-based start position, confidence, and opaque authority.
+
+An explicit Rules origin click may switch VS Code to the verified workspace CSS
+or SCSS document using a current IDE-issued opaque authority. The browser cannot
+choose the file, full range, document version, source-map path, or command. The
+IDE revalidates workspace/dependency ownership and document identity both before
+and after the editor-host call; stale authority prevents cursor/reveal and is
+revoked. Passive inspection never switches editors.
+
 The pinned browser runtime includes PostCSS `8.5.16` and
 `postcss-selector-parser` `7.1.0` for bounded parsing and selector analysis.
 Their bundled constructor uses were reviewed as typed AST cloning/prototype
@@ -237,6 +253,12 @@ excerpts from its active document for Source presentation: at most 32 excerpts,
 workspace paths and URIs, source maps, and browser tab IDs are not sent. Pin-op
 does not upload source or maps to a remote service.
 
+Rules origin publications contain no workspace URI/path, full range, document
+version, source-map content/path, or command. They contain only a safe label,
+language, one-based start position, confidence, correlation, and opaque open
+authority. The minimal `rules.open` request contains none of the display label
+or position fields and has no acknowledgement message.
+
 Before that IDE-to-browser send, the trusted VS Code host maps plugin `kind`
 and `relation` strings to the closed protocol vocabularies, bounds and
 normalizes display/document labels and language IDs, and rejects literal or
@@ -258,7 +280,9 @@ inspect envelope to 768 KiB, two targets, 256 facts per target, and bounded
 strings, arrays, metadata, selectors, declarations, URLs, and routes. Resolution
 replies and source-navigation messages are limited to 16 KiB and closed
 status/diagnostic vocabularies. Source presentation is limited to 256 KiB and
-the per-excerpt limits above.
+the per-excerpt limits above. Rules source publication is limited to 256 entries
+and 128 KiB, with independent generations and bounded labels, positions,
+authority IDs, and unresolved counts.
 
 Browser collection has byte, stylesheet, rule, nesting, declaration, class,
 attribute, and inaccessible-stylesheet budgets. The browser-local tree limits
@@ -268,12 +292,19 @@ closed when a bound is reached.
 
 ## Source Resolution
 
-The IDE resolves only the active document. Exact CSS evidence wins. The CSS
-fingerprint fallback requires stable selector/media/declaration evidence and a
-unique result; ambiguity produces no highlight. SCSS requires one generated
-rule, a valid source map, and a mapping into the active SCSS document. Missing,
-invalid, unmapped, ambiguous, or other-document cases fail closed and produce a
-bounded footer status.
+Legacy Source/highlight resolution uses only the active document. Exact CSS
+evidence wins. Its CSS fingerprint fallback requires stable
+selector/media/declaration evidence and a unique result; ambiguity produces no
+highlight. Its SCSS path requires one generated rule, a valid source map, and a
+mapping into the active SCSS document. Missing, invalid, unmapped, ambiguous, or
+other-document cases fail closed and produce a bounded footer status.
+
+Rules origin resolution is a separate IDE-owned batch over bounded workspace
+CSS/SCSS/map dependencies. It can authorize a cross-file open only after exact
+CSS or source-mapped SCSS verification. Existing Source remains
+active-document-only in the legacy rollback panel; the new Inspector has no
+visible Source tab. A new Source tab and first-party PHP/template providers
+remain future scope.
 
 Pin-op does not load executable code from an inspected workspace. Built-in CSS
 and SCSS resolvers use source-plugin API v3; its synchronous refresh classifiers
