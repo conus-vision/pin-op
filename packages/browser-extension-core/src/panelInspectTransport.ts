@@ -1,13 +1,13 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
 } from "@pin-op/protocol";
 import {
   DOM_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isDomResponseForRequest,
-  isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -16,9 +16,11 @@ import {
 } from "./domProtocol.js";
 import {
   parseInspectControllerCommand,
+  parsePanelInspectStartedState,
   parseInspectPortInvalidated,
   parseInspectPortResult,
   parsePanelPresentationSettingsCommand,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
@@ -28,7 +30,10 @@ import {
   type PanelInspectPort,
 } from "./inspectPortProtocol.js";
 import { parseLinkCode } from "./linkCode.js";
-import { parseProtocolData } from "./protocolDataSnapshot.js";
+import {
+  parseProtocolData,
+  parseRulesSourcesProtocolData,
+} from "./protocolDataSnapshot.js";
 import {
   STYLES_PROTOCOL_MAX_IDENTIFIER_LENGTH,
   isStylesResponseForRequest,
@@ -337,6 +342,14 @@ export class PanelInspectTransport {
     }
     this.pendingDom.clear();
     this.pendingDomCallerIds.clear();
+  }
+
+  public dispatchRulesOpen(message: unknown): void {
+    this.dispatchLocalCommand(
+      message,
+      parsePanelRulesOpenCommand,
+      "Invalid Rules open command",
+    );
   }
 
   public cancelStylesRequests(reason = "Styles session changed"): void {
@@ -673,6 +686,13 @@ function validatedPushMessage(message: unknown): unknown | undefined {
   if (sourceMatches) {
     return sourceMatches;
   }
+  const rulesSources = parseRulesSourcesProtocolData(
+    message,
+    RulesSourcesMessageSchema,
+  );
+  if (rulesSources) {
+    return rulesSources;
+  }
   const tabState = parsePanelTabStateMessage(message);
   if (tabState) {
     return tabState;
@@ -680,6 +700,10 @@ function validatedPushMessage(message: unknown): unknown | undefined {
   const compatibility = parseProtocolCompatibilityMessage(message);
   if (compatibility) {
     return compatibility;
+  }
+  const inspectStarted = parsePanelInspectStartedState(message);
+  if (inspectStarted) {
+    return inspectStarted;
   }
   return validatedLocalPanelState(message);
 }
@@ -712,21 +736,6 @@ function validatedLocalPanelState(message: unknown): unknown | undefined {
       type: message.type,
       state: message.state,
       displayLinkCode: message.displayLinkCode,
-    };
-  }
-  if (
-    keys.length === 3 &&
-    keys[0] === "inspectMessageId" &&
-    keys[1] === "selectionRevision" &&
-    keys[2] === "type" &&
-    message.type === "pin-op.inspect.started" &&
-    isOpaqueId(message.inspectMessageId) &&
-    isSelectionRevision(message.selectionRevision)
-  ) {
-    return {
-      type: message.type,
-      inspectMessageId: message.inspectMessageId,
-      selectionRevision: message.selectionRevision,
     };
   }
   if (

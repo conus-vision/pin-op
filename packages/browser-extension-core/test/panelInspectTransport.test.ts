@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceExcerpt,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
@@ -761,6 +762,7 @@ describe("PanelInspectTransport DOM integration", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 4,
+      expectedRuleRefs: ["rule-1"],
     } as const;
 
     port.emitMessage(inspectStarted);
@@ -884,7 +886,7 @@ describe("PanelInspectTransport source navigation", () => {
 });
 
 describe("PanelInspectTransport source presentation", () => {
-  it("posts only exact source open, presentation, and tab settings commands", () => {
+  it("posts only exact Source, Rules, presentation, and tab settings commands", () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
     const sourceOpen = {
@@ -898,6 +900,12 @@ describe("PanelInspectTransport source presentation", () => {
       inspectMessageId: "inspect-1",
       ideHighlightEnabled: false,
     } as const;
+    const rulesOpen = {
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-1",
+    } as const;
     const tabSettings = {
       type: "pin-op.tab.settings",
       autoRefreshEnabled: false,
@@ -905,16 +913,22 @@ describe("PanelInspectTransport source presentation", () => {
     } as const;
 
     transport.dispatchSourceOpen(sourceOpen);
+    transport.dispatchRulesOpen(rulesOpen);
     transport.dispatchPresentationSettings(presentation);
     transport.dispatchTabSettings(tabSettings);
 
-    expect(port.sent).toEqual([sourceOpen, presentation, tabSettings]);
+    expect(port.sent).toEqual([sourceOpen, rulesOpen, presentation, tabSettings]);
     expect(port.sent[0]).not.toBe(sourceOpen);
-    expect(port.sent[1]).not.toBe(presentation);
-    expect(port.sent[2]).not.toBe(tabSettings);
+    expect(port.sent[1]).not.toBe(rulesOpen);
+    expect(port.sent[2]).not.toBe(presentation);
+    expect(port.sent[3]).not.toBe(tabSettings);
 
     expect(() => transport.dispatchSourceOpen({ ...sourceOpen, extra: true }))
       .toThrow("Invalid source open command");
+    expect(() => transport.dispatchRulesOpen({
+      ...rulesOpen,
+      ruleRef: "rule-1",
+    })).toThrow("Invalid Rules open command");
     expect(() => transport.dispatchPresentationSettings({
       ...presentation,
       inspectMessageId: "",
@@ -923,7 +937,7 @@ describe("PanelInspectTransport source presentation", () => {
       ...tabSettings,
       autoRefreshEnabled: "yes",
     })).toThrow("Invalid tab settings command");
-    expect(port.sent).toHaveLength(3);
+    expect(port.sent).toHaveLength(4);
   });
 
   it("forwards strict v7 source, settings, compatibility, and incompatible states", () => {
@@ -936,6 +950,7 @@ describe("PanelInspectTransport source presentation", () => {
     );
     transport.connect();
     const matches = sourceMatches();
+    const rules = rulesSources();
     const tabState = {
       type: "pin-op.tab.state",
       autoRefreshEnabled: true,
@@ -955,15 +970,23 @@ describe("PanelInspectTransport source presentation", () => {
     } as const;
 
     port.emitMessage(matches);
+    port.emitMessage(rules);
     port.emitMessage(tabState);
     port.emitMessage(compatible);
     port.emitMessage(incompatible);
     port.emitMessage({ ...matches, extra: true });
+    port.emitMessage({ ...rules, path: "/secret.scss" });
     port.emitMessage({ ...tabState, participant: "yes" });
     port.emitMessage({ ...compatible, browserProtocolVersion: 5 });
     port.emitMessage({ ...incompatible, state: "connected" });
 
-    expect(received).toEqual([matches, tabState, compatible, incompatible]);
+    expect(received).toEqual([
+      matches,
+      rules,
+      tabState,
+      compatible,
+      incompatible,
+    ]);
   });
 
   it("ignores messages from an old port after reconnecting", () => {
@@ -979,10 +1002,10 @@ describe("PanelInspectTransport source presentation", () => {
     ports[0]!.disconnect();
     transport.connect();
 
-    ports[0]!.emitMessage(sourceMatches());
-    ports[1]!.emitMessage(sourceMatches());
+    ports[0]!.emitMessage(rulesSources());
+    ports[1]!.emitMessage(rulesSources());
 
-    expect(received).toEqual([sourceMatches()]);
+    expect(received).toEqual([rulesSources()]);
   });
 });
 
@@ -1165,6 +1188,28 @@ function rootResponse(requestId: string) {
       branchRevision: 0,
       locator: stableLocator({ path: [pathSegment({ tagName: "html" })] }),
     },
+  };
+}
+
+function rulesSources(): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: "rules-sources-1",
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    rulesGeneration: 1,
+    sources: [{
+      ruleRef: "rule-1",
+      openAuthorityId: "authority-1",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
+    metadata: {},
   };
 }
 

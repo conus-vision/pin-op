@@ -56,6 +56,11 @@ every derived source.
 - Adapt `MatchedStylesModel` through `RulesDataSource` in the shared Inspector
   runtime so selection and rendering remain browser-local and independent of
   IDE source resolution.
+- Decorate each rule origin through the narrow source-link delegate: keep the
+  generated public label as non-clickable text until an exact current Rules
+  authority is available, then make only the exact label and line clickable.
+  The click carries an opaque authority and never exposes a workspace path or
+  URI to the browser UI.
 
 <a id="scoped-styles"></a>
 ## Scoped styles
@@ -76,3 +81,6 @@ every derived source.
   contexts, public origin labels, declaration tokens, inherited separators,
   partial diagnostics, proven-overridden line-through, unknown-state marker,
   dark/forced-color variables, focus rings, and the 320-pixel stacked layout.
+- Reset an enabled Rules origin to a text-sized scoped button with an explicit
+  keyboard-focus ring so the shared panel button chrome cannot distort the
+  Chromium-style rule header.

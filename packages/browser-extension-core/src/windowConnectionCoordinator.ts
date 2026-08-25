@@ -4,6 +4,7 @@ import {
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
@@ -20,6 +21,7 @@ import {
   type InspectPayload,
   type InspectSendOutcome,
   type PresentationSettingsInput,
+  type RulesOpenInput,
   type SourceOpenInput,
   type SourceNavigationSendOutcome,
   type SourcePresentationSendOutcome,
@@ -32,6 +34,7 @@ import {
 import { parseLinkCode } from "./linkCode.js";
 import {
   parsePanelPresentationSettingsCommand,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
 } from "./inspectPortProtocol.js";
 import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
@@ -79,6 +82,7 @@ export interface WindowConnectionClient {
     >,
   ): SourceNavigationSendOutcome;
   sendSourceOpen(input: SourceOpenInput): SourcePresentationSendOutcome;
+  sendRulesOpen(input: RulesOpenInput): SourcePresentationSendOutcome;
   sendPresentationSettings(
     input: PresentationSettingsInput,
   ): SourcePresentationSendOutcome;
@@ -93,6 +97,9 @@ export interface WindowConnectionClient {
   ): BrowserBridgeSubscription;
   onSourceMatches(
     listener: TrustedIdeMessageListener<SourceMatchesMessage>,
+  ): BrowserBridgeSubscription;
+  onRulesSources(
+    listener: TrustedIdeMessageListener<RulesSourcesMessage>,
   ): BrowserBridgeSubscription;
   onPageRefresh(
     listener: (message: PageRefreshMessage) => void,
@@ -204,6 +211,9 @@ export class WindowConnectionCoordinator {
   >();
   private readonly sourceMatchesListeners = new Set<
     TrustedIdeMessageListener<SourceMatchesMessage>
+  >();
+  private readonly rulesSourcesListeners = new Set<
+    TrustedIdeMessageListener<RulesSourcesMessage>
   >();
   private readonly pageRefreshListeners = new Set<
     (windowId: number, message: PageRefreshMessage) => void
@@ -494,6 +504,33 @@ export class WindowConnectionCoordinator {
     }
   }
 
+  public publishRulesOpen(
+    context: TrustedIdePeerContext,
+    input: RulesOpenInput,
+  ): SourcePresentationSendOutcome {
+    const authorized = this.authorizedClient(context);
+    if (!authorized) return "not-connected";
+    const safeInput = snapshotRulesOpenInput(input);
+    if (!safeInput) return "invalid-message";
+    if (!this.isCurrentAuthority(authorized, context)) {
+      return "not-connected";
+    }
+    try {
+      const outcome = authorized.client.sendRulesOpen(safeInput);
+      if (!this.isCurrentAuthority(authorized, context)) {
+        return "not-connected";
+      }
+      this.handleSourcePresentationOutcome(authorized, context, outcome);
+      return outcome;
+    } catch {
+      if (!this.isCurrentAuthority(authorized, context)) {
+        return "not-connected";
+      }
+      this.failAuthorizedTransport(authorized, context);
+      return "transport-error";
+    }
+  }
+
   public publishPresentationSettings(
     context: TrustedIdePeerContext,
     input: PresentationSettingsInput,
@@ -553,6 +590,12 @@ export class WindowConnectionCoordinator {
     listener: TrustedIdeMessageListener<SourceMatchesMessage>,
   ): BrowserBridgeSubscription {
     return subscribeTrustedIdeEvent(this.sourceMatchesListeners, listener);
+  }
+
+  public onRulesSources(
+    listener: TrustedIdeMessageListener<RulesSourcesMessage>,
+  ): BrowserBridgeSubscription {
+    return subscribeTrustedIdeEvent(this.rulesSourcesListeners, listener);
   }
 
   public onPageRefresh(
@@ -617,6 +660,7 @@ export class WindowConnectionCoordinator {
     this.stateListeners.clear();
     this.sourceNavigationStateListeners.clear();
     this.sourceMatchesListeners.clear();
+    this.rulesSourcesListeners.clear();
     this.pageRefreshListeners.clear();
     this.protocolMismatchListeners.clear();
   }
@@ -792,6 +836,9 @@ export class WindowConnectionCoordinator {
       ));
       subscriptions.push(client.onSourceMatches((context, message) =>
         this.forwardSourceMatches(record, generation, token, context, message),
+      ));
+      subscriptions.push(client.onRulesSources((context, message) =>
+        this.forwardRulesSources(record, generation, token, context, message),
       ));
       subscriptions.push(client.onPeerState((message) =>
         this.forwardPeerState(record, generation, token, message),
@@ -1428,6 +1475,25 @@ export class WindowConnectionCoordinator {
     notifyTrustedIdeEvent(this.sourceMatchesListeners, context, message);
   }
 
+  private forwardRulesSources(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+    context: TrustedIdePeerContext,
+    message: RulesSourcesMessage,
+  ): void {
+    if (!this.acceptTrustedIdeContext(
+      record,
+      generation,
+      token,
+      context,
+      message,
+    )) {
+      return;
+    }
+    notifyTrustedIdeEvent(this.rulesSourcesListeners, context, message);
+  }
+
   private forwardPeerState(
     record: WindowRecord,
     generation: number,
@@ -1601,6 +1667,28 @@ function snapshotSourceOpenInput(value: unknown): SourceOpenInput | undefined {
         inspectMessageId: parsed.inspectMessageId,
         resolutionGeneration: parsed.resolutionGeneration,
         matchId: parsed.matchId,
+      }
+    : undefined;
+}
+
+function snapshotRulesOpenInput(value: unknown): RulesOpenInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "rulesGeneration",
+    "openAuthorityId",
+  ]);
+  if (!record) return undefined;
+  const parsed = parsePanelRulesOpenCommand({
+    type: "pin-op.rules.open",
+    inspectMessageId: record.inspectMessageId,
+    rulesGeneration: record.rulesGeneration,
+    openAuthorityId: record.openAuthorityId,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        rulesGeneration: parsed.rulesGeneration,
+        openAuthorityId: parsed.openAuthorityId,
       }
     : undefined;
 }

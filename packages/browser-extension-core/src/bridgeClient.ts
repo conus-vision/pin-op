@@ -4,6 +4,7 @@ import {
   PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
   PROTOCOL_MISMATCH_CLOSE_CODE,
+  RulesOpenMessageSchema,
   SourceOpenMessageSchema,
   SourceNavigateMessageSchema,
   parseProtocolMismatchReason,
@@ -14,6 +15,8 @@ import {
   type PresentationSettingsMessage,
   type ProtocolErrorCode,
   type ResolutionMessage,
+  type RulesOpenMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
@@ -21,8 +24,10 @@ import {
 } from "@pin-op/protocol";
 import {
   parsePanelPresentationSettingsCommand,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
   type PanelPresentationSettingsCommand,
+  type PanelRulesOpenCommand,
   type PanelSourceOpenCommand,
 } from "./inspectPortProtocol.js";
 import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
@@ -113,6 +118,7 @@ export type InspectSendOutcome =
 export type SourceNavigationSendOutcome = InspectSendOutcome;
 export type SourcePresentationSendOutcome = InspectSendOutcome;
 export type SourceOpenInput = Omit<PanelSourceOpenCommand, "type">;
+export type RulesOpenInput = Omit<PanelRulesOpenCommand, "type">;
 export type PresentationSettingsInput = Omit<
   PanelPresentationSettingsCommand,
   "type"
@@ -172,6 +178,9 @@ export class BrowserBridgeClient {
   >();
   private readonly sourceMatchesListeners = new Set<
     TrustedIdeMessageListener<SourceMatchesMessage>
+  >();
+  private readonly rulesSourcesListeners = new Set<
+    TrustedIdeMessageListener<RulesSourcesMessage>
   >();
   private readonly pageRefreshListeners = new Set<
     (message: PageRefreshMessage) => void
@@ -336,6 +345,37 @@ export class BrowserBridgeClient {
       : this.rejectSourcePresentation("Source open message");
   }
 
+  public sendRulesOpen(
+    input: RulesOpenInput,
+  ): SourcePresentationSendOutcome {
+    if (!this.isConnectedTransport()) {
+      return "not-connected";
+    }
+    const safeInput = snapshotRulesOpenInput(input);
+    if (!safeInput) {
+      return this.rejectSourcePresentation("Rules open message");
+    }
+    let message: RulesOpenMessage | undefined;
+    try {
+      const parsed = RulesOpenMessageSchema.safeParse({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "rules.open",
+        messageId: this.messageId(),
+        sessionId: this.credentials?.sessionId,
+        inspectMessageId: safeInput.inspectMessageId,
+        rulesGeneration: safeInput.rulesGeneration,
+        openAuthorityId: safeInput.openAuthorityId,
+        metadata: {},
+      });
+      message = parsed.success ? parsed.data : undefined;
+    } catch {
+      message = undefined;
+    }
+    return message
+      ? this.sendSourcePresentation(message, "Rules open")
+      : this.rejectSourcePresentation("Rules open message");
+  }
+
   public sendPresentationSettings(
     input: PresentationSettingsInput,
   ): SourcePresentationSendOutcome {
@@ -389,6 +429,12 @@ export class BrowserBridgeClient {
     listener: TrustedIdeMessageListener<SourceMatchesMessage>,
   ): BrowserBridgeSubscription {
     return subscribeTrusted(this.sourceMatchesListeners, listener);
+  }
+
+  public onRulesSources(
+    listener: TrustedIdeMessageListener<RulesSourcesMessage>,
+  ): BrowserBridgeSubscription {
+    return subscribeTrusted(this.rulesSourcesListeners, listener);
   }
 
   public onPageRefresh(
@@ -472,7 +518,7 @@ export class BrowserBridgeClient {
   }
 
   private sendSourcePresentation(
-    message: SourceOpenMessage | PresentationSettingsMessage,
+    message: SourceOpenMessage | RulesOpenMessage | PresentationSettingsMessage,
     label: string,
   ): SourcePresentationSendOutcome {
     const socket = this.socket;
@@ -650,6 +696,21 @@ export class BrowserBridgeClient {
       );
       return;
     }
+    if (message.type === "rules.sources") {
+      if (
+        !this.authenticated ||
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId
+      ) {
+        return;
+      }
+      this.notifyTrustedIdeListeners(
+        this.rulesSourcesListeners,
+        this.trustedIdePeerContext(message.source.id),
+        message,
+      );
+      return;
+    }
     if (message.type === "page.refresh") {
       if (
         !this.authenticated ||
@@ -736,6 +797,7 @@ export class BrowserBridgeClient {
         "presentation-settings",
         "source-navigation",
         "auto-refresh",
+        "rules-sources",
       ],
       metadata: {},
     });
@@ -912,6 +974,28 @@ function snapshotSourceOpenInput(value: unknown): SourceOpenInput | undefined {
         inspectMessageId: parsed.inspectMessageId,
         resolutionGeneration: parsed.resolutionGeneration,
         matchId: parsed.matchId,
+      }
+    : undefined;
+}
+
+function snapshotRulesOpenInput(value: unknown): RulesOpenInput | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "inspectMessageId",
+    "rulesGeneration",
+    "openAuthorityId",
+  ]);
+  if (!record) return undefined;
+  const parsed = parsePanelRulesOpenCommand({
+    type: "pin-op.rules.open",
+    inspectMessageId: record.inspectMessageId,
+    rulesGeneration: record.rulesGeneration,
+    openAuthorityId: record.openAuthorityId,
+  });
+  return parsed
+    ? {
+        inspectMessageId: parsed.inspectMessageId,
+        rulesGeneration: parsed.rulesGeneration,
+        openAuthorityId: parsed.openAuthorityId,
       }
     : undefined;
 }

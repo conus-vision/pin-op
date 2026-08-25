@@ -9,6 +9,8 @@ import {
   isInspectorLocalRequestType,
   parseInspectorLocalRequest,
   parsePanelPresentationSettingsCommand,
+  parsePanelInspectStartedState,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
@@ -237,6 +239,102 @@ describe("panel inspect transport", () => {
     ]) {
       expect(parsePanelPresentationSettingsCommand(candidate)).toBeUndefined();
     }
+  });
+
+  it("parses only the exact opaque Rules open intent", () => {
+    const command = {
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 3,
+      openAuthorityId: "authority-1",
+    } as const;
+
+    expect(parsePanelRulesOpenCommand(command)).toEqual(command);
+    for (const candidate of [
+      { ...command, sessionId: "session-1" },
+      { ...command, ruleRef: "rule-1" },
+      { ...command, uri: "file:///secret.scss" },
+      { ...command, path: "C:\\secret.scss" },
+      { ...command, range: { start: 1, end: 2 } },
+      { ...command, command: "workbench.action.files.openFile" },
+      { ...command, inspectMessageId: "" },
+      { ...command, rulesGeneration: -1 },
+      { ...command, rulesGeneration: 1.5 },
+      { ...command, rulesGeneration: 0x80000000 },
+      { ...command, openAuthorityId: "x".repeat(129) },
+      { type: command.type, inspectMessageId: command.inspectMessageId },
+      null,
+      [],
+    ]) {
+      expect(parsePanelRulesOpenCommand(candidate)).toBeUndefined();
+    }
+  });
+
+  it("snapshots Rules open without invoking accessors or accepting symbols", () => {
+    const command = {
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 3,
+      openAuthorityId: "authority-1",
+    } as const;
+    let getterCalls = 0;
+    const accessor = { ...command } as Record<string, unknown>;
+    Object.defineProperty(accessor, "openAuthorityId", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("getter must not run");
+      },
+    });
+    const withSymbol = { ...command, [Symbol("hidden")]: true };
+    const { proxy, revoke } = Proxy.revocable(command, {});
+    revoke();
+
+    expect(parsePanelRulesOpenCommand(Object.create(command))).toBeUndefined();
+    expect(() => parsePanelRulesOpenCommand(accessor)).not.toThrow();
+    expect(parsePanelRulesOpenCommand(accessor)).toBeUndefined();
+    expect(getterCalls).toBe(0);
+    expect(parsePanelRulesOpenCommand(withSymbol)).toBeUndefined();
+    expect(() => parsePanelRulesOpenCommand(proxy)).not.toThrow();
+    expect(parsePanelRulesOpenCommand(proxy)).toBeUndefined();
+  });
+
+  it("parses one strict bounded inspect start with immutable expected Rules refs", () => {
+    const state = {
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-1",
+      selectionRevision: 4,
+      expectedRuleRefs: ["rule-1", "rule-2"],
+    } as const;
+    const parsed = parsePanelInspectStartedState(state);
+    expect(parsed).toEqual(state);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed?.expectedRuleRefs)).toBe(true);
+
+    for (const candidate of [
+      { ...state, tabId: 1 },
+      { ...state, expectedRuleRefs: ["rule-1", "rule-1"] },
+      { ...state, expectedRuleRefs: [""] },
+      { ...state, expectedRuleRefs: ["x".repeat(129)] },
+      { ...state, expectedRuleRefs: Array.from({ length: 257 }, (_, i) => `rule-${i}`) },
+      { ...state, selectionRevision: -1 },
+      { ...state, inspectMessageId: "" },
+    ]) {
+      expect(parsePanelInspectStartedState(candidate)).toBeUndefined();
+    }
+
+    let getterCalls = 0;
+    const accessor = { ...state } as Record<string, unknown>;
+    Object.defineProperty(accessor, "expectedRuleRefs", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return ["rule-1"];
+      },
+    });
+    expect(() => parsePanelInspectStartedState(accessor)).not.toThrow();
+    expect(parsePanelInspectStartedState(accessor)).toBeUndefined();
+    expect(getterCalls).toBe(0);
   });
 
   it("snapshots source commands without inherited fields or accessor execution", () => {

@@ -1,16 +1,17 @@
 import {
   PeerStateMessageSchema,
   ResolutionMessageSchema,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
   type PeerStateMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import {
   isDomResponseForRequest,
-  isSelectionRevision,
   parseDomEvent,
   parseDomRequest,
   parseDomResponse,
@@ -20,10 +21,14 @@ import {
 } from "./domProtocol.js";
 import {
   isValidDevtoolsChannel,
+  parsePanelInspectStartedState,
   parseInspectRepublishRequest,
   type InspectRepublishRequest,
 } from "./inspectPortProtocol.js";
-import { parseProtocolData } from "./protocolDataSnapshot.js";
+import {
+  parseProtocolData,
+  parseRulesSourcesProtocolData,
+} from "./protocolDataSnapshot.js";
 import {
   isStylesResponseForRequest,
   parseStylesEvent,
@@ -42,7 +47,10 @@ export interface PanelSessionTransportOptions {
     tabId: number,
     message: unknown,
   ) => Promise<unknown>;
-  readonly postPanelMessage: (channel: string, message: unknown) => void;
+  readonly postPanelMessage: (
+    channel: string,
+    message: unknown,
+  ) => boolean | void;
   readonly maxChannels?: number;
 }
 
@@ -50,12 +58,6 @@ export interface PanelIdeDisconnectedState {
   readonly type: "pin-op.ideState";
   readonly status: "ide-disconnected";
   readonly inspectMessageId: string;
-}
-
-export interface PanelInspectStartedState {
-  readonly type: "pin-op.inspect.started";
-  readonly inspectMessageId: string;
-  readonly selectionRevision: number;
 }
 
 interface PanelSessionBinding {
@@ -239,20 +241,22 @@ export class PanelSessionTransport {
       | StylesInvalidatedEvent
       | ResolutionMessage
       | PeerStateMessage
+      | RulesSourcesMessage
       | SourceMatchesMessage
       | SourceNavigationStateMessage,
-  ): void {
+  ): boolean {
     if (!this.channels.has(channel)) {
-      return;
+      return false;
     }
     const parsed = parsePublishedMessage(message);
     if (!parsed) {
-      return;
+      return false;
     }
     try {
-      this.options.postPanelMessage(channel, parsed);
+      return this.options.postPanelMessage(channel, parsed) !== false;
     } catch {
       // A panel disconnect owns channel disposal.
+      return false;
     }
   }
 
@@ -283,19 +287,16 @@ export class PanelSessionTransport {
     channel: string,
     inspectMessageId: string,
     selectionRevision: number,
+    expectedRuleRefs: readonly string[],
   ): void {
-    if (
-      !this.channels.has(channel) ||
-      !isOpaqueId(inspectMessageId) ||
-      !isSelectionRevision(selectionRevision)
-    ) {
-      return;
-    }
-    const state: PanelInspectStartedState = Object.freeze({
+    if (!this.channels.has(channel)) return;
+    const state = parsePanelInspectStartedState({
       type: "pin-op.inspect.started",
       inspectMessageId,
       selectionRevision,
+      expectedRuleRefs,
     });
+    if (!state) return;
     try {
       this.options.postPanelMessage(channel, state);
     } catch {
@@ -320,6 +321,7 @@ function parsePublishedMessage(
     | StylesInvalidatedEvent
     | ResolutionMessage
     | PeerStateMessage
+    | RulesSourcesMessage
     | SourceMatchesMessage
     | SourceNavigationStateMessage,
 ): PublishedPanelMessage | undefined {
@@ -334,6 +336,11 @@ function parsePublishedMessage(
   } catch {
     // Non-local bridge messages continue below.
   }
+  const rulesSources = parseRulesSourcesProtocolData(
+    message,
+    RulesSourcesMessageSchema,
+  );
+  if (rulesSources) return rulesSources;
   return parseProtocolData(message, {
     safeParse(value):
       | { readonly success: true; readonly data: PublishedPanelMessage }
@@ -366,6 +373,7 @@ type PublishedPanelMessage =
   | StylesInvalidatedEvent
   | ResolutionMessage
   | PeerStateMessage
+  | RulesSourcesMessage
   | SourceMatchesMessage
   | SourceNavigationStateMessage;
 

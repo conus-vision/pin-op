@@ -168,6 +168,26 @@ export interface RulesDataSource {
   filter(query: string): void;
 }
 
+export type RuleOriginConfidence = "exact" | "sourcemap";
+
+export type RuleOriginState = "pending" | "stale" | "incompatible";
+
+/**
+ * Sanitized IDE-owned source provenance for one Rules row. The label is a
+ * basename and positions are 1-based; no workspace path or open authority is
+ * exposed to the renderer.
+ */
+export interface RuleOriginDecoration {
+  readonly label: string;
+  readonly languageId: "css" | "scss";
+  readonly startLine: number;
+  readonly startColumn: number;
+  readonly confidence: RuleOriginConfidence;
+  readonly clickable: boolean;
+  readonly state?: RuleOriginState;
+}
+
 export interface SourceLinkDelegate {
+  originFor(ruleRef: string): RuleOriginDecoration | undefined;
   openRuleOrigin(ruleRef: string): void;
 }

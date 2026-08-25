@@ -5,6 +5,20 @@ const MAX_SNAPSHOT_OBJECT_KEYS = 64;
 const MAX_SNAPSHOT_STRING_LENGTH = 256 * 1024;
 const invalidSnapshot = Symbol("invalidSnapshot");
 
+const defaultSnapshotLimits: SnapshotLimits = Object.freeze({
+  maxNodes: MAX_SNAPSHOT_NODES,
+  maxArrayLength: MAX_SNAPSHOT_ARRAY_LENGTH,
+});
+const rulesSourcesSnapshotLimits: SnapshotLimits = Object.freeze({
+  maxNodes: 520,
+  maxArrayLength: 256,
+});
+
+interface SnapshotLimits {
+  readonly maxNodes: number;
+  readonly maxArrayLength: number;
+}
+
 interface SafeParser<T> {
   safeParse(value: unknown):
     | { readonly success: true; readonly data: T }
@@ -15,7 +29,22 @@ export function parseProtocolData<T>(
   value: unknown,
   parser: SafeParser<T>,
 ): T | undefined {
-  const snapshot = snapshotJsonData(value, { nodes: 0 }, 0);
+  return parseProtocolDataWithLimits(value, parser, defaultSnapshotLimits);
+}
+
+export function parseRulesSourcesProtocolData<T>(
+  value: unknown,
+  parser: SafeParser<T>,
+): T | undefined {
+  return parseProtocolDataWithLimits(value, parser, rulesSourcesSnapshotLimits);
+}
+
+function parseProtocolDataWithLimits<T>(
+  value: unknown,
+  parser: SafeParser<T>,
+  limits: SnapshotLimits,
+): T | undefined {
+  const snapshot = snapshotJsonData(value, { nodes: 0 }, 0, limits);
   if (snapshot === invalidSnapshot) {
     return undefined;
   }
@@ -27,7 +56,12 @@ export function snapshotExactDataRecord(
   value: unknown,
   expectedKeys: readonly string[],
 ): Readonly<Record<string, unknown>> | undefined {
-  const snapshot = snapshotJsonData(value, { nodes: 0 }, 0);
+  const snapshot = snapshotJsonData(
+    value,
+    { nodes: 0 },
+    0,
+    defaultSnapshotLimits,
+  );
   if (
     snapshot === invalidSnapshot ||
     !snapshot ||
@@ -48,6 +82,7 @@ function snapshotJsonData(
   value: unknown,
   budget: { nodes: number },
   depth: number,
+  limits: SnapshotLimits,
 ): unknown | typeof invalidSnapshot {
   if (
     value === null ||
@@ -62,7 +97,7 @@ function snapshotJsonData(
   if (
     typeof value !== "object" ||
     depth > MAX_SNAPSHOT_DEPTH ||
-    ++budget.nodes > MAX_SNAPSHOT_NODES
+    ++budget.nodes > limits.maxNodes
   ) {
     return invalidSnapshot;
   }
@@ -82,7 +117,7 @@ function snapshotJsonData(
         !Object.hasOwn(lengthDescriptor, "value") ||
         !Number.isSafeInteger(lengthDescriptor.value) ||
         lengthDescriptor.value < 0 ||
-        lengthDescriptor.value > MAX_SNAPSHOT_ARRAY_LENGTH
+        lengthDescriptor.value > limits.maxArrayLength
       ) {
         return invalidSnapshot;
       }
@@ -101,7 +136,12 @@ function snapshotJsonData(
         ) {
           return invalidSnapshot;
         }
-        const item = snapshotJsonData(descriptor.value, budget, depth + 1);
+        const item = snapshotJsonData(
+          descriptor.value,
+          budget,
+          depth + 1,
+          limits,
+        );
         if (item === invalidSnapshot) {
           return invalidSnapshot;
         }
@@ -132,7 +172,12 @@ function snapshotJsonData(
       ) {
         return invalidSnapshot;
       }
-      const item = snapshotJsonData(descriptor.value, budget, depth + 1);
+      const item = snapshotJsonData(
+        descriptor.value,
+        budget,
+        depth + 1,
+        limits,
+      );
       if (item === invalidSnapshot) {
         return invalidSnapshot;
       }

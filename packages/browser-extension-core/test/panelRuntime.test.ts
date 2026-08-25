@@ -4141,6 +4141,7 @@ function inspectStarted(
     type: "pin-op.inspect.started" as const,
     inspectMessageId,
     selectionRevision,
+    expectedRuleRefs: [],
   };
 }
 

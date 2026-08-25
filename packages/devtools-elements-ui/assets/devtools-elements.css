@@ -376,6 +376,29 @@
   white-space: nowrap;
 }
 
+.pin-op-elements-inspector button.rule-origin {
+  appearance: none;
+  block-size: auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+  margin: 0;
+  padding-block: 0;
+  padding-inline-end: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--pin-op-elements-rules-meta);
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.pin-op-elements-inspector button.rule-origin:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: -1px;
+}
+
 .pin-op-elements-inspector .style-properties {
   display: block;
   clear: both;

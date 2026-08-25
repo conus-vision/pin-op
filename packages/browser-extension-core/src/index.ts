@@ -430,7 +430,9 @@ export {
   parseInspectPortInvalidated,
   parseInspectPortRequest,
   parseInspectPortResult,
+  parsePanelInspectStartedState,
   parsePanelPresentationSettingsCommand,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
 } from "./inspectPortProtocol.js";
 export type {
@@ -445,7 +447,9 @@ export type {
   InspectPortRequest,
   InspectPortResult,
   PanelPresentationSettingsCommand,
+  PanelInspectStartedState,
   PanelInspectPort,
+  PanelRulesOpenCommand,
   PanelSourceOpenCommand,
   PanelToBackgroundInspectPortMessage,
 } from "./inspectPortProtocol.js";
@@ -500,6 +504,12 @@ export type {
   SourcePaneGroup,
   SourcePaneViewModel,
 } from "./sourcePaneController.js";
+export { RulesSourcesController } from "./rulesSourcesController.js";
+export type {
+  RuleOrigin,
+  RulesOriginState,
+  RulesSourcesInvalidationReason,
+} from "./rulesSourcesController.js";
 export { PanelSettingsController } from "./panelSettingsController.js";
 export type {
   PanelSettingsBindingToken,

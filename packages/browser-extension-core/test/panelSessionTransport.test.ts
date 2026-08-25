@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   type PeerStateMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -416,6 +417,28 @@ describe("PanelSessionTransport", () => {
     expect(published).toEqual([{ channel: "panel-a", message: matches }]);
   });
 
+  it("publishes strict Rules sources only to the bound originating channel", () => {
+    const published: Array<{ channel: string; message: unknown }> = [];
+    const transport = new PanelSessionTransport({
+      sendTabMessage: vi.fn(),
+      postPanelMessage(channel, message) {
+        published.push({ channel, message });
+      },
+    });
+    transport.bind("panel-a", 7);
+    transport.bind("panel-b", 8);
+    const sources = rulesSources();
+
+    transport.publish("panel-a", sources);
+    transport.publish("panel-missing", sources);
+    transport.publish("panel-b", {
+      ...sources,
+      path: "/secret.scss",
+    } as unknown as RulesSourcesMessage);
+
+    expect(published).toEqual([{ channel: "panel-a", message: sources }]);
+  });
+
   it("publishes a bounded correlated inspect start only to its bound panel", () => {
     const published: Array<{ channel: string; message: unknown }> = [];
     const transport = new PanelSessionTransport({
@@ -426,16 +449,29 @@ describe("PanelSessionTransport", () => {
     });
     transport.bind("panel-a", 7);
 
-    transport.publishInspectStarted("panel-a", "inspect-1", 4);
-    transport.publishInspectStarted("panel-missing", "inspect-2", 4);
-    transport.publishInspectStarted("panel-a", "", 4);
-    transport.publishInspectStarted("panel-a", "x".repeat(129), 4);
-    transport.publishInspectStarted("panel-a", "inspect-negative", -1);
-    transport.publishInspectStarted("panel-a", "inspect-fractional", 1.5);
+    const expectedRuleRefs = ["rule-1", "rule-2"];
+    transport.publishInspectStarted("panel-a", "inspect-1", 4, expectedRuleRefs);
+    expectedRuleRefs.splice(0);
+    transport.publishInspectStarted("panel-missing", "inspect-2", 4, []);
+    transport.publishInspectStarted("panel-a", "", 4, []);
+    transport.publishInspectStarted("panel-a", "x".repeat(129), 4, []);
+    transport.publishInspectStarted("panel-a", "inspect-negative", -1, []);
+    transport.publishInspectStarted("panel-a", "inspect-fractional", 1.5, []);
     transport.publishInspectStarted(
       "panel-a",
       "inspect-unsafe",
       Number.MAX_SAFE_INTEGER + 1,
+      [],
+    );
+    transport.publishInspectStarted("panel-a", "inspect-duplicate", 5, [
+      "rule-1",
+      "rule-1",
+    ]);
+    transport.publishInspectStarted(
+      "panel-a",
+      "inspect-too-many",
+      5,
+      Array.from({ length: 257 }, (_, index) => `rule-${index}`),
     );
 
     expect(published).toEqual([{
@@ -444,8 +480,14 @@ describe("PanelSessionTransport", () => {
         type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 4,
+        expectedRuleRefs: ["rule-1", "rule-2"],
       },
     }]);
+    const started = published[0]?.message as {
+      readonly expectedRuleRefs: readonly string[];
+    };
+    expect(Object.isFrozen(started)).toBe(true);
+    expect(Object.isFrozen(started.expectedRuleRefs)).toBe(true);
   });
 
   it("bounds channels and releases them through their handles", () => {
@@ -632,6 +674,28 @@ function sourceMatches(): SourceMatchesMessage {
       truncated: false,
     }],
     omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function rulesSources(): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: "rules-sources-1",
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId: "inspect-1",
+    rulesGeneration: 1,
+    sources: [{
+      ruleRef: "rule-1",
+      openAuthorityId: "authority-1",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
     metadata: {},
   };
 }

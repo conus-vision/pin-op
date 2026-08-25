@@ -15,6 +15,7 @@ import {
 import { isValidDevtoolsChannel } from "./inspectPortProtocol.js";
 import {
   parseProtocolData,
+  parseRulesSourcesProtocolData,
   snapshotExactDataRecord,
 } from "./protocolDataSnapshot.js";
 import {
@@ -100,6 +101,12 @@ export interface RulesOpenAuthority {
   readonly windowId: number;
   readonly context: TrustedIdePeerContext;
   readonly [rulesOpenAuthorityRevision]: bigint;
+}
+
+export interface PreparedRulesSources {
+  readonly channel: string;
+  commit(): boolean;
+  rollback(): void;
 }
 
 export class InspectCorrelationStore {
@@ -228,10 +235,21 @@ export class InspectCorrelationStore {
     message: RulesSourcesMessage,
     peerContext: TrustedIdePeerContext,
   ): string | undefined {
+    const prepared = this.prepareRulesSources(message, peerContext);
+    return prepared?.commit() ? prepared.channel : undefined;
+  }
+
+  public prepareRulesSources(
+    message: RulesSourcesMessage,
+    peerContext: TrustedIdePeerContext,
+  ): PreparedRulesSources | undefined {
     if (!isTrustedIdePeerContext(peerContext)) {
       return undefined;
     }
-    const parsed = parseProtocolData(message, RulesSourcesMessageSchema);
+    const parsed = parseRulesSourcesProtocolData(
+      message,
+      RulesSourcesMessageSchema,
+    );
     if (!parsed) {
       return undefined;
     }
@@ -251,17 +269,44 @@ export class InspectCorrelationStore {
       return undefined;
     }
 
-    correlation.sessionId = peerContext.sessionId;
-    correlation.sourceId = peerContext.source.id;
-    correlation.rulesGeneration = parsed.rulesGeneration;
-    correlation.rulesPeerContext = peerContext;
-    correlation.ruleOpenAuthorityIds = new Set(
-      parsed.sources.map(({ openAuthorityId }) => openAuthorityId),
-    );
-    correlation.rulesAuthorityRevision = this.nextAuthorityRevision();
-    this.correlations.delete(parsed.inspectMessageId);
-    this.correlations.set(parsed.inspectMessageId, correlation);
-    return correlation.channel;
+    const previousRulesGeneration = correlation.rulesGeneration;
+    const previousRulesAuthorityRevision = correlation.rulesAuthorityRevision;
+    let pending = true;
+    return Object.freeze({
+      channel: correlation.channel,
+      commit: () => {
+        if (!pending) return false;
+        pending = false;
+        const current = this.correlations.get(parsed.inspectMessageId);
+        if (
+          current !== correlation ||
+          correlation.rulesGeneration !== previousRulesGeneration ||
+          correlation.rulesAuthorityRevision !==
+            previousRulesAuthorityRevision ||
+          correlation.windowId !== peerContext.windowId ||
+          !payloadMatchesPeer(parsed, peerContext) ||
+          (correlation.sourceId !== undefined &&
+            (correlation.sourceId !== peerContext.source.id ||
+              correlation.sessionId !== peerContext.sessionId))
+        ) {
+          return false;
+        }
+        correlation.sessionId = peerContext.sessionId;
+        correlation.sourceId = peerContext.source.id;
+        correlation.rulesGeneration = parsed.rulesGeneration;
+        correlation.rulesPeerContext = peerContext;
+        correlation.ruleOpenAuthorityIds = new Set(
+          parsed.sources.map(({ openAuthorityId }) => openAuthorityId),
+        );
+        correlation.rulesAuthorityRevision = this.nextAuthorityRevision();
+        this.correlations.delete(parsed.inspectMessageId);
+        this.correlations.set(parsed.inspectMessageId, correlation);
+        return true;
+      },
+      rollback: () => {
+        pending = false;
+      },
+    });
   }
 
   public acceptNavigationState(

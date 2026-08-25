@@ -2,11 +2,13 @@ import {
   ClientSourceSchema,
   InspectMessageSchema,
   PROTOCOL_VERSION,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   type ClientSource,
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
@@ -17,6 +19,7 @@ import {
   type InspectPayload,
   type InspectSendOutcome,
   type PresentationSettingsInput,
+  type RulesOpenInput,
   type SourceOpenInput,
   type SourceNavigationSendOutcome,
   type SourcePresentationSendOutcome,
@@ -38,9 +41,13 @@ import {
 import {
   InspectCorrelationStore,
   type PresentationSettingsAuthority,
+  type RulesOpenAuthority,
   type SourceOpenAuthority,
 } from "./inspectCorrelationStore.js";
-import { parseProtocolData } from "./protocolDataSnapshot.js";
+import {
+  parseProtocolData,
+  parseRulesSourcesProtocolData,
+} from "./protocolDataSnapshot.js";
 import {
   isTrustedIdePeerContext,
   type TrustedIdePeerContext,
@@ -57,6 +64,7 @@ import {
   parseDevtoolsPanelPortName,
   parseInspectPortRequest,
   parsePanelPresentationSettingsCommand,
+  parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
@@ -64,6 +72,7 @@ import {
   type InspectRepublishRequest,
   type PanelInspectPort,
   type PanelPresentationSettingsCommand,
+  type PanelRulesOpenCommand,
   type PanelSourceOpenCommand,
   type PanelSourceNavigateCommand,
 } from "./inspectPortProtocol.js";
@@ -133,6 +142,10 @@ export interface BackgroundWindowCoordinator {
   publishSourceOpen(
     context: TrustedIdePeerContext,
     input: SourceOpenInput,
+  ): SourcePresentationSendOutcome;
+  publishRulesOpen(
+    context: TrustedIdePeerContext,
+    input: RulesOpenInput,
   ): SourcePresentationSendOutcome;
   publishPresentationSettings(
     context: TrustedIdePeerContext,
@@ -245,6 +258,12 @@ export interface BackgroundRouterOptions {
     listener: (
       peerContext: TrustedIdePeerContext,
       message: SourceMatchesMessage,
+    ) => void,
+  ) => () => void;
+  readonly subscribeRulesSources?: (
+    listener: (
+      peerContext: TrustedIdePeerContext,
+      message: RulesSourcesMessage,
     ) => void,
   ) => () => void;
   readonly subscribePageRefreshes?: (
@@ -501,6 +520,13 @@ export class BackgroundRouter {
         ),
       );
     }
+    if (options.subscribeRulesSources) {
+      this.removeSubscriptions.push(
+        options.subscribeRulesSources((peerContext, message) =>
+          this.receiveRulesSources(peerContext, message),
+        ),
+      );
+    }
     if (options.subscribeProtocolMismatches) {
       this.removeSubscriptions.push(
         options.subscribeProtocolMismatches((windowId) =>
@@ -549,7 +575,6 @@ export class BackgroundRouter {
         sender,
       );
     }
-
     const stylesEvent = parseContentStylesEventMessage(message);
     if (stylesEvent) {
       return this.publishContentStylesEvent(
@@ -2188,6 +2213,11 @@ export class BackgroundRouter {
     }
     const request = parseInspectPortRequest(message);
     if (!request) {
+      const rulesOpen = parsePanelRulesOpenCommand(message);
+      if (rulesOpen) {
+        this.publishRulesOpen(record, activationToken, rulesOpen);
+        return;
+      }
       const sourceOpen = parsePanelSourceOpenCommand(message);
       if (sourceOpen) {
         this.publishSourceOpen(record, activationToken, sourceOpen);
@@ -2496,6 +2526,104 @@ export class BackgroundRouter {
     record.inspectCommandTail = operation.catch((error) => {
       this.reportError(error);
     });
+  }
+
+  private publishRulesOpen(
+    record: PanelPortRecord,
+    activationToken: object,
+    command: PanelRulesOpenCommand,
+  ): void {
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (
+        !binding ||
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return;
+      }
+      const authority = this.correlations.authorizeRulesOpen({
+        channel: record.channel,
+        tabId: binding.tabId,
+        windowId: binding.windowId,
+        inspectMessageId: command.inspectMessageId,
+        rulesGeneration: command.rulesGeneration,
+        openAuthorityId: command.openAuthorityId,
+      });
+      if (!authority) return;
+
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      const currentAuthority = this.correlations.authorizeRulesOpen({
+        channel: record.channel,
+        tabId: binding.tabId,
+        windowId: binding.windowId,
+        inspectMessageId: command.inspectMessageId,
+        rulesGeneration: command.rulesGeneration,
+        openAuthorityId: command.openAuthorityId,
+      });
+      if (
+        refreshed !== binding ||
+        !record.registration ||
+        !currentAuthority ||
+        currentAuthority.context !== authority.context ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return;
+      }
+
+      let outcome: SourcePresentationSendOutcome;
+      try {
+        outcome = this.coordinator.publishRulesOpen(authority.context, {
+          inspectMessageId: command.inspectMessageId,
+          rulesGeneration: command.rulesGeneration,
+          openAuthorityId: command.openAuthorityId,
+        });
+      } catch (error) {
+        this.reportError(error);
+        outcome = "transport-error";
+      }
+      await this.finishRulesOpen(
+        record,
+        activationToken,
+        binding,
+        authority,
+        outcome,
+      );
+    });
+    record.inspectCommandTail = operation.catch((error) => {
+      this.reportError(error);
+    });
+  }
+
+  private async finishRulesOpen(
+    record: PanelPortRecord,
+    activationToken: object,
+    binding: ChannelBinding,
+    authority: RulesOpenAuthority,
+    outcome: SourcePresentationSendOutcome,
+  ): Promise<void> {
+    const postflight = await this.refreshPanelBinding(
+      binding,
+      record,
+      activationToken,
+    );
+    if (
+      postflight !== binding ||
+      !record.registration ||
+      !this.isCurrentActivation(record, activationToken, binding) ||
+      outcome === "sent" ||
+      !this.correlations.discardRulesOpenAuthority(authority)
+    ) {
+      return;
+    }
+    this.panelSessions.publishIdeDisconnected(
+      record.channel,
+      authority.inspectMessageId,
+    );
   }
 
   private publishPresentationSettings(
@@ -3052,10 +3180,15 @@ export class BackgroundRouter {
         refreshed.windowId,
         inspectPayload.ruleEvidence,
       );
+      const route = this.correlations.routeForInspect(inspectMessageId);
+      if (!route) {
+        throw new Error("Inspect correlation was not recorded");
+      }
       this.panelSessions.publishInspectStarted(
         refreshed.channel,
         inspectMessageId,
         selectionRevision,
+        [...route.expectedRuleRefs],
       );
     } catch (error) {
       this.reportError(error);
@@ -3653,6 +3786,48 @@ export class BackgroundRouter {
     this.panelSessions.publish(channel, parsed);
   }
 
+  private receiveRulesSources(
+    peerContext: TrustedIdePeerContext,
+    message: RulesSourcesMessage,
+  ): void {
+    if (this.disposed || !isTrustedIdePeerContext(peerContext)) return;
+    const parsed = parseRulesSourcesProtocolData(
+      message,
+      RulesSourcesMessageSchema,
+    );
+    if (!parsed) return;
+    const route = this.correlations.routeForInspect(parsed.inspectMessageId);
+    if (!route) return;
+    const binding = this.bindings.get(route.channel);
+    const record = this.panelPorts.get(route.channel);
+    const token = record?.activationToken;
+    if (
+      !binding ||
+      !record ||
+      !token ||
+      !record.registration ||
+      !record.inspectSession ||
+      !record.panelSessionBinding ||
+      record.inspectTabId !== route.tabId ||
+      record.inspectWindowId !== route.windowId ||
+      binding.tabId !== route.tabId ||
+      binding.windowId !== route.windowId ||
+      peerContext.windowId !== route.windowId ||
+      isProtocolIncompatible(record) ||
+      !maintainsInspectionSession(record.lastWindowState) ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
+      return;
+    }
+    const prepared = this.correlations.prepareRulesSources(parsed, peerContext);
+    if (!prepared || prepared.channel !== route.channel) return;
+    if (!this.panelSessions.publish(prepared.channel, parsed)) {
+      prepared.rollback();
+      return;
+    }
+    prepared.commit();
+  }
+
   private receivePeerState(
     windowId: number,
     message: PeerStateMessage,
@@ -3745,27 +3920,29 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     token: object,
     message: unknown,
-  ): void {
+  ): boolean {
     if (
       this.panelPorts.get(record.channel) !== record ||
       record.activationToken !== token
     ) {
-      return;
+      return false;
     }
     try {
       record.port.postMessage(message);
+      return true;
     } catch {
       // A disappearing panel is finalized by its disconnect event.
+      return false;
     }
   }
 
-  private postToActiveChannel(channel: string, message: unknown): void {
+  private postToActiveChannel(channel: string, message: unknown): boolean {
     const record = this.panelPorts.get(channel);
     const token = record?.activationToken;
     if (!record || !token) {
-      return;
+      return false;
     }
-    this.postToCurrentPort(record, token, message);
+    return this.postToCurrentPort(record, token, message);
   }
 
   private isCurrentPending(pending: PendingRegistration): boolean {

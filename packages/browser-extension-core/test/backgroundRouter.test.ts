@@ -16,6 +16,7 @@ import {
   type InspectPayload,
   type InspectSendOutcome,
   type PresentationSettingsInput,
+  type RulesOpenInput,
   type SourceOpenInput,
   type SourceNavigationSendOutcome,
   type SourcePresentationSendOutcome,
@@ -2671,6 +2672,7 @@ describe("BackgroundRouter", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 1,
+      expectedRuleRefs: [],
     });
     expect(harness.coordinator.published[0]).toEqual({
       windowId: 10,
@@ -2712,6 +2714,7 @@ describe("BackgroundRouter", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "inspect-1",
       selectionRevision: 4,
+      expectedRuleRefs: [],
     }]);
     expect(harness.coordinator.published).toHaveLength(1);
   });
@@ -2757,11 +2760,13 @@ describe("BackgroundRouter", () => {
         type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 1,
+        expectedRuleRefs: [],
       },
       {
         type: "pin-op.inspect.started",
         inspectMessageId: "inspect-2",
         selectionRevision: 1,
+        expectedRuleRefs: [],
       },
       {
         type: "pin-op.ideState",
@@ -2803,11 +2808,13 @@ describe("BackgroundRouter", () => {
         type: "pin-op.inspect.started",
         inspectMessageId: "inspect-1",
         selectionRevision: 1,
+        expectedRuleRefs: [],
       },
       {
         type: "pin-op.inspect.started",
         inspectMessageId: "inspect-2",
         selectionRevision: 1,
+        expectedRuleRefs: [],
       },
     ]);
     expect(messagesOfType(panel, "resolution")).toEqual([
@@ -4500,6 +4507,177 @@ describe("BackgroundRouter", () => {
       publishToPanel.mock.invocationCallOrder[0] as number,
     );
     expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+  });
+
+  it("routes one complete Rules publication to the exact inspect panel using immutable expected refs", async () => {
+    const correlations = new InspectCorrelationStore();
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-route");
+    const payload = rulesInspectPayload();
+
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-route", payload),
+      contentSender(17, 10),
+    );
+    (payload.ruleEvidence.rules as Array<{ ruleRef: string }>).splice(0);
+
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([{
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-1",
+      selectionRevision: 1,
+      expectedRuleRefs: ["rule-a"],
+    }]);
+
+    const context = trustedIdePeer();
+    const complete = rulesSourcesMessage("inspect-1", 1);
+    harness.rulesSources.emit(
+      createTransportTrustedIdePeerContext(20, "session-a", "vscode-a"),
+      complete,
+    );
+    harness.rulesSources.emit(context, {
+      ...complete,
+      sources: [],
+      unresolvedRuleCount: 0,
+    });
+    expect(messagesOfType(panel, "rules.sources")).toEqual([]);
+
+    harness.rulesSources.emit(context, complete);
+    expect(messagesOfType(panel, "rules.sources")).toEqual([complete]);
+  });
+
+  it("authorizes repeat Rules opens only for the current panel, generation, and IDE", async () => {
+    const correlations = new InspectCorrelationStore();
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-open");
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-open", rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    const context = trustedIdePeer();
+    harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+    const open = {
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    } as const;
+
+    panel.emitMessage(open);
+    panel.emitMessage(open);
+    panel.emitMessage({ ...open, openAuthorityId: "foreign-authority" });
+    panel.emitMessage({ ...open, rulesGeneration: 2 });
+    await vi.waitFor(() => expect(harness.coordinator.rulesOpens).toHaveLength(2));
+
+    const input = {
+      inspectMessageId: open.inspectMessageId,
+      rulesGeneration: open.rulesGeneration,
+      openAuthorityId: open.openAuthorityId,
+    };
+    expect(harness.coordinator.rulesOpens).toEqual([
+      { context, input },
+      { context, input },
+    ]);
+  });
+
+  it("does not let an old Rules open failure discard a newer accepted generation", async () => {
+    const correlations = new InspectCorrelationStore();
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-race");
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-race", rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    const context = trustedIdePeer();
+    harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+    harness.coordinator.rulesOpenOutcome = "not-connected";
+    harness.coordinator.onRulesOpen = () => {
+      harness.rulesSources.emit(context, {
+        ...rulesSourcesMessage("inspect-1", 2),
+        sources: [{
+          ...rulesSourcesMessage("inspect-1", 2).sources[0]!,
+          openAuthorityId: "open-rule-new",
+        }],
+      });
+    };
+
+    panel.emitMessage({
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    });
+    await vi.waitFor(() => expect(harness.coordinator.rulesOpens).toHaveLength(1));
+    await flushMicrotasks();
+
+    expect(correlations.authorizeRulesOpen({
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+      openAuthorityId: "open-rule-new",
+    })).toBeDefined();
+    expect(messagesOfType(panel, "pin-op.ideState")).toEqual([]);
+    expect(messagesOfType(panel, "rules.sources").at(-1)).toMatchObject({
+      rulesGeneration: 2,
+    });
+  });
+
+  it("retains the prior Rules authority when the new publication cannot reach its panel", async () => {
+    const correlations = new InspectCorrelationStore();
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await harness.attachContentSession(17, "content-rules-delivery");
+    await harness.router.routeMessage(
+      selectedMessage("content-rules-delivery", rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    const context = trustedIdePeer();
+    harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+    const prior = {
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    } as const;
+    expect(correlations.authorizeRulesOpen(prior)).toBeDefined();
+
+    panel.disconnected = true;
+    harness.rulesSources.emit(context, {
+      ...rulesSourcesMessage("inspect-1", 2),
+      sources: [{
+        ...rulesSourcesMessage("inspect-1", 2).sources[0]!,
+        openAuthorityId: "open-rule-new",
+      }],
+    });
+
+    expect(correlations.authorizeRulesOpen(prior)).toBeDefined();
+    expect(correlations.authorizeRulesOpen({
+      ...prior,
+      rulesGeneration: 2,
+      openAuthorityId: "open-rule-new",
+    })).toBeUndefined();
   });
 
   it("rejects stale stylesheet invalidation after a renewed inspect", async () => {
@@ -7623,6 +7801,12 @@ function createHarness(options: HarnessOptions = {}) {
       message: SourceMatchesMessage,
     ) => void
   >();
+  const rulesSources = new FakeEvent<
+    (
+      context: TrustedIdePeerContext,
+      message: RulesSourcesMessage,
+    ) => void
+  >();
   const pageRefreshes = new FakeEvent<
     (windowId: number, message: PageRefreshMessage) => void
   >();
@@ -7658,6 +7842,7 @@ function createHarness(options: HarnessOptions = {}) {
     peerStates,
     sourceNavigationStates,
     sourceMatches,
+    rulesSources,
     pageRefreshes,
     protocolMismatches,
     tabRefresh,
@@ -7752,6 +7937,10 @@ function createHarness(options: HarnessOptions = {}) {
       sourceMatches.addListener(listener);
       return () => sourceMatches.removeListener(listener);
     },
+    subscribeRulesSources: (listener) => {
+      rulesSources.addListener(listener);
+      return () => rulesSources.removeListener(listener);
+    },
     subscribePageRefreshes: (listener) => {
       pageRefreshes.addListener(listener);
       return () => pageRefreshes.removeListener(listener);
@@ -7820,6 +8009,11 @@ interface PublishedSourceOpen {
   readonly input: SourceOpenInput;
 }
 
+interface PublishedRulesOpen {
+  readonly context: TrustedIdePeerContext;
+  readonly input: RulesOpenInput;
+}
+
 interface PublishedPresentationSettings {
   readonly context: TrustedIdePeerContext;
   readonly input: PresentationSettingsInput;
@@ -7830,6 +8024,7 @@ class FakeWindowCoordinator {
   public readonly published: PublishedInspect[] = [];
   public readonly sourceNavigations: PublishedSourceNavigation[] = [];
   public readonly sourceOpens: PublishedSourceOpen[] = [];
+  public readonly rulesOpens: PublishedRulesOpen[] = [];
   public readonly presentationSettings: PublishedPresentationSettings[] = [];
   public readonly removedWindows: number[] = [];
   public readonly links: Array<{
@@ -7842,12 +8037,15 @@ class FakeWindowCoordinator {
   public publishOutcome: InspectSendOutcome = "sent";
   public sourceNavigationOutcome: SourceNavigationSendOutcome = "sent";
   public sourceOpenOutcome: SourcePresentationSendOutcome = "sent";
+  public rulesOpenOutcome: SourcePresentationSendOutcome = "sent";
   public presentationSettingsOutcome: SourcePresentationSendOutcome = "sent";
   public throwOnSourceOpen = false;
+  public throwOnRulesOpen = false;
   public throwOnPresentationSettings = false;
   public readonly refreshParticipants: Array<[number, number, boolean]> = [];
   public onPublish?: (publication: PublishedInspect) => void;
   public onSourceOpen?: (publication: PublishedSourceOpen) => void;
+  public onRulesOpen?: (publication: PublishedRulesOpen) => void;
   public onPresentationSettings?: (
     publication: PublishedPresentationSettings,
   ) => void;
@@ -7946,6 +8144,19 @@ class FakeWindowCoordinator {
       throw new Error("source open failed");
     }
     return this.sourceOpenOutcome;
+  }
+
+  public publishRulesOpen(
+    context: TrustedIdePeerContext,
+    input: RulesOpenInput,
+  ): SourcePresentationSendOutcome {
+    const publication = { context, input: { ...input } };
+    this.rulesOpens.push(publication);
+    this.onRulesOpen?.(publication);
+    if (this.throwOnRulesOpen) {
+      throw new Error("Rules open failed");
+    }
+    return this.rulesOpenOutcome;
   }
 
   public publishPresentationSettings(

@@ -85,7 +85,7 @@
         {
           "path": "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
           "changeRecord": "PIN_OP_CHANGES.md#rules",
-          "localSha256": "258c5a029b5135eb94fdbc8d24ad1fbbaa1e84ae843fa28045b860d91755cc9d"
+          "localSha256": "2a23013161ed18920997793023f25a8fca5947bc036fcdf9310cf5da47e0c91f"
         }
       ]
     },
@@ -153,7 +153,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054"
+          "localSha256": "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b"
         }
       ]
     },
@@ -170,7 +170,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054"
+          "localSha256": "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b"
         }
       ]
     },
@@ -187,7 +187,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "54136470be6987ad2bc0a357b4b0396c9428c06dc2e0015809454b1903c5f054"
+          "localSha256": "3fe4293d542dfbd4ce02a0cd9e1f41c8b0887d3a04e36acbbb0658ec6a4cc32b"
         }
       ]
     }

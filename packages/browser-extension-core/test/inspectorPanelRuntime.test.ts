@@ -146,6 +146,142 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("publishes exact IDE rule origins without coupling them to Source navigation", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-rules",
+      selectionRevision: 4,
+      expectedRuleRefs: ["rule-card"],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const response = stylesMatched(request, 9, 2);
+    port.emitMessage({
+      ...response,
+      styles: {
+        ...response.styles,
+        rules: [{
+          ...matchedRule("rule-card", ".selected-card"),
+          source: {
+            sourceUrl: "https://example.test/app.css",
+            startLine: 17,
+            startColumn: 5,
+            endLine: 18,
+            endColumn: 2,
+            rulePath: "0.3",
+          },
+        }],
+      },
+    });
+    await flushAsync();
+
+    const generated = harness.document.querySelector(
+      '[data-rule-origin="rule-card"]',
+    );
+    expect(generated?.tagName).toBe("SPAN");
+    expect(generated?.textContent).toBe("app.css:17:5");
+
+    port.emitMessage(rulesSources("inspect-rules", 1, "rule-card"));
+    await flushAsync();
+    const exact = harness.document.querySelector(
+      '[data-rule-origin="rule-card"]',
+    );
+    expect(exact?.tagName).toBe("BUTTON");
+    expect(exact?.textContent).toBe("card.scss:41");
+    exact?.dispatch("click");
+    expect(lastMessage(port.sent, "pin-op.rules.open")).toEqual({
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-rules",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-card",
+    });
+
+    port.emitMessage({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.navigate",
+      messageId: "navigate-unrelated",
+      sessionId: "session-a",
+      source: { role: "ide", id: "vscode-a" },
+      inspectMessageId: "inspect-rules",
+      resolutionGeneration: 1,
+      matchId: "match-unrelated",
+      metadata: {},
+    });
+    await flushAsync();
+    expect(harness.document.querySelector('[data-rule-origin="rule-card"]')
+      ?.tagName).toBe("BUTTON");
+
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 6,
+      stylesRevision: 10,
+      stylesheetRevision: 3,
+    });
+    const invalidated = harness.document.querySelector(
+      '[data-rule-origin="rule-card"]',
+    );
+    expect(invalidated?.tagName).toBe("SPAN");
+    expect(invalidated?.textContent).toBe("app.css:17:5");
+    expect(invalidated?.getAttribute("data-source-link-status")).toBe("stale");
+
+    runtime.dispose();
+  });
+
+  it("keeps a new inspect pending through its correlated selection after an older document", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    port.emitMessage(selection("old-card", 5, 3));
+    await flushAsync();
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-new-document",
+      selectionRevision: 4,
+      expectedRuleRefs: ["rule-card"],
+    });
+    expect(runtime.rulesSourcesController.status()).toBe("pending");
+
+    port.emitMessage(selection("new-card", 6, 4));
+    await flushAsync();
+    expect(runtime.rulesSourcesController.status()).toBe("pending");
+
+    port.emitMessage(rulesSources("inspect-new-document", 1, "rule-card"));
+    await flushAsync();
+    expect(runtime.rulesSourcesController.status()).toBe("ready");
+
+    runtime.dispose();
+  });
+
   it("manually refreshes the current browser-local Rules query and exposes its revision probe", async () => {
     const harness = createHarness();
     const runtime = harness.start();
@@ -934,6 +1070,7 @@ describe("startInspectorPanelRuntime", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "blocked-after-window-state-reentry",
       selectionRevision: 1,
+      expectedRuleRefs: [],
     });
     await flushAsync();
     expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
@@ -1064,6 +1201,7 @@ describe("startInspectorPanelRuntime", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "stale-after-revoke",
       selectionRevision: 1,
+      expectedRuleRefs: [],
     });
     await flushAsync();
 
@@ -1367,6 +1505,7 @@ describe("startInspectorPanelRuntime", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "blocked-after-binding-loss",
       selectionRevision: 1,
+      expectedRuleRefs: [],
     });
     await flushAsync();
 
@@ -1423,6 +1562,7 @@ describe("startInspectorPanelRuntime", () => {
       type: "pin-op.inspect.started",
       inspectMessageId: "blocked-after-tab-binding-loss",
       selectionRevision: 1,
+      expectedRuleRefs: [],
     });
     await flushAsync();
 
@@ -1835,5 +1975,31 @@ function matchedRule(ruleRef: string, selectorText: string) {
       reason: "highest-precedence-known-author-declaration" as const,
     }],
     contexts: [],
+  };
+}
+
+function rulesSources(
+  inspectMessageId: string,
+  rulesGeneration: number,
+  ruleRef: string,
+) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources" as const,
+    messageId: `rules-sources-${rulesGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide" as const, id: "vscode-a" },
+    inspectMessageId,
+    rulesGeneration,
+    sources: [{
+      ruleRef,
+      openAuthorityId: "authority-card",
+      document: { label: "card.scss", languageId: "scss" as const },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap" as const,
+    }],
+    unresolvedRuleCount: 0,
+    metadata: {},
   };
 }

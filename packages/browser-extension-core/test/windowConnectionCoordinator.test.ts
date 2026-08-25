@@ -5,6 +5,8 @@ import {
   type PeerStateMessage,
   type PresentationSettingsMessage,
   type ResolutionMessage,
+  type RuleSourceOpenMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
@@ -1457,6 +1459,106 @@ describe("WindowConnectionCoordinator", () => {
     ]);
   });
 
+  it("forwards Rules sources only from the current authenticated IDE transport", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const received: Array<[TrustedIdePeerContext, RulesSourcesMessage]> = [];
+    harness.coordinator.onRulesSources((context, message) => {
+      received.push([context, message]);
+    });
+    const first = await harness.link(10, "4873507");
+    await harness.authenticate(first, windowLink());
+    const context = trustedIdePeer();
+    const current = rulesSources("inspect-current", 1);
+    const staleCallback = first.captureRulesSourcesListener();
+
+    first.emitRulesSources(
+      createTransportTrustedIdePeerContext(20, "session-a", "vscode-a"),
+      current,
+    );
+    first.emitRulesSources(context, {
+      ...current,
+      source: { role: "ide", id: "vscode-b" },
+    } as RulesSourcesMessage);
+    expect(received).toEqual([]);
+
+    first.emitRulesSources(context, current);
+    expect(received).toEqual([[context, current]]);
+
+    const replacement = await harness.link(10, "4873508");
+    await harness.authenticate(replacement, windowLink());
+    staleCallback(context, rulesSources("inspect-stale", 2));
+    const replacementContext = trustedIdePeer();
+    const replacementMessage = rulesSources("inspect-replacement", 1);
+    replacement.emitRulesSources(replacementContext, replacementMessage);
+    expect(received).toEqual([
+      [context, current],
+      [replacementContext, replacementMessage],
+    ]);
+  });
+
+  it("publishes opaque Rules opens only through the pinned current IDE authority", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const context = trustedIdePeer();
+    client.emitRulesSources(context, rulesSources("inspect-current", 1));
+    const open = {
+      inspectMessageId: "inspect-current",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-current",
+    } as const;
+
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+    expect(client.rulesOpenCalls).toEqual([open, open]);
+
+    for (const rejectedContext of [
+      trustedIdePeer(),
+      createTransportTrustedIdePeerContext(20, "session-a", "vscode-a"),
+      createTransportTrustedIdePeerContext(10, "other-session", "vscode-a"),
+      createTransportTrustedIdePeerContext(10, "session-a", "vscode-b"),
+    ]) {
+      expect(harness.coordinator.publishRulesOpen(rejectedContext, open))
+        .toBe("not-connected");
+    }
+    expect(harness.coordinator.publishRulesOpen(context, {
+      ...open,
+      path: "C:\\secret.scss",
+    } as never)).toBe("invalid-message");
+    expect(client.rulesOpenCalls).toEqual([open, open]);
+  });
+
+  it("fails a reentrant Rules open postflight when its client authority is replaced", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const context = trustedIdePeer();
+    client.emitRulesSources(context, rulesSources("inspect-current", 1));
+    client.onRulesOpenSend = () => client.emitState("disconnected");
+
+    expect(harness.coordinator.publishRulesOpen(context, {
+      inspectMessageId: "inspect-current",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-current",
+    })).toBe("not-connected");
+    expect(harness.coordinator.state(10)).toBe("reconnecting");
+  });
+
   it("publishes exact source presentation commands only for current IDE authority", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
@@ -1975,6 +2077,12 @@ class FakeWindowClient {
       "inspectMessageId" | "resolutionGeneration" | "matchId"
     >
   > = [];
+  public readonly rulesOpenCalls: Array<
+    Pick<
+      RuleSourceOpenMessage,
+      "inspectMessageId" | "rulesGeneration" | "openAuthorityId"
+    >
+  > = [];
   public readonly presentationSettingsCalls: Array<
     Pick<
       PresentationSettingsMessage,
@@ -1986,9 +2094,12 @@ class FakeWindowClient {
   public inspectResult: InspectSendOutcome = "sent";
   public sourceNavigationResult: SourceNavigationSendOutcome = "sent";
   public sourceOpenResult: InspectSendOutcome = "sent";
+  public rulesOpenResult: InspectSendOutcome = "sent";
   public presentationSettingsResult: InspectSendOutcome = "sent";
   public throwOnSourceNavigation = false;
   public throwOnSourceOpen = false;
+  public throwOnRulesOpen = false;
+  public onRulesOpenSend: (() => void) | undefined;
   public throwOnPresentationSettings = false;
   public throwOnPeerStateSubscription = false;
   private readonly resolutionListeners = new Set<
@@ -2007,6 +2118,12 @@ class FakeWindowClient {
     (
       context: TrustedIdePeerContext,
       message: SourceMatchesMessage,
+    ) => void
+  >();
+  private readonly rulesSourcesListeners = new Set<
+    (
+      context: TrustedIdePeerContext,
+      message: RulesSourcesMessage,
     ) => void
   >();
   private readonly pageRefreshListeners = new Set<
@@ -2072,6 +2189,20 @@ class FakeWindowClient {
       throw new Error("source open send failed");
     }
     return this.sourceOpenResult;
+  }
+
+  public sendRulesOpen(
+    input: Pick<
+      RuleSourceOpenMessage,
+      "inspectMessageId" | "rulesGeneration" | "openAuthorityId"
+    >,
+  ): InspectSendOutcome {
+    this.rulesOpenCalls.push({ ...input });
+    this.onRulesOpenSend?.();
+    if (this.throwOnRulesOpen) {
+      throw new Error("Rules open send failed");
+    }
+    return this.rulesOpenResult;
   }
 
   public sendPresentationSettings(
@@ -2140,6 +2271,18 @@ class FakeWindowClient {
     };
   }
 
+  public onRulesSources(
+    listener: (
+      context: TrustedIdePeerContext,
+      message: RulesSourcesMessage,
+    ) => void,
+  ) {
+    this.rulesSourcesListeners.add(listener);
+    return {
+      dispose: () => this.rulesSourcesListeners.delete(listener),
+    };
+  }
+
   public onProtocolMismatch(
     listener: (details: BrowserProtocolMismatch) => void,
   ) {
@@ -2190,6 +2333,29 @@ class FakeWindowClient {
     for (const listener of this.sourceMatchesListeners) {
       listener(context, message);
     }
+  }
+
+  public emitRulesSources(
+    context: TrustedIdePeerContext,
+    message: RulesSourcesMessage,
+  ): void {
+    for (const listener of this.rulesSourcesListeners) {
+      listener(context, message);
+    }
+  }
+
+  public captureRulesSourcesListener(): (
+    context: TrustedIdePeerContext,
+    message: RulesSourcesMessage,
+  ) => void {
+    const listener = this.rulesSourcesListeners.values().next().value as
+      | ((
+        context: TrustedIdePeerContext,
+        message: RulesSourcesMessage,
+      ) => void)
+      | undefined;
+    if (!listener) throw new Error("Expected a Rules sources listener");
+    return listener;
   }
 
   public captureSourceMatchesListener(): (
@@ -2688,6 +2854,31 @@ function sourceMatches(
       truncated: false,
     }],
     omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function rulesSources(
+  inspectMessageId: string,
+  rulesGeneration: number,
+): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: `rules-sources-${inspectMessageId}-${rulesGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    rulesGeneration,
+    sources: [{
+      ruleRef: "rule-current",
+      openAuthorityId: "authority-current",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
     metadata: {},
   };
 }

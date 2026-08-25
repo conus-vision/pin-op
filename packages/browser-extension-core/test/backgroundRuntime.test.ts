@@ -4,12 +4,14 @@ import {
   type PageRefreshMessage,
   type PeerStateMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
 } from "@pin-op/protocol";
 import { startBackgroundRuntime } from "../src/backgroundRuntime.js";
 import type {
   BrowserProtocolMismatch,
   InspectPayload,
+  RulesOpenInput,
   SourceOpenInput,
 } from "../src/bridgeClient.js";
 import type {
@@ -41,6 +43,7 @@ describe("startBackgroundRuntime", () => {
     const stateDispose = vi.fn();
     const peerStateDispose = vi.fn();
     const sourceMatchesDispose = vi.fn();
+    const rulesSourcesDispose = vi.fn();
     const sourceNavigationStateDispose = vi.fn();
     const pageRefreshDispose = vi.fn();
     const protocolMismatchDispose = vi.fn();
@@ -55,6 +58,12 @@ describe("startBackgroundRuntime", () => {
       | ((
         context: TrustedIdePeerContext,
         message: SourceMatchesMessage,
+      ) => void)
+      | undefined;
+    let rulesSourcesListener:
+      | ((
+        context: TrustedIdePeerContext,
+        message: RulesSourcesMessage,
       ) => void)
       | undefined;
     let panelRegistration: PanelRegistration | undefined;
@@ -80,6 +89,10 @@ describe("startBackgroundRuntime", () => {
         _context: TrustedIdePeerContext,
         _input: SourceOpenInput,
       ) => "sent" as const),
+      publishRulesOpen: vi.fn((
+        _context: TrustedIdePeerContext,
+        _input: RulesOpenInput,
+      ) => "sent" as const),
       publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
@@ -93,6 +106,10 @@ describe("startBackgroundRuntime", () => {
       onSourceMatches: vi.fn((listener) => {
         sourceMatchesListener = listener;
         return { dispose: sourceMatchesDispose };
+      }),
+      onRulesSources: vi.fn((listener) => {
+        rulesSourcesListener = listener;
+        return { dispose: rulesSourcesDispose };
       }),
       onSourceNavigationState: vi.fn(() => ({
         dispose: sourceNavigationStateDispose,
@@ -121,6 +138,7 @@ describe("startBackgroundRuntime", () => {
     expect(coordinator.onStateChanged).toHaveBeenCalledOnce();
     expect(coordinator.onPeerState).toHaveBeenCalledTimes(2);
     expect(coordinator.onSourceMatches).toHaveBeenCalledOnce();
+    expect(coordinator.onRulesSources).toHaveBeenCalledOnce();
     expect(coordinator.onSourceNavigationState).toHaveBeenCalledOnce();
     expect(coordinator.onPageRefresh).toHaveBeenCalledOnce();
     expect(coordinator.onProtocolMismatch).toHaveBeenCalledTimes(2);
@@ -149,7 +167,7 @@ describe("startBackgroundRuntime", () => {
     await flushAsync();
     expect(contentLease.disconnected).toBe(false);
     const selectionResult = await messages.emit(
-      selectedMessage(contentSessionId),
+      selectedMessage(contentSessionId, rulesInspectPayload()),
       contentSender(tabId, 7),
     );
     expect(selectionResult).toEqual({ ok: true });
@@ -200,6 +218,15 @@ describe("startBackgroundRuntime", () => {
     sourceMatchesListener?.(sourceMatchesContext, matches);
     expect(messagesOfType(panel, "source.matches")).toEqual([matches]);
 
+    const rules = rulesSources(inspectMessageId, 1);
+    rulesSourcesListener?.(
+      createTransportTrustedIdePeerContext(8, "session-a", "vscode-a"),
+      rules,
+    );
+    expect(messagesOfType(panel, "rules.sources")).toEqual([]);
+    rulesSourcesListener?.(sourceMatchesContext, rules);
+    expect(messagesOfType(panel, "rules.sources")).toEqual([rules]);
+
     panel.onMessage.emit({
       type: "pin-op.source.open",
       inspectMessageId,
@@ -218,6 +245,22 @@ describe("startBackgroundRuntime", () => {
       matchId: "match-1",
     });
 
+    panel.onMessage.emit({
+      type: "pin-op.rules.open",
+      inspectMessageId,
+      rulesGeneration: 1,
+      openAuthorityId: "authority-1",
+    });
+    await flushAsync();
+    expect(coordinator.publishRulesOpen).toHaveBeenCalledWith(
+      sourceMatchesContext,
+      {
+        inspectMessageId,
+        rulesGeneration: 1,
+        openAuthorityId: "authority-1",
+      },
+    );
+
     runtime.dispose();
     runtime.dispose();
 
@@ -225,6 +268,7 @@ describe("startBackgroundRuntime", () => {
     expect(stateDispose).toHaveBeenCalledOnce();
     expect(peerStateDispose).toHaveBeenCalledTimes(2);
     expect(sourceMatchesDispose).toHaveBeenCalledOnce();
+    expect(rulesSourcesDispose).toHaveBeenCalledOnce();
     expect(sourceNavigationStateDispose).toHaveBeenCalledOnce();
     expect(pageRefreshDispose).toHaveBeenCalledOnce();
     expect(protocolMismatchDispose).toHaveBeenCalledTimes(2);
@@ -253,6 +297,7 @@ describe("startBackgroundRuntime", () => {
       publishInspect: vi.fn(() => "sent" as const),
       publishSourceNavigation: vi.fn(() => "sent" as const),
       publishSourceOpen: vi.fn(() => "sent" as const),
+      publishRulesOpen: vi.fn(() => "sent" as const),
       publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant: vi.fn(),
       removeWindow: vi.fn(async () => undefined),
@@ -261,6 +306,7 @@ describe("startBackgroundRuntime", () => {
       onResolution: vi.fn(() => ({ dispose: vi.fn() })),
       onPeerState: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
+      onRulesSources: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
       onPageRefresh: vi.fn((listener) => {
         pageRefreshListener = listener;
@@ -435,6 +481,7 @@ describe("startBackgroundRuntime", () => {
       publishInspect: vi.fn(() => "sent" as const),
       publishSourceNavigation: vi.fn(() => "sent" as const),
       publishSourceOpen: vi.fn(() => "sent" as const),
+      publishRulesOpen: vi.fn(() => "sent" as const),
       publishPresentationSettings: vi.fn(() => "sent" as const),
       setRefreshParticipant,
       removeWindow: vi.fn(async () => undefined),
@@ -443,6 +490,7 @@ describe("startBackgroundRuntime", () => {
       onResolution: vi.fn(() => ({ dispose: vi.fn() })),
       onPeerState: peerStates.subscribe,
       onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
+      onRulesSources: vi.fn(() => ({ dispose: vi.fn() })),
       onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
       onPageRefresh: pageRefreshes.subscribe,
       onProtocolMismatch: protocolMismatches.subscribe,
@@ -734,12 +782,55 @@ function inspectPayload(): InspectPayload {
   };
 }
 
-function selectedMessage(contentSessionId: string) {
+function selectedMessage(
+  contentSessionId: string,
+  payload: InspectPayload = inspectPayload(),
+) {
   return {
     type: "elementSelected" as const,
     contentSessionId,
     selectionRevision: 1,
-    payload: inspectPayload(),
+    payload,
+  };
+}
+
+function rulesInspectPayload(): InspectPayload {
+  return {
+    ...inspectPayload(),
+    ruleEvidence: {
+      rules: [{
+        ruleRef: "rule-1",
+        selector: ".card",
+        declarations: [],
+        declarationsTruncated: false,
+      }],
+      omittedRuleCount: 0,
+    },
+  };
+}
+
+function rulesSources(
+  inspectMessageId: string,
+  rulesGeneration: number,
+): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: `rules-sources-${rulesGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    rulesGeneration,
+    sources: [{
+      ruleRef: "rule-1",
+      openAuthorityId: "authority-1",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
+    metadata: {},
   };
 }
 

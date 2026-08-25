@@ -1,5 +1,7 @@
 import {
   RESOLUTION_LIMITS,
+  RULES_SOURCES_LIMITS,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
@@ -109,6 +111,20 @@ export interface PanelSourceOpenCommand {
   readonly matchId: string;
 }
 
+export interface PanelRulesOpenCommand {
+  readonly type: "pin-op.rules.open";
+  readonly inspectMessageId: string;
+  readonly rulesGeneration: number;
+  readonly openAuthorityId: string;
+}
+
+export interface PanelInspectStartedState {
+  readonly type: "pin-op.inspect.started";
+  readonly inspectMessageId: string;
+  readonly selectionRevision: number;
+  readonly expectedRuleRefs: readonly string[];
+}
+
 export interface PanelPresentationSettingsCommand {
   readonly type: "pin-op.presentation.settings";
   readonly inspectMessageId: string;
@@ -120,6 +136,7 @@ export type PanelToBackgroundInspectPortMessage =
   | InspectPortRequest
   | PanelSourceNavigateCommand
   | PanelSourceOpenCommand
+  | PanelRulesOpenCommand
   | PanelPresentationSettingsCommand
   | PanelTabSettingsCommand
   | DomRequest
@@ -131,6 +148,8 @@ export type BackgroundToPanelInspectPortMessage =
   | InspectPortInvalidated
   | PanelTabStateMessage
   | ProtocolCompatibilityMessage
+  | PanelInspectStartedState
+  | RulesSourcesMessage
   | SourceMatchesMessage
   | SourceNavigationStateMessage
   | DomResponse
@@ -415,6 +434,91 @@ export function parsePanelSourceOpenCommand(
   };
 }
 
+export function parsePanelRulesOpenCommand(
+  value: unknown,
+): PanelRulesOpenCommand | undefined {
+  const record = snapshotExactDataRecord(value, [
+    "type",
+    "inspectMessageId",
+    "rulesGeneration",
+    "openAuthorityId",
+  ]);
+  if (
+    !record ||
+    record.type !== "pin-op.rules.open" ||
+    !isProtocolOpaqueId(record.inspectMessageId) ||
+    !isResolutionGeneration(record.rulesGeneration) ||
+    !isProtocolOpaqueId(record.openAuthorityId)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    inspectMessageId: record.inspectMessageId,
+    rulesGeneration: record.rulesGeneration,
+    openAuthorityId: record.openAuthorityId,
+  });
+}
+
+export function parsePanelInspectStartedState(
+  value: unknown,
+): PanelInspectStartedState | undefined {
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value)
+    ) {
+      return undefined;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const expectedKeys = [
+      "type",
+      "inspectMessageId",
+      "selectionRevision",
+      "expectedRuleRefs",
+    ] as const;
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key) => typeof key !== "string") ||
+      expectedKeys.some((key) => {
+        const descriptor = descriptors[key];
+        return !descriptor ||
+          !descriptor.enumerable ||
+          !Object.hasOwn(descriptor, "value");
+      })
+    ) {
+      return undefined;
+    }
+    const type = descriptors.type!.value as unknown;
+    const inspectMessageId = descriptors.inspectMessageId!.value as unknown;
+    const selectionRevision = descriptors.selectionRevision!.value as unknown;
+    const refsValue = descriptors.expectedRuleRefs!.value as unknown;
+    const expectedRuleRefs = snapshotExpectedRuleRefs(refsValue);
+    if (
+      type !== "pin-op.inspect.started" ||
+      !isProtocolOpaqueId(inspectMessageId) ||
+      !isSelectionRevision(selectionRevision) ||
+      !expectedRuleRefs
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      type,
+      inspectMessageId,
+      selectionRevision,
+      expectedRuleRefs,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export function parsePanelPresentationSettingsCommand(
   value: unknown,
 ): PanelPresentationSettingsCommand | undefined {
@@ -472,6 +576,49 @@ function isResolutionGeneration(value: unknown): value is number {
     Number.isSafeInteger(value) &&
     value >= 0 &&
     value <= RESOLUTION_LIMITS.generation;
+}
+
+function snapshotExpectedRuleRefs(
+  value: unknown,
+): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthHolder = Reflect.getOwnPropertyDescriptor(descriptors, "length");
+  const lengthDescriptor = lengthHolder?.value as PropertyDescriptor | undefined;
+  if (
+    !lengthDescriptor ||
+    !Object.hasOwn(lengthDescriptor, "value") ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.value < 0 ||
+    lengthDescriptor.value > RULES_SOURCES_LIMITS.sources
+  ) {
+    return undefined;
+  }
+  const length = lengthDescriptor.value as number;
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.length !== length + 1 ||
+    keys.some((key) => typeof key !== "string")
+  ) {
+    return undefined;
+  }
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      !Object.hasOwn(descriptor, "value") ||
+      !isProtocolOpaqueId(descriptor.value) ||
+      seen.has(descriptor.value)
+    ) {
+      return undefined;
+    }
+    seen.add(descriptor.value);
+    refs.push(descriptor.value);
+  }
+  return Object.freeze(refs);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

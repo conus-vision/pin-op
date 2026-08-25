@@ -212,6 +212,20 @@ describe("ElementsInspectorView", () => {
     expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(/);
   });
 
+  it("resets the exact Rules origin button without losing keyboard focus", () => {
+    const css = readFileSync(
+      path.join(packageRoot, "assets", "devtools-elements.css"),
+      "utf8",
+    );
+
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector button\.rule-origin\s*\{[^}]*appearance:\s*none;[^}]*block-size:\s*auto;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*cursor:\s*pointer;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector button\.rule-origin:focus-visible\s*\{[^}]*outline:\s*2px solid Highlight;/s,
+    );
+  });
+
   it("rejects a selector whose first class only looks like the inspector root", () => {
     const css = ".pin-op-elements-inspector-leak { color: red; }";
 

@@ -1,10 +1,13 @@
 import type {
   SourceMatchesMessage,
   SourceNavigationStateMessage,
+  RulesSourcesMessage,
 } from "@pin-op/protocol";
 import type {
   BackgroundToPanelInspectPortMessage,
   PanelPresentationSettingsCommand,
+  PanelInspectStartedState,
+  PanelRulesOpenCommand,
   PanelSourceOpenCommand,
   PanelToBackgroundInspectPortMessage,
 } from "../src/inspectPortProtocol.js";
@@ -39,6 +42,24 @@ const presentationSettings: PanelPresentationSettingsCommand = {
 const panelMessages: readonly PanelToBackgroundInspectPortMessage[] = [
   sourceOpen,
   presentationSettings,
+  {
+    type: "pin-op.rules.open",
+    inspectMessageId: "inspect-1",
+    rulesGeneration: 1,
+    openAuthorityId: "authority-1",
+  } satisfies PanelRulesOpenCommand,
+];
+
+declare const rulesSources: RulesSourcesMessage;
+const inspectStarted: PanelInspectStartedState = {
+  type: "pin-op.inspect.started",
+  inspectMessageId: "inspect-1",
+  selectionRevision: 1,
+  expectedRuleRefs: ["rule-1"],
+};
+const rulesPanelResponses: readonly BackgroundToPanelInspectPortMessage[] = [
+  rulesSources,
+  inspectStarted,
 ];
 
 declare const stylesRequest: StylesGetMatchedRequest;
@@ -52,5 +73,6 @@ const stylesPanelResponses: readonly BackgroundToPanelInspectPortMessage[] = [
 
 void sourceMatchesBackgroundMessage;
 void panelMessages;
+void rulesPanelResponses;
 void stylesPanelRequest;
 void stylesPanelResponses;

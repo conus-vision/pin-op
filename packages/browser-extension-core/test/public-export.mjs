@@ -46,6 +46,7 @@ import {
   PanelSettingsController,
   ResolutionPresenter,
   RuleReferenceRegistry,
+  RulesSourcesController,
   STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
   SourcePaneController,
   formatResolutionFooter,
@@ -125,6 +126,7 @@ assert.equal(typeof PanelController, "function");
 assert.equal(typeof PanelSettingsController, "function");
 assert.equal(typeof ResolutionPresenter, "function");
 assert.equal(typeof RuleReferenceRegistry, "function");
+assert.equal(typeof RulesSourcesController, "function");
 assert.equal(STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES, 512 * 1024);
 assert.equal(typeof SourcePaneController, "function");
 assert.equal(typeof formatResolutionFooter, "function");

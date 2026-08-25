@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type {
   MatchedStylesSnapshot,
+  RuleOriginDecoration,
   RulesDataSource,
   RulesPresentationSnapshot,
   SourceLinkDelegate,
@@ -282,6 +283,70 @@ describe("Chromium-derived read-only Rules renderer", () => {
     );
     expect(derivedSources).not.toMatch(/addEventListener\(["']contextmenu["']/);
   });
+
+  it("makes an exact IDE origin the only click target and stops propagation", () => {
+    const harness = createHarness();
+    harness.sourceLinks.publish("rule:card", {
+      label: "card.scss",
+      languageId: "scss",
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+      clickable: true,
+    });
+    harness.rules.publish({
+      state: "partial",
+      matchedStyles: richMatchedStyles(),
+    });
+
+    const origin = required(
+      harness.rulesRoot.querySelector('[data-rule-origin="rule:card"]'),
+    );
+    const section = required(
+      harness.rulesRoot.querySelector('[data-rule-ref="rule:card"]'),
+    );
+    expect(origin.tagName).toBe("BUTTON");
+    expect(origin.textContent).toBe("card.scss:41");
+    expect(origin.getAttribute("type")).toBe("button");
+    expect(origin.getAttribute("data-source-link-status")).toBe("ready");
+
+    const click = origin.dispatch("click");
+    expect(click.defaultPrevented).toBe(true);
+    expect(click.propagationStopped).toBe(true);
+    expect(harness.sourceLinks.openedRuleRefs).toEqual(["rule:card"]);
+
+    section.dispatch("click");
+    expect(harness.sourceLinks.openedRuleRefs).toEqual(["rule:card"]);
+  });
+
+  it.each(["pending", "stale", "incompatible"] as const)(
+    "keeps generated evidence visible and non-clickable while Rules origin is %s",
+    (state) => {
+      const harness = createHarness();
+      harness.sourceLinks.publish("rule:card", {
+        label: "stale.scss",
+        languageId: "scss",
+        startLine: 99,
+        startColumn: 1,
+        confidence: "sourcemap",
+        clickable: false,
+        state,
+      });
+      harness.rules.publish({
+        state: "partial",
+        matchedStyles: richMatchedStyles(),
+      });
+
+      const origin = required(
+        harness.rulesRoot.querySelector('[data-rule-origin="rule:card"]'),
+      );
+      expect(origin.tagName).toBe("SPAN");
+      expect(origin.textContent).toBe("app.css:17:5");
+      expect(origin.getAttribute("data-source-link-status")).toBe(state);
+      origin.dispatch("click");
+      expect(harness.sourceLinks.openedRuleRefs).toEqual([]);
+    },
+  );
 });
 
 class FakeRulesDataSource implements RulesDataSource {
@@ -311,9 +376,18 @@ class FakeRulesDataSource implements RulesDataSource {
 
 class FakeSourceLinkDelegate implements SourceLinkDelegate {
   public readonly openedRuleRefs: string[] = [];
+  private readonly origins = new Map<string, RuleOriginDecoration>();
+
+  public originFor(ruleRef: string): RuleOriginDecoration | undefined {
+    return this.origins.get(ruleRef);
+  }
 
   public openRuleOrigin(ruleRef: string): void {
     this.openedRuleRefs.push(ruleRef);
+  }
+
+  public publish(ruleRef: string, origin: RuleOriginDecoration): void {
+    this.origins.set(ruleRef, origin);
   }
 }
 

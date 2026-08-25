@@ -3,6 +3,7 @@ import type {
   PeerStateMessage,
   PageRefreshMessage,
   ResolutionMessage,
+  RulesSourcesMessage,
   SourceMatchesMessage,
   SourceNavigateMessage,
   SourceNavigationStateMessage,
@@ -23,6 +24,7 @@ import {
 import type {
   InspectSendOutcome,
   PresentationSettingsInput,
+  RulesOpenInput,
   SourceOpenInput,
   SourceNavigationSendOutcome,
   SourcePresentationSendOutcome,
@@ -378,6 +380,10 @@ class FakeWindowClient implements WindowConnectionClient {
     return this.active ? "sent" : "not-connected";
   }
 
+  public sendRulesOpen(_input: RulesOpenInput): SourcePresentationSendOutcome {
+    return this.active ? "sent" : "not-connected";
+  }
+
   public sendPresentationSettings(
     _input: PresentationSettingsInput,
   ): SourcePresentationSendOutcome {
@@ -402,6 +408,12 @@ class FakeWindowClient implements WindowConnectionClient {
 
   public onSourceMatches(
     _listener: TrustedIdeMessageListener<SourceMatchesMessage>,
+  ) {
+    return { dispose(): void {} };
+  }
+
+  public onRulesSources(
+    _listener: TrustedIdeMessageListener<RulesSourcesMessage>,
   ) {
     return { dispose(): void {} };
   }

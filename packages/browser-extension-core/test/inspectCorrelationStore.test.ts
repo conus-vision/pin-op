@@ -662,6 +662,30 @@ describe("InspectCorrelationStore", () => {
     })?.context).toBe(secondRulesContext);
   });
 
+  it("fences a prepared Rules commit behind the current authority revision", () => {
+    const store = readyRulesStore();
+    const context = trustedPeer();
+    const prepared = store.prepareRulesSources(
+      rulesSources("inspect-a", 2, ["rule-a"]),
+      context,
+    );
+    expect(prepared?.channel).toBe("panel-a");
+
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 3, ["rule-a"]),
+      context,
+    )).toBe("panel-a");
+    expect(prepared?.commit()).toBe(false);
+    expect(store.authorizeRulesOpen({
+      ...rulesOpenRoute(),
+      rulesGeneration: 2,
+    })).toBeUndefined();
+    expect(store.authorizeRulesOpen({
+      ...rulesOpenRoute(),
+      rulesGeneration: 3,
+    })).toBeDefined();
+  });
+
   it("rejects invalid Rules publications without mutating either namespace", () => {
     const store = new InspectCorrelationStore(4);
     store.record(

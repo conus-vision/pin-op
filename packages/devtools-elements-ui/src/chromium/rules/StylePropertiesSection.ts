@@ -134,15 +134,35 @@ export class StylePropertiesSection {
     });
     title.append(selectorContainer);
 
-    if (rule.generatedSource) {
+    const exactOrigin = options.sourceLinkDelegate?.originFor(rule.ruleRef);
+    const exactOriginLabel = exactOrigin?.clickable
+      ? `${exactOrigin.label}:${exactOrigin.startLine}`
+      : undefined;
+    if (exactOriginLabel !== undefined) {
+      const origin = createRulesElement(document, "button", {
+        className: "styles-section-subtitle rule-origin",
+        text: exactOriginLabel,
+        attributes: {
+          "data-rule-origin": rule.ruleRef,
+          "data-source-link-status": "ready",
+          type: "button",
+        },
+      });
+      origin.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        options.sourceLinkDelegate?.openRuleOrigin(rule.ruleRef);
+      });
+      title.append(origin);
+    } else if (rule.generatedSource) {
       const origin = createRulesElement(document, "span", {
         className: "styles-section-subtitle rule-origin",
         text: generatedOriginLabel(rule.generatedSource),
         attributes: {
           "data-rule-origin": rule.ruleRef,
-          "data-source-link-status": options.sourceLinkDelegate
-            ? "unresolved"
-            : "unavailable",
+          "data-source-link-status": exactOrigin?.state ?? (
+            options.sourceLinkDelegate ? "unresolved" : "unavailable"
+          ),
         },
       });
       title.append(origin);
@@ -178,7 +198,9 @@ export class StylePropertiesSection {
     this.filterText = [
       rule.selectorText,
       ...rule.contexts.map(contextLabel),
-      rule.generatedSource ? generatedOriginLabel(rule.generatedSource) : "",
+      exactOriginLabel ?? (
+        rule.generatedSource ? generatedOriginLabel(rule.generatedSource) : ""
+      ),
       options.inheritedFrom ?? "",
     ].join("\n");
   }

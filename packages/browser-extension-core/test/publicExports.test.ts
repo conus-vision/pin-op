@@ -51,6 +51,7 @@ import {
   PanelSettingsController,
   ResolutionPresenter,
   RuleReferenceRegistry,
+  RulesSourcesController,
   STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
   SourceNavigationController,
   SourcePaneController,
@@ -167,6 +168,7 @@ describe("browser extension core exports", () => {
     expect(PanelSettingsController).toBeTypeOf("function");
     expect(ResolutionPresenter).toBeTypeOf("function");
     expect(RuleReferenceRegistry).toBeTypeOf("function");
+    expect(RulesSourcesController).toBeTypeOf("function");
     expect(SourceNavigationController).toBeTypeOf("function");
     expect(SourcePaneController).toBeTypeOf("function");
     expect(formatResolutionFooter).toBeTypeOf("function");

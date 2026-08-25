@@ -4,6 +4,7 @@ import type {
   MatchedStylesSnapshot,
   RulesDataSource,
   RulesPresentationSnapshot,
+  SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
 import type { DomTreeDocument } from "./domTreeView.js";
 import { ElementsInspectorAdapter } from "./elementsInspectorAdapter.js";
@@ -31,10 +32,15 @@ import type {
 } from "./matchedStylesTypes.js";
 import { parseDomEvent } from "./domProtocol.js";
 import {
+  parsePanelInspectStartedState,
   parseInspectPortInvalidated,
   parseProtocolCompatibilityMessage,
 } from "./inspectPortProtocol.js";
 import { parseStylesEvent } from "./stylesProtocol.js";
+import {
+  RulesSourcesController,
+  type RulesOriginState,
+} from "./rulesSourcesController.js";
 
 export interface InspectorPanelRuntimeOptions extends Omit<
   PanelRuntimeOptions,
@@ -48,13 +54,17 @@ export interface InspectorPanelRuntime {
   readonly closed: Promise<void>;
   readonly settingsController: PanelSettingsController;
   readonly matchedStylesModel: MatchedStylesModel;
+  readonly rulesSourcesController: RulesSourcesController;
   dispose(): void;
 }
 
 export function startInspectorPanelRuntime(
   options: InspectorPanelRuntimeOptions,
 ): InspectorPanelRuntime {
-  const presentationState: { matchedStylesModel?: MatchedStylesModel } = {};
+  const presentationState: {
+    matchedStylesModel?: MatchedStylesModel;
+    rulesSourcesController?: RulesSourcesController;
+  } = {};
   const runtime = startPanelRuntimeWithPresentation(
     options,
     (runtimeOptions, reportError) => createInspectorPresentation(
@@ -64,7 +74,8 @@ export function startInspectorPanelRuntime(
     ),
   );
   const matchedStylesModel = presentationState.matchedStylesModel;
-  if (!matchedStylesModel) {
+  const rulesSourcesController = presentationState.rulesSourcesController;
+  if (!matchedStylesModel || !rulesSourcesController) {
     runtime.dispose();
     throw new Error("Matched styles model failed to initialize");
   }
@@ -73,6 +84,7 @@ export function startInspectorPanelRuntime(
     closed: runtime.closed,
     settingsController: runtime.settingsController,
     matchedStylesModel,
+    rulesSourcesController,
     dispose: () => runtime.dispose(),
   });
 }
@@ -80,7 +92,10 @@ export function startInspectorPanelRuntime(
 function createInspectorPresentation(
   options: PanelRuntimeOptions,
   reportError: (error: unknown) => void,
-  presentationState: { matchedStylesModel?: MatchedStylesModel },
+  presentationState: {
+    matchedStylesModel?: MatchedStylesModel;
+    rulesSourcesController?: RulesSourcesController;
+  },
 ): PanelRuntimePresentation {
   const view = new InspectorPanelView(
     options.document as InspectorPanelDocument,
@@ -93,21 +108,35 @@ function createInspectorPresentation(
       const matchedStylesModel = new MatchedStylesModel({
         request: context.requestStyles,
       });
+      const rulesSourcesController = new RulesSourcesController(
+        context.dispatchRulesOpen,
+      );
+      const rulesLifecycle: RulesLifecycleAuthority = {};
       presentationState.matchedStylesModel = matchedStylesModel;
+      presentationState.rulesSourcesController = rulesSourcesController;
       const removeInspectorMessages = context.subscribeInspectorMessages(
-        (message) => routeMatchedStylesLifecycle(matchedStylesModel, message),
+        (message) => routeInspectorLifecycle(
+          matchedStylesModel,
+          rulesSourcesController,
+          rulesLifecycle,
+          message,
+        ),
       );
       const adapter = new ElementsInspectorAdapter(context.treeController);
-      const rulesAdapter = new MatchedStylesRulesAdapter(matchedStylesModel);
+      const rulesAdapter = new MatchedStylesRulesAdapter(
+        matchedStylesModel,
+        rulesSourcesController,
+      );
       let removeSettingsBindings: (() => void) | undefined;
       try {
-        view.mountTree(adapter).bindRulesDataSource(rulesAdapter);
+        view.mountTree(adapter).bindRulesDataSource(rulesAdapter, rulesAdapter);
         view.bindStylesRefresh(matchedStylesModel);
         removeSettingsBindings = view.bindSettings(
           context.settingsController,
         );
       } catch (error) {
         removeInspectorMessages();
+        rulesSourcesController.dispose();
         matchedStylesModel.dispose();
         view.dispose();
         throw error;
@@ -119,18 +148,114 @@ function createInspectorPresentation(
         removeSourceNavigationBindings: noOp,
         removeLayoutBindings: noOp,
         contentLeaseReplaced() {
+          rulesLifecycle.selectionRevision = undefined;
+          rulesLifecycle.documentEpoch = undefined;
+          rulesSourcesController.invalidate("transport-invalidation");
           matchedStylesModel.reset("content-lease-replaced");
         },
         disposePresentation() {
           if (disposed) return;
           disposed = true;
           removeInspectorMessages();
+          rulesSourcesController.dispose();
           matchedStylesModel.dispose();
           view.dispose();
         },
       };
     },
   };
+}
+
+async function routeInspectorLifecycle(
+  model: MatchedStylesModel,
+  controller: RulesSourcesController,
+  lifecycle: RulesLifecycleAuthority,
+  message: unknown,
+): Promise<void> {
+  routeRulesSourcesLifecycle(controller, lifecycle, message);
+  await routeMatchedStylesLifecycle(model, message);
+}
+
+function routeRulesSourcesLifecycle(
+  controller: RulesSourcesController,
+  lifecycle: RulesLifecycleAuthority,
+  message: unknown,
+): void {
+  const inspectStarted = parsePanelInspectStartedState(message);
+  if (inspectStarted) {
+    lifecycle.selectionRevision = inspectStarted.selectionRevision;
+    lifecycle.documentEpoch = undefined;
+    controller.beginInspect(
+      inspectStarted.inspectMessageId,
+      new Set(inspectStarted.expectedRuleRefs),
+    );
+    return;
+  }
+  if (controller.accept(message) === "published") return;
+  try {
+    const event = parseStylesEvent(message);
+    if (event.type === "styles.invalidated") {
+      controller.invalidate("stylesheet-refresh");
+    }
+    return;
+  } catch {
+    // Continue through exact lifecycle families.
+  }
+  try {
+    const event = parseDomEvent(message);
+    if (event.type === "dom.selectionChanged") {
+      if (
+        lifecycle.selectionRevision !== event.selectionRevision ||
+        (lifecycle.documentEpoch !== undefined &&
+          lifecycle.documentEpoch !== event.documentEpoch)
+      ) {
+        controller.invalidate("document-navigation");
+      }
+      lifecycle.selectionRevision = event.selectionRevision;
+      lifecycle.documentEpoch = event.documentEpoch;
+    } else if (event.type === "dom.selectionCleared") {
+      controller.invalidate("document-navigation");
+      lifecycle.selectionRevision = event.selectionRevision;
+      lifecycle.documentEpoch = event.documentEpoch;
+    }
+    return;
+  } catch {
+    // Continue through non-DOM lifecycle families.
+  }
+  if (parseInspectPortInvalidated(message)) {
+    lifecycle.selectionRevision = undefined;
+    lifecycle.documentEpoch = undefined;
+    controller.invalidate("transport-invalidation");
+    return;
+  }
+  const compatibility = parseProtocolCompatibilityMessage(message);
+  if (compatibility) {
+    if (!compatibility.compatible) {
+      lifecycle.selectionRevision = undefined;
+      lifecycle.documentEpoch = undefined;
+    }
+    controller.setCompatible(compatibility.compatible);
+    return;
+  }
+  const state = rulesWindowState(message);
+  if (state === "incompatible") {
+    lifecycle.selectionRevision = undefined;
+    lifecycle.documentEpoch = undefined;
+    controller.setCompatible(false);
+  } else if (state && state !== "linked") {
+    lifecycle.selectionRevision = undefined;
+    lifecycle.documentEpoch = undefined;
+    controller.invalidate("disconnect");
+  } else if (isIdeDisconnectedState(message) || isDisconnectedPeer(message)) {
+    lifecycle.selectionRevision = undefined;
+    lifecycle.documentEpoch = undefined;
+    controller.invalidate("disconnect");
+  }
+}
+
+interface RulesLifecycleAuthority {
+  documentEpoch?: number;
+  selectionRevision?: number;
 }
 
 async function routeMatchedStylesLifecycle(
@@ -172,11 +297,14 @@ async function routeMatchedStylesLifecycle(
   if (reason) model.reset(reason);
 }
 
-class MatchedStylesRulesAdapter implements RulesDataSource {
+class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
   private sourceSnapshot: MatchedStylesModelSnapshot | undefined;
   private presentationSnapshot: RulesPresentationSnapshot = EMPTY_RULES_PRESENTATION;
 
-  public constructor(private readonly model: MatchedStylesModel) {}
+  public constructor(
+    private readonly model: MatchedStylesModel,
+    private readonly rulesSources: RulesSourcesController,
+  ) {}
 
   public snapshot(): RulesPresentationSnapshot {
     const source = this.model.snapshot();
@@ -188,7 +316,25 @@ class MatchedStylesRulesAdapter implements RulesDataSource {
   }
 
   public subscribe(listener: () => void): () => void {
-    return this.model.subscribe(() => listener());
+    const removeModel = this.model.subscribe(listener);
+    const removeRulesSources = this.rulesSources.subscribe(listener);
+    return () => {
+      removeRulesSources();
+      removeModel();
+    };
+  }
+
+  public originFor(ruleRef: string) {
+    const origin = this.rulesSources.originFor(ruleRef);
+    if (origin) return origin;
+    const state = this.rulesSources.status();
+    return state === "ready"
+      ? undefined
+      : hiddenOriginState(state);
+  }
+
+  public openRuleOrigin(ruleRef: string): void {
+    this.rulesSources.open(ruleRef);
   }
 
   public filter(_query: string): void {
@@ -363,6 +509,75 @@ function disconnectedResetReason(
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function hiddenOriginState(
+  state: Exclude<RulesOriginState, "ready">,
+) {
+  return Object.freeze({
+    label: "unresolved.css",
+    languageId: "css" as const,
+    startLine: 1,
+    startColumn: 1,
+    confidence: "exact" as const,
+    clickable: false,
+    state,
+  });
+}
+
+function rulesWindowState(message: unknown): string | undefined {
+  try {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(message);
+    const type = descriptors.type;
+    const state = descriptors.state;
+    return type?.enumerable &&
+        Object.hasOwn(type, "value") &&
+        type.value === "pin-op.windowState" &&
+        state?.enumerable &&
+        Object.hasOwn(state, "value") &&
+        typeof state.value === "string"
+      ? state.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isIdeDisconnectedState(message: unknown): boolean {
+  try {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      return false;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(message);
+    return descriptors.type?.enumerable === true &&
+      Object.hasOwn(descriptors.type, "value") &&
+      descriptors.type.value === "pin-op.ideState" &&
+      descriptors.status?.enumerable === true &&
+      Object.hasOwn(descriptors.status, "value") &&
+      descriptors.status.value === "ide-disconnected";
+  } catch {
+    return false;
+  }
+}
+
+function isDisconnectedPeer(message: unknown): boolean {
+  try {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      return false;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(message);
+    return descriptors.type?.enumerable === true &&
+      Object.hasOwn(descriptors.type, "value") &&
+      descriptors.type.value === "peerState" &&
+      descriptors.connected?.enumerable === true &&
+      Object.hasOwn(descriptors.connected, "value") &&
+      descriptors.connected.value === false;
+  } catch {
+    return false;
   }
 }
 

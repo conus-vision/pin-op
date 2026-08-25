@@ -31,7 +31,6 @@ import {
   PanelSettingsController,
   type PanelSettingsBindingToken,
 } from "./panelSettingsController.js";
-import type { PanelInspectStartedState } from "./panelSessionTransport.js";
 import { DomPanelView, type PanelDocument } from "./panelView.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
 import {
@@ -49,9 +48,11 @@ import {
   createDevtoolsPanelPortName,
   isValidDevtoolsChannel,
   parseInspectPortInvalidated,
+  parsePanelInspectStartedState,
   parsePanelTabStateMessage,
   parseProtocolCompatibilityMessage,
   type PanelInspectPort,
+  type PanelRulesOpenCommand,
 } from "./inspectPortProtocol.js";
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
 import type {
@@ -99,6 +100,7 @@ interface PanelRuntimePresentationContext {
     request: StylesGetMatchedRequest,
     signal: AbortSignal,
   ) => Promise<StylesResponse>;
+  readonly dispatchRulesOpen: (command: PanelRulesOpenCommand) => void;
   readonly subscribeInspectorMessages: (
     listener: (message: unknown) => void,
   ) => () => void;
@@ -243,6 +245,8 @@ export function startPanelRuntimeWithPresentation(
     treeController,
     requestStyles: (request, signal) =>
       inspectTransport.requestStyles(request, signal),
+    dispatchRulesOpen: (command) =>
+      inspectTransport.dispatchRulesOpen(command),
     subscribeInspectorMessages(listener) {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
@@ -1124,25 +1128,8 @@ function validatedDomEvent(message: unknown) {
 
 function validatedInspectStarted(
   message: unknown,
-): PanelInspectStartedState | undefined {
-  if (
-    !isRecord(message) ||
-    !hasOnlyKeys(message, [
-      "type",
-      "inspectMessageId",
-      "selectionRevision",
-    ]) ||
-    message.type !== "pin-op.inspect.started" ||
-    !isOpaqueId(message.inspectMessageId) ||
-    !isSelectionRevision(message.selectionRevision)
-  ) {
-    return undefined;
-  }
-  return {
-    type: message.type,
-    inspectMessageId: message.inspectMessageId,
-    selectionRevision: message.selectionRevision,
-  };
+): ReturnType<typeof parsePanelInspectStartedState> {
+  return parsePanelInspectStartedState(message);
 }
 
 function validatedResolution(message: unknown): boolean {

@@ -3,6 +3,8 @@ import {
   INSPECT_ENVELOPE_MAX_BYTES,
   PresentationSettingsMessageSchema,
   PROTOCOL_VERSION,
+  RulesOpenMessageSchema,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigateMessageSchema,
   SourceOpenMessageSchema,
@@ -11,6 +13,7 @@ import {
   type PeerStateMessage,
   type SourceMatchesMessage,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceNavigationStateMessage,
 } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -146,6 +149,7 @@ describe("BrowserBridgeClient", () => {
         "presentation-settings",
         "source-navigation",
         "auto-refresh",
+        "rules-sources",
       ],
     });
     expect(harness.states).not.toContain("connected");
@@ -417,6 +421,44 @@ describe("BrowserBridgeClient", () => {
       ideHighlightEnabled: false,
       metadata: {},
     });
+  });
+
+  it("sends only the strict opaque Rules open intent from authenticated credentials", () => {
+    const harness = createHarness();
+    const input = {
+      inspectMessageId: "inspect-card",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-card",
+    } as const;
+
+    expect(harness.client.sendRulesOpen(input)).toBe("not-connected");
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    expect(harness.client.sendRulesOpen(input)).toBe("not-connected");
+    authenticate(harness.sockets[0]);
+
+    expect(harness.client.sendRulesOpen({
+      ...input,
+      ruleRef: "rule-card",
+    } as never)).toBe("invalid-message");
+    expect(harness.client.sendRulesOpen(input)).toBe("sent");
+
+    const message = JSON.parse(harness.sockets[0].sent[1] ?? "{}");
+    expect(RulesOpenMessageSchema.parse(message)).toEqual(message);
+    expect(message).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "rules.open",
+      messageId: "message-2",
+      sessionId: SESSION_ID,
+      inspectMessageId: "inspect-card",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-card",
+      metadata: {},
+    });
+
+    harness.sockets[0].throwOnSend = true;
+    expect(harness.client.sendRulesOpen(input)).toBe("transport-error");
+    expect(harness.errors.at(-1)?.message).toMatch(/rules open send/i);
   });
 
   it("fails closed for unavailable, invalid, accessor-backed, and failed source presentation sends", () => {
@@ -889,6 +931,50 @@ describe("BrowserBridgeClient", () => {
     expect(received).toHaveLength(1);
   });
 
+  it("delivers strict same-session Rules sources with transport-authenticated IDE context", () => {
+    const harness = createHarness();
+    const received: Array<readonly [unknown, RulesSourcesMessage]> = [];
+    const subscription = harness.client.onRulesSources((context, message) => {
+      received.push([context, message]);
+    });
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const current = rulesSourcesMessage(SESSION_ID, 1);
+
+    harness.sockets[0].message(rulesSourcesMessage("other-session", 1));
+    harness.sockets[0].message(current);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.[0]).toMatchObject({
+      windowId: 10,
+      sessionId: SESSION_ID,
+      source: { role: "ide", id: "vscode-test" },
+    });
+    expect(received[0]?.[1]).toEqual(RulesSourcesMessageSchema.parse(current));
+
+    subscription.dispose();
+    harness.sockets[0].message(rulesSourcesMessage(SESSION_ID, 2));
+    expect(received).toHaveLength(1);
+  });
+
+  it("drops Rules sources from a replaced socket after reconnect", () => {
+    const harness = createHarness();
+    const received: RulesSourcesMessage[] = [];
+    harness.client.onRulesSources((_context, message) => received.push(message));
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    const staleHandler = harness.sockets[0].onmessage;
+    harness.sockets[0].serverClose();
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    authenticate(harness.sockets[1]);
+
+    staleHandler?.({ data: JSON.stringify(rulesSourcesMessage(SESSION_ID, 1)) });
+    harness.sockets[1].message(rulesSourcesMessage(SESSION_ID, 1));
+    expect(received).toEqual([rulesSourcesMessage(SESSION_ID, 1)]);
+  });
+
   it.each([
     {
       name: "malformed JSON",
@@ -1323,6 +1409,31 @@ function sourceMatchesMessage(
       truncated: false,
     }],
     omittedMatchCount: 0,
+    metadata: {},
+  };
+}
+
+function rulesSourcesMessage(
+  sessionId: string,
+  rulesGeneration: number,
+): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: `rules-sources-${rulesGeneration}`,
+    sessionId,
+    source: { role: "ide", id: "vscode-test" },
+    inspectMessageId: "inspect-card",
+    rulesGeneration,
+    sources: [{
+      ruleRef: "rule-card",
+      openAuthorityId: "authority-card",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
     metadata: {},
   };
 }

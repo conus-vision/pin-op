@@ -61,6 +61,7 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
       | "onStateChanged"
       | "onPeerState"
       | "onSourceMatches"
+      | "onRulesSources"
       | "onSourceNavigationState"
       | "onPageRefresh"
       | "onProtocolMismatch"
@@ -206,6 +207,12 @@ export function startBackgroundRuntime(
     },
     subscribeSourceMatches: (listener) => {
       const subscription = coordinator.onSourceMatches(
+        (context, message) => listener(context, message),
+      );
+      return () => subscription.dispose();
+    },
+    subscribeRulesSources: (listener) => {
+      const subscription = coordinator.onRulesSources(
         (context, message) => listener(context, message),
       );
       return () => subscription.dispose();
