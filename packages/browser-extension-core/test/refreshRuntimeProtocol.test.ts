@@ -117,6 +117,44 @@ describe("refresh runtime protocol", () => {
     });
   });
 
+  it("parses accepted refresh mode exactly without exposing it to panels", () => {
+    const state = {
+      tabId: 11,
+      windowId: 7,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 5,
+      lastAcceptedMode: "reload",
+    } as const;
+
+    expect(parseTabRefreshState(state)).toEqual(state);
+    expect(parseTabRefreshState({
+      ...state,
+      lastAcceptedMode: "unknown",
+    })).toBeUndefined();
+    expect(parseTabRefreshState({
+      ...state,
+      participant: true,
+      lastAcceptedMode: "styles",
+      pending: { generation: 5, mode: "reload" },
+    })).toBeUndefined();
+
+    const panelState = createPanelTabStateMessage(state);
+    expect(panelState).toEqual({
+      type: "pin-op.tab.state",
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: false,
+      participant: false,
+      lastAcceptedGeneration: 5,
+    });
+    expect(panelState).not.toHaveProperty("lastAcceptedMode");
+    expect(parsePanelTabStateMessage({
+      ...panelState,
+      lastAcceptedMode: "reload",
+    })).toBeUndefined();
+  });
+
   it("rejects unknown, missing, malformed, and accessor-backed fields", () => {
     const state = {
       tabId: 11,

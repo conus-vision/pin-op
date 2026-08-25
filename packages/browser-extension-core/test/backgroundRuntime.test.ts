@@ -279,7 +279,7 @@ describe("startBackgroundRuntime", () => {
         windowId === undefined ? undefined : tabState(tabId, windowId)),
       state: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
       updateSettings: vi.fn(async (tabId, windowId) => tabState(tabId, windowId)),
-      acceptPageRefresh: vi.fn(async () => undefined),
+      acceptPageRefresh: vi.fn(async () => true),
       beginWindowEpoch: vi.fn(async () => undefined),
       clearWindowPending: vi.fn(async () => undefined),
       activateTab: vi.fn(async () => undefined),
@@ -355,7 +355,11 @@ describe("startBackgroundRuntime", () => {
     });
     await flushAsync();
 
-    expect(tabRefresh.acceptPageRefresh).toHaveBeenCalledWith(7, refresh);
+    expect(tabRefresh.acceptPageRefresh).toHaveBeenCalledWith(
+      7,
+      refresh,
+      expect.any(Function),
+    );
     expect(tabRefresh.clearWindowPending).toHaveBeenCalledWith(7);
     expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
     expect(tabRefresh.removeTab).toHaveBeenCalledWith(12);

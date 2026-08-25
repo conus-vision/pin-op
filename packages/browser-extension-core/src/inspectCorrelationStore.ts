@@ -1,9 +1,13 @@
 import {
+  InspectRuleEvidenceBatchSchema,
   RESOLUTION_LIMITS,
   ResolutionMessageSchema,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
+  type InspectRuleEvidenceBatch,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceDocument,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
@@ -24,24 +28,44 @@ export const DEFAULT_MAX_INSPECT_CORRELATIONS = 256;
 const sourcePresentationAuthorityRevision: unique symbol = Symbol(
   "sourcePresentationAuthorityRevision",
 );
+const rulesOpenAuthorityRevision: unique symbol = Symbol(
+  "rulesOpenAuthorityRevision",
+);
+const sourceResolutionGenerationBrand: unique symbol = Symbol(
+  "sourceResolutionGenerationBrand",
+);
+const rulesGenerationBrand: unique symbol = Symbol("rulesGenerationBrand");
+
+type SourceResolutionGeneration = number & {
+  readonly [sourceResolutionGenerationBrand]: true;
+};
+
+type RulesGeneration = number & {
+  readonly [rulesGenerationBrand]: true;
+};
 
 interface InspectCorrelation {
   readonly channel: string;
   readonly tabId: number;
   readonly windowId: number;
-  authorityRevision: bigint;
+  readonly expectedRuleRefs: ReadonlySet<string>;
+  sourceAuthorityRevision: bigint;
+  rulesAuthorityRevision: bigint;
   resolutionGeneration: number;
+  rulesGeneration: number;
   sessionId?: string;
   sourceId?: string;
   document?: SourceDocument;
-  peerContext?: TrustedIdePeerContext;
+  sourcePeerContext?: TrustedIdePeerContext;
+  rulesPeerContext?: TrustedIdePeerContext;
   matchIds: Set<string>;
+  ruleOpenAuthorityIds: Set<string>;
 }
 
 export interface SourceOpenAuthority {
   readonly channel: string;
   readonly inspectMessageId: string;
-  readonly resolutionGeneration: number;
+  readonly resolutionGeneration: SourceResolutionGeneration;
   readonly matchId: string;
   readonly tabId: number;
   readonly windowId: number;
@@ -54,16 +78,28 @@ export interface InspectCorrelationRoute {
   readonly inspectMessageId: string;
   readonly tabId: number;
   readonly windowId: number;
+  readonly expectedRuleRefs: ReadonlySet<string>;
 }
 
 export interface PresentationSettingsAuthority {
   readonly channel: string;
   readonly inspectMessageId: string;
-  readonly resolutionGeneration: number;
+  readonly resolutionGeneration: SourceResolutionGeneration;
   readonly tabId: number;
   readonly windowId: number;
   readonly context: TrustedIdePeerContext;
   readonly [sourcePresentationAuthorityRevision]: bigint;
+}
+
+export interface RulesOpenAuthority {
+  readonly channel: string;
+  readonly inspectMessageId: string;
+  readonly rulesGeneration: RulesGeneration;
+  readonly openAuthorityId: string;
+  readonly tabId: number;
+  readonly windowId: number;
+  readonly context: TrustedIdePeerContext;
+  readonly [rulesOpenAuthorityRevision]: bigint;
 }
 
 export class InspectCorrelationStore {
@@ -87,15 +123,23 @@ export class InspectCorrelationStore {
     inspectMessageId: string,
     tabId: number,
     windowId: number,
+    ruleEvidence: InspectRuleEvidenceBatch,
   ): void {
+    const parsedRuleEvidence = InspectRuleEvidenceBatchSchema.safeParse(
+      ruleEvidence,
+    );
     if (
       !isValidDevtoolsChannel(channel) ||
       !isOpaqueId(inspectMessageId) ||
       !isBrowserId(tabId) ||
-      !isBrowserId(windowId)
+      !isBrowserId(windowId) ||
+      !parsedRuleEvidence.success
     ) {
       throw new Error("Invalid inspect correlation");
     }
+    const expectedRuleRefs = new Set(
+      parsedRuleEvidence.data.rules.map(({ ruleRef }) => ruleRef),
+    );
     for (const [recordedId, correlation] of this.correlations) {
       if (correlation.channel === channel || correlation.tabId === tabId) {
         this.correlations.delete(recordedId);
@@ -106,9 +150,13 @@ export class InspectCorrelationStore {
       channel,
       tabId,
       windowId,
-      authorityRevision: this.nextAuthorityRevision(),
+      expectedRuleRefs,
+      sourceAuthorityRevision: this.nextAuthorityRevision(),
+      rulesAuthorityRevision: this.nextAuthorityRevision(),
       resolutionGeneration: -1,
+      rulesGeneration: -1,
       matchIds: new Set(),
+      ruleOpenAuthorityIds: new Set(),
     });
     while (this.correlations.size > this.maximumSize) {
       const oldest = this.correlations.keys().next().value as
@@ -150,9 +198,9 @@ export class InspectCorrelationStore {
     correlation.document = parsed.document
       ? Object.freeze({ ...parsed.document })
       : undefined;
-    correlation.peerContext = peerContext;
+    correlation.sourcePeerContext = peerContext;
     correlation.matchIds.clear();
-    correlation.authorityRevision = this.nextAuthorityRevision();
+    correlation.sourceAuthorityRevision = this.nextAuthorityRevision();
     this.correlations.delete(parsed.inspectMessageId);
     this.correlations.set(parsed.inspectMessageId, correlation);
     return correlation.channel;
@@ -171,8 +219,49 @@ export class InspectCorrelationStore {
           inspectMessageId,
           tabId: correlation.tabId,
           windowId: correlation.windowId,
+          expectedRuleRefs: new Set(correlation.expectedRuleRefs),
         })
       : undefined;
+  }
+
+  public acceptRulesSources(
+    message: RulesSourcesMessage,
+    peerContext: TrustedIdePeerContext,
+  ): string | undefined {
+    if (!isTrustedIdePeerContext(peerContext)) {
+      return undefined;
+    }
+    const parsed = parseProtocolData(message, RulesSourcesMessageSchema);
+    if (!parsed) {
+      return undefined;
+    }
+    const correlation = this.correlations.get(parsed.inspectMessageId);
+    if (
+      !correlation ||
+      correlation.windowId !== peerContext.windowId ||
+      !payloadMatchesPeer(parsed, peerContext) ||
+      (correlation.sourceId !== undefined &&
+        (correlation.sourceId !== peerContext.source.id ||
+          correlation.sessionId !== peerContext.sessionId)) ||
+      (correlation.rulesGeneration < 0
+        ? parsed.rulesGeneration !== 1
+        : parsed.rulesGeneration <= correlation.rulesGeneration) ||
+      !rulesSourcesCoverExpectedRefs(parsed, correlation.expectedRuleRefs)
+    ) {
+      return undefined;
+    }
+
+    correlation.sessionId = peerContext.sessionId;
+    correlation.sourceId = peerContext.source.id;
+    correlation.rulesGeneration = parsed.rulesGeneration;
+    correlation.rulesPeerContext = peerContext;
+    correlation.ruleOpenAuthorityIds = new Set(
+      parsed.sources.map(({ openAuthorityId }) => openAuthorityId),
+    );
+    correlation.rulesAuthorityRevision = this.nextAuthorityRevision();
+    this.correlations.delete(parsed.inspectMessageId);
+    this.correlations.set(parsed.inspectMessageId, correlation);
+    return correlation.channel;
   }
 
   public acceptNavigationState(
@@ -218,14 +307,16 @@ export class InspectCorrelationStore {
     if (
       !correlation ||
       correlation.windowId !== peerContext.windowId ||
-      !payloadMatchesPeer(parsed, peerContext)
+      !payloadMatchesPeer(parsed, peerContext) ||
+      (correlation.sourceId !== undefined &&
+        !correlationMatchesPeer(correlation, peerContext))
     ) {
       return undefined;
     }
 
     if (parsed.matches.length === 0 && correlation.resolutionGeneration < 0) {
       correlation.matchIds.clear();
-      correlation.authorityRevision = this.nextAuthorityRevision();
+      correlation.sourceAuthorityRevision = this.nextAuthorityRevision();
       return correlation.channel;
     }
     if (!matchesCurrentAuthority(parsed, correlation, peerContext)) {
@@ -241,9 +332,9 @@ export class InspectCorrelationStore {
     }
     correlation.matchIds = matchIds;
     if (parsed.matches.length > 0) {
-      correlation.peerContext = peerContext;
+      correlation.sourcePeerContext = peerContext;
     }
-    correlation.authorityRevision = this.nextAuthorityRevision();
+    correlation.sourceAuthorityRevision = this.nextAuthorityRevision();
     return correlation.channel;
   }
 
@@ -270,7 +361,7 @@ export class InspectCorrelationStore {
       return undefined;
     }
     const correlation = this.correlations.get(record.inspectMessageId);
-    const context = correlation?.peerContext;
+    const context = correlation?.sourcePeerContext;
     if (
       !correlation ||
       !context ||
@@ -286,12 +377,15 @@ export class InspectCorrelationStore {
     return Object.freeze({
       channel: correlation.channel,
       inspectMessageId: record.inspectMessageId,
-      resolutionGeneration: correlation.resolutionGeneration,
+      resolutionGeneration: asSourceResolutionGeneration(
+        correlation.resolutionGeneration,
+      ),
       matchId: record.matchId,
       tabId: correlation.tabId,
       windowId: correlation.windowId,
       context,
-      [sourcePresentationAuthorityRevision]: correlation.authorityRevision,
+      [sourcePresentationAuthorityRevision]:
+        correlation.sourceAuthorityRevision,
     } as SourceOpenAuthority);
   }
 
@@ -314,7 +408,7 @@ export class InspectCorrelationStore {
       return undefined;
     }
     const correlation = this.correlations.get(record.inspectMessageId);
-    const context = correlation?.peerContext;
+    const context = correlation?.sourcePeerContext;
     if (
       !correlation ||
       !context ||
@@ -329,12 +423,63 @@ export class InspectCorrelationStore {
     return Object.freeze({
       channel: correlation.channel,
       inspectMessageId: record.inspectMessageId,
-      resolutionGeneration: correlation.resolutionGeneration,
+      resolutionGeneration: asSourceResolutionGeneration(
+        correlation.resolutionGeneration,
+      ),
       tabId: correlation.tabId,
       windowId: correlation.windowId,
       context,
-      [sourcePresentationAuthorityRevision]: correlation.authorityRevision,
+      [sourcePresentationAuthorityRevision]:
+        correlation.sourceAuthorityRevision,
     } as PresentationSettingsAuthority);
+  }
+
+  public authorizeRulesOpen(
+    input: unknown,
+  ): RulesOpenAuthority | undefined {
+    const record = snapshotExactDataRecord(input, [
+      "channel",
+      "tabId",
+      "windowId",
+      "inspectMessageId",
+      "rulesGeneration",
+      "openAuthorityId",
+    ]);
+    if (
+      !record ||
+      !isValidDevtoolsChannel(record.channel) ||
+      !isBrowserId(record.tabId) ||
+      !isBrowserId(record.windowId) ||
+      !isOpaqueId(record.inspectMessageId) ||
+      !isResolutionGeneration(record.rulesGeneration) ||
+      !isOpaqueId(record.openAuthorityId)
+    ) {
+      return undefined;
+    }
+    const correlation = this.correlations.get(record.inspectMessageId);
+    const context = correlation?.rulesPeerContext;
+    if (
+      !correlation ||
+      !context ||
+      !isTrustedIdePeerContext(context) ||
+      correlation.channel !== record.channel ||
+      correlation.tabId !== record.tabId ||
+      correlation.windowId !== record.windowId ||
+      correlation.rulesGeneration !== record.rulesGeneration ||
+      !correlation.ruleOpenAuthorityIds.has(record.openAuthorityId as string)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      channel: correlation.channel,
+      inspectMessageId: record.inspectMessageId,
+      rulesGeneration: asRulesGeneration(correlation.rulesGeneration),
+      openAuthorityId: record.openAuthorityId,
+      tabId: correlation.tabId,
+      windowId: correlation.windowId,
+      context,
+      [rulesOpenAuthorityRevision]: correlation.rulesAuthorityRevision,
+    } as RulesOpenAuthority);
   }
 
   public discardSourcePresentationAuthority(
@@ -347,9 +492,26 @@ export class InspectCorrelationStore {
       correlation.tabId !== authority.tabId ||
       correlation.windowId !== authority.windowId ||
       correlation.resolutionGeneration !== authority.resolutionGeneration ||
-      correlation.peerContext !== authority.context ||
-      correlation.authorityRevision !==
+      correlation.sourcePeerContext !== authority.context ||
+      correlation.sourceAuthorityRevision !==
         authority[sourcePresentationAuthorityRevision]
+    ) {
+      return false;
+    }
+    return this.correlations.delete(authority.inspectMessageId);
+  }
+
+  public discardRulesOpenAuthority(authority: RulesOpenAuthority): boolean {
+    const correlation = this.correlations.get(authority.inspectMessageId);
+    if (
+      !correlation ||
+      correlation.channel !== authority.channel ||
+      correlation.tabId !== authority.tabId ||
+      correlation.windowId !== authority.windowId ||
+      correlation.rulesGeneration !== authority.rulesGeneration ||
+      correlation.rulesPeerContext !== authority.context ||
+      !correlation.ruleOpenAuthorityIds.has(authority.openAuthorityId) ||
+      correlation.rulesAuthorityRevision !== authority[rulesOpenAuthorityRevision]
     ) {
       return false;
     }
@@ -425,12 +587,30 @@ function matchesCurrentAuthority(
   peerContext: TrustedIdePeerContext,
 ): boolean {
   return correlation.resolutionGeneration === message.resolutionGeneration &&
-    correlation.peerContext !== undefined &&
+    correlation.sourcePeerContext !== undefined &&
     correlationMatchesPeer(correlation, peerContext) &&
     payloadMatchesPeer(message, peerContext) &&
     correlation.document !== undefined &&
     correlation.document.label === message.document.label &&
     correlation.document.languageId === message.document.languageId;
+}
+
+function rulesSourcesCoverExpectedRefs(
+  message: RulesSourcesMessage,
+  expectedRuleRefs: ReadonlySet<string>,
+): boolean {
+  if (
+    message.sources.length + message.unresolvedRuleCount !==
+      expectedRuleRefs.size
+  ) {
+    return false;
+  }
+  for (const source of message.sources) {
+    if (!expectedRuleRefs.has(source.ruleRef)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function correlationMatchesPeer(
@@ -466,4 +646,14 @@ function isResolutionGeneration(value: unknown): value is number {
     Number(value) >= 0 &&
     Number(value) <= RESOLUTION_LIMITS.generation
   );
+}
+
+function asSourceResolutionGeneration(
+  value: number,
+): SourceResolutionGeneration {
+  return value as SourceResolutionGeneration;
+}
+
+function asRulesGeneration(value: number): RulesGeneration {
+  return value as RulesGeneration;
 }

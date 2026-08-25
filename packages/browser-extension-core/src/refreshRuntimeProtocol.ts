@@ -24,6 +24,7 @@ export interface TabRefreshState {
   readonly ideHighlightEnabled: boolean;
   readonly participant: boolean;
   readonly lastAcceptedGeneration: number;
+  readonly lastAcceptedMode?: PageRefreshMode;
   readonly pending?: PendingTabRefresh;
 }
 
@@ -127,6 +128,7 @@ const TAB_STATE_REQUIRED_KEYS = [
   "participant",
   "lastAcceptedGeneration",
 ] as const;
+const TAB_STATE_OPTIONAL_KEYS = ["lastAcceptedMode", "pending"] as const;
 const PANEL_STATE_REQUIRED_KEYS = [
   "type",
   "autoRefreshEnabled",
@@ -166,7 +168,7 @@ export function parseTabRefreshState(
   const record = snapshotExactOptionalRecord(
     value,
     TAB_STATE_REQUIRED_KEYS,
-    "pending",
+    TAB_STATE_OPTIONAL_KEYS,
   );
   if (
     !record ||
@@ -176,6 +178,8 @@ export function parseTabRefreshState(
     typeof record.ideHighlightEnabled !== "boolean" ||
     typeof record.participant !== "boolean" ||
     !isGeneration(record.lastAcceptedGeneration) ||
+    (record.lastAcceptedMode !== undefined &&
+      !isRefreshMode(record.lastAcceptedMode)) ||
     (record.participant && !record.autoRefreshEnabled)
   ) {
     return undefined;
@@ -188,7 +192,9 @@ export function parseTabRefreshState(
     (pending &&
       (!record.autoRefreshEnabled ||
         !record.participant ||
-        pending.generation !== record.lastAcceptedGeneration))
+        pending.generation !== record.lastAcceptedGeneration ||
+        (isRefreshMode(record.lastAcceptedMode) &&
+          pending.mode !== record.lastAcceptedMode)))
   ) {
     return undefined;
   }
@@ -199,6 +205,9 @@ export function parseTabRefreshState(
     ideHighlightEnabled: record.ideHighlightEnabled,
     participant: record.participant,
     lastAcceptedGeneration: record.lastAcceptedGeneration,
+    ...(isRefreshMode(record.lastAcceptedMode)
+      ? { lastAcceptedMode: record.lastAcceptedMode }
+      : {}),
     ...(pending ? { pending } : {}),
   });
 }
@@ -413,7 +422,7 @@ export function parseContentRefreshResult(
       "mode",
       "accepted",
     ],
-    "stylesheet",
+    ["stylesheet"],
   );
   const binding = parseContentBinding(record);
   const stylesheet = record?.stylesheet === undefined
@@ -484,7 +493,7 @@ export function parsePanelTabStateMessage(
   const record = snapshotExactOptionalRecord(
     value,
     PANEL_STATE_REQUIRED_KEYS,
-    "pending",
+    ["pending"],
   );
   if (
     !record ||
@@ -699,15 +708,16 @@ function isProtocolVersion(value: unknown): value is number {
 function snapshotExactOptionalRecord(
   value: unknown,
   requiredKeys: readonly string[],
-  optionalKey: string,
+  optionalKeys: readonly string[],
 ): Record<string, unknown> | undefined {
   const keys = ownDataKeys(value);
   if (
     !keys ||
-    (keys.length !== requiredKeys.length &&
-      keys.length !== requiredKeys.length + 1) ||
+    keys.length < requiredKeys.length ||
+    keys.length > requiredKeys.length + optionalKeys.length ||
     requiredKeys.some((key) => !keys.includes(key)) ||
-    (keys.length === requiredKeys.length + 1 && !keys.includes(optionalKey))
+    keys.some((key) =>
+      !requiredKeys.includes(key) && !optionalKeys.includes(key))
   ) {
     return undefined;
   }

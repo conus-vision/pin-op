@@ -17,6 +17,7 @@ const STORED_STATE_REQUIRED_KEYS = [
   "participant",
   "lastAcceptedGeneration",
 ] as const;
+const STORED_STATE_OPTIONAL_KEYS = ["lastAcceptedMode", "pending"] as const;
 
 interface ParsedStoredStates {
   readonly states: readonly TabRefreshState[];
@@ -216,6 +217,9 @@ function snapshotState(state: TabRefreshState): Record<string, unknown> {
     ideHighlightEnabled: state.ideHighlightEnabled,
     participant: false,
     lastAcceptedGeneration: state.lastAcceptedGeneration,
+    ...(state.lastAcceptedMode
+      ? { lastAcceptedMode: state.lastAcceptedMode }
+      : {}),
   };
 }
 
@@ -227,6 +231,9 @@ function durableState(state: TabRefreshState): TabRefreshState {
     ideHighlightEnabled: state.ideHighlightEnabled,
     participant: false,
     lastAcceptedGeneration: state.lastAcceptedGeneration,
+    ...(state.lastAcceptedMode
+      ? { lastAcceptedMode: state.lastAcceptedMode }
+      : {}),
   });
 }
 
@@ -271,11 +278,14 @@ function parseStoredState(value: unknown): ParsedStoredState | undefined {
     const keys = Reflect.ownKeys(descriptors);
     if (
       keys.some((key) => typeof key !== "string") ||
-      (keys.length !== STORED_STATE_REQUIRED_KEYS.length &&
-        keys.length !== STORED_STATE_REQUIRED_KEYS.length + 1) ||
+      keys.length < STORED_STATE_REQUIRED_KEYS.length ||
+      keys.length >
+        STORED_STATE_REQUIRED_KEYS.length + STORED_STATE_OPTIONAL_KEYS.length ||
       STORED_STATE_REQUIRED_KEYS.some((key) => !keys.includes(key)) ||
-      (keys.length === STORED_STATE_REQUIRED_KEYS.length + 1 &&
-        !keys.includes("pending"))
+      keys.some((key) =>
+        typeof key === "string" &&
+        !STORED_STATE_REQUIRED_KEYS.some((required) => required === key) &&
+        !STORED_STATE_OPTIONAL_KEYS.some((optional) => optional === key))
     ) {
       return undefined;
     }
@@ -295,11 +305,17 @@ function parseStoredState(value: unknown): ParsedStoredState | undefined {
       ideHighlightEnabled: record.ideHighlightEnabled,
       participant: false,
       lastAcceptedGeneration: record.lastAcceptedGeneration,
+      ...(record.lastAcceptedMode !== undefined
+        ? { lastAcceptedMode: record.lastAcceptedMode }
+        : {}),
     });
     return normalized
       ? Object.freeze({
           state: durableState(normalized),
-          needsRewrite: record.participant !== false || keys.includes("pending"),
+          needsRewrite: record.participant !== false ||
+            keys.includes("pending") ||
+            (keys.includes("lastAcceptedMode") &&
+              record.lastAcceptedMode === undefined),
         })
       : undefined;
   } catch {

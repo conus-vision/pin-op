@@ -297,10 +297,13 @@ export class BackgroundContentRefreshCoordinator {
     }
   }
 
-  public observeTabUpdate(tabId: number, update: BackgroundTabUpdate): void {
-    if (!isBrowserId(tabId) || this.disposed) return;
+  public observeTabUpdate(
+    tabId: number,
+    update: BackgroundTabUpdate,
+  ): boolean {
+    if (!isBrowserId(tabId) || this.disposed) return false;
     const lifecycle = this.lifecycleFor(tabId);
-    if (lifecycle.detached) return;
+    if (lifecycle.detached) return false;
     if (isBrowserId(update.windowId)) {
       if (lifecycle.windowId !== undefined && lifecycle.windowId !== update.windowId) {
         this.invalidateLifecycle(
@@ -311,7 +314,7 @@ export class BackgroundContentRefreshCoordinator {
         );
         lifecycle.participant = false;
         lifecycle.detached = true;
-        return;
+        return true;
       }
       lifecycle.windowId = update.windowId;
     }
@@ -344,9 +347,10 @@ export class BackgroundContentRefreshCoordinator {
         ? currentRuntimeId ?? lifecycle.blockedRuntimeId
         : undefined;
       lifecycle.preserveSnapshot = preserveSnapshot;
-      return;
+      return true;
     }
     if (pageUrl !== undefined) lifecycle.pageUrl = pageUrl;
+    return false;
   }
 
   public routeMessage(

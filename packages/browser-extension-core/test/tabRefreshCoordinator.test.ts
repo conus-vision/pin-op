@@ -424,6 +424,147 @@ describe("TabRefreshCoordinator", () => {
       ]);
   });
 
+  it("reports page refresh admission only for a newly committed watermark", async () => {
+    const context = setup();
+    await context.coordinator.panelOpened(11, 7);
+
+    await expect(
+      context.coordinator.acceptPageRefresh(-1, refresh(1, "styles")),
+    ).resolves.toBe(false);
+    await expect(
+      context.coordinator.acceptPageRefresh(7, refresh(2, "styles")),
+    ).resolves.toBe(true);
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      lastAcceptedGeneration: 2,
+    });
+    await expect(
+      context.coordinator.acceptPageRefresh(7, refresh(2, "styles")),
+    ).resolves.toBe(false);
+    await expect(
+      context.coordinator.acceptPageRefresh(7, refresh(1, "reload")),
+    ).resolves.toBe(false);
+    await expect(
+      context.coordinator.acceptPageRefresh(7, refresh(2, "reload")),
+    ).resolves.toBe(true);
+    await expect(
+      context.coordinator.acceptPageRefresh(7, refresh(2, "reload")),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects a same-generation reload replay after restart", async () => {
+    const first = setup();
+    await first.coordinator.panelOpened(11, 7);
+    const accepted = vi.fn();
+
+    await expect(first.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "reload"),
+      accepted,
+    )).resolves.toBe(true);
+    expect(accepted).toHaveBeenCalledOnce();
+
+    const replacement = setup(first.storage);
+    const replayed = vi.fn();
+    await expect(replacement.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "reload"),
+      replayed,
+    )).resolves.toBe(false);
+    expect(replayed).not.toHaveBeenCalled();
+  });
+
+  it("preserves the styles-to-reload upgrade across restart", async () => {
+    const first = setup();
+    await first.coordinator.panelOpened(11, 7);
+    await expect(first.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "styles"),
+    )).resolves.toBe(true);
+    expect(await first.store.loadAll()).toEqual([
+      expect.objectContaining({
+        lastAcceptedGeneration: 5,
+        lastAcceptedMode: "styles",
+      }),
+    ]);
+
+    const replacement = setup(first.storage);
+    const upgraded = vi.fn();
+    await expect(replacement.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "reload"),
+      upgraded,
+    )).resolves.toBe(true);
+    expect(upgraded).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed for same-generation replays from historical storage", async () => {
+    const context = setup(gatedInitialStorage(Promise.resolve({
+      "pin-op.tabRefreshStates": [{
+        tabId: 11,
+        windowId: 7,
+        autoRefreshEnabled: true,
+        ideHighlightEnabled: true,
+        participant: false,
+        lastAcceptedGeneration: 5,
+      }],
+    })));
+    const replayed = vi.fn();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "styles"),
+      replayed,
+    )).resolves.toBe(false);
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(5, "reload"),
+      replayed,
+    )).resolves.toBe(false);
+    expect(replayed).not.toHaveBeenCalled();
+  });
+
+  it("signals newer refresh admission once before deferred completion", async () => {
+    const dispatchGate = deferred<void>();
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => dispatchGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+    const onAccepted = vi.fn();
+    let settled = false;
+    const accepting = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+      onAccepted,
+    ).then((accepted) => {
+      settled = true;
+      return accepted;
+    });
+
+    try {
+      await vi.waitFor(() => expect(onAccepted).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+    } finally {
+      dispatchGate.resolve();
+    }
+    await expect(accepting).resolves.toBe(true);
+    expect(onAccepted).toHaveBeenCalledOnce();
+
+    const onReplay = vi.fn();
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+      onReplay,
+    )).resolves.toBe(false);
+    await expect(context.coordinator.acceptPageRefresh(
+      -1,
+      refresh(2, "reload"),
+      onReplay,
+    )).resolves.toBe(false);
+    expect(onReplay).not.toHaveBeenCalled();
+  });
+
   it("discards pending work while disabled and never replays disabled generations", async () => {
     const context = setup(undefined, () => 99);
     await context.coordinator.panelOpened(11, 7);
@@ -605,6 +746,7 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "reload",
     }]);
     const moved = await context.coordinator.panelOpened(11, 8);
     expect(moved).toMatchObject({
@@ -789,6 +931,7 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "reload",
     }]);
   });
 
@@ -1061,6 +1204,7 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: true,
       participant: false,
       lastAcceptedGeneration: 1,
+      lastAcceptedMode: "reload",
     }]);
     await context.coordinator.acceptPageRefresh(7, refresh(2, "reload"));
     await context.coordinator.activateTab(11, 7);
@@ -1085,6 +1229,7 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "reload",
     }]);
 
     const moved = await context.coordinator.panelOpened(11, 8);
@@ -1119,6 +1264,7 @@ describe("TabRefreshCoordinator", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "reload",
     }]);
     expect(replacement.setRefreshParticipant).not.toHaveBeenCalled();
   });

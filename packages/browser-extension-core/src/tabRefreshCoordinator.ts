@@ -31,9 +31,11 @@ export interface TabRefreshCoordinatorOptions {
   readonly onError?: (error: unknown) => void;
 }
 
+type WindowWatermarkMode = PageRefreshMode | "unknown";
+
 interface WindowWatermark {
   readonly generation: number;
-  readonly mode: PageRefreshMode;
+  readonly mode: WindowWatermarkMode;
 }
 
 export class TabRefreshCoordinator {
@@ -96,16 +98,16 @@ export class TabRefreshCoordinator {
         }
         const moved = existing !== undefined && existing.windowId !== windowId;
         const current = existing ?? createDefaultTabRefreshState(tabId, windowId);
-        const windowGeneration = this.watermarks.get(windowId)?.generation ?? 0;
         return durableSnapshot({
           tabId,
           windowId,
           autoRefreshEnabled: current.autoRefreshEnabled,
           ideHighlightEnabled: current.ideHighlightEnabled,
           participant: false,
-          lastAcceptedGeneration: moved
-            ? windowGeneration
-            : Math.max(current.lastAcceptedGeneration, windowGeneration),
+          ...durableWatermarkSnapshot(
+            moved ? undefined : existing,
+            this.watermarks.get(windowId),
+          ),
         });
       });
       const durable = updated ?? createDefaultTabRefreshState(tabId, windowId);
@@ -209,18 +211,18 @@ export class TabRefreshCoordinator {
         if (!this.isCurrentLifecycle(tabId, revision)) {
           return stored;
         }
-        const current = stored?.windowId === windowId
+        const storedForWindow = stored?.windowId === windowId
           ? stored
-          : createDefaultTabRefreshState(tabId, windowId);
+          : undefined;
         return durableSnapshot({
           tabId,
           windowId,
           autoRefreshEnabled: settings.autoRefreshEnabled,
           ideHighlightEnabled: settings.ideHighlightEnabled,
           participant: false,
-          lastAcceptedGeneration: Math.max(
-            current.lastAcceptedGeneration,
-            this.watermarks.get(windowId)?.generation ?? 0,
+          ...durableWatermarkSnapshot(
+            storedForWindow,
+            this.watermarks.get(windowId),
           ),
         });
       });
@@ -245,24 +247,26 @@ export class TabRefreshCoordinator {
   public async acceptPageRefresh(
     windowId: number,
     message: PageRefreshMessage,
-  ): Promise<void> {
+    onAccepted?: () => void,
+  ): Promise<boolean> {
     const parsed = PageRefreshMessageSchema.safeParse(message);
     if (!parsed.success || !isBrowserId(windowId)) {
-      return;
+      return false;
     }
     await this.ensureInitialized();
-    await this.enqueue(async () => {
+    return await this.enqueue(async () => {
       const states = await this.store.loadAll();
       const windowStates = states.filter((state) => state.windowId === windowId);
       const current = currentWatermark(this.watermarks.get(windowId), windowStates);
-      const incoming: WindowWatermark = {
+      const incoming = {
         generation: parsed.data.refreshGeneration,
         mode: parsed.data.mode,
-      };
+      } satisfies WindowWatermark;
       if (!isNewerRefresh(incoming, current)) {
-        return;
+        return false;
       }
       this.watermarks.set(windowId, incoming);
+      onAccepted?.();
 
       let activeTabId: number | undefined;
       try {
@@ -280,6 +284,7 @@ export class TabRefreshCoordinator {
                 ...state,
                 participant: false,
                 lastAcceptedGeneration: incoming.generation,
+                lastAcceptedMode: incoming.mode,
               })
             : state);
         if (
@@ -301,6 +306,7 @@ export class TabRefreshCoordinator {
           await this.dispatch(snapshot.tabId, pending);
         }
       }
+      return true;
     });
   }
 
@@ -320,7 +326,10 @@ export class TabRefreshCoordinator {
         await this.store.updateTab(state.tabId, (current) =>
           current?.windowId === windowId
             ? durableSnapshot({
-                ...current,
+                tabId: current.tabId,
+                windowId: current.windowId,
+                autoRefreshEnabled: current.autoRefreshEnabled,
+                ideHighlightEnabled: current.ideHighlightEnabled,
                 participant: false,
                 lastAcceptedGeneration: 0,
               })
@@ -446,11 +455,9 @@ export class TabRefreshCoordinator {
     const attempt = this.store.loadAll().then((states) => {
       for (const state of states) {
         const current = this.watermarks.get(state.windowId);
-        if (!current || state.lastAcceptedGeneration > current.generation) {
-          this.watermarks.set(state.windowId, {
-            generation: state.lastAcceptedGeneration,
-            mode: "styles",
-          });
+        const candidate = stateWatermark(state);
+        if (isNewerRefresh(candidate, current)) {
+          this.watermarks.set(state.windowId, candidate);
         }
       }
     });
@@ -584,13 +591,8 @@ export class TabRefreshCoordinator {
     tabId: number,
     windowId: number,
   ): TabRefreshState {
-    const base = durable.windowId === windowId
-      ? durable
-      : createDefaultTabRefreshState(
-          tabId,
-          windowId,
-          this.watermarks.get(windowId)?.generation ?? 0,
-        );
+    const storedForWindow = durable.windowId === windowId ? durable : undefined;
+    const base = storedForWindow ?? createDefaultTabRefreshState(tabId, windowId);
     const participant = base.autoRefreshEnabled &&
       this.panelWindows.get(tabId) === windowId &&
       this.participantWindows.get(tabId) === windowId;
@@ -601,7 +603,10 @@ export class TabRefreshCoordinator {
       autoRefreshEnabled: base.autoRefreshEnabled,
       ideHighlightEnabled: base.ideHighlightEnabled,
       participant,
-      lastAcceptedGeneration: base.lastAcceptedGeneration,
+      ...durableWatermarkSnapshot(
+        storedForWindow,
+        this.watermarks.get(windowId),
+      ),
       ...(pending ? { pending } : {}),
     });
   }
@@ -688,10 +693,7 @@ function currentWatermark(
 ): WindowWatermark | undefined {
   let current = remembered;
   for (const state of states) {
-    const candidate = {
-      generation: state.lastAcceptedGeneration,
-      mode: "styles",
-    } as const;
+    const candidate = stateWatermark(state);
     if (isNewerRefresh(candidate, current)) {
       current = candidate;
     }
@@ -706,8 +708,54 @@ function isNewerRefresh(
   return !current ||
     incoming.generation > current.generation ||
     (incoming.generation === current.generation &&
-      incoming.mode === "reload" &&
-      current.mode === "styles");
+      watermarkModePrecedence(incoming.mode) >
+        watermarkModePrecedence(current.mode));
+}
+
+function stateWatermark(state: TabRefreshState): WindowWatermark {
+  return {
+    generation: state.lastAcceptedGeneration,
+    mode: state.lastAcceptedMode ??
+      (state.lastAcceptedGeneration > 0 ? "unknown" : "styles"),
+  };
+}
+
+function durableWatermarkSnapshot(
+  state: TabRefreshState | undefined,
+  remembered: WindowWatermark | undefined,
+): Pick<TabRefreshState, "lastAcceptedGeneration" | "lastAcceptedMode"> {
+  if (state) {
+    const stored = stateWatermark(state);
+    if (!remembered || !isNewerRefresh(remembered, stored)) {
+      return {
+        lastAcceptedGeneration: state.lastAcceptedGeneration,
+        ...(state.lastAcceptedMode
+          ? { lastAcceptedMode: state.lastAcceptedMode }
+          : {}),
+      };
+    }
+  }
+  if (!remembered) {
+    return { lastAcceptedGeneration: 0 };
+  }
+  return {
+    lastAcceptedGeneration: remembered.generation,
+    ...(remembered.mode !== "unknown" &&
+        (remembered.generation > 0 || remembered.mode === "reload")
+      ? { lastAcceptedMode: remembered.mode }
+      : {}),
+  };
+}
+
+function watermarkModePrecedence(mode: WindowWatermarkMode): number {
+  switch (mode) {
+    case "styles":
+      return 0;
+    case "reload":
+      return 1;
+    case "unknown":
+      return 2;
+  }
 }
 
 function durableSnapshot(state: TabRefreshState): TabRefreshState {
@@ -718,6 +766,9 @@ function durableSnapshot(state: TabRefreshState): TabRefreshState {
     ideHighlightEnabled: state.ideHighlightEnabled,
     participant: false,
     lastAcceptedGeneration: state.lastAcceptedGeneration,
+    ...(state.lastAcceptedMode
+      ? { lastAcceptedMode: state.lastAcceptedMode }
+      : {}),
   });
 }
 
@@ -729,6 +780,9 @@ function stateSnapshot(state: TabRefreshState): TabRefreshState {
     ideHighlightEnabled: state.ideHighlightEnabled,
     participant: state.participant,
     lastAcceptedGeneration: state.lastAcceptedGeneration,
+    ...(state.lastAcceptedMode
+      ? { lastAcceptedMode: state.lastAcceptedMode }
+      : {}),
     ...(state.pending
       ? { pending: Object.freeze({ ...state.pending }) }
       : {}),

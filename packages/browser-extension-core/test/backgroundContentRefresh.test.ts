@@ -10,6 +10,43 @@ import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("BackgroundContentRefreshCoordinator", () => {
+  it("reports only authoritative tab lifecycle navigation", async () => {
+    const coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(
+        new MemorySessionStorage(),
+      ),
+      executeContentScript: vi.fn(async () => undefined),
+      sendTopFrameMessage: vi.fn(async () => undefined),
+      reloadTab: vi.fn(async () => undefined),
+    });
+    const sender = topSender(41, "https://example.test/page");
+    authorize(coordinator, 41);
+    await bind(coordinator, sender, "runtime-navigation-a");
+
+    expect(coordinator.observeTabUpdate(41, {
+      status: "complete",
+      url: sender.url,
+      windowId: 7,
+    })).toBe(false);
+    expect(coordinator.observeTabUpdate(41, {
+      status: "loading",
+      url: sender.url,
+      windowId: 7,
+    })).toBe(true);
+
+    await bind(coordinator, sender, "runtime-navigation-b");
+    expect(coordinator.observeTabUpdate(41, {
+      status: "complete",
+      url: "https://example.test/next",
+      windowId: 7,
+    })).toBe(true);
+    expect(coordinator.observeTabUpdate(-1, {
+      status: "loading",
+      url: sender.url,
+      windowId: 7,
+    })).toBe(false);
+  });
+
   it("binds default readiness timers to the host global", async () => {
     const pendingTimers = new Map<number, TimerHandler>();
     let nextTimer = 1;

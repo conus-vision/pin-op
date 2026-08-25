@@ -1,6 +1,8 @@
 import {
   PROTOCOL_VERSION,
+  type InspectRuleEvidenceBatch,
   type ResolutionMessage,
+  type RulesSourcesMessage,
   type SourceExcerpt,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
@@ -17,7 +19,7 @@ import {
 describe("InspectCorrelationStore", () => {
   it("routes only increasing resolution generations to the recorded channel", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
 
     expect(store.accept(resolution("inspect-a", 2), trusted)).toBe("panel-a");
@@ -29,8 +31,8 @@ describe("InspectCorrelationStore", () => {
 
   it("removes a failed send without disturbing other correlations", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
-    store.record("panel-b", "inspect-b", 8, 20);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
+    store.record("panel-b", "inspect-b", 8, 20, serializedRuleEvidence());
 
     store.discard("inspect-a");
 
@@ -40,10 +42,10 @@ describe("InspectCorrelationStore", () => {
 
   it("keeps only the newest inspect correlation for each panel channel", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a-old", 7, 10);
-    store.record("panel-b", "inspect-b", 8, 20);
+    store.record("panel-a", "inspect-a-old", 7, 10, serializedRuleEvidence());
+    store.record("panel-b", "inspect-b", 8, 20, serializedRuleEvidence());
 
-    store.record("panel-a", "inspect-a-current", 7, 10);
+    store.record("panel-a", "inspect-a-current", 7, 10, serializedRuleEvidence());
 
     expect(store.accept(resolution("inspect-a-old", 1), trustedPeer())).toBeUndefined();
     expect(store.accept(resolution("inspect-b", 1), trustedPeer({ windowId: 20 }))).toBe("panel-b");
@@ -52,7 +54,7 @@ describe("InspectCorrelationStore", () => {
 
   it("returns an immutable local route without granting IDE authority", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
 
     const route = store.routeForInspect("inspect-a");
 
@@ -61,6 +63,7 @@ describe("InspectCorrelationStore", () => {
       inspectMessageId: "inspect-a",
       tabId: 7,
       windowId: 10,
+      expectedRuleRefs: new Set(),
     });
     expect(Object.isFrozen(route)).toBe(true);
     expect(store.routeForInspect("inspect-missing")).toBeUndefined();
@@ -72,11 +75,11 @@ describe("InspectCorrelationStore", () => {
 
   it("is bounded by least-recently-used correlations", () => {
     const store = new InspectCorrelationStore(2);
-    store.record("panel-a", "inspect-a", 7, 10);
-    store.record("panel-b", "inspect-b", 8, 20);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
+    store.record("panel-b", "inspect-b", 8, 20, serializedRuleEvidence());
     expect(store.accept(resolution("inspect-a", 1), trustedPeer())).toBe("panel-a");
 
-    store.record("panel-c", "inspect-c", 9, 30);
+    store.record("panel-c", "inspect-c", 9, 30, serializedRuleEvidence());
 
     expect(store.accept(resolution("inspect-b", 1), trustedPeer({ windowId: 20 }))).toBeUndefined();
     expect(store.accept(resolution("inspect-a", 2), trustedPeer())).toBe("panel-a");
@@ -85,9 +88,9 @@ describe("InspectCorrelationStore", () => {
 
   it("drops every correlation owned by a disposed panel channel", () => {
     const store = new InspectCorrelationStore(256);
-    store.record("panel-a", "inspect-a", 7, 10);
-    store.record("panel-a", "inspect-b", 7, 10);
-    store.record("panel-b", "inspect-c", 8, 20);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
+    store.record("panel-a", "inspect-b", 7, 10, serializedRuleEvidence());
+    store.record("panel-b", "inspect-c", 8, 20, serializedRuleEvidence());
 
     store.disposeChannel("panel-a");
 
@@ -98,7 +101,7 @@ describe("InspectCorrelationStore", () => {
 
   it("repeatedly accepts navigation state only at the current resolution generation", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
     expect(store.accept(resolution("inspect-a", 2), trusted)).toBe("panel-a");
     const current = sourceNavigationState("inspect-a", 2, 0);
@@ -126,7 +129,7 @@ describe("InspectCorrelationStore", () => {
 
   it("repeatedly authorizes only the exact current navigation correlation", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
     expect(store.accept(resolution("inspect-a", 2), trusted)).toBe("panel-a");
     const current = {
@@ -158,7 +161,7 @@ describe("InspectCorrelationStore", () => {
 
   it("authorizes source open only for the exact published IDE match authority", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const resolutionContext = trustedPeer();
     const matchesContext = trustedPeer();
     expect(store.accept(matchedResolution("inspect-a", 1), resolutionContext)).toBe("panel-a");
@@ -188,7 +191,7 @@ describe("InspectCorrelationStore", () => {
 
   it("authorizes presentation settings only from exact local routing facts", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const resolutionContext = trustedPeer();
     const route = presentationSettingsRoute();
 
@@ -233,7 +236,7 @@ describe("InspectCorrelationStore", () => {
 
   it("requires a current resolution for nonempty matches and accepts empty pre-resolution invalidation without authority", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
 
     expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1), trusted)).toBeUndefined();
@@ -258,9 +261,51 @@ describe("InspectCorrelationStore", () => {
       .toBe(trusted);
   });
 
+  it("rejects foreign pre-resolution match invalidation after Rules pins the owner", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record(
+      "panel-a",
+      "inspect-a",
+      7,
+      10,
+      serializedRuleEvidence("rule-a"),
+    );
+    const owner = trustedPeer();
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 1, ["rule-a"]),
+      owner,
+    )).toBe("panel-a");
+    const rulesAuthority = store.authorizeRulesOpen(rulesOpenRoute());
+    expect(rulesAuthority).toBeDefined();
+    if (!rulesAuthority) {
+      throw new Error("Expected current Rules authority");
+    }
+    const sourceOpenBefore = store.authorizeSourceOpen(sourceOpenRoute());
+    const presentationBefore = store.authorizePresentationSettings(
+      presentationSettingsRoute(),
+    );
+    expect(sourceOpenBefore).toBeUndefined();
+    expect(presentationBefore).toBeUndefined();
+    const foreignPeer = trustedPeer({ sourceId: "vscode-b" });
+
+    expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1, {
+      sourceId: "vscode-b",
+      matches: [],
+    }), foreignPeer)).toBeUndefined();
+
+    expect(store.authorizeSourceOpen(sourceOpenRoute())).toBe(sourceOpenBefore);
+    expect(store.authorizePresentationSettings(presentationSettingsRoute()))
+      .toBe(presentationBefore);
+    expect(store.authorizeRulesOpen(rulesOpenRoute())?.context).toBe(owner);
+    expect(store.acceptSourceMatches(sourceMatches("inspect-a", 1, {
+      matches: [],
+    }), owner)).toBe("panel-a");
+    expect(store.discardRulesOpenAuthority(rulesAuthority)).toBe(true);
+  });
+
   it("rejects stale, foreign, and duplicate match publications atomically", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     expect(store.accept(matchedResolution("inspect-a", 1), trustedPeer())).toBe(
       "panel-a",
     );
@@ -305,7 +350,7 @@ describe("InspectCorrelationStore", () => {
       resolutionGeneration: 2,
     })?.context).toBe(trusted);
 
-    store.record("panel-a", "inspect-b", 7, 10);
+    store.record("panel-a", "inspect-b", 7, 10, serializedRuleEvidence());
     expect(store.authorizeSourceOpen({
       ...current,
       resolutionGeneration: 2,
@@ -399,7 +444,7 @@ describe("InspectCorrelationStore", () => {
 
   it("requires an opaque trusted peer context before resolution authority mutation", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const spoof = {
       windowId: 10,
       sessionId: "session-a",
@@ -418,7 +463,7 @@ describe("InspectCorrelationStore", () => {
 
   it("rejects payload identity spoofing without consuming the resolution generation", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
     const spoofed = {
       ...matchedResolution("inspect-a", 1),
@@ -433,7 +478,7 @@ describe("InspectCorrelationStore", () => {
 
   it("requires the same trusted route for matches and navigation", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const trusted = trustedPeer();
     const otherWindow = trustedPeer({ windowId: 11 });
     expect(store.accept(matchedResolution("inspect-a", 1), trusted)).toBe(
@@ -463,7 +508,7 @@ describe("InspectCorrelationStore", () => {
 
   it("does not replace pinned authority for stale or spoofed match contexts", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const firstResolutionContext = trustedPeer();
     expect(store.accept(
       matchedResolution("inspect-a", 1),
@@ -499,7 +544,7 @@ describe("InspectCorrelationStore", () => {
 
   it("does not route pre-resolution invalidation from a spoofed context", () => {
     const store = new InspectCorrelationStore(4);
-    store.record("panel-a", "inspect-a", 7, 10);
+    store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
     const spoof = {
       windowId: 10,
       sessionId: "session-a",
@@ -510,6 +555,224 @@ describe("InspectCorrelationStore", () => {
       matches: [],
     }), spoof)).toBeUndefined();
     expect(store.authorizeSourceOpen(sourceOpenRoute())).toBeUndefined();
+  });
+
+  it("snapshots the exact expected refs from the final serialized evidence batch", () => {
+    const store = new InspectCorrelationStore(4);
+    const evidence = serializedRuleEvidence("rule-a", "rule-b");
+    store.record("panel-a", "inspect-a", 7, 10, evidence);
+
+    const route = store.routeForInspect("inspect-a");
+    expect(route).toMatchObject({
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      tabId: 7,
+      windowId: 10,
+      expectedRuleRefs: new Set(["rule-a", "rule-b"]),
+    });
+    expect(Object.isFrozen(route)).toBe(true);
+
+    (evidence.rules as { ruleRef: string }[]).splice(0);
+    (route?.expectedRuleRefs as Set<string> | undefined)?.clear();
+    expect(store.routeForInspect("inspect-a")?.expectedRuleRefs).toEqual(
+      new Set(["rule-a", "rule-b"]),
+    );
+  });
+
+  it("keeps Rules authority current across active-editor Source resolution and navigation", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record(
+      "panel-a",
+      "inspect-a",
+      7,
+      10,
+      serializedRuleEvidence("rule-a"),
+    );
+    const rulesContext = trustedPeer();
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 1, ["rule-a"]),
+      rulesContext,
+    )).toBe("panel-a");
+    const current = rulesOpenRoute();
+    const authority = store.authorizeRulesOpen(current);
+    expect(authority).toMatchObject(current);
+    expect(authority?.context).toBe(rulesContext);
+    expect(Object.isFrozen(authority)).toBe(true);
+
+    const sourceContext = trustedPeer();
+    expect(store.accept(matchedResolution("inspect-a", 40), sourceContext)).toBe(
+      "panel-a",
+    );
+    expect(store.acceptNavigationState(
+      sourceNavigationState("inspect-a", 40, 0),
+      sourceContext,
+    )).toBe("panel-a");
+    expect(store.authorizeNavigation({
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 40,
+      tabId: 7,
+    })).toBe(true);
+    expect(store.authorizeRulesOpen(current)?.context).toBe(rulesContext);
+  });
+
+  it("keeps Source authority current across newer Rules source generations", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record(
+      "panel-a",
+      "inspect-a",
+      7,
+      10,
+      serializedRuleEvidence("rule-a"),
+    );
+    const sourceContext = trustedPeer();
+    expect(store.accept(matchedResolution("inspect-a", 1), sourceContext)).toBe(
+      "panel-a",
+    );
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      sourceContext,
+    )).toBe("panel-a");
+    expect(store.authorizeSourceOpen(sourceOpenRoute())?.context).toBe(
+      sourceContext,
+    );
+
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 1, ["rule-a"]),
+      trustedPeer(),
+    )).toBe("panel-a");
+    const secondRulesContext = trustedPeer();
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 2, ["rule-a"]),
+      secondRulesContext,
+    )).toBe("panel-a");
+
+    expect(store.authorizeSourceOpen(sourceOpenRoute())?.context).toBe(
+      sourceContext,
+    );
+    expect(store.authorizeNavigation({
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      tabId: 7,
+    })).toBe(true);
+    expect(store.authorizeRulesOpen({
+      ...rulesOpenRoute(),
+      rulesGeneration: 2,
+    })?.context).toBe(secondRulesContext);
+  });
+
+  it("rejects invalid Rules publications without mutating either namespace", () => {
+    const store = new InspectCorrelationStore(4);
+    store.record(
+      "panel-a",
+      "inspect-a",
+      7,
+      10,
+      serializedRuleEvidence("rule-a"),
+    );
+    const sourceContext = trustedPeer();
+    expect(store.accept(matchedResolution("inspect-a", 1), sourceContext)).toBe(
+      "panel-a",
+    );
+    expect(store.acceptSourceMatches(
+      sourceMatches("inspect-a", 1),
+      sourceContext,
+    )).toBe("panel-a");
+    const rulesContext = trustedPeer();
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 1, ["rule-a"]),
+      rulesContext,
+    )).toBe("panel-a");
+
+    const foreignContext = trustedPeer({ sourceId: "vscode-b" });
+    const foreignPublication = {
+      ...rulesSources("inspect-a", 2, ["rule-a"]),
+      source: { role: "ide", id: "vscode-b" },
+    } as RulesSourcesMessage;
+    for (const [message, context] of [
+      [rulesSources("inspect-a", 1, ["rule-a"]), rulesContext],
+      [rulesSources("inspect-a", 2, ["unexpected-rule"]), rulesContext],
+      [rulesSources("inspect-a", 2, []), rulesContext],
+      [foreignPublication, foreignContext],
+    ] as const) {
+      expect(store.acceptRulesSources(message, context)).toBeUndefined();
+    }
+
+    expect(store.authorizeSourceOpen(sourceOpenRoute())?.context).toBe(
+      sourceContext,
+    );
+    expect(store.authorizeNavigation({
+      channel: "panel-a",
+      inspectMessageId: "inspect-a",
+      resolutionGeneration: 1,
+      tabId: 7,
+    })).toBe(true);
+    expect(store.authorizeRulesOpen(rulesOpenRoute())?.context).toBe(
+      rulesContext,
+    );
+  });
+
+  it("fences same-selection Rules renewal behind a new inspect route", () => {
+    const store = readyRulesStore();
+    const stale = store.authorizeRulesOpen(rulesOpenRoute());
+    expect(stale).toBeDefined();
+
+    store.record(
+      "panel-a",
+      "inspect-renewed",
+      7,
+      10,
+      serializedRuleEvidence("rule-renewed"),
+    );
+
+    expect(store.routeForInspect("inspect-a")).toBeUndefined();
+    expect(store.authorizeRulesOpen(rulesOpenRoute())).toBeUndefined();
+    expect(stale && store.discardRulesOpenAuthority(stale)).toBe(false);
+    expect(store.routeForInspect("inspect-renewed")).toMatchObject({
+      channel: "panel-a",
+      inspectMessageId: "inspect-renewed",
+      tabId: 7,
+      windowId: 10,
+      expectedRuleRefs: new Set(["rule-renewed"]),
+    });
+    expect(store.acceptRulesSources(
+      rulesSources("inspect-a", 2, ["rule-a"]),
+      trustedPeer(),
+    )).toBeUndefined();
+  });
+
+  it.each([
+    ["selection", (store: InspectCorrelationStore) => store.record(
+      "panel-a",
+      "inspect-next",
+      7,
+      10,
+      serializedRuleEvidence("rule-next"),
+    )],
+    ["stylesheet refresh", (store: InspectCorrelationStore) =>
+      store.disposeWindow(10)],
+    ["page refresh", (store: InspectCorrelationStore) =>
+      store.disposeWindow(10)],
+    ["document navigation", (store: InspectCorrelationStore) =>
+      store.disposeTab(7)],
+    ["frame navigation", (store: InspectCorrelationStore) =>
+      store.disposeChannel("panel-a")],
+    ["disconnect", (store: InspectCorrelationStore) =>
+      store.disposeWindow(10)],
+    ["protocol mismatch", (store: InspectCorrelationStore) =>
+      store.disposeWindow(10)],
+    ["disposal", (store: InspectCorrelationStore) =>
+      store.discard("inspect-a")],
+  ] as const)("revokes Rules authority on %s", (_reason, revoke) => {
+    const store = readyRulesStore();
+    const authority = store.authorizeRulesOpen(rulesOpenRoute());
+    expect(authority).toBeDefined();
+
+    revoke(store);
+
+    expect(store.authorizeRulesOpen(rulesOpenRoute())).toBeUndefined();
+    expect(authority && store.discardRulesOpenAuthority(authority)).toBe(false);
   });
 });
 
@@ -633,7 +896,7 @@ function populateSourceStore(
   store: InspectCorrelationStore,
   context: TrustedIdePeerContext,
 ): void {
-  store.record("panel-a", "inspect-a", 7, 10);
+  store.record("panel-a", "inspect-a", 7, 10, serializedRuleEvidence());
   store.accept(matchedResolution("inspect-a", 1), context);
   store.acceptSourceMatches(sourceMatches("inspect-a", 1), context);
 }
@@ -655,4 +918,74 @@ function sourceNavigationState(
     ...(activeMatchIndex === undefined ? {} : { activeMatchIndex }),
     metadata: {},
   };
+}
+
+function serializedRuleEvidence(
+  ...ruleRefs: readonly string[]
+): InspectRuleEvidenceBatch {
+  return JSON.parse(JSON.stringify({
+    rules: ruleRefs.map((ruleRef) => ({
+      ruleRef,
+      selector: `.${ruleRef}`,
+      declarations: [],
+      declarationsTruncated: false,
+    })),
+    omittedRuleCount: 0,
+  })) as InspectRuleEvidenceBatch;
+}
+
+function rulesSources(
+  inspectMessageId: string,
+  rulesGeneration: number,
+  ruleRefs: readonly string[],
+): RulesSourcesMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: `rules-sources-${inspectMessageId}-${rulesGeneration}`,
+    sessionId: "session-a",
+    source: { role: "ide", id: "vscode-a" },
+    inspectMessageId,
+    rulesGeneration,
+    sources: ruleRefs.map((ruleRef) => ({
+      ruleRef,
+      openAuthorityId: `open-${ruleRef}`,
+      document: { label: `${ruleRef}.scss`, languageId: "scss" },
+      startLine: 1,
+      startColumn: 1,
+      confidence: "exact",
+    })),
+    unresolvedRuleCount: 0,
+    metadata: {},
+  };
+}
+
+function rulesOpenRoute() {
+  return {
+    channel: "panel-a",
+    tabId: 7,
+    windowId: 10,
+    inspectMessageId: "inspect-a",
+    rulesGeneration: 1,
+    openAuthorityId: "open-rule-a",
+  } as const;
+}
+
+function readyRulesStore(): InspectCorrelationStore {
+  const store = new InspectCorrelationStore(4);
+  store.record(
+    "panel-a",
+    "inspect-a",
+    7,
+    10,
+    serializedRuleEvidence("rule-a"),
+  );
+  const accepted = store.acceptRulesSources(
+    rulesSources("inspect-a", 1, ["rule-a"]),
+    trustedPeer(),
+  );
+  if (accepted !== "panel-a") {
+    throw new Error("Expected current Rules authority");
+  }
+  return store;
 }

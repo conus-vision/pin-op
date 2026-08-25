@@ -285,6 +285,17 @@ interface StylesSelectionAuthority {
   readonly selected: boolean;
 }
 
+interface InspectPublicationToken {
+  documentEpoch: number | undefined;
+  readonly selectionRevision: number;
+}
+
+interface StylesInvalidationAuthority {
+  readonly documentEpoch: number;
+  readonly stylesRevision: number;
+  readonly stylesheetRevision: number;
+}
+
 interface PanelPortRecord {
   readonly channel: string;
   readonly port: BackgroundRuntimePort;
@@ -299,6 +310,8 @@ interface PanelPortRecord {
   inspectWindowId?: number;
   contentSessionId?: ContentSessionId;
   stylesSelectionAuthority?: StylesSelectionAuthority;
+  stylesInvalidationAuthority?: StylesInvalidationAuthority;
+  inspectPublicationToken?: InspectPublicationToken;
   panelSessionBinding?: { dispose(): void };
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
@@ -362,7 +375,7 @@ const okResult = Object.freeze({ ok: true } as const);
 const nullContentRefreshRuntime: BackgroundContentRefreshRuntime = Object.freeze({
   async dispatch(): Promise<void> {},
   async routeMessage(): Promise<undefined> { return undefined; },
-  observeTabUpdate(): void {},
+  observeTabUpdate(): boolean { return false; },
   async tabUpdated(): Promise<void> {},
   setTabParticipation(): void {},
   setWindowEligibility(): void {},
@@ -617,7 +630,7 @@ export class BackgroundRouter {
       windowId,
     );
     this.contentRefreshCoordinator.revokeWindow(windowId);
-    this.correlations.disposeWindow(windowId);
+    this.revokeInspectWindow(windowId);
     this.removedWindows.add(windowId);
     this.windowRefreshEpochs.delete(windowId);
     this.peerStates.delete(windowId);
@@ -644,6 +657,10 @@ export class BackgroundRouter {
     }
     this.disposed = true;
     this.disposeGeneration += 1;
+
+    for (const record of this.panelPorts.values()) {
+      record.inspectPublicationToken = undefined;
+    }
 
     for (const removeSubscription of this.removeSubscriptions.splice(0)) {
       try {
@@ -730,7 +747,7 @@ export class BackgroundRouter {
     }
     const tabRefreshRemoval = this.tabRefreshCoordinator.removeTab(tabId);
     this.contentRefreshCoordinator.revokeTab(tabId);
-    this.correlations.disposeTab(tabId);
+    this.revokeInspectTab(tabId);
     this.cancelPendingRegistrationsForTab(tabId);
     const channel = this.channelByTab.get(tabId);
     const binding = channel ? this.bindings.get(channel) : undefined;
@@ -774,7 +791,7 @@ export class BackgroundRouter {
       return;
     }
     this.contentRefreshCoordinator.revokeTab(tabId);
-    this.correlations.disposeTab(tabId);
+    this.revokeInspectTab(tabId);
     for (const pending of this.pendingRegistrations.values()) {
       if (pending.tabId === tabId && this.isCurrentPending(pending)) {
         pending.detachedWindowId = oldWindowId;
@@ -1282,7 +1299,13 @@ export class BackgroundRouter {
     update: BackgroundTabUpdate,
   ): Promise<void> {
     if (this.disposed || !isBrowserId(tabId)) return;
-    this.contentRefreshCoordinator.observeTabUpdate(tabId, update);
+    const navigated = this.contentRefreshCoordinator.observeTabUpdate(
+      tabId,
+      update,
+    );
+    if (navigated) {
+      this.revokeInspectTab(tabId);
+    }
     let participant = false;
     if (isBrowserId(update.windowId)) {
       try {
@@ -1650,7 +1673,7 @@ export class BackgroundRouter {
     this.beginWindowRefreshEpoch(windowId);
     this.peerBlockedWindows.add(windowId);
     this.contentRefreshCoordinator.revokeWindow(windowId);
-    this.correlations.disposeWindow(windowId);
+    this.revokeInspectWindow(windowId);
     this.invalidateWindowPanelTabStates(windowId);
     try {
       await this.coordinator.unlinkWindow(windowId);
@@ -1711,7 +1734,7 @@ export class BackgroundRouter {
   ): void {
     const activationToken = record.activationToken;
     if (preserveInspection) {
-      this.correlations.disposeChannel(record.channel);
+      this.revokeInspectChannel(record.channel);
       if (settlePendingInspect) {
         record.inspectSession?.suspend("stalePanel");
       }
@@ -1721,6 +1744,7 @@ export class BackgroundRouter {
     record.activationToken = undefined;
     record.bindingGeneration = undefined;
     record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
     record.windowStateQueue = undefined;
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
@@ -1752,6 +1776,7 @@ export class BackgroundRouter {
     record.contentRecoveryAvailable = false;
     record.contentSessionId = undefined;
     record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
     const panelSessionBinding = this.panelSessions.bind(
       record.channel,
       binding.tabId,
@@ -1771,6 +1796,7 @@ export class BackgroundRouter {
           ) {
             record.contentSessionId = contentSessionId;
             record.stylesSelectionAuthority = undefined;
+            record.stylesInvalidationAuthority = undefined;
             record.contentRecoveryAvailable = true;
             record.inspectionFailedClosed = false;
           }
@@ -1798,6 +1824,7 @@ export class BackgroundRouter {
     }
     record.contentSessionId = undefined;
     record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
     const binding = this.bindings.get(record.channel);
     const token = record.activationToken;
     const recover = reason === "documentDisconnected" &&
@@ -1835,11 +1862,12 @@ export class BackgroundRouter {
     record.inspectWindowId = undefined;
     record.contentSessionId = undefined;
     record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
     record.panelSessionBinding?.dispose();
     record.panelSessionBinding = undefined;
     record.contentRecoveryAvailable = false;
     this.panelSessions.disposeChannel(record.channel);
-    this.correlations.disposeChannel(record.channel);
+    this.revokeInspectChannel(record.channel);
     if (settlePendingInspect) {
       session?.retire("stalePanel");
     } else {
@@ -2031,7 +2059,7 @@ export class BackgroundRouter {
       } else {
         this.beginWindowRefreshEpoch(refreshed.windowId);
         this.contentRefreshCoordinator.revokeWindow(refreshed.windowId);
-        this.correlations.disposeChannel(command.channel);
+        this.revokeInspectWindow(refreshed.windowId);
         this.peerBlockedWindows.add(refreshed.windowId);
         await this.coordinator.unlinkWindow(
           refreshed.windowId,
@@ -2957,12 +2985,28 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
+    const selectionAuthority = record.stylesSelectionAuthority;
+    if (
+      selectionAuthority &&
+      (selectionRevision < selectionAuthority.selectionRevision ||
+        (!selectionAuthority.selected &&
+          selectionRevision === selectionAuthority.selectionRevision))
+    ) {
+      return undefined;
+    }
+    const publicationToken: InspectPublicationToken = {
+      documentEpoch: selectionAuthority?.documentEpoch,
+      selectionRevision,
+    };
+    record.inspectPublicationToken = publicationToken;
+    this.correlations.disposeChannel(binding.channel);
     const token = record.activationToken;
     const refreshed = await this.refreshPanelBinding(binding, record, token);
     if (
       !refreshed ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      record.inspectPublicationToken !== publicationToken ||
       (senderTab.windowId !== undefined &&
         senderTab.windowId !== refreshed.windowId)
     ) {
@@ -2983,6 +3027,7 @@ export class BackgroundRouter {
     if (
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      record.inspectPublicationToken !== publicationToken ||
       !record.activationToken ||
       !this.isCurrentActivation(record, record.activationToken, refreshed)
     ) {
@@ -2996,12 +3041,16 @@ export class BackgroundRouter {
       metadata: payload.metadata,
     };
     try {
+      if (record.inspectPublicationToken !== publicationToken) {
+        return undefined;
+      }
       inspectMessageId = this.inspectMessageId();
       this.correlations.record(
         refreshed.channel,
         inspectMessageId,
         refreshed.tabId,
         refreshed.windowId,
+        inspectPayload.ruleEvidence,
       );
       this.panelSessions.publishInspectStarted(
         refreshed.channel,
@@ -3057,7 +3106,9 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
-    this.observeStylesSelectionAuthority(record, event);
+    if (!this.observeStylesSelectionAuthority(record, event)) {
+      return undefined;
+    }
     this.panelSessions.publish(binding.channel, event);
     return okResult;
   }
@@ -3081,6 +3132,23 @@ export class BackgroundRouter {
       (senderTab.windowId !== undefined && senderTab.windowId !== binding.windowId)
     ) return undefined;
     if (event.type === "styles.invalidated") {
+      const authority = record.stylesInvalidationAuthority;
+      if (
+        authority &&
+        (event.documentEpoch < authority.documentEpoch ||
+          (event.documentEpoch === authority.documentEpoch &&
+            (event.stylesRevision <= authority.stylesRevision ||
+              event.stylesheetRevision < authority.stylesheetRevision)))
+      ) {
+        return undefined;
+      }
+      record.stylesInvalidationAuthority = Object.freeze({
+        documentEpoch: event.documentEpoch,
+        stylesRevision: event.stylesRevision,
+        stylesheetRevision: event.stylesheetRevision,
+      });
+      record.inspectPublicationToken = undefined;
+      this.correlations.disposeChannel(binding.channel);
       this.panelSessions.publish(binding.channel, event);
       return okResult;
     }
@@ -3109,21 +3177,40 @@ export class BackgroundRouter {
   private observeStylesSelectionAuthority(
     record: PanelPortRecord,
     event: DomEvent,
-  ): void {
+  ): boolean {
     if (
       event.type !== "dom.selectionChanged" &&
       event.type !== "dom.selectionCleared"
     ) {
-      return;
+      return true;
     }
     const current = record.stylesSelectionAuthority;
+    const selectedToClearedTie = current?.selected === true &&
+      event.type === "dom.selectionCleared" &&
+      event.documentEpoch === current.documentEpoch &&
+      event.selectionRevision === current.selectionRevision &&
+      event.nodeRef === current.nodeRef;
     if (
       current &&
       (event.documentEpoch < current.documentEpoch ||
         (event.documentEpoch === current.documentEpoch &&
-          event.selectionRevision <= current.selectionRevision))
+          (event.selectionRevision < current.selectionRevision ||
+            (event.selectionRevision === current.selectionRevision &&
+              !selectedToClearedTie))))
     ) {
-      return;
+      return false;
+    }
+    const publicationToken = record.inspectPublicationToken;
+    const matchesCurrentPublication = event.type === "dom.selectionChanged" &&
+      publicationToken !== undefined &&
+      publicationToken.selectionRevision === event.selectionRevision &&
+      (publicationToken.documentEpoch === undefined ||
+        publicationToken.documentEpoch === event.documentEpoch);
+    if (matchesCurrentPublication) {
+      publicationToken.documentEpoch = event.documentEpoch;
+    } else {
+      record.inspectPublicationToken = undefined;
+      this.correlations.disposeChannel(record.channel);
     }
     record.stylesSelectionAuthority = {
       documentEpoch: event.documentEpoch,
@@ -3131,6 +3218,7 @@ export class BackgroundRouter {
       selectionRevision: event.selectionRevision,
       selected: event.type === "dom.selectionChanged",
     };
+    return true;
   }
 
   private queueWindowState(
@@ -3151,7 +3239,7 @@ export class BackgroundRouter {
     record.windowStateRevision += 1;
     const revision = record.windowStateRevision;
     if (revokesSourcePresentationAuthority(state)) {
-      this.correlations.disposeWindow(binding.windowId);
+      this.revokeInspectWindow(binding.windowId);
     }
     const operation = queue.tail.then(async () => {
       if (
@@ -3425,6 +3513,37 @@ export class BackgroundRouter {
       });
   }
 
+  private revokeInspectChannel(channel: string): void {
+    const record = this.panelPorts.get(channel);
+    if (record) {
+      record.inspectPublicationToken = undefined;
+    }
+    this.correlations.disposeChannel(channel);
+  }
+
+  private revokeInspectTab(tabId: number): void {
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      if (record.inspectTabId === tabId || binding?.tabId === tabId) {
+        record.inspectPublicationToken = undefined;
+      }
+    }
+    this.correlations.disposeTab(tabId);
+  }
+
+  private revokeInspectWindow(windowId: number): void {
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      if (
+        record.inspectWindowId === windowId ||
+        binding?.windowId === windowId
+      ) {
+        record.inspectPublicationToken = undefined;
+      }
+    }
+    this.correlations.disposeWindow(windowId);
+  }
+
   private activeInspectionRecords(windowId: number): PanelPortRecord[] {
     return [...this.panelPorts.values()].filter((record) => {
       const token = record.activationToken;
@@ -3560,7 +3679,7 @@ export class BackgroundRouter {
       previous !== undefined &&
       previous.sessionId !== message.sessionId;
     if (!message.connected || connectedSessionChanged) {
-      this.correlations.disposeWindow(windowId);
+      this.revokeInspectWindow(windowId);
     }
     const availability = this.getAvailabilityState(windowId);
     const wasAvailable = windowIsAvailable(availability, previous);
@@ -3613,7 +3732,7 @@ export class BackgroundRouter {
       return;
     }
     this.contentRefreshCoordinator.revokeWindow(windowId);
-    this.correlations.disposeWindow(windowId);
+    this.revokeInspectWindow(windowId);
     this.peerBlockedWindows.add(windowId);
     this.peerStates.delete(windowId);
     this.availabilityStates.delete(windowId);
@@ -3736,7 +3855,20 @@ export class BackgroundRouter {
       return;
     }
     void this.tabRefreshCoordinator
-      .acceptPageRefresh(windowId, message)
+      .acceptPageRefresh(windowId, message, () => {
+        try {
+          if (
+            this.disposed ||
+            this.removedWindows.has(windowId) ||
+            this.windowRefreshEpoch(windowId) !== refreshEpoch
+          ) {
+            return;
+          }
+          this.revokeInspectWindow(windowId);
+        } catch (error) {
+          this.reportError(error);
+        }
+      })
       .catch((error) => this.reportError(error));
   }
 

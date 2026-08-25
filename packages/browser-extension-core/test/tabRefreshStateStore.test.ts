@@ -6,7 +6,7 @@ import {
 } from "../src/tabRefreshStateStore.js";
 
 describe("TabRefreshStateStore", () => {
-  it("persists only preferences and generation across store instances", async () => {
+  it("persists preferences, generation, and accepted mode across stores", async () => {
     const storage = memoryStorage();
     const first = new TabRefreshStateStore(storage);
 
@@ -25,6 +25,7 @@ describe("TabRefreshStateStore", () => {
       participant: true,
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "styles",
       pending: { generation: 4, mode: "styles" },
     });
     const replacement = new TabRefreshStateStore(storage);
@@ -32,11 +33,13 @@ describe("TabRefreshStateStore", () => {
       ...defaults,
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "styles",
     });
     expect(storage.value("pin-op.tabRefreshStates")).toEqual([{
       ...defaults,
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 4,
+      lastAcceptedMode: "styles",
     }]);
   });
 
@@ -226,6 +229,7 @@ describe("TabRefreshStateStore", () => {
       ...state(11, 7),
       ideHighlightEnabled: false,
       lastAcceptedGeneration: 9,
+      lastAcceptedMode: "reload" as const,
       pending: { generation: 9, mode: "reload" as const },
     };
     const storage = memoryStorage({
@@ -241,6 +245,7 @@ describe("TabRefreshStateStore", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 9,
+      lastAcceptedMode: "reload",
     }]);
     expect(storage.value("pin-op.tabRefreshStates")).toEqual([stale]);
 
@@ -252,6 +257,7 @@ describe("TabRefreshStateStore", () => {
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 9,
+      lastAcceptedMode: "reload",
     }]);
   });
 
@@ -267,15 +273,22 @@ describe("TabRefreshStateStore", () => {
         pending: { malformed: true },
       }],
     });
-
-    await expect(new TabRefreshStateStore(storage).loadAll()).resolves.toEqual([{
+    const expected = [{
       tabId: 11,
       windowId: 7,
       autoRefreshEnabled: false,
       ideHighlightEnabled: false,
       participant: false,
       lastAcceptedGeneration: 8,
-    }]);
+    }];
+
+    await expect(new TabRefreshStateStore(storage).loadAll()).resolves.toEqual(
+      expected,
+    );
+    expect(storage.value("pin-op.tabRefreshStates")).toEqual(expected);
+    await expect(new TabRefreshStateStore(storage).loadAll()).resolves.toEqual(
+      expected,
+    );
   });
 
   it("ignores and removes a legacy recovery journal without trusting it", async () => {

@@ -98,14 +98,21 @@ describe("PanelDiagnostics", () => {
 
   it("records only bounded resolution state without local source details", () => {
     const diagnostics = new PanelDiagnostics();
+    const secretRuleRef = "rule-C:\\secret\\workspace\\card.scss";
+    const secretAuthority = "open-authority-C:\\secret\\workspace";
     diagnostics.recordResolution(
-      resolution({
-        resolutionGeneration: 4,
-        selectedMatchCount: 2,
-        parentMatchCount: 1,
-        inaccessibleStylesheetCount: 3,
-        diagnosticCodes: ["resolver.plugin-timeout"],
-      }),
+      {
+        ...resolution({
+          resolutionGeneration: 4,
+          selectedMatchCount: 2,
+          parentMatchCount: 1,
+          inaccessibleStylesheetCount: 3,
+          diagnosticCodes: ["resolver.plugin-timeout"],
+        }),
+        expectedRuleRefs: [secretRuleRef],
+        rulesGeneration: 8,
+        openAuthorityIds: [secretAuthority],
+      } as ResolutionMessage,
     );
 
     expect(diagnostics.snapshot().resolution).toEqual({
@@ -118,6 +125,10 @@ describe("PanelDiagnostics", () => {
     });
     expect(JSON.stringify(diagnostics.snapshot())).not.toContain(
       "C:\\secret\\workspace",
+    );
+    expect(JSON.stringify(diagnostics.snapshot())).not.toContain(secretRuleRef);
+    expect(JSON.stringify(diagnostics.snapshot())).not.toContain(
+      secretAuthority,
     );
   });
 
