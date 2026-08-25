@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import type * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   type InspectMessage,
   type PresentationSettingsMessage,
+  type RulesOpenMessage,
   type SourceNavigateMessage,
   type SourceOpenMessage,
 } from "@pin-op/protocol";
@@ -23,8 +26,19 @@ import {
   SourceDecorationManager,
   type DecorationRole,
 } from "../src/presenter/decorations.js";
-import { createPresenterRuntime } from "../src/presenter/runtime.js";
+import {
+  createPresenterDocumentHost,
+  createPresenterRuntime,
+  type PresenterDocumentLike,
+} from "../src/presenter/runtime.js";
 import { RefreshClassifierRegistry } from "../src/refresh/refreshClassifierRegistry.js";
+import type { RulesSourcesPublicationPayload } from
+  "../src/rules/rulesSourcesPublication.js";
+import type {
+  ResolvedRuleSource,
+  RulesSourceResolutionBatch,
+  RulesSourceResolverRequest,
+} from "../src/rules/rulesSourceResolver.js";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 
 describe("presenter runtime", () => {
@@ -665,6 +679,261 @@ describe("presenter runtime", () => {
     })).toBe("reload");
   });
 
+  it("brands presenter-opened documents and rejects a forged adapter", async () => {
+    const rawDocument = textDocument(
+      "file:///workspace/dist/app.css",
+      "css",
+      ".card { color: red; }",
+      1,
+    );
+    const exactEditor = {
+      ...createEditor(
+        rawDocument.uri.toString(),
+        rawDocument.languageId,
+        rawDocument.getText(),
+        rawDocument.version,
+      ),
+      document: rawDocument,
+    };
+    const foreignSameIdentity = createEditor(
+      rawDocument.uri.toString(),
+      rawDocument.languageId,
+      rawDocument.getText(),
+      rawDocument.version,
+    );
+    const showTextDocument = vi.fn()
+      .mockResolvedValueOnce(exactEditor)
+      .mockResolvedValueOnce(foreignSameIdentity);
+    const host = createPresenterDocumentHost({
+      openTextDocument: vi.fn(async () => rawDocument),
+      createPosition: (line, character) => new TestPosition(line, character),
+      showTextDocument,
+    });
+    const adapter = await host.openTextDocument(rawDocument.uri.toString());
+
+    expect(Object.isFrozen(adapter)).toBe(true);
+    await expect(host.showTextDocument(adapter)).resolves.toMatchObject({
+      documentUri: rawDocument.uri.toString(),
+    });
+    await expect(host.showTextDocument({
+      ...adapter,
+    } as PresenterDocumentLike)).rejects.toThrow(/presenter document/i);
+    await expect(host.showTextDocument(adapter)).rejects.toThrow(
+      /document identity/i,
+    );
+    expect(showTextDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates a frozen presenter adapter without eagerly indexing document text", async () => {
+    const rawDocument = textDocument(
+      "file:///workspace/dist/app.css",
+      "css",
+      ".card { color: red; }",
+      1,
+      true,
+    );
+    const getText = vi.spyOn(rawDocument, "getText");
+    const positionAt = vi.spyOn(rawDocument, "positionAt");
+    const offsetAt = vi.spyOn(rawDocument, "offsetAt");
+    const createPosition = vi.fn((line: number, character: number) =>
+      new TestPosition(line, character)
+    );
+    const host = createPresenterDocumentHost({
+      openTextDocument: vi.fn(async () => rawDocument),
+      createPosition,
+      showTextDocument: vi.fn(async () => ({
+        ...createEditor(
+          rawDocument.uri.toString(),
+          rawDocument.languageId,
+          rawDocument.getText(),
+          rawDocument.version,
+        ),
+        document: rawDocument,
+      })),
+    });
+
+    const adapter = await host.openTextDocument(rawDocument.uri.toString());
+
+    expect(Object.isFrozen(adapter)).toBe(true);
+    expect(getText).not.toHaveBeenCalled();
+    expect(adapter.positionAt(1)).toEqual({ line: 0, character: 1 });
+    expect(adapter.offsetAt({ line: 0, character: 2 })).toBe(2);
+    expect(adapter.getText()).toBe(".card { color: red; }");
+    expect(positionAt).toHaveBeenCalledOnce();
+    expect(offsetAt).toHaveBeenCalledOnce();
+    expect(createPosition).toHaveBeenCalledWith(0, 2);
+    expect(getText).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Rules authority current across active-editor and Source navigation", async () => {
+    const harness = rulesRuntimeHarness();
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+    const publication = harness.rulesPublications.at(-1)!;
+    const source = publication.sources[0]!;
+
+    harness.changeActiveEditor();
+    harness.runtime.navigate(sourceNavigate("next"));
+    await harness.flush();
+    expect(harness.rulesPublications).toHaveLength(1);
+
+    await harness.runtime.openRuleSource(rulesOpen(
+      publication.inspectMessageId,
+      publication.rulesGeneration,
+      source.openAuthorityId,
+    ));
+
+    expect(harness.openedUris).toEqual([
+      "file:///workspace/dist/app.css",
+    ]);
+    expect(harness.cursorSets).toEqual([{ line: 0, character: 0 }]);
+    expect(harness.revealedRanges).toEqual([{
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 21 },
+    }]);
+  });
+
+  it("opens a Rules target through a host that requires native positions", async () => {
+    const harness = rulesRuntimeHarness({ strictPresenterPositions: true });
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+    const publication = harness.rulesPublications[0]!;
+
+    await harness.runtime.openRuleSource(rulesOpen(
+      publication.inspectMessageId,
+      publication.rulesGeneration,
+      publication.sources[0]!.openAuthorityId,
+    ));
+
+    expect(harness.shownUris).toEqual(["file:///workspace/dist/app.css"]);
+    expect(harness.cursorSets).toEqual([{ line: 0, character: 0 }]);
+    expect(harness.revealedRanges).toEqual([{
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 21 },
+    }]);
+  });
+
+  it("rehashes a grown target without eager presenter document adaptation", async () => {
+    const harness = rulesRuntimeHarness();
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+    const publication = harness.rulesPublications[0]!;
+    const source = publication.sources[0]!;
+    harness.growTarget(".card { color: blue; }", 2);
+
+    await harness.runtime.openRuleSource(rulesOpen(
+      publication.inspectMessageId,
+      publication.rulesGeneration,
+      source.openAuthorityId,
+    ));
+
+    expect(harness.openedUris).toEqual([
+      "file:///workspace/dist/app.css",
+    ]);
+    expect(harness.presenterGetTextCalls).toBe(0);
+    expect(harness.shownUris).toEqual([]);
+    expect(harness.cursorSets).toEqual([]);
+    expect(harness.revealedRanges).toEqual([]);
+  });
+
+  it("revokes Rules on clear/refresh/dispose and never on source.open", async () => {
+    const harness = rulesRuntimeHarness();
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+    const first = harness.rulesPublications[0]!;
+
+    harness.runtime.open(sourceOpen("unknown-source-match"));
+    expect(harness.rulesPublications).toHaveLength(1);
+    await harness.runtime.stylesheetRefresh();
+    expect(harness.rulesPublications.at(-1)?.rulesGeneration).toBe(2);
+
+    harness.runtime.clear();
+    await harness.runtime.openRuleSource(rulesOpen(
+      first.inspectMessageId,
+      first.rulesGeneration,
+      first.sources[0]!.openAuthorityId,
+    ));
+    expect(harness.openedUris).toEqual([]);
+
+    harness.runtime.dispose();
+    await harness.runtime.openRuleSource(rulesOpen(
+      first.inspectMessageId,
+      first.rulesGeneration,
+      first.sources[0]!.openAuthorityId,
+    ));
+    expect(harness.openedUris).toEqual([]);
+  });
+
+  it("watches each workspace folder and filters eager invalidation to exact dependencies", async () => {
+    const harness = rulesRuntimeHarness();
+    expect(harness.watcherCreations).toBe(1);
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+
+    harness.fireFileChange("file:///workspace/unrelated.css");
+    await harness.flush();
+    expect(harness.rulesPublications).toHaveLength(1);
+
+    harness.fireFileChange("file:///workspace/dist/app.css");
+    await harness.flush();
+    harness.fireTextDocument("file:///workspace/dist/app.css");
+    await harness.flush();
+    expect(harness.rulesPublications.map((entry) => entry.rulesGeneration))
+      .toEqual([1, 2, 3]);
+
+    harness.fireWorkspaceFoldersChanged();
+    await harness.flush();
+    expect(harness.rulesPublications.at(-1)?.rulesGeneration).toBe(4);
+    expect(harness.watcherCreations).toBe(2);
+    expect(harness.watcherDisposals).toBe(1);
+
+    harness.runtime.dispose();
+    expect(harness.watcherDisposals).toBe(2);
+  });
+
+  it.each(["text-css", "create-map", "change-scss"] as const)(
+    "restarts a first in-flight Rules resolution for %s without active-editor restarts",
+    async (event) => {
+      const paused = deferred<RulesSourceResolutionBatch>();
+      let attempt = 0;
+      const harness = rulesRuntimeHarness({
+        resolve(request) {
+          attempt += 1;
+          return attempt === 1
+            ? paused.promise
+            : Promise.resolve(unresolvedRulesBatch(request));
+        },
+      });
+      harness.runtime.select(inspectMessageWithSelectedAndParent());
+      await harness.flush();
+      expect(harness.resolve).toHaveBeenCalledTimes(1);
+
+      harness.changeActiveEditor();
+      await harness.flush();
+      expect(harness.resolve).toHaveBeenCalledTimes(1);
+
+      if (event === "text-css") {
+        harness.fireTextDocument("file:///workspace/dist/app.css");
+      } else if (event === "create-map") {
+        harness.fireFileCreate("file:///workspace/dist/app.css.map");
+      } else {
+        harness.fireFileChange("file:///workspace/src/card.scss");
+      }
+      await harness.flush();
+      const attemptsBeforeRelease = harness.resolve.mock.calls.length;
+      paused.resolve(unresolvedRulesBatch(harness.resolve.mock.calls[0]![0]));
+      await harness.flush();
+
+      expect(attemptsBeforeRelease).toBe(2);
+      expect(harness.resolve.mock.calls[0]![0].signal?.aborted).toBe(true);
+      expect(harness.rulesPublications).toHaveLength(1);
+      expect(harness.rulesPublications[0]).toMatchObject({
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+      });
+    },
+  );
+
   it("disposes coordinator, commands, tree, decorations, and built-ins", () => {
     const harness = runtimeHarness({ activeLanguageId: "css" });
     harness.runtime.dispose();
@@ -682,6 +951,283 @@ describe("presenter runtime", () => {
     ]);
   });
 });
+
+function rulesRuntimeHarness(options: {
+  readonly resolve?: (
+    request: RulesSourceResolverRequest,
+  ) => Promise<RulesSourceResolutionBatch>;
+  readonly strictPresenterPositions?: boolean;
+} = {}) {
+  const cssUri = "file:///workspace/dist/app.css";
+  let cssText = ".card { color: red; }";
+  let cssVersion = 1;
+  const cssHash = createHash("sha256").update(cssText).digest("hex");
+  let workspaceGeneration = 0;
+  const rulesWorkspace: SourceWorkspace & {
+    currentRulesSourceGeneration(): number;
+    readRulesSourceSnapshot(uri: string): Promise<{
+      readonly uri: string;
+      readonly text: string;
+      readonly documentVersion: number;
+    }>;
+  } = {
+    findFiles: async () => [cssUri],
+    readText: async () => cssText,
+    resolveSourceUri: async () => ({
+      uris: [cssUri],
+      status: "exact",
+      strategy: "automatic",
+    }),
+    resolveRelativeUri: (base, reference) => new URL(reference, base).toString(),
+    isWorkspaceUri: (uri) => uri.startsWith("file:///workspace/"),
+    currentRulesSourceGeneration: () => workspaceGeneration,
+    readRulesSourceSnapshot: async (uri) => ({
+      uri,
+      text: cssText,
+      documentVersion: cssVersion,
+    }),
+  };
+  const rulesPublications: RulesSourcesPublicationPayload[] = [];
+  const openedUris: string[] = [];
+  const shownUris: string[] = [];
+  let presenterGetTextCalls = 0;
+  const cursorSets: SourcePosition[] = [];
+  const revealedRanges: SourceRange[] = [];
+  const activeEditorListeners = new Set<
+    (editor: ReturnType<typeof createEditor> | undefined) => void
+  >();
+  const documentChangeListeners = new Set<
+    (document: ReturnType<typeof textDocument>) => void
+  >();
+  const workspaceFolderListeners = new Set<() => void>();
+  const fileCreateListeners = new Set<(uri: { toString(): string }) => void>();
+  const fileChangeListeners = new Set<(uri: { toString(): string }) => void>();
+  const fileDeleteListeners = new Set<(uri: { toString(): string }) => void>();
+  let watcherCreations = 0;
+  let watcherDisposals = 0;
+  let editor = createEditor(
+    "file:///workspace/src/active.css",
+    "css",
+    ".active {}",
+    1,
+  );
+  const presenterDocuments = createPresenterDocumentHost({
+    async openTextDocument(uri) {
+      openedUris.push(uri);
+      const source = textDocument(
+        uri,
+        "css",
+        cssText,
+        cssVersion,
+        options.strictPresenterPositions,
+      );
+      return {
+        ...source,
+        getText() {
+          presenterGetTextCalls += 1;
+          return source.getText();
+        },
+      };
+    },
+    createPosition: (line, character) => new TestPosition(line, character),
+    async showTextDocument(document_) {
+      shownUris.push(document_.uri.toString());
+      editor = {
+        ...createEditor(
+        document_.uri.toString(),
+        document_.languageId,
+        document_.getText(),
+        document_.version,
+        ),
+        document: document_ as ReturnType<typeof textDocument>,
+      };
+      return editor;
+    },
+  });
+  const resolve = vi.fn(options.resolve ?? (async (
+    request: RulesSourceResolverRequest,
+  ) => ({
+    selectionMessageId: request.selectionMessageId,
+    results: [...new Set(request.ruleEvidence.rules.map((rule) => rule.ruleRef))]
+      .map((ruleRef): ResolvedRuleSource => ({
+        kind: "resolved",
+        ruleRef,
+        document: { uri: cssUri, languageId: "css", version: 1 },
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 0, character: 21 },
+        },
+        confidence: "exact",
+        dependencies: [{
+          kind: "generated-css",
+          uri: cssUri,
+          documentVersion: 1,
+          contentHash: cssHash,
+        }],
+      })),
+  })));
+  const runtime = createPresenterRuntime({
+    workspace: rulesWorkspace,
+    rulesSourceResolver: { resolve },
+    sendRulesSources(payload) {
+      rulesPublications.push(payload);
+      return true;
+    },
+    measureRulesSourcesEnvelope(payload) {
+      return Buffer.byteLength(JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "rules.sources",
+        messageId: "00000000-0000-4000-8000-000000000000",
+        sessionId: "session-1",
+        source: { role: "ide", id: "vscode-test" },
+        ...payload,
+        metadata: {},
+      }), "utf8");
+    },
+    host: {
+      ...presenterDocuments,
+      getActiveEditor: () => editor,
+      getPrimaryCursor: () => ({ line: 0, character: 0 }),
+      setPrimaryCursor(_editor, position) {
+        cursorSets.push(position);
+      },
+      revealRange(_editor, range) {
+        revealedRanges.push(range as SourceRange);
+      },
+      onDidChangeActiveEditor(listener) {
+        activeEditorListeners.add(listener);
+        return disposable(() => activeEditorListeners.delete(listener));
+      },
+      onDidChangeTextDocument(listener) {
+        documentChangeListeners.add(listener as (
+          document: ReturnType<typeof textDocument>,
+        ) => void);
+        return disposable(() => documentChangeListeners.delete(listener as (
+          document: ReturnType<typeof textDocument>,
+        ) => void));
+      },
+      onDidChangeWorkspaceFolders(listener) {
+        workspaceFolderListeners.add(listener);
+        return disposable(() => workspaceFolderListeners.delete(listener));
+      },
+      createRulesSourceFileWatcher() {
+        watcherCreations += 1;
+        return {
+          onDidCreate(listener) {
+            fileCreateListeners.add(listener);
+            return disposable(() => fileCreateListeners.delete(listener));
+          },
+          onDidChange(listener) {
+            fileChangeListeners.add(listener);
+            return disposable(() => fileChangeListeners.delete(listener));
+          },
+          onDidDelete(listener) {
+            fileDeleteListeners.add(listener);
+            return disposable(() => fileDeleteListeners.delete(listener));
+          },
+          dispose() {
+            watcherDisposals += 1;
+          },
+        };
+      },
+      onDidChangePrimaryCursor: () => disposable(() => undefined),
+      createThemeIcon: (id) => ({ id }) as vscode.ThemeIcon,
+      createThemeColor: (id) => ({ id }) as vscode.ThemeColor,
+      overviewRulerLaneRight: 4,
+      createDecorationType: (_style, role) => ({
+        role,
+        dispose: () => undefined,
+      }),
+      createRange: (startLine, startCharacter, endLine, endCharacter) => ({
+        start: { line: startLine, character: startCharacter },
+        end: { line: endLine, character: endCharacter },
+      }),
+      registerTreeDataProvider: () => disposable(() => undefined),
+      registerCommand: () => disposable(() => undefined),
+      reportError: () => undefined,
+      workspaceFolders: [{ uri: { toString: () => "file:///workspace" } }],
+      findFiles: async () => [],
+      joinPath: (base) => base,
+      parseUri: (value) => ({ toString: () => value }),
+      readFile: async () => new Uint8Array(),
+      stat: async () => ({ size: Buffer.byteLength(cssText, "utf8") }),
+      getOpenTextDocument: () => undefined,
+      openWorkspaceTextDocument: async (uri) => textDocument(
+        uri.toString(),
+        "css",
+        cssText,
+        cssVersion,
+      ),
+      currentRulesSourceGeneration: () => workspaceGeneration,
+      advanceRulesSourceGeneration() {
+        workspaceGeneration += 1;
+      },
+    },
+  });
+
+  return {
+    runtime,
+    resolve,
+    rulesPublications,
+    openedUris,
+    shownUris,
+    cursorSets,
+    revealedRanges,
+    get presenterGetTextCalls() {
+      return presenterGetTextCalls;
+    },
+    get watcherCreations() {
+      return watcherCreations;
+    },
+    get watcherDisposals() {
+      return watcherDisposals;
+    },
+    changeActiveEditor() {
+      editor = createEditor(
+        "file:///workspace/src/other.css",
+        "css",
+        ".other {}",
+        1,
+      );
+      for (const listener of activeEditorListeners) listener(editor);
+    },
+    fireFileChange(uri: string) {
+      const value = { toString: () => uri };
+      for (const listener of fileChangeListeners) listener(value);
+    },
+    fireFileCreate(uri: string) {
+      const value = { toString: () => uri };
+      for (const listener of fileCreateListeners) listener(value);
+    },
+    fireTextDocument(uri: string) {
+      const value = textDocument(uri, "css", cssText, cssVersion);
+      for (const listener of documentChangeListeners) listener(value);
+    },
+    growTarget(text: string, version: number) {
+      cssText = text;
+      cssVersion = version;
+    },
+    fireWorkspaceFoldersChanged() {
+      for (const listener of workspaceFolderListeners) listener();
+    },
+    flush,
+  };
+}
+
+function unresolvedRulesBatch(
+  request: RulesSourceResolverRequest,
+): RulesSourceResolutionBatch {
+  return {
+    selectionMessageId: request.selectionMessageId,
+    results: [...new Set(
+      request.ruleEvidence.rules.map((rule) => rule.ruleRef),
+    )].map((ruleRef) => ({
+      kind: "unresolved" as const,
+      ruleRef,
+      reason: "fixture-paused",
+    })),
+  };
+}
 
 function runtimeHarness(options: {
   readonly activeLanguageId: string;
@@ -747,6 +1293,11 @@ function runtimeHarness(options: {
     });
   }
   let primaryCursor: SourcePosition = { line: 0, character: 0 };
+  const presenterDocuments = createPresenterDocumentHost({
+    openTextDocument: async () => editor.document,
+    createPosition: (line, character) => new TestPosition(line, character),
+    showTextDocument: async () => editor,
+  });
   const runtime = createPresenterRuntime({
     registry,
     refreshClassifierRegistry: options.refreshClassifierRegistry,
@@ -796,6 +1347,7 @@ function runtimeHarness(options: {
       return true;
     },
     host: {
+      ...presenterDocuments,
       getActiveEditor: () => editor,
       getPrimaryCursor: () => primaryCursor,
       setPrimaryCursor(_editor, position) {
@@ -1061,6 +1613,23 @@ function sourceOpen(
   };
 }
 
+function rulesOpen(
+  inspectMessageId: string,
+  rulesGeneration: number,
+  openAuthorityId: string,
+): RulesOpenMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.open",
+    messageId: "rules-open-1",
+    sessionId: "session-1",
+    inspectMessageId,
+    rulesGeneration,
+    openAuthorityId,
+    metadata: {},
+  };
+}
+
 function presentationSettings(
   ideHighlightEnabled: boolean,
   inspectMessageId = "inspect-1",
@@ -1180,12 +1749,6 @@ function textDocument(
   version = 1,
   strictPositions = false,
 ) {
-  class StrictPosition {
-    public constructor(
-      public readonly line: number,
-      public readonly character: number,
-    ) {}
-  }
   const lineStarts = [0];
   for (let index = 0; index < text.length; index += 1) {
     if (text[index] === "\n") lineStarts.push(index + 1);
@@ -1203,11 +1766,11 @@ function textDocument(
       }
       const character = Math.min(bounded, lineEnd(line)) - lineStarts[line]!;
       return strictPositions
-        ? new StrictPosition(line, character)
+        ? new TestPosition(line, character)
         : { line, character };
     },
     offsetAt(position: { line: number; character: number }) {
-      if (strictPositions && !(position instanceof StrictPosition)) {
+      if (strictPositions && !(position instanceof TestPosition)) {
         throw new TypeError("Invalid argument: position must be a Position");
       }
       const line = Math.max(0, Math.min(position.line, lineStarts.length - 1));
@@ -1226,6 +1789,13 @@ function textDocument(
   }
 }
 
+class TestPosition {
+  public constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
+}
+
 function workspace(): SourceWorkspace {
   return {
     findFiles: async () => [],
@@ -1238,6 +1808,14 @@ function workspace(): SourceWorkspace {
 
 function disposable(dispose: () => void) {
   return { dispose };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 async function flush(): Promise<void> {

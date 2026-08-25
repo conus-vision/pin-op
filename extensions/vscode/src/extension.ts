@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { PinOpApi } from "@pin-op/plugin-api";
+import { RESOLUTION_LIMITS } from "@pin-op/protocol";
 import {
   BridgeClient,
   PageRefreshClientRouter,
@@ -15,6 +16,7 @@ import {
   writeBridgeDiagnostics,
 } from "./diagnostics.js";
 import {
+  createPresenterDocumentHost,
   createPresenterRuntime,
   type PresenterEditorLike,
   type PresenterRuntime,
@@ -165,7 +167,13 @@ export async function activate(
   const saveObserver = new SaveObserver({
     classifierRegistry: refreshClassifierRegistry,
     sink: {
-      publish: (mode) => pageRefreshClients.sendPageRefresh({ mode }),
+      publish(mode) {
+        const refresh = mode === "styles"
+          ? runtime.stylesheetRefresh()
+          : runtime.pageRefresh();
+        void refresh.catch(reportPresenterError);
+        pageRefreshClients.sendPageRefresh({ mode });
+      },
     },
   });
   const saveObserverSubscriptions = bindSaveObserverEvents(
@@ -221,7 +229,21 @@ function reportPresenterError(error: unknown): void {
 }
 
 function createPresenterHost(): PresenterRuntimeHost {
+  let rulesSourceGeneration = 0;
+  const presenterDocuments = createPresenterDocumentHost({
+    openTextDocument: (uri) =>
+      vscode.workspace.openTextDocument(vscode.Uri.parse(uri)),
+    createPosition: (line, character) =>
+      new vscode.Position(line, character),
+    async showTextDocument(document) {
+      const editor = await vscode.window.showTextDocument(
+        document as vscode.TextDocument,
+      );
+      return presenterEditor(editor);
+    },
+  });
   return {
+    ...presenterDocuments,
     get workspaceFolders() {
       return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
         uri: folder.uri,
@@ -233,6 +255,31 @@ function createPresenterHost(): PresenterRuntimeHost {
     parseUri: (value) => vscode.Uri.parse(value),
     readFile: (uri) => vscode.workspace.fs.readFile(uri as vscode.Uri),
     stat: (uri) => vscode.workspace.fs.stat(uri as vscode.Uri),
+    getOpenTextDocument: (uri) => vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === uri.toString(),
+    ),
+    openWorkspaceTextDocument: (uri) =>
+      vscode.workspace.openTextDocument(uri as vscode.Uri),
+    currentRulesSourceGeneration: () => rulesSourceGeneration,
+    advanceRulesSourceGeneration() {
+      rulesSourceGeneration = Math.min(
+        rulesSourceGeneration + 1,
+        RESOLUTION_LIMITS.generation,
+      );
+    },
+    onDidChangeWorkspaceFolders: (listener) =>
+      vscode.workspace.onDidChangeWorkspaceFolders(listener),
+    createRulesSourceFileWatcher(folderUri) {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folderUri as vscode.Uri, "**/*"),
+      );
+      return {
+        onDidCreate: (listener) => watcher.onDidCreate(listener),
+        onDidChange: (listener) => watcher.onDidChange(listener),
+        onDidDelete: (listener) => watcher.onDidDelete(listener),
+        dispose: () => watcher.dispose(),
+      };
+    },
     getActiveEditor: () => {
       const editor = vscode.window.activeTextEditor;
       return editor ? presenterEditor(editor) : undefined;
