@@ -64,6 +64,69 @@ const simulatorInspectMessage: Extract<
   source: { role: "simulator", id: "simulator-source", metadata: {} },
 };
 
+function rulesInspectMessage(
+  ruleRefs: readonly string[] = ["rule-a", "rule-b"],
+): Extract<PinOpMessage, { type: "inspect" }> {
+  return {
+    ...inspectMessage,
+    messageId: "inspect-rules",
+    ruleEvidence: {
+      rules: ruleRefs.map((ruleRef) => ({
+        ruleRef,
+        selector: `.${ruleRef}`,
+        declarations: [],
+        declarationsTruncated: false,
+      })),
+      omittedRuleCount: 7,
+    },
+  };
+}
+
+function rulesSourcesMessage(
+  sourceId: string,
+  rulesGeneration: number,
+  sources: readonly {
+    readonly ruleRef: string;
+    readonly openAuthorityId: string;
+  }[],
+  unresolvedRuleCount: number,
+): Extract<PinOpMessage, { type: "rules.sources" }> {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.sources",
+    messageId: `rules-sources-${sourceId}-${rulesGeneration}`,
+    sessionId: "session-1",
+    source: { role: "ide", id: sourceId },
+    inspectMessageId: "inspect-rules",
+    rulesGeneration,
+    sources: sources.map((source, index) => ({
+      ...source,
+      document: { label: `rule-${index + 1}.scss`, languageId: "scss" },
+      startLine: index + 1,
+      startColumn: 1,
+      confidence: "exact",
+    })),
+    unresolvedRuleCount,
+    metadata: {},
+  };
+}
+
+function rulesOpenMessage(
+  openAuthorityId: string,
+  rulesGeneration = 1,
+): Extract<PinOpMessage, { type: "rules.open" }> {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.open",
+    messageId: `rules-open-${openAuthorityId}`,
+    sessionId: "session-1",
+    inspectMessageId: "inspect-rules",
+    rulesGeneration,
+    openAuthorityId,
+    metadata: {},
+  };
+}
+
 describe("bridge router and registry", () => {
   it("stores clients by protocol sessionId and role", () => {
     const registry = new clientRegistry.ClientRegistry();
@@ -1133,5 +1196,261 @@ describe("bridge router and registry", () => {
     expect(browserConnection.sent).toEqual([
       expect.objectContaining({ type: "error", code: "bridge.noIdeClient" }),
     ]);
+  });
+
+  it("routes Rules sources and repeated opens only through the exact owning peers", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect", "rules-sources"],
+      "browser-source",
+    );
+    const otherBrowserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect", "rules-sources"],
+      "browser-other",
+    );
+    const ideAConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "rules-sources"],
+      "ide-a",
+    );
+    const ideBConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "rules-sources"],
+      "ide-b",
+    );
+    const browser = registry.add(browserConnection);
+    const otherBrowser = registry.add(otherBrowserConnection);
+    const ideA = registry.add(ideAConnection);
+    const ideB = registry.add(ideBConnection);
+    routeMessage(registry, routes, browser, rulesInspectMessage());
+    ideAConnection.sent.length = 0;
+    ideBConnection.sent.length = 0;
+
+    const sources = rulesSourcesMessage(
+      "ide-a",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      1,
+    );
+    routeMessage(registry, routes, ideA, sources);
+    const open = rulesOpenMessage("open-a");
+    routeMessage(registry, routes, browser, open);
+    routeMessage(registry, routes, browser, open);
+    routeMessage(registry, routes, otherBrowser, open);
+    routeMessage(
+      registry,
+      routes,
+      ideB,
+      rulesSourcesMessage(
+        "ide-b",
+        2,
+        [{ ruleRef: "rule-b", openAuthorityId: "foreign-open" }],
+        1,
+      ),
+    );
+
+    expect(browserConnection.sent).toEqual([sources]);
+    expect(otherBrowserConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "protocol.invalidMessage" }),
+    ]);
+    expect(ideAConnection.sent).toEqual([open, open]);
+    expect(ideBConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+    ]);
+    expect(routes.get("session-1", "inspect-rules")).toMatchObject({
+      ideConnectionId: ideA.id,
+      rulesGeneration: 1,
+      ruleOpenAuthorityIds: new Set(["open-a"]),
+    });
+  });
+
+  it("rejects incomplete, guessed, and stale Rules publications without mutation", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect", "rules-sources"],
+      "browser-source",
+    );
+    const ideConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "rules-sources"],
+      "ide-a",
+    );
+    const browser = registry.add(browserConnection);
+    const ide = registry.add(ideConnection);
+    routeMessage(registry, routes, browser, rulesInspectMessage());
+    ideConnection.sent.length = 0;
+    const initial = rulesSourcesMessage(
+      "ide-a",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      1,
+    );
+    routeMessage(registry, routes, ide, initial);
+    const current = routes.get("session-1", "inspect-rules");
+
+    routeMessage(
+      registry,
+      routes,
+      ide,
+      rulesSourcesMessage(
+        "ide-a",
+        2,
+        [{ ruleRef: "rule-b", openAuthorityId: "incomplete" }],
+        0,
+      ),
+    );
+    routeMessage(
+      registry,
+      routes,
+      ide,
+      rulesSourcesMessage(
+        "ide-a",
+        2,
+        [{ ruleRef: "guessed", openAuthorityId: "guessed" }],
+        1,
+      ),
+    );
+    routeMessage(registry, routes, ide, { ...initial, messageId: "equal" });
+
+    expect(browserConnection.sent).toEqual([initial]);
+    expect(ideConnection.sent).toHaveLength(3);
+    expect(ideConnection.sent).toEqual(
+      Array(3).fill(
+        expect.objectContaining({
+          type: "error",
+          code: "bridge.noBrowserClient",
+        }),
+      ),
+    );
+    expect(routes.get("session-1", "inspect-rules")).toEqual(current);
+
+    const clear = rulesSourcesMessage("ide-a", 2, [], 2);
+    routeMessage(registry, routes, ide, clear);
+    routeMessage(registry, routes, browser, rulesOpenMessage("open-a", 1));
+    expect(browserConnection.sent).toEqual([
+      initial,
+      clear,
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(routes.get("session-1", "inspect-rules")).toMatchObject({
+      rulesGeneration: 2,
+      ruleOpenAuthorityIds: new Set(),
+    });
+  });
+
+  it("rolls back a Rules authority replacement when browser delivery throws", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect", "rules-sources"],
+      "browser-source",
+    );
+    const ideConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "rules-sources"],
+      "ide-a",
+    );
+    const browser = registry.add(browserConnection);
+    const ide = registry.add(ideConnection);
+    routeMessage(registry, routes, browser, rulesInspectMessage(["rule-a"]));
+    ideConnection.sent.length = 0;
+    routeMessage(
+      registry,
+      routes,
+      ide,
+      rulesSourcesMessage(
+        "ide-a",
+        1,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+        0,
+      ),
+    );
+    const current = routes.get("session-1", "inspect-rules");
+    browserConnection.connection.send = () => {
+      throw new Error("browser send failed");
+    };
+
+    routeMessage(
+      registry,
+      routes,
+      ide,
+      rulesSourcesMessage(
+        "ide-a",
+        2,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-b" }],
+        0,
+      ),
+    );
+
+    expect(routes.get("session-1", "inspect-rules")).toEqual(current);
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+    ]);
+  });
+
+  it("requires rules-sources capability on both routed endpoints", () => {
+    const registry = new ClientRegistry();
+    const routes = new ReplyRouteRegistry();
+    const browserConnection = client(
+      "browser",
+      "session-1",
+      ["inspect"],
+      "browser-source",
+    );
+    const ideConnection = client(
+      "ide",
+      "session-1",
+      ["resolution", "rules-sources"],
+      "ide-a",
+    );
+    const browser = registry.add(browserConnection);
+    const ide = registry.add(ideConnection);
+    routeMessage(registry, routes, browser, rulesInspectMessage(["rule-a"]));
+    ideConnection.sent.length = 0;
+
+    routeMessage(
+      registry,
+      routes,
+      ide,
+      rulesSourcesMessage(
+        "ide-a",
+        1,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+        0,
+      ),
+    );
+    routeMessage(registry, routes, browser, rulesOpenMessage("open-a"));
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "protocol.invalidMessage",
+      }),
+    ]);
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({ type: "error", code: "bridge.noBrowserClient" }),
+    ]);
+    expect(routes.get("session-1", "inspect-rules")).toMatchObject({
+      ideConnectionId: undefined,
+      rulesGeneration: undefined,
+      ruleOpenAuthorityIds: new Set(),
+    });
   });
 });

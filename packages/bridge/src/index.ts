@@ -25,9 +25,11 @@ export { startHeartbeat, type Heartbeat } from "./heartbeat.js";
 export { routeMessage } from "./router.js";
 export {
   ReplyRouteRegistry,
+  type RuleSourceAuthority,
   type ReplyRoute,
   type ReplyRouteRegistration,
   type ReplyRouteRegistrationStatus,
   type ReplyRouteRegistryOptions,
+  type RulesSourcesPreparation,
 } from "./replyRouteRegistry.js";
 export { createAuthorizedToken, tokensEqual } from "./auth.js";

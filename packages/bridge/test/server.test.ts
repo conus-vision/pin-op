@@ -2479,6 +2479,191 @@ describe("bridge server lifecycle", () => {
   });
 });
 
+describe("bridge server Rules source routing", () => {
+  it("accepts capable Rules families and clears their route on unlink", async () => {
+    const authenticator = createAuthenticator();
+    const replyRoutes = new ReplyRouteRegistry();
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      replyRoutes,
+    });
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const browserToken = acceptedToken(authenticator);
+    await server.start();
+    const ide = await connect(server.getUrl());
+    const browser = await connect(server.getUrl());
+
+    try {
+      await sendJsonAndExpectType(
+        ide,
+        {
+          ...hello(ideToken.value, "ide"),
+          capabilities: ["resolution", "rules-sources"],
+        },
+        "authenticated",
+      );
+      await sendJsonAndExpectType(
+        browser,
+        {
+          ...hello(browserToken),
+          capabilities: ["inspect", "rules-sources"],
+        },
+        "authenticated",
+      );
+      const inspect = {
+        ...inspectMessage("rules-route"),
+        ruleEvidence: {
+          rules: [
+            {
+              ruleRef: "rule-a",
+              selector: ".rule-a",
+              declarations: [],
+              declarationsTruncated: false,
+            },
+          ],
+          omittedRuleCount: 4,
+        },
+      };
+      const routedInspect = nextJsonMessageOfType(ide, "inspect");
+      browser.send(JSON.stringify(inspect));
+      await expect(routedInspect).resolves.toMatchObject({
+        messageId: "inspect-rules-route",
+      });
+
+      const sources = {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "rules.sources",
+        messageId: "rules-sources-1",
+        sessionId: SESSION_ID,
+        source: { role: "ide", id: "ide-source" },
+        inspectMessageId: "inspect-rules-route",
+        rulesGeneration: 1,
+        sources: [
+          {
+            ruleRef: "rule-a",
+            openAuthorityId: "open-a",
+            document: { label: "rule-a.scss", languageId: "scss" },
+            startLine: 3,
+            startColumn: 1,
+            confidence: "exact",
+          },
+        ],
+        unresolvedRuleCount: 0,
+        metadata: {},
+      };
+      const routedSources = nextJsonMessageBeforeClose(
+        browser,
+        ide,
+        "rules.sources",
+      );
+      ide.send(JSON.stringify(sources));
+      await expect(routedSources).resolves.toEqual(sources);
+
+      const open = {
+        protocolVersion: PROTOCOL_VERSION,
+        type: "rules.open",
+        messageId: "rules-open-1",
+        sessionId: SESSION_ID,
+        inspectMessageId: "inspect-rules-route",
+        rulesGeneration: 1,
+        openAuthorityId: "open-a",
+        metadata: {},
+      };
+      const routedOpen = nextJsonMessageBeforeClose(ide, browser, "rules.open");
+      browser.send(JSON.stringify(open));
+      await expect(routedOpen).resolves.toEqual(open);
+      expect(replyRoutes.get(SESSION_ID, "inspect-rules-route")).toMatchObject({
+        rulesGeneration: 1,
+        ruleOpenAuthorityIds: new Set(["open-a"]),
+      });
+
+      const browserClosed = once(browser, "close");
+      browser.send(JSON.stringify(unlink("unlink-rules-route")));
+      await browserClosed;
+      expect(replyRoutes.get(SESSION_ID, "inspect-rules-route")).toBeUndefined();
+    } finally {
+      await closeSocket(ide);
+      await closeSocket(browser);
+      await server.stop();
+    }
+  });
+
+  it("closes a Rules publisher missing the advertised capability", async () => {
+    const authenticator = createAuthenticator();
+    const replyRoutes = new ReplyRouteRegistry();
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      replyRoutes,
+    });
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const browserToken = acceptedToken(authenticator);
+    await server.start();
+    const ide = await connect(server.getUrl());
+    const browser = await connect(server.getUrl());
+
+    try {
+      await sendJsonAndExpectType(
+        ide,
+        hello(ideToken.value, "ide"),
+        "authenticated",
+      );
+      await sendJsonAndExpectType(
+        browser,
+        {
+          ...hello(browserToken),
+          capabilities: ["inspect", "rules-sources"],
+        },
+        "authenticated",
+      );
+      const inspect = {
+        ...inspectMessage("rules-incapable"),
+        ruleEvidence: {
+          rules: [
+            {
+              ruleRef: "rule-a",
+              selector: ".rule-a",
+              declarations: [],
+              declarationsTruncated: false,
+            },
+          ],
+          omittedRuleCount: 0,
+        },
+      };
+      const routedInspect = nextJsonMessageOfType(ide, "inspect");
+      browser.send(JSON.stringify(inspect));
+      await routedInspect;
+
+      await expectSocketErrorAndClose(
+        ide,
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          type: "rules.sources",
+          messageId: "rules-sources-incapable",
+          sessionId: SESSION_ID,
+          source: { role: "ide", id: "ide-source" },
+          inspectMessageId: "inspect-rules-incapable",
+          rulesGeneration: 1,
+          sources: [],
+          unresolvedRuleCount: 1,
+          metadata: {},
+        },
+        { code: "protocol.invalidMessage" },
+      );
+      expect(replyRoutes.get(SESSION_ID, "inspect-rules-incapable")).toMatchObject({
+        ideConnectionId: undefined,
+        rulesGeneration: undefined,
+        ruleOpenAuthorityIds: new Set(),
+      });
+    } finally {
+      await closeSocket(ide);
+      await closeSocket(browser);
+      await server.stop();
+    }
+  });
+});
+
 describe("bridge public surface", () => {
   it("does not export or retain the legacy link store source", () => {
     const legacyStoreName = ["Pairing", "Store"].join("");

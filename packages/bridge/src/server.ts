@@ -602,6 +602,13 @@ function isAllowedInboundMessage(
         message.source.id === client.source.id &&
         supportsCapability(client, "resolution")
       );
+    case "rules.sources":
+      return (
+        client.source.role === "ide" &&
+        message.sessionId === client.sessionId &&
+        message.source.id === client.source.id &&
+        supportsCapability(client, "rules-sources")
+      );
     case "source.matches":
       return (
         client.source.role === "ide" &&
@@ -615,6 +622,13 @@ function isAllowedInboundMessage(
           client.source.role === "simulator") &&
         message.sessionId === client.sessionId &&
         supportsCapability(client, "source-presentation")
+      );
+    case "rules.open":
+      return (
+        (client.source.role === "browser" ||
+          client.source.role === "simulator") &&
+        message.sessionId === client.sessionId &&
+        supportsCapability(client, "rules-sources")
       );
     case "presentation.settings":
       return (

@@ -41,6 +41,7 @@ export function routeMessage(
         message.sessionId,
         message.messageId,
         sender.id,
+        message.ruleEvidence.rules.map((evidence) => evidence.ruleRef),
       );
       if (registration.status === "collision") {
         sendInvalid(sender);
@@ -100,6 +101,54 @@ export function routeMessage(
         sendNoBrowser(sender);
       }
       return;
+    case "rules.sources": {
+      if (
+        sender.source.role !== "ide" ||
+        message.source.id !== sender.source.id ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "rules-sources")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const route = replyRoutes.get(
+        message.sessionId,
+        message.inspectMessageId,
+      );
+      const recipient = route ? getOriginRecipient(registry, route) : undefined;
+      if (
+        !route ||
+        !recipient ||
+        !supportsCapability(recipient, "rules-sources")
+      ) {
+        sendNoBrowser(sender);
+        return;
+      }
+
+      const prepared = replyRoutes.prepareRulesSources(
+        message.sessionId,
+        message.inspectMessageId,
+        sender.id,
+        message.rulesGeneration,
+        message.sources,
+        message.unresolvedRuleCount,
+      );
+      if (!prepared) {
+        sendNoBrowser(sender);
+        return;
+      }
+
+      if (!sendMessage(recipient, message)) {
+        prepared.rollback();
+        sendNoBrowser(sender);
+        return;
+      }
+      if (!prepared.commit()) {
+        sendNoBrowser(sender);
+      }
+      return;
+    }
     case "source.matches": {
       if (
         sender.source.role !== "ide" ||
@@ -192,6 +241,39 @@ export function routeMessage(
       }
 
       replyRoutes.resolve(message.sessionId, message.inspectMessageId);
+      if (!sendMessage(recipient, message)) {
+        sendNoIde(sender);
+      }
+      return;
+    }
+    case "rules.open": {
+      if (
+        (sender.source.role !== "browser" &&
+          sender.source.role !== "simulator") ||
+        message.sessionId !== sender.sessionId ||
+        !supportsCapability(sender, "rules-sources")
+      ) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const route = replyRoutes.authorizeRulesOpen(
+        message.sessionId,
+        message.inspectMessageId,
+        sender.id,
+        message.rulesGeneration,
+        message.openAuthorityId,
+      );
+      if (!route) {
+        sendInvalid(sender);
+        return;
+      }
+
+      const recipient = getIdeRecipient(registry, route);
+      if (!recipient || !supportsCapability(recipient, "rules-sources")) {
+        sendNoIde(sender);
+        return;
+      }
       if (!sendMessage(recipient, message)) {
         sendNoIde(sender);
       }

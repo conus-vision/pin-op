@@ -6,9 +6,17 @@ function commitRoute(
   sessionId: string,
   inspectMessageId: string,
   connectionId: string,
+  expectedRuleRefs: Iterable<string> = [],
 ): void {
   expect(
-    routes.register(sessionId, inspectMessageId, connectionId).commit(),
+    routes
+      .register(
+        sessionId,
+        inspectMessageId,
+        connectionId,
+        expectedRuleRefs,
+      )
+      .commit(),
   ).toBe(true);
 }
 
@@ -319,10 +327,38 @@ describe("reply route registry", () => {
 
   it("removes routes through both origin and owner reverse indexes", () => {
     const routes = new ReplyRouteRegistry();
-    commitRoute(routes, "session-1", "inspect-a", "browser-1");
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a"],
+    );
     routes.claimResolution("session-1", "inspect-a", "ide-1", 1);
-    commitRoute(routes, "session-1", "inspect-b", "browser-2");
+    routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      0,
+    )?.commit();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-b",
+      "browser-2",
+      ["rule-b"],
+    );
     routes.claimResolution("session-1", "inspect-b", "ide-2", 1);
+    routes.prepareRulesSources(
+      "session-1",
+      "inspect-b",
+      "ide-2",
+      1,
+      [{ ruleRef: "rule-b", openAuthorityId: "open-b" }],
+      0,
+    )?.commit();
 
     routes.removeClient("ide-1");
     expect(routes.get("session-1", "inspect-a")).toBeUndefined();
@@ -449,5 +485,396 @@ describe("reply route registry", () => {
     expect(routes.peek("session-1", "inspect-a")).toBeUndefined();
     expect(routes.peek("session-1", "inspect-b")).toBeUndefined();
     expect(routes.peek("session-1", "inspect-c")).toBe("browser-1");
+  });
+
+  it("treats expected rule refs as immutable inspect-route identity", () => {
+    const routes = new ReplyRouteRegistry();
+    const expectedRuleRefs = new Set(["rule-a", "rule-b"]);
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      expectedRuleRefs,
+    );
+    expectedRuleRefs.clear();
+
+    expect(routes.get("session-1", "inspect-a")?.expectedRuleRefs).toEqual(
+      new Set(["rule-a", "rule-b"]),
+    );
+    const idempotent = routes.register(
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-b", "rule-a"],
+    );
+    expect(idempotent.status).toBe("refreshed");
+    expect(idempotent.commit()).toBe(true);
+    expect(
+      routes.register(
+        "session-1",
+        "inspect-a",
+        "browser-1",
+        ["rule-a"],
+      ).status,
+    ).toBe("collision");
+    expect(routes.get("session-1", "inspect-a")?.expectedRuleRefs).toEqual(
+      new Set(["rule-a", "rule-b"]),
+    );
+  });
+
+  it("prepares rules authority without mutation and commits it atomically", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a", "rule-b"],
+    );
+
+    const prepared = routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      1,
+      [
+        { ruleRef: "rule-a", openAuthorityId: "open-a" },
+        { ruleRef: "rule-b", openAuthorityId: "open-b" },
+      ],
+      0,
+    );
+    expect(prepared).toBeDefined();
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      ideConnectionId: undefined,
+      rulesGeneration: undefined,
+      ruleOpenAuthorityIds: new Set(),
+    });
+
+    expect(prepared?.commit()).toBe(true);
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      ideConnectionId: "ide-1",
+      rulesGeneration: 1,
+      ruleOpenAuthorityIds: new Set(["open-a", "open-b"]),
+    });
+  });
+
+  it("rejects invalid publications without changing current Rules authority", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a", "rule-b"],
+    );
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        1,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+        1,
+      )?.commit(),
+    ).toBe(true);
+    const current = routes.get("session-1", "inspect-a");
+
+    for (const invalid of [
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        1,
+        [{ ruleRef: "rule-a", openAuthorityId: "equal" }],
+        1,
+      ),
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+        [{ ruleRef: "rule-a", openAuthorityId: "incomplete" }],
+        0,
+      ),
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+        [
+          { ruleRef: "rule-a", openAuthorityId: "duplicate-a" },
+          { ruleRef: "rule-a", openAuthorityId: "duplicate-b" },
+        ],
+        0,
+      ),
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+        [{ ruleRef: "guessed-rule", openAuthorityId: "guessed" }],
+        1,
+      ),
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-2",
+        2,
+        [{ ruleRef: "rule-b", openAuthorityId: "foreign" }],
+        1,
+      ),
+    ]) {
+      expect(invalid).toBeUndefined();
+    }
+    expect(routes.get("session-1", "inspect-a")).toEqual(current);
+  });
+
+  it("keeps Rules generation and open authority independent from resolution", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-resolution-first",
+      "browser-1",
+      ["rule-a"],
+    );
+    routes.claimResolution(
+      "session-1",
+      "inspect-resolution-first",
+      "ide-1",
+      40,
+    );
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-resolution-first",
+        "ide-1",
+        1,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+        0,
+      )?.commit(),
+    ).toBe(true);
+    routes.claimSourceInvalidation(
+      "session-1",
+      "inspect-resolution-first",
+      "ide-1",
+      41,
+    );
+
+    expect(
+      routes.authorizeRulesOpen(
+        "session-1",
+        "inspect-resolution-first",
+        "browser-1",
+        1,
+        "open-a",
+      ),
+    ).toBeDefined();
+    for (const authorization of [
+      routes.authorizeRulesOpen(
+        "other-session",
+        "inspect-resolution-first",
+        "browser-1",
+        1,
+        "open-a",
+      ),
+      routes.authorizeRulesOpen(
+        "session-1",
+        "inspect-resolution-first",
+        "browser-2",
+        1,
+        "open-a",
+      ),
+      routes.authorizeRulesOpen(
+        "session-1",
+        "inspect-resolution-first",
+        "browser-1",
+        2,
+        "open-a",
+      ),
+      routes.authorizeRulesOpen(
+        "session-1",
+        "inspect-resolution-first",
+        "browser-1",
+        1,
+        "guessed-open",
+      ),
+    ]) {
+      expect(authorization).toBeUndefined();
+    }
+    expect(
+      routes.authorizeRulesOpen(
+        "session-1",
+        "inspect-resolution-first",
+        "browser-1",
+        1,
+        "open-a",
+      ),
+    ).toBeDefined();
+    expect(routes.get("session-1", "inspect-resolution-first")).toMatchObject({
+      resolutionGeneration: 41,
+      rulesGeneration: 1,
+      ruleOpenAuthorityIds: new Set(["open-a"]),
+    });
+
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-rules-first",
+      "browser-1",
+      ["rule-b"],
+    );
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-rules-first",
+        "ide-2",
+        1,
+        [{ ruleRef: "rule-b", openAuthorityId: "open-b" }],
+        0,
+      )?.commit(),
+    ).toBe(true);
+    expect(
+      routes.claimResolution(
+        "session-1",
+        "inspect-rules-first",
+        "ide-1",
+        1,
+      ),
+    ).toBeUndefined();
+    expect(
+      routes.claimResolution(
+        "session-1",
+        "inspect-rules-first",
+        "ide-2",
+        1,
+      ),
+    ).toBeDefined();
+  });
+
+  it("rolls back prepared replacement and lets an empty next generation clear authority", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a"],
+    );
+    routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      0,
+    )?.commit();
+
+    const canceled = routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      2,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-b" }],
+      0,
+    );
+    canceled?.rollback();
+    expect(canceled?.commit()).toBe(false);
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      rulesGeneration: 1,
+      ruleOpenAuthorityIds: new Set(["open-a"]),
+    });
+
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        2,
+        [],
+        1,
+      )?.commit(),
+    ).toBe(true);
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      rulesGeneration: 2,
+      ruleOpenAuthorityIds: new Set(),
+    });
+  });
+
+  it("cannot commit a first Rules authority after its IDE is removed", () => {
+    const routes = new ReplyRouteRegistry();
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a"],
+    );
+    const prepared = routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      0,
+    );
+
+    routes.removeClient("ide-1");
+
+    expect(prepared?.commit()).toBe(false);
+    expect(routes.get("session-1", "inspect-a")).toMatchObject({
+      ideConnectionId: undefined,
+      rulesGeneration: undefined,
+      ruleOpenAuthorityIds: new Set(),
+    });
+  });
+
+  it("starts Rules generation at one for each fresh inspect route", () => {
+    const routes = new ReplyRouteRegistry({ maxRoutesPerClient: 1 });
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-a",
+      "browser-1",
+      ["rule-a"],
+    );
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-a",
+        "ide-1",
+        0,
+        [{ ruleRef: "rule-a", openAuthorityId: "open-zero" }],
+        0,
+      ),
+    ).toBeUndefined();
+    routes.prepareRulesSources(
+      "session-1",
+      "inspect-a",
+      "ide-1",
+      1,
+      [{ ruleRef: "rule-a", openAuthorityId: "open-a" }],
+      0,
+    )?.commit();
+
+    commitRoute(
+      routes,
+      "session-1",
+      "inspect-b",
+      "browser-1",
+      ["rule-b"],
+    );
+    expect(routes.get("session-1", "inspect-a")).toBeUndefined();
+    expect(
+      routes.prepareRulesSources(
+        "session-1",
+        "inspect-b",
+        "ide-1",
+        1,
+        [{ ruleRef: "rule-b", openAuthorityId: "open-b" }],
+        0,
+      )?.commit(),
+    ).toBe(true);
   });
 });

@@ -9,24 +9,43 @@ export interface ReplyRouteRegistration {
   rollback(): void;
 }
 
+export interface RuleSourceAuthority {
+  readonly ruleRef: string;
+  readonly openAuthorityId: string;
+}
+
+export interface RulesSourcesPreparation {
+  commit(): boolean;
+  rollback(): void;
+}
+
 export interface ReplyRoute {
   readonly sessionId: string;
   readonly inspectMessageId: string;
   readonly originConnectionId: string;
+  readonly expectedRuleRefs: ReadonlySet<string>;
   readonly ideConnectionId?: string;
   readonly resolutionGeneration?: number;
   readonly resolutionClaimed: boolean;
   readonly matchIds: ReadonlySet<string>;
+  readonly rulesGeneration?: number;
+  readonly ruleOpenAuthorityIds: ReadonlySet<string>;
 }
 
-type Route = ReplyRoute;
+type Route = StoredReplyRoute & {
+  readonly sessionId: string;
+  readonly inspectMessageId: string;
+};
 
-interface StoredRoute {
+interface StoredReplyRoute {
   readonly originConnectionId: string;
+  readonly expectedRuleRefs: ReadonlySet<string>;
   ideConnectionId?: string;
   resolutionGeneration?: number;
   resolutionClaimed: boolean;
-  matchIds: Set<string>;
+  excerptMatchIds: Set<string>;
+  rulesGeneration?: number;
+  ruleOpenAuthorityIds: Set<string>;
 }
 
 export interface ReplyRouteRegistryOptions {
@@ -35,7 +54,7 @@ export interface ReplyRouteRegistryOptions {
 
 export class ReplyRouteRegistry {
   private readonly maxRoutesPerClient: number;
-  private readonly routes = new Map<string, Map<string, StoredRoute>>();
+  private readonly routes = new Map<string, Map<string, StoredReplyRoute>>();
   private readonly routesByClient = new Map<string, Map<string, undefined>>();
   private readonly routesByIde = new Map<string, Set<string>>();
   private revision = 0;
@@ -53,10 +72,15 @@ export class ReplyRouteRegistry {
     sessionId: string,
     inspectMessageId: string,
     connectionId: string,
+    expectedRuleRefs: Iterable<string> = [],
   ): ReplyRouteRegistration {
+    const proposedExpectedRuleRefs = new Set(expectedRuleRefs);
     const currentRoute = this.routes.get(sessionId)?.get(inspectMessageId);
     if (currentRoute !== undefined) {
-      if (currentRoute.originConnectionId !== connectionId) {
+      if (
+        currentRoute.originConnectionId !== connectionId ||
+        !setsEqual(currentRoute.expectedRuleRefs, proposedExpectedRuleRefs)
+      ) {
         return this.createSettledRegistration("collision");
       }
 
@@ -86,11 +110,13 @@ export class ReplyRouteRegistry {
       }
 
       const sessionRoutes =
-        this.routes.get(sessionId) ?? new Map<string, StoredRoute>();
+        this.routes.get(sessionId) ?? new Map<string, StoredReplyRoute>();
       sessionRoutes.set(inspectMessageId, {
         originConnectionId: connectionId,
+        expectedRuleRefs: proposedExpectedRuleRefs,
         resolutionClaimed: false,
-        matchIds: new Set(),
+        excerptMatchIds: new Set(),
+        ruleOpenAuthorityIds: new Set(),
       });
       this.routes.set(sessionId, sessionRoutes);
       this.getClientRoutes(connectionId).set(
@@ -149,7 +175,7 @@ export class ReplyRouteRegistry {
       return undefined;
     }
     if (route.ideConnectionId === undefined) {
-      route.matchIds = new Set();
+      route.excerptMatchIds = new Set();
       this.touchClientRoute(
         route.originConnectionId,
         sessionId,
@@ -204,7 +230,7 @@ export class ReplyRouteRegistry {
     if (generationChanged) {
       route.resolutionGeneration = resolutionGeneration;
     }
-    route.matchIds = new Set();
+    route.excerptMatchIds = new Set();
     route.resolutionClaimed = resolutionClaimed;
 
     this.touchClientRoute(
@@ -232,7 +258,119 @@ export class ReplyRouteRegistry {
       return undefined;
     }
 
-    route.matchIds = new Set(matchIds);
+    route.excerptMatchIds = new Set(matchIds);
+    this.touchClientRoute(
+      route.originConnectionId,
+      sessionId,
+      inspectMessageId,
+    );
+    return this.snapshot(sessionId, inspectMessageId, route);
+  }
+
+  prepareRulesSources(
+    sessionId: string,
+    inspectMessageId: string,
+    ideConnectionId: string,
+    rulesGeneration: number,
+    sources: Iterable<RuleSourceAuthority>,
+    unresolvedRuleCount: number,
+  ): RulesSourcesPreparation | undefined {
+    const route = this.routes.get(sessionId)?.get(inspectMessageId);
+    if (
+      !route ||
+      (route.ideConnectionId !== undefined &&
+        route.ideConnectionId !== ideConnectionId) ||
+      !Number.isInteger(rulesGeneration) ||
+      !Number.isInteger(unresolvedRuleCount) ||
+      unresolvedRuleCount < 0 ||
+      (route.rulesGeneration === undefined
+        ? rulesGeneration !== 1
+        : rulesGeneration <= route.rulesGeneration)
+    ) {
+      return undefined;
+    }
+
+    const expectedRevision = this.revision;
+    const publishedRuleRefs = new Set<string>();
+    const proposedAuthorityIds = new Set<string>();
+    let sourceCount = 0;
+    for (const source of sources) {
+      sourceCount += 1;
+      if (
+        !route.expectedRuleRefs.has(source.ruleRef) ||
+        publishedRuleRefs.has(source.ruleRef) ||
+        source.openAuthorityId.length === 0 ||
+        proposedAuthorityIds.has(source.openAuthorityId)
+      ) {
+        return undefined;
+      }
+      publishedRuleRefs.add(source.ruleRef);
+      proposedAuthorityIds.add(source.openAuthorityId);
+    }
+    if (sourceCount + unresolvedRuleCount !== route.expectedRuleRefs.size) {
+      return undefined;
+    }
+
+    const expectedRulesGeneration = route.rulesGeneration;
+    let settled = false;
+    return {
+      commit: () => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
+        const currentRoute = this.routes
+          .get(sessionId)
+          ?.get(inspectMessageId);
+        if (
+          this.revision !== expectedRevision ||
+          currentRoute !== route ||
+          currentRoute.rulesGeneration !== expectedRulesGeneration ||
+          (currentRoute.ideConnectionId !== undefined &&
+            currentRoute.ideConnectionId !== ideConnectionId)
+        ) {
+          return false;
+        }
+
+        if (currentRoute.ideConnectionId === undefined) {
+          currentRoute.ideConnectionId = ideConnectionId;
+          this.getIdeRoutes(ideConnectionId).add(
+            this.routeKey(sessionId, inspectMessageId),
+          );
+        }
+        currentRoute.rulesGeneration = rulesGeneration;
+        currentRoute.ruleOpenAuthorityIds = proposedAuthorityIds;
+        this.touchClientRoute(
+          currentRoute.originConnectionId,
+          sessionId,
+          inspectMessageId,
+        );
+        return true;
+      },
+      rollback: () => {
+        settled = true;
+      },
+    };
+  }
+
+  authorizeRulesOpen(
+    sessionId: string,
+    inspectMessageId: string,
+    originConnectionId: string,
+    rulesGeneration: number,
+    openAuthorityId: string,
+  ): ReplyRoute | undefined {
+    const route = this.routes.get(sessionId)?.get(inspectMessageId);
+    if (
+      !route ||
+      route.originConnectionId !== originConnectionId ||
+      route.ideConnectionId === undefined ||
+      route.rulesGeneration !== rulesGeneration ||
+      !route.ruleOpenAuthorityIds.has(openAuthorityId)
+    ) {
+      return undefined;
+    }
+
     this.touchClientRoute(
       route.originConnectionId,
       sessionId,
@@ -375,16 +513,19 @@ export class ReplyRouteRegistry {
   private snapshot(
     sessionId: string,
     inspectMessageId: string,
-    route: StoredRoute,
+    route: StoredReplyRoute,
   ): ReplyRoute {
     return {
       sessionId,
       inspectMessageId,
       originConnectionId: route.originConnectionId,
+      expectedRuleRefs: new Set(route.expectedRuleRefs),
       ideConnectionId: route.ideConnectionId,
       resolutionGeneration: route.resolutionGeneration,
       resolutionClaimed: route.resolutionClaimed,
-      matchIds: new Set(route.matchIds),
+      matchIds: new Set(route.excerptMatchIds),
+      rulesGeneration: route.rulesGeneration,
+      ruleOpenAuthorityIds: new Set(route.ruleOpenAuthorityIds),
     };
   }
 
@@ -395,4 +536,16 @@ export class ReplyRouteRegistry {
   private markMutated(): void {
     this.revision += 1;
   }
+}
+
+function setsEqual<T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
 }
