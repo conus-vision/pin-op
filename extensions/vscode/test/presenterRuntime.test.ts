@@ -22,6 +22,7 @@ import type {
   SourceMatchesInput,
   SourceNavigationStateInput,
 } from "../src/bridgeClient.js";
+import { RulesSourcesClientRouter } from "../src/bridgeClient.js";
 import {
   SourceDecorationManager,
   type DecorationRole,
@@ -793,6 +794,41 @@ describe("presenter runtime", () => {
     }]);
   });
 
+  it("publishes Rules through only the currently bound bridge client", async () => {
+    const router = new RulesSourcesClientRouter();
+    const first = {
+      sendRulesSources: vi.fn(() => true),
+      rulesSourcesEnvelopeBytes: vi.fn(() => 8_192),
+    };
+    const second = {
+      sendRulesSources: vi.fn(() => true),
+      rulesSourcesEnvelopeBytes: vi.fn(() => 8_192),
+    };
+    router.bind(first);
+    const harness = rulesRuntimeHarness({
+      sendRulesSources: (payload) => router.sendRulesSources(payload),
+      measureRulesSourcesEnvelope: (payload) =>
+        router.rulesSourcesEnvelopeBytes(payload),
+    });
+
+    harness.runtime.select(inspectMessageWithSelectedAndParent());
+    await harness.flush();
+    router.bind(second);
+    router.unbind(first);
+    await harness.runtime.stylesheetRefresh();
+
+    expect(first.sendRulesSources).toHaveBeenCalledOnce();
+    expect(second.sendRulesSources).toHaveBeenCalledOnce();
+    expect(first.sendRulesSources.mock.calls[0]?.[0]).toMatchObject({
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+    });
+    expect(second.sendRulesSources.mock.calls[0]?.[0]).toMatchObject({
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+    });
+  });
+
   it("opens a Rules target through a host that requires native positions", async () => {
     const harness = rulesRuntimeHarness({ strictPresenterPositions: true });
     harness.runtime.select(inspectMessageWithSelectedAndParent());
@@ -957,6 +993,12 @@ function rulesRuntimeHarness(options: {
     request: RulesSourceResolverRequest,
   ) => Promise<RulesSourceResolutionBatch>;
   readonly strictPresenterPositions?: boolean;
+  readonly sendRulesSources?: (
+    payload: RulesSourcesPublicationPayload,
+  ) => boolean;
+  readonly measureRulesSourcesEnvelope?: (
+    payload: RulesSourcesPublicationPayload,
+  ) => number;
 } = {}) {
   const cssUri = "file:///workspace/dist/app.css";
   let cssText = ".card { color: red; }";
@@ -1071,9 +1113,12 @@ function rulesRuntimeHarness(options: {
     rulesSourceResolver: { resolve },
     sendRulesSources(payload) {
       rulesPublications.push(payload);
-      return true;
+      return options.sendRulesSources?.(payload) ?? true;
     },
     measureRulesSourcesEnvelope(payload) {
+      if (options.measureRulesSourcesEnvelope) {
+        return options.measureRulesSourcesEnvelope(payload);
+      }
       return Buffer.byteLength(JSON.stringify({
         protocolVersion: PROTOCOL_VERSION,
         type: "rules.sources",

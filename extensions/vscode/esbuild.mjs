@@ -1,4 +1,11 @@
-import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { builtinModules, createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +18,7 @@ import {
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const distDirectory = resolve(extensionRoot, "dist");
+const integrationDistDirectory = resolve(distDirectory, "test/integration");
 const require = createRequire(import.meta.url);
 const sourceMapRoot = dirname(require.resolve("source-map/package.json"));
 const builtinImports = new Set([
@@ -19,6 +27,18 @@ const builtinImports = new Set([
 ]);
 
 await mkdir(distDirectory, { recursive: true });
+if (dirname(integrationDistDirectory) !== resolve(distDirectory, "test")) {
+  throw new Error("Refusing to clean an unbounded integration output directory");
+}
+await rm(integrationDistDirectory, { recursive: true, force: true });
+await mkdir(integrationDistDirectory, { recursive: true });
+const integrationEntryPoints = (await readdir(
+  resolve(extensionRoot, "test/integration"),
+  { withFileTypes: true },
+))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".test.ts"))
+  .map((entry) => `test/integration/${entry.name}`)
+  .sort(compareAscii);
 
 const [extensionBuild] = await Promise.all([
   build({
@@ -38,12 +58,13 @@ const [extensionBuild] = await Promise.all([
   }),
   build({
     absWorkingDir: extensionRoot,
-    entryPoints: ["test/integration/sourcePluginApi.test.ts"],
+    entryPoints: integrationEntryPoints,
     bundle: true,
     platform: "node",
     format: "cjs",
     external: ["vscode"],
-    outfile: "dist/test/integration/sourcePluginApi.test.cjs",
+    outdir: "dist/test/integration",
+    outExtension: { ".js": ".cjs" },
     sourcemap: true,
   }),
 ]);

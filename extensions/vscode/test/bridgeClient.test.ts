@@ -1,9 +1,11 @@
 import {
   PageRefreshMessageSchema,
   PROTOCOL_VERSION,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
   type PresentationSettingsMessage,
+  type RulesOpenMessage,
   type SourceNavigateMessage,
   type SourceOpenMessage,
 } from "@pin-op/protocol";
@@ -12,8 +14,10 @@ import {
   BridgeClient,
   PageRefreshClientRouter,
   ResolutionClientRouter,
+  RulesSourcesClientRouter,
   SourceMatchesClientRouter,
   SourceNavigationClientRouter,
+  type RulesSourcesInput,
   type SourceMatchesInput,
 } from "../src/bridgeClient.js";
 
@@ -149,6 +153,116 @@ describe("BridgeClient", () => {
 
     expect(first.sendSourceMatches).toHaveBeenCalledTimes(1);
     expect(second.sendSourceMatches).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes Rules publications and envelope measurement only to the current client", () => {
+    const router = new RulesSourcesClientRouter();
+    const first = {
+      sendRulesSources: vi.fn(() => true),
+      rulesSourcesEnvelopeBytes: vi.fn(() => 303),
+    };
+    const second = {
+      sendRulesSources: vi.fn(() => false),
+      rulesSourcesEnvelopeBytes: vi.fn(() => 404),
+    };
+    const input = rulesSourcesInput();
+
+    expect(router.rulesSourcesEnvelopeBytes(input)).toBe(Number.POSITIVE_INFINITY);
+    expect(router.sendRulesSources(input)).toBe(false);
+    router.bind(first);
+    expect(router.rulesSourcesEnvelopeBytes(input)).toBe(303);
+    expect(router.sendRulesSources(input)).toBe(true);
+    router.bind(second);
+    router.unbind(first);
+    expect(router.rulesSourcesEnvelopeBytes(input)).toBe(404);
+    expect(router.sendRulesSources(input)).toBe(false);
+    router.unbind(second);
+    expect(router.sendRulesSources(input)).toBe(false);
+
+    expect(first.sendRulesSources).toHaveBeenCalledTimes(1);
+    expect(second.sendRulesSources).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes one complete strict Rules publication after authentication", () => {
+    const harness = createHarness();
+    const input = rulesSourcesInput();
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    expect(harness.client.sendRulesSources(input)).toBe(false);
+    expect(harness.sockets[0].sent).toHaveLength(1);
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(inspectMessage());
+
+    const measured = harness.client.rulesSourcesEnvelopeBytes(input);
+    expect(harness.client.sendRulesSources(input)).toBe(true);
+    const payload = harness.sockets[0].sent.at(-1)!;
+    const message = JSON.parse(payload);
+
+    expect(Buffer.byteLength(payload, "utf8")).toBe(measured);
+    expect(RulesSourcesMessageSchema.parse(message)).toEqual(message);
+    expect(message).toMatchObject({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "rules.sources",
+      sessionId: SESSION_ID,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      sources: [{
+        ruleRef: "rule-1",
+        openAuthorityId: "authority-1",
+        document: { label: "card.scss", languageId: "scss" },
+        startLine: 41,
+        startColumn: 3,
+        confidence: "sourcemap",
+      }],
+      unresolvedRuleCount: 0,
+      metadata: {},
+    });
+    expect(JSON.stringify(message)).not.toMatch(
+      /file:|[A-Za-z]:[\\/]|"(?:uri|path|range|documentVersion)"\s*:/i,
+    );
+  });
+
+  it("measures Rules publication drafts with fixed authority placeholders", () => {
+    const harness = createHarness();
+    const input = rulesSourcesInput();
+    const placeholder = "00000000-0000-4000-8000-000000000000";
+
+    expect(harness.client.rulesSourcesEnvelopeBytes({
+      inspectMessageId: "rules-integration-inspect",
+      rulesGeneration: 1,
+      sources: [
+        { ...input.sources[0]!, openAuthorityId: placeholder },
+        {
+          ...input.sources[0]!,
+          ruleRef: "rule-2",
+          openAuthorityId: placeholder,
+        },
+      ],
+      unresolvedRuleCount: 0,
+    })).toBeGreaterThan(0);
+  });
+
+  it("rejects malformed Rules publications without changing the current route", () => {
+    const harness = createHarness();
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(inspectMessage());
+    expect(harness.client.sendRulesSources(rulesSourcesInput())).toBe(true);
+    const sentBefore = harness.sockets[0].sent.length;
+
+    expect(() => harness.client.sendRulesSources({
+      ...rulesSourcesInput(),
+      unresolvedRuleCount: -1,
+      localPath: "C:/private/card.scss",
+    } as never)).toThrowError(expect.objectContaining({ name: "ZodError" }));
+
+    expect(harness.sockets[0].sent).toHaveLength(sentBefore);
+    const opened = vi.fn();
+    harness.client.onRulesOpen(opened);
+    harness.sockets[0].message(rulesOpenMessage());
+    expect(opened).toHaveBeenCalledOnce();
   });
 
   it("sends a strict protocol-v7 resolution through the authenticated IDE route", () => {
@@ -578,6 +692,7 @@ describe("BridgeClient", () => {
       "auto-refresh",
       "source-presentation",
       "presentation-settings",
+      "rules-sources",
     ]);
     expect(harness.states).toEqual(["connecting"]);
 
@@ -735,6 +850,69 @@ describe("BridgeClient", () => {
 
     expect(opened).toHaveBeenCalledTimes(1);
     expect(settings).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatches Rules open only for the current authenticated publication", () => {
+    const harness = createHarness();
+    const opened: RulesOpenMessage[] = [];
+    harness.client.onRulesOpen((message) => opened.push(message));
+    harness.client.connect();
+    harness.sockets[0].open();
+
+    harness.sockets[0].message(rulesOpenMessage());
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(rulesOpenMessage());
+    harness.sockets[0].message(inspectMessage());
+    harness.sockets[0].message(rulesOpenMessage());
+    expect(harness.client.sendRulesSources(rulesSourcesInput())).toBe(true);
+    harness.sockets[0].message(rulesOpenMessage("stale-session"));
+    harness.sockets[0].message(rulesOpenMessage(SESSION_ID, {
+      rulesGeneration: 2,
+    }));
+    harness.sockets[0].message(rulesOpenMessage(SESSION_ID, {
+      openAuthorityId: "unknown-authority",
+    }));
+    harness.sockets[0].message(rulesOpenMessage());
+    harness.sockets[0].message(rulesOpenMessage());
+
+    expect(opened).toEqual([rulesOpenMessage(), rulesOpenMessage()]);
+  });
+
+  it("does not resurrect Rules authorities across reconnect", () => {
+    const harness = createHarness();
+    const opened = vi.fn();
+    harness.client.onRulesOpen(opened);
+    harness.client.connect();
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].message(inspectMessage());
+    expect(harness.client.sendRulesSources(rulesSourcesInput())).toBe(true);
+    harness.sockets[0].message(rulesOpenMessage());
+    expect(opened).toHaveBeenCalledTimes(1);
+
+    harness.sockets[0].serverClose();
+    harness.runNextTimer();
+    harness.sockets[1].open();
+    authenticate(harness.sockets[1]);
+    harness.sockets[1].message(rulesOpenMessage());
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(rulesSourcesMessages(harness.sockets[1])).toEqual([]);
+
+    harness.sockets[1].message(inspectMessage("inspect-2"));
+    expect(harness.client.sendRulesSources(rulesSourcesInput({
+      inspectMessageId: "inspect-2",
+      rulesGeneration: 1,
+      sources: [{
+        ...rulesSourcesInput().sources[0]!,
+        openAuthorityId: "authority-2",
+      }],
+    }))).toBe(true);
+    harness.sockets[1].message(rulesOpenMessage(SESSION_ID, {
+      inspectMessageId: "inspect-2",
+      openAuthorityId: "authority-2",
+    }));
+
+    expect(opened).toHaveBeenCalledTimes(2);
   });
 
   it("ignores inspect and heartbeat traffic before authentication", () => {
@@ -983,6 +1161,12 @@ function sourcePresentationMessages(
     );
 }
 
+function rulesSourcesMessages(socket: FakeSocket): Array<Record<string, unknown>> {
+  return socket.sent
+    .map((payload) => JSON.parse(payload) as Record<string, unknown>)
+    .filter((message) => message.type === "rules.sources");
+}
+
 function sendSourcePresentation(
   client: BridgeClient,
   messageType: "source.matches" | "source.navigationState",
@@ -992,11 +1176,11 @@ function sendSourcePresentation(
     : client.sendSourceNavigationState(sourceNavigationStateInput());
 }
 
-function inspectMessage() {
+function inspectMessage(messageId = "inspect-1") {
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
-    messageId: "inspect-1",
+    messageId,
     sessionId: SESSION_ID,
     source: { role: "browser", id: "browser-1", metadata: {} },
     ideHighlightEnabled: true,
@@ -1012,6 +1196,42 @@ function inspectMessage() {
     ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
+  };
+}
+
+function rulesSourcesInput(
+  overrides: Partial<RulesSourcesInput> = {},
+): RulesSourcesInput {
+  return {
+    inspectMessageId: "inspect-1",
+    rulesGeneration: 1,
+    sources: [{
+      ruleRef: "rule-1",
+      openAuthorityId: "authority-1",
+      document: { label: "card.scss", languageId: "scss" },
+      startLine: 41,
+      startColumn: 3,
+      confidence: "sourcemap",
+    }],
+    unresolvedRuleCount: 0,
+    ...overrides,
+  };
+}
+
+function rulesOpenMessage(
+  sessionId = SESSION_ID,
+  overrides: Partial<RulesOpenMessage> = {},
+): RulesOpenMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "rules.open",
+    messageId: "rules-open-1",
+    sessionId,
+    inspectMessageId: "inspect-1",
+    rulesGeneration: 1,
+    openAuthorityId: "authority-1",
+    metadata: {},
+    ...overrides,
   };
 }
 

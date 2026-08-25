@@ -5,6 +5,7 @@ import {
   BridgeClient,
   PageRefreshClientRouter,
   ResolutionClientRouter,
+  RulesSourcesClientRouter,
   SourceMatchesClientRouter,
   SourceNavigationClientRouter,
   type ConnectionState,
@@ -49,6 +50,7 @@ export async function activate(
   const resolutionClients = new ResolutionClientRouter();
   const sourceMatchesClients = new SourceMatchesClientRouter();
   const sourceNavigationClients = new SourceNavigationClientRouter();
+  const rulesSourcesClients = new RulesSourcesClientRouter();
   const pageRefreshClients = new PageRefreshClientRouter();
   const refreshClassifierRegistry = new RefreshClassifierRegistry();
 
@@ -64,6 +66,10 @@ export async function activate(
       sourceMatchesClients.sourceMatchesEnvelopeBytes(matches),
     sendSourceNavigationState: (state) =>
       sourceNavigationClients.sendSourceNavigationState(state),
+    sendRulesSources: (sources) =>
+      rulesSourcesClients.sendRulesSources(sources),
+    measureRulesSourcesEnvelope: (sources) =>
+      rulesSourcesClients.rulesSourcesEnvelopeBytes(sources),
   });
   presenterRuntime = runtime;
 
@@ -113,6 +119,9 @@ export async function activate(
       const unsubscribeSourceOpen = nextClient.onSourceOpen((message) =>
         runtime.open(message)
       );
+      const unsubscribeRulesOpen = nextClient.onRulesOpen((message) => {
+        void runtime.openRuleSource(message).catch(reportPresenterError);
+      });
       const unsubscribePresentationSettings =
         nextClient.onPresentationSettings((message) =>
           runtime.applyPresentationSettings(message)
@@ -120,17 +129,20 @@ export async function activate(
       resolutionClients.bind(nextClient);
       sourceMatchesClients.bind(nextClient);
       sourceNavigationClients.bind(nextClient);
+      rulesSourcesClients.bind(nextClient);
       pageRefreshClients.bind(nextClient);
       return {
         connect: () => nextClient.connect(),
         dispose() {
           unsubscribeSourceNavigate();
           unsubscribeSourceOpen();
+          unsubscribeRulesOpen();
           unsubscribePresentationSettings();
           runtime.clear();
           resolutionClients.unbind(nextClient);
           sourceMatchesClients.unbind(nextClient);
           sourceNavigationClients.unbind(nextClient);
+          rulesSourcesClients.unbind(nextClient);
           pageRefreshClients.unbind(nextClient);
           nextClient.dispose();
         },

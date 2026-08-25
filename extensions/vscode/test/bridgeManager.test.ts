@@ -1,5 +1,8 @@
+import { once } from "node:events";
 import { createServer, type Server } from "node:net";
+import { PROTOCOL_VERSION, type RulesOpenMessage } from "@pin-op/protocol";
 import { describe, expect, it, onTestFinished } from "vitest";
+import WebSocket from "ws";
 import {
   LinkAuthenticator,
   type BridgeServerOptions,
@@ -110,7 +113,7 @@ describe("BridgeManager", () => {
     await manager.stop();
   });
 
-  it("authenticates the IDE after an occupied first managed port", async () => {
+  it("routes Rules sources and current open through its managed bridge", async () => {
     const reservation = await reserveAdjacentPorts();
     const authenticators = deterministicAuthenticators([
       { bridgeInstanceId: INSTANCE_A, pin: "07" },
@@ -122,8 +125,10 @@ describe("BridgeManager", () => {
       createAuthenticator: authenticators.create,
     });
     let client: BridgeClient | undefined;
+    let browser: WebSocket | undefined;
     onTestFinished(async () => {
       client?.dispose();
+      browser?.close();
       try {
         await manager.stop();
       } finally {
@@ -148,6 +153,69 @@ describe("BridgeManager", () => {
     const connected = waitForConnected(client);
     client.connect();
     await connected;
+
+    browser = await connectSocket(manager.snapshot().url ?? "");
+    const acceptedPromise = nextJsonMessage(browser, "linkAccepted");
+    browser.send(JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "linkRequest",
+      messageId: "link-browser-1",
+      pin: manager.snapshot().pin,
+      source: { role: "browser", id: "browser-test", metadata: {} },
+      metadata: {},
+    }));
+    const accepted = await acceptedPromise;
+    const authenticatedPromise = nextJsonMessage(browser, "authenticated");
+    browser.send(JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "hello",
+      messageId: "hello-browser-1",
+      sessionId: requiredMessageString(accepted, "sessionId"),
+      authToken: requiredMessageString(accepted, "authToken"),
+      bridgeInstanceId: requiredMessageString(accepted, "bridgeInstanceId"),
+      source: { role: "browser", id: "browser-test", metadata: {} },
+      capabilities: ["inspect", "rules-sources"],
+      metadata: {},
+    }));
+    await authenticatedPromise;
+
+    const inspectAccepted = new Promise<void>((resolve) => {
+      const unsubscribe = client?.onInspect(() => {
+        unsubscribe?.();
+        resolve();
+      });
+    });
+    browser.send(JSON.stringify(inspectForRules()));
+    await inspectAccepted;
+    const sourcesPromise = nextJsonMessage(browser, "rules.sources");
+    expect(client.sendRulesSources(rulesSourcesInput())).toBe(true);
+    const sources = await sourcesPromise;
+    expect(sources).toMatchObject({
+      inspectMessageId: "inspect-rules-1",
+      rulesGeneration: 1,
+      sources: [{ openAuthorityId: "authority-rules-1" }],
+    });
+
+    const opened = new Promise<RulesOpenMessage>((resolve) => {
+      const unsubscribe = client?.onRulesOpen((message) => {
+        unsubscribe?.();
+        resolve(message);
+      });
+    });
+    browser.send(JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "rules.open",
+      messageId: "rules-open-browser-1",
+      sessionId: SESSION_ID,
+      inspectMessageId: "inspect-rules-1",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-rules-1",
+      metadata: {},
+    }));
+    await expect(opened).resolves.toMatchObject({
+      inspectMessageId: "inspect-rules-1",
+      openAuthorityId: "authority-rules-1",
+    });
 
     client.dispose();
     client = undefined;
@@ -737,6 +805,93 @@ async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+async function connectSocket(url: string): Promise<WebSocket> {
+  const socket = new WebSocket(url);
+  await once(socket, "open");
+  return socket;
+}
+
+async function nextJsonMessage(
+  socket: WebSocket,
+  expectedType: string,
+): Promise<Record<string, unknown>> {
+  const [data] = await once(socket, "message");
+  const message = JSON.parse(String(data)) as Record<string, unknown>;
+  if (message.type !== expectedType) {
+    throw new Error(`Expected ${expectedType}, received ${String(message.type)}`);
+  }
+  return message;
+}
+
+function requiredMessageString(
+  message: Record<string, unknown>,
+  key: string,
+): string {
+  const value = message[key];
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${key} to be a string`);
+  }
+  return value;
+}
+
+function inspectForRules() {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "inspect",
+    messageId: "inspect-rules-1",
+    sessionId: SESSION_ID,
+    source: { role: "browser", id: "browser-test", metadata: {} },
+    ideHighlightEnabled: false,
+    targets: [{
+      role: "selected",
+      depth: 0,
+      subject: { selector: ".card", metadata: {} },
+      facts: [],
+      metadata: {},
+    }],
+    ruleEvidence: {
+      rules: [{
+        ruleRef: "rule-routes-1",
+        selector: ".card",
+        declarations: [{
+          property: "color",
+          value: "red",
+          important: false,
+          valueTruncated: false,
+        }],
+        declarationsTruncated: false,
+        generatedSource: {
+          sourceUrl: "http://localhost:3000/app.css",
+          startLine: 1,
+          startColumn: 1,
+          contexts: [],
+          contextsTruncated: false,
+          unsupportedGroupContext: false,
+        },
+      }],
+      omittedRuleCount: 0,
+    },
+    context: { url: "http://localhost:3000/", metadata: {} },
+    metadata: {},
+  };
+}
+
+function rulesSourcesInput() {
+  return {
+    inspectMessageId: "inspect-rules-1",
+    rulesGeneration: 1,
+    sources: [{
+      ruleRef: "rule-routes-1",
+      openAuthorityId: "authority-rules-1",
+      document: { label: "app.css", languageId: "css" as const },
+      startLine: 1,
+      startColumn: 1,
+      confidence: "exact" as const,
+    }],
+    unresolvedRuleCount: 0,
+  };
 }
 
 function waitForConnected(client: BridgeClient): Promise<void> {

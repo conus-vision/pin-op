@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { builtinModules } from "node:module";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -24,6 +30,14 @@ const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const buildScriptUrl = new URL("../esbuild.mjs", import.meta.url);
 const verifyScriptUrl = new URL("../verify-vsix.mjs", import.meta.url);
 const extensionSourceUrl = new URL("../src/extension.ts", import.meta.url);
+const integrationBundlesUrl = new URL(
+  "../dist/test/integration/",
+  import.meta.url,
+);
+const staleIntegrationBundleUrl = new URL(
+  "stale.test.cjs",
+  integrationBundlesUrl,
+);
 const installedSmokeUrl = new URL(
   "../smoke-installed-vsix.mjs",
   import.meta.url,
@@ -34,6 +48,12 @@ const builtins = new Set([
 ]);
 
 beforeAll(() => {
+  mkdirSync(fileURLToPath(integrationBundlesUrl), { recursive: true });
+  writeFileSync(
+    staleIntegrationBundleUrl,
+    "// stale integration bundle sentinel\n",
+    "utf8",
+  );
   execFileSync(process.execPath, ["esbuild.mjs"], {
     cwd: extensionRoot,
     stdio: "pipe",
@@ -41,6 +61,16 @@ beforeAll(() => {
 });
 
 describe("VS Code package build", () => {
+  it("replaces the bounded integration bundle directory", () => {
+    expect(readdirSync(integrationBundlesUrl).sort()).toEqual([
+      "rulesOpen.test.cjs",
+      "rulesOpen.test.cjs.map",
+      "sourcePluginApi.test.cjs",
+      "sourcePluginApi.test.cjs.map",
+    ]);
+    expect(existsSync(staleIntegrationBundleUrl)).toBe(false);
+  });
+
   it("has no external package requires except vscode", () => {
     const bundle = readFileSync(bundleUrl, "utf8");
     const requires = [
@@ -83,7 +113,7 @@ describe("VS Code package build", () => {
     const bundle = readFileSync(bundleUrl, "utf8");
 
     expect(bundle).toMatch(
-      /capabilities:\s*\[\s*"resolution",\s*"source-navigation",\s*"auto-refresh",\s*"source-presentation",\s*"presentation-settings"\s*\]/,
+      /capabilities:\s*\[\s*"resolution",\s*"source-navigation",\s*"auto-refresh",\s*"source-presentation",\s*"presentation-settings",\s*"rules-sources"\s*\]/,
     );
     expect(bundle).toContain("page.refresh");
     expect(bundle).toContain("source.matches");
@@ -91,6 +121,8 @@ describe("VS Code package build", () => {
     expect(bundle).toContain("presentation.settings");
     expect(bundle).toContain("source.navigate");
     expect(bundle).toContain("source.navigationState");
+    expect(bundle).toContain("rules.sources");
+    expect(bundle).toContain("rules.open");
   });
 
   it("wires source presentation senders, listeners, and disconnect cleanup", () => {
@@ -107,16 +139,25 @@ describe("VS Code package build", () => {
     expect(source).toContain("runtime.applyPresentationSettings(message)");
     expect(source).toContain("sourceMatchesClients.bind(nextClient)");
     expect(source).toContain("sourceMatchesClients.unbind(nextClient)");
+    expect(source).toContain("new RulesSourcesClientRouter()");
+    expect(source).toContain("sendRulesSources: (sources)");
+    expect(source).toContain("rulesSourcesClients.sendRulesSources(sources)");
+    expect(source).toContain("nextClient.onRulesOpen((message)");
+    expect(source).toContain("runtime.openRuleSource(message)");
+    expect(source).toContain("rulesSourcesClients.bind(nextClient)");
+    expect(source).toContain("rulesSourcesClients.unbind(nextClient)");
     expect(source).toContain('if (state !== "connected")');
 
     expect(createClientDisposeCalls(source)).toEqual([
       "unsubscribeSourceNavigate",
       "unsubscribeSourceOpen",
+      "unsubscribeRulesOpen",
       "unsubscribePresentationSettings",
       "runtime.clear",
       "resolutionClients.unbind",
       "sourceMatchesClients.unbind",
       "sourceNavigationClients.unbind",
+      "rulesSourcesClients.unbind",
       "pageRefreshClients.unbind",
       "nextClient.dispose",
     ]);

@@ -5,6 +5,7 @@ import {
   PageRefreshMessageSchema,
   PROTOCOL_VERSION,
   ResolutionMessageSchema,
+  RulesSourcesMessageSchema,
   SourceMatchesMessageSchema,
   SourceNavigationStateMessageSchema,
   type ErrorMessage,
@@ -12,6 +13,8 @@ import {
   type PageRefreshMessage,
   type PresentationSettingsMessage,
   type ResolutionMessage,
+  type RulesOpenMessage,
+  type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigateMessage,
   type SourceNavigationStateMessage,
@@ -19,6 +22,40 @@ import {
 } from "@pin-op/protocol";
 
 export type PageRefreshInput = Pick<PageRefreshMessage, "mode">;
+
+export type RulesSourcesInput = Pick<
+  RulesSourcesMessage,
+  | "inspectMessageId"
+  | "rulesGeneration"
+  | "sources"
+  | "unresolvedRuleCount"
+>;
+
+export interface RulesSourcesSender {
+  sendRulesSources(sources: RulesSourcesInput): boolean;
+  rulesSourcesEnvelopeBytes(sources: RulesSourcesInput): number;
+}
+
+export class RulesSourcesClientRouter implements RulesSourcesSender {
+  private client: RulesSourcesSender | undefined;
+
+  public bind(client: RulesSourcesSender): void {
+    this.client = client;
+  }
+
+  public unbind(client: RulesSourcesSender): void {
+    if (this.client === client) this.client = undefined;
+  }
+
+  public sendRulesSources(sources: RulesSourcesInput): boolean {
+    return this.client?.sendRulesSources(sources) ?? false;
+  }
+
+  public rulesSourcesEnvelopeBytes(sources: RulesSourcesInput): number {
+    return this.client?.rulesSourcesEnvelopeBytes(sources) ??
+      Number.POSITIVE_INFINITY;
+  }
+}
 
 export interface PageRefreshSender {
   sendPageRefresh(refresh: PageRefreshInput): void;
@@ -176,6 +213,9 @@ export class BridgeClient {
   private readonly sourceOpenListeners = new Set<
     (message: SourceOpenMessage) => void
   >();
+  private readonly rulesOpenListeners = new Set<
+    (message: RulesOpenMessage) => void
+  >();
   private readonly presentationSettingsListeners = new Set<
     (message: PresentationSettingsMessage) => void
   >();
@@ -191,6 +231,14 @@ export class BridgeClient {
   private terminalFailure = false;
   private state: ConnectionState = "disconnected";
   private refreshGeneration = 0;
+  private currentInspectMessageId: string | undefined;
+  private currentRulesRoute:
+    | {
+        readonly inspectMessageId: string;
+        readonly rulesGeneration: number;
+        readonly authorityIds: ReadonlySet<string>;
+      }
+    | undefined;
 
   constructor(private readonly options: BridgeClientOptions) {
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
@@ -229,6 +277,7 @@ export class BridgeClient {
     this.inspectListeners.clear();
     this.sourceNavigateListeners.clear();
     this.sourceOpenListeners.clear();
+    this.rulesOpenListeners.clear();
     this.presentationSettingsListeners.clear();
     this.protocolErrorListeners.clear();
     this.stateListeners.clear();
@@ -247,6 +296,11 @@ export class BridgeClient {
   onSourceOpen(listener: (message: SourceOpenMessage) => void): () => void {
     this.sourceOpenListeners.add(listener);
     return () => this.sourceOpenListeners.delete(listener);
+  }
+
+  onRulesOpen(listener: (message: RulesOpenMessage) => void): () => void {
+    this.rulesOpenListeners.add(listener);
+    return () => this.rulesOpenListeners.delete(listener);
   }
 
   onPresentationSettings(
@@ -323,6 +377,29 @@ export class BridgeClient {
     return this.sendAuthenticatedMessage(message);
   }
 
+  sendRulesSources(sources: RulesSourcesInput): boolean {
+    const message = RulesSourcesMessageSchema.parse(
+      this.createRulesSourcesMessage(sources, randomUUID()),
+    );
+    if (this.currentInspectMessageId !== message.inspectMessageId) return false;
+    if (!this.sendAuthenticatedMessage(message)) return false;
+    this.currentRulesRoute = {
+      inspectMessageId: message.inspectMessageId,
+      rulesGeneration: message.rulesGeneration,
+      authorityIds: new Set(
+        message.sources.map((source) => source.openAuthorityId),
+      ),
+    };
+    return true;
+  }
+
+  rulesSourcesEnvelopeBytes(sources: RulesSourcesInput): number {
+    return Buffer.byteLength(JSON.stringify(this.createRulesSourcesMessage(
+      sources,
+      "00000000-0000-4000-8000-000000000000",
+    )), "utf8");
+  }
+
   private createSourceMatchesMessage(
     matches: SourceMatchesInput,
     messageId: string,
@@ -338,6 +415,24 @@ export class BridgeClient {
       document: matches.document,
       matches: matches.matches,
       omittedMatchCount: matches.omittedMatchCount,
+      metadata: {},
+    };
+  }
+
+  private createRulesSourcesMessage(
+    sources: RulesSourcesInput,
+    messageId: string,
+  ): RulesSourcesMessage {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      type: "rules.sources",
+      messageId,
+      sessionId: this.options.sessionId,
+      source: { role: "ide", id: this.sourceId },
+      inspectMessageId: sources.inspectMessageId,
+      rulesGeneration: sources.rulesGeneration,
+      sources: sources.sources,
+      unresolvedRuleCount: sources.unresolvedRuleCount,
       metadata: {},
     };
   }
@@ -365,6 +460,7 @@ export class BridgeClient {
             "auto-refresh",
             "source-presentation",
             "presentation-settings",
+            "rules-sources",
           ],
           metadata: {},
         }),
@@ -418,7 +514,19 @@ export class BridgeClient {
       this.state === "connected" &&
       parsed.data.sessionId === this.options.sessionId
     ) {
+      this.currentInspectMessageId = parsed.data.messageId;
+      this.currentRulesRoute = undefined;
       for (const listener of this.inspectListeners) {
+        listener(parsed.data);
+      }
+    }
+    if (
+      parsed.data.type === "rules.open" &&
+      this.state === "connected" &&
+      parsed.data.sessionId === this.options.sessionId &&
+      this.isCurrentRulesOpen(parsed.data)
+    ) {
+      for (const listener of this.rulesOpenListeners) {
         listener(parsed.data);
       }
     }
@@ -549,6 +657,7 @@ export class BridgeClient {
       return;
     }
     this.state = state;
+    if (state !== "connected") this.clearRulesCorrelation();
     for (const listener of this.stateListeners) {
       listener(state);
     }
@@ -559,6 +668,19 @@ export class BridgeClient {
     socket.onmessage = null;
     socket.onclose = null;
     socket.onerror = null;
+  }
+
+  private isCurrentRulesOpen(message: RulesOpenMessage): boolean {
+    const route = this.currentRulesRoute;
+    return this.currentInspectMessageId === message.inspectMessageId &&
+      route?.inspectMessageId === message.inspectMessageId &&
+      route.rulesGeneration === message.rulesGeneration &&
+      route.authorityIds.has(message.openAuthorityId);
+  }
+
+  private clearRulesCorrelation(): void {
+    this.currentInspectMessageId = undefined;
+    this.currentRulesRoute = undefined;
   }
 }
 
