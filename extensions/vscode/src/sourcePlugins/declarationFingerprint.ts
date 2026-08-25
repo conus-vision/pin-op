@@ -1,4 +1,4 @@
-import type { CssRuleFact } from "@pin-op/protocol";
+import type { CssResolutionFact } from "./cssFacts.js";
 import type {
   CssDeclarationEvidence,
   NormalizedDeclaration,
@@ -25,53 +25,15 @@ export function declarationFingerprint(
 }
 
 export function declarationEvidenceFromFact(
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
 ): CssDeclarationEvidence | undefined {
-  const metadataValueTruncated = fact.metadata.valueTruncated;
-  if (typeof metadataValueTruncated !== "boolean" || metadataValueTruncated) {
-    return undefined;
-  }
-  const important = factPriority(fact);
-  if (important === undefined) return undefined;
+  if (fact.valueTruncated) return undefined;
   return {
     property: fact.property,
     value: fact.value,
     valueComplete: true,
-    important,
+    important: fact.important,
   };
-}
-
-function factPriority(fact: CssRuleFact): boolean | undefined {
-  const hasImportant = Object.prototype.hasOwnProperty.call(
-    fact.metadata,
-    "important",
-  );
-  const hasPriority = Object.prototype.hasOwnProperty.call(
-    fact.metadata,
-    "priority",
-  );
-  const metadataImportant = fact.metadata.important;
-  const metadataPriority = fact.metadata.priority;
-  if (hasImportant && typeof metadataImportant !== "boolean") return undefined;
-  if (
-    hasPriority && metadataPriority !== "" && metadataPriority !== "important"
-  ) {
-    return undefined;
-  }
-  if (!hasImportant && !hasPriority) return undefined;
-  const legacyImportant = hasPriority
-    ? metadataPriority === "important"
-    : undefined;
-  if (
-    typeof metadataImportant === "boolean" &&
-    legacyImportant !== undefined &&
-    metadataImportant !== legacyImportant
-  ) {
-    return undefined;
-  }
-  return typeof metadataImportant === "boolean"
-    ? metadataImportant
-    : legacyImportant;
 }
 
 export function declarationsContainEvidence(

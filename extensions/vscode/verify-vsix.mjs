@@ -67,7 +67,7 @@ assertPngDimensions(
   128,
 );
 parseRuntimeMetadata(entries.get("extension/dist/runtime-metadata.json"), {
-  expectedProtocolVersion: 6,
+  expectedProtocolVersion: 7,
   label: "VSIX runtime metadata",
 });
 

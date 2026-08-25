@@ -1,6 +1,11 @@
-import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
+import {
+  INSPECT_LIMITS,
+  RULE_EVIDENCE_LIMITS,
+  utf8ByteLength,
+} from "@pin-op/protocol";
 import { describe, expect, it } from "vitest";
 import { MatchedStylesCollector } from "../src/matchedStylesCollector.js";
+import { projectMatchedStylesToCssFacts } from "../src/matchedStylesProjection.js";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import type { StyleDeclarationSource } from "../src/cssRuleWalker.js";
 import type {
@@ -147,6 +152,40 @@ describe("MatchedStylesCollector", () => {
     expect(new Set(result.rules.map(({ ruleRef }) => ruleRef))).toHaveLength(5);
   });
 
+  it("keeps identical rules in distinct supports contexts non-interchangeable", () => {
+    const firstCondition = "(display: grid)";
+    const secondCondition = "(display: inline-grid)";
+    const scope = documentScope({
+      supports: new Map([
+        [firstCondition, true],
+        [secondCondition, true],
+      ]),
+    });
+    const selected = element(scope, { matches: new Set([".card"]) });
+    const matched = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet("https://example.test/app.css", [
+        supportsRule(firstCondition, [styleRule(".card", { color: "red" })]),
+        supportsRule(secondCondition, [styleRule(".card", { color: "red" })]),
+      ])]),
+    ).collect(AUTHORITY)!;
+
+    const projection = projectMatchedStylesToCssFacts(matched);
+    const contextsByRef = new Map(projection.ruleEvidence.rules.map((rule) => [
+      rule.ruleRef,
+      rule.generatedSource?.contexts,
+    ]));
+
+    expect(projection.facts.map(({ ruleRef }) => ruleRef)).toEqual(
+      matched.rules.map(({ ruleRef }) => ruleRef),
+    );
+    expect([...contextsByRef.values()]).toEqual([
+      [{ kind: "supports", conditionText: firstCondition }],
+      [{ kind: "supports", conditionText: secondCondition }],
+    ]);
+    expect(new Set(contextsByRef.keys())).toHaveLength(2);
+  });
+
   it("collects inheritable declarations from at most 32 composed ancestors", () => {
     const scope = documentScope();
     let ancestor: ReturnType<typeof element> | null = null;
@@ -185,6 +224,46 @@ describe("MatchedStylesCollector", () => {
       .toBe(true);
     expect(result.partial).toBe(true);
     expect(result.diagnostics).toContain("ancestor-limit");
+  });
+
+  it("identifies the actual DOM parent within the composed ancestor authority", () => {
+    const scope = documentScope();
+    const lightDomParent = element(scope, {
+      matches: new Set([".light-parent"]),
+      tagName: "MAIN",
+    });
+    const slot = element(scope, {
+      matches: new Set([".slot"]),
+      tagName: "SLOT",
+    });
+    const rules = [
+      styleRule(".light-parent", { color: "red" }),
+      styleRule(".slot", { color: "blue" }),
+    ];
+    const stylesheets = stylesheetAuthority(scope, [stylesheet(null, rules)]);
+
+    const direct = collector(
+      element(scope, {
+        matches: new Set([".selected"]),
+        parent: lightDomParent,
+      }),
+      stylesheets,
+    ).collect(AUTHORITY)!;
+    const slotted = collector(
+      element(scope, {
+        matches: new Set([".selected"]),
+        parent: lightDomParent,
+        assignedSlot: slot,
+      }),
+      stylesheets,
+    ).collect(AUTHORITY)!;
+
+    expect(direct).toMatchObject({ domParentAncestorIndex: 1 });
+    expect(slotted.inherited[0]).toMatchObject({
+      ancestorIndex: 1,
+      elementName: "slot",
+    });
+    expect(slotted).not.toHaveProperty("domParentAncestorIndex");
   });
 
   it("fails closed for exact scope, hostile selectors, unsupported groups, and partial inventory", () => {
@@ -340,30 +419,39 @@ describe("MatchedStylesCollector", () => {
     )).toEqual(["winning-known-author", "winning-known-author", "unknown"]);
   });
 
-  it("surfaces shared-walker fact truncation instead of claiming completeness", () => {
+  it("keeps the full Rules model while truncating only inspect evidence", () => {
     const scope = documentScope();
     const selected = element(scope, { matches: new Set([".card"]) });
-    const rules = Array.from({ length: 3 }, (_, ruleIndex) => styleRule(
+    const rules = [styleRule(
       ".card",
       Object.fromEntries(Array.from(
-        { length: INSPECT_LIMITS.declarationsPerRule },
+        { length: INSPECT_LIMITS.declarationsPerRule + 1 },
         (_, declarationIndex) => [
-          `--r${ruleIndex}-${declarationIndex}`,
+          `--property-${declarationIndex}`,
           `${declarationIndex}`,
         ],
       )),
-    ));
+    )];
 
     const result = collector(
       selected,
       stylesheetAuthority(scope, [stylesheet(null, rules)]),
     ).collect(AUTHORITY)!;
+    const projection = projectMatchedStylesToCssFacts(result);
 
-    expect(result.rules.flatMap(({ declarations }) => declarations)).toHaveLength(
-      INSPECT_LIMITS.factsPerTarget,
+    expect(result.rules[0]?.declarations).toHaveLength(
+      INSPECT_LIMITS.declarationsPerRule,
     );
+    expect(result.rules[0]?.declarationsTruncated).toBe(true);
     expect(result.partial).toBe(true);
-    expect(result.diagnostics).toContain("facts-per-target-limit");
+    expect(result.diagnostics).toContain("declarations-per-rule-limit");
+    expect(projection.facts).toHaveLength(
+      RULE_EVIDENCE_LIMITS.declarationsPerRule,
+    );
+    expect(projection.ruleEvidence.rules[0]?.declarations).toHaveLength(
+      RULE_EVIDENCE_LIMITS.declarationsPerRule,
+    );
+    expect(projection.ruleEvidence.rules[0]?.declarationsTruncated).toBe(true);
   });
 
   it("detects unsupported :host and ::slotted rules across actual roots", () => {

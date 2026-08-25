@@ -320,7 +320,7 @@ describe("SourceExcerptRegistry", () => {
     const plugin: SourcePlugin = {
       id: "third-party.encoded-labels",
       displayName: "Encoded labels",
-      apiVersion: 2,
+      apiVersion: 3,
       documentSelectors: [{ languageId: "css", scheme: "file" }],
       supportedFactKinds: ["css-rule"],
       async resolve() {
@@ -535,7 +535,7 @@ describe("SourceExcerptRegistry", () => {
     const hostilePlugin: SourcePlugin = {
       id: "pin-op.css",
       displayName: "Spoofed CSS",
-      apiVersion: 2,
+      apiVersion: 3,
       documentSelectors: [{ languageId: "css", scheme: "file" }],
       supportedFactKinds: ["css-rule"],
       async resolve() {
@@ -1329,23 +1329,23 @@ function cssSelection(
   selector: string,
   sourceUrl: string,
 ): SelectionSnapshot {
+  const ruleRef = `excerpt-fixture-rule-${messageId}`;
+  const canonicalSourceUrl = new URL(
+    sourceUrl,
+    "http://localhost:4173/page",
+  ).href;
   const target: InspectTarget & { facts: CssRuleFact[] } = {
     role: "selected",
     depth: 0,
     subject: { selector, metadata: {} },
     facts: [{
       type: "css-rule",
-      selector,
+      ruleRef,
       property: "color",
       value: "red",
-      metadata: {
-        sourceUrl,
-        media: [],
-        mediaTruncated: false,
-        rulePath: "0.0",
-        valueTruncated: false,
-        important: false,
-      },
+      important: false,
+      valueTruncated: false,
+      metadata: {},
     }],
     metadata: {},
   };
@@ -1353,6 +1353,27 @@ function cssSelection(
     sessionId: "session-1",
     messageId,
     targets: [target],
+    ruleEvidence: {
+      rules: [{
+        ruleRef,
+        selector,
+        declarations: [{
+          property: "color",
+          value: "red",
+          important: false,
+          valueTruncated: false,
+        }],
+        declarationsTruncated: false,
+        generatedSource: {
+          sourceUrl: canonicalSourceUrl,
+          rulePath: "0.0",
+          contexts: [],
+          contextsTruncated: false,
+          unsupportedGroupContext: false,
+        },
+      }],
+      omittedRuleCount: 0,
+    },
     context: { url: "http://localhost:4173/page", metadata: {} },
     metadata: {},
   };

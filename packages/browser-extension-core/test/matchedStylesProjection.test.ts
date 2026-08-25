@@ -4,7 +4,7 @@ import { projectMatchedStylesToCssFacts } from "../src/matchedStylesProjection.j
 import type { MatchedStyles } from "../src/matchedStylesTypes.js";
 
 describe("projectMatchedStylesToCssFacts", () => {
-  it("projects the exact matched records with shared refs and bounded v6 metadata", () => {
+  it("projects one correlated evidence unit per displayed rule", () => {
     const matched = fixture();
     const result = projectMatchedStylesToCssFacts(matched, createInspectByteBudget());
 
@@ -12,23 +12,42 @@ describe("projectMatchedStylesToCssFacts", () => {
       facts: [
         {
           type: "css-rule",
-          selector: ".card",
+          ruleRef: "rule-external",
           property: "color",
           value: "red",
-          metadata: {
-            ruleRef: "rule-external",
-            sourceUrl: "https://example.test/app.css",
-            media: ["screen"],
-            mediaTruncated: false,
-            rulePath: "0.3",
-            valueTruncated: false,
-            important: true,
-          },
+          important: true,
+          valueTruncated: false,
+          metadata: {},
         },
       ],
+      ruleEvidence: {
+        rules: [
+          {
+            ruleRef: "rule-external",
+            selector: ".card",
+            declarations: [
+              {
+                property: "color",
+                value: "red",
+                important: true,
+                valueTruncated: false,
+              },
+            ],
+            declarationsTruncated: false,
+            generatedSource: {
+            sourceUrl: "https://example.test/app.css",
+              rulePath: "0.3",
+              contexts: [{ kind: "media", conditionText: "screen" }],
+              contextsTruncated: false,
+              unsupportedGroupContext: false,
+            },
+          },
+        ],
+        omittedRuleCount: 0,
+      },
       inaccessibleStylesheets: [],
     });
-    expect(result.facts[0]!.metadata.ruleRef).toBe(matched.rules[0]!.ruleRef);
+    expect(result.facts[0]!.ruleRef).toBe(matched.rules[0]!.ruleRef);
   });
 
   it("can project an inherited group without recollecting or walking CSSOM", () => {
@@ -38,17 +57,129 @@ describe("projectMatchedStylesToCssFacts", () => {
       createInspectByteBudget(),
       { inheritedAncestorIndex: 1 },
     );
-    expect(inherited.facts.map((fact) => [fact.selector, fact.property])).toEqual([
-      ["body", "font-size"],
+    expect(inherited.facts.map((fact) => [fact.ruleRef, fact.property])).toEqual([
+      ["rule-body", "font-size"],
+    ]);
+    expect(inherited.ruleEvidence.rules.map((rule) => rule.ruleRef)).toEqual([
+      "rule-body",
     ]);
   });
 
   it("honors the shared byte budget atomically", () => {
     const budget = createInspectByteBudget();
     budget.remainingBytes = 0;
-    expect(projectMatchedStylesToCssFacts(fixture(), budget).facts).toEqual([]);
+    expect(projectMatchedStylesToCssFacts(fixture(), budget)).toMatchObject({
+      facts: [],
+      ruleEvidence: { rules: [], omittedRuleCount: 1 },
+    });
+  });
+
+  it("keeps inline evidence but omits generated source authority", () => {
+    const matched = fixture();
+    const inline = rule(
+      "rule-inline",
+      "element.style",
+      "color",
+      "blue",
+      false,
+      { rulePath: "0" },
+    );
+    const result = projectMatchedStylesToCssFacts({ ...matched, inline });
+
+    expect(result.ruleEvidence.rules[0]).toMatchObject({
+      ruleRef: "rule-inline",
+      selector: "element.style",
+    });
+    expect(result.ruleEvidence.rules[0]).not.toHaveProperty("generatedSource");
+  });
+
+  it("fails closed on hostile and unresolved generated source URLs", () => {
+    for (const sourceUrl of [
+      "file:///private/app.css",
+      "blob:https://example.test/id",
+      "data:text/css,body{}",
+      "chrome-extension://abc/app.css",
+      "moz-extension://abc/app.css",
+      "resource://gre/app.css",
+      "about:blank",
+      "javascript:alert(1)",
+      "/var/private/app.css",
+      "/Users/alice/app.css",
+      "/workspace/project/app.css",
+      "/mnt/c/app.css",
+      "C:\\private\\app.css",
+      "\\\\server\\share\\app.css",
+      "//server/share/app.css",
+      "https://user@example.test/app.css",
+      "https://EXAMPLE.test/app.css",
+      "https://example.test/app.css#",
+      "https://example.test/app.css#fragment",
+      "https://example.test/app.css\u0085hidden",
+      "https://example.test/app.css\u2066hidden",
+      "https://example.test/app%00.css",
+      "https://example.test/app%C2%85.css",
+      "https://example.test/app%E2%81%A6.css",
+      "https://example.test/app%5Csecret.css",
+    ]) {
+      const matched = fixtureWithSourceUrl(sourceUrl);
+      const result = projectMatchedStylesToCssFacts(matched);
+
+      expect(result.ruleEvidence.rules).toHaveLength(1);
+      expect(result.ruleEvidence.rules[0]).not.toHaveProperty("generatedSource");
+    }
+  });
+
+  it.each([
+    ["../assets/app.css", "https://example.test/routes/assets/app.css"],
+    ["/assets/app.css", "https://example.test/assets/app.css"],
+  ])("canonicalizes relative stylesheet href %s", (sourceUrl, expected) => {
+    const result = projectMatchedStylesToCssFacts(
+      fixtureWithSourceUrl(sourceUrl),
+      createInspectByteBudget(),
+      { pageUrl: "https://example.test/routes/card/" },
+    );
+
+    expect(result.ruleEvidence.rules[0]?.generatedSource).toMatchObject({
+      sourceUrl: expected,
+    });
+  });
+
+  it("marks truncated and unsupported contexts for fail-closed resolution", () => {
+    const matched = fixture();
+    const truncated = projectMatchedStylesToCssFacts({
+      ...matched,
+      rules: [{ ...matched.rules[0]!, contextsTruncated: true }],
+    });
+    expect(truncated.ruleEvidence.rules[0]?.generatedSource).toMatchObject({
+      contextsTruncated: true,
+      unsupportedGroupContext: false,
+    });
+
+    const unsupported = projectMatchedStylesToCssFacts({
+      ...matched,
+      rules: [{
+        ...matched.rules[0]!,
+        contexts: [{ kind: "container" as const, text: "width > 10rem" }],
+      }],
+    });
+    expect(unsupported.ruleEvidence.rules[0]?.generatedSource).toMatchObject({
+      contexts: [],
+      contextsTruncated: false,
+      unsupportedGroupContext: true,
+    });
   });
 });
+
+function fixtureWithSourceUrl(sourceUrl: string): MatchedStyles {
+  const matched = fixture();
+  return {
+    ...matched,
+    rules: [{
+      ...matched.rules[0]!,
+      source: { ...matched.rules[0]!.source!, sourceUrl },
+    }],
+  };
+}
 
 function fixture(): MatchedStyles {
   return Object.freeze({

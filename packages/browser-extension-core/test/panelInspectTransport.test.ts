@@ -926,7 +926,7 @@ describe("PanelInspectTransport source presentation", () => {
     expect(port.sent).toHaveLength(3);
   });
 
-  it("forwards strict v6 source, settings, compatibility, and incompatible states", () => {
+  it("forwards strict v7 source, settings, compatibility, and incompatible states", () => {
     const port = new FakePort();
     const received: unknown[] = [];
     const transport = new PanelInspectTransport(

@@ -1,6 +1,6 @@
 # Pin-op Protocol Simulator
 
-The simulator sends strict Pin-op protocol v6 messages to the local WebSocket
+The simulator sends strict Pin-op protocol v7 messages to the local WebSocket
 bridge. It does not use HTTP, write source files, carry workspace paths, or ask
 an IDE to run commands.
 
@@ -22,7 +22,7 @@ Explicit bridge credentials are also supported for integration environments:
 corepack pnpm --filter @pin-op/simulator send -- --url ws://127.0.0.1:48735 --session-id SESSION --bridge-instance-id UUID --auth-token TOKEN --fixture inspect-card
 ```
 
-## Protocol V6 Verification
+## Protocol V7 Verification
 
 ```powershell
 corepack pnpm --filter @pin-op/simulator test

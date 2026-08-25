@@ -1218,6 +1218,7 @@ function selection(selector: string) {
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:3000", metadata: {} },
     ideHighlightEnabled: true,
     metadata: {},

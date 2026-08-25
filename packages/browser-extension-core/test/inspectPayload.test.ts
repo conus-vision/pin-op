@@ -2,6 +2,7 @@ import {
   PinOpMessageSchema,
   INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
+  RULE_EVIDENCE_LIMITS,
   InspectContextSchema,
   InspectTargetSchema,
   PROTOCOL_VERSION,
@@ -10,19 +11,33 @@ import { describe, expect, it } from "vitest";
 import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import { createInspectPayload } from "../src/inspectPayload.js";
 import type { InspectableElement } from "../src/inspectMode.js";
-import type { MatchedStyles } from "../src/matchedStylesTypes.js";
+import type {
+  MatchedRule,
+  MatchedStyles,
+} from "../src/matchedStylesTypes.js";
 
 describe("createInspectPayload", () => {
+  it("fails closed instead of synthesizing rule references without MatchedStyles", () => {
+    const selected = element("article", "", ["card"], null);
+
+    expect(() => (createInspectPayload as unknown as (
+      element: InspectableElement,
+      document: ReturnType<typeof fakeDocument>,
+      location: ReturnType<typeof locationSource>,
+    ) => unknown)(selected, fakeDocument([]), locationSource())).toThrow(
+      "MatchedStyles is required",
+    );
+  });
+
   it("collects selected and immediate-parent targets independently", () => {
     const parent = element("main", "", ["layout"], null);
     const selected = element("article", "", ["card", "featured"], parent);
+    const fixture = matchedStylesFixture();
     const payload = createInspectPayload(
       selected,
-      fakeDocument([
-        rule(".layout", parent, "display", "grid"),
-        rule(".card", selected, "display", "block"),
-      ]),
+      fakeDocument([]),
       locationSource(),
+      { ...fixture, inherited: fixture.inherited.slice(0, 1) },
     );
 
     expect(payload.targets.map((target) => [target.role, target.depth])).toEqual([
@@ -32,6 +47,12 @@ describe("createInspectPayload", () => {
     expect(payload.targets[0]?.facts.map((fact) => fact.type)).toContain(
       "css-rule",
     );
+    expect(payload.ruleEvidence.rules).toHaveLength(2);
+    expect(new Set(payload.ruleEvidence.rules.map(({ ruleRef }) => ruleRef))).toEqual(
+      new Set(payload.targets.flatMap((target) => target.facts)
+        .filter((fact) => fact.type === "css-rule")
+        .map((fact) => fact.ruleRef)),
+    );
     expect(payload.targets[1]?.subject.selector).toBe("main.layout");
   });
 
@@ -40,13 +61,14 @@ describe("createInspectPayload", () => {
       element("html", "", [], null),
       fakeDocument([]),
       locationSource(),
+      emptyMatchedStyles("node-root"),
     );
 
     expect(payload.targets).toHaveLength(1);
     expect(payload.targets[0]?.role).toBe("selected");
   });
 
-  it("projects selected and inherited facts from one supplied matched authority", () => {
+  it("projects facts for targets and evidence for every displayed inherited rule", () => {
     const parent = element("main", "", ["layout"], null);
     const selected = element("article", "", ["card"], parent);
     const matched = matchedStylesFixture();
@@ -64,54 +86,81 @@ describe("createInspectPayload", () => {
       matched,
     );
 
-    expect(payload.targets[0]?.facts[0]?.metadata.ruleRef).toBe("rule-selected");
-    expect(payload.targets[1]?.facts[0]?.metadata.ruleRef).toBe("rule-parent");
+    expect(payload.targets[0]?.facts[0]).toMatchObject({ ruleRef: "rule-selected" });
+    expect(payload.targets[1]?.facts[0]).toMatchObject({ ruleRef: "rule-parent" });
+    expect(payload.ruleEvidence.rules.map(({ ruleRef }) => ruleRef)).toEqual([
+      "rule-selected",
+      "rule-parent",
+      "rule-grandparent",
+    ]);
+    expect(payload.targets.flatMap(({ facts }) => facts).map((fact) =>
+      fact.type === "css-rule" ? fact.ruleRef : undefined
+    )).not.toContain("rule-grandparent");
     expect(payload.context.metadata).toEqual({ inaccessibleStylesheetCount: 3 });
   });
 
-  it("keeps shared rules in both targets and deduplicates browser errors", () => {
-    const parent = element("main", "", ["shared"], null);
-    const selected = element("article", "", ["shared"], parent);
-    const inaccessible = {
-      href: "https://cdn.example/vendor.css",
-      get cssRules(): never {
-        throw new Error("Permission denied");
-      },
-    };
+  it("does not label assigned-slot rules as light-DOM-parent facts", () => {
+    const lightDomParent = element("main", "", ["layout"], null);
+    const slot = element("slot", "", ["slot"], null);
+    const selected = {
+      ...element("article", "", ["card"], lightDomParent),
+      assignedSlot: slot,
+    } as InspectableElement;
+    const slotRule = matchedRule("rule-slot", ".slot", "color");
+
     const payload = createInspectPayload(
       selected,
-      {
-        pageUrl: "http://localhost:3000/page",
-        styleSheets: [
-          { href: "/dist/app.css", cssRules: [rule(".shared", null, "color", "red")] },
-          inaccessible,
-        ],
-      },
+      fakeDocument([]),
       locationSource(),
+      {
+        ...emptyMatchedStyles(),
+        inherited: [{
+          ancestorIndex: 1,
+          elementName: "slot",
+          rules: [slotRule],
+        }],
+      },
+    );
+
+    expect(payload.targets[1]?.subject.selector).toBe("main.layout");
+    expect(payload.targets[1]?.facts).toEqual([]);
+    expect(payload.ruleEvidence.rules.map(({ ruleRef }) => ruleRef)).toEqual([
+      "rule-slot",
+    ]);
+  });
+
+  it("keeps one shared Rules authority in both targets", () => {
+    const parent = element("main", "", ["shared"], null);
+    const selected = element("article", "", ["shared"], parent);
+    const sharedRule = matchedRule("rule-shared", ".shared", "color");
+    const payload = createInspectPayload(
+      selected,
+      fakeDocument([]),
+      locationSource(),
+      {
+        ...emptyMatchedStyles(),
+        domParentAncestorIndex: 1,
+        rules: [sharedRule],
+        inherited: [{
+          ancestorIndex: 1,
+          elementName: "main",
+          rules: [sharedRule],
+        }],
+        inaccessibleStylesheetCount: 1,
+      },
     );
 
     expect(payload.targets.map((target) => target.facts.length)).toEqual([1, 1]);
-    expect(payload.inaccessibleStylesheets).toEqual([
-      {
-        code: "browser.stylesheetInaccessible",
-        sourceUrl: "https://cdn.example/vendor.css",
-        reason: "Permission denied",
-      },
+    expect(payload.ruleEvidence.rules.map(({ ruleRef }) => ruleRef)).toEqual([
+      "rule-shared",
     ]);
+    expect(payload.inaccessibleStylesheets).toEqual([]);
+    expect(payload.context.metadata).toEqual({ inaccessibleStylesheetCount: 1 });
   });
 
   it("bounds inspect context and browser diagnostics while preserving both targets", () => {
     const parent = element("main", "", ["layout"], null);
     const selected = element("article", "", ["card"], parent);
-    const inaccessible = Array.from(
-      { length: INSPECT_LIMITS.inaccessibleStylesheets + 1 },
-      (_, index) => ({
-        href: exactLengthUrl(index),
-        get cssRules(): never {
-          throw new Error("r".repeat(INSPECT_LIMITS.valueLength + 1));
-        },
-      }),
-    );
     const location = {
       href: "http://localhost:3000/page",
       pathname: `/${"p".repeat(INSPECT_LIMITS.routeLength)}`,
@@ -120,17 +169,19 @@ describe("createInspectPayload", () => {
     };
     const payload = createInspectPayload(
       selected,
-      { pageUrl: location.href, styleSheets: inaccessible },
+      fakeDocument([]),
       location,
+      {
+        ...emptyMatchedStyles(),
+        inaccessibleStylesheetCount: INSPECT_LIMITS.inaccessibleStylesheets,
+      },
     );
 
     expect(payload.targets.map((target) => target.role)).toEqual([
       "selected",
       "parent",
     ]);
-    expect(payload.inaccessibleStylesheets).toHaveLength(
-      INSPECT_LIMITS.inaccessibleStylesheets,
-    );
+    expect(payload.inaccessibleStylesheets).toEqual([]);
     expect(payload.context.metadata).toEqual({
       inaccessibleStylesheetCount: INSPECT_LIMITS.inaccessibleStylesheets,
     });
@@ -152,62 +203,71 @@ describe("createInspectPayload", () => {
     expect(INSPECT_COLLECTION_MAX_BYTES).toBeLessThan(
       INSPECT_ENVELOPE_MAX_BYTES,
     );
-    let valueReads = 0;
     const parent = element("main", "", ["shared"], null);
     const selected = element("article", "", ["shared"], parent);
-    const declarationCount = INSPECT_LIMITS.declarationsPerRule;
-    const names = Array.from(
-      { length: declarationCount },
-      (_, index) => `--property-${index}`,
+    const declarations = Array.from(
+      { length: RULE_EVIDENCE_LIMITS.declarationsPerRule },
+      (_, index) => ({
+        ruleRef: "placeholder",
+        property: `--property-${index}`,
+        value: "v".repeat(INSPECT_LIMITS.valueLength),
+        important: false,
+        valueTruncated: false,
+        state: "winning-known-author" as const,
+        reason: "highest-precedence-known-author-declaration" as const,
+      }),
     );
-    let cssRule: unknown = {
-      selectorText: ".shared",
-      cssText: "x".repeat(INSPECT_LIMITS.valueLength),
-      style: {
-        length: declarationCount,
-        item: (index: number) => names[index] ?? "",
-        getPropertyValue() {
-          valueReads += 1;
-          return "v".repeat(INSPECT_LIMITS.valueLength);
-        },
-        getPropertyPriority: () =>
-          "p".repeat(INSPECT_LIMITS.propertyNameLength),
+    const maximalRules = Array.from(
+      { length: RULE_EVIDENCE_LIMITS.rules },
+      (_, index): MatchedRule => {
+        const ruleRef = `rule-${index}`;
+        return {
+          ruleRef,
+          selectorText: `.shared:nth-child(${index + 1})`,
+          matchingSelectorIndices: [0],
+          declarations: declarations.map((declaration) => ({
+            ...declaration,
+            ruleRef,
+          })),
+          contexts: Array.from(
+            { length: RULE_EVIDENCE_LIMITS.contextsPerRule },
+            (__, contextIndex) => ({
+              kind: "media" as const,
+              text: `media-${contextIndex}-${"m".repeat(
+                RULE_EVIDENCE_LIMITS.contextTextLength - 16,
+              )}`,
+            }),
+          ),
+          source: {
+            sourceUrl: "https://example.test/app.css",
+            rulePath: `${index}`,
+          },
+        };
       },
-    };
-    for (let index = 0; index < INSPECT_LIMITS.mediaConditions; index += 1) {
-      const conditionText = `media-${index}-${"m".repeat(
-        INSPECT_LIMITS.valueLength,
-      )}`;
-      cssRule = {
-        conditionText,
-        media: { mediaText: conditionText },
-        cssRules: [cssRule],
-      };
-    }
+    );
     const payload = createInspectPayload(
       selected,
-      {
-        pageUrl: "http://localhost:3000/page",
-        styleSheets: [
-          {
-            href: exactLengthUrl(0),
-            cssRules: [cssRule],
-          },
-        ],
-      },
+      fakeDocument([]),
       locationSource(),
+      {
+        ...emptyMatchedStyles(),
+        domParentAncestorIndex: 1,
+        rules: maximalRules,
+        inherited: [{
+          ancestorIndex: 1,
+          elementName: "main",
+          rules: maximalRules,
+        }],
+      },
     );
 
     const facts = payload.targets.flatMap((target) => target.facts);
-    expect(facts.length).toBeLessThan(declarationCount * 2);
-    expect(valueReads).toBeLessThan(declarationCount * 2);
+    expect(payload.ruleEvidence.omittedRuleCount).toBeGreaterThan(0);
+    expect(facts.length).toBeLessThan(
+      RULE_EVIDENCE_LIMITS.declarationsPerRule * RULE_EVIDENCE_LIMITS.rules * 2,
+    );
     for (const fact of facts) {
-      expect(fact.metadata).not.toHaveProperty("cssText");
-      expect(fact.metadata).not.toHaveProperty("declarationNames");
-      expect(fact.metadata).not.toHaveProperty("priority");
-      expect(fact.metadata.sourceUrl).toBe(exactLengthUrl(0));
-      expect(fact.metadata.rulePath).toMatch(/^0(?:\.0)+$/);
-      expect(fact.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
+      expect(fact.metadata).toEqual({});
     }
 
     const message = fullInspectMessage(payload);
@@ -237,6 +297,7 @@ describe("createInspectPayload", () => {
       selected,
       fakeDocument([]),
       locationSource(),
+      emptyMatchedStyles(),
     );
 
     expect(payload.targets).toHaveLength(2);
@@ -267,14 +328,10 @@ function fullInspectMessage(
     source: { role: "browser" as const, id: "firefox-test", metadata: {} },
     ideHighlightEnabled: payload.ideHighlightEnabled,
     targets: payload.targets,
+    ruleEvidence: payload.ruleEvidence,
     context: payload.context,
     metadata: payload.metadata,
   };
-}
-
-function exactLengthUrl(index: number): string {
-  const prefix = `https://cdn.example/${index}/`;
-  return `${prefix}${"u".repeat(INSPECT_LIMITS.urlLength - prefix.length)}`;
 }
 
 function element(
@@ -305,24 +362,6 @@ function fakeDocument(rules: readonly unknown[]) {
   };
 }
 
-function rule(
-  selectorText: string,
-  _element: InspectableElement | null,
-  property: string,
-  value: string,
-) {
-  return {
-    selectorText,
-    cssText: `${selectorText} { ${property}: ${value}; }`,
-    style: {
-      length: 1,
-      item: () => property,
-      getPropertyValue: () => value,
-      getPropertyPriority: () => "",
-    },
-  };
-}
-
 function locationSource() {
   return {
     href: "http://localhost:3000/page?mode=dev#card",
@@ -333,11 +372,53 @@ function locationSource() {
 }
 
 function matchedStylesFixture(): MatchedStyles {
-  const matchedRule = (
-    ruleRef: string,
-    selectorText: string,
-    property: string,
-  ) => ({
+  return {
+    documentEpoch: 1,
+    selectionRevision: 1,
+    stylesRevision: 1,
+    stylesheetRevision: 1,
+    nodeRef: "node-selected",
+    domParentAncestorIndex: 1,
+    rules: [matchedRule("rule-selected", ".card", "color")],
+    inherited: [
+      {
+        ancestorIndex: 1,
+        elementName: "main",
+        rules: [matchedRule("rule-parent", ".layout", "color")],
+      },
+      {
+        ancestorIndex: 2,
+        elementName: "body",
+        rules: [matchedRule("rule-grandparent", "body", "font-size")],
+      },
+    ],
+    inaccessibleStylesheetCount: 3,
+    partial: true,
+    diagnostics: ["stylesheet-inaccessible"],
+  };
+}
+
+function emptyMatchedStyles(nodeRef = "node-selected"): MatchedStyles {
+  return {
+    documentEpoch: 1,
+    selectionRevision: 1,
+    stylesRevision: 1,
+    stylesheetRevision: 1,
+    nodeRef,
+    rules: [],
+    inherited: [],
+    inaccessibleStylesheetCount: 0,
+    partial: false,
+    diagnostics: [],
+  };
+}
+
+function matchedRule(
+  ruleRef: string,
+  selectorText: string,
+  property: string,
+): MatchedRule {
+  return {
     ruleRef,
     selectorText,
     matchingSelectorIndices: [0],
@@ -347,26 +428,10 @@ function matchedStylesFixture(): MatchedStyles {
       value: "red",
       important: false,
       valueTruncated: false,
-      state: "winning-known-author" as const,
-      reason: "highest-precedence-known-author-declaration" as const,
+      state: "winning-known-author",
+      reason: "highest-precedence-known-author-declaration",
     }],
     contexts: [],
     source: { sourceUrl: "/dist/app.css", rulePath: "0.0" },
-  });
-  return {
-    documentEpoch: 1,
-    selectionRevision: 1,
-    stylesRevision: 1,
-    stylesheetRevision: 1,
-    nodeRef: "node-selected",
-    rules: [matchedRule("rule-selected", ".card", "color")],
-    inherited: [{
-      ancestorIndex: 1,
-      elementName: "main",
-      rules: [matchedRule("rule-parent", ".layout", "color")],
-    }],
-    inaccessibleStylesheetCount: 3,
-    partial: true,
-    diagnostics: ["stylesheet-inaccessible"],
   };
 }

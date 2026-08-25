@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SourceDocument } from "@pin-op/plugin-api";
-import { INSPECT_LIMITS, type CssRuleFact } from "@pin-op/protocol";
+import { INSPECT_LIMITS } from "@pin-op/protocol";
+import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
 import {
   findRulesByFingerprint,
   normalizeSelector,
@@ -67,8 +68,9 @@ describe("stylesheet fingerprint lookup", () => {
       ".card { color: red !important; }",
     ].join("\n"));
 
-    const runtimeFact = fact(".card", "color", "red");
-    runtimeFact.metadata.important = true;
+    const runtimeFact = fact(".card", "color", "red", {
+      important: true,
+    });
     const rules = findRulesByFingerprint(parsed, runtimeFact);
 
     expect(rules).toHaveLength(1);
@@ -82,8 +84,9 @@ describe("stylesheet fingerprint lookup", () => {
       ".card { color: red; color: blue !important; }",
     );
     const normal = fact(".card", "color", "red");
-    const important = fact(".card", "color", "blue");
-    important.metadata.important = true;
+    const important = fact(".card", "color", "blue", {
+      important: true,
+    });
 
     expect(findRulesByFingerprint(parsed, normal)).toEqual([]);
     expect(findRulesByFingerprint(parsed, important)).toEqual([]);
@@ -111,10 +114,12 @@ describe("stylesheet fingerprint lookup", () => {
       "  .card { color: red; }",
       "}",
     ].join("\n"));
-    const matching = fact(".card", "color", "red");
-    matching.metadata.media = [" (min-width: 40rem) "];
-    const mismatched = fact(".card", "color", "red");
-    mismatched.metadata.media = ["(orientation: landscape)"];
+    const matching = fact(".card", "color", "red", {
+      media: [" (min-width: 40rem) "],
+    });
+    const mismatched = fact(".card", "color", "red", {
+      media: ["(orientation: landscape)"],
+    });
 
     const rules = findRulesByFingerprint(parsed, matching);
     expect(rules).toHaveLength(1);
@@ -126,8 +131,9 @@ describe("stylesheet fingerprint lookup", () => {
     const parsed = stylesheet(
       "@media (--Theme) { .card { color: red; } }",
     );
-    const runtime = fact(".card", "color", "red");
-    runtime.metadata.media = ["(--theme)"];
+    const runtime = fact(".card", "color", "red", {
+      media: ["(--theme)"],
+    });
 
     expect(findRulesByFingerprint(parsed, runtime)).toEqual([]);
   });
@@ -149,8 +155,9 @@ describe("stylesheet fingerprint lookup", () => {
     const complete = stylesheet(
       `.card { --payload: ${belowBoundary}; }`,
     );
-    const truncated = fact(".card", "--payload", boundary);
-    truncated.metadata.valueTruncated = true;
+    const truncated = fact(".card", "--payload", boundary, {
+      valueTruncated: true,
+    });
 
     expect(findRulesByFingerprint(
       exactBoundary,
@@ -172,11 +179,13 @@ describe("stylesheet fingerprint lookup", () => {
       `@media ${boundary} { .card { color: red; } }`,
       `@media ${belowBoundary} { .card { color: blue; } }`,
     ].join("\n"));
-    const ambiguous = fact(".card", "color", "red");
-    ambiguous.metadata.media = [boundary];
-    ambiguous.metadata.mediaTruncated = true;
-    const complete = fact(".card", "color", "blue");
-    complete.metadata.media = [belowBoundary];
+    const ambiguous = fact(".card", "color", "red", {
+      media: [boundary],
+      mediaTruncated: true,
+    });
+    const complete = fact(".card", "color", "blue", {
+      media: [belowBoundary],
+    });
 
     expect(findRulesByFingerprint(parsed, ambiguous)).toEqual([]);
     expect(findRulesByFingerprint(parsed, complete)).toHaveLength(1);
@@ -230,19 +239,26 @@ function fact(
   selector: string,
   property: string,
   value: string,
-): CssRuleFact {
+  overrides: {
+    readonly important?: boolean;
+    readonly valueTruncated?: boolean;
+    readonly media?: readonly string[];
+    readonly mediaTruncated?: boolean;
+  } = {},
+): CssResolutionFact {
   return {
     type: "css-rule",
+    ruleRef: "stylesheet-ast-fixture-rule",
     selector,
     property,
     value,
+    important: overrides.important ?? false,
+    valueTruncated: overrides.valueTruncated ?? false,
     metadata: {
       sourceUrl: "/dist/app.css",
       rulePath: "0.99",
-      media: [],
-      mediaTruncated: false,
-      valueTruncated: false,
-      important: false,
+      media: overrides.media ?? [],
+      mediaTruncated: overrides.mediaTruncated ?? false,
     },
   };
 }

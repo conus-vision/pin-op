@@ -194,7 +194,7 @@ tabs whose panel is closed.
 
 ## Protocol Compatibility
 
-The browser and IDE extensions must both implement protocol v6. Protocol v5 is
+The browser and IDE extensions must both implement protocol v7. Protocol v6 is
 rejected with WebSocket close code `1002`; there is no fallback. On mismatch the
 panel keeps connection controls available but blocks inspection and source
 actions and shows:
@@ -202,7 +202,7 @@ actions and shows:
 ```text
 Extensions are incompatible
 Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.
-Browser protocol: 6 - IDE protocol: 5
+Browser protocol: 7 - IDE protocol: 6
 ```
 
 Update both extensions to the same protocol generation, restart them, and link

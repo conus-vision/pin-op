@@ -47,6 +47,7 @@ export interface MatchedRule {
   readonly selectorText: string;
   readonly matchingSelectorIndices: readonly number[];
   readonly declarations: readonly MatchedDeclaration[];
+  readonly declarationsTruncated?: boolean;
   readonly contexts: readonly CssRuleContextRecord[];
   readonly contextsTruncated?: boolean;
   readonly mediaTruncated?: boolean;
@@ -65,6 +66,8 @@ export interface MatchedStyles {
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
   readonly nodeRef: string;
+  /** Composed-ancestor index whose element is exactly the selected node's DOM parent. */
+  readonly domParentAncestorIndex?: number;
   readonly inline?: MatchedRule;
   readonly rules: readonly MatchedRule[];
   readonly inherited: readonly InheritedMatchedRules[];

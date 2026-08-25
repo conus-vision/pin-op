@@ -2,7 +2,7 @@
 
 Pin-op is a local, read-only bridge from browser DevTools inspection to
 source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
-protocol version is `6`.
+protocol version is `7`.
 
 ## Components
 
@@ -97,10 +97,10 @@ once when activated.
 
 ### Protocol And Bridge
 
-Protocol version `6` defines strict handshake, inspection, targeted resolution,
+Protocol version `7` defines strict handshake, inspection, targeted resolution,
 source presentation, presentation settings, auto-refresh, source navigation,
 peer state, error, and heartbeat messages. Every product message is validated
-before routing. Version 6 is breaking: a v5 peer is closed with WebSocket code
+before routing. Version 7 is breaking: a v6 peer is closed with WebSocket code
 `1002`, with no compatibility adapter or fallback.
 
 The bridge binds one managed port on `127.0.0.1`. A link request to that exact
@@ -123,7 +123,7 @@ the managed port and two-digit PIN and copies the ungrouped code on click.
 The presenter retains the latest valid selection and resolves it against only
 the active text document. It never switches editors. It owns Selected and Parent
 decorations, validates and deduplicates plugin ranges, updates Applicable
-Sources, creates bounded Source excerpts, and sends protocol-v6 resolution and
+Sources, creates bounded Source excerpts, and sends protocol-v7 resolution and
 source-presentation outcomes back to the originating panel. Clicking an excerpt
 returns only its opaque match ID; the IDE validates that private authority
 before revealing the exact range in the active document.
@@ -137,11 +137,11 @@ Unchanged saves do not publish refreshes.
 
 ### Source Plugins
 
-Built-in CSS and SCSS resolvers use source-plugin API v2, the same versioned API
-available to separately installed VS Code extensions. API v2 also accepts
+Built-in CSS and SCSS resolvers use source-plugin API v3, the same versioned API
+available to separately installed VS Code extensions. API v3 also accepts
 synchronous refresh classifiers. This document-first, protocol-driven boundary
 keeps the browser independent of the IDE and permits future IDE adapters to
-implement the same v6 contract.
+implement the same v7 contract.
 
 Source lookup first chooses a workspace strategy. Workspace-bound resolution is
 selected when the document or stylesheet URL path begins with an open workspace
@@ -193,7 +193,7 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
 4. Picker click or tree selection resolves a live element through the same
    authority and updates the tree ancestor path.
 5. Only then does the browser collect and publish bounded selected/immediate-
-   parent facts as a protocol-v6 inspect message.
+   parent facts as a protocol-v7 inspect message.
 
 ### Resolve And Present
 
@@ -211,9 +211,9 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
 ### Refresh After Save
 
 1. VS Code records actual document changes and ignores an unchanged save.
-2. Built-in or plugin API v2 classifiers choose `styles` or `reload`; `reload`
+2. Built-in or plugin API v3 classifiers choose `styles` or `reload`; `reload`
    wins a mixed burst.
-3. The IDE publishes one v6 `page.refresh` generation to linked browsers.
+3. The IDE publishes one v7 `page.refresh` generation to linked browsers.
 4. The browser applies it only to participating tabs with Auto Refresh on.
 5. `styles` clones and cache-busts eligible top-document external HTTP(S)
    stylesheet links, removing the old link only after the replacement loads.

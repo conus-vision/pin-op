@@ -67,7 +67,7 @@ describe("VS Code package build", () => {
 
     expect(JSON.parse(readFileSync(runtimeMetadataUrl, "utf8"))).toEqual({
       schemaVersion: 1,
-      protocolVersion: 6,
+      protocolVersion: 7,
     });
     const buildScript = readFileSync(buildScriptUrl, "utf8");
     expect(buildScript).toContain("PROTOCOL_VERSION");
@@ -75,8 +75,8 @@ describe("VS Code package build", () => {
       "serializeRuntimeMetadata(PROTOCOL_VERSION)",
     );
     const verifyScript = readFileSync(verifyScriptUrl, "utf8");
-    expect(verifyScript).toContain("expectedProtocolVersion: 6");
-    expect(verifyScript).not.toContain("expectedProtocolVersion: 5");
+    expect(verifyScript).toContain("expectedProtocolVersion: 7");
+    expect(verifyScript).not.toContain("expectedProtocolVersion: 6");
   });
 
   it("packages the current IDE capabilities and messages", () => {
@@ -172,13 +172,13 @@ describe("VS Code package build", () => {
     expect(subscriptionOwnership).toBeGreaterThan(observerBinding);
   });
 
-  it("pins protocol 6 and current source contracts in the installed smoke", () => {
+  it("pins protocol 7 and current source contracts in the installed smoke", () => {
     const smoke = readFileSync(installedSmokeUrl, "utf8");
 
     expect(smoke).toContain('"runtime-metadata.json"');
-    expect(smoke).toContain("metadata.protocolVersion !== 6");
-    expect(smoke).toContain("schema 1/protocol 6");
-    expect(smoke).toContain("INSTALLED_VSIX_PROTOCOL_V6_OK");
+    expect(smoke).toContain("metadata.protocolVersion !== 7");
+    expect(smoke).toContain("schema 1/protocol 7");
+    expect(smoke).toContain("INSTALLED_VSIX_PROTOCOL_V7_OK");
     expect(smoke).toContain('"source-navigation"');
     expect(smoke).toContain('"source-presentation"');
     expect(smoke).toContain('"source.matches"');
@@ -187,7 +187,7 @@ describe("VS Code package build", () => {
     expect(smoke).toContain('"matchId"');
     expect(smoke).not.toContain("requiredRuntimeMarkers");
     expect(smoke).not.toContain("PROTOCOL_VERSION\\s*=");
-    expect(smoke).not.toMatch(/protocol[- _]?v?5/i);
+    expect(smoke).not.toMatch(/protocol[- _]?v?6/i);
   });
 
   it("covers every bundled third-party package with full notices", () => {

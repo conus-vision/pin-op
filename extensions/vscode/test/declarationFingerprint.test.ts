@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { CssRuleFact } from "@pin-op/protocol";
 import {
   declarationEvidenceFromFact,
   declarationFingerprint,
 } from "../src/sourcePlugins/declarationFingerprint.js";
+import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
 import type { CssDeclarationEvidence } from "../src/sourcePlugins/types.js";
 
 describe("declarationFingerprint", () => {
@@ -97,52 +97,19 @@ describe("declarationFingerprint", () => {
     }]);
   });
 
-  it("uses exact legacy priority metadata when boolean evidence is absent", () => {
-    const fact: CssRuleFact = {
-      type: "css-rule",
-      selector: ".card",
+  it("uses only the correlated v7 priority and completion fields", () => {
+    expect(declarationEvidenceFromFact(runtimeFact({
+      important: true,
+      metadata: { important: false, priority: "" },
+    }))).toEqual({
       property: "color",
       value: "red",
-      metadata: { priority: "important", valueTruncated: false },
-    };
-
-    expect(declarationFingerprint([
-      declarationEvidenceFromFact(fact)!,
-    ])).toEqual([
-      { property: "color", value: "red", important: true },
-    ]);
-  });
-
-  it("rejects runtime declarations without completion or priority evidence", () => {
+      valueComplete: true,
+      important: true,
+    });
     expect(declarationEvidenceFromFact(runtimeFact({
-      important: false,
-    }))).toBeUndefined();
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-    }))).toBeUndefined();
-  });
-
-  it("accepts only exact legacy priority and rejects conflicts", () => {
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      priority: "",
-    }))).toEqual(expect.objectContaining({ important: false }));
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      priority: "important",
-    }))).toEqual(expect.objectContaining({ important: true }));
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      priority: " IMPORTANT ",
-    }))).toBeUndefined();
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      priority: "urgent",
-    }))).toBeUndefined();
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      important: false,
-      priority: "important",
+      valueTruncated: true,
+      metadata: { valueTruncated: false },
     }))).toBeUndefined();
   });
 
@@ -175,33 +142,23 @@ describe("declarationFingerprint", () => {
     ]);
   });
 
-  it("rejects an important suffix conflicting with legacy empty priority", () => {
-    const conflicting = declarationEvidenceFromFact(runtimeFact(
-      {
-        valueTruncated: false,
-        priority: "",
-      },
-      "red !important",
-    ));
-
-    expect(conflicting).toEqual(expect.objectContaining({ important: false }));
-    expect(declarationFingerprint([conflicting!])).toEqual([]);
-    expect(declarationEvidenceFromFact(runtimeFact({
-      valueTruncated: false,
-      priority: "unknown",
-    }))).toBeUndefined();
-  });
 });
 
 function runtimeFact(
-  metadata: Record<string, unknown>,
+  overrides: Partial<Pick<
+    CssResolutionFact,
+    "important" | "valueTruncated" | "metadata"
+  >>,
   value = "red",
-): CssRuleFact {
+): CssResolutionFact {
   return {
     type: "css-rule",
+    ruleRef: "runtime-rule",
     selector: ".card",
     property: "color",
     value,
-    metadata: { sourceUrl: "/dist/app.css", ...metadata },
+    important: overrides.important ?? false,
+    valueTruncated: overrides.valueTruncated ?? false,
+    metadata: overrides.metadata ?? {},
   };
 }

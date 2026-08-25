@@ -16,6 +16,6 @@ suite("Pin-op external source plugin API", () => {
     const exported = await fixture.activate();
     assert.equal(exported.sourcePluginRegistered, true);
     assert.equal(exported.refreshClassifierRegistered, true);
-    assert.equal(exported.coreApiVersion, 2);
+    assert.equal(exported.coreApiVersion, 3);
   });
 });

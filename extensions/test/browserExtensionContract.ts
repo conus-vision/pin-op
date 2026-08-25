@@ -1157,7 +1157,7 @@ export function describeBrowserPackageContract(
       ) as unknown;
       expect(metadata).toEqual({
         schemaVersion: 1,
-        protocolVersion: 6,
+        protocolVersion: 7,
       });
 
       const adapter = readFileSync(

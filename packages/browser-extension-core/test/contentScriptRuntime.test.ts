@@ -190,6 +190,7 @@ describe("startContentScriptRuntime", () => {
       payload: {
         context: { url: "https://example.test/page" },
         targets: [{ role: "selected" }],
+        ruleEvidence: { rules: [], omittedRuleCount: 0 },
       },
     });
     const publicInspectPayload = JSON.stringify(
@@ -1067,6 +1068,7 @@ function inspectPayload() {
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "https://example.test/page", metadata: {} },
     metadata: {},
   };

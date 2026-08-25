@@ -323,15 +323,15 @@ test("source-resolution materials name fallback and fail-closed outcomes", () =>
   assert.match(materials, /SCSS source map invalid/);
 });
 
-test("protocol materials pin exact version 6 and terminal v5 rejection", () => {
+test("protocol materials pin exact version 7 and terminal v6 rejection", () => {
   const publicMaterials = `${readme}\n${changelog}\n${architectureGuide}\n${protocolGuide}`;
-  assert.match(protocolGuide, /current protocol version is `6`/i);
-  assert.match(protocolGuide, /`protocolVersion: 6`/);
+  assert.match(protocolGuide, /current protocol version is `7`/i);
+  assert.match(protocolGuide, /`protocolVersion: 7`/);
   assert.match(protocolGuide, /source-navigation/);
   assert.match(protocolGuide, /source-presentation/);
   assert.match(protocolGuide, /capabilit(?:y|ies)[\s\S]*hello/i);
   assert.match(protocolGuide, /exact version[\s\S]*no downgrade/i);
-  assert.match(protocolGuide, /v5 peer[\s\S]*1002[\s\S]*no[\s\S]*fallback/i);
+  assert.match(protocolGuide, /v6 peer[\s\S]*1002[\s\S]*no[\s\S]*fallback/i);
   assert.match(protocolGuide, /targeted resolution repl(?:y|ies)/i);
   assert.match(protocolGuide, /peer state/i);
   assert.match(protocolGuide, /browser-local node refs/i);
@@ -340,13 +340,17 @@ test("protocol materials pin exact version 6 and terminal v5 rejection", () => {
   assert.match(protocolGuide, /branch revision/i);
   assert.doesNotMatch(
     publicMaterials,
-    /current protocol version is `[45]`|`protocolVersion: [45]`|protocol v[45] router/i,
+    /current protocol version is `[456]`|`protocolVersion: [456]`|protocol v[456] router/i,
+  );
+  assert.doesNotMatch(
+    publicMaterials,
+    /protocol\s+[456]\s+exposes/i,
   );
 });
 
 test("protocol guide contains strict source navigation examples", () => {
   assert.deepEqual(jsonExample("source.navigate"), {
-    protocolVersion: 6,
+    protocolVersion: 7,
     type: "source.navigate",
     messageId: "navigate-19",
     sessionId: "default",
@@ -356,7 +360,7 @@ test("protocol guide contains strict source navigation examples", () => {
     metadata: {},
   });
   assert.deepEqual(jsonExample("source.navigationState"), {
-    protocolVersion: 6,
+    protocolVersion: 7,
     type: "source.navigationState",
     messageId: "navigation-state-20",
     sessionId: "default",
@@ -372,7 +376,7 @@ test("protocol guide contains strict source navigation examples", () => {
 test("protocol guide exposes only bounded excerpts and opaque source-open authority", () => {
   assert.ok(sourcePresentationSection, "Source Presentation section is required");
   const matches = jsonExample("source.matches");
-  assert.equal(matches.protocolVersion, 6);
+  assert.equal(matches.protocolVersion, 7);
   assert.equal(matches.type, "source.matches");
   assert.deepEqual(Object.keys(matches).sort(), [
     "document",
@@ -575,7 +579,7 @@ test("README presents the canonical Pin-op workflow and release status", () => {
   assert.match(readme, /```mermaid[\s\S]*?```/);
   assert.match(readme, /normal workflow\s+is terminal-free/i);
   assert.match(readme, /seven-digit link code/);
-  assert.match(readme, /Protocol version `6` is an exact-match WebSocket contract/);
+  assert.match(readme, /Protocol version `7` is an exact-match WebSocket contract/);
   for (const artifact of releaseArtifactNames) {
     assert.ok(readme.includes(`\`${artifact}\``), artifact);
   }

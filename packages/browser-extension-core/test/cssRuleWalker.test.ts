@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
+import {
+  INSPECT_LIMITS,
+  utf8ByteLength,
+} from "@pin-op/protocol";
 import {
   createCssRuleWalkBudget,
   walkCssRules,
@@ -212,7 +215,9 @@ describe("walkCssRules", () => {
       styleSheets: [sheet("/bounded.css", [nested])],
     });
 
-    expect(bounded.records).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    expect(bounded.records).toHaveLength(
+      INSPECT_LIMITS.declarationsPerRule,
+    );
     expect(bounded.records[0]?.contexts).toHaveLength(
       INSPECT_LIMITS.mediaConditions,
     );
@@ -361,6 +366,49 @@ describe("walkCssRules", () => {
       });
       expect(walk.status.reasons, testCase.label).toContain("byte-limit");
     }
+  });
+
+  it("marks matched-rule declarations truncated when bytes expire mid-rule", () => {
+    const sourceUrl = "https://example.test/app.css";
+    const selector = ".target";
+    const properties = ["color", "background"];
+    const firstValue = "red";
+    const budget = createCssRuleWalkBudget();
+    budget.remainingBytes = [
+      sourceUrl,
+      selector,
+      ...properties,
+      firstValue,
+    ].reduce((total, value) => total + utf8ByteLength(value), 0);
+    let matchedRule: { readonly declarationsTruncated: boolean } | undefined;
+    const walk = walkCssRules(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [sheet(sourceUrl, [{
+          selectorText: selector,
+          style: {
+            length: properties.length,
+            item: (index: number) => properties[index] ?? "",
+            getPropertyPriority: () => "",
+            getPropertyValue: (property: string) =>
+              property === properties[0] ? firstValue : "blue",
+          },
+        }])],
+      },
+      {
+        workBudget: budget,
+        referenceRule: () => "rule-mid-byte",
+        onMatchedRule: (rule) => matchedRule = rule,
+      },
+    );
+
+    expect([...walk.records].map(({ property }) => property)).toEqual(["color"]);
+    expect(matchedRule).toMatchObject({
+      ruleRef: "rule-mid-byte",
+      declarationsTruncated: true,
+    });
+    expect(walk.status.reasons).toContain("byte-limit");
   });
 
   it("charges dropped nested, branching, and import context getter reads once", () => {

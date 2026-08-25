@@ -19,7 +19,7 @@ describe("bridge protocol version handshake", () => {
     [5, protocolMismatchReason(5)],
     [99, protocolMismatchReason(99)],
   ])(
-    "closes protocol version %s with 1002 and no v6 error frame",
+    "closes protocol version %s with 1002 and no current-version error frame",
     async (protocolVersion, expectedReason) => {
       server = createBridgeServer({ port: 0 });
       await server.start();

@@ -98,7 +98,7 @@ installation and current evidence status.
 
 ## How It Works
 
-Protocol version `6` is an exact-match WebSocket contract for inspection,
+Protocol version `7` is an exact-match WebSocket contract for inspection,
 refresh, source presentation, settings, and navigation. Pin-op prefers exact
 CSS evidence, uses a conservative unique fingerprint fallback, and fails closed
 when source-map or document identity cannot be established safely.

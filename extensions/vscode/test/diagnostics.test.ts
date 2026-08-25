@@ -184,6 +184,20 @@ function inspectMessage(): InspectMessage {
         metadata: {},
       },
     ],
+    ruleEvidence: {
+      rules: [{
+        ruleRef: "rule-card",
+        selector: ".card",
+        declarations: [{
+          property: "display",
+          value: "grid",
+          important: false,
+          valueTruncated: false,
+        }],
+        declarationsTruncated: false,
+      }],
+      omittedRuleCount: 0,
+    },
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
   };
@@ -242,9 +256,11 @@ function outcome(): PresenterOutcome {
 function cssFact() {
   return {
     type: "css-rule" as const,
-    selector: ".card",
+    ruleRef: "rule-card",
     property: "display",
     value: "grid",
+    important: false,
+    valueTruncated: false,
     metadata: {},
   };
 }

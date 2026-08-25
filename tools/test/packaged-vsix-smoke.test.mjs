@@ -171,19 +171,19 @@ test("installed VSIX smoke has no implicit machine runtime fallback", async () =
   assert.doesNotMatch(source, /LOCALAPPDATA|defaultVSCodeExecutablePath/);
 });
 
-test("installed VSIX smoke pins protocol 6 and current source capabilities", async () => {
+test("installed VSIX smoke pins protocol 7 and current source capabilities", async () => {
   const source = await readFile(installedSmokePath, "utf8");
 
-  assert.match(source, /metadata\.protocolVersion !== 6/);
-  assert.match(source, /protocol 6/);
+  assert.match(source, /metadata\.protocolVersion !== 7/);
+  assert.match(source, /protocol 7/);
   assert.match(source, /"source-navigation"/);
   assert.match(source, /"source-presentation"/);
   assert.match(source, /"source\.matches"/);
   assert.match(source, /"source\.open"/);
   assert.match(source, /"source\.navigationState"/);
   assert.match(source, /"matchId"/);
-  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V6_OK/);
-  assert.doesNotMatch(source, /protocol[- _]?v?5/i);
+  assert.match(source, /INSTALLED_VSIX_PROTOCOL_V7_OK/);
+  assert.doesNotMatch(source, /protocol[- _]?v?6/i);
 });
 
 test("VS Code README uses the exact opening result statement", () => {
@@ -420,7 +420,7 @@ test("VSIX installation rejects protocol v5 runtime metadata", async () => {
 
     await assert.rejects(
       installVerifiedVsix(artifactPath, extensionsDirectory),
-      /runtime metadata protocolVersion expected 6 but found 5/i,
+      /runtime metadata protocolVersion expected 7 but found 5/i,
     );
     assert.deepEqual(await readdir(extensionsDirectory), []);
   });
@@ -847,7 +847,7 @@ function writeVsix(path, manifestOverrides = {}, archiveOverrides = {}) {
     [
       "extension/dist/runtime-metadata.json",
       archiveOverrides.runtimeMetadata ??
-        '{"schemaVersion":1,"protocolVersion":6}\n',
+        '{"schemaVersion":1,"protocolVersion":7}\n',
     ],
     ["extension/package.json", JSON.stringify(expectedManifest(manifestOverrides))],
     ["extension/readme.md", archiveOverrides.readme ?? vscodeReadme],

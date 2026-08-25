@@ -538,7 +538,7 @@ Use intentionally mismatched development artifacts once:
    versions when known.
 3. Confirm picker, settings, Source, and navigation actions are blocked while
    Link/Disconnect remains usable.
-4. Restore matching protocol-v6 artifacts, restart both extensions, reconnect,
+4. Restore matching protocol-v7 artifacts, restart both extensions, reconnect,
    and confirm a fresh compatible handshake and tab state restore the defaults.
 
 ### Optional `_ORB` Project Regression

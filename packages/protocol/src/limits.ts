@@ -2,6 +2,7 @@ export const INSPECT_ENVELOPE_MAX_BYTES = 768 * 1024;
 export const RESOLUTION_ENVELOPE_MAX_BYTES = 16 * 1024;
 export const SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES = 16 * 1024;
 export const SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES = 256 * 1024;
+export const RULES_SOURCES_ENVELOPE_MAX_BYTES = 128 * 1024;
 
 export const INSPECT_LIMITS = {
   targets: 2,
@@ -38,4 +39,23 @@ export const SOURCE_PRESENTATION_LIMITS = {
   matches: 32,
   textBytes: 8 * 1024,
   textLines: 80,
+} as const;
+
+export const RULE_EVIDENCE_LIMITS = {
+  rules: 256,
+  declarationsPerRule: 32,
+  contextsPerRule: 16,
+  contextTextLength: 2048,
+  ruleRefLength: 128,
+  rulePathLength: 512,
+  sourceUrlLength: 2048,
+} as const;
+
+export const RULES_SOURCES_LIMITS = {
+  sources: 256,
+  unresolvedRules: 256,
+  labelLength: 128,
+  authorityIdLength: 128,
+  line: 10_000_000,
+  column: 1_000_000,
 } as const;

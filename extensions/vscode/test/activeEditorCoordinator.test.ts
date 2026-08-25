@@ -716,16 +716,41 @@ function inspectMessage(messageId: string, withFacts = true): InspectMessage {
           ? [
               {
                 type: "css-rule",
-                selector: ".card",
+                ruleRef: "rule-card",
                 property: "color",
                 value: "red",
-                metadata: { sourceUrl: "/dist/app.css" },
+                important: false,
+                valueTruncated: false,
+                metadata: {},
               },
             ]
           : [],
         metadata: {},
       },
     ],
+    ruleEvidence: withFacts
+      ? {
+          rules: [{
+            ruleRef: "rule-card",
+            selector: ".card",
+            declarations: [{
+              property: "color",
+              value: "red",
+              important: false,
+              valueTruncated: false,
+            }],
+            declarationsTruncated: false,
+            generatedSource: {
+              sourceUrl: "http://localhost:4173/dist/app.css",
+              rulePath: "0.0",
+              contexts: [],
+              contextsTruncated: false,
+              unsupportedGroupContext: false,
+            },
+          }],
+          omittedRuleCount: 0,
+        }
+      : { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:4173/", metadata: {} },
     metadata: {},
   };

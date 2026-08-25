@@ -2990,6 +2990,7 @@ export class BackgroundRouter {
     }
     const inspectPayload: InspectPayload = {
       targets: payload.targets,
+      ruleEvidence: payload.ruleEvidence,
       context: payload.context,
       ideHighlightEnabled: tabState.ideHighlightEnabled,
       metadata: payload.metadata,
@@ -4005,6 +4006,7 @@ function parseElementSelectedMessage(
         metadata: {},
       },
       targets: value.payload.targets,
+      ruleEvidence: value.payload.ruleEvidence,
       context: value.payload.context,
       ideHighlightEnabled: value.payload.ideHighlightEnabled,
       metadata: value.payload.metadata,
@@ -4015,6 +4017,7 @@ function parseElementSelectedMessage(
           selectionRevision: value.selectionRevision,
           payload: {
             targets: parsed.data.targets,
+            ruleEvidence: parsed.data.ruleEvidence,
             context: parsed.data.context,
             ideHighlightEnabled: parsed.data.ideHighlightEnabled,
             metadata: parsed.data.metadata,

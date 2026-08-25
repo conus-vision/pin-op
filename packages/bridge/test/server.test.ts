@@ -2605,6 +2605,7 @@ function inspectMessage(
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
   };

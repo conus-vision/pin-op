@@ -151,7 +151,7 @@ describe("BridgeClient", () => {
     expect(second.sendSourceMatches).toHaveBeenCalledTimes(1);
   });
 
-  it("sends a strict protocol-v6 resolution through the authenticated IDE route", () => {
+  it("sends a strict protocol-v7 resolution through the authenticated IDE route", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();
@@ -343,7 +343,7 @@ describe("BridgeClient", () => {
     expect(harness.sockets[0].sent).toHaveLength(1);
   });
 
-  it("sends a strict protocol-v6 source navigation state through the authenticated IDE route", () => {
+  it("sends a strict protocol-v7 source navigation state through the authenticated IDE route", () => {
     const harness = createHarness();
     harness.client.connect();
     harness.sockets[0].open();
@@ -1009,6 +1009,7 @@ function inspectMessage() {
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
   };

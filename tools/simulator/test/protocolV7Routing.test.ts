@@ -48,8 +48,8 @@ import {
 import { buildInspectMessage, describeBridgeClose } from "../src/sendInspect.js";
 import inspectCardFixture from "../fixtures/inspect-card.json";
 
-const SESSION_ID = "simulator-v6";
-const INSPECT_ID = "inspect-v6";
+const SESSION_ID = "simulator-v7";
+const INSPECT_ID = "inspect-v7";
 const BRIDGE_INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const AUTH_TOKEN = "a".repeat(64);
 const WINDOW_ID = 10;
@@ -96,7 +96,7 @@ function inspect(
   };
 }
 
-describe("simulator protocol v6 production routing", () => {
+describe("simulator protocol v7 production routing", () => {
   it.each([
     ["CSS", "file:///project/app.css", "css", 150, "styles"],
     ["SCSS", "file:///project/app.scss", "scss", 750, "styles"],
@@ -132,7 +132,7 @@ describe("simulator protocol v6 production routing", () => {
     },
   );
 
-  it("routes IDE Highlight off and on in v6 inspect envelopes", () => {
+  it("routes IDE Highlight off and on in v7 inspect envelopes", () => {
     const registry = new ClientRegistry();
     const routes = new ReplyRouteRegistry();
     const simulatorConnection = client("simulator", "simulator-a", ["inspect"]);
@@ -145,12 +145,12 @@ describe("simulator protocol v6 production routing", () => {
 
     expect(ideConnection.sent).toEqual([
       expect.objectContaining({
-        protocolVersion: 6,
+        protocolVersion: 7,
         type: "inspect",
         ideHighlightEnabled: false,
       }),
       expect.objectContaining({
-        protocolVersion: 6,
+        protocolVersion: 7,
         type: "inspect",
         ideHighlightEnabled: true,
       }),
@@ -319,7 +319,7 @@ describe("simulator protocol mismatch diagnostics", () => {
     expect(code).toBe(PROTOCOL_MISMATCH_CLOSE_CODE);
     expect(reason.toString()).toBe(protocolMismatchReason(5));
     expect(describeBridgeClose(code, reason.toString())).toBe(
-      "Protocol mismatch: expected version 6, received version 5",
+      "Protocol mismatch: expected version 7, received version 5",
     );
     expect(received).toEqual([]);
   });

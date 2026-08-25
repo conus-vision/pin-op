@@ -334,6 +334,7 @@ function matchedResponse() {
         ruleRef: "rule-1",
         selectorText: ".card",
         matchingSelectorIndices: [0],
+        declarationsTruncated: true,
         declarations: [{
           ruleRef: "rule-1",
           property: "display",

@@ -6,6 +6,7 @@ import {
   PROTOCOL_VERSION,
   ProtocolCapability,
   ProtocolCapabilitySchema,
+  RULE_EVIDENCE_LIMITS,
   parseMessage,
 } from "../src/index.js";
 
@@ -35,10 +36,11 @@ const sourceLocation = {
 const runtimeFacts = [
   {
     type: "css-rule",
-    selector: ".primary",
+    ruleRef: "rule-primary",
     property: "color",
     value: "red",
-    source: sourceLocation,
+    important: false,
+    valueTruncated: false,
     metadata: {},
   },
   {
@@ -48,6 +50,39 @@ const runtimeFacts = [
     metadata: {},
   },
 ];
+
+const ruleEvidence = {
+  rules: [
+    {
+      ruleRef: "rule-primary",
+      selector: ".primary",
+      declarations: [
+        {
+          property: "color",
+          value: "red",
+          important: false,
+          valueTruncated: false,
+        },
+      ],
+      declarationsTruncated: false,
+      generatedSource: {
+        sourceUrl: "https://example.test/app.css",
+        startLine: 12,
+        startColumn: 3,
+        endLine: 15,
+        endColumn: 8,
+        rulePath: "0.3",
+        contexts: [
+          { kind: "media", conditionText: "screen" },
+          { kind: "supports", conditionText: "(display: grid)" },
+        ],
+        contextsTruncated: false,
+        unsupportedGroupContext: false,
+      },
+    },
+  ],
+  omittedRuleCount: 0,
+};
 
 function target(
   role: "selected" | "parent",
@@ -73,12 +108,26 @@ function inspectMessage(targets: readonly unknown[]) {
     source,
     ideHighlightEnabled: true,
     targets,
+    ruleEvidence,
     context: { url: "http://localhost:3000/", metadata: {} },
     metadata: {},
   };
 }
 
 describe("Pin-op protocol schemas", () => {
+  it("cuts the protocol to v7 with exact correlated evidence limits", () => {
+    expect(PROTOCOL_VERSION).toBe(7);
+    expect(RULE_EVIDENCE_LIMITS).toEqual({
+      rules: 256,
+      declarationsPerRule: 32,
+      contextsPerRule: 16,
+      contextTextLength: 2048,
+      ruleRefLength: 128,
+      rulePathLength: 512,
+      sourceUrlLength: 2048,
+    });
+  });
+
   it.each([
     [
       "hello",
@@ -171,6 +220,7 @@ describe("Pin-op protocol schemas", () => {
             metadata: {},
           },
         ],
+        ruleEvidence,
         context: {
           url: "http://localhost:3000/form",
           frameId: "main",
@@ -278,6 +328,7 @@ describe("Pin-op protocol schemas", () => {
       AutoRefresh: "auto-refresh",
       SourcePresentation: "source-presentation",
       PresentationSettings: "presentation-settings",
+      RulesSources: "rules-sources",
     });
     expect(ProtocolCapabilitySchema.options).toEqual([
       "inspect",
@@ -287,6 +338,7 @@ describe("Pin-op protocol schemas", () => {
       "auto-refresh",
       "source-presentation",
       "presentation-settings",
+      "rules-sources",
     ]);
   });
 
@@ -560,17 +612,41 @@ describe("Pin-op protocol schemas", () => {
     expect(() => parseMessage(createMessage(limit + 1))).toThrow();
   });
 
+  it("bounds the evidence-owned CSS selector", () => {
+    const createMessage = (length: number) => ({
+      ...inspectMessage([target("selected", 0, ".card", runtimeFacts)]),
+      ruleEvidence: {
+        ...ruleEvidence,
+        rules: [{ ...ruleEvidence.rules[0], selector: "x".repeat(length) }],
+      },
+    });
+
+    expect(() => parseMessage(createMessage(INSPECT_LIMITS.selectorLength)))
+      .not.toThrow();
+    expect(() => parseMessage(createMessage(INSPECT_LIMITS.selectorLength + 1)))
+      .toThrow();
+  });
+
   it.each([
-    ["CSS selector", "selector", () => INSPECT_LIMITS.selectorLength],
-    ["CSS property", "property", () => INSPECT_LIMITS.propertyNameLength],
-    ["CSS value", "value", () => INSPECT_LIMITS.valueLength],
-  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    ["property", () => INSPECT_LIMITS.propertyNameLength],
+    ["value", () => INSPECT_LIMITS.valueLength],
+  ])("bounds correlated CSS %s length", (field, readLimit) => {
     const createMessage = (length: number) => {
-      const fact = {
-        ...runtimeFacts[0],
+      const declaration = {
+        ...ruleEvidence.rules[0]!.declarations[0]!,
         [field]: "x".repeat(length),
       };
-      return inspectMessage([target("selected", 0, ".card", [fact])]);
+      const fact = { ...runtimeFacts[0], [field]: declaration[field] };
+      return {
+        ...inspectMessage([target("selected", 0, ".card", [fact])]),
+        ruleEvidence: {
+          ...ruleEvidence,
+          rules: [{
+            ...ruleEvidence.rules[0],
+            declarations: [declaration],
+          }],
+        },
+      };
     };
     const limit = readLimit();
 
@@ -666,6 +742,177 @@ describe("Pin-op protocol schemas", () => {
     ],
   ])("rejects %s", (_name, targets) => {
     expect(() => parseMessage(inspectMessage(targets))).toThrow();
+  });
+
+  it("requires a top-level bounded correlated rule evidence batch", () => {
+    const message = inspectMessage([
+      target("selected", 0, ".card", runtimeFacts),
+    ]);
+    const { ruleEvidence: _ruleEvidence, ...withoutEvidence } = message;
+
+    expect(() => InspectMessageSchema.parse(withoutEvidence)).toThrow();
+    expect(() => InspectMessageSchema.parse({
+      ...message,
+      ruleEvidence: {
+        rules: Array.from(
+          { length: RULE_EVIDENCE_LIMITS.rules + 1 },
+          (_, index) => ({
+            ...ruleEvidence.rules[0],
+            ruleRef: `rule-${index}`,
+          }),
+        ),
+        omittedRuleCount: 0,
+      },
+    })).toThrow();
+  });
+
+  it("requires unique evidence refs and exact declaration tuples for CSS facts", () => {
+    const message = inspectMessage([
+      target("selected", 0, ".card", runtimeFacts),
+    ]);
+
+    expect(() => InspectMessageSchema.parse({
+      ...message,
+      ruleEvidence: {
+        ...ruleEvidence,
+        rules: [ruleEvidence.rules[0], ruleEvidence.rules[0]],
+      },
+    })).toThrow();
+    expect(() => InspectMessageSchema.parse({
+      ...message,
+      targets: [target("selected", 0, ".card", [{
+        ...runtimeFacts[0],
+        ruleRef: "missing-rule",
+      }])],
+    })).toThrow();
+    expect(() => InspectMessageSchema.parse({
+      ...message,
+      targets: [target("selected", 0, ".card", [{
+        ...runtimeFacts[0],
+        important: true,
+      }])],
+    })).toThrow();
+  });
+
+  it.each([
+    { selector: ".forged" },
+    { source: { uri: "file:///C:/private/app.scss", line: 1, column: 1 } },
+    { sourceUrl: "file:///C:/private/app.scss" },
+    { stylesheet: "C:\\private\\app.scss" },
+    { rulePath: "0.1" },
+    { media: ["screen"] },
+    { contexts: [{ kind: "supports", conditionText: "(display: grid)" }] },
+    { line: 1 },
+    { column: 1 },
+  ])("rejects selector/source ownership smuggled through CSS fact metadata %j", (
+    metadata,
+  ) => {
+    const message = inspectMessage([
+      target("selected", 0, ".card", [{ ...runtimeFacts[0], metadata }]),
+    ]);
+
+    expect(() => InspectMessageSchema.parse(message)).toThrow();
+  });
+
+  it("bounds declarations and supported outer-to-inner contexts", () => {
+    const evidence = ruleEvidence.rules[0]!;
+    expect(() => InspectMessageSchema.parse({
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      ruleEvidence: {
+        rules: [{
+          ...evidence,
+          declarations: Array.from(
+            { length: RULE_EVIDENCE_LIMITS.declarationsPerRule + 1 },
+            () => evidence.declarations[0],
+          ),
+        }],
+        omittedRuleCount: 0,
+      },
+    })).toThrow();
+    expect(() => InspectMessageSchema.parse({
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      ruleEvidence: {
+        rules: [{
+          ...evidence,
+          generatedSource: {
+            ...evidence.generatedSource,
+            contexts: [{ kind: "container", conditionText: "width > 1px" }],
+          },
+        }],
+        omittedRuleCount: 0,
+      },
+    })).toThrow();
+  });
+
+  it("requires complete generated positions or a numeric dotted path", () => {
+    const evidence = ruleEvidence.rules[0]!;
+    const generatedSource = evidence.generatedSource!;
+    for (const invalid of [
+      { ...generatedSource, startColumn: undefined, rulePath: undefined },
+      { ...generatedSource, endColumn: undefined },
+      {
+        ...generatedSource,
+        startLine: undefined,
+        startColumn: undefined,
+        endLine: undefined,
+        endColumn: undefined,
+        rulePath: "0.a",
+      },
+      {
+        ...generatedSource,
+        startLine: undefined,
+        startColumn: undefined,
+        endLine: undefined,
+        endColumn: undefined,
+        rulePath: "0.01",
+      },
+      {
+        ...generatedSource,
+        startLine: undefined,
+        startColumn: undefined,
+        endLine: undefined,
+        endColumn: undefined,
+        rulePath: "0.9007199254740992",
+      },
+      { ...generatedSource, startLine: 0 },
+      { ...generatedSource, endLine: 11, endColumn: 1 },
+    ]) {
+      expect(() => InspectMessageSchema.parse({
+        ...inspectMessage([target("selected", 0, ".card", [])]),
+        ruleEvidence: {
+          rules: [{ ...evidence, generatedSource: invalid }],
+          omittedRuleCount: 0,
+        },
+      })).toThrow();
+    }
+  });
+
+  it("keeps inline evidence without inventing generated source coordinates", () => {
+    const inline = {
+      ruleRef: "rule-inline",
+      selector: "element.style",
+      declarations: [{
+        property: "color",
+        value: "red",
+        important: false,
+        valueTruncated: false,
+      }],
+      declarationsTruncated: false,
+    };
+    const message = {
+      ...inspectMessage([target("selected", 0, ".card", [{
+        type: "css-rule",
+        ruleRef: "rule-inline",
+        property: "color",
+        value: "red",
+        important: false,
+        valueTruncated: false,
+        metadata: {},
+      }])]),
+      ruleEvidence: { rules: [inline], omittedRuleCount: 0 },
+    };
+
+    expect(InspectMessageSchema.parse(message)).toEqual(message);
   });
 
   it("rejects protocol v5", () => {

@@ -1,4 +1,7 @@
-import type { CssRuleFact } from "@pin-op/protocol";
+import type {
+  CssRuleFact,
+  InspectRuleEvidenceBatch,
+} from "@pin-op/protocol";
 import {
   walkCssRules,
   type CssDocumentSource,
@@ -30,6 +33,7 @@ export type {
 
 export interface CssFactCollection {
   readonly facts: CssRuleFact[];
+  readonly ruleEvidence: InspectRuleEvidenceBatch;
   readonly inaccessibleStylesheets: InaccessibleStylesheet[];
 }
 
@@ -43,8 +47,8 @@ export function collectCssFacts(
   budget?: InspectByteBudget,
 ): CssFactCollection;
 /**
- * Projects facts from MatchedStyles. The element/document overload is a v6
- * compatibility adapter which first materializes matched records through the
+ * Projects facts from MatchedStyles. The element/document overload first
+ * materializes matched records through the
  * shared bounded walker; it contains no second CSSOM traversal.
  */
 export function collectCssFacts(
@@ -63,7 +67,7 @@ export function collectCssFacts(
   const document = documentOrBudget as CssDocumentSource;
   const budget = optionalBudget ?? createInspectByteBudget();
   const registry = new RuleReferenceRegistry({
-    contentSessionId: "content-v6-css-facts",
+    contentSessionId: "content-v7-css-facts",
     documentEpoch: 0,
     stylesheetRevision: 0,
   });
@@ -79,6 +83,9 @@ export function collectCssFacts(
         selectorText: record.selector,
         matchingSelectorIndices: [0],
         declarations: [],
+        ...(record.declarationsTruncated
+          ? { declarationsTruncated: true }
+          : {}),
         contexts: record.contexts,
         ...(record.contextsTruncated ? { contextsTruncated: true } : {}),
         ...(record.mediaTruncated ? { mediaTruncated: true } : {}),
@@ -110,7 +117,7 @@ export function collectCssFacts(
     selectionRevision: 0,
     stylesRevision: 0,
     stylesheetRevision: 0,
-    nodeRef: "v6-css-facts",
+    nodeRef: "v7-css-facts",
     rules: matchedRules,
     inherited: [],
     inaccessibleStylesheetCount: walk.inaccessibleStylesheets.length,
@@ -119,10 +126,13 @@ export function collectCssFacts(
       ? ["stylesheet-inaccessible"]
       : [],
   };
-  const projection = projectMatchedStylesToCssFacts(matched, budget);
+  const projection = projectMatchedStylesToCssFacts(matched, budget, {
+    pageUrl: document.pageUrl,
+  });
   registry.dispose();
   return {
     facts: projection.facts,
+    ruleEvidence: projection.ruleEvidence,
     inaccessibleStylesheets: [...walk.inaccessibleStylesheets],
   };
 }

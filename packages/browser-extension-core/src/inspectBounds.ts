@@ -41,8 +41,11 @@ export function consumeJsonBudget(
   }
 }
 
-export function exactBoundedUrl(value: string): string | undefined {
-  if (value.length > INSPECT_LIMITS.urlLength) {
+export function exactBoundedUrl(
+  value: string,
+  maxLength: number = INSPECT_LIMITS.urlLength,
+): string | undefined {
+  if (value.length > maxLength) {
     return undefined;
   }
   try {

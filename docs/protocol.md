@@ -7,14 +7,14 @@ and routes typed refresh generations from the IDE to participating tabs.
 
 ## Version And Capability Negotiation
 
-The current protocol version is `6`. Every product message uses
-`protocolVersion: 6`; product release semver (`0.3.0`) is independent. Packaged
-runtime metadata reports protocol version `6`.
+The current protocol version is `7`. Every product message uses
+`protocolVersion: 7`; product release semver (`0.3.0`) is independent. Packaged
+runtime metadata reports protocol version `7`.
 
 The protocol uses exact version matching with no downgrade negotiation.
 Unsupported versions, unknown fields, and invalid message shapes are rejected.
-Protocol v6 is breaking. A v5 peer is rejected with WebSocket close code
-`1002`; there is no v5 compatibility adapter, downgrade, or retry fallback.
+Protocol v7 is breaking. A v6 peer is rejected with WebSocket close code
+`1002`; there is no v6 compatibility adapter, downgrade, or retry fallback.
 The browser exposes the received and expected versions so the panel can tell
 the user to update both extensions and reconnect.
 
@@ -35,7 +35,7 @@ client cannot send or receive an optional message family without its capability.
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "hello",
   "messageId": "hello-2",
   "sessionId": "default",
@@ -71,7 +71,7 @@ port from `48735` through `48834`. Pin-op exposes no product HTTP API and
 the browser does not scan the port range.
 
 Ordinary protocol messages are strict objects with a non-empty `messageId`, a
-message-specific `type`, JSON-only `metadata`, and protocol version `6`.
+message-specific `type`, JSON-only `metadata`, and protocol version `7`.
 Handshake and routed messages add the exact identity and correlation fields
 their schemas require. WebSocket frames larger than 1 MiB are rejected.
 
@@ -114,7 +114,7 @@ immediate-parent target:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "inspect",
   "messageId": "inspect-42",
   "sessionId": "default",
@@ -136,6 +136,10 @@ immediate-parent target:
       "metadata": {}
     }
   ],
+  "ruleEvidence": {
+    "rules": [],
+    "omittedRuleCount": 0
+  },
   "context": {
     "url": "http://127.0.0.1:4173/",
     "metadata": {}
@@ -143,6 +147,14 @@ immediate-parent target:
   "metadata": {}
 }
 ```
+
+Every inspect includes `ruleEvidence`, even when it is empty. A CSS fact carries
+only its `ruleRef` and exact declaration tuple. The referenced evidence is the
+sole wire owner of selector text, generated HTTP(S) stylesheet URL, one-based
+and end-exclusive positions, numeric dotted rule path, and ordered outer-to-inner
+`media`/`supports` contexts. Missing, duplicate, truncated, unsupported, hostile,
+or over-budget source evidence fails closed; browser-local paths never cross the
+product WebSocket.
 
 When the bridge accepts an inspect message, it registers a reply route keyed by
 `sessionId` and the inspect `messageId`. The route points to the exact browser
@@ -159,7 +171,7 @@ results.
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "resolution",
   "messageId": "resolution-18",
   "sessionId": "default",
@@ -188,6 +200,17 @@ sources, source-map failures, no or ambiguous rule matches, and bounded plugin
 or internal errors. Wire source locations are one-based; the local source
 plugin API converts them to zero-based, end-exclusive editor ranges.
 
+Protocol v7 also reserves strict `rules.sources` and `rules.open` envelopes for
+future correlated Rules-source navigation. `rules.sources` is IDE-authored and
+maps unique inspect `ruleRef` values to opaque `openAuthorityId` values, safe
+basename labels, CSS/SCSS language IDs, bounded one-based positions, and exact
+or source-map confidence. `rules.open` carries only the inspect ID, rules
+generation, and opaque authority ID; paths, URIs, URLs, ranges, commands, and
+rule refs are invalid. The `rules-sources` capability is intentionally dormant:
+current browser, simulator, bridge, and IDE endpoints do not advertise or route
+this family yet. Existing `source.matches`, `source.open`, and active-editor
+Source semantics remain separate.
+
 ## Auto Refresh
 
 The `auto-refresh` capability authorizes IDE-to-browser `page.refresh`
@@ -195,7 +218,7 @@ messages. They contain only an increasing generation and one closed mode:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "page.refresh",
   "messageId": "refresh-7",
   "sessionId": "default",
@@ -212,7 +235,7 @@ reload the current tab with bounded top-level scroll restoration. The message
 contains no path, URL, script, selector, source text, tab ID, or command.
 
 Participation and pending work are browser-local. Auto Refresh is tab-local and
-defaults on only after `protocol.compatibility` reports v6 and a fresh tab-state
+defaults on only after `protocol.compatibility` reports v7 and a fresh tab-state
 snapshot is accepted. A panel must be open. An inactive participating tab keeps
 the strongest newest pending mode and applies it once when activated.
 
@@ -224,7 +247,7 @@ generation. A match is a bounded excerpt from the active IDE document:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "source.matches",
   "messageId": "matches-8",
   "sessionId": "default",
@@ -293,7 +316,7 @@ an intent with no source ranges or file identity:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "source.navigate",
   "messageId": "navigate-19",
   "sessionId": "default",
@@ -312,7 +335,7 @@ The IDE answers with current cursor state:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "source.navigationState",
   "messageId": "navigation-state-20",
   "sessionId": "default",
@@ -383,7 +406,7 @@ session and includes an increasing `peerGeneration`:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "type": "peerState",
   "messageId": "peer-9",
   "sessionId": "default",
@@ -504,7 +527,7 @@ Only bounded inspect facts, bounded active-document excerpts, and protocol
 state cross the loopback WebSocket. Browser-local locators and node refs never
 cross it. Full source documents, editor ranges, local file paths and URIs,
 source maps, and browser tab IDs never cross in the reverse direction. Protocol
-6 exposes no arbitrary page-owned DOM writes, source writes, shell execution,
+7 exposes no arbitrary page-owned DOM writes, source writes, shell execution,
 workspace command execution, or reverse synchronization. Its only DOM changes
 are the extension-owned overlay and the typed stylesheet-link replacement
 described above.

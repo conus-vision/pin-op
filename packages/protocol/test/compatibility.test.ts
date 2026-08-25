@@ -9,14 +9,14 @@ import {
 } from "../src/index.js";
 
 describe("protocol version compatibility helpers", () => {
-  it("recognizes only protocol v6 as compatible", () => {
-    expect(PROTOCOL_VERSION).toBe(6);
-    expect(probeProtocolVersion(JSON.stringify({ protocolVersion: 6 }))).toEqual({
-      receivedVersion: 6,
+  it("recognizes only protocol v7 as compatible", () => {
+    expect(PROTOCOL_VERSION).toBe(7);
+    expect(probeProtocolVersion(JSON.stringify({ protocolVersion: 7 }))).toEqual({
+      receivedVersion: 7,
       compatible: true,
     });
-    expect(probeProtocolVersion(JSON.stringify({ protocolVersion: 5 }))).toEqual({
-      receivedVersion: 5,
+    expect(probeProtocolVersion(JSON.stringify({ protocolVersion: 6 }))).toEqual({
+      receivedVersion: 6,
       compatible: false,
     });
   });
@@ -39,17 +39,17 @@ describe("protocol version compatibility helpers", () => {
   });
 
   it("bounds raw serialized frame text by UTF-8 bytes", () => {
-    const emptyFrame = JSON.stringify({ protocolVersion: 6, padding: "" });
+    const emptyFrame = JSON.stringify({ protocolVersion: 7, padding: "" });
     const emptyFrameBytes = Buffer.byteLength(emptyFrame, "utf8");
     const atLimit = JSON.stringify({
-      protocolVersion: 6,
+      protocolVersion: 7,
       padding: "x".repeat(
         PROTOCOL_VERSION_PROBE_MAX_BYTES - emptyFrameBytes,
       ),
     });
     const overLimit = `${atLimit} `;
     const multibyteOverLimit = JSON.stringify({
-      protocolVersion: 6,
+      protocolVersion: 7,
       padding: "\u00e9".repeat(PROTOCOL_VERSION_PROBE_MAX_BYTES / 2),
     });
 
@@ -57,7 +57,7 @@ describe("protocol version compatibility helpers", () => {
       PROTOCOL_VERSION_PROBE_MAX_BYTES,
     );
     expect(probeProtocolVersion(atLimit)).toEqual({
-      receivedVersion: 6,
+      receivedVersion: 7,
       compatible: true,
     });
     expect(Buffer.byteLength(overLimit, "utf8")).toBe(
@@ -138,7 +138,7 @@ describe("protocol version compatibility helpers", () => {
     });
   });
 
-  it.each([5, 7, undefined])(
+  it.each([5, 6, 8, undefined])(
     "round trips mismatch close reasons for received version %s",
     (receivedVersion) => {
       const reason = protocolMismatchReason(receivedVersion);

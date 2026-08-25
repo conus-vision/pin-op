@@ -2,7 +2,7 @@
 
 This private VS Code extension proves that an extension outside the Pin-op
 core can register a `SourcePlugin` and `RefreshClassifier` through public API
-version 2. It contributes the `pin-op-fixture` language for `.pin-op-fixture`
+version 3. It contributes the `pin-op-fixture` language for `.pin-op-fixture`
 files and registers IDs `pin-op.fixture` and `pin-op.fixture.refresh`.
 
 Its manifest depends on the canonical core extension ID

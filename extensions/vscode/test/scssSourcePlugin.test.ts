@@ -7,9 +7,13 @@ import type {
   SourceMatch,
   SourceWorkspace,
 } from "@pin-op/plugin-api";
-import type { CssRuleFact, InspectTarget } from "@pin-op/protocol";
 import { ScssSourcePlugin } from "../src/sourcePlugins/scssSourcePlugin.js";
 import { memorySourceWorkspace } from "./support/memorySourceWorkspace.js";
+import {
+  createCorrelatedCssTarget,
+  projectCorrelatedCssFixtures,
+  type CorrelatedCssTargetFixture,
+} from "./support/correlatedCssFixture.js";
 
 describe("ScssSourcePlugin", () => {
   it("maps selected and parent rules to complete blocks in layout.scss", async () => {
@@ -408,7 +412,7 @@ describe("ScssSourcePlugin", () => {
       workspace: {
         ...base,
         resolveSourceUri: async (sourceUrl, baseUrl) =>
-          sourceUrl === "/assets/app.css"
+          new URL(sourceUrl).pathname === "/assets/app.css"
             ? {
               uris: [generatedUri],
               status: "unique-basename",
@@ -427,7 +431,7 @@ describe("ScssSourcePlugin", () => {
       {
         code: "scss.generatedSourceHeuristic",
         message:
-          "Generated CSS used automatic basename matching: /assets/app.css",
+          "Generated CSS used automatic basename matching: http://localhost:4173/assets/app.css",
         severity: "info",
       },
       {
@@ -508,7 +512,7 @@ describe("ScssSourcePlugin", () => {
           uris: [],
           status: "not-found",
           strategy: "workspace-bound",
-          workspaceFolderUri: sourceUrl === "/dist/layout.css"
+          workspaceFolderUri: new URL(sourceUrl).pathname === "/dist/layout.css"
             ? "file:///workspaces/SECOND"
             : "file:///workspaces/FIRST",
         }),
@@ -813,7 +817,7 @@ async function resolveWithGeneratedResolution(
     workspace: {
       ...base,
       resolveSourceUri: async (sourceUrl, baseUrl) =>
-        sourceUrl === "/assets/app.css"
+        new URL(sourceUrl).pathname === "/assets/app.css"
           ? resolution
           : base.resolveSourceUri(sourceUrl, baseUrl),
     },
@@ -891,13 +895,15 @@ function memoryWorkspace(
 }
 
 function selection(
-  targets: readonly InspectTarget[],
+  fixtures: readonly CorrelatedCssTargetFixture[],
   url = "http://localhost:4173/page",
 ): SelectionSnapshot {
+  const correlated = projectCorrelatedCssFixtures(fixtures);
   return {
     sessionId: "session-1",
     messageId: "inspect-1",
-    targets,
+    targets: correlated.targets,
+    ruleEvidence: correlated.ruleEvidence,
     context: { url, metadata: {} },
     metadata: {},
   };
@@ -912,29 +918,14 @@ function cssTarget(
     readonly value?: string;
     readonly rulePath?: string;
   } = {},
-): InspectTarget & { facts: CssRuleFact[] } {
-  return {
-    role,
-    depth: role === "selected" ? 0 : 1,
-    subject: { selector, metadata: {} },
-    facts: [
-      {
-        type: "css-rule",
-        selector,
-        property: options.property ?? "color",
-        value: options.value ?? "red",
-        metadata: {
-          sourceUrl,
-          media: [],
-          mediaTruncated: false,
-          rulePath: options.rulePath ?? "0.0",
-          valueTruncated: false,
-          important: false,
-        },
-      },
-    ],
-    metadata: {},
-  };
+): CorrelatedCssTargetFixture {
+  const property = options.property ?? "color";
+  const value = options.value ?? "red";
+  return createCorrelatedCssTarget(role, selector, {
+    sourceUrl,
+    rulePath: options.rulePath ?? "0.0",
+    declarations: [{ property, value }],
+  });
 }
 
 function document(uri: string, text: string): SourceDocument {

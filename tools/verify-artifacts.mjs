@@ -941,7 +941,7 @@ export function validateVsixArchive(archive, filename) {
   parseRuntimeMetadata(
     archive.files.get("extension/dist/runtime-metadata.json"),
     {
-      expectedProtocolVersion: 6,
+      expectedProtocolVersion: 7,
       label: `${filename} runtime metadata`,
     },
   );

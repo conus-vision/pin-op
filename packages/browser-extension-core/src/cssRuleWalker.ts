@@ -114,6 +114,7 @@ export interface CssMatchedRuleWalkRecord {
   readonly mediaTruncated: boolean;
   readonly contexts: readonly CssRuleContextRecord[];
   readonly contextsTruncated: boolean;
+  readonly declarationsTruncated: boolean;
   readonly ruleRef?: string;
 }
 
@@ -608,30 +609,17 @@ function* walkDeclarations(
       nativeRule,
     );
   }
-  state.options.onMatchedRule?.({
-    nativeRule,
-    nativeStylesheet: stylesheet.nativeStylesheet,
-    selector: selector.sourceSelector,
-    resolvedSelector: selector.resolvedSelector,
-    sourceUrl: stylesheet.sourceUrl,
-    stylesheetIdentity: stylesheet.stylesheetIdentity,
-    rulePath,
-    media: [...media.values],
-    mediaTruncated: media.truncated,
-    contexts: contexts.values.map((context) => ({ ...context })),
-    contextsTruncated: contexts.truncated,
-    ...(ruleRef ? { ruleRef } : {}),
-  });
+  const records: CssRuleWalkRecord[] = [];
   for (const property of declarationNames) {
-    if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) return;
+    if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) break;
     try {
       const priority = style.getPropertyPriority(property);
       if (typeof priority !== "string") continue;
-      if (!consumeWalkBytes(state, priority)) return;
+      if (!consumeWalkBytes(state, priority)) break;
       if (priority !== "" && priority !== "important") continue;
       const rawValue = style.getPropertyValue(property);
       if (typeof rawValue !== "string") continue;
-      if (!consumeWalkBytes(state, rawValue)) return;
+      if (!consumeWalkBytes(state, rawValue)) break;
       const record: CssRuleWalkRecord = {
         selector: selector.sourceSelector,
         resolvedSelector: selector.resolvedSelector,
@@ -649,11 +637,27 @@ function* walkDeclarations(
         ...(ruleRef ? { ruleRef } : {}),
       };
       state.recordsEmitted += 1;
-      yield record;
+      records.push(record);
     } catch {
       continue;
     }
   }
+  state.options.onMatchedRule?.({
+    nativeRule,
+    nativeStylesheet: stylesheet.nativeStylesheet,
+    selector: selector.sourceSelector,
+    resolvedSelector: selector.resolvedSelector,
+    sourceUrl: stylesheet.sourceUrl,
+    stylesheetIdentity: stylesheet.stylesheetIdentity,
+    rulePath,
+    media: [...media.values],
+    mediaTruncated: media.truncated,
+    contexts: contexts.values.map((context) => ({ ...context })),
+    contextsTruncated: contexts.truncated,
+    declarationsTruncated: declaredLength > records.length,
+    ...(ruleRef ? { ruleRef } : {}),
+  });
+  for (const record of records) yield record;
 }
 
 function* walkImportedStylesheet(

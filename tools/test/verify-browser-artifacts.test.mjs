@@ -62,23 +62,24 @@ const upstreamRootLicense = readFileSync(
   "utf8",
 ).replaceAll("\r\n", "\n").trim();
 
-// Pin raw canonical archive bytes for the sole zod@3.25.76 v3 schema-clone
-// helper emitted by esbuild. Retaining that helper after dependency/build
-// changes requires a security review before deliberately updating this list.
+// Pin raw canonical protocol-v7 archive bytes for the reviewed zod@3.25.76
+// schema clone and the two pinned PostCSS AST clones emitted by esbuild.
+// Retaining those helpers after dependency/build changes requires a security
+// review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "3079fa7107dae0835f4db29b4c4872e5ad0ff6aa8bf07ae9ee9d96ec223545ee", inspectorSha256: "20fa981cdbd0e2c0ce7d8e1a2dc8f9acff02d46efe3bb1916f8e4681ec944a7e" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "2f1c92b62179d155bed110020cdacf10bb4ca6163ce018e83f01b26d30df7bcf", inspectorSha256: "2f1c92b62179d155bed110020cdacf10bb4ca6163ce018e83f01b26d30df7bcf" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "337440b6c672e26a0582b5a4641dc887618bb8435bcacf055021ba35372c1f0f", inspectorSha256: "c4bf834f8324ae46a98de8c94a959834c0d6183cb42a4a6e3b08b51be5a94e9b" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "b968ed425d6cf5c5543c1799ab4ac787f6ed43f6be48d9968ee605dfdb903925", inspectorSha256: "b968ed425d6cf5c5543c1799ab4ac787f6ed43f6be48d9968ee605dfdb903925" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "7ebc194578244ad5e601be41fcd7f5384844a9823f05cafcb1228dd582fbcac9", inspectorSha256: "7ebc194578244ad5e601be41fcd7f5384844a9823f05cafcb1228dd582fbcac9" },
-  { browser: "firefox", path: "dist/background.js", sha256: "3079fa7107dae0835f4db29b4c4872e5ad0ff6aa8bf07ae9ee9d96ec223545ee", inspectorSha256: "20fa981cdbd0e2c0ce7d8e1a2dc8f9acff02d46efe3bb1916f8e4681ec944a7e" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "2f1c92b62179d155bed110020cdacf10bb4ca6163ce018e83f01b26d30df7bcf", inspectorSha256: "2f1c92b62179d155bed110020cdacf10bb4ca6163ce018e83f01b26d30df7bcf" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "5c8dd94024ad70b7ca464b5014205464685b84918aee667496395decdd5a6a1e", inspectorSha256: "802cc4375537aac9fc9d1689274efaffb0d93ba758374163ef63bc8f3c60f121" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "b968ed425d6cf5c5543c1799ab4ac787f6ed43f6be48d9968ee605dfdb903925", inspectorSha256: "b968ed425d6cf5c5543c1799ab4ac787f6ed43f6be48d9968ee605dfdb903925" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "7ebc194578244ad5e601be41fcd7f5384844a9823f05cafcb1228dd582fbcac9", inspectorSha256: "7ebc194578244ad5e601be41fcd7f5384844a9823f05cafcb1228dd582fbcac9" },
+  { browser: "chrome", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "9e6f943508e41629a2cc7a7d9756124095fddaf4c0e996208be4761eef5fa8d4", inspectorSha256: "115ffe993588c50114101876f748dec70680f4f0457a66c8939a82bfcd30bca7" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" },
+  { browser: "firefox", path: "dist/background.js", sha256: "55c1a2c241ba89ea794552341727c40ea5461c94a6320f9211f00a64f979bfcf", inspectorSha256: "6489d52e09607781aff4852ba2dd7f50c08e45d9e841a0c5693119d7d000fc5e" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665", inspectorSha256: "a305f3bc1c187f3179472c7da27da8f92e7d5f7ab4d58e56af1d05661d01c665" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "e1a15cce41ddadfb666fb93787ff6914134a504bf75eee3b40e0e5100fd26f10", inspectorSha256: "b7c7bba1865ec8c94b177ed9b86d96eb0a24e2503eef280a61a573cf4ef5e842" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d", inspectorSha256: "72aac0118799dcd39c911e7b12449c3410ed16607f3332ed14d021429b3c560d" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09", inspectorSha256: "4d3136f09dedb2ec790534137cfe779ace03f9bb2d770368d4563902d8de0b09" },
 ]);
 
-test("browser runtime contract pins zod@3.25.76 bundle provenance per browser and path", () => {
+test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
   assert.deepEqual(
     browserPackageContract.TRUSTED_ZOD_V3_BUNDLE_PROVENANCE,
     EXPECTED_ZOD_V3_BUNDLE_PROVENANCE,
@@ -251,7 +252,7 @@ test("top-level artifact verification invokes cross-browser Inspector parity", (
 });
 
 for (const browser of ["firefox", "chrome"]) {
-  test(`common ${browser} artifact verifier accepts protocol v6 and the current panel`, () => {
+  test(`common ${browser} artifact verifier accepts protocol v7 and the current panel`, () => {
     assert.doesNotThrow(() =>
       validateBrowserArchive(
         browserArchive(browser),
@@ -963,7 +964,7 @@ for (const browser of ["firefox", "chrome"]) {
         `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
-      /runtime metadata protocolVersion expected 6 but found 5/i,
+      /runtime metadata protocolVersion expected 7 but found 5/i,
     );
   });
 
@@ -1479,7 +1480,7 @@ function browserArchive(browser) {
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));
   files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":6}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":7}\n'),
   );
   for (const size of [16, 32, 48, 96, 128]) {
     files.set(

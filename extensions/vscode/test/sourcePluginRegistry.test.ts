@@ -15,6 +15,10 @@ import type {
   SourcePluginDispatch,
   SourceResolution,
 } from "../src/sourcePlugins/types.js";
+import {
+  createCorrelatedCssTarget,
+  projectCorrelatedCssFixtures,
+} from "./support/correlatedCssFixture.js";
 
 describe("SourcePluginRegistry", () => {
   it("dispatches only plugins matching the active document and fact kinds", async () => {
@@ -45,7 +49,7 @@ describe("SourcePluginRegistry", () => {
     );
 
     const dispatch = await registry.resolve(
-      selectionWithFacts("css-rule"),
+      selectionWithFacts(),
       document("file:///app.css", "css", ".card {}"),
       workspace(),
       new AbortController().signal,
@@ -62,7 +66,7 @@ describe("SourcePluginRegistry", () => {
     registry.register(plugin({ languageId: "css" }));
 
     const result = await registry.resolve(
-      selectionWithFacts("css-rule"),
+      selectionWithFacts(),
       document("file:///app.ts", "typescript", "const value = 1;"),
       workspace(),
       new AbortController().signal,
@@ -78,7 +82,7 @@ describe("SourcePluginRegistry", () => {
   it("returns resolved with no candidates when the supported document has no dispatchable facts", async () => {
     const registry = new SourcePluginRegistry();
     registry.register(plugin({ languageId: "css", factKinds: ["css-rule"] }));
-    const selection = selectionWithFacts("css-rule");
+    const selection = selectionWithFacts();
 
     const result = await registry.resolve(
       { ...selection, targets: selection.targets.map((target) => ({ ...target, facts: [] })) },
@@ -251,7 +255,7 @@ describe("SourcePluginRegistry", () => {
     expect(() =>
       registry.register({
         ...plugin({ id: "legacy" }),
-        apiVersion: 1 as typeof SOURCE_PLUGIN_API_VERSION,
+        apiVersion: 2 as typeof SOURCE_PLUGIN_API_VERSION,
       }),
     ).toThrow(/unsupported API version/);
 
@@ -269,7 +273,7 @@ function registryWithMatches(matches: readonly SourceMatch[]) {
 
 function resolveCss(
   registry: SourcePluginRegistry,
-  selection = selectionWithFacts("css-rule"),
+  selection = selectionWithFacts(),
 ) {
   return registry.resolve(
     selection,
@@ -387,34 +391,26 @@ function range(
   };
 }
 
-function selectionWithFacts(kind: "css-rule"): SelectionSnapshot {
+function selectionWithFacts(): SelectionSnapshot {
+  const correlated = projectCorrelatedCssFixtures([
+    createCorrelatedCssTarget("selected", ".card", {
+      sourceUrl: "http://localhost/app.css",
+      rulePath: "0.0",
+      declarations: [{ property: "display", value: "block" }],
+    }),
+  ]);
   return {
     sessionId: "session-1",
     messageId: "inspect-1",
-    targets: [
-      {
-        role: "selected",
-        depth: 0,
-        subject: { selector: ".card", metadata: {} },
-        facts: [
-          {
-            type: kind,
-            selector: ".card",
-            property: "display",
-            value: "block",
-            metadata: {},
-          },
-        ],
-        metadata: {},
-      },
-    ],
+    targets: correlated.targets,
+    ruleEvidence: correlated.ruleEvidence,
     context: { url: "http://localhost/", metadata: {} },
     metadata: {},
   };
 }
 
 function selectionWithSelectedAndParentFacts(): SelectionSnapshot {
-  const selection = selectionWithFacts("css-rule");
+  const selection = selectionWithFacts();
   return {
     ...selection,
     targets: [

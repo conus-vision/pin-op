@@ -17,7 +17,7 @@ The unsigned `pin-op-firefox-0.3.0.zip` is build and Mozilla-review input.
 It is not a persistent Firefox Stable add-on and cannot replace the signed XPI.
 
 Install browser and IDE candidates from the same protocol generation. This
-runbook requires protocol v6. Protocol v5 is rejected with WebSocket close code
+runbook requires protocol v7. Protocol v6 is rejected with WebSocket close code
 `1002`; there is no compatibility adapter or fallback.
 
 ## Privacy And Security Before Testing
@@ -29,8 +29,9 @@ cross-linking, not a malicious process running as the same desktop user.
 
 One selection can send bounded facts for the selected element and its immediate
 parent: full page URL/route, IDs, classes, permitted `data-*`, `aria-*`, and
-`role` names and values, CSS declarations and stylesheet identity, and bounded
-development metadata. The IDE can return bounded excerpts from its active
+`role` names and values, CSS declarations, opaque correlated rule refs, and
+canonical public HTTP(S) stylesheet evidence. Local paths and hostile or
+unsupported stylesheet source evidence are omitted. The IDE can return bounded excerpts from its active
 document: at most 32 excerpts, 80 logical lines and 8 KiB each, in a 256 KiB
 message. These values are not content-redacted. Pin-op does
 not deliberately read cookies, headers, form values, DOM text, workspace source
@@ -250,14 +251,14 @@ tab state, and applies only while that tab's panel participates.
 
 ## Protocol Compatibility
 
-1. Temporarily combine a protocol-v6 extension with a v5 peer.
-2. Confirm the connection closes with code `1002`, does not retry v5, and shows
+1. Temporarily combine a protocol-v7 extension with a v6 peer.
+2. Confirm the connection closes with code `1002`, does not retry v6, and shows
    `Extensions are incompatible` plus instructions to update both extensions
    and reconnect.
-3. Confirm the panel reports `Browser protocol: 6 - IDE protocol: 5` when both
+3. Confirm the panel reports `Browser protocol: 7 - IDE protocol: 6` when both
    values are known and blocks picker/settings/Source/navigation while keeping
    Link/Disconnect usable.
-4. Restore matching protocol-v6 candidates, restart both extensions, reconnect,
+4. Restore matching protocol-v7 candidates, restart both extensions, reconnect,
    and confirm defaults activate only after a fresh tab state.
 
 ## Window Isolation And Disconnect
@@ -302,7 +303,7 @@ tab state, and applies only while that tab's panel participates.
 - **Link rejected:** copy the current code again from the intended VS Code
   window. Old bridge codes and credentials are intentionally invalid.
 - **Extensions are incompatible:** install browser and VS Code extensions from
-  the same protocol generation, restart both, and link again. A v5/v6 pair
+  the same protocol generation, restart both, and link again. A v6/v7 pair
   cannot downgrade or continue partially.
 - **No DevTools panel:** confirm the browser extension is enabled, restart the
   browser, and open DevTools on a normal page.

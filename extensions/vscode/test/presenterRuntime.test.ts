@@ -1111,6 +1111,30 @@ function inspectMessageWithCustomFact(includeParent = false): InspectMessage {
 }
 
 function inspect(targets: InspectMessage["targets"]): InspectMessage {
+  const rules = targets.flatMap((target, targetIndex) =>
+    target.facts.flatMap((fact) =>
+      fact.type === "css-rule" && "ruleRef" in fact
+        ? [{
+            ruleRef: fact.ruleRef,
+            selector: target.subject.selector,
+            declarations: [{
+              property: fact.property,
+              value: fact.value,
+              important: fact.important,
+              valueTruncated: fact.valueTruncated,
+            }],
+            declarationsTruncated: false,
+            generatedSource: {
+              sourceUrl: "http://localhost:4173/dist/app.css",
+              rulePath: `${targetIndex}.0`,
+              contexts: [],
+              contextsTruncated: false,
+              unsupportedGroupContext: false,
+            },
+          }]
+        : []
+    )
+  );
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
@@ -1119,6 +1143,7 @@ function inspect(targets: InspectMessage["targets"]): InspectMessage {
     source: { role: "browser", id: "firefox", metadata: {} },
     ideHighlightEnabled: true,
     targets,
+    ruleEvidence: { rules, omittedRuleCount: 0 },
     context: { url: "http://localhost:4173/", metadata: {} },
     metadata: {},
   };
@@ -1136,10 +1161,12 @@ function cssTarget(
     facts: [
       {
         type: "css-rule",
-        selector,
+        ruleRef: `rule-${role}`,
         property: "display",
         value: "grid",
-        metadata: { sourceUrl: "/dist/app.css" },
+        important: false,
+        valueTruncated: false,
+        metadata: {},
       },
     ],
     metadata: {},

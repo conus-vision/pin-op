@@ -7661,6 +7661,7 @@ function inspectPayload(): InspectPayload {
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "https://example.test/page", metadata: {} },
     ideHighlightEnabled: true,
     metadata: {},

@@ -303,7 +303,15 @@ describe("source presentation protocol messages", () => {
 
     expect(SourceOpenMessageSchema.parse(message)).toEqual(message);
     expect(parseMessage(message)).toEqual(message);
-    for (const forbidden of ["uri", "range", "command", "path"]) {
+    for (const forbidden of [
+      "uri",
+      "range",
+      "command",
+      "path",
+      "ruleRef",
+      "rulesGeneration",
+      "openAuthorityId",
+    ]) {
       expect(() =>
         SourceOpenMessageSchema.parse(
           sourceOpenMessage({ [forbidden]: forbidden }),
@@ -330,10 +338,12 @@ describe("source presentation protocol messages", () => {
   });
 
   it.each([
-    sourceMatchesMessage({ protocolVersion: 5 }),
-    sourceOpenMessage({ protocolVersion: 5 }),
-    presentationSettingsMessage({ protocolVersion: 5 }),
-  ])("rejects protocol v5", (message) => {
+    ...[5, 6].flatMap((protocolVersion) => [
+      sourceMatchesMessage({ protocolVersion }),
+      sourceOpenMessage({ protocolVersion }),
+      presentationSettingsMessage({ protocolVersion }),
+    ]),
+  ])("rejects legacy protocol versions", (message) => {
     expect(() => parseMessage(message)).toThrow();
   });
 });

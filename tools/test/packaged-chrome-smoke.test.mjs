@@ -99,7 +99,7 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   );
   files.set(
     "dist/runtime-metadata.json",
-    Buffer.from('{"schemaVersion":1,"protocolVersion":6}\n'),
+    Buffer.from('{"schemaVersion":1,"protocolVersion":7}\n'),
   );
   return { files, paths: [...paths] };
 }
@@ -127,7 +127,7 @@ test("rejects a packaged runtime downgraded to protocol version 5", () => {
 
   assert.throws(
     () => validatePackagedChromeArchive(archive),
-    /runtime metadata protocolVersion expected 6 but found 5/i,
+    /runtime metadata protocolVersion expected 7 but found 5/i,
   );
 });
 
@@ -135,7 +135,7 @@ test("rejects malformed or extended packaged runtime metadata", () => {
   for (const [metadata, expectedError] of [
     ["not-json", /runtime metadata is not valid JSON/i],
     [
-      '{"schemaVersion":1,"protocolVersion":6,"marker":"test"}',
+      '{"schemaVersion":1,"protocolVersion":7,"marker":"test"}',
       /runtime metadata has unexpected keys: marker/i,
     ],
   ]) {

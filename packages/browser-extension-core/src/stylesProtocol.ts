@@ -377,11 +377,17 @@ function parseMatchedRule(value: unknown, budget: NestedParseBudget): MatchedRul
     "selectorText",
     "matchingSelectorIndices",
     "declarations",
+    "declarationsTruncated",
     "contexts",
     "contextsTruncated",
     "mediaTruncated",
     "source",
-  ], ["contextsTruncated", "mediaTruncated", "source"]);
+  ], [
+    "declarationsTruncated",
+    "contextsTruncated",
+    "mediaTruncated",
+    "source",
+  ]);
   const ruleRef = identifier(read(record, "ruleRef"));
   const declarations = boundedArray(
     read(record, "declarations"),
@@ -405,6 +411,13 @@ function parseMatchedRule(value: unknown, budget: NestedParseBudget): MatchedRul
       STYLES_PROTOCOL_MAX_RULES * 2,
     ),
     declarations,
+    ...(has(record, "declarationsTruncated")
+      ? {
+          declarationsTruncated: boolean(
+            read(record, "declarationsTruncated"),
+          ),
+        }
+      : {}),
     contexts: countNested(
       budget,
       "contexts",

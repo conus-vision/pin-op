@@ -8,6 +8,7 @@ export const ProtocolCapability = {
   AutoRefresh: "auto-refresh",
   SourcePresentation: "source-presentation",
   PresentationSettings: "presentation-settings",
+  RulesSources: "rules-sources",
 } as const;
 
 export const ProtocolCapabilitySchema = z.enum([
@@ -18,6 +19,7 @@ export const ProtocolCapabilitySchema = z.enum([
   ProtocolCapability.AutoRefresh,
   ProtocolCapability.SourcePresentation,
   ProtocolCapability.PresentationSettings,
+  ProtocolCapability.RulesSources,
 ]);
 
 export type ProtocolCapability =

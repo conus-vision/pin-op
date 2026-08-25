@@ -56,24 +56,94 @@ describe("inspect-card fixture", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "css-rule",
-          selector: ".card",
-          metadata: { sourceUrl: "/dist/app.css" },
+          ruleRef: "fixture-rule-0-0",
+          property: "display",
+          metadata: {},
         }),
         expect.objectContaining({
           type: "css-rule",
-          selector: ".featured",
-          metadata: { sourceUrl: "/dist/app.css" },
+          ruleRef: "fixture-rule-0-1",
+          property: "box-shadow",
+          metadata: {},
         }),
         expect.objectContaining({
           type: "css-rule",
-          selector: ".card",
-          metadata: {
-            status: "external",
-            sourceUrl: "https://cdn.jsdelivr.net/npm/bootstrap/dist/css/bootstrap.css",
-          },
+          ruleRef: "fixture-rule-0-2",
+          property: "display",
+          metadata: {},
         }),
       ]),
     );
+    expect(message.ruleEvidence).toMatchObject({
+      omittedRuleCount: 0,
+      rules: [
+        {
+          ruleRef: "fixture-rule-0-0",
+          selector: ".card",
+          generatedSource: {
+            sourceUrl: "http://localhost:3000/dist/app.css",
+          },
+        },
+        {
+          ruleRef: "fixture-rule-0-1",
+          selector: ".featured",
+          generatedSource: {
+            sourceUrl: "http://localhost:3000/dist/app.css",
+          },
+        },
+        {
+          ruleRef: "fixture-rule-0-2",
+          selector: ".card",
+          generatedSource: {
+            sourceUrl: "https://cdn.jsdelivr.net/npm/bootstrap/dist/css/bootstrap.css",
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    "file:///private/app.css",
+    "blob:https://example.test/id",
+    "data:text/css,body{}",
+    "chrome-extension://abc/app.css",
+    "moz-extension://abc/app.css",
+    "resource://gre/app.css",
+    "about:blank",
+    "javascript:alert(1)",
+    "/var/private/app.css",
+    "/Users/alice/app.css",
+    "/workspace/project/app.css",
+    "/mnt/c/app.css",
+    "C:\\private\\app.css",
+    "\\\\server\\share\\app.css",
+    "//server/share/app.css",
+    "https://user@example.test/app.css",
+    "https://EXAMPLE.test/app.css",
+    "https://example.test/app.css#",
+    "https://example.test/app.css#fragment",
+    "https://example.test/app.css\u0085hidden",
+    "https://example.test/app.css\u2066hidden",
+    "https://example.test/app%00.css",
+    "https://example.test/app%C2%85.css",
+    "https://example.test/app%E2%81%A6.css",
+    "https://example.test/app%5Csecret.css",
+  ])("keeps fixture evidence but omits hostile source authority %j", (sourceUrl) => {
+    const fixture = structuredClone(inspectCardFixture) as {
+      targets: Array<{ facts: Array<{ metadata: Record<string, unknown> }> }>;
+    };
+    fixture.targets[0]!.facts[0]!.metadata.sourceUrl = sourceUrl;
+
+    const message = buildInspectMessage(fixture, {
+      sessionId: SESSION_ID,
+      sourceId: "simulator-hostile-source",
+    });
+
+    expect(message.targets[0]?.facts[0]).toMatchObject({
+      type: "css-rule",
+      ruleRef: "fixture-rule-0-0",
+    });
+    expect(message.ruleEvidence.rules[0]).not.toHaveProperty("generatedSource");
   });
 });
 
@@ -225,7 +295,7 @@ describe("sendInspect", () => {
       expect(result.ok).toBe(false);
       expect(result.ok ? undefined : result.error).toBeInstanceOf(Error);
       expect((result.ok ? undefined : result.error as Error).message).toBe(
-        "Protocol mismatch: expected version 6, received version 5",
+        "Protocol mismatch: expected version 7, received version 5",
       );
       expect(bridge.connectionCount()).toBe(1);
     } finally {
@@ -397,7 +467,7 @@ describe("sendInspect", () => {
       expect(result.ok).toBe(false);
       expect(result.ok ? undefined : result.error).toBeInstanceOf(Error);
       expect((result.ok ? undefined : result.error as Error).message).toBe(
-        "Protocol mismatch: expected version 6, received version 5",
+        "Protocol mismatch: expected version 7, received version 5",
       );
       await delay(25);
       expect(bridge.connectionCount()).toBe(1);
@@ -416,13 +486,13 @@ describe("describeBridgeClose", () => {
         PROTOCOL_MISMATCH_CLOSE_CODE,
         protocolMismatchReason(5),
       ),
-    ).toBe("Protocol mismatch: expected version 6, received version 5");
+    ).toBe("Protocol mismatch: expected version 7, received version 5");
     expect(
       describeBridgeClose(
         PROTOCOL_MISMATCH_CLOSE_CODE,
         protocolMismatchReason(),
       ),
-    ).toBe("Protocol mismatch: expected version 6, received version unknown");
+    ).toBe("Protocol mismatch: expected version 7, received version unknown");
   });
 
   it("does not interpret malformed or non-1002 closes as a mismatch", () => {

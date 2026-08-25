@@ -131,14 +131,14 @@ export async function activate(
 }
 ```
 
-`SOURCE_PLUGIN_API_VERSION` is currently `2`. Reject an incompatible core API
+`SOURCE_PLUGIN_API_VERSION` is currently `3`. Reject an incompatible core API
 before registration. Plugin IDs must be globally unique; duplicate IDs fail at
 registration. Dispose the returned registration with the extension context so
 the core can clear results when the extension is deactivated.
 
 ## Classify Refreshes
 
-API version 2 also lets an extension classify the refresh needed after one of
+API version 3 also lets an extension classify the refresh needed after one of
 its source files changes. A classifier is separate from a source resolver and
 has its own globally unique ID:
 

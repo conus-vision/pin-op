@@ -8,6 +8,7 @@ import {
   InspectMessageSchema,
   PROTOCOL_MISMATCH_CLOSE_CODE,
   PROTOCOL_VERSION,
+  canonicalizePublicStylesheetUrl,
   parseProtocolMismatchReason,
   type AuthenticatedMessage,
   type PinOpMessage,
@@ -81,6 +82,7 @@ export function buildInspectMessage(
   if (!isRecord(fixture)) {
     throw new Error("Inspect fixture must contain a JSON object");
   }
+  const projection = projectFixture(fixture);
 
   return InspectMessageSchema.parse({
     protocolVersion: PROTOCOL_VERSION,
@@ -93,10 +95,81 @@ export function buildInspectMessage(
       metadata: {},
     },
     ideHighlightEnabled: options.ideHighlightEnabled ?? true,
-    targets: fixture.targets,
+    targets: projection.targets,
+    ruleEvidence: projection.ruleEvidence,
     context: fixture.context,
     metadata: fixture.metadata ?? {},
   });
+}
+
+function projectFixture(fixture: Record<string, unknown>) {
+  const contextUrl = isRecord(fixture.context) &&
+      typeof fixture.context.url === "string"
+    ? fixture.context.url
+    : undefined;
+  const rules: Array<Record<string, unknown>> = [];
+  const rawTargets = Array.isArray(fixture.targets) ? fixture.targets : [];
+  const targets = rawTargets.map((rawTarget, targetIndex) => {
+    if (!isRecord(rawTarget)) return rawTarget;
+    const rawFacts = Array.isArray(rawTarget.facts) ? rawTarget.facts : [];
+    const facts = rawFacts.map((rawFact, factIndex) => {
+      if (!isRecord(rawFact) || rawFact.type !== "css-rule") return rawFact;
+      const metadata = isRecord(rawFact.metadata) ? rawFact.metadata : {};
+      const ruleRef = `fixture-rule-${targetIndex}-${factIndex}`;
+      const important = typeof metadata.important === "boolean"
+        ? metadata.important
+        : metadata.priority === "important";
+      const valueTruncated = metadata.valueTruncated === true;
+      const declaration = {
+        property: rawFact.property,
+        value: rawFact.value,
+        important,
+        valueTruncated,
+      };
+      const generatedSource = fixtureGeneratedSource(
+        metadata.sourceUrl,
+        contextUrl,
+        `${targetIndex}.${factIndex}`,
+      );
+      rules.push({
+        ruleRef,
+        selector: rawFact.selector,
+        declarations: [declaration],
+        declarationsTruncated: false,
+        ...(generatedSource ? { generatedSource } : {}),
+      });
+      return {
+        type: "css-rule",
+        ruleRef,
+        ...declaration,
+        metadata: {},
+      };
+    });
+    return { ...rawTarget, facts };
+  });
+  return {
+    targets,
+    ruleEvidence: { rules, omittedRuleCount: 0 },
+  };
+}
+
+function fixtureGeneratedSource(
+  rawSourceUrl: unknown,
+  contextUrl: string | undefined,
+  rulePath: string,
+): Record<string, unknown> | undefined {
+  if (typeof rawSourceUrl !== "string" || !contextUrl) return undefined;
+  const sourceUrl = canonicalizePublicStylesheetUrl(rawSourceUrl, {
+    baseUrl: contextUrl,
+  });
+  if (!sourceUrl) return undefined;
+  return {
+    sourceUrl,
+    rulePath,
+    contexts: [],
+    contextsTruncated: false,
+    unsupportedGroupContext: false,
+  };
 }
 
 export function parseLinkCode(value: string): { url: string; pin: string } {

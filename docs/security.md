@@ -75,7 +75,7 @@ discarded.
 
 ## Targeted Replies And Peer State
 
-Protocol version `6` binds each accepted inspect ID to the exact browser
+Protocol version `7` binds each accepted inspect ID to the exact browser
 connection that sent it. IDE resolution replies are routed only to that
 connection. Cross-connection inspect-ID collisions, stale routes, wrong roles,
 and wrong sessions fail closed. Routes are bounded and removed with the client.
@@ -86,7 +86,7 @@ routes. Source-open carries only an opaque current match ID; presentation
 settings carry only the current correlation and IDE Highlight boolean. Neither
 message exposes an arbitrary file, range, path, URI, tab ID, or command.
 
-Protocol v6 is an exact breaking contract. A v5 or otherwise incompatible peer
+Protocol v7 is an exact breaking contract. A v6 or otherwise incompatible peer
 is closed with WebSocket code `1002`; there is no adapter or downgrade fallback.
 The panel blocks inspection, refresh settings, Source actions, and navigation
 until both extensions report a compatible handshake and fresh tab state. Link
@@ -185,8 +185,13 @@ The browser runtime does not fetch stylesheet URLs in the background. A
 cross-origin or otherwise unreadable stylesheet contributes only a bounded
 inaccessible count and partial diagnostic; Pin-op does not invent its rules,
 specificity, declarations, or source locations. Full stylesheet text, DOM
-nodes, browser-local `ruleRef` values, and adopted-sheet objects do not cross
-the public WebSocket merely to render Rules.
+nodes, and adopted-sheet objects do not cross the public WebSocket merely to
+render Rules. A displayed rule can contribute only bounded correlated evidence:
+an opaque `ruleRef`, selector, exact declaration tuples, canonical public
+HTTP(S) generated URL, numeric rule path or one-based position, and supported
+outer-to-inner media/supports contexts. Local paths, userinfo, fragments,
+non-public schemes, malformed URLs, unsupported ancestors, and truncated
+contexts fail closed for source resolution.
 
 The pinned browser runtime includes PostCSS `8.5.16` and
 `postcss-selector-parser` `7.1.0` for bounded parsing and selector analysis.
@@ -212,8 +217,9 @@ for the selected element and its immediate parent:
 - page URL and route;
 - tag, ID, classes, selectors, and permitted `data-*`, `aria-*`, and `role`
   names and values;
-- stylesheet URL/accessibility, selectors, declarations, media conditions, and
-  CSSOM rule-path or source-position evidence;
+- canonical public stylesheet URL/accessibility, selectors, declarations,
+  supported media/supports contexts, and correlated CSSOM rule-path or
+  source-position evidence;
 - namespaced development metadata when explicitly produced by the application.
 
 These bounded inspection facts are not content-redacted. URLs, routes,
@@ -247,7 +253,7 @@ from the active document and can contain secrets. See the
 
 ## Resource Bounds
 
-The bridge rejects WebSocket messages over 1 MiB. Protocol version `6` limits an
+The bridge rejects WebSocket messages over 1 MiB. Protocol version `7` limits an
 inspect envelope to 768 KiB, two targets, 256 facts per target, and bounded
 strings, arrays, metadata, selectors, declarations, URLs, and routes. Resolution
 replies and source-navigation messages are limited to 16 KiB and closed
@@ -270,7 +276,7 @@ invalid, unmapped, ambiguous, or other-document cases fail closed and produce a
 bounded footer status.
 
 Pin-op does not load executable code from an inspected workspace. Built-in CSS
-and SCSS resolvers use source-plugin API v2; its synchronous refresh classifiers
+and SCSS resolvers use source-plugin API v3; its synchronous refresh classifiers
 receive only canonical URI and language ID, not source text or workspace
 services. A
 separately installed source plugin is independently trusted VS Code extension

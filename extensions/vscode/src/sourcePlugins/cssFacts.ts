@@ -2,6 +2,7 @@ import type { SelectionSnapshot } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
   type CssRuleFact,
+  type InspectRuleEvidence,
   type RuntimeFact,
 } from "@pin-op/protocol";
 import { declarationEvidenceFromFact } from "./declarationFingerprint.js";
@@ -9,48 +10,71 @@ import type { CssDeclarationEvidence } from "./types.js";
 
 export interface TargetCssFact {
   readonly targetRole: "selected" | "parent";
-  readonly fact: CssRuleFact;
+  readonly fact: CssResolutionFact;
   readonly sourceUrl: string;
   readonly declarations: readonly CssDeclarationEvidence[];
 }
+
+/** IDE-local correlated view. Selector/source/context remain owned by evidence on wire. */
+export type CssResolutionFact = Omit<CssRuleFact, "metadata"> & {
+  readonly selector: string;
+  readonly source?: {
+    readonly uri: string;
+    readonly line: number;
+    readonly column: number;
+  };
+  readonly metadata: Readonly<Record<string, unknown>>;
+};
 
 export function targetCssFacts(
   selection: SelectionSnapshot,
 ): TargetCssFact[] {
   const unique = new Map<string, {
     readonly targetRole: TargetCssFact["targetRole"];
-    readonly fact: CssRuleFact;
+    readonly fact: CssResolutionFact;
     readonly sourceUrl: string;
     readonly declarations: CssDeclarationEvidence[];
     readonly declarationKeys: Set<string>;
   }>();
+  const evidenceByRef = new Map(
+    selection.ruleEvidence.rules.map((evidence) => [
+      evidence.ruleRef,
+      evidence,
+    ] as const),
+  );
   let unstableFactIndex = 0;
   for (const target of selection.targets) {
     for (const fact of target.facts) {
+      if (fact.type !== "css-rule") continue;
       if (!isCssRuleFact(fact)) continue;
-      const sourceUrl = cssFactSourceUrl(fact);
+      const evidence = evidenceByRef.get(fact.ruleRef);
+      const correlatedFact = evidence
+        ? correlateCssFact(fact, evidence)
+        : undefined;
+      if (!correlatedFact) continue;
+      const sourceUrl = cssFactSourceUrl(correlatedFact);
       if (!sourceUrl) continue;
-      const stableIdentity = stableCssRuleIdentity(fact);
+      const stableIdentity = stableCssRuleIdentity(correlatedFact);
       const key = JSON.stringify([
         target.role,
         sourceUrl,
-        fact.selector,
+        correlatedFact.selector,
         stableIdentity ?? `unstable:${unstableFactIndex++}`,
-        fact.metadata.media ?? null,
-        fact.metadata.mediaTruncated ?? null,
+        correlatedFact.metadata.media ?? null,
+        correlatedFact.metadata.mediaTruncated ?? null,
       ]);
       let entry = unique.get(key);
       if (!entry) {
         entry = {
           targetRole: target.role,
-          fact,
+          fact: correlatedFact,
           sourceUrl,
           declarations: [],
           declarationKeys: new Set(),
         };
         unique.set(key, entry);
       }
-      const declaration = declarationEvidenceFromFact(fact);
+      const declaration = declarationEvidenceFromFact(correlatedFact);
       if (!declaration) continue;
       const declarationKey = JSON.stringify(declaration);
       if (!entry.declarationKeys.has(declarationKey)) {
@@ -68,7 +92,7 @@ export function targetCssFacts(
 }
 
 export function stableCssRuleIdentity(
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
 ): string | undefined {
   if (fact.source !== undefined) {
     return validSourcePosition(fact.source.line, fact.source.column) &&
@@ -129,12 +153,16 @@ function validSourcePosition(line: number, column: number): boolean {
 
 function isCssRuleFact(fact: RuntimeFact): fact is CssRuleFact {
   return fact.type === "css-rule" &&
-    "selector" in fact &&
+    "ruleRef" in fact &&
     "property" in fact &&
-    "value" in fact;
+    "value" in fact &&
+    "important" in fact &&
+    "valueTruncated" in fact;
 }
 
-export function cssFactSourceUrl(fact: CssRuleFact): string | undefined {
+export function cssFactSourceUrl(
+  fact: CssResolutionFact,
+): string | undefined {
   for (const candidate of [
     fact.metadata.sourceUrl,
     fact.metadata.stylesheet,
@@ -145,4 +173,55 @@ export function cssFactSourceUrl(fact: CssRuleFact): string | undefined {
     }
   }
   return undefined;
+}
+
+function correlateCssFact(
+  fact: CssRuleFact,
+  evidence: InspectRuleEvidence,
+): CssResolutionFact | undefined {
+  const generated = evidence.generatedSource;
+  if (
+    !generated ||
+    fact.valueTruncated ||
+    generated.contextsTruncated ||
+    generated.unsupportedGroupContext
+  ) {
+    return undefined;
+  }
+  const media = generated.contexts
+    .filter((context) => context.kind === "media")
+    .map((context) => context.conditionText);
+  const unsupportedForLegacyResolver = generated.contexts.some(
+    (context) => context.kind === "supports",
+  );
+  const metadata: Readonly<Record<string, unknown>> = {
+    sourceUrl: generated.sourceUrl,
+    media,
+    mediaTruncated: generated.contextsTruncated ||
+      generated.unsupportedGroupContext || unsupportedForLegacyResolver,
+    contexts: generated.contexts,
+    contextsTruncated: generated.contextsTruncated,
+    unsupportedGroupContext: generated.unsupportedGroupContext,
+    declarationsTruncated: evidence.declarationsTruncated,
+    important: fact.important,
+    valueTruncated: fact.valueTruncated,
+    ...(generated.rulePath === undefined
+      ? {}
+      : { rulePath: generated.rulePath }),
+  };
+  return {
+    ...fact,
+    selector: evidence.selector,
+    ...(generated.startLine !== undefined &&
+        generated.startColumn !== undefined
+      ? {
+          source: {
+            uri: generated.sourceUrl,
+            line: generated.startLine,
+            column: generated.startColumn,
+          },
+        }
+      : {}),
+    metadata,
+  };
 }

@@ -80,6 +80,48 @@ describe("StylesheetRegistry", () => {
     ))).toBe(false);
   });
 
+  it.each([
+    "https://example.test/app.css#secret",
+    "file:///private/app.css",
+    "blob:https://example.test/id",
+    "data:text/css,body{}",
+    "chrome-extension://abc/app.css",
+    "moz-extension://abc/app.css",
+    "resource://gre/app.css",
+    "about:blank",
+    "javascript:alert(1)",
+    "/var/private/app.css",
+    "/Users/alice/app.css",
+    "/workspace/project/app.css",
+    "/mnt/c/app.css",
+    "C:\\private\\app.css",
+    "\\\\server\\share\\app.css",
+    "//server/share/app.css",
+    "https://user@example.test/app.css",
+    "https://EXAMPLE.test/app.css",
+    "https://example.test/app.css\u0085hidden",
+    "https://example.test/app.css\u2066hidden",
+    "https://example.test/app%00.css",
+    "https://example.test/app%C2%85.css",
+    "https://example.test/app%E2%81%A6.css",
+    "https://example.test/app%5Csecret.css",
+  ])("retains rules but omits hostile raw source authority %j", (href) => {
+    const document = scope(
+      "document",
+      [sheet(href, [styleRule(".card", "color: red")])],
+      [],
+      [],
+    );
+    (document as typeof document & { location: { href: string } }).location = {
+      href: "https://example.test/page",
+    };
+
+    const snapshot = createRegistry(document).snapshot();
+
+    expect(snapshot.entries).toHaveLength(1);
+    expect(snapshot.entries[0]?.sourceUrl).toBeUndefined();
+  });
+
   it("detects eventless adopted stylesheet add, remove, and reorder", () => {
     const first = sheet(null, [styleRule(".first", "color: red")]);
     const second = sheet(null, [styleRule(".second", "color: blue")]);

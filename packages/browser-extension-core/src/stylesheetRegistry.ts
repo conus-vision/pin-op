@@ -5,7 +5,11 @@ import postcss, {
   type Rule,
 } from "postcss";
 import selectorParser from "postcss-selector-parser";
-import { utf8ByteLength } from "@pin-op/protocol";
+import {
+  INSPECT_LIMITS,
+  canonicalizePublicStylesheetUrl,
+  utf8ByteLength,
+} from "@pin-op/protocol";
 import { RuleReferenceRegistry } from "./ruleReferenceRegistry.js";
 import { StylesheetFingerprint } from "./stylesheetFingerprint.js";
 
@@ -1366,22 +1370,10 @@ function scanBoundedObjects(
 
 function publicStylesheetUrl(href: string | undefined, scope: StylesheetScope): string | undefined {
   if (!href) return undefined;
-  try {
-    const base = safeDocumentLocation(scope);
-    const url = new URL(href, base);
-    if (
-      (url.protocol !== "http:" && url.protocol !== "https:") ||
-      url.username ||
-      url.password ||
-      /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(url.href)
-    ) {
-      return undefined;
-    }
-    url.hash = "";
-    return url.href;
-  } catch {
-    return undefined;
-  }
+  return canonicalizePublicStylesheetUrl(href, {
+    baseUrl: safeDocumentLocation(scope),
+    maxLength: INSPECT_LIMITS.urlLength,
+  });
 }
 
 function safeDocumentLocation(scope: StylesheetScope): string | undefined {

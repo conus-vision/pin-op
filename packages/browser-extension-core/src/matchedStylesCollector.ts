@@ -79,6 +79,7 @@ interface RuleDraft {
   readonly contexts: CssMatchedRuleWalkRecord["contexts"];
   readonly contextsTruncated: boolean;
   readonly mediaTruncated: boolean;
+  readonly declarationsTruncated: boolean;
   readonly active: boolean | undefined;
   readonly source: GeneratedMatchedRuleSource;
   readonly sourceOrder: number;
@@ -127,6 +128,8 @@ export class MatchedStylesCollector {
       workBudget,
       applicabilityCandidates,
     );
+    const domParent = directDomParent(selected.element);
+    let domParentAncestorIndex: number | undefined;
     const ancestors: InheritedMatchedRules[] = [];
     let ancestor = composedParent(selected.element);
     let ancestorIndex = 1;
@@ -137,6 +140,7 @@ export class MatchedStylesCollector {
         break;
       }
       visited.add(ancestor);
+      if (ancestor === domParent) domParentAncestorIndex = ancestorIndex;
       const ancestorInline = this.collectInline(ancestor, diagnostics, workBudget);
       const collected = this.collectElement(
         ancestor,
@@ -185,6 +189,7 @@ export class MatchedStylesCollector {
       !sameRevisions(authority, after) ||
       !resolvedAgain ||
       resolvedAgain.element !== selected.element ||
+      directDomParent(resolvedAgain.element) !== domParent ||
       !this.isCurrent(authority)
     ) {
       return undefined;
@@ -196,6 +201,7 @@ export class MatchedStylesCollector {
     );
     const result: MatchedStyles = {
       ...authority,
+      ...(domParentAncestorIndex === undefined ? {} : { domParentAncestorIndex }),
       ...(inlineRule ? { inline: inlineRule } : {}),
       rules,
       inherited: ancestors,
@@ -304,6 +310,7 @@ export class MatchedStylesCollector {
             contexts: record.contexts,
             contextsTruncated: record.contextsTruncated,
             mediaTruncated: record.mediaTruncated,
+            declarationsTruncated: record.declarationsTruncated,
             active: record.contextsTruncated || record.mediaTruncated
               ? undefined
               : combineApplicability(
@@ -358,6 +365,7 @@ export class MatchedStylesCollector {
       contexts: [],
       contextsTruncated: false,
       mediaTruncated: false,
+      declarationsTruncated: false,
       active: true,
       source: { rulePath: "0" },
       sourceOrder: Number.MAX_SAFE_INTEGER,
@@ -433,6 +441,9 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
       matchingSelectorIndices: draft.matchingSelectorIndices,
       declarations,
       contexts: draft.contexts,
+      ...(draft.declarationsTruncated
+        ? { declarationsTruncated: true }
+        : {}),
       ...(draft.contextsTruncated ? { contextsTruncated: true } : {}),
       ...(draft.mediaTruncated ? { mediaTruncated: true } : {}),
       source: draft.source,
@@ -799,6 +810,15 @@ function composedParent(element: Element): Element | undefined {
     const root = element.getRootNode();
     const host = (root as ShadowRoot).host;
     return typeof host === "object" && host !== null ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function directDomParent(element: Element): Element | undefined {
+  try {
+    const parent = element.parentElement;
+    return typeof parent === "object" && parent !== null ? parent : undefined;
   } catch {
     return undefined;
   }

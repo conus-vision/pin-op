@@ -827,7 +827,7 @@ describe("startPanelRuntime", () => {
 
     expect(dom.element("protocol-mismatch").hidden).toBe(false);
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: 5");
+      .toBe("Browser protocol: 7 - IDE protocol: 5");
     expect(dom.element("auto-refresh-enabled").disabled).toBe(true);
     expect(dom.element("ide-highlight-enabled").disabled).toBe(true);
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
@@ -878,7 +878,7 @@ describe("startPanelRuntime", () => {
       controlsEnabled: false,
     });
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: 5");
+      .toBe("Browser protocol: 7 - IDE protocol: 5");
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
     expect(dom.element("source-navigation-footer").hidden).toBe(true);
     expect(dom.element("inspect-mode").disabled).toBe(true);
@@ -943,7 +943,7 @@ describe("startPanelRuntime", () => {
         controlsEnabled: false,
       });
       expect(dom.element("protocol-mismatch-versions").textContent)
-        .toBe("Browser protocol: 6 - IDE protocol: 5");
+        .toBe("Browser protocol: 7 - IDE protocol: 5");
       expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
       expect(dom.element("source-navigation-footer").hidden).toBe(true);
       expect(dom.element("inspect-mode").disabled).toBe(true);
@@ -1029,7 +1029,7 @@ describe("startPanelRuntime", () => {
 
       expect(dom.element("protocol-mismatch").hidden).toBe(false);
       expect(dom.element("protocol-mismatch-versions").textContent).toBe(
-        `Browser protocol: 6 - IDE protocol: ${expectedPeerVersion}`,
+        `Browser protocol: 7 - IDE protocol: ${expectedPeerVersion}`,
       );
       expect(runtime.settingsController.snapshot()).toMatchObject({
         autoRefreshEnabled: true,
@@ -1080,7 +1080,7 @@ describe("startPanelRuntime", () => {
 
     expect(dom.element("protocol-mismatch").hidden).toBe(false);
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: unknown");
+      .toBe("Browser protocol: 7 - IDE protocol: unknown");
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
     port.emitMessage({
       type: "pin-op.protocol.compatibility",
@@ -1089,7 +1089,7 @@ describe("startPanelRuntime", () => {
       peerProtocolVersion: 5,
     });
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: 5");
+      .toBe("Browser protocol: 7 - IDE protocol: 5");
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
     runtime.dispose();
   });
@@ -1116,7 +1116,7 @@ describe("startPanelRuntime", () => {
 
     expect(dom.element("protocol-mismatch").hidden).toBe(false);
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: 5");
+      .toBe("Browser protocol: 7 - IDE protocol: 5");
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
     expect(dom.element("disconnect-button").hidden).toBe(false);
     expect(dom.element("link-controls").hidden).toBe(true);
@@ -1134,7 +1134,7 @@ describe("startPanelRuntime", () => {
     });
     expect(dom.element("protocol-mismatch").hidden).toBe(false);
     expect(dom.element("protocol-mismatch-versions").textContent)
-      .toBe("Browser protocol: 6 - IDE protocol: 5");
+      .toBe("Browser protocol: 7 - IDE protocol: 5");
     expect(dom.element("source-pane-root").text()).toContain("Extensions are incompatible");
     currentPort.emitMessage({
       type: "pin-op.windowState",

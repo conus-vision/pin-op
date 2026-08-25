@@ -10,7 +10,7 @@ import {
 } from "../src/index.js";
 
 describe("source plugin public contract", () => {
-  it("exports API version 2 and accepts structurally valid extensions", () => {
+  it("exports API version 3 and accepts structurally valid extensions", () => {
     const plugin: SourcePlugin = {
       id: "fixture.source",
       displayName: "Fixture Source",
@@ -28,7 +28,7 @@ describe("source plugin public contract", () => {
       },
     };
 
-    expect(SOURCE_PLUGIN_API_VERSION).toBe(2);
+    expect(SOURCE_PLUGIN_API_VERSION).toBe(3);
     expect(plugin.id).toBe("fixture.source");
     expect(classifier.classify({
       uri: "file:///workspace/example.fixture",

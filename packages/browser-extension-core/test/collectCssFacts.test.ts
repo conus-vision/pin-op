@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   INSPECT_LIMITS,
+  RULE_EVIDENCE_LIMITS,
   RuntimeFactSchema,
   type CssRuleFact,
 } from "@pin-op/protocol";
 import { collectCssFacts } from "../src/collectCssFacts.js";
 
 describe("collectCssFacts", () => {
-  it("emits complete fingerprint metadata for every declaration", () => {
+  it("emits correlated evidence once for every matched rule", () => {
     const result = collectCssFacts(
       { matches: () => true },
       {
@@ -22,36 +23,51 @@ describe("collectCssFacts", () => {
       },
     );
 
+    expect(result.ruleEvidence.rules).toHaveLength(1);
+    expect(result.ruleEvidence.rules[0]).toMatchObject({
+      ruleRef: expect.stringMatching(/^rule-/),
+      selector: ".card",
+      declarations: [
+        {
+          property: "color",
+          value: "red",
+          important: false,
+          valueTruncated: false,
+        },
+        {
+          property: "display",
+          value: "grid",
+          important: true,
+          valueTruncated: false,
+        },
+      ],
+      declarationsTruncated: false,
+      generatedSource: {
+        sourceUrl: "http://localhost:3000/complete.css",
+        rulePath: "0.0",
+        contexts: [],
+        contextsTruncated: false,
+        unsupportedGroupContext: false,
+      },
+    });
     expect(result.facts).toEqual([
       {
         type: "css-rule",
-        selector: ".card",
+        ruleRef: result.ruleEvidence.rules[0]!.ruleRef,
         property: "color",
         value: "red",
-        metadata: {
-          ruleRef: expect.stringMatching(/^rule-/),
-          sourceUrl: "/complete.css",
-          media: [],
-          mediaTruncated: false,
-          rulePath: "0.0",
-          valueTruncated: false,
-          important: false,
-        },
+        important: false,
+        valueTruncated: false,
+        metadata: {},
       },
       {
         type: "css-rule",
-        selector: ".card",
+        ruleRef: result.ruleEvidence.rules[0]!.ruleRef,
         property: "display",
         value: "grid",
-        metadata: {
-          ruleRef: expect.stringMatching(/^rule-/),
-          sourceUrl: "/complete.css",
-          media: [],
-          mediaTruncated: false,
-          rulePath: "0.0",
-          valueTruncated: false,
-          important: true,
-        },
+        important: true,
+        valueTruncated: false,
+        metadata: {},
       },
     ]);
     result.facts.forEach((fact) => {
@@ -89,7 +105,7 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.inaccessibleStylesheets).toEqual([]);
-    expect(result.facts).toEqual([
+    expect(legacyFactView(result)).toEqual([
       {
         type: "css-rule",
         selector: ".card",
@@ -137,15 +153,15 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts).toEqual([{
+    expect(legacyFactView(result)).toEqual([{
       type: "css-rule",
       selector: ".card",
       property: "payload",
       value: valuePrefix,
       metadata: completeFactMetadata(
-        "/truncated.css",
+        "http://localhost:3000/truncated.css",
         "0.0.0",
-        [mediaPrefix],
+        [mediaPrefix.slice(0, RULE_EVIDENCE_LIMITS.contextTextLength)],
         { mediaTruncated: true, valueTruncated: true },
       ),
     }]);
@@ -168,10 +184,10 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.metadata.media).toHaveLength(
+    expect(evidenceForFact(result, 0)?.generatedSource?.contexts).toHaveLength(
       INSPECT_LIMITS.mediaConditions,
     );
-    expect(result.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(evidenceForFact(result, 0)?.generatedSource?.contextsTruncated).toBe(true);
     expect(RuntimeFactSchema.parse(result.facts[0])).toEqual(result.facts[0]);
   });
 
@@ -199,10 +215,10 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.metadata.media).toHaveLength(
+    expect(evidenceForFact(result, 0)?.generatedSource?.contexts).toHaveLength(
       INSPECT_LIMITS.mediaConditions,
     );
-    expect(result.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(evidenceForFact(result, 0)?.generatedSource?.contextsTruncated).toBe(true);
     expect(RuntimeFactSchema.parse(result.facts[0])).toEqual(result.facts[0]);
   });
 
@@ -237,13 +253,16 @@ describe("collectCssFacts", () => {
       ".card",
       ":is(.card) > .title",
     ]);
-    expect(result.facts).toEqual([
+    expect(legacyFactView(result)).toEqual([
       {
         type: "css-rule",
         selector: "& > .title",
         property: "color",
         value: "red",
-        metadata: completeFactMetadata("/nested.css", "0.0.0"),
+        metadata: completeFactMetadata(
+          "http://localhost:3000/nested.css",
+          "0.0.0",
+        ),
       },
     ]);
   });
@@ -281,13 +300,13 @@ describe("collectCssFacts", () => {
       ".card",
       ":is(.card) .icon",
     ]);
-    expect(result.facts[0]).toEqual({
+    expect(legacyFactView(result)[0]).toEqual({
       type: "css-rule",
       selector: "& .icon",
       property: "display",
       value: "block",
       metadata: completeFactMetadata(
-        "/nested-media.css",
+        "http://localhost:3000/nested-media.css",
         "0.0.0.0",
         ["(width >= 40rem)"],
       ),
@@ -336,8 +355,8 @@ describe("collectCssFacts", () => {
       resolvedGrandchild,
     ]);
     expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.selector).toBe("& > .title\\&mark");
-    expect(result.facts[0]?.metadata.rulePath).toBe("0.0.0.0");
+    expect(evidenceForFact(result, 0)?.selector).toBe("& > .title\\&mark");
+    expect(evidenceForFact(result, 0)?.generatedSource?.rulePath).toBe("0.0.0.0");
   });
 
   it("uses a conservative descendant fallback when a nested selector omits ampersand", () => {
@@ -369,7 +388,7 @@ describe("collectCssFacts", () => {
       ".card",
       ":is(.card) .title",
     ]);
-    expect(result.facts[0]?.selector).toBe(".title");
+    expect(evidenceForFact(result, 0)?.selector).toBe(".title");
   });
 
   it("collects nested declarations against the inherited style selector", () => {
@@ -405,14 +424,14 @@ describe("collectCssFacts", () => {
     );
 
     expect(matchedSelectors).toEqual([".card", ".card"]);
-    expect(result.facts).toEqual([
+    expect(legacyFactView(result)).toEqual([
       {
         type: "css-rule",
         selector: ".card",
         property: "background",
         value: "silver",
         metadata: completeFactMetadata(
-          "/nested-declarations.css",
+          "http://localhost:3000/nested-declarations.css",
           "0.0.0.0",
           ["(prefers-color-scheme: dark)"],
         ),
@@ -467,6 +486,7 @@ describe("collectCssFacts", () => {
             href: "/supports.css",
             cssRules: [
               {
+                type: 12,
                 conditionText: "(display: grid)",
                 cssRules: [styleRule(".card", { display: "grid" })],
               },
@@ -476,8 +496,10 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts[0]?.metadata.media).toEqual([]);
-    expect(result.facts[0]?.metadata.mediaTruncated).toBe(false);
+    expect(evidenceForFact(result, 0)?.generatedSource?.contexts).toEqual([
+      { kind: "supports", conditionText: "(display: grid)" },
+    ]);
+    expect(evidenceForFact(result, 0)?.generatedSource?.contextsTruncated).toBe(false);
   });
 
   it("does not let a trailing escape cross the resolved selector limit", () => {
@@ -544,7 +566,7 @@ describe("collectCssFacts", () => {
         reason: "Permission denied",
       },
     ]);
-    expect(result.facts[0].metadata.sourceUrl).toBe("inline-style://document/1");
+    expect(evidenceForFact(result, 0)).not.toHaveProperty("generatedSource");
   });
 
   it("collects imported rules under their own source and local rule path", () => {
@@ -568,7 +590,7 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts).toEqual([
+    expect(legacyFactView(result)).toEqual([
       {
         type: "css-rule",
         selector: ".imported",
@@ -627,7 +649,7 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts[0]).toEqual({
+    expect(legacyFactView(result)[0]).toEqual({
       type: "css-rule",
       selector: ".nested-import",
       property: "color",
@@ -671,7 +693,7 @@ describe("collectCssFacts", () => {
       },
     ]);
     expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.selector).toBe(".after-import");
+    expect(evidenceForFact(result, 0)?.selector).toBe(".after-import");
   });
 
   it("reports a throwing import styleSheet accessor with its import URL", () => {
@@ -702,7 +724,7 @@ describe("collectCssFacts", () => {
       sourceUrl: importedUrl,
       reason: "styleSheet denied",
     });
-    expect(result.facts[0]?.selector).toBe(".after-import");
+    expect(evidenceForFact(result, 0)?.selector).toBe(".after-import");
   });
 
   it("reports a throwing imported href accessor without reading its rules", () => {
@@ -738,7 +760,7 @@ describe("collectCssFacts", () => {
       sourceUrl: importedUrl,
       reason: "href denied",
     });
-    expect(result.facts[0]?.selector).toBe(".after-import");
+    expect(evidenceForFact(result, 0)?.selector).toBe(".after-import");
   });
 
   it("does not confuse style or group rules carrying a styleSheet field", () => {
@@ -764,7 +786,7 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts.map((fact) => fact.selector)).toEqual([
+    expect(result.facts.map((_, index) => evidenceForFact(result, index)?.selector)).toEqual([
       ".styled",
       ".grouped",
     ]);
@@ -796,11 +818,17 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.facts).toHaveLength(2);
-    expect(result.facts.map((fact) => fact.metadata.sourceUrl)).toEqual([
+    expect(result.facts.map((_, index) =>
+      evidenceForFact(result, index)?.generatedSource?.sourceUrl
+    )).toEqual([
       sharedUrl,
       sharedUrl,
     ]);
-    expect(result.facts.map((fact) => fact.metadata.media)).toEqual([
+    expect(result.facts.map((_, index) =>
+      evidenceForFact(result, index)?.generatedSource?.contexts
+        .filter(({ kind }) => kind === "media")
+        .map(({ conditionText }) => conditionText)
+    )).toEqual([
       ["screen"],
       ["print"],
     ]);
@@ -916,10 +944,31 @@ describe("collectCssFacts", () => {
     expect(rootRulesRead).toBe(1);
   });
 
-  it("drops malformed and over-limit imported URLs before reading rules", () => {
+  it("keeps imported rule evidence when only the public URL bound is exceeded", () => {
+    const importedUrl = `${exactPublicLengthUrl()}x`;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [{
+          href: "https://example.test/root.css",
+          cssRules: [importRule(importedUrl, {
+            href: importedUrl,
+            cssRules: [styleRule(".imported", { color: "red" })],
+          })],
+        }],
+      },
+    );
+
+    expect(result.facts).toHaveLength(1);
+    expect(evidenceForFact(result, 0)?.selector).toBe(".imported");
+    expect(evidenceForFact(result, 0)).not.toHaveProperty("generatedSource");
+  });
+
+  it("drops malformed and internal-over-limit imported URLs before reading rules", () => {
     let styleSheetReads = 0;
     let rulesRead = 0;
-    const overLimitUrl = `${exactLengthUrl()}x`;
+    const overLimitUrl = `${exactInternalLengthUrl()}x`;
     const result = collectCssFacts(
       { matches: () => true },
       {
@@ -1014,7 +1063,7 @@ describe("collectCssFacts", () => {
   });
 
   it("bounds priority reads while retaining compact source evidence", () => {
-    const declarationCount = INSPECT_LIMITS.declarationsPerRule + 1;
+    const declarationCount = RULE_EVIDENCE_LIMITS.declarationsPerRule + 1;
     let cssTextReads = 0;
     let priorityReads = 0;
     const result = collectCssFacts(
@@ -1052,17 +1101,16 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    expect(result.facts).toHaveLength(RULE_EVIDENCE_LIMITS.declarationsPerRule);
     expect(cssTextReads).toBe(0);
-    expect(priorityReads).toBe(INSPECT_LIMITS.declarationsPerRule);
+    expect(priorityReads).toBe(declarationCount);
+    expect(result.ruleEvidence.rules[0]?.declarationsTruncated).toBe(true);
     for (const fact of result.facts) {
-      expect(fact.metadata).toEqual(
-        completeFactMetadata("/metadata.css", "0.0"),
-      );
+      expect(fact.metadata).toEqual({});
     }
   });
 
-  it("preserves query and fragment percent characters verbatim", () => {
+  it("omits generated source for stylesheet URLs with fragments", () => {
     const sourceUrl = "https://example.test/app.css?v=100%#coverage%";
     const result = collectCssFacts(
       { matches: () => true },
@@ -1078,7 +1126,7 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.metadata.sourceUrl).toBe(sourceUrl);
+    expect(evidenceForFact(result, 0)).not.toHaveProperty("generatedSource");
   });
 
   it("preserves valid percent escapes in source pathnames", () => {
@@ -1096,7 +1144,7 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts[0]?.metadata.sourceUrl).toBe(sourceUrl);
+    expect(evidenceForFact(result, 0)?.generatedSource?.sourceUrl).toBe(sourceUrl);
     expect(decodeURIComponent(new URL(sourceUrl).pathname)).toBe(
       "/My Card.css",
     );
@@ -1125,13 +1173,13 @@ describe("collectCssFacts", () => {
     expect(result.inaccessibleStylesheets).toEqual([]);
   });
 
-  it("preserves the exact URL limit and drops one crossing its boundary", () => {
+  it("omits only generated source when a stylesheet URL crosses the public boundary", () => {
     const prefix = "https://example.test/";
     const exactUrl = `${prefix}${"a".repeat(
-      INSPECT_LIMITS.urlLength - prefix.length - 3,
+      RULE_EVIDENCE_LIMITS.sourceUrlLength - prefix.length - 3,
     )}%20`;
     const overLimitUrl = `${prefix}${"a".repeat(
-      INSPECT_LIMITS.urlLength - prefix.length - 1,
+      RULE_EVIDENCE_LIMITS.sourceUrlLength - prefix.length - 1,
     )}%20`;
     let overLimitRulesRead = 0;
     const result = collectCssFacts(
@@ -1154,15 +1202,18 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(exactUrl).toHaveLength(INSPECT_LIMITS.urlLength);
-    expect(overLimitUrl.length).toBeGreaterThan(INSPECT_LIMITS.urlLength);
-    expect(overLimitUrl.slice(0, INSPECT_LIMITS.urlLength).endsWith("%"))
+    expect(exactUrl).toHaveLength(RULE_EVIDENCE_LIMITS.sourceUrlLength);
+    expect(overLimitUrl.length).toBeGreaterThan(
+      RULE_EVIDENCE_LIMITS.sourceUrlLength,
+    );
+    expect(overLimitUrl.slice(0, RULE_EVIDENCE_LIMITS.sourceUrlLength).endsWith("%"))
       .toBe(true);
-    expect(overLimitRulesRead).toBe(0);
-    expect(result.facts).toHaveLength(1);
-    expect(result.facts[0]?.metadata.sourceUrl).toBe(exactUrl);
+    expect(overLimitRulesRead).toBe(1);
+    expect(result.facts).toHaveLength(2);
+    expect(evidenceForFact(result, 0)).not.toHaveProperty("generatedSource");
+    expect(evidenceForFact(result, 1)?.generatedSource?.sourceUrl).toBe(exactUrl);
     const resolved = new URL(
-      String(result.facts[0]?.metadata.sourceUrl),
+      String(evidenceForFact(result, 1)?.generatedSource?.sourceUrl),
       "http://localhost:3000/page",
     );
     expect(() => decodeURIComponent(resolved.pathname)).not.toThrow();
@@ -1220,8 +1271,9 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    expect(result.facts).toHaveLength(RULE_EVIDENCE_LIMITS.declarationsPerRule);
     expect(itemCalls).toBe(INSPECT_LIMITS.declarationsPerRule);
+    expect(result.ruleEvidence.rules[0]?.declarationsTruncated).toBe(true);
   });
 
   it("stops matching rules as soon as the fact budget is exhausted", () => {
@@ -1304,7 +1356,7 @@ describe("collectCssFacts", () => {
         pageUrl: "http://localhost:3000/page",
         styleSheets: [
           {
-            href: exactLengthUrl(),
+            href: exactPublicLengthUrl(),
             cssRules: [nestedRule(INSPECT_LIMITS.mediaConditions, true)],
           },
         ],
@@ -1313,8 +1365,12 @@ describe("collectCssFacts", () => {
     const fact = atLimit.facts[0];
 
     expect(fact).toBeDefined();
-    expect(fact?.metadata.sourceUrl).toHaveLength(INSPECT_LIMITS.urlLength);
-    expect(fact?.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
+    expect(evidenceForFact(atLimit, 0)?.generatedSource?.sourceUrl).toHaveLength(
+      RULE_EVIDENCE_LIMITS.sourceUrlLength,
+    );
+    expect(evidenceForFact(atLimit, 0)?.generatedSource?.contexts).toHaveLength(
+      INSPECT_LIMITS.mediaConditions,
+    );
     expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
 
     const depthAtLimit = collectCssFacts(
@@ -1344,7 +1400,7 @@ describe("collectCssFacts", () => {
     expect(beyondLimit.facts).toEqual([]);
   });
 
-  it("preserves the legacy fact projection across mixed stylesheet traversal", () => {
+  it("keeps selectors, sources, and contexts solely in correlated evidence", () => {
     const importedUrl = "https://example.test/imported.css?theme=night";
     const result = collectCssFacts(
       { matches: () => true },
@@ -1376,8 +1432,7 @@ describe("collectCssFacts", () => {
       },
     );
 
-    expect(result).toEqual({
-      facts: [
+    expect(legacyFactView(result)).toEqual([
         {
           type: "css-rule",
           selector: ".external",
@@ -1402,33 +1457,65 @@ describe("collectCssFacts", () => {
           selector: ".inline",
           property: "margin",
           value: "0",
-          metadata: completeFactMetadata(
-            "inline-style://document/1",
-            "1.0",
-          ),
+          metadata: completeFactMetadata(undefined, undefined),
         },
-      ],
-      inaccessibleStylesheets: [],
-    });
+      ]);
+    expect(result.facts.every((fact) => Object.keys(fact.metadata).length === 0))
+      .toBe(true);
+    expect(result.inaccessibleStylesheets).toEqual([]);
   });
 });
 
 function completeFactMetadata(
-  sourceUrl: string,
-  rulePath: string,
+  sourceUrl: string | undefined,
+  rulePath: string | undefined,
   media: readonly string[] = [],
   overrides: Readonly<Record<string, unknown>> = {},
 ): CssRuleFact["metadata"] {
   return {
     ruleRef: expect.stringMatching(/^rule-/),
-    sourceUrl,
+    ...(sourceUrl ? { sourceUrl } : {}),
     media: [...media],
     mediaTruncated: false,
-    rulePath,
+    ...(rulePath ? { rulePath } : {}),
     valueTruncated: false,
     important: false,
     ...overrides,
   };
+}
+
+function evidenceForFact(
+  result: ReturnType<typeof collectCssFacts>,
+  index: number,
+) {
+  const fact = result.facts[index];
+  return fact
+    ? result.ruleEvidence.rules.find(({ ruleRef }) => ruleRef === fact.ruleRef)
+    : undefined;
+}
+
+function legacyFactView(result: ReturnType<typeof collectCssFacts>) {
+  return result.facts.map((fact, index) => {
+    const evidence = evidenceForFact(result, index);
+    const source = evidence?.generatedSource;
+    return {
+      type: fact.type,
+      selector: evidence?.selector,
+      property: fact.property,
+      value: fact.value,
+      metadata: {
+        ruleRef: fact.ruleRef,
+        ...(source?.sourceUrl ? { sourceUrl: source.sourceUrl } : {}),
+        media: source?.contexts
+          .filter(({ kind }) => kind === "media")
+          .map(({ conditionText }) => conditionText) ?? [],
+        mediaTruncated: source?.contextsTruncated ?? false,
+        ...(source?.rulePath ? { rulePath: source.rulePath } : {}),
+        valueTruncated: fact.valueTruncated,
+        important: fact.important,
+      },
+    };
+  });
 }
 
 function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
@@ -1483,9 +1570,18 @@ function importRule(
   };
 }
 
-function exactLengthUrl(): string {
+function exactInternalLengthUrl(): string {
   const prefix = "https://example.test/";
-  return `${prefix}${"u".repeat(INSPECT_LIMITS.urlLength - prefix.length)}`;
+  return `${prefix}${"u".repeat(
+    INSPECT_LIMITS.urlLength - prefix.length,
+  )}`;
+}
+
+function exactPublicLengthUrl(): string {
+  const prefix = "https://example.test/";
+  return `${prefix}${"u".repeat(
+    RULE_EVIDENCE_LIMITS.sourceUrlLength - prefix.length,
+  )}`;
 }
 
 function styleRule(

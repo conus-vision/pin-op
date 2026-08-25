@@ -7,11 +7,15 @@ import type {
 } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
+  RULE_EVIDENCE_LIMITS,
+  canonicalizePublicStylesheetUrl,
   type CssRuleFact,
+  type InspectRuleEvidenceBatch,
   type InspectTarget,
 } from "@pin-op/protocol";
 import { collectCssFacts } from "../../../packages/browser-extension-core/src/collectCssFacts.js";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
+import type { CssResolutionFact } from "../src/sourcePlugins/cssFacts.js";
 import {
   DOCUMENT_STYLESHEET_CACHE_LIMIT,
   GENERATED_STYLESHEET_CACHE_LIMIT,
@@ -19,8 +23,45 @@ import {
   normalizeSelector,
   StylesheetAstCache,
 } from "../src/sourcePlugins/stylesheetAst.js";
+import {
+  addCorrelatedCssRule,
+  createCorrelatedCssTarget,
+  primaryCorrelatedCssRule,
+  projectCorrelatedCssFixtures,
+  type CorrelatedCssTargetFixture,
+} from "./support/correlatedCssFixture.js";
 
 describe("CssSourcePlugin", () => {
+  it("rejects legacy selector-owned facts without correlated rule evidence", async () => {
+    const legacyTarget = {
+      role: "selected",
+      depth: 0,
+      subject: { selector: ".legacy", metadata: {} },
+      facts: [{
+        type: "css-rule",
+        selector: ".legacy",
+        property: "color",
+        value: "red",
+        metadata: {
+          sourceUrl: "/dist/app.css",
+          media: [],
+          mediaTruncated: false,
+          valueTruncated: false,
+          important: false,
+          rulePath: "0.0",
+        },
+      }],
+      metadata: {},
+    } as unknown as InspectTarget;
+
+    const result = await resolveCss(
+      ".legacy { color: red; }",
+      selection([legacyTarget], { rules: [], omittedRuleCount: 0 }),
+    );
+
+    expect(result.matches).toEqual([]);
+  });
+
   it("returns every complete selected and parent CSS rule", async () => {
     const text = [
       ".layout { display: grid; }",
@@ -61,10 +102,8 @@ describe("CssSourcePlugin", () => {
       text,
       selection([
         cssTarget("selected", ".card", "/dist/app.css", {
-          uri: "http://localhost:4173/dist/app.css",
           line: 2,
           column: 1,
-          metadata: {},
         }),
       ]),
     );
@@ -93,10 +132,8 @@ describe("CssSourcePlugin", () => {
     const result = await resolveCss(
       text,
       selection([cssTarget("selected", ".card", "/dist/app.css", {
-        uri: "http://localhost:4173/dist/app.css",
         line,
         column,
-        metadata: {},
       })]),
     );
 
@@ -108,10 +145,8 @@ describe("CssSourcePlugin", () => {
     const result = await resolveCss(
       text,
       selection([cssTarget("selected", ".final", "/dist/app.css", {
-        uri: "http://localhost:4173/dist/app.css",
         line: 2,
         column: 1,
-        metadata: {},
       })]),
     );
 
@@ -126,15 +161,13 @@ describe("CssSourcePlugin", () => {
       text,
       selection([
         cssTarget("selected", ".card,.featured", "/dist/app.css", {
-          uri: "http://localhost:4173/dist/app.css",
           line: 1,
           column: 1,
-          metadata: {},
         }),
       ]),
     );
     const pathTarget = cssTarget("selected", ".other", "/dist/app.css");
-    pathTarget.facts[0]!.metadata.rulePath = "0.1";
+    primaryCorrelatedCssRule(pathTarget).rulePath = "0.1";
     const byPath = await resolveCss(text, selection([pathTarget]));
 
     expect(snippets(text, positioned.matches)).toEqual([
@@ -154,7 +187,7 @@ describe("CssSourcePlugin", () => {
       ".root { color: blue; }",
     ].join("\n");
     const target = cssTarget("selected", ".nested", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.1";
+    primaryCorrelatedCssRule(target).rulePath = "0.0.1";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -192,7 +225,7 @@ describe("CssSourcePlugin", () => {
       `${second} { color: blue; }`,
     ].join("\n");
     const target = cssTarget("selected", browser, "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -219,8 +252,11 @@ describe("CssSourcePlugin", () => {
       "& > .title, & .summary",
       "/dist/app.css",
     );
-    target.facts[0]!.metadata.rulePath = "0.0.0.0";
-    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+    primaryCorrelatedCssRule(target).rulePath = "0.0.0.0";
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(min-width: 40rem)",
+    }];
 
     const result = await resolveCss(text, selection([target]));
 
@@ -244,11 +280,17 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
-    target.facts.push(
-      cssFact("& > .title", "color", "blue", "/dist/app.css", "0.0.0"),
-      cssFact(".card", "background", "silver", "/dist/app.css", "0.0.1"),
-    );
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
+    addCorrelatedCssRule(target, "& > .title", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.0",
+      declarations: [{ property: "color", value: "blue" }],
+    });
+    addCorrelatedCssRule(target, ".card", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.1",
+      declarations: [{ property: "background", value: "silver" }],
+    });
 
     const result = await resolveCss(text, selection([target]));
 
@@ -287,8 +329,11 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", "& .title", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.0.0";
-    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+    primaryCorrelatedCssRule(target).rulePath = "0.0.0.0";
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(min-width: 40rem)",
+    }];
 
     const result = await resolveCss(text, selection([target]));
 
@@ -311,12 +356,22 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
-    target.facts.push(
-      cssFact(".card", "display", "grid", "/dist/app.css", "0.0.0.0"),
-      cssFact(".card", "gap", "1rem", "/dist/app.css", "0.0.0.1.0"),
-      cssFact(".card", "background", "white", "/dist/app.css", "0.0.1"),
-    );
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
+    addCorrelatedCssRule(target, ".card", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.0.0",
+      declarations: [{ property: "display", value: "grid" }],
+    });
+    addCorrelatedCssRule(target, ".card", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.0.1.0",
+      declarations: [{ property: "gap", value: "1rem" }],
+    });
+    addCorrelatedCssRule(target, ".card", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.1",
+      declarations: [{ property: "background", value: "white" }],
+    });
 
     const result = await resolveCss(text, selection([target]));
 
@@ -339,14 +394,16 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.1";
-    target.facts.push(
-      cssFact(".card", "gap", "1rem", "/dist/app.css", "0.0.3"),
-    );
+    primaryCorrelatedCssRule(target).rulePath = "0.0.1";
+    addCorrelatedCssRule(target, ".card", {
+      sourceUrl: "/dist/app.css",
+      rulePath: "0.0.3",
+      declarations: [{ property: "gap", value: "1rem" }],
+    });
     const first = cssTarget("selected", "& .first", "/dist/app.css");
-    first.facts[0]!.metadata.rulePath = "0.0.0";
+    primaryCorrelatedCssRule(first).rulePath = "0.0.0";
     const second = cssTarget("selected", "& .second", "/dist/app.css");
-    second.facts[0]!.metadata.rulePath = "0.0.2";
+    primaryCorrelatedCssRule(second).rulePath = "0.0.2";
 
     const result = await resolveCss(
       text,
@@ -371,9 +428,9 @@ describe("CssSourcePlugin", () => {
       ".outside { color: green; }",
     ].join("\n");
     const uncertain = cssTarget("selected", ".duplicate", "/dist/app.css");
-    uncertain.facts[0]!.metadata.rulePath = "0.0.1";
+    primaryCorrelatedCssRule(uncertain).rulePath = "0.0.1";
     const trusted = cssTarget("parent", ".outside", "/dist/app.css");
-    trusted.facts[0]!.metadata.rulePath = "0.1";
+    primaryCorrelatedCssRule(trusted).rulePath = "0.1";
 
     const result = await resolveCss(text, selection([uncertain, trusted]));
 
@@ -413,7 +470,7 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", cssomSelector, "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.0";
+    primaryCorrelatedCssRule(target).rulePath = "0.0.0";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -439,7 +496,7 @@ describe("CssSourcePlugin", () => {
   ) => {
     const text = `${sourceSelector} { color: ${color}; }`;
     const target = cssTarget("selected", cssomSelector, "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -456,8 +513,11 @@ describe("CssSourcePlugin", () => {
       "}",
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.0";
-    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+    primaryCorrelatedCssRule(target).rulePath = "0.0.0";
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(min-width: 40rem)",
+    }];
 
     const result = await resolveCss(text, selection([target]));
 
@@ -466,11 +526,15 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
-  it("rejects oversized media metadata for pathless fallback", async () => {
-    const media = "x".repeat(INSPECT_LIMITS.valueLength + 1);
+  it("rejects producer-truncated media evidence for pathless fallback", async () => {
+    const media = "x".repeat(RULE_EVIDENCE_LIMITS.contextTextLength);
     const text = `@media ${media} { .card { color: red; } }`;
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.media = [media];
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: media,
+    }];
+    primaryCorrelatedCssRule(target).contextsTruncated = true;
 
     const result = await resolveCss(text, selection([target]));
 
@@ -484,7 +548,7 @@ describe("CssSourcePlugin", () => {
       ".duplicate { color: blue; }",
     ].join("\n");
     const target = cssTarget("selected", ".duplicate", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.1";
+    primaryCorrelatedCssRule(target).rulePath = "0.1";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -794,7 +858,7 @@ describe("CssSourcePlugin", () => {
       ".duplicate { color: blue; }",
     ].join("\n");
     const target = cssTarget("selected", ".duplicate", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = path;
+    primaryCorrelatedCssRule(target).rulePath = path;
 
     const result = await resolveCss(text, selection([target]));
 
@@ -807,17 +871,13 @@ describe("CssSourcePlugin", () => {
     );
   });
 
-  it("rejects malformed paths but falls back after a valid unresolved path", async () => {
-    const malformed = cssTarget("selected", ".card", "/dist/app.css");
-    malformed.facts[0]!.metadata.rulePath = "0.not-an-index";
-    const excessive = cssTarget("parent", ".layout", "/dist/app.css");
-    excessive.facts[0]!.metadata.rulePath = `0.${"1.".repeat(1000)}1`;
+  it("falls back after a valid unresolved browser rule path", async () => {
     const unresolved = cssTarget("selected", ".card", "/dist/app.css");
-    unresolved.facts[0]!.metadata.rulePath = "0.99";
+    primaryCorrelatedCssRule(unresolved).rulePath = "0.99";
 
     const result = await resolveCss(
       ".layout { display: grid; }\n.card { color: red; }",
-      selection([malformed, excessive, unresolved]),
+      selection([unresolved]),
     );
 
     expect(snippets(
@@ -837,7 +897,7 @@ describe("CssSourcePlugin", () => {
       ...parsed,
       pathIndex: new Map([["0", null]]),
     } as unknown as Parameters<typeof findMatchingCssRules>[0];
-    const fact = cssFact(
+    const fact = cssResolutionFact(
       ".card",
       "color",
       "red",
@@ -851,7 +911,7 @@ describe("CssSourcePlugin", () => {
     expect(findMatchingCssRules(collided, fact, parsed.document)).toHaveLength(1);
   });
 
-  it("uses fixture fallback for a nested browser path and preserves duplicate ambiguity", async () => {
+  it("fails closed for unsupported nested collector context and preserves duplicate ambiguity", async () => {
     const text = (await readFile(
       new URL("../../../examples/basic-css/fallback.css", import.meta.url),
       "utf8",
@@ -885,28 +945,31 @@ describe("CssSourcePlugin", () => {
     );
     expect(collected.facts).toEqual([
       expect.objectContaining({
-        selector: ".pin-op-path-miss",
+        ruleRef: collected.ruleEvidence.rules[0]?.ruleRef,
         property: "outline-style",
         value: "dashed",
-        metadata: expect.objectContaining({ rulePath: "0.1.1" }),
+        important: false,
+        valueTruncated: false,
+        metadata: {},
       }),
     ]);
+    expect(collected.ruleEvidence.rules[0]).toMatchObject({
+      selector: ".pin-op-path-miss",
+      generatedSource: { rulePath: "0.1.1" },
+    });
 
     const fallback = await resolveCss(
       text,
-      selection([collectedTarget(collected.facts, null)]),
+      selection(
+        [collectedTarget(collected.facts)],
+        withRulePath(collected.ruleEvidence, "0.99"),
+      ),
     );
 
-    expect(fallback.status).toBe("matched");
-    expect(fallback.matches).toHaveLength(1);
-    expect(fallback.matches[0]?.confidence).toBe("heuristic");
-    expect(snippets(text, fallback.matches)).toEqual([
-      [
-        ".pin-op-path-miss {",
-        "  outline-style: dashed;",
-        "}",
-      ].join("\n"),
-    ]);
+    expect(collected.ruleEvidence.rules[0]?.generatedSource)
+      .toMatchObject({ unsupportedGroupContext: true });
+    expect(fallback.status).toBe("no-rule-match");
+    expect(fallback.matches).toEqual([]);
 
     const duplicate = cssTarget(
       "selected",
@@ -915,7 +978,7 @@ describe("CssSourcePlugin", () => {
     );
     duplicate.facts[0]!.property = "text-decoration";
     duplicate.facts[0]!.value = "underline";
-    duplicate.facts[0]!.metadata.rulePath = "0.1.2";
+    primaryCorrelatedCssRule(duplicate).rulePath = "0.1.2";
 
     const ambiguous = await resolveCss(text, selection([duplicate]));
 
@@ -962,20 +1025,18 @@ describe("CssSourcePlugin", () => {
         throw new Error("lookup scanned ParsedStylesheet.rules");
       },
     });
-    const byPath = cssFact(
+    const byPath = cssResolutionFact(
       ".browser-serialized-selector",
       "order",
       "1023",
       "/dist/app.css",
       "0.1023",
     );
-    const bySelector: CssRuleFact = {
+    const bySelector: CssResolutionFact = {
       ...byPath,
       selector: ".rule-512",
       value: "512",
-      metadata: completeRuntimeMetadata("/dist/app.css", {
-        rulePath: "0.2048",
-      }),
+      metadata: { ...byPath.metadata, rulePath: "0.2048" },
     };
 
     expect(findMatchingCssRules(parsed, byPath, source).map(
@@ -1115,14 +1176,7 @@ describe("CssSourcePlugin", () => {
 
   it("does not grant CSSOM path authority to a unique basename", async () => {
     const target = cssTarget("selected", ".card", "/assets/app.css");
-    target.facts[0]!.metadata = {
-      sourceUrl: "/assets/app.css",
-      rulePath: "0.0",
-      media: [],
-      mediaTruncated: false,
-      valueTruncated: false,
-      important: false,
-    };
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
     const text = [
       ".wrong { color: blue; }",
       ".card { color: red; }",
@@ -1146,13 +1200,7 @@ describe("CssSourcePlugin", () => {
 
   it("does not heuristic-resolve a fact without stable rule identity", async () => {
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata = {
-      sourceUrl: "/dist/app.css",
-      media: [],
-      mediaTruncated: false,
-      valueTruncated: false,
-      important: false,
-    };
+    primaryCorrelatedCssRule(target).rulePath = undefined;
 
     const result = await resolveCss(
       ".card { color: red; }",
@@ -1165,30 +1213,17 @@ describe("CssSourcePlugin", () => {
 
   it("does not combine pathless declarations into synthetic rule evidence", async () => {
     const target = cssTarget("selected", ".card", "/dist/app.css");
+    primaryCorrelatedCssRule(target).rulePath = undefined;
     target.facts.splice(0, target.facts.length,
       {
         ...target.facts[0]!,
         property: "color",
         value: "red",
-        metadata: {
-          sourceUrl: "/dist/app.css",
-          media: [],
-          mediaTruncated: false,
-          valueTruncated: false,
-          important: false,
-        },
       },
       {
         ...target.facts[0]!,
         property: "display",
         value: "grid",
-        metadata: {
-          sourceUrl: "/dist/app.css",
-          media: [],
-          mediaTruncated: false,
-          valueTruncated: false,
-          important: false,
-        },
       },
     );
 
@@ -1215,9 +1250,7 @@ describe("CssSourcePlugin", () => {
       "/dist/app.css",
       [["display", "grid"], ["color", "red"]],
     );
-    target.facts.forEach((fact) => {
-      fact.metadata.rulePath = "0.99";
-    });
+    primaryCorrelatedCssRule(target).rulePath = "0.99";
 
     const result = await resolveCss(text, selection([target]));
 
@@ -1248,7 +1281,7 @@ describe("CssSourcePlugin", () => {
       "/dist/app.css",
       [["display", "grid"]],
     );
-    target.facts[0]!.metadata.rulePath = "0.99";
+    primaryCorrelatedCssRule(target).rulePath = "0.99";
 
     const result = await resolveCss(
       ".a, .b { display: grid; }",
@@ -1278,30 +1311,9 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
-  it.each([
-    ["media", ["media"]],
-    ["media completion", ["mediaTruncated"]],
-    ["value completion", ["valueTruncated"]],
-    ["priority", ["important"]],
-  ] as const)("rejects heuristic facts missing explicit %s evidence", async (
-    _name,
-    omitted,
-  ) => {
-    const target = completeCssTarget(".card", { rulePath: "0.99" });
-    for (const key of omitted) delete target.facts[0]!.metadata[key];
-
-    const result = await resolveCss(
-      ".card { color: red; }",
-      selection([target]),
-    );
-
-    expect(result.matches).toEqual([]);
-    expect(result.status).toBe("no-rule-match");
-  });
-
   it("keeps exact CSSOM path resolution independent of fingerprint metadata", async () => {
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
 
     const result = await resolveCss(
       ".card { color: red; }",
@@ -1320,12 +1332,8 @@ describe("CssSourcePlugin", () => {
       "/missing/app.css",
       [["display", "grid"]],
     );
-    target.facts[0]!.source = {
-      uri: "http://localhost:4173/missing/app.css",
-      line: 999,
-      column: 1,
-      metadata: {},
-    };
+    primaryCorrelatedCssRule(target).startLine = 999;
+    primaryCorrelatedCssRule(target).startColumn = 1;
     const result = await resolveCss(
       ".card { display: grid; }",
       selection([target]),
@@ -1356,12 +1364,8 @@ describe("CssSourcePlugin", () => {
       "/missing/app.css",
       [["display", "grid"]],
     );
-    target.facts[0]!.source = {
-      uri: "http://localhost:4173/missing/app.css",
-      line: 999,
-      column: 1,
-      metadata: {},
-    };
+    primaryCorrelatedCssRule(target).startLine = 999;
+    primaryCorrelatedCssRule(target).startColumn = 1;
     const result = await resolveCss(
       ".card { display: grid; }",
       selection([target]),
@@ -1424,7 +1428,7 @@ describe("CssSourcePlugin", () => {
         uris: ["file:///workspace/dist/app.css"],
         status: "exact",
         strategy: "workspace-bound",
-        workspaceFolderUri: sourceUrl === "/dist/layout.css"
+        workspaceFolderUri: new URL(sourceUrl).pathname === "/dist/layout.css"
           ? "file:///workspaces/SECOND"
           : "file:///workspaces/FIRST",
       }),
@@ -1673,9 +1677,7 @@ describe("CssSourcePlugin", () => {
       "/dist/app.css",
       [["color", "blue"], ["display", "grid"]],
     );
-    target.facts.forEach((fact) => {
-      fact.metadata.rulePath = "0.0";
-    });
+    primaryCorrelatedCssRule(target).rulePath = "0.0";
     const text = [
       ".card { color: red; }",
       ".card { color: blue; display: grid; }",
@@ -1696,14 +1698,20 @@ describe("CssSourcePlugin", () => {
       "/dist/app.css",
       [["color", "red"]],
     );
-    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(min-width: 40rem)",
+    }];
     const text = [
       "@media (min-width:40rem) { .card { color: red; } }",
       "@media (min-width:60rem) { .card { color: red; } }",
     ].join("\n");
 
     const matched = await resolveCss(text, selection([target]));
-    target.facts[0]!.metadata.media = ["(orientation: landscape)"];
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(orientation: landscape)",
+    }];
     const mismatched = await resolveCss(text, selection([target]));
 
     expect(matched.matches).toHaveLength(1);
@@ -1724,17 +1732,14 @@ describe("CssSourcePlugin", () => {
     expect(result.matches).toHaveLength(1);
   });
 
-  it("does not merge media-incomplete facts into complete rule evidence", async () => {
+  it("does not resolve context-incomplete correlated rule evidence", async () => {
     const target = completeCssTarget(".card", { rulePath: "0.99" });
     target.facts.push({
       ...target.facts[0]!,
       property: "display",
       value: "grid",
-      metadata: {
-        ...target.facts[0]!.metadata,
-        mediaTruncated: true,
-      },
     });
+    primaryCorrelatedCssRule(target).contextsTruncated = true;
 
     const result = await resolveCss(
       [
@@ -1745,7 +1750,7 @@ describe("CssSourcePlugin", () => {
     );
 
     expect(result.matches).toEqual([]);
-    expect(result.status).toBe("rule-match-ambiguous");
+    expect(result.status).toBe("no-rule-match");
   });
 
   it("uses priority evidence emitted by the browser collector", async () => {
@@ -1782,9 +1787,12 @@ describe("CssSourcePlugin", () => {
       ".card { color: red !important; }",
     ].join("\n");
 
-    const result = await resolveCss(text, selection([target]));
+    const result = await resolveCss(
+      text,
+      selection([target], withRulePath(collected.ruleEvidence, "0.99")),
+    );
 
-    expect(collected.facts[0]?.metadata.important).toBe(true);
+    expect(collected.facts[0]?.important).toBe(true);
     expect(snippets(text, result.matches)).toEqual([
       ".card { color: red !important; }",
     ]);
@@ -1813,10 +1821,10 @@ describe("CssSourcePlugin", () => {
 
     const result = await resolveCss(
       `.card { --payload: ${prefix}; }`,
-      selection([collectedTarget(collected.facts)]),
+      selection([collectedTarget(collected.facts)], collected.ruleEvidence),
     );
 
-    expect(collected.facts[0]?.metadata.valueTruncated).toBe(true);
+    expect(collected.facts[0]?.valueTruncated).toBe(true);
     expect(result.matches).toEqual([]);
   });
 
@@ -1849,10 +1857,11 @@ describe("CssSourcePlugin", () => {
 
     const result = await resolveCss(
       `@media ${condition} { .card { color: red; } }`,
-      selection([collectedTarget(collected.facts)]),
+      selection([collectedTarget(collected.facts)], collected.ruleEvidence),
     );
 
-    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(collected.ruleEvidence.rules[0]?.generatedSource)
+      .toMatchObject({ contextsTruncated: true });
     expect(result.matches).toEqual([]);
   });
 
@@ -1881,11 +1890,12 @@ describe("CssSourcePlugin", () => {
 
     const result = await resolveCss(
       text,
-      selection([collectedTarget(collected.facts)]),
+      selection([collectedTarget(collected.facts)], collected.ruleEvidence),
     );
 
     expect(result.matches).toEqual([]);
-    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(collected.ruleEvidence.rules[0]?.generatedSource)
+      .toMatchObject({ contextsTruncated: true });
   });
 
   it("rejects imported media count overflow reported by the collector", async () => {
@@ -1915,11 +1925,12 @@ describe("CssSourcePlugin", () => {
 
     const result = await resolveCss(
       text,
-      selection([collectedTarget(collected.facts)]),
+      selection([collectedTarget(collected.facts)], collected.ruleEvidence),
     );
 
     expect(result.matches).toEqual([]);
-    expect(collected.facts[0]?.metadata.mediaTruncated).toBe(true);
+    expect(collected.ruleEvidence.rules[0]?.generatedSource)
+      .toMatchObject({ contextsTruncated: true });
   });
 
   it("filters media evidence and returns parse diagnostics without stale ranges", async () => {
@@ -1930,7 +1941,10 @@ describe("CssSourcePlugin", () => {
     ].join("\n");
     const target = cssTarget("selected", ".card", "/dist/app.css");
     target.facts[0]!.value = "blue";
-    (target.facts[0] as CssRuleFact).metadata.media = ["(min-width: 40rem)"];
+    primaryCorrelatedCssRule(target).contexts = [{
+      kind: "media",
+      conditionText: "(min-width: 40rem)",
+    }];
     const first = await resolveCss(text, selection([target]), undefined, plugin);
 
     expect(snippets(text, first.matches)).toEqual([
@@ -1981,17 +1995,68 @@ async function resolvePath(
   selector = ".duplicate",
 ) {
   const target = cssTarget("selected", selector, "/dist/app.css");
-  target.facts[0]!.metadata.rulePath = path;
+  primaryCorrelatedCssRule(target).rulePath = path;
   return resolveCss(text, selection([target]));
 }
 
-function selection(targets: readonly InspectTarget[]): SelectionSnapshot {
+function selection(
+  targets: readonly CorrelatedCssTargetFixture[],
+): SelectionSnapshot;
+function selection(
+  targets: readonly InspectTarget[],
+  ruleEvidence: InspectRuleEvidenceBatch,
+): SelectionSnapshot;
+function selection(
+  targets: readonly (InspectTarget | CorrelatedCssTargetFixture)[],
+  ruleEvidence?: InspectRuleEvidenceBatch,
+): SelectionSnapshot {
+  const correlated = ruleEvidence === undefined
+    ? projectCorrelatedCssFixtures(targets.filter(isCorrelatedCssFixture))
+    : {
+        targets: targets.map((target) => isCorrelatedCssFixture(target)
+          ? projectCorrelatedCssFixtures([target]).targets[0]!
+          : target),
+        ruleEvidence,
+      };
+  if (
+    ruleEvidence === undefined &&
+    correlated.targets.length !== targets.length
+  ) {
+    throw new Error("CSS fixture selection requires correlated v7 targets");
+  }
   return {
     sessionId: "session-1",
     messageId: "inspect-1",
-    targets,
+    targets: correlated.targets,
+    ruleEvidence: correlated.ruleEvidence,
     context: { url: "http://localhost:4173/page", metadata: {} },
     metadata: {},
+  };
+}
+
+function isCorrelatedCssFixture(
+  target: InspectTarget | CorrelatedCssTargetFixture,
+): target is CorrelatedCssTargetFixture {
+  return "correlatedRules" in target;
+}
+
+function withRulePath(
+  evidence: InspectRuleEvidenceBatch,
+  rulePath: string,
+): InspectRuleEvidenceBatch {
+  return {
+    ...evidence,
+    rules: evidence.rules.map((rule) => ({
+      ...rule,
+      ...(rule.generatedSource
+        ? {
+            generatedSource: {
+              ...rule.generatedSource,
+              rulePath,
+            },
+          }
+        : {}),
+    })),
   };
 }
 
@@ -1999,37 +2064,46 @@ function cssTarget(
   role: "selected" | "parent",
   selector: string,
   sourceUrl: string,
-  source?: CssRuleFact["source"],
-): InspectTarget & { facts: CssRuleFact[] } {
-  return {
-    role,
-    depth: role === "selected" ? 0 : 1,
-    subject: { selector, metadata: {} },
-    facts: [
-      {
-        type: "css-rule",
-        selector,
-        property: "color",
-        value: "red",
-        source,
-        metadata: completeRuntimeMetadata(sourceUrl, {
-          rulePath: "0.99",
-        }),
-      },
-    ],
-    metadata: {},
-  };
+  source?: {
+    readonly line: number;
+    readonly column: number;
+  },
+): CorrelatedCssTargetFixture {
+  return createCorrelatedCssTarget(role, selector, {
+    sourceUrl,
+    rulePath: "0.99",
+    startLine: source?.line,
+    startColumn: source?.column,
+  });
 }
 
 function completeCssTarget(
   selector: string,
-  metadata: Readonly<Record<string, unknown>> = {},
-): InspectTarget & { facts: CssRuleFact[] } {
-  const target = cssTarget("selected", selector, "/dist/app.css");
-  target.facts[0]!.metadata = completeRuntimeMetadata(
-    "/dist/app.css",
-    metadata,
-  );
+  options: {
+    readonly rulePath?: string;
+    readonly media?: readonly string[];
+    readonly mediaTruncated?: boolean;
+    readonly valueTruncated?: boolean;
+    readonly important?: boolean;
+    readonly unsupportedGroupContext?: boolean;
+  } = {},
+): CorrelatedCssTargetFixture {
+  const target = createCorrelatedCssTarget("selected", selector, {
+    sourceUrl: "/dist/app.css",
+    rulePath: options.rulePath ?? "0.99",
+    contexts: (options.media ?? []).map((conditionText) => ({
+      kind: "media" as const,
+      conditionText,
+    })),
+    contextsTruncated: options.mediaTruncated,
+    unsupportedGroupContext: options.unsupportedGroupContext,
+    declarations: [{
+      property: "color",
+      value: "red",
+      important: options.important,
+      valueTruncated: options.valueTruncated,
+    }],
+  });
   return target;
 }
 
@@ -2038,39 +2112,22 @@ function cssTargetWithDeclarations(
   selector: string,
   sourceUrl: string,
   declarations: readonly (readonly [string, string])[],
-): InspectTarget & { facts: CssRuleFact[] } {
-  const target = cssTarget(role, selector, sourceUrl);
-  target.facts.splice(
-    0,
-    target.facts.length,
-    ...declarations.map(([property, value]) => ({
-      type: "css-rule" as const,
-      selector,
-      property,
-      value,
-      metadata: completeRuntimeMetadata(sourceUrl, {
-        rulePath: "0.99",
-      }),
-    })),
-  );
-  return target;
+): CorrelatedCssTargetFixture {
+  return createCorrelatedCssTarget(role, selector, {
+    sourceUrl,
+    rulePath: "0.99",
+    declarations: declarations.map(([property, value]) => ({ property, value })),
+  });
 }
 
 function collectedTarget(
   facts: readonly CssRuleFact[],
-  rulePath: string | null = "0.99",
 ): InspectTarget {
   return {
     role: "selected",
     depth: 0,
-    subject: { selector: facts[0]?.selector ?? ".card", metadata: {} },
-    facts: facts.map((fact) => ({
-      ...fact,
-      metadata: {
-        ...fact.metadata,
-        ...(rulePath === null ? {} : { rulePath }),
-      },
-    })),
+    subject: { selector: ".card", metadata: {} },
+    facts,
     metadata: {},
   };
 }
@@ -2109,33 +2166,31 @@ function mediaCss(conditions: readonly string[], rule: string): string {
   );
 }
 
-function cssFact(
+function cssResolutionFact(
   selector: string,
   property: string,
   value: string,
   sourceUrl: string,
   rulePath: string,
-): CssRuleFact {
+): CssResolutionFact {
+  const canonicalSourceUrl = canonicalizePublicStylesheetUrl(sourceUrl, {
+    baseUrl: "http://localhost:4173/page",
+  });
+  if (!canonicalSourceUrl) throw new Error("Invalid CSS resolution fixture URL");
   return {
     type: "css-rule",
+    ruleRef: `resolution-fixture-${rulePath}`,
     selector,
     property,
     value,
-    metadata: completeRuntimeMetadata(sourceUrl, { rulePath }),
-  };
-}
-
-function completeRuntimeMetadata(
-  sourceUrl: string,
-  overrides: Readonly<Record<string, unknown>> = {},
-): CssRuleFact["metadata"] {
-  return {
-    sourceUrl,
-    media: [],
-    mediaTruncated: false,
-    valueTruncated: false,
     important: false,
-    ...overrides,
+    valueTruncated: false,
+    metadata: {
+      sourceUrl: canonicalSourceUrl,
+      media: [],
+      mediaTruncated: false,
+      rulePath,
+    },
   };
 }
 

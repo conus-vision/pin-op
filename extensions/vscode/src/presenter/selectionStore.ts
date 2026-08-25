@@ -9,6 +9,7 @@ export class SelectionStore {
       sessionId: message.sessionId,
       messageId: message.messageId,
       targets: message.targets,
+      ruleEvidence: message.ruleEvidence,
       context: message.context,
       metadata: message.metadata,
     };

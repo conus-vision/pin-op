@@ -97,7 +97,11 @@ export interface BrowserBridgeClientOptions {
 
 export type InspectPayload = Pick<
   InspectMessage,
-  "targets" | "context" | "ideHighlightEnabled" | "metadata"
+  | "targets"
+  | "ruleEvidence"
+  | "context"
+  | "ideHighlightEnabled"
+  | "metadata"
 >;
 
 export type InspectSendOutcome =
@@ -423,6 +427,7 @@ export class BrowserBridgeClient {
         id: sourceId,
       },
       targets: safePayload.targets,
+      ruleEvidence: safePayload.ruleEvidence,
       context: safePayload.context,
       ideHighlightEnabled: safePayload.ideHighlightEnabled,
       metadata: safePayload.metadata,
@@ -962,6 +967,7 @@ export function withoutInternalRoutingMetadata(
   delete metadata.tabId;
   return {
     targets: payload.targets,
+    ruleEvidence: payload.ruleEvidence,
     context: payload.context,
     ideHighlightEnabled: payload.ideHighlightEnabled,
     metadata,

@@ -5,18 +5,33 @@ import {
   BridgeInstanceIdSchema,
   PinOpMessageSchema,
   EmptyMetadataSchema,
+  InspectGeneratedSourceSchema,
+  InspectRuleContextSchema,
+  InspectRuleDeclarationSchema,
+  InspectRuleEvidenceBatchSchema,
+  InspectRuleEvidenceSchema,
   LinkAcceptedMessageSchema,
   LinkRequestMessageSchema,
   PeerStateMessageSchema,
   PageRefreshMessageSchema,
   PageRefreshModeSchema,
   PresentationSettingsMessageSchema,
+  PublicStylesheetUrlSchema,
   PROTOCOL_VERSION,
   PROTOCOL_MISMATCH_CLOSE_CODE,
   PROTOCOL_VERSION_PROBE_MAX_BYTES,
   ProtocolCapability,
   RESOLUTION_ENVELOPE_MAX_BYTES,
   RESOLUTION_LIMITS,
+  RULE_EVIDENCE_LIMITS,
+  RULES_SOURCES_ENVELOPE_MAX_BYTES,
+  RULES_SOURCES_LIMITS,
+  RulesGenerationSchema,
+  RulesOpenMessageSchema,
+  RulesSourceConfidenceSchema,
+  RulesSourceDocumentSchema,
+  RulesSourceSchema,
+  RulesSourcesMessageSchema,
   ResolutionDiagnosticCodeSchema,
   ResolutionMessageSchema,
   ResolutionSourceSchema,
@@ -38,6 +53,7 @@ import {
   SourceNavigationStateMessageSchema,
   SourceOpenMessageSchema,
   UnlinkMessageSchema,
+  canonicalizePublicStylesheetUrl,
   createSourceMatchesMessageSchema,
   parseProtocolMismatchReason,
   parseMessage,
@@ -54,7 +70,7 @@ const ping = {
 };
 
 assert.deepEqual(parseMessage(ping), ping);
-assert.equal(PROTOCOL_VERSION, 6);
+assert.equal(PROTOCOL_VERSION, 7);
 assert.equal(typeof PinOpMessageSchema.parse, "function");
 assert.equal(typeof BridgeInstanceIdSchema.parse, "function");
 assert.equal(typeof EmptyMetadataSchema.parse, "function");
@@ -100,6 +116,19 @@ assert.equal(typeof createSourceMatchesMessageSchema, "function");
 assert.equal(typeof SourceMatchesMessageSchema.parse, "function");
 assert.equal(typeof SourceOpenMessageSchema.parse, "function");
 assert.equal(typeof PresentationSettingsMessageSchema.parse, "function");
+assert.equal(typeof PublicStylesheetUrlSchema.parse, "function");
+assert.equal(typeof canonicalizePublicStylesheetUrl, "function");
+assert.equal(typeof InspectRuleContextSchema.parse, "function");
+assert.equal(typeof InspectRuleDeclarationSchema.parse, "function");
+assert.equal(typeof InspectGeneratedSourceSchema.parse, "function");
+assert.equal(typeof InspectRuleEvidenceSchema.parse, "function");
+assert.equal(typeof InspectRuleEvidenceBatchSchema.parse, "function");
+assert.equal(typeof RulesGenerationSchema.parse, "function");
+assert.equal(typeof RulesSourceConfidenceSchema.parse, "function");
+assert.equal(typeof RulesSourceDocumentSchema.parse, "function");
+assert.equal(typeof RulesSourceSchema.parse, "function");
+assert.equal(typeof RulesSourcesMessageSchema.parse, "function");
+assert.equal(typeof RulesOpenMessageSchema.parse, "function");
 assert.equal(typeof SourceNavigationDirectionSchema.parse, "function");
 assert.equal(typeof SourceNavigateMessageSchema.parse, "function");
 assert.equal(typeof SourceNavigationStateMessageSchema.parse, "function");
@@ -107,20 +136,24 @@ assert.equal(ProtocolCapability.SourceNavigation, "source-navigation");
 assert.equal(ProtocolCapability.AutoRefresh, "auto-refresh");
 assert.equal(ProtocolCapability.SourcePresentation, "source-presentation");
 assert.equal(ProtocolCapability.PresentationSettings, "presentation-settings");
+assert.equal(ProtocolCapability.RulesSources, "rules-sources");
 assert.equal(RESOLUTION_ENVELOPE_MAX_BYTES, 16 * 1024);
 assert.equal(SOURCE_NAVIGATION_ENVELOPE_MAX_BYTES, 16 * 1024);
 assert.equal(SOURCE_PRESENTATION_ENVELOPE_MAX_BYTES, 256 * 1024);
 assert.equal(SOURCE_PRESENTATION_LIMITS.matches, 32);
 assert.equal(SOURCE_PRESENTATION_LIMITS.textBytes, 8 * 1024);
 assert.equal(SOURCE_PRESENTATION_LIMITS.textLines, 80);
+assert.equal(RULE_EVIDENCE_LIMITS.rules, 256);
+assert.equal(RULES_SOURCES_LIMITS.sources, 256);
+assert.equal(RULES_SOURCES_ENVELOPE_MAX_BYTES, 128 * 1024);
 assert.equal(PROTOCOL_MISMATCH_CLOSE_CODE, 1002);
 assert.equal(PROTOCOL_VERSION_PROBE_MAX_BYTES, 768 * 1024);
-assert.deepEqual(probeProtocolVersion(JSON.stringify({ protocolVersion: 6 })), {
-  receivedVersion: 6,
+assert.deepEqual(probeProtocolVersion(JSON.stringify({ protocolVersion: 7 })), {
+  receivedVersion: 7,
   compatible: true,
 });
 assert.deepEqual(parseProtocolMismatchReason(protocolMismatchReason(5)), {
-  expectedVersion: 6,
+  expectedVersion: 7,
   receivedVersion: 5,
 });
 assert.equal(typeof RESOLUTION_LIMITS.opaqueIdLength, "number");

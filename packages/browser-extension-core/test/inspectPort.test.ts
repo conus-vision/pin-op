@@ -306,7 +306,7 @@ describe("panel inspect transport", () => {
     const compatibility = {
       type: "pin-op.protocol.compatibility",
       compatible: false,
-      browserProtocolVersion: 6,
+      browserProtocolVersion: 7,
       peerProtocolVersion: "unknown",
     } as const;
     const execution = {

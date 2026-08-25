@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { utf8ByteLength } from "@pin-op/protocol";
 import type { CssDocumentSource } from "../src/collectCssFacts.js";
-import type { InspectPayloadWithDiagnostics } from "../src/inspectPayload.js";
-import type { LocationSource } from "../src/inspectPayload.js";
+import {
+  createInspectPayload as createWireInspectPayload,
+  type InspectPayloadWithDiagnostics,
+  type LocationSource,
+} from "../src/inspectPayload.js";
 import {
   InspectMode,
   type InspectDocument,
@@ -24,6 +27,7 @@ import {
   MatchedStylesApplicabilityObserver,
   type MatchedStylesApplicabilityObserverOptions,
 } from "../src/matchedStylesApplicabilityObserver.js";
+import type { MatchedStyles } from "../src/matchedStylesTypes.js";
 import { DomTreeProviderError } from "../src/domTreeProvider.js";
 import type {
   DomTreeElementIdentity,
@@ -53,6 +57,240 @@ import type {
 } from "../src/frameRegistry.js";
 
 describe("PageInspectionSession", () => {
+  it("publishes the exact current Rules authority as correlated inspect evidence", async () => {
+    const collect = vi.fn((authority: {
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      stylesRevision: number;
+      stylesheetRevision: number;
+    }): MatchedStyles => ({
+      ...authority,
+      domParentAncestorIndex: 1,
+      rules: [{
+        ...matchedRule("rule-selected", ".card", "color"),
+        declarationsTruncated: true,
+      }],
+      inherited: [
+        {
+          ancestorIndex: 1,
+          elementName: "html",
+          rules: [matchedRule("rule-parent", "html", "font-size")],
+        },
+        {
+          ancestorIndex: 2,
+          elementName: "body",
+          rules: [matchedRule("rule-grandparent", "body", "line-height")],
+        },
+      ],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    }));
+    const harness = createSessionHarness({
+      createMatchedStylesCollector: () => ({ collect }),
+      createInspectPayload: createWireInspectPayload,
+    });
+
+    await harness.session.selectByRef("node-2", 3);
+
+    const selection = harness.selections[0]!;
+    expect(selection.payload.ruleEvidence.rules.map(({ ruleRef }) => ruleRef))
+      .toEqual(["rule-selected", "rule-parent", "rule-grandparent"]);
+    expect(selection.payload.targets.flatMap(({ facts }) => facts)
+      .filter((fact) => fact.type === "css-rule")
+      .map(({ ruleRef }) => ruleRef)).toEqual(["rule-selected", "rule-parent"]);
+
+    const response = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "same-rules-authority",
+      documentEpoch: selection.documentEpoch,
+      nodeRef: selection.nodeRef,
+      selectionRevision: selection.selectionRevision,
+    });
+    expect(response).toMatchObject({
+      type: "styles.matched",
+      styles: {
+        rules: [{ ruleRef: "rule-selected", declarationsTruncated: true }],
+        inherited: [
+          { rules: [{ ruleRef: "rule-parent" }] },
+          { rules: [{ ruleRef: "rule-grandparent" }] },
+        ],
+      },
+    });
+    expect(response).not.toHaveProperty("styles.domParentAncestorIndex");
+    expect(collect).toHaveBeenCalledOnce();
+  });
+
+  it("omits fragmented stylesheet authority from the real registry-to-inspect path", async () => {
+    const nativeRule = {
+      cssText: ".card { color: red; }",
+      selectorText: ".card",
+      style: {
+        length: 1,
+        item: () => "color",
+        getPropertyValue: () => "red",
+        getPropertyPriority: () => "",
+      },
+    };
+    const harness = createSessionHarness({
+      createStylesheetRegistry(options) {
+        const typed = options as StylesheetRegistryOptions;
+        (typed.document.styleSheets as unknown as object[]).push({
+          href: "https://example.test/app.css#secret",
+          cssRules: [nativeRule],
+          disabled: false,
+          media: { mediaText: "" },
+        });
+        return new StylesheetRegistry({
+          ...typed,
+          createMutationObserver: () => ({
+            observe: vi.fn(),
+            disconnect: vi.fn(),
+          }),
+        });
+      },
+      createInspectPayload: createWireInspectPayload,
+    });
+    (harness.card as typeof harness.card & { getRootNode(): object })
+      .getRootNode = () => harness.document;
+    harness.card.matches = (selector: string) => selector === ".card";
+
+    await harness.session.selectByRef("node-2", 3);
+
+    expect(harness.selections[0]?.payload.ruleEvidence.rules).toHaveLength(1);
+    expect(harness.selections[0]?.payload.ruleEvidence.rules[0])
+      .not.toHaveProperty("generatedSource");
+  });
+
+  it("cancels inspect publication when payload collection invalidates Rules authority", async () => {
+    const revisions = {
+      documentEpoch: 3,
+      stylesheetRevision: 0,
+      stylesRevision: 0,
+    };
+    const registry = {
+      revisions,
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect: (authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }): MatchedStyles => ({
+          ...authority,
+          rules: [],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
+      createInspectPayload: (selected) => {
+        revisions.stylesRevision += 1;
+        return payload(selected.id);
+      },
+    });
+
+    await harness.session.selectByRef("node-2", 3);
+
+    expect(harness.selections).toEqual([]);
+    expect(harness.provider.retentions).toEqual([
+      { action: "retain", nodeRef: "node-2", reason: "selected" },
+      { action: "release", nodeRef: "node-2", reason: "selected" },
+    ]);
+  });
+
+  it("rolls back visible selection authority when a replacement payload postflight fails", async () => {
+    const revisions = {
+      documentEpoch: 3,
+      stylesheetRevision: 0,
+      stylesRevision: 0,
+    };
+    let invalidateReplacementPostflight = false;
+    const registry = {
+      revisions,
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect: (authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }): MatchedStyles => ({
+          ...authority,
+          rules: [matchedRule(
+            `${authority.nodeRef}-rule`,
+            `#${authority.nodeRef}`,
+            "color",
+          )],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
+      createInspectPayload: (selected) => {
+        if (selected.id === "root" && invalidateReplacementPostflight) {
+          invalidateReplacementPostflight = false;
+          revisions.stylesRevision += 1;
+        }
+        return payload(selected.id);
+      },
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const visibleSelection = harness.selections[0]!;
+
+    invalidateReplacementPostflight = true;
+    await harness.session.selectByRef("node-1", 3);
+
+    expect(harness.selections.map(({ nodeRef, selectionRevision }) => ({
+      nodeRef,
+      selectionRevision,
+    }))).toEqual([{
+      nodeRef: "node-2",
+      selectionRevision: 1,
+    }]);
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "restored-visible-selection",
+      documentEpoch: visibleSelection.documentEpoch,
+      nodeRef: visibleSelection.nodeRef,
+      selectionRevision: visibleSelection.selectionRevision,
+    })).resolves.toMatchObject({
+      type: "styles.matched",
+      requestId: "restored-visible-selection",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: 1,
+      styles: {
+        rules: [{ ruleRef: "node-2-rule" }],
+      },
+    });
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
+  });
+
   it("collects matched styles for the exact current selection and returns strict lifecycle errors", async () => {
     const harness = createSessionHarness();
     await harness.session.selectByRef("node-2", 3);
@@ -312,8 +550,11 @@ describe("PageInspectionSession", () => {
     expect(renewals).toEqual([]);
 
     value = "blue";
+    registry.revisions.stylesRevision += 1;
     const blue = harness.session.handle({ ...request, requestId: "styles-3" });
     value = "green";
+    registry.revisions.stylesRevision += 1;
+    registry.revisions.stylesheetRevision += 1;
     const green = harness.session.handle({ ...request, requestId: "styles-4" });
     await Promise.all([blue, green]);
     await Promise.resolve();
@@ -324,7 +565,81 @@ describe("PageInspectionSession", () => {
       selectionRevision,
     }]);
     expect(harness.selections).toHaveLength(1);
+    await expect(harness.session.handle({
+      ...request,
+      requestId: "styles-latest",
+    })).resolves.toMatchObject({
+      type: "styles.matched",
+      styles: {
+        stylesheetRevision: 2,
+        stylesRevision: 4,
+        rules: [{ declarations: [{ value: "green" }] }],
+      },
+    });
   });
+
+  it("commits renewed evidence only after payload postflight succeeds", async () => {
+    const renewals: unknown[] = [];
+    let value = "red";
+    let invalidatePayloadPostflight = false;
+    const registry = {
+      revisions: { documentEpoch: 3, stylesheetRevision: 1, stylesRevision: 2 },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const collect = vi.fn((authority: {
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      stylesRevision: number;
+      stylesheetRevision: number;
+    }): MatchedStyles => ({
+      ...authority,
+      rules: [matchedRule("rule-current", ".test", "color", value)],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      partial: false,
+      diagnostics: [],
+    }));
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({ collect }),
+      createInspectPayload: (selected) => {
+        if (invalidatePayloadPostflight) {
+          invalidatePayloadPostflight = false;
+          registry.revisions.stylesRevision += 1;
+        }
+        return payload(selected.id);
+      },
+      onStylesInspectPublicationRenewed: (event) => renewals.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+
+    value = "blue";
+    registry.revisions.stylesRevision += 1;
+    invalidatePayloadPostflight = true;
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
+    await Promise.resolve();
+    expect(renewals).toEqual([]);
+    expect(harness.selections).toHaveLength(1);
+
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
+    await Promise.resolve();
+    expect(renewals).toEqual([{
+      type: "styles.inspectPublicationRenewed",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: 1,
+    }]);
+    expect(collect).toHaveBeenCalledTimes(3);
+    expect(harness.selections).toHaveLength(2);
+  });
+
   it("owns stylesheet polling and applicability lifecycle for the active content lease", async () => {
     const registry = {
       revisions: {
@@ -359,6 +674,22 @@ describe("PageInspectionSession", () => {
     const harness = createSessionHarness({
       contentSessionId: "content-page-styles",
       createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect: (authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }): MatchedStyles => ({
+          ...authority,
+          rules: [],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
       createApplicabilityObserver,
       onStylesInvalidated: (event) => styleInvalidations.push(event),
     });
@@ -371,8 +702,8 @@ describe("PageInspectionSession", () => {
       [],
     );
     expect(harness.session.checkStylesheetsForMatchedQuery()).toBe(false);
-    expect(registry.checkForChanges).toHaveBeenCalledOnce();
-    expect(firstApplicability.check).toHaveBeenCalledTimes(2);
+    expect(registry.checkForChanges).toHaveBeenCalledTimes(2);
+    expect(firstApplicability.check).toHaveBeenCalledTimes(3);
 
     const frameDocument = new FakeSessionDocument();
     const context = frameContext(frameDocument, "frame-styles", 1);
@@ -591,6 +922,9 @@ describe("PageInspectionSession", () => {
       media: { mediaText: "" },
     };
     let candidateCheckArmed = false;
+    let allowCandidateInvalidation = false;
+    let invalidateApplicability: ((event: { readonly reason: string }) => void) |
+      undefined;
     const harness = createSessionHarness({
       createStylesheetRegistry(options) {
         const typed = options as StylesheetRegistryOptions;
@@ -605,12 +939,14 @@ describe("PageInspectionSession", () => {
       },
       createApplicabilityObserver(options) {
         const typed = options as MatchedStylesApplicabilityObserverOptions;
+        invalidateApplicability = typed.onInvalidated;
         return {
           setSelection: vi.fn((
             _element: Element | undefined,
             candidates: readonly unknown[],
           ) => {
-            candidateCheckArmed = candidates.length > 0;
+            candidateCheckArmed = allowCandidateInvalidation &&
+              candidates.length > 0;
           }),
           check: vi.fn(() => {
             if (!candidateCheckArmed) return;
@@ -631,6 +967,8 @@ describe("PageInspectionSession", () => {
     const selectionRevision = selection?.type === "dom.selectionChanged"
       ? selection.selectionRevision
       : -1;
+    invalidateApplicability?.({ reason: "prime-next-authority" });
+    allowCandidateInvalidation = true;
 
     const response = await harness.session.handle({
       type: "styles.getMatched",
@@ -1737,7 +2075,10 @@ describe("PageInspectionSession", () => {
     await harness.session.selectByRef("node-2", 3);
 
     expect(harness.selections).toEqual([]);
-    expect(harness.provider.retentions).toEqual([]);
+    expect(harness.provider.retentions).toEqual([
+      { action: "retain", nodeRef: "node-2", reason: "selected" },
+      { action: "release", nodeRef: "node-2", reason: "selected" },
+    ]);
     await expect(republishCurrentSelection(harness)).resolves.toBe(false);
   });
 
@@ -2574,6 +2915,7 @@ function createSessionHarness(overrides: {
     element: ReturnType<typeof element>,
     document: CssDocumentSource,
     location: LocationSource,
+    matchedStyles: MatchedStyles,
   ) => InspectPayloadWithDiagnostics;
   readonly onError?: (error: unknown) => void;
   readonly onEvent?: (event: DomEvent) => void;
@@ -3265,9 +3607,41 @@ function dispatchPrimarySequence(
   }
 }
 
+function matchedRule(
+  ruleRef: string,
+  selectorText: string,
+  property: string,
+  value = "value",
+) {
+  return {
+    ruleRef,
+    selectorText,
+    matchingSelectorIndices: [0],
+    declarations: [{
+      ruleRef,
+      property,
+      value,
+      important: false,
+      valueTruncated: false,
+      state: "winning-known-author" as const,
+      reason: "highest-precedence-known-author-declaration" as const,
+    }],
+    contexts: [],
+    source: {
+      sourceUrl: "https://example.test/app.css",
+      rulePath: ruleRef === "rule-selected"
+        ? "0.0"
+        : ruleRef === "rule-parent"
+          ? "0.1"
+          : "0.2",
+    },
+  };
+}
+
 function payload(id: string): InspectPayloadWithDiagnostics {
   return {
     targets: [],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: `https://example.test/${id}`, metadata: {} },
     metadata: {},
     inaccessibleStylesheets: [],

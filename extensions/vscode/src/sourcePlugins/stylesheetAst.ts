@@ -16,12 +16,12 @@ import type {
 } from "@pin-op/plugin-api";
 import {
   INSPECT_LIMITS,
-  type CssRuleFact,
 } from "@pin-op/protocol";
 import { BoundedLruCache } from "./boundedLruCache.js";
 import {
   parseBrowserRulePath,
   stableCssRuleIdentity,
+  type CssResolutionFact,
 } from "./cssFacts.js";
 import {
   declarationEvidenceFromFact,
@@ -115,7 +115,7 @@ export class StylesheetAstCache {
 
 export function findMatchingCssRules(
   stylesheet: ParsedStylesheet,
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
   document: SourceDocument,
   declarations?: readonly CssDeclarationEvidence[],
 ): StylesheetRule[] {
@@ -127,7 +127,7 @@ export function findMatchingCssRules(
 
 export function findExactCssRules(
   stylesheet: ParsedStylesheet,
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
   document: SourceDocument,
 ): StylesheetRule[] {
   if (fact.source !== undefined) {
@@ -155,7 +155,7 @@ export function findExactCssRules(
 }
 
 export function canFingerprintFallback(
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
   document?: SourceDocument,
 ): boolean {
   if (stableCssRuleIdentity(fact) === undefined) return false;
@@ -180,7 +180,7 @@ export function canFingerprintFallback(
 
 export function findRulesByFingerprint(
   stylesheet: ParsedStylesheet,
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
   declarations?: readonly CssDeclarationEvidence[],
 ): readonly StylesheetRule[] {
   if (!canFingerprintFallback(fact)) return [];
@@ -198,7 +198,7 @@ export function findRulesByFingerprint(
 
 function fingerprintBucket(
   stylesheet: ParsedStylesheet,
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
 ): readonly StylesheetRule[] {
   const selector = fallbackSelectorKey(fact.selector);
   if (selector === undefined) return [];
@@ -934,7 +934,7 @@ function fallbackSelectorKey(selector: string): string | undefined {
 }
 
 function factMedia(
-  fact: CssRuleFact,
+  fact: CssResolutionFact,
 ): readonly string[] | null {
   const mediaTruncated = fact.metadata.mediaTruncated;
   if (typeof mediaTruncated !== "boolean" || mediaTruncated) return null;

@@ -1,10 +1,11 @@
 import type {
   InspectContext,
+  InspectRuleEvidenceBatch,
   InspectTarget,
   JsonObject,
 } from "@pin-op/protocol";
 
-export const SOURCE_PLUGIN_API_VERSION = 2 as const;
+export const SOURCE_PLUGIN_API_VERSION = 3 as const;
 
 export interface Disposable {
   dispose(): void;
@@ -53,6 +54,7 @@ export interface SelectionSnapshot {
   readonly sessionId: string;
   readonly messageId: string;
   readonly targets: readonly InspectTarget[];
+  readonly ruleEvidence: InspectRuleEvidenceBatch;
   readonly context: InspectContext;
   readonly metadata: Readonly<Record<string, unknown>>;
 }

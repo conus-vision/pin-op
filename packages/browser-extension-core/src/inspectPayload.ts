@@ -1,10 +1,12 @@
 import {
   INSPECT_LIMITS,
+  RULE_EVIDENCE_LIMITS,
+  type InspectRuleEvidence,
+  type InspectRuleEvidenceBatch,
   type InspectTarget,
 } from "@pin-op/protocol";
 import type { InspectPayload } from "./bridgeClient.js";
 import {
-  collectCssFacts,
   type CssDocumentSource,
   type InaccessibleStylesheet,
 } from "./collectCssFacts.js";
@@ -31,49 +33,78 @@ export type InspectPayloadWithDiagnostics = InspectPayload & {
 };
 
 interface CollectedTarget extends InspectTarget {
+  readonly ruleEvidence: InspectRuleEvidenceBatch;
   readonly inaccessibleStylesheets: readonly InaccessibleStylesheet[];
 }
 
 export function createInspectPayload(
   element: InspectableElement,
-  document: CssDocumentSource,
+  _document: CssDocumentSource,
   location: LocationSource,
-  matchedStyles?: MatchedStyles,
+  matchedStyles: MatchedStyles,
 ): InspectPayloadWithDiagnostics {
+  if (!matchedStyles) throw new TypeError("MatchedStyles is required");
   const pageUrl = boundedPageUrl(location.href);
   const budget = createInspectByteBudget();
   const selected = collectTarget(
     "selected",
     0,
     element,
-    document,
     pageUrl,
     budget,
     matchedStyles,
   );
+  const domParentAncestorIndex = matchedStyles.domParentAncestorIndex;
   const parent = element.parentElement
     ? collectTarget(
         "parent",
         1,
         element.parentElement,
-        document,
         pageUrl,
         budget,
         matchedStyles,
-        1,
+        domParentAncestorIndex ?? null,
       )
     : undefined;
   const collected = parent ? [selected, parent] : [selected];
-  const inaccessibleStylesheets = deduplicateInaccessible(
-    collected.flatMap((target) => target.inaccessibleStylesheets),
+  const inaccessibleStylesheets: InaccessibleStylesheet[] = [];
+  const displayedInheritedEvidence = matchedStyles.inherited
+    .filter(({ ancestorIndex }) =>
+      !parent || ancestorIndex !== domParentAncestorIndex
+    )
+    .map(({ ancestorIndex }) =>
+      projectMatchedStylesToCssFacts(matchedStyles, budget, {
+        inheritedAncestorIndex: ancestorIndex,
+        pageUrl,
+        evidenceOnly: true,
+      }).ruleEvidence
+    );
+  const ruleEvidence = mergeRuleEvidence(collected, displayedInheritedEvidence);
+  const evidenceByRef = new Map(
+    ruleEvidence.rules.map((evidence) => [evidence.ruleRef, evidence]),
   );
-  const targets = collected.map(
-    ({ inaccessibleStylesheets: _ignored, ...target }) => target,
-  );
+  const targets = collected.map(({
+    inaccessibleStylesheets: _ignoredInaccessible,
+    ruleEvidence: _ignoredEvidence,
+    ...target
+  }) => ({
+    ...target,
+    facts: target.facts.filter((fact) => {
+      if (fact.type !== "css-rule" || !("ruleRef" in fact)) return true;
+      const evidence = evidenceByRef.get(fact.ruleRef);
+      return evidence?.declarations.some((declaration) =>
+        declaration.property === fact.property &&
+        declaration.value === fact.value &&
+        declaration.important === fact.important &&
+        declaration.valueTruncated === fact.valueTruncated
+      ) ?? false;
+    }),
+  }));
 
   return {
     ideHighlightEnabled: true,
     targets,
+    ruleEvidence,
     context: {
       url: pageUrl,
       route: joinBounded(
@@ -81,8 +112,7 @@ export function createInspectPayload(
         INSPECT_LIMITS.routeLength,
       ),
       metadata: {
-        inaccessibleStylesheetCount: matchedStyles?.inaccessibleStylesheetCount ??
-          inaccessibleStylesheets.length,
+        inaccessibleStylesheetCount: matchedStyles.inaccessibleStylesheetCount,
       },
     },
     metadata: {},
@@ -94,49 +124,66 @@ function collectTarget(
   role: "selected" | "parent",
   depth: 0 | 1,
   element: InspectableElement,
-  document: CssDocumentSource,
   pageUrl: string,
   budget: InspectByteBudget,
-  matchedStyles?: MatchedStyles,
-  inheritedAncestorIndex?: number,
+  matchedStyles: MatchedStyles,
+  inheritedAncestorIndex?: number | null,
 ): CollectedTarget {
   const subject = createElementSnapshot(element, pageUrl, budget);
-  const collection = matchedStyles
-    ? projectMatchedStylesToCssFacts(
-      matchedStyles,
-      budget,
-      inheritedAncestorIndex === undefined
-        ? {}
-        : { inheritedAncestorIndex },
-    )
-    : collectCssFacts(
-      element,
-      {
-        pageUrl,
-        styleSheets: document.styleSheets,
-      },
-      budget,
-    );
+  const collection = inheritedAncestorIndex === null
+    ? {
+        facts: [],
+        ruleEvidence: { rules: [], omittedRuleCount: 0 },
+        inaccessibleStylesheets: [],
+      }
+    : projectMatchedStylesToCssFacts(
+        matchedStyles,
+        budget,
+        inheritedAncestorIndex === undefined
+          ? { pageUrl }
+          : { inheritedAncestorIndex, pageUrl },
+      );
   return {
     role,
     depth,
     subject,
     facts: collection.facts,
+    ruleEvidence: collection.ruleEvidence,
     metadata: {},
     inaccessibleStylesheets: collection.inaccessibleStylesheets,
   };
 }
 
-function deduplicateInaccessible(
-  entries: readonly InaccessibleStylesheet[],
-): InaccessibleStylesheet[] {
-  const unique = new Map<string, InaccessibleStylesheet>();
-  for (const entry of entries) {
-    if (unique.size >= INSPECT_LIMITS.inaccessibleStylesheets) {
-      break;
+function mergeRuleEvidence(
+  targets: readonly CollectedTarget[],
+  additional: readonly InspectRuleEvidenceBatch[] = [],
+): InspectRuleEvidenceBatch {
+  const batches = [
+    ...targets.map(({ ruleEvidence }) => ruleEvidence),
+    ...additional,
+  ];
+  const rules: InspectRuleEvidence[] = [];
+  const byRef = new Map<string, InspectRuleEvidence>();
+  let omittedRuleCount = batches.reduce(
+    (count, batch) => count + batch.omittedRuleCount,
+    0,
+  );
+  for (const batch of batches) {
+    for (const evidence of batch.rules) {
+      const existing = byRef.get(evidence.ruleRef);
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(evidence)) {
+          omittedRuleCount += 1;
+        }
+        continue;
+      }
+      if (rules.length >= RULE_EVIDENCE_LIMITS.rules) {
+        omittedRuleCount += 1;
+        continue;
+      }
+      rules.push(evidence);
+      byRef.set(evidence.ruleRef, evidence);
     }
-    const key = JSON.stringify([entry.sourceUrl, entry.reason]);
-    if (!unique.has(key)) unique.set(key, entry);
   }
-  return [...unique.values()];
+  return { rules, omittedRuleCount };
 }

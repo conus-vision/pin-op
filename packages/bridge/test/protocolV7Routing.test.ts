@@ -60,6 +60,7 @@ function inspect(messageId = "inspect-1", sessionId = "session-1"): InspectMessa
         metadata: {},
       },
     ],
+    ruleEvidence: { rules: [], omittedRuleCount: 0 },
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
   };
@@ -211,7 +212,7 @@ function setup() {
   };
 }
 
-describe("protocol v6 bridge routing", () => {
+describe("protocol v7 bridge routing", () => {
   it("lets the first valid resolution claim a route and rejects a second IDE race", () => {
     const context = setup();
     const first = resolution("ide-a", 2);

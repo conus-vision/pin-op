@@ -37,7 +37,7 @@ Source-mapped SCSS requires a usable source map and fails closed when the
 mapping or active source document cannot be identified safely.
 
 **Auto Refresh** and **IDE Highlight** are tab-local and default on after a
-compatible protocol-v6 handshake and fresh tab state. Changed CSS/SCSS/Sass/Less
+compatible protocol-v7 handshake and fresh tab state. Changed CSS/SCSS/Sass/Less
 saves refresh eligible stylesheets; changed JavaScript, TypeScript, Vue, PHP,
 and HTML saves reload the current participating tab with scroll restoration.
 Unchanged saves do nothing. Turning IDE Highlight off clears decorations only;

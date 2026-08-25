@@ -489,6 +489,10 @@ function selection(tabId: number): InspectPayload {
       url: `http://localhost:${tabId}`,
       metadata: {},
     },
+    ruleEvidence: {
+      rules: [],
+      omittedRuleCount: 0,
+    },
     metadata: {},
   };
 }

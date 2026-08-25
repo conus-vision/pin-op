@@ -7,9 +7,19 @@ import {
 import type {
   PinOpMessage,
   EmptyMetadata,
+  InspectGeneratedSource,
+  InspectMessage,
+  InspectRuleContext,
+  InspectRuleDeclaration,
+  InspectRuleEvidence,
+  InspectRuleEvidenceBatch,
   PeerStateMessage,
   PageRefreshMessage,
   PresentationSettingsMessage,
+  RulesOpenMessage,
+  RulesSource,
+  RulesSourceDocument,
+  RulesSourcesMessage,
   ProtocolVersionProbe,
   ResolutionMessage,
   SourceExcerpt,
@@ -22,13 +32,13 @@ import type {
   SourceOpenMessage,
 } from "@pin-op/protocol";
 
-// @ts-expect-error Legacy reference envelopes are not part of protocol v6.
+// @ts-expect-error Legacy reference envelopes are not part of protocol v7.
 type RemovedReferencesMessage = import("@pin-op/protocol").ReferencesMessage;
-// @ts-expect-error Legacy command envelopes are not part of protocol v6.
+// @ts-expect-error Legacy command envelopes are not part of protocol v7.
 type RemovedCommandMessage = import("@pin-op/protocol").CommandMessage;
-// @ts-expect-error Legacy open-source commands are not part of protocol v6.
+// @ts-expect-error Legacy open-source commands are not part of protocol v7.
 type RemovedOpenSourceCommandMessage = import("@pin-op/protocol").OpenSourceCommandMessage;
-// @ts-expect-error Legacy highlight commands are not part of protocol v6.
+// @ts-expect-error Legacy highlight commands are not part of protocol v7.
 type RemovedHighlightCommandMessage = import("@pin-op/protocol").HighlightElementCommandMessage;
 // @ts-expect-error Legacy source references are not publicly exported.
 type RemovedSourceReference = import("@pin-op/protocol").SourceReference;
@@ -39,7 +49,7 @@ const emptyMetadata: EmptyMetadata = {};
 const nonEmptyMetadata: EmptyMetadata = { extra: true };
 
 const resolution: ResolutionMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "resolution",
   messageId: "resolution-1",
   sessionId: "session-1",
@@ -61,7 +71,7 @@ const resolutionWithMetadata: ResolutionMessage = {
 };
 
 const peerState: PeerStateMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "peerState",
   messageId: "peer-state-1",
   sessionId: "session-1",
@@ -84,7 +94,7 @@ const nextDirection: SourceNavigationDirection = "next";
 const unsupportedDirection: SourceNavigationDirection = "first";
 
 const sourceNavigate: SourceNavigateMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "source.navigate",
   messageId: "source-navigate-1",
   sessionId: "session-1",
@@ -95,7 +105,7 @@ const sourceNavigate: SourceNavigateMessage = {
 };
 
 const sourceNavigationStateWithoutActiveMatch: SourceNavigationStateMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "source.navigationState",
   messageId: "source-navigation-state-1",
   sessionId: "session-1",
@@ -113,7 +123,7 @@ const sourceNavigationStateWithActiveMatch: SourceNavigationStateMessage = {
 };
 
 const pageRefresh: PageRefreshMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "page.refresh",
   messageId: "refresh-1",
   sessionId: "session-1",
@@ -149,7 +159,7 @@ SourceExcerptKindSchema.parse(canonicalSourceKind);
 SourceExcerptRelationSchema.parse(canonicalSourceRelation);
 
 const sourceMatches: SourceMatchesMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "source.matches",
   messageId: "matches-1",
   sessionId: "session-1",
@@ -163,7 +173,7 @@ const sourceMatches: SourceMatchesMessage = {
 };
 
 const sourceOpen: SourceOpenMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "source.open",
   messageId: "open-1",
   sessionId: "session-1",
@@ -174,7 +184,7 @@ const sourceOpen: SourceOpenMessage = {
 };
 
 const presentationSettings: PresentationSettingsMessage = {
-  protocolVersion: 6,
+  protocolVersion: 7,
   type: "presentation.settings",
   messageId: "settings-1",
   sessionId: "session-1",
@@ -183,8 +193,104 @@ const presentationSettings: PresentationSettingsMessage = {
   metadata: emptyMetadata,
 };
 
+const rulesSourceDocument: RulesSourceDocument = {
+  label: "styles.css",
+  languageId: "css",
+};
+
+const rulesSource: RulesSource = {
+  ruleRef: "rule-1",
+  openAuthorityId: "authority-1",
+  document: rulesSourceDocument,
+  startLine: 1,
+  startColumn: 1,
+  confidence: "exact",
+};
+
+const rulesSources: RulesSourcesMessage = {
+  protocolVersion: 7,
+  type: "rules.sources",
+  messageId: "rules-sources-1",
+  sessionId: "session-1",
+  source: { role: "ide", id: "vscode-1" },
+  inspectMessageId: "inspect-1",
+  rulesGeneration: 1,
+  sources: [rulesSource],
+  unresolvedRuleCount: 0,
+  metadata: emptyMetadata,
+};
+
+const rulesOpen: RulesOpenMessage = {
+  protocolVersion: 7,
+  type: "rules.open",
+  messageId: "rules-open-1",
+  sessionId: "session-1",
+  inspectMessageId: "inspect-1",
+  rulesGeneration: 1,
+  openAuthorityId: "authority-1",
+  metadata: emptyMetadata,
+};
+
+const inspectRuleContext: InspectRuleContext = {
+  kind: "media",
+  conditionText: "screen",
+};
+
+const inspectRuleDeclaration: InspectRuleDeclaration = {
+  property: "color",
+  value: "red",
+  important: false,
+  valueTruncated: false,
+};
+
+const inspectGeneratedSource: InspectGeneratedSource = {
+  sourceUrl: "https://example.test/styles.css",
+  rulePath: "0",
+  contexts: [inspectRuleContext],
+  contextsTruncated: false,
+  unsupportedGroupContext: false,
+};
+
+const inspectRuleEvidence: InspectRuleEvidence = {
+  ruleRef: "rule-1",
+  selector: ".card",
+  declarations: [inspectRuleDeclaration],
+  declarationsTruncated: false,
+  generatedSource: inspectGeneratedSource,
+};
+
+const inspectRuleEvidenceBatch: InspectRuleEvidenceBatch = {
+  rules: [inspectRuleEvidence],
+  omittedRuleCount: 0,
+};
+
+const inspect: InspectMessage = {
+  protocolVersion: 7,
+  type: "inspect",
+  messageId: "inspect-1",
+  sessionId: "session-1",
+  source: {
+    role: "browser",
+    id: "browser-1",
+    label: "Demo tab",
+    url: "https://example.test/page",
+    metadata: emptyMetadata,
+  },
+  ideHighlightEnabled: true,
+  targets: [{
+    role: "selected",
+    depth: 0,
+    subject: { selector: ".card", metadata: emptyMetadata },
+    facts: [],
+    metadata: emptyMetadata,
+  }],
+  ruleEvidence: inspectRuleEvidenceBatch,
+  context: { url: "https://example.test/page", metadata: emptyMetadata },
+  metadata: emptyMetadata,
+};
+
 const protocolVersionProbe: ProtocolVersionProbe = {
-  receivedVersion: 6,
+  receivedVersion: 7,
   compatible: true,
 };
 
@@ -200,7 +306,36 @@ void sourceMatches;
 void templateSourceExcerpt;
 void sourceOpen;
 void presentationSettings;
+void rulesSources;
+void rulesOpen;
+void inspect;
 void protocolVersionProbe;
+
+// @ts-expect-error Inspect rule declarations are deeply readonly.
+inspectRuleEvidence.declarations[0]!.value = "blue";
+// @ts-expect-error Inspect rule contexts are deeply readonly.
+inspectRuleEvidence.generatedSource!.contexts[0]!.conditionText = "print";
+// @ts-expect-error Inspect evidence batches expose a readonly rules array.
+inspectRuleEvidenceBatch.rules.push(inspectRuleEvidence);
+// @ts-expect-error InspectMessage evidence remains deeply readonly.
+inspect.ruleEvidence.rules[0]!.declarations.push({
+  property: "display",
+  value: "block",
+  important: false,
+  valueTruncated: false,
+});
+// @ts-expect-error Standalone InspectRuleContext fields are readonly.
+inspectRuleContext.conditionText = "print";
+// @ts-expect-error Standalone InspectRuleDeclaration fields are readonly.
+inspectRuleDeclaration.value = "blue";
+// @ts-expect-error Standalone InspectGeneratedSource arrays are readonly.
+inspectGeneratedSource.contexts.push(inspectRuleContext);
+// @ts-expect-error Standalone RulesSourceDocument fields are readonly.
+rulesSourceDocument.label = "other.css";
+// @ts-expect-error Standalone RulesSource fields are deeply readonly.
+rulesSource.document.label = "other.css";
+// @ts-expect-error Standalone RulesSource position fields are readonly.
+rulesSource.startLine = 2;
 
 // @ts-expect-error ProtocolVersionProbe fields are readonly.
 protocolVersionProbe.receivedVersion = 5;
