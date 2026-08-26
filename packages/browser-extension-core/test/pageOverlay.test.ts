@@ -1399,6 +1399,107 @@ describe("PageOverlay", () => {
       height: "80px",
     });
   });
+
+  it("rejects exact runtime-artifact targets and artifact ancestry before geometry reads", () => {
+    const environment = createEnvironment();
+    const runtimeNode = environment.createElement({
+      rects: [{ x: 0, y: 0, width: 10, height: 10 }],
+    });
+    const descendant = environment.createElement({
+      parentElement: runtimeNode,
+      rects: [{ x: 10, y: 10, width: 20, height: 20 }],
+    });
+    const overlay = environment.createOverlay({
+      isExcludedNode: (node) => node === runtimeNode,
+    });
+
+    overlay.show(runtimeNode, environment.identity);
+    environment.animation.flush();
+    overlay.show(descendant, environment.identity);
+    environment.animation.flush();
+
+    expect(runtimeNode.clientRectReads).toBe(0);
+    expect(descendant.clientRectReads).toBe(0);
+    expect(runtimeNode.computedStyleReads).toBe(0);
+    expect(descendant.computedStyleReads).toBe(0);
+  });
+
+  it("fails closed for throwing exclusion predicates and composed artifact ancestry", () => {
+    const throwingEnvironment = createEnvironment();
+    const throwingTarget = throwingEnvironment.createElement({
+      rects: [{ x: 0, y: 0, width: 10, height: 10 }],
+    });
+    const throwingOverlay = throwingEnvironment.createOverlay({
+      isExcludedNode: () => {
+        throw new Error("artifact predicate unavailable");
+      },
+    });
+    throwingOverlay.show(throwingTarget, throwingEnvironment.identity);
+    throwingEnvironment.animation.flush();
+    expect(throwingTarget.clientRectReads).toBe(0);
+    expect(throwingTarget.computedStyleReads).toBe(0);
+
+    const slottedEnvironment = createEnvironment();
+    const artifactSlot = slottedEnvironment.createElement({ rects: [] });
+    const slottedTarget = slottedEnvironment.createElement({
+      rects: [{ x: 1, y: 2, width: 10, height: 20 }],
+    });
+    slottedTarget.assignedSlot = artifactSlot;
+    const slottedOverlay = slottedEnvironment.createOverlay({
+      isExcludedNode: (node) => node === artifactSlot,
+    });
+    slottedOverlay.show(slottedTarget, slottedEnvironment.identity);
+    slottedEnvironment.animation.flush();
+    expect(slottedTarget.clientRectReads).toBe(0);
+    expect(slottedTarget.computedStyleReads).toBe(0);
+
+    const shadowEnvironment = createEnvironment();
+    const artifactHost = shadowEnvironment.createElement({ rects: [] });
+    const shadow = artifactHost.attachShadow({ mode: "open" });
+    const shadowTarget = shadowEnvironment.createElement({
+      rects: [{ x: 2, y: 3, width: 20, height: 30 }],
+    });
+    Object.defineProperty(shadowTarget, "getRootNode", {
+      configurable: true,
+      value: () => shadow,
+    });
+    const shadowOverlay = shadowEnvironment.createOverlay({
+      isExcludedNode: (node) => node === artifactHost,
+    });
+    shadowOverlay.show(shadowTarget, shadowEnvironment.identity);
+    shadowEnvironment.animation.flush();
+    expect(shadowTarget.clientRectReads).toBe(0);
+    expect(shadowTarget.computedStyleReads).toBe(0);
+  });
+
+  it.each(["computed-style", "bounding-rect"] as const)(
+    "rechecks composed artifact ancestry after %s reentrancy before publish",
+    (reentryPoint) => {
+      const environment = createEnvironment();
+      const runtimeAncestor = environment.createElement({ rects: [] });
+      let target!: FakeElement & Element;
+      const moveBelowRuntime = (): void => {
+        target.parentElement = runtimeAncestor;
+      };
+      target = environment.createElement({
+        rects: [{ x: 5, y: 6, width: 70, height: 80 }],
+        ...(reentryPoint === "computed-style"
+          ? { onComputedStyle: moveBelowRuntime }
+          : { onGetBoundingClientRect: moveBelowRuntime }),
+      });
+      const overlay = environment.createOverlay({
+        isExcludedNode: (node) => node === runtimeAncestor,
+      });
+
+      overlay.show(target, environment.identity);
+      environment.animation.flush();
+
+      expect(target.computedStyleReads).toBe(1);
+      expect(readAllBoxGeometry(environment.document, "border")).toEqual([]);
+      expect(environment.document.defaultView.listenerCount("scroll")).toBe(0);
+      expect(environment.document.defaultView.listenerCount("resize")).toBe(0);
+    },
+  );
 });
 
 const DEFAULT_STYLE = Object.freeze({

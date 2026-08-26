@@ -37,11 +37,19 @@ interface CollectedTarget extends InspectTarget {
   readonly inaccessibleStylesheets: readonly InaccessibleStylesheet[];
 }
 
+export interface InspectPayloadOptions {
+  readonly isRuntimeAttributeName?: (name: string) => boolean;
+  readonly containsRuntimeMarker?: (value: string) => boolean;
+}
+
+const RUNTIME_MARKER_PAYLOAD_SCAN_LIMIT = 100_000;
+
 export function createInspectPayload(
   element: InspectableElement,
   _document: CssDocumentSource,
   location: LocationSource,
   matchedStyles: MatchedStyles,
+  options: InspectPayloadOptions = {},
 ): InspectPayloadWithDiagnostics {
   if (!matchedStyles) throw new TypeError("MatchedStyles is required");
   const pageUrl = boundedPageUrl(location.href);
@@ -53,6 +61,8 @@ export function createInspectPayload(
     pageUrl,
     budget,
     matchedStyles,
+    undefined,
+    options,
   );
   const domParentAncestorIndex = matchedStyles.domParentAncestorIndex;
   const parent = element.parentElement
@@ -64,6 +74,7 @@ export function createInspectPayload(
         budget,
         matchedStyles,
         domParentAncestorIndex ?? null,
+        options,
       )
     : undefined;
   const collected = parent ? [selected, parent] : [selected];
@@ -101,7 +112,7 @@ export function createInspectPayload(
     }),
   }));
 
-  return {
+  const payload: InspectPayloadWithDiagnostics = {
     ideHighlightEnabled: true,
     targets,
     ruleEvidence,
@@ -118,6 +129,50 @@ export function createInspectPayload(
     metadata: {},
     inaccessibleStylesheets,
   };
+  if (containsRuntimeMarker(payload, options.containsRuntimeMarker)) {
+    throw new TypeError("Inspect payload contains a runtime marker");
+  }
+  return payload;
+}
+
+function containsRuntimeMarker(
+  value: unknown,
+  predicate: InspectPayloadOptions["containsRuntimeMarker"],
+): boolean {
+  if (!predicate) return false;
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  let scanned = 0;
+  try {
+    while (pending.length > 0) {
+      scanned += 1;
+      if (scanned > RUNTIME_MARKER_PAYLOAD_SCAN_LIMIT) return true;
+      const current = pending.pop();
+      if (typeof current === "string") {
+        if (predicate(current) === true) return true;
+        continue;
+      }
+      if (typeof current !== "object" || current === null || seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      if (Array.isArray(current)) {
+        const length = current.length;
+        if (!Number.isSafeInteger(length) || length < 0) return true;
+        for (let index = 0; index < length; index += 1) pending.push(current[index]);
+        continue;
+      }
+      const keys = Object.keys(current);
+      if (keys.length > RUNTIME_MARKER_PAYLOAD_SCAN_LIMIT - scanned) return true;
+      for (const key of keys) {
+        if (predicate(key) === true) return true;
+        pending.push((current as Record<string, unknown>)[key]);
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function collectTarget(
@@ -128,8 +183,9 @@ function collectTarget(
   budget: InspectByteBudget,
   matchedStyles: MatchedStyles,
   inheritedAncestorIndex?: number | null,
+  options: InspectPayloadOptions = {},
 ): CollectedTarget {
-  const subject = createElementSnapshot(element, pageUrl, budget);
+  const subject = createElementSnapshot(element, pageUrl, budget, options);
   const collection = inheritedAncestorIndex === null
     ? {
         facts: [],

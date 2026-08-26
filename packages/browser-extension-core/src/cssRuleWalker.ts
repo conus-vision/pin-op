@@ -135,6 +135,7 @@ export interface CssStyleRuleCandidateRecord {
 
 export interface CssRuleWalkOptions {
   readonly workBudget?: CssRuleWalkBudget;
+  readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
   readonly ruleReferences?: Pick<RuleReferenceRegistry, "reference">;
   readonly referenceRule?: (
     stylesheet: StylesheetSource,
@@ -153,6 +154,7 @@ export type CssRuleWalkTruncationReason =
   | "byte-limit"
   | "declarations-per-rule-limit"
   | "stylesheets-limit"
+  | "runtime-artifact-exclusion-failed"
   | "rule-depth-limit"
   | "context-limit";
 
@@ -197,6 +199,8 @@ interface WalkState {
   recordsEmitted: number;
   nextStylesheetIdentity: number;
   nextRootIndex: number;
+  runtimeBoundaryProbes: number;
+  stylesheetBoundaryClosed: boolean;
   readonly inaccessibleStylesheets: InaccessibleStylesheet[];
   readonly truncationReasons: CssRuleWalkTruncationReason[];
   readonly options: CssRuleWalkOptions;
@@ -244,6 +248,8 @@ export function walkCssRules(
     recordsEmitted: 0,
     nextStylesheetIdentity: 0,
     nextRootIndex: 0,
+    runtimeBoundaryProbes: 0,
+    stylesheetBoundaryClosed: false,
     inaccessibleStylesheets,
     truncationReasons: [],
     options,
@@ -278,7 +284,7 @@ function* walkDocument(
   }
   yield* walkRootStylesheets(element, regularSheets, rootIndex, state);
   rootIndex = state.nextRootIndex;
-  if (reachedDocumentLimit(state)) return;
+  if (reachedWalkLimit(state)) return;
 
   let adoptedSheets: Iterable<StylesheetSource> | undefined;
   try {
@@ -299,6 +305,10 @@ function* walkRootStylesheets(
   let rootIndex = startingRootIndex;
   try {
     for (const stylesheet of enumerateStylesheetsBounded(stylesheets, state)) {
+      if (isRuntimeStylesheet(state, stylesheet)) {
+        continue;
+      }
+      if (stylesheetLimitReached(state)) return;
       state.nextRootIndex = rootIndex + 1;
       state.stylesheetsVisited += 1;
       state.workBudget.remainingStylesheets -= 1;
@@ -359,9 +369,16 @@ function* enumerateStylesheetsBounded(
 ): IterableIterator<StylesheetSource> {
   const iterator = stylesheets[Symbol.iterator]();
   let exhausted = false;
+  let rawPulls = 0;
+  const rawPullLimit = INSPECT_LIMITS.stylesheets * 2;
   try {
-    while (!reachedDocumentLimit(state)) {
+    while (!reachedWalkLimit(state) && rawPulls < rawPullLimit) {
+      if (
+        !state.options.isRuntimeStylesheet &&
+        stylesheetLimitReached(state)
+      ) return;
       const result = iterator.next();
+      rawPulls += 1;
       if (result.done) {
         exhausted = true;
         return;
@@ -369,6 +386,9 @@ function* enumerateStylesheetsBounded(
       yield result.value;
     }
   } finally {
+    if (!exhausted && rawPulls >= rawPullLimit) {
+      markTruncation(state, "stylesheets-limit");
+    }
     if (!exhausted) {
       try {
         iterator.return?.();
@@ -670,17 +690,39 @@ function* walkImportedStylesheet(
   state: WalkState,
   activeStylesheets: ReadonlySet<object>,
 ): IterableIterator<CssRuleWalkRecord> {
-  if (
-    depth >= INSPECT_LIMITS.cssRuleDepth ||
-    reachedDocumentLimit(state)
-  ) {
+  if (depth >= INSPECT_LIMITS.cssRuleDepth || reachedWalkLimit(state)) return;
+
+  if (stylesheetLimitReached(state, false)) {
+    if (state.stylesheetBoundaryClosed) {
+      stylesheetLimitReached(state);
+      return;
+    }
+    if (
+      state.options.isRuntimeStylesheet &&
+      state.runtimeBoundaryProbes < INSPECT_LIMITS.stylesheets
+    ) {
+      state.runtimeBoundaryProbes += 1;
+      let boundaryCandidate: StylesheetSource | undefined;
+      try {
+        const candidate = (rule as Partial<ImportRuleSource>).styleSheet;
+        boundaryCandidate = isStylesheetSource(candidate) ? candidate : undefined;
+      } catch {
+        state.stylesheetBoundaryClosed = true;
+        stylesheetLimitReached(state);
+        return;
+      }
+      if (
+        boundaryCandidate &&
+        (
+          isRuntimeStylesheet(state, boundaryCandidate) ||
+          activeStylesheets.has(boundaryCandidate)
+        )
+      ) return;
+    }
+    state.stylesheetBoundaryClosed = true;
+    stylesheetLimitReached(state);
     return;
   }
-
-  const stylesheetNamespace = state.stylesheetsVisited;
-  state.stylesheetsVisited += 1;
-  state.workBudget.remainingStylesheets -= 1;
-  const stylesheetIdentity = reserveStylesheetIdentity(state);
 
   let importedStylesheet: StylesheetSource;
   try {
@@ -688,6 +730,7 @@ function* walkImportedStylesheet(
     if (!isStylesheetSource(candidate)) return;
     importedStylesheet = candidate;
   } catch (error) {
+    consumeStylesheetAuthority(state);
     reportInaccessible(
       state,
       diagnosticImportUrl(rule, containingSourceUrl),
@@ -695,7 +738,12 @@ function* walkImportedStylesheet(
     );
     return;
   }
+  if (isRuntimeStylesheet(state, importedStylesheet)) return;
   if (activeStylesheets.has(importedStylesheet)) return;
+
+  const stylesheetNamespace = state.stylesheetsVisited;
+  consumeStylesheetAuthority(state);
+  const stylesheetIdentity = reserveStylesheetIdentity(state);
 
   let sourceUrl: string | undefined;
   try {
@@ -764,6 +812,23 @@ function* walkImportedStylesheet(
     );
   } catch (error) {
     reportInaccessible(state, sourceUrl, error);
+  }
+}
+
+function isRuntimeStylesheet(
+  state: WalkState,
+  stylesheet: object,
+): boolean {
+  try {
+    return state.options.isRuntimeStylesheet?.(stylesheet) === true;
+  } catch (error) {
+    markTruncation(state, "runtime-artifact-exclusion-failed");
+    reportInaccessible(
+      state,
+      "runtime-artifact://stylesheet-classification",
+      error,
+    );
+    return true;
   }
 }
 
@@ -1183,12 +1248,19 @@ function reachedWalkLimit(state: WalkState): boolean {
   return factsLimit || rulesLimit || byteLimit;
 }
 
-function reachedDocumentLimit(state: WalkState): boolean {
-  const walkLimit = reachedWalkLimit(state);
+function stylesheetLimitReached(
+  state: WalkState,
+  mark = true,
+): boolean {
   const stylesheetLimit = state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
     state.workBudget.remainingStylesheets <= 0;
-  if (stylesheetLimit) markTruncation(state, "stylesheets-limit");
-  return walkLimit || stylesheetLimit;
+  if (stylesheetLimit && mark) markTruncation(state, "stylesheets-limit");
+  return stylesheetLimit;
+}
+
+function consumeStylesheetAuthority(state: WalkState): void {
+  state.stylesheetsVisited += 1;
+  state.workBudget.remainingStylesheets -= 1;
 }
 
 function consumeWalkBytes(state: WalkState, value: string): boolean {

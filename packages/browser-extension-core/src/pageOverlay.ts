@@ -35,6 +35,7 @@ export interface PageOverlayOptions {
     type: OverlayEventType,
     listener: EventListener,
   ) => void;
+  readonly isExcludedNode?: (node: Node) => boolean;
 }
 
 type OverlayEventType = "scroll" | "resize";
@@ -45,6 +46,7 @@ type GetViewportSize = NonNullable<PageOverlayOptions["getViewportSize"]>;
 type GetEventTarget = NonNullable<PageOverlayOptions["getEventTarget"]>;
 type AddListener = NonNullable<PageOverlayOptions["addEventListener"]>;
 type RemoveListener = NonNullable<PageOverlayOptions["removeEventListener"]>;
+type IsExcludedNode = NonNullable<PageOverlayOptions["isExcludedNode"]>;
 type RenderOutcome = "published" | "failed" | "stale";
 
 interface BoxEdges {
@@ -145,6 +147,7 @@ export class PageOverlay {
   private getEventTarget: GetEventTarget | undefined;
   private addListener: AddListener | undefined;
   private removeListener: RemoveListener | undefined;
+  private isExcludedNode: IsExcludedNode | undefined;
   private readonly listeners: OverlayListener[] = [];
   private target: Element | undefined;
   private identity: FrameIdentity | undefined;
@@ -190,6 +193,7 @@ export class PageOverlay {
     this.removeListener = options.removeEventListener ?? ((target, type, listener) => {
       target.removeEventListener(type, listener, { capture: true });
     });
+    this.isExcludedNode = options.isExcludedNode;
     this.createHost(topDocument);
   }
 
@@ -264,6 +268,7 @@ export class PageOverlay {
     this.getEventTarget = undefined;
     this.addListener = undefined;
     this.removeListener = undefined;
+    this.isExcludedNode = undefined;
 
     try {
       host?.remove();
@@ -370,18 +375,40 @@ export class PageOverlay {
     const targetContext = this.readTargetContext(authority, read);
     if (!targetContext) return this.currentOutcome(authority);
 
+    const isExcludedNode = this.isExcludedNode;
+    const checkedAncestry = isExcludedNode
+      ? this.readAllowedTargetAncestry(
+        authority,
+        targetContext.document,
+        isExcludedNode,
+        read,
+      )
+      : undefined;
+    if (isExcludedNode && !checkedAncestry) {
+      return this.currentOutcome(authority);
+    }
+
     const getStyle = this.getStyle;
     if (!getStyle) return "failed";
     const styleRead = read(() => getStyle(authority.target));
     if (!styleRead) return "stale";
     if (!isObject(styleRead.value)) return "failed";
-    if (!this.hasNeutralTargetAncestry(
-      authority,
-      targetContext.document,
-      styleRead.value,
-      getStyle,
-      read,
-    )) {
+    const hasNeutralAncestry = checkedAncestry
+      ? this.hasNeutralCheckedTargetAncestry(
+        authority,
+        checkedAncestry,
+        styleRead.value,
+        getStyle,
+        read,
+      )
+      : this.hasNeutralTargetAncestry(
+        authority,
+        targetContext.document,
+        styleRead.value,
+        getStyle,
+        read,
+      );
+    if (!hasNeutralAncestry) {
       return this.currentOutcome(authority);
     }
     const boxModel = readBoxModel(styleRead.value, read);
@@ -519,6 +546,22 @@ export class PageOverlay {
     if (!finalContext || finalContext.document !== targetContext.document) {
       this.removeContainer(container);
       return this.currentOutcome(authority);
+    }
+    if (isExcludedNode && checkedAncestry) {
+      const finalAncestry = this.readAllowedTargetAncestry(
+        authority,
+        targetContext.document,
+        isExcludedNode,
+        read,
+      );
+      if (
+        !finalAncestry ||
+        finalAncestry.length !== checkedAncestry.length ||
+        finalAncestry.some((node, index) => node !== checkedAncestry[index])
+      ) {
+        this.removeContainer(container);
+        return this.currentOutcome(authority);
+      }
     }
     return this.publish(authority, container, read);
   }
@@ -686,6 +729,99 @@ export class PageOverlay {
     if (!context || !sameIdentity(context, authority.identity)) return undefined;
     const ownerDocumentRead = read(() => authority.target.ownerDocument);
     return ownerDocumentRead?.value === context.document ? context : undefined;
+  }
+
+  private readAllowedTargetAncestry(
+    authority: RenderAuthority,
+    targetDocument: Document,
+    isExcludedNode: IsExcludedNode,
+    read: AuthorityReader,
+  ): readonly object[] | undefined {
+    const ancestry: object[] = [];
+    const seen = new Set<object>();
+    let current: object = authority.target;
+    for (let depth = 0; depth < MAX_TARGET_GEOMETRY_ANCESTORS; depth += 1) {
+      if (seen.has(current) || !this.isAuthority(authority)) return undefined;
+      seen.add(current);
+      const excludedRead = read(() => {
+        try {
+          return isExcludedNode(current as Node) === true;
+        } catch {
+          return true;
+        }
+      });
+      if (!excludedRead || excludedRead.value) return undefined;
+      ancestry.push(current);
+
+      const assignedSlotRead = read(() => (
+        (current as { readonly assignedSlot?: unknown }).assignedSlot
+      ));
+      if (!assignedSlotRead) return undefined;
+      if (assignedSlotRead.value !== null) {
+        if (!isObject(assignedSlotRead.value)) return undefined;
+        current = assignedSlotRead.value;
+        continue;
+      }
+
+      const parentElementRead = read(() => (
+        (current as { readonly parentElement?: unknown }).parentElement
+      ));
+      if (!parentElementRead) return undefined;
+      if (parentElementRead.value !== null) {
+        if (!isObject(parentElementRead.value)) return undefined;
+        current = parentElementRead.value;
+        continue;
+      }
+
+      const getRootNodeRead = read(() => (
+        (current as { readonly getRootNode?: unknown }).getRootNode
+      ));
+      const getRootNode = getRootNodeRead?.value;
+      if (typeof getRootNode !== "function") return undefined;
+      const rootRead = read(() => getRootNode.call(current) as unknown);
+      if (!rootRead) return undefined;
+      if (rootRead.value === targetDocument) {
+        return this.isAuthority(authority) ? ancestry : undefined;
+      }
+      if (!isObject(rootRead.value)) return undefined;
+      const modeRead = read(() => (
+        (rootRead.value as { readonly mode?: unknown }).mode
+      ));
+      const hostRead = read(() => (
+        (rootRead.value as { readonly host?: unknown }).host
+      ));
+      if (
+        !modeRead ||
+        modeRead.value !== "open" ||
+        !hostRead ||
+        !isObject(hostRead.value)
+      ) {
+        return undefined;
+      }
+      current = hostRead.value;
+    }
+    return undefined;
+  }
+
+  private hasNeutralCheckedTargetAncestry(
+    authority: RenderAuthority,
+    ancestry: readonly object[],
+    targetStyle: object,
+    getStyle: GetStyle,
+    read: AuthorityReader,
+  ): boolean {
+    for (const [index, element] of ancestry.entries()) {
+      const style = index === 0
+        ? targetStyle
+        : read(() => getStyle(element as Element))?.value;
+      if (
+        !isObject(style) ||
+        !hasNeutralGeometryStyle(style, () => this.isAuthority(authority))
+      ) {
+        return false;
+      }
+    }
+    return this.isAuthority(authority);
   }
 
   private hasNeutralTargetAncestry(

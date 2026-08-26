@@ -9,6 +9,7 @@ export const DOM_TREE_RECOVERY_MAX_EXPANDED = 64;
 const MAX_ID_SCAN_NODES = 4_096;
 const MAX_EVIDENCE_PHYSICAL_SCAN = 256;
 const MAX_CHILD_PHYSICAL_SCAN = 256;
+const MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN = 4_096;
 const MAX_LOCATOR_VISITED_NODES = 65_536;
 const READ_FAILED = Symbol("dom-stable-locator-read-failed");
 
@@ -108,6 +109,8 @@ export interface DomStableLocatorServiceOptions {
     unregisterFrame(frameElement: HTMLIFrameElement): readonly unknown[];
   };
   readonly isExcludedNode: (node: Node) => boolean;
+  readonly isRuntimeArtifactNode?: (node: Node) => boolean;
+  readonly isRuntimeArtifactAttributeName?: (name: string) => boolean;
 }
 
 interface CapturedElementPath {
@@ -125,11 +128,21 @@ export class DomStableLocatorService {
   private readonly topDocument: Document;
   private readonly frameRegistry: DomStableLocatorServiceOptions["frameRegistry"];
   private readonly isExcludedNode: DomStableLocatorServiceOptions["isExcludedNode"];
+  private readonly isRuntimeArtifactNode: NonNullable<
+    DomStableLocatorServiceOptions["isRuntimeArtifactNode"]
+  >;
+  private readonly isRuntimeArtifactAttributeName: NonNullable<
+    DomStableLocatorServiceOptions["isRuntimeArtifactAttributeName"]
+  >;
 
   public constructor(options: DomStableLocatorServiceOptions) {
     this.topDocument = options.topDocument;
     this.frameRegistry = options.frameRegistry;
     this.isExcludedNode = options.isExcludedNode;
+    this.isRuntimeArtifactNode = options.isRuntimeArtifactNode ?? (() => false);
+    this.isRuntimeArtifactAttributeName = options.isRuntimeArtifactAttributeName ?? (
+      () => false
+    );
   }
 
   public capture(
@@ -302,7 +315,14 @@ export class DomStableLocatorService {
     // The final page-controlled proof for this root is capturePath. Keep all
     // root/context work above it and assemble only trusted local values below.
     if (boundary.kind === "top") {
-      const path = capturePath(root, target, this.isExcludedNode, budget);
+      const path = capturePath(
+        root,
+        target,
+        (node) => this.isExcluded(node),
+        this.isRuntimeArtifactNode,
+        this.isRuntimeArtifactAttributeName,
+        budget,
+      );
       if (path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
       return Object.freeze({
         boundaries: Object.freeze([]),
@@ -311,7 +331,14 @@ export class DomStableLocatorService {
       });
     }
     const parent = this.captureElement(boundary.host, seen, depth + 1, budget);
-    const path = capturePath(root, target, this.isExcludedNode, budget);
+    const path = capturePath(
+      root,
+      target,
+      (node) => this.isExcluded(node),
+      this.isRuntimeArtifactNode,
+      this.isRuntimeArtifactAttributeName,
+      budget,
+    );
     const pathDepth = parent.pathDepth + path.length;
     if (pathDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
     return Object.freeze({
@@ -385,7 +412,12 @@ export class DomStableLocatorService {
     const resolvedPath: Node[] = [root];
     for (let index = 0; index < path.length; index += 1) {
       const segment = path[index]!;
-      const candidate = elementChildAt(parent, segment.siblingIndex, budget);
+      const candidate = elementChildAt(
+        parent,
+        segment.siblingIndex,
+        this.isRuntimeArtifactNode,
+        budget,
+      );
       if (
         !candidate ||
         seen.has(candidate) ||
@@ -395,6 +427,8 @@ export class DomStableLocatorService {
           segment,
           parent,
           root,
+          this.isRuntimeArtifactNode,
+          this.isRuntimeArtifactAttributeName,
           budget,
           index === path.length - 1 && prepareFinal
             ? (element) => prepareFinal(
@@ -477,10 +511,14 @@ export class DomStableLocatorService {
 
   private isExcluded(node: Node): boolean {
     try {
-      return this.isExcludedNode(node);
+      if (this.isExcludedNode(node)) return true;
     } catch {
       return true;
     }
+    return callRuntimeArtifactNodePredicate(
+      this.isRuntimeArtifactNode,
+      node,
+    ) !== false;
   }
 }
 
@@ -515,6 +553,8 @@ function capturePath(
   root: Node,
   target: Element,
   isExcludedNode: (node: Node) => boolean,
+  isRuntimeArtifactNode: (node: Node) => boolean,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
 ): readonly DomPathSegment[] {
   const reversed: DomPathSegment[] = [];
@@ -528,7 +568,14 @@ function capturePath(
     if (isExcludedNode(current)) throw invalidLocator();
     const parent = readParentNode(current);
     if (!parent || parent === current || isExcludedNode(parent)) throw invalidLocator();
-    reversed.push(captureSegment(current as Element, parent, root, budget));
+    reversed.push(captureSegment(
+      current as Element,
+      parent,
+      root,
+      isRuntimeArtifactNode,
+      isRuntimeArtifactAttributeName,
+      budget,
+    ));
     current = parent;
   }
   if (reversed.length === 0) throw invalidLocator();
@@ -539,13 +586,27 @@ function captureSegment(
   element: Element,
   parent: Node,
   root: Node,
+  isRuntimeArtifactNode: (node: Node) => boolean,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
 ): DomPathSegment {
   const tagName = readTagName(element);
   if (!tagName) throw invalidLocator();
-  const siblingIndex = elementSiblingIndex(parent, element, budget);
+  const siblingIndex = elementSiblingIndex(
+    parent,
+    element,
+    isRuntimeArtifactNode,
+    budget,
+  );
   if (siblingIndex === undefined) throw invalidLocator();
-  const evidence = readCanonicalEvidence(element, parent, root, budget, true);
+  const evidence = readCanonicalEvidence(
+    element,
+    parent,
+    root,
+    isRuntimeArtifactAttributeName,
+    budget,
+    true,
+  );
   if (!evidence) throw invalidLocator();
   // The final uniqueness traversal in stabilizeSegmentIdentity is the last
   // page-controlled read before an ID anchor is committed.
@@ -555,6 +616,8 @@ function captureSegment(
     root,
     tagName,
     evidence,
+    isRuntimeArtifactNode,
+    isRuntimeArtifactAttributeName,
     budget,
     true,
   );
@@ -578,6 +641,7 @@ function readCanonicalEvidence(
   element: Element,
   expectedParent: Node,
   expectedRoot: Node,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
   surfaceAttributeFailures = false,
 ): CanonicalEvidence | undefined {
@@ -591,6 +655,7 @@ function readCanonicalEvidence(
   if (!classes) return undefined;
   const attributes = readCanonicalAttributes(
     element,
+    isRuntimeArtifactAttributeName,
     budget,
     surfaceAttributeFailures,
   );
@@ -637,6 +702,7 @@ function readCanonicalClasses(
 
 function readCanonicalAttributes(
   element: Element,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
   surfaceFailures: boolean,
 ): readonly DomLocatorAttribute[] | undefined {
@@ -662,11 +728,12 @@ function readCanonicalAttributes(
     typeof rawLength !== "number" ||
     !Number.isSafeInteger(rawLength) ||
     rawLength < 0 ||
-    rawLength > MAX_EVIDENCE_PHYSICAL_SCAN
+    rawLength > MAX_EVIDENCE_PHYSICAL_SCAN + MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN
   ) return undefined;
   const selected: DomLocatorAttribute[] = [];
+  let authorAttributeCount = 0;
+  let runtimeAttributeCount = 0;
   for (let index = 0; index < rawLength; index += 1) {
-    if (!budget.visit()) return undefined;
     let attribute: unknown;
     try {
       attribute = (attributes as { readonly [index: number]: unknown })[index];
@@ -675,7 +742,6 @@ function readCanonicalAttributes(
       return undefined;
     }
     if (!attribute || typeof attribute !== "object") return undefined;
-    if (!budget.visit()) return undefined;
     let rawName: unknown;
     try {
       rawName = (attribute as { readonly name?: unknown }).name;
@@ -685,6 +751,26 @@ function readCanonicalAttributes(
     }
     if (typeof rawName !== "string") return undefined;
     const name = rawName.toLowerCase();
+    const runtimeArtifact = callRuntimeArtifactAttributePredicate(
+      isRuntimeArtifactAttributeName,
+      name,
+    );
+    if (runtimeArtifact === READ_FAILED) {
+      if (surfaceFailures) throw new DomStableLocatorAttributeCaptureError();
+      return undefined;
+    }
+    if (runtimeArtifact) {
+      runtimeAttributeCount += 1;
+      if (runtimeAttributeCount > MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN) {
+        return undefined;
+      }
+      continue;
+    }
+    authorAttributeCount += 1;
+    if (
+      authorAttributeCount > MAX_EVIDENCE_PHYSICAL_SCAN ||
+      !budget.visit()
+    ) return undefined;
     if (!budget.visit()) return undefined;
     let value: unknown;
     try {
@@ -755,13 +841,18 @@ function compareCodeUnits(left: string, right: string): number {
 function elementChildAt(
   parent: Node,
   siblingIndex: number,
+  isRuntimeArtifactNode: (node: Node) => boolean,
   budget: LocatorVisitBudget,
 ): Element | undefined {
   if (!Number.isSafeInteger(siblingIndex) || siblingIndex < 0) return undefined;
-  const children = snapshotChildNodes(parent, budget);
+  const children = snapshotChildNodes(parent, isRuntimeArtifactNode, budget);
   if (!children) return undefined;
   const candidate = elementChildAtSnapshot(children, siblingIndex);
-  const verifiedChildren = snapshotChildNodes(parent, budget);
+  const verifiedChildren = snapshotChildNodes(
+    parent,
+    isRuntimeArtifactNode,
+    budget,
+  );
   if (
     !candidate ||
     !verifiedChildren ||
@@ -792,28 +883,51 @@ function elementChildAtSnapshot(
 function elementSiblingIndex(
   parent: Node,
   target: Element,
+  isRuntimeArtifactNode: (node: Node) => boolean,
   budget: LocatorVisitBudget,
 ): number | undefined {
-  const children = snapshotChildNodes(parent, budget);
+  const children = snapshotChildNodes(parent, isRuntimeArtifactNode, budget);
   if (!children || readParentNode(target) !== parent) return undefined;
   if (!budget.visit()) return undefined;
   let previous = readPreviousElementSibling(target);
   if (previous === undefined) return undefined;
   let siblingIndex = 0;
   const seen = new Set<Element>([target]);
+  let authorSiblingCount = 0;
+  let runtimeSiblingCount = 0;
   while (previous !== null) {
-    if (
-      !budget.visit() ||
-      seen.size >= MAX_CHILD_PHYSICAL_SCAN ||
-      seen.has(previous)
-    ) return undefined;
+    if (seen.has(previous)) return undefined;
     seen.add(previous);
+    const runtimeArtifact = callRuntimeArtifactNodePredicate(
+      isRuntimeArtifactNode,
+      previous,
+    );
+    if (runtimeArtifact === READ_FAILED) return undefined;
+    if (runtimeArtifact) {
+      runtimeSiblingCount += 1;
+      if (runtimeSiblingCount > MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN) {
+        return undefined;
+      }
+    } else {
+      authorSiblingCount += 1;
+      if (
+        authorSiblingCount > MAX_CHILD_PHYSICAL_SCAN ||
+        !budget.visit()
+      ) return undefined;
+      siblingIndex += 1;
+    }
     if (readParentNode(previous) !== parent) return undefined;
-    siblingIndex += 1;
     previous = readPreviousElementSibling(previous);
     if (previous === undefined) return undefined;
   }
-  return confirmElementSiblingIndex(parent, target, children, siblingIndex, budget);
+  return confirmElementSiblingIndex(
+    parent,
+    target,
+    children,
+    siblingIndex,
+    isRuntimeArtifactNode,
+    budget,
+  );
 }
 
 function confirmElementSiblingIndex(
@@ -821,13 +935,22 @@ function confirmElementSiblingIndex(
   target: Element,
   initialChildren: readonly ChildNodeSnapshot[],
   expectedIndex: number,
+  isRuntimeArtifactNode: (node: Node) => boolean,
   budget: LocatorVisitBudget,
 ): number | undefined {
-  const verifiedChildren = snapshotChildNodes(parent, budget);
+  const verifiedChildren = snapshotChildNodes(
+    parent,
+    isRuntimeArtifactNode,
+    budget,
+  );
   if (!verifiedChildren || !sameChildNodeSnapshot(initialChildren, verifiedChildren)) {
     return undefined;
   }
-  const finalChildren = snapshotChildNodes(parent, budget);
+  const finalChildren = snapshotChildNodes(
+    parent,
+    isRuntimeArtifactNode,
+    budget,
+  );
   if (
     !finalChildren ||
     !sameChildNodeSnapshot(verifiedChildren, finalChildren) ||
@@ -838,16 +961,33 @@ function confirmElementSiblingIndex(
 
 function snapshotChildNodes(
   parent: Node,
+  isRuntimeArtifactNode: (node: Node) => boolean,
   budget: LocatorVisitBudget,
 ): readonly ChildNodeSnapshot[] | undefined {
   const children = readChildCollection(parent);
   if (!children) return undefined;
   const snapshot: ChildNodeSnapshot[] = [];
+  let runtimeChildCount = 0;
   for (let physicalIndex = 0; physicalIndex < children.length; physicalIndex += 1) {
-    if (!budget.visit()) return undefined;
     const child = readCollectionItem(children.collection, physicalIndex);
     if (!child || typeof child !== "object") return undefined;
     const node = child as Node;
+    const runtimeArtifact = callRuntimeArtifactNodePredicate(
+      isRuntimeArtifactNode,
+      node,
+    );
+    if (runtimeArtifact === READ_FAILED) return undefined;
+    if (runtimeArtifact) {
+      runtimeChildCount += 1;
+      if (runtimeChildCount > MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN) {
+        return undefined;
+      }
+      continue;
+    }
+    if (
+      snapshot.length >= MAX_CHILD_PHYSICAL_SCAN ||
+      !budget.visit()
+    ) return undefined;
     const nodeType = readNodeType(node);
     if (nodeType === undefined) return undefined;
     snapshot.push(Object.freeze({ node, nodeType }));
@@ -898,14 +1038,27 @@ function matchesSegment(
   segment: DomPathSegment,
   parent: Node,
   root: Node,
+  isRuntimeArtifactNode: (node: Node) => boolean,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
   prepareFinal?: (element: Element) => boolean,
 ): boolean {
   if (prepareFinal && !prepareFinal(element)) return false;
   if (readTagName(element) !== segment.tagName) return false;
-  const siblingIndex = elementSiblingIndex(parent, element, budget);
+  const siblingIndex = elementSiblingIndex(
+    parent,
+    element,
+    isRuntimeArtifactNode,
+    budget,
+  );
   if (siblingIndex !== segment.siblingIndex) return false;
-  const evidence = readCanonicalEvidence(element, parent, root, budget);
+  const evidence = readCanonicalEvidence(
+    element,
+    parent,
+    root,
+    isRuntimeArtifactAttributeName,
+    budget,
+  );
   if (!evidence) return false;
   // This must remain after every structural and final-target proof: the last
   // scan jointly commits the candidate fingerprint and unique-ID boundary.
@@ -915,6 +1068,8 @@ function matchesSegment(
     root,
     segment.tagName,
     evidence,
+    isRuntimeArtifactNode,
+    isRuntimeArtifactAttributeName,
     budget,
   );
   if (
@@ -934,17 +1089,20 @@ function stabilizeSegmentIdentity(
   root: Node,
   tagName: string,
   evidence: CanonicalEvidence,
+  isRuntimeArtifactNode: (node: Node) => boolean,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
   surfaceAttributeFailures = false,
 ): string | undefined | typeof READ_FAILED {
   const firstUnique = evidence.id === undefined
     ? undefined
-    : uniqueIdStatus(root, evidence.id, budget);
+    : uniqueIdStatus(root, evidence.id, isRuntimeArtifactNode, budget);
   if (firstUnique === READ_FAILED) return READ_FAILED;
   const verifiedEvidence = readCanonicalEvidence(
     element,
     parent,
     root,
+    isRuntimeArtifactAttributeName,
     budget,
     surfaceAttributeFailures,
   );
@@ -955,12 +1113,13 @@ function stabilizeSegmentIdentity(
   ) return READ_FAILED;
   const secondUnique = evidence.id === undefined
     ? undefined
-    : uniqueIdStatus(root, evidence.id, budget);
+    : uniqueIdStatus(root, evidence.id, isRuntimeArtifactNode, budget);
   if (secondUnique === READ_FAILED) return READ_FAILED;
   const finalEvidence = readCanonicalEvidence(
     element,
     parent,
     root,
+    isRuntimeArtifactAttributeName,
     budget,
     surfaceAttributeFailures,
   );
@@ -971,7 +1130,7 @@ function stabilizeSegmentIdentity(
   ) return READ_FAILED;
   const finalUnique = evidence.id === undefined
     ? undefined
-    : uniqueIdStatus(root, evidence.id, budget);
+    : uniqueIdStatus(root, evidence.id, isRuntimeArtifactNode, budget);
   if (finalUnique === READ_FAILED) return READ_FAILED;
   return firstUnique === true && secondUnique === true && finalUnique === true
     ? evidence.id
@@ -989,23 +1148,53 @@ function sameCanonicalEvidence(
   );
 }
 
+interface UniqueIdTraversalEntry {
+  readonly node: Node;
+  readonly runtimeArtifact?: boolean;
+  children?: { readonly collection: object; readonly length: number };
+  next?: number;
+  authorChildCount: number;
+  runtimeChildCount: number;
+}
+
 function uniqueIdStatus(
   root: Node,
   id: string,
+  isRuntimeArtifactNode: (node: Node) => boolean,
   budget: LocatorVisitBudget,
 ): boolean | typeof READ_FAILED {
-  const pending: Array<{ readonly node: Node; readonly children?: { readonly collection: object; readonly length: number }; next?: number }> = [{ node: root }];
+  const pending: UniqueIdTraversalEntry[] = [{
+    node: root,
+    authorChildCount: 0,
+    runtimeChildCount: 0,
+  }];
   const seen = new Set<Node>();
+  let authorNodeCount = 0;
+  let runtimeNodeCount = 0;
   let matches = 0;
   while (pending.length > 0) {
     const current = pending[pending.length - 1]!;
     if (!current.children) {
       if (
-        seen.size >= MAX_ID_SCAN_NODES ||
-        !budget.visit() ||
+        seen.size >= MAX_ID_SCAN_NODES + MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN ||
         seen.has(current.node)
       ) return READ_FAILED;
       seen.add(current.node);
+      const runtimeArtifact = current.runtimeArtifact ??
+        callRuntimeArtifactNodePredicate(isRuntimeArtifactNode, current.node);
+      if (runtimeArtifact === READ_FAILED) return READ_FAILED;
+      if (runtimeArtifact) {
+        runtimeNodeCount += 1;
+        if (runtimeNodeCount > MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN) {
+          return READ_FAILED;
+        }
+        pending.pop();
+        continue;
+      }
+      authorNodeCount += 1;
+      if (authorNodeCount > MAX_ID_SCAN_NODES || !budget.visit()) {
+        return READ_FAILED;
+      }
       if (readNodeType(current.node) === 1) {
         const currentId = readIdStrict(current.node as Element);
         if (currentId === READ_FAILED) return READ_FAILED;
@@ -1013,17 +1202,37 @@ function uniqueIdStatus(
       }
       const children = readChildCollection(current.node);
       if (!children) return READ_FAILED;
-      (current as { children: { readonly collection: object; readonly length: number }; next: number }).children = children;
-      (current as { next: number }).next = 0;
+      current.children = children;
+      current.next = 0;
     }
     if (current.next! >= current.children!.length) {
       pending.pop();
       continue;
     }
-    if (!budget.visit()) return READ_FAILED;
     const child = readCollectionItem(current.children!.collection, current.next!++);
-    if (!isNode(child)) return READ_FAILED;
-    pending.push({ node: child });
+    if (!child || typeof child !== "object") return READ_FAILED;
+    const runtimeArtifact = callRuntimeArtifactNodePredicate(
+      isRuntimeArtifactNode,
+      child as Node,
+    );
+    if (runtimeArtifact === READ_FAILED) return READ_FAILED;
+    if (runtimeArtifact) {
+      current.runtimeChildCount += 1;
+      if (
+        current.runtimeChildCount > MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN
+      ) return READ_FAILED;
+    } else {
+      current.authorChildCount += 1;
+      if (current.authorChildCount > MAX_CHILD_PHYSICAL_SCAN) {
+        return READ_FAILED;
+      }
+    }
+    pending.push({
+      node: child as Node,
+      runtimeArtifact,
+      authorChildCount: 0,
+      runtimeChildCount: 0,
+    });
   }
   return matches === 1;
 }
@@ -1057,7 +1266,10 @@ function readChildCollection(
 ): { readonly collection: object; readonly length: number } | undefined {
   try {
     const collection = node.childNodes;
-    const length = readBoundedCollectionLength(collection, MAX_CHILD_PHYSICAL_SCAN);
+    const length = readBoundedCollectionLength(
+      collection,
+      MAX_CHILD_PHYSICAL_SCAN + MAX_RUNTIME_ARTIFACT_PHYSICAL_SCAN,
+    );
     return Object.freeze({ collection, length });
   } catch {
     return undefined;
@@ -1069,6 +1281,28 @@ function readNodeType(node: Node): number | undefined {
     return typeof node.nodeType === "number" ? node.nodeType : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function callRuntimeArtifactNodePredicate(
+  predicate: (node: Node) => boolean,
+  node: Node,
+): boolean | typeof READ_FAILED {
+  try {
+    return predicate(node);
+  } catch {
+    return READ_FAILED;
+  }
+}
+
+function callRuntimeArtifactAttributePredicate(
+  predicate: (name: string) => boolean,
+  name: string,
+): boolean | typeof READ_FAILED {
+  try {
+    return predicate(name);
+  } catch {
+    return READ_FAILED;
   }
 }
 

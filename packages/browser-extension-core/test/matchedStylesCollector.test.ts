@@ -779,6 +779,35 @@ describe("MatchedStylesCollector", () => {
     expect(result.partial).toBe(true);
     expect(result.diagnostics).toContain("inline-declaration-unavailable");
   });
+
+  it("excludes only the exact runtime stylesheet from Rules and inspect evidence", () => {
+    const scope = documentScope();
+    const selected = element(scope, {
+      matches: new Set([".author", ".runtime"]),
+    });
+    const authorSheet = stylesheet("https://example.test/author.css", [
+      styleRule(".author", { color: "green" }),
+    ]);
+    const runtimeSheet = stylesheet("https://example.test/runtime.css", [
+      styleRule(".runtime", { background: "black" }),
+    ]);
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [authorSheet, runtimeSheet]),
+      () => true,
+      undefined,
+      (sheet) => sheet === runtimeSheet,
+    ).collect(AUTHORITY)!;
+    const projection = projectMatchedStylesToCssFacts(result);
+
+    expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([
+      ".author",
+    ]);
+    expect(projection.facts.map(({ property }) => property)).toEqual(["color"]);
+    expect(projection.ruleEvidence.rules.map(({ selector }) => selector)).toEqual([
+      ".author",
+    ]);
+  });
 });
 
 function collector(
@@ -786,6 +815,7 @@ function collector(
   stylesheets: MatchedStylesStylesheetAuthority,
   isAuthorityCurrent: (authority: MatchedStylesCollectionAuthority) => boolean = () => true,
   onApplicabilityCandidates?: MatchedStylesCollectorOptions["onApplicabilityCandidates"],
+  isRuntimeStylesheet?: (stylesheet: object) => boolean,
 ) {
   return new MatchedStylesCollector({
     domTreeProvider: {
@@ -804,6 +834,7 @@ function collector(
     stylesheets,
     isAuthorityCurrent,
     onApplicabilityCandidates,
+    ...(isRuntimeStylesheet ? { isRuntimeStylesheet } : {}),
   });
 }
 

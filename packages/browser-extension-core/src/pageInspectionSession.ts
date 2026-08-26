@@ -39,9 +39,11 @@ import type {
 } from "./frameRegistry.js";
 import {
   createInspectPayload,
+  type InspectPayloadOptions,
   type InspectPayloadWithDiagnostics,
   type LocationSource,
 } from "./inspectPayload.js";
+import { PinOpRuntimeArtifacts } from "./pinOpRuntimeArtifacts.js";
 import {
   InspectMode,
   type InspectDocument,
@@ -154,11 +156,13 @@ export interface PageInspectionSessionOptions {
   readonly requestAnimationFrame?: (callback: FrameRequestCallback) => number;
   readonly cancelAnimationFrame?: (handle: number) => void;
   readonly overlayOptions?: PageOverlayOptions;
+  readonly createRuntimeArtifacts?: () => PinOpRuntimeArtifacts;
   readonly createInspectPayload?: (
     element: InspectableElement,
     document: CssDocumentSource,
     location: LocationSource,
     matchedStyles: MatchedStyles,
+    options?: InspectPayloadOptions,
   ) => InspectPayloadWithDiagnostics;
   readonly createTreeProvider?: (
     document: Document,
@@ -297,6 +301,7 @@ export class PageInspectionSession {
   private document: PageInspectionDocument;
   private readonly contentSessionId: string;
   private readonly provider: PageInspectionTreeProvider;
+  private readonly runtimeArtifacts: PinOpRuntimeArtifacts;
   private overlay: PageInspectionOverlay;
   private readonly mode: PageInspectionMode;
   private readonly selectionIntervalMs: number;
@@ -367,6 +372,8 @@ export class PageInspectionSession {
     );
     this.now = options.now ?? Date.now;
     this.payloadFactory = options.createInspectPayload ?? createInspectPayload;
+    this.runtimeArtifacts = options.createRuntimeArtifacts?.() ??
+      new PinOpRuntimeArtifacts();
     this.requestFrame = options.requestAnimationFrame ?? ((callback) => {
       const view = this.document.defaultView;
       if (!view) throw new Error("requestAnimationFrame is unavailable");
@@ -392,6 +399,13 @@ export class PageInspectionSession {
       onFrameLifecycle: () => this.handleFrameLifecycle(),
       onMutationSettled: () => this.handleMutationSettled(),
       isExcludedNode: (node) => this.isOverlayNode(node),
+      isRuntimeArtifactNode: (node) => this.isRuntimeArtifactNode(node),
+      isRuntimeArtifactAttributeName: (name) => (
+        this.isRuntimeArtifactAttributeName(name)
+      ),
+      isRuntimeArtifactAttributeMutation: (element, name) => (
+        this.isRuntimeArtifactAttributeMutation(element, name)
+      ),
     });
     this.overlayFactory = options.createOverlay ?? (
       (document, frameAuthority, overlayOptions) => new PageOverlay(
@@ -400,7 +414,18 @@ export class PageInspectionSession {
         overlayOptions,
       )
     );
-    this.overlayOptions = options.overlayOptions ?? {};
+    const configuredOverlayOptions = options.overlayOptions ?? {};
+    this.overlayOptions = {
+      ...configuredOverlayOptions,
+      isExcludedNode: (node) => {
+        if (this.isRuntimeArtifactNode(node)) return true;
+        try {
+          return configuredOverlayOptions.isExcludedNode?.(node) === true;
+        } catch {
+          return true;
+        }
+      },
+    };
     this.overlay = this.overlayFactory(
       options.document,
       this.provider.frameAuthority,
@@ -429,6 +454,8 @@ export class PageInspectionSession {
       documentEpoch: this.provider.currentDocumentEpoch,
       onInvalidated: (event) => this.handleStylesInvalidated(event),
       onError: (error) => this.reportError(error),
+      isRuntimeNode: (node) => this.isRuntimeArtifactNode(node as Node),
+      isRuntimeStylesheet: (sheet) => this.runtimeArtifacts.isRuntimeStylesheet(sheet),
       now: options.now,
     });
     const createMatchedStylesCollector = options.createMatchedStylesCollector ?? (
@@ -467,6 +494,7 @@ export class PageInspectionSession {
           candidates,
         );
       },
+      isRuntimeStylesheet: (sheet) => this.runtimeArtifacts.isRuntimeStylesheet(sheet),
     });
     this.applicabilityFactory = options.createApplicabilityObserver ?? (
       (observerOptions: MatchedStylesApplicabilityObserverOptions) => (
@@ -2413,9 +2441,37 @@ export class PageInspectionSession {
   }
 
   private isOverlayNode(node: Node): boolean {
+    if (this.isRuntimeArtifactNode(node)) return true;
     try {
       const overlay = this.overlay as PageInspectionOverlay | undefined;
       return overlay ? overlay.ownsNode(node) : false;
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactNode(node: Node): boolean {
+    try {
+      return this.runtimeArtifacts.isRuntimeNode(node);
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactAttributeName(name: string): boolean {
+    try {
+      return this.runtimeArtifacts.isRuntimeAttributeName(name);
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactAttributeMutation(
+    element: Element,
+    name: string,
+  ): boolean {
+    try {
+      return this.runtimeArtifacts.isRuntimeAttributeMutation(element, name);
     } catch {
       return true;
     }
@@ -2491,6 +2547,14 @@ export class PageInspectionSession {
       },
       location,
       matchedStyles,
+      {
+        isRuntimeAttributeName: (name) => (
+          this.isRuntimeArtifactAttributeName(name)
+        ),
+        containsRuntimeMarker: (value) => (
+          this.runtimeArtifacts.containsRuntimeMarker(value)
+        ),
+      },
     );
     if (
       !isAuthoritative() ||

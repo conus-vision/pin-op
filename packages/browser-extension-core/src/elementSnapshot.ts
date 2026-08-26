@@ -12,6 +12,8 @@ import {
   truncate,
 } from "./inspectBounds.js";
 
+const RUNTIME_ATTRIBUTE_SCAN_LIMIT = 4_096;
+
 export interface ElementSnapshotSource {
   readonly tagName: string;
   readonly id: string;
@@ -19,10 +21,15 @@ export interface ElementSnapshotSource {
   readonly attributes: Iterable<{ readonly name: string; readonly value: string }>;
 }
 
+export interface ElementSnapshotOptions {
+  readonly isRuntimeAttributeName?: (name: string) => boolean;
+}
+
 export function createElementSnapshot(
   element: ElementSnapshotSource,
   pageUrl: string,
   budget: InspectByteBudget = createInspectByteBudget(),
+  options: ElementSnapshotOptions = {},
 ): InspectSubject {
   const tag = truncate(
     element.tagName.toLowerCase(),
@@ -38,10 +45,18 @@ export function createElementSnapshot(
     );
   const id = truncate(element.id, INSPECT_LIMITS.nodeIdLength);
   const attributes: NonNullable<InspectSubject["attributes"]> = [];
+  let authorAttributeCount = 0;
   for (const { name, value } of iterateBounded(
     element.attributes,
-    INSPECT_LIMITS.subjectAttributes,
+    INSPECT_LIMITS.subjectAttributes + RUNTIME_ATTRIBUTE_SCAN_LIMIT,
   )) {
+    if (isRuntimeAttributeName(name, options.isRuntimeAttributeName)) {
+      continue;
+    }
+    authorAttributeCount += 1;
+    if (authorAttributeCount > INSPECT_LIMITS.subjectAttributes) {
+      break;
+    }
     if (!isSafeAttribute(name)) {
       continue;
     }
@@ -67,6 +82,18 @@ export function createElementSnapshot(
       pageUrl: boundedPageUrl(pageUrl),
     },
   };
+}
+
+function isRuntimeAttributeName(
+  name: string,
+  predicate: ElementSnapshotOptions["isRuntimeAttributeName"],
+): boolean {
+  if (!predicate) return false;
+  try {
+    return predicate(name) === true;
+  } catch {
+    return true;
+  }
 }
 
 function selectorFor(tag: string, id: string, classes: readonly string[]): string {

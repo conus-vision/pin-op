@@ -53,6 +53,7 @@ describe("transformPseudoStateSelector", () => {
       )).join(","),
       transformedBranches: 2,
       omittedBranches: 3,
+      unsupportedOmittedBranches: 1,
     });
   });
 
@@ -98,6 +99,7 @@ describe("transformPseudoStateSelector", () => {
       selectorText: ":where(:is(.button[data-pin-op-preview-hover-abcdefghijkl])):where([data-pin-op-preview-selected-abcdefghijkl])",
       transformedBranches: 1,
       omittedBranches: 2,
+      unsupportedOmittedBranches: 0,
     });
     expect(spaced).toEqual(compact);
   });
@@ -157,6 +159,7 @@ describe("transformPseudoStateSelector", () => {
       selectorText: ":where(.safe[data-pin-op-preview-hover-abcdefghijkl]):where([data-pin-op-preview-selected-abcdefghijkl])",
       transformedBranches: 1,
       omittedBranches: 2,
+      unsupportedOmittedBranches: 2,
     });
     expect(transformPseudoStateSelector(
       ":is(> .unsafe:hover)",
@@ -170,6 +173,7 @@ describe("transformPseudoStateSelector", () => {
       selectorText: ":where(.safe[data-pin-op-preview-hover-abcdefghijkl]):where([data-pin-op-preview-selected-abcdefghijkl])",
       transformedBranches: 1,
       omittedBranches: 1,
+      unsupportedOmittedBranches: 1,
     });
     expect(transformPseudoStateSelector(
       ":where(.host::before + .child:hover)",
@@ -277,6 +281,64 @@ describe("transformPseudoStateSelector", () => {
     });
   });
 
+  it("snapshots a hostile requested-state array without consulting its iterator", () => {
+    let lengthReads = 0;
+    const requestedStates = new Proxy<Array<"hover" | "focus">>(["hover"], {
+      get(target, property, receiver) {
+        if (property === "length") {
+          lengthReads += 1;
+          if (lengthReads > 1) throw new Error("hostile changing length");
+          return 1;
+        }
+        if (property === Symbol.iterator) {
+          throw new Error("hostile infinite iterator");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(transformPseudoStateSelector(
+      ".button:hover",
+      MARKERS,
+      requestedStates,
+    )).toEqual({
+      kind: "supported",
+      selectorText: ".button[data-pin-op-preview-hover-abcdefghijkl]:where([data-pin-op-preview-selected-abcdefghijkl])",
+      transformedBranches: 1,
+      omittedBranches: 0,
+      unsupportedOmittedBranches: 0,
+    });
+    expect(lengthReads).toBe(1);
+  });
+
+  it.each([-1, 0.5, Number.NaN])(
+    "rejects a non-natural requested-state length %s",
+    (length) => {
+      const requestedStates = new Proxy<Array<"hover" | "focus">>(["hover"], {
+        get(target, property, receiver) {
+          if (property === "length") return length;
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      });
+
+      expect(transformPseudoStateSelector(
+        ".button:hover",
+        MARKERS,
+        requestedStates,
+      )).toEqual({ kind: "unsupported", reason: "malformed-selector" });
+    },
+  );
+
+  it("fails closed without recursive measurement on a deeply nested selector", () => {
+    const depth = 2_000;
+    const selector = `${":is(".repeat(depth)}.button:hover${")".repeat(depth)}`;
+
+    expect(() => transformPseudoStateSelector(selector, MARKERS)).not.toThrow();
+    expect(transformPseudoStateSelector(selector, MARKERS)).toMatchObject({
+      kind: "unsupported",
+    });
+  });
+
   it("guards every emitted selector so a matching non-selected element cannot match", () => {
     const result = supported(transformPseudoStateSelector(
       ".button:hover, :is(.button:hover, a), :where(.button:hover)",
@@ -298,6 +360,13 @@ describe("transformPseudoStateSelector", () => {
         selectorText,
       ).toBe(false);
     }
+    const computedColor = (element: Matchable): string => (
+      splitSelectors(result.selectorText).some((selectorText) => (
+        matchesSupportedOutput(selectorText, element)
+      )) ? "preview-red" : "page-blue"
+    );
+    expect(computedColor(selected)).toBe("preview-red");
+    expect(computedColor(otherwiseMatchingSibling)).toBe("page-blue");
   });
 });
 
@@ -307,6 +376,7 @@ function expectSupported(selectorText: string, expected: string): void {
     selectorText: expected,
     transformedBranches: 1,
     omittedBranches: selectorText.includes(":is(") ? 1 : 0,
+    unsupportedOmittedBranches: 0,
   });
 }
 

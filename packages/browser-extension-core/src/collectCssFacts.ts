@@ -37,6 +37,10 @@ export interface CssFactCollection {
   readonly inaccessibleStylesheets: InaccessibleStylesheet[];
 }
 
+export interface CollectCssFactsOptions {
+  readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
+}
+
 export function collectCssFacts(
   matchedStyles: MatchedStyles,
   budget?: InspectByteBudget,
@@ -45,6 +49,7 @@ export function collectCssFacts(
   element: MatchableElement,
   document: CssDocumentSource,
   budget?: InspectByteBudget,
+  options?: CollectCssFactsOptions,
 ): CssFactCollection;
 /**
  * Projects facts from MatchedStyles. The element/document overload first
@@ -55,6 +60,7 @@ export function collectCssFacts(
   matchedOrElement: MatchedStyles | MatchableElement,
   documentOrBudget?: CssDocumentSource | InspectByteBudget,
   optionalBudget?: InspectByteBudget,
+  options?: CollectCssFactsOptions,
 ): CssFactCollection {
   if (isMatchedStyles(matchedOrElement)) {
     return projectMatchedStylesToCssFacts(
@@ -75,6 +81,9 @@ export function collectCssFacts(
   const observedRules: MatchedRule[] = [];
   const walk = walkCssRules(matchedOrElement, document, {
     ruleReferences: registry,
+    ...(options?.isRuntimeStylesheet
+      ? { isRuntimeStylesheet: options.isRuntimeStylesheet }
+      : {}),
     onMatchedRule(record) {
       if (!record.ruleRef) return;
       recordsByRule.set(record.ruleRef, []);

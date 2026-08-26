@@ -30,6 +30,7 @@ export type SelectorTransformResult =
       readonly selectorText: string;
       readonly transformedBranches: number;
       readonly omittedBranches: number;
+      readonly unsupportedOmittedBranches: number;
     }
   | {
       readonly kind: "unsupported";
@@ -43,6 +44,7 @@ export const PSEUDO_STATE_SELECTOR_LIMITS = Object.freeze({
 });
 
 const MARKER_NAME = /^data-pin-op-preview-[a-z0-9-]{16,64}$/u;
+const ALL_PSEUDO_STATES = Object.freeze(["hover", "focus"] as const);
 
 type Selector = selectorParser.Selector;
 type Pseudo = selectorParser.Pseudo;
@@ -52,6 +54,7 @@ type BranchTransform =
   | {
       readonly kind: "supported";
       readonly omittedBranches: number;
+      readonly unsupportedOmittedBranches: number;
     }
   | {
       readonly kind: "unsupported";
@@ -66,9 +69,12 @@ type BranchTransform =
 export function transformPseudoStateSelector(
   selectorText: string,
   markerNames: PseudoStateMarkerNames,
+  requestedStates: readonly PseudoState[] = ALL_PSEUDO_STATES,
 ): SelectorTransformResult {
   const markers = readMarkerNames(markerNames);
   if (!markers) return unsupported("invalid-marker-name");
+  const requested = readRequestedStates(requestedStates);
+  if (!requested) return unsupported("malformed-selector");
   if (typeof selectorText !== "string") return unsupported("malformed-selector");
 
   let selectorBytes: number;
@@ -100,15 +106,20 @@ export function transformPseudoStateSelector(
 
   const emitted: Selector[] = [];
   let omittedBranches = 0;
+  let unsupportedOmittedBranches = 0;
   let failure: PseudoSelectorUnsupportedReason | undefined;
   for (const source of root.nodes) {
     const selector = source.clone();
-    const transformed = transformBranch(selector, markers, true);
+    const transformed = transformBranch(selector, markers, requested, true);
     if (transformed.kind === "supported") {
       emitted.push(selector);
       omittedBranches += transformed.omittedBranches;
+      unsupportedOmittedBranches += transformed.unsupportedOmittedBranches;
     } else {
       omittedBranches += 1;
+      if (transformed.reason !== "no-target-pseudo") {
+        unsupportedOmittedBranches += 1;
+      }
       failure = preferReason(failure, transformed.reason);
     }
   }
@@ -132,12 +143,47 @@ export function transformPseudoStateSelector(
     selectorText: output,
     transformedBranches: emitted.length,
     omittedBranches,
+    unsupportedOmittedBranches,
   });
+}
+
+/** Bounded semantic probe used when nesting cannot be resolved safely. */
+export function selectorContainsRequestedPseudoState(
+  selectorText: string,
+  requestedStates: readonly PseudoState[],
+): boolean | undefined {
+  const requested = readRequestedStates(requestedStates);
+  if (!requested || typeof selectorText !== "string") return undefined;
+  try {
+    if (
+      selectorText.length > PSEUDO_STATE_SELECTOR_LIMITS.selectorBytes ||
+      utf8ByteLength(selectorText) > PSEUDO_STATE_SELECTOR_LIMITS.selectorBytes
+    ) return undefined;
+    const root = selectorParser().astSync(selectorText, { lossless: false });
+    const measured = measureSelectors(root.nodes);
+    if (
+      measured.branches > PSEUDO_STATE_SELECTOR_LIMITS.branches ||
+      measured.depth > PSEUDO_STATE_SELECTOR_LIMITS.functionalDepth
+    ) return undefined;
+    let found = false;
+    root.walkPseudos((pseudo) => {
+      const state = targetState(pseudo.value);
+      if (state && requested.has(state)) {
+        found = true;
+        return false;
+      }
+      return undefined;
+    });
+    return found;
+  } catch {
+    return undefined;
+  }
 }
 
 function transformBranch(
   selector: Selector,
   markers: PseudoStateMarkerNames,
+  requested: ReadonlySet<PseudoState>,
   appendSelectionGuard: boolean,
 ): BranchTransform {
   if (
@@ -151,6 +197,7 @@ function transformBranch(
   let pseudoElementCompound: number | undefined;
   const targetCompounds = new Set<number>();
   let omittedBranches = 0;
+  let unsupportedOmittedBranches = 0;
   for (const node of [...selector.nodes]) {
     if (node.type === "combinator") {
       compound += 1;
@@ -162,7 +209,7 @@ function transformBranch(
     const pseudo = node as Pseudo;
     const value = pseudo.value.toLowerCase();
     if (isPseudoElement(pseudo)) {
-      if (containsTargetPseudo(pseudo)) {
+      if (containsTargetPseudo(pseudo, requested)) {
         return unsupported("unsupported-functional-target");
       }
       pseudoElementCompound = compound;
@@ -170,6 +217,12 @@ function transformBranch(
     }
     const state = targetState(pseudo.value);
     if (state) {
+      if (!requested.has(state)) {
+        if (pseudo.nodes && pseudo.nodes.length > 0) {
+          return unsupported("unsupported-functional-target");
+        }
+        continue;
+      }
       if (pseudoElementCompound === compound) {
         return unsupported("unsupported-target-position");
       }
@@ -181,7 +234,7 @@ function transformBranch(
       continue;
     }
 
-    if (!containsTargetPseudo(pseudo)) continue;
+    if (!containsTargetPseudo(pseudo, requested)) continue;
     if (pseudoElementCompound === compound) {
       return unsupported("unsupported-target-position");
     }
@@ -191,9 +244,10 @@ function transformBranch(
       return unsupported("unsupported-functional-target");
     }
 
-    const transformed = transformPositiveFunction(pseudo, markers, value);
+    const transformed = transformPositiveFunction(pseudo, markers, requested, value);
     if (transformed.kind === "unsupported") return transformed;
     omittedBranches += transformed.omittedBranches;
+    unsupportedOmittedBranches += transformed.unsupportedOmittedBranches;
     targetCompounds.add(compound);
   }
 
@@ -204,12 +258,13 @@ function transformBranch(
   }
   if (appendSelectionGuard) appendGuard(selector, markers.selection);
   if (!isMountableSelectorStructure(selector)) return unsupported("unsafe-selector");
-  return { kind: "supported", omittedBranches };
+  return { kind: "supported", omittedBranches, unsupportedOmittedBranches };
 }
 
 function transformPositiveFunction(
   pseudo: Pseudo,
   markers: PseudoStateMarkerNames,
+  requested: ReadonlySet<PseudoState>,
   value: ":is" | ":where",
 ): BranchTransform {
   const originalSpecificity = value === ":is"
@@ -217,15 +272,20 @@ function transformPositiveFunction(
     : undefined;
   const emitted: Selector[] = [];
   let omittedBranches = 0;
+  let unsupportedOmittedBranches = 0;
   let failure: PseudoSelectorUnsupportedReason | undefined;
   for (const source of pseudo.nodes) {
     const selector = source.clone();
-    const transformed = transformBranch(selector, markers, false);
+    const transformed = transformBranch(selector, markers, requested, false);
     if (transformed.kind === "supported") {
       emitted.push(selector);
       omittedBranches += transformed.omittedBranches;
+      unsupportedOmittedBranches += transformed.unsupportedOmittedBranches;
     } else {
       omittedBranches += 1;
+      if (transformed.reason !== "no-target-pseudo") {
+        unsupportedOmittedBranches += 1;
+      }
       failure = preferReason(failure, transformed.reason);
     }
   }
@@ -246,7 +306,7 @@ function transformPositiveFunction(
 
   pseudo.removeAll();
   for (const selector of emitted) pseudo.append(selector);
-  return { kind: "supported", omittedBranches };
+  return { kind: "supported", omittedBranches, unsupportedOmittedBranches };
 }
 
 function appendGuard(selector: Selector, selectionMarker: string): void {
@@ -285,6 +345,33 @@ function readMarkerNames(
       return undefined;
     }
     return Object.freeze({ selection, hover, focus });
+  } catch {
+    return undefined;
+  }
+}
+
+function readRequestedStates(
+  states: readonly PseudoState[],
+): ReadonlySet<PseudoState> | undefined {
+  try {
+    if (!Array.isArray(states)) {
+      return undefined;
+    }
+    const length = states.length;
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > ALL_PSEUDO_STATES.length
+    ) {
+      return undefined;
+    }
+    const requested = new Set<PseudoState>();
+    for (let index = 0; index < length; index += 1) {
+      const state = states[index];
+      if (state !== "hover" && state !== "focus") return undefined;
+      requested.add(state);
+    }
+    return requested;
   } catch {
     return undefined;
   }
@@ -343,10 +430,14 @@ function isCssWhitespace(value: string | undefined): boolean {
     value === "\r" || value === "\f";
 }
 
-function containsTargetPseudo(node: Pseudo): boolean {
+function containsTargetPseudo(
+  node: Pseudo,
+  requested: ReadonlySet<PseudoState>,
+): boolean {
   let found = false;
   node.walkPseudos((nested) => {
-    if (targetState(nested.value)) {
+    const state = targetState(nested.value);
+    if (state && requested.has(state)) {
       found = true;
       return false;
     }
@@ -361,15 +452,23 @@ function measureSelectors(selectors: readonly Selector[]): {
 } {
   let branches = 0;
   let maximumDepth = 0;
-  const visit = (selector: Selector, depth: number): void => {
+  const stack = selectors.map((selector) => ({ selector, depth: 0 }));
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const { selector, depth } = current;
     branches += 1;
     maximumDepth = Math.max(maximumDepth, depth);
+    if (
+      branches > PSEUDO_STATE_SELECTOR_LIMITS.branches ||
+      maximumDepth > PSEUDO_STATE_SELECTOR_LIMITS.functionalDepth
+    ) break;
     for (const node of selector.nodes) {
       if (node.type !== "pseudo" || !node.nodes || node.nodes.length === 0) continue;
-      for (const nested of node.nodes) visit(nested, depth + 1);
+      for (let index = node.nodes.length - 1; index >= 0; index -= 1) {
+        stack.push({ selector: node.nodes[index]!, depth: depth + 1 });
+      }
     }
-  };
-  for (const selector of selectors) visit(selector, 0);
+  }
   return { branches, depth: maximumDepth };
 }
 

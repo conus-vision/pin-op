@@ -68,6 +68,79 @@ describe("createInspectPayload", () => {
     expect(payload.targets[0]?.role).toBe("selected");
   });
 
+  it("omits session marker names from selected and parent inspect subjects", () => {
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    const styleMarker = "data-pin-op-runtime-fedcba9876543210";
+    const parent = {
+      ...element("main", "", ["layout"], null),
+      attributes: [
+        { name: marker, value: "" },
+        { name: styleMarker, value: "copied-by-page" },
+        { name: "data-page", value: "parent" },
+      ],
+    } as InspectableElement;
+    const selected = {
+      ...element("article", "", ["card"], parent),
+      attributes: [
+        { name: marker, value: "" },
+        { name: styleMarker, value: "copied-by-page" },
+        { name: "data-page", value: "selected" },
+      ],
+    } as InspectableElement;
+
+    const payload = createInspectPayload(
+      selected,
+      fakeDocument([]),
+      locationSource(),
+      emptyMatchedStyles(),
+      {
+        isRuntimeAttributeName: (name) => (
+          name === marker || name === styleMarker
+        ),
+      },
+    );
+
+    expect(payload.targets.map(({ subject }) => subject.attributes)).toEqual([
+      [{ name: "data-page", value: "selected", metadata: {} }],
+      [{ name: "data-page", value: "parent", metadata: {} }],
+    ]);
+  });
+
+  it("rejects copied runtime markers in subject strings and author rule evidence", () => {
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    const containsRuntimeMarker = (value: string): boolean => value.includes(marker);
+    const copiedSubject = element(
+      "article",
+      `target-${marker}`,
+      ["card"],
+      null,
+    );
+
+    expect(() => createInspectPayload(
+      copiedSubject,
+      fakeDocument([]),
+      locationSource(),
+      emptyMatchedStyles(),
+      { containsRuntimeMarker },
+    )).toThrow(/runtime marker/iu);
+
+    const matched = {
+      ...emptyMatchedStyles(),
+      rules: [matchedRule(
+        "rule-runtime-copy",
+        `.card[${marker}]`,
+        "color",
+      )],
+    };
+    expect(() => createInspectPayload(
+      element("article", "target", ["card"], null),
+      fakeDocument([]),
+      locationSource(),
+      matched,
+      { containsRuntimeMarker },
+    )).toThrow(/runtime marker/iu);
+  });
+
   it("projects facts for targets and evidence for every displayed inherited rule", () => {
     const parent = element("main", "", ["layout"], null);
     const selected = element("article", "", ["card"], parent);

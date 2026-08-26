@@ -60,6 +60,7 @@ const FRAME_MUTATION_OPERATION_LIMIT = FRAME_MUTATION_SCAN_LIMIT * 4;
 const MUTATION_INTAKE_RECORD_LIMIT = 4_096;
 const MUTATION_INTAKE_NODE_LIMIT = 4_096;
 const MUTATION_RECORD_NODE_LIMIT = 256;
+const RUNTIME_ARTIFACT_SCAN_LIMIT = 4_096;
 const MUTATION_OVERFLOW_COALESCING_LIMIT = 128;
 const MUTATION_OVERFLOW_FRAME_VISIT_LIMIT = 4_096;
 // A reset hook may synchronously request another epoch. Bound the drain so a
@@ -110,6 +111,12 @@ export interface DomTreeProviderOptions {
   readonly onFrameLifecycle?: (event: FrameLifecycleEvent) => void;
   readonly onMutationSettled?: () => void;
   readonly isExcludedNode?: (node: Node) => boolean;
+  readonly isRuntimeArtifactNode?: (node: Node) => boolean;
+  readonly isRuntimeArtifactAttributeName?: (name: string) => boolean;
+  readonly isRuntimeArtifactAttributeMutation?: (
+    element: Element,
+    name: string,
+  ) => boolean;
 }
 
 export interface DomTreeSelectedNodeRemoval {
@@ -175,6 +182,7 @@ interface CursorRecord {
   readonly branchRevision: number;
   readonly offset: number;
   readonly physicalOffset: number;
+  readonly resumeAfter?: Node;
   readonly active: boolean;
 }
 
@@ -231,9 +239,12 @@ interface PendingMutationRecord {
   readonly observedRoot: Node;
   readonly type: "attributes" | "characterData" | "childList";
   readonly target: Node;
+  readonly attributeName?: string;
   readonly addedNodes: readonly Node[];
   readonly removedNodes: readonly Node[];
 }
+
+const SKIPPED_RUNTIME_MUTATION = Symbol("skipped-runtime-mutation");
 
 interface PendingMutationOverflow {
   readonly observedRoots: Set<Node>;
@@ -414,6 +425,15 @@ export class DomTreeProvider {
   private readonly isExcludedNodePredicate: (
     (node: Node) => boolean
   ) | undefined;
+  private readonly isRuntimeArtifactNodePredicate: (
+    (node: Node) => boolean
+  ) | undefined;
+  private readonly isRuntimeArtifactAttributeNamePredicate: (
+    (name: string) => boolean
+  ) | undefined;
+  private readonly isRuntimeArtifactAttributeMutationPredicate: (
+    (element: Element, name: string) => boolean
+  ) | undefined;
   private readonly frameAuthorityView: DomTreeFrameAuthority;
   private readonly pendingMutations: PendingMutationRecord[] = [];
   private pendingMutationNodeCount = 0;
@@ -483,6 +503,11 @@ export class DomTreeProvider {
     this.onFrameLifecycle = options.onFrameLifecycle;
     this.onMutationSettled = options.onMutationSettled;
     this.isExcludedNodePredicate = options.isExcludedNode;
+    this.isRuntimeArtifactNodePredicate = options.isRuntimeArtifactNode;
+    this.isRuntimeArtifactAttributeNamePredicate =
+      options.isRuntimeArtifactAttributeName;
+    this.isRuntimeArtifactAttributeMutationPredicate =
+      options.isRuntimeArtifactAttributeMutation;
     this.nodeRegistry = new DomNodeRegistry({
       documentEpoch: this.documentEpoch,
       maxReverseEntries: this.maxRecords,
@@ -565,6 +590,10 @@ export class DomTreeProvider {
         )),
       },
       isExcludedNode: (node) => this.isNodeExcluded(node),
+      isRuntimeArtifactNode: (node) => this.isRuntimeArtifactNode(node),
+      isRuntimeArtifactAttributeName: (name) => (
+        this.isRuntimeArtifactAttributeName(name)
+      ),
     });
   }
 
@@ -592,8 +621,39 @@ export class DomTreeProvider {
   }
 
   private isNodeExcluded(node: Node): boolean {
+    if (this.isRuntimeArtifactNode(node)) return true;
     try {
       return this.isExcludedNodePredicate?.(node) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactNode(node: Node): boolean {
+    try {
+      return this.isRuntimeArtifactNodePredicate?.(node) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactAttributeName(name: string): boolean {
+    try {
+      return this.isRuntimeArtifactAttributeNamePredicate?.(name) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  private isRuntimeArtifactAttributeMutation(
+    element: Element,
+    name: string,
+  ): boolean {
+    try {
+      return this.isRuntimeArtifactAttributeMutationPredicate?.(
+        element,
+        name,
+      ) === true;
     } catch {
       return true;
     }
@@ -789,6 +849,7 @@ export class DomTreeProvider {
       request.nodeRef,
       record!.scope,
       physicalOffset,
+      requestedCursor?.resumeAfter,
     );
     const locators = page.children.map((child) => (
       isRecoverableKind(child.kind)
@@ -841,6 +902,9 @@ export class DomTreeProvider {
           branchRevision: branch.revision,
           offset: nextOffset,
           physicalOffset: nextPhysicalOffset!,
+          ...(nodes.length === 0
+            ? {}
+            : { resumeAfter: page.children[nodes.length - 1]!.node }),
         })
       : undefined;
     const response = freezeChildrenResponse({
@@ -1512,17 +1576,33 @@ export class DomTreeProvider {
     if (frameElement && frame && !frameWasRegistered) {
       newlyRegisteredFrames?.add(element);
     }
+    const shadowRoot = getOpenShadowRoot(element);
+    const visibleShadowRoot = shadowRoot && !this.isNodeExcluded(shadowRoot)
+      ? shadowRoot
+      : undefined;
     const expandable = frame?.kind === "accessible" || (
       !frameElement && (
-        getOpenShadowRoot(element) !== undefined ||
-        hasLogicalChild(element)
+        visibleShadowRoot !== undefined ||
+        hasLogicalChild(
+          element,
+          (node) => this.isNodeExcluded(node),
+          this.maxRecords,
+        )
       )
     );
-    const label = createElementLabel(element);
+    const label = createElementLabel(
+      element,
+      (name) => this.isRuntimeArtifactAttributeName(name),
+    );
     const inaccessible = frameElement && frame?.kind !== "accessible";
     const childCount = frameElement
       ? frame?.kind === "accessible" ? 1 : 0
-      : safeChildCount(element, getOpenShadowRoot(element) ? 1 : 0);
+      : safeChildCount(
+        element,
+        visibleShadowRoot ? 1 : 0,
+        (node) => this.isNodeExcluded(node),
+        this.maxRecords,
+      );
     this.storeReferencedRecord(nodeRef, {
       scope,
       kind: "element",
@@ -1537,7 +1617,10 @@ export class DomTreeProvider {
       kind: "element",
       nodeType: 1,
       nodeName: readNodeName(element, "ELEMENT"),
-      attributes: readInspectorAttributes(element),
+      attributes: readInspectorAttributes(
+        element,
+        (name) => this.isRuntimeArtifactAttributeName(name),
+      ),
       childCount,
       relationship: "dom",
       selectable: !inaccessible,
@@ -1570,7 +1653,12 @@ export class DomTreeProvider {
       nodeType: 11,
       nodeName: readNodeName(shadowRoot, "#document-fragment"),
       attributes: Object.freeze([]),
-      childCount: safeChildCount(shadowRoot),
+      childCount: safeChildCount(
+        shadowRoot,
+        0,
+        (node) => this.isNodeExcluded(node),
+        this.maxRecords,
+      ),
       relationship: "shadow-root",
       selectable: false,
       label: "#shadow-root (open)",
@@ -1603,7 +1691,12 @@ export class DomTreeProvider {
       nodeType: 9,
       nodeName: readNodeName(document, "#document"),
       attributes: Object.freeze([]),
-      childCount: safeChildCount(document),
+      childCount: safeChildCount(
+        document,
+        0,
+        (node) => this.isNodeExcluded(node),
+        this.maxRecords,
+      ),
       relationship: "frame-document",
       selectable: false,
       label: "#document",
@@ -1997,6 +2090,7 @@ export class DomTreeProvider {
     nodeRef: string,
     scope: NodeScope,
     physicalOffset: number,
+    resumeAfter?: Node,
   ): LogicalChildPage {
     const children: LogicalChild[] = [];
     const childPhysicalOffsets: number[] = [];
@@ -2006,6 +2100,7 @@ export class DomTreeProvider {
       if (
         description?.kind === "accessible" &&
         physicalOffset === 0 &&
+        resumeAfter === undefined &&
         !this.isNodeExcluded(description.document)
       ) {
         children.push({
@@ -2018,11 +2113,13 @@ export class DomTreeProvider {
       return freezeLogicalChildPage(children, childPhysicalOffsets, false, 1);
     }
     let syntheticChildCount = 0;
+    let logicalShadowRoot: ShadowRoot | undefined;
     if (node.nodeType === 1) {
       const shadowRoot = getOpenShadowRoot(node as Element);
       if (shadowRoot && !this.isNodeExcluded(shadowRoot)) {
+        logicalShadowRoot = shadowRoot;
         syntheticChildCount = 1;
-        if (physicalOffset === 0) {
+        if (physicalOffset === 0 && resumeAfter === undefined) {
           children.push({ kind: "shadow-root", node: shadowRoot });
           childPhysicalOffsets.push(1);
           physicalOffset = 1;
@@ -2038,17 +2135,77 @@ export class DomTreeProvider {
         physicalOffset,
       );
     }
+    if (resumeAfter !== undefined && resumeAfter !== logicalShadowRoot) {
+      if (readDirectParentNode(resumeAfter) !== node) {
+        throwDomTreeError("node-unavailable");
+      }
+      let child = readNextSibling(resumeAfter);
+      if (child === undefined) throwDomTreeError("node-unavailable");
+      let authorVisitedNodes = 0;
+      let runtimeVisitedNodes = 0;
+      let nextPhysicalOffset = physicalOffset;
+      while (
+        child !== null &&
+        authorVisitedNodes < CHILD_PAGE_PHYSICAL_SCAN_LIMIT &&
+        runtimeVisitedNodes <= RUNTIME_ARTIFACT_SCAN_LIMIT &&
+        children.length < CHILD_PAGE_SIZE
+      ) {
+        const current = child;
+        child = readNextSibling(current);
+        if (child === undefined) throwDomTreeError("node-unavailable");
+        nextPhysicalOffset += 1;
+        if (this.isNodeExcluded(current)) {
+          runtimeVisitedNodes += 1;
+          if (runtimeVisitedNodes > RUNTIME_ARTIFACT_SCAN_LIMIT) {
+            throwDomTreeError("node-unavailable");
+          }
+          continue;
+        }
+        authorVisitedNodes += 1;
+        const childType = readNodeType(current);
+        if (childType === 1) {
+          children.push({ kind: "element", node: current as Element });
+        } else if (childType === 3) {
+          children.push({ kind: "text", node: current });
+        } else if (childType === 8) {
+          children.push({ kind: "comment", node: current });
+        } else if (childType === 10) {
+          children.push({ kind: "document-type", node: current as DocumentType });
+        }
+        if (children.length > childPhysicalOffsets.length) {
+          childPhysicalOffsets.push(nextPhysicalOffset);
+        }
+      }
+      return freezeLogicalChildPage(
+        children,
+        childPhysicalOffsets,
+        child !== null,
+        nextPhysicalOffset,
+      );
+    }
     let childIndex = Math.max(0, physicalOffset - syntheticChildCount);
-    let visitedNodes = 0;
+    let authorVisitedNodes = 0;
+    let runtimeVisitedNodes = 0;
     while (
       childIndex < childNodes.length &&
-      visitedNodes < CHILD_PAGE_PHYSICAL_SCAN_LIMIT &&
+      authorVisitedNodes < CHILD_PAGE_PHYSICAL_SCAN_LIMIT &&
+      runtimeVisitedNodes <= RUNTIME_ARTIFACT_SCAN_LIMIT &&
       children.length < CHILD_PAGE_SIZE
     ) {
       const child = safeArrayLikeItem(childNodes, childIndex);
       childIndex += 1;
-      visitedNodes += 1;
-      if (!child || this.isNodeExcluded(child)) continue;
+      if (!child) {
+        authorVisitedNodes += 1;
+        continue;
+      }
+      if (this.isNodeExcluded(child)) {
+        runtimeVisitedNodes += 1;
+        if (runtimeVisitedNodes > RUNTIME_ARTIFACT_SCAN_LIMIT) {
+          throwDomTreeError("node-unavailable");
+        }
+        continue;
+      }
+      authorVisitedNodes += 1;
       const childType = readNodeType(child);
       if (childType === 1) {
         children.push({ kind: "element", node: child as Element });
@@ -2361,12 +2518,12 @@ export class DomTreeProvider {
         return;
       }
       if (!isCurrent() || this.pendingMutationOverflow) return;
-      const availableRecords = Math.max(
-        0,
-        MUTATION_INTAKE_RECORD_LIMIT - this.pendingMutations.length,
-      );
-      const acceptedRecordCount = Math.min(recordCount, availableRecords);
-      for (let index = 0; index < acceptedRecordCount; index += 1) {
+      let index = 0;
+      let skippedRuntimeRecords = 0;
+      while (
+        index < recordCount &&
+        skippedRuntimeRecords <= RUNTIME_ARTIFACT_SCAN_LIMIT
+      ) {
         if (!isCurrent()) return;
         let record: MutationRecord | undefined;
         try {
@@ -2376,10 +2533,19 @@ export class DomTreeProvider {
           return;
         }
         if (!isCurrent() || this.pendingMutationOverflow) return;
+        index += 1;
         const snapshot = record
           ? this.snapshotMutationRecord(observedRoot, record, authority)
           : undefined;
         if (!isCurrent() || this.pendingMutationOverflow) return;
+        if (snapshot === SKIPPED_RUNTIME_MUTATION) {
+          skippedRuntimeRecords += 1;
+          if (skippedRuntimeRecords > RUNTIME_ARTIFACT_SCAN_LIMIT) {
+            this.markMutationOverflow(observedRoot);
+            return;
+          }
+          continue;
+        }
         if (!snapshot) {
           this.markMutationOverflow(observedRoot);
           return;
@@ -2399,7 +2565,7 @@ export class DomTreeProvider {
         this.pendingMutationNodeCount += snapshotNodeCount;
         if (this.pendingMutationOverflow) return;
       }
-      if (recordCount > acceptedRecordCount && isCurrent()) {
+      if (recordCount > index && isCurrent()) {
         this.markMutationOverflow(observedRoot);
       }
     } finally {
@@ -2411,7 +2577,7 @@ export class DomTreeProvider {
     observedRoot: Node,
     record: MutationRecord,
     authority: MutationDrainAuthority,
-  ): PendingMutationRecord | undefined {
+  ): PendingMutationRecord | typeof SKIPPED_RUNTIME_MUTATION | undefined {
     const isCurrent = () => this.isMutationDrainAuthorityCurrent(authority);
     let type: unknown;
     let target: unknown;
@@ -2431,11 +2597,34 @@ export class DomTreeProvider {
     ) {
       return undefined;
     }
+    if (this.isRuntimeArtifactNode(target as Node)) {
+      return SKIPPED_RUNTIME_MUTATION;
+    }
     if (type !== "childList") {
+      let attributeName: string | undefined;
+      if (type === "attributes") {
+        try {
+          const candidate = record.attributeName;
+          attributeName = typeof candidate === "string" ? candidate : undefined;
+        } catch {
+          return undefined;
+        }
+        if (!isCurrent() || this.pendingMutationOverflow) return undefined;
+        if (
+          attributeName !== undefined &&
+          this.isRuntimeArtifactAttributeMutation(
+            target as Element,
+            attributeName,
+          )
+        ) {
+          return SKIPPED_RUNTIME_MUTATION;
+        }
+      }
       return Object.freeze({
         observedRoot,
         type,
         target: target as Node,
+        ...(attributeName === undefined ? {} : { attributeName }),
         addedNodes: Object.freeze([]) as readonly Node[],
         removedNodes: Object.freeze([]) as readonly Node[],
       });
@@ -2449,6 +2638,8 @@ export class DomTreeProvider {
     }
     if (!isCurrent() || this.pendingMutationOverflow) return undefined;
     const copied: Node[] = [];
+    let runtimeNodeCount = 0;
+    let sawRuntimeNode = false;
     const copyNodes = (source: unknown): readonly Node[] | undefined => {
       if (!source || typeof source !== "object") return undefined;
       let length: number;
@@ -2458,18 +2649,28 @@ export class DomTreeProvider {
         return undefined;
       }
       if (!isCurrent() || this.pendingMutationOverflow) return undefined;
-      const recordCapacity = MUTATION_RECORD_NODE_LIMIT - copied.length;
-      const pendingCapacity = MUTATION_INTAKE_NODE_LIMIT -
-        this.pendingMutationNodeCount - copied.length;
-      const copyCount = Math.min(length, recordCapacity, pendingCapacity);
       const result: Node[] = [];
-      for (let index = 0; index < copyCount; index += 1) {
+      let index = 0;
+      while (
+        index < length &&
+        runtimeNodeCount <= RUNTIME_ARTIFACT_SCAN_LIMIT
+      ) {
         if (!isCurrent()) return undefined;
         let node: unknown;
         try {
           node = (source as ArrayLike<unknown>)[index];
         } catch {
           return undefined;
+        }
+        index += 1;
+        if (this.isRuntimeArtifactNode(node as Node)) {
+          sawRuntimeNode = true;
+          runtimeNodeCount += 1;
+          if (runtimeNodeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) {
+            this.markMutationOverflow(observedRoot, target as Node);
+            return undefined;
+          }
+          continue;
         }
         if (
           !isCurrent() ||
@@ -2490,7 +2691,7 @@ export class DomTreeProvider {
         result.push(node as Node);
         copied.push(node as Node);
       }
-      if (length > copyCount) {
+      if (length > index) {
         this.markMutationOverflow(observedRoot, target as Node);
       }
       return Object.freeze(result);
@@ -2509,6 +2710,13 @@ export class DomTreeProvider {
       addedNodes = copyNodes(addedSource);
     }
     if (!addedNodes || !isCurrent()) return undefined;
+    if (
+      sawRuntimeNode &&
+      addedNodes.length === 0 &&
+      removedNodes.length === 0
+    ) {
+      return SKIPPED_RUNTIME_MUTATION;
+    }
     return Object.freeze({
       observedRoot,
       type,
@@ -2673,6 +2881,16 @@ export class DomTreeProvider {
           if (!isCurrent()) return false;
           continue;
         }
+        if (
+          mutation.attributeName !== undefined &&
+          this.isRuntimeArtifactAttributeMutation(
+            mutation.target as Element,
+            mutation.attributeName,
+          )
+        ) {
+          if (!isCurrent()) return false;
+          continue;
+        }
         if (!isCurrent()) return false;
         const targetRef = this.refsByNode.get(mutation.target);
         const targetRecord = targetRef
@@ -2716,6 +2934,10 @@ export class DomTreeProvider {
       for (let index = 0; index < removedNodes.length; index += 1) {
         if (!isCurrent()) return false;
         const removed = removedNodes[index];
+        if (removed && this.isNodeExcluded(removed)) {
+          if (!isCurrent()) return false;
+          continue;
+        }
         const removedType = removed ? readNodeType(removed) : undefined;
         if (!isCurrent()) return false;
         if (removedType === 1) {
@@ -2752,6 +2974,10 @@ export class DomTreeProvider {
       for (let index = 0; index < addedNodes.length; index += 1) {
         if (!isCurrent()) return false;
         const added = addedNodes[index];
+        if (added && this.isNodeExcluded(added)) {
+          if (!isCurrent()) return false;
+          continue;
+        }
         const addedType = added ? readNodeType(added) : undefined;
         if (!isCurrent()) return false;
         if (addedType === 1 && added && !this.isNodeExcluded(added)) {
@@ -4373,7 +4599,13 @@ export class DomTreeProvider {
       if (!liveParentPath || !this.validateMaterializedPath(liveParentPath, parentRef)) {
         return false;
       }
-      const current = this.logicalChildPage(parent, parentRef, scope, physicalOffset);
+      const current = this.logicalChildPage(
+        parent,
+        parentRef,
+        scope,
+        physicalOffset,
+        expectedCursor?.resumeAfter,
+      );
       if (
         current.hasMore !== expected.hasMore ||
         current.nextPhysicalOffset !== expected.nextPhysicalOffset ||
@@ -4394,7 +4626,8 @@ export class DomTreeProvider {
         : this.cursors.get(nextCursor);
       if (nextCursor !== undefined && (
         liveNextCursor?.offset !== (expectedCursor?.offset ?? 0) + views.length ||
-        liveNextCursor.physicalOffset !== expectedNextPhysicalOffset
+        liveNextCursor.physicalOffset !== expectedNextPhysicalOffset ||
+        liveNextCursor.resumeAfter !== current.children[views.length - 1]?.node
       )) {
         return false;
       }
@@ -5905,18 +6138,54 @@ function readShadowIncludingParent(node: Node): Node | undefined {
   }
 }
 
-function hasLogicalChild(node: Node): boolean {
+function hasLogicalChild(
+  node: Node,
+  isExcluded: (node: Node) => boolean,
+  scanLimit: number,
+): boolean {
   const childNodes = readChildNodes(node);
   if (!childNodes) return true;
   try {
     const length = childNodes.length;
-    return typeof length === "number" &&
-      Number.isSafeInteger(length) &&
-      length >= 0
-      ? length > 0
-      : true;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > scanLimit + RUNTIME_ARTIFACT_SCAN_LIMIT
+    ) return true;
+    let runtimeNodeCount = 0;
+    for (let index = 0; index < length; index += 1) {
+      const child = childNodes[index];
+      if (!child) return true;
+      if (!isExcluded(child)) return true;
+      runtimeNodeCount += 1;
+      if (runtimeNodeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) return true;
+    }
+    return false;
   } catch {
     return true;
+  }
+}
+
+function readDirectParentNode(node: Node): Node | null | undefined {
+  try {
+    const parent = node.parentNode;
+    return parent === null || (parent && typeof parent === "object")
+      ? parent
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readNextSibling(node: Node): Node | null | undefined {
+  try {
+    const sibling = node.nextSibling;
+    return sibling === null || (sibling && typeof sibling === "object")
+      ? sibling
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -6010,7 +6279,10 @@ function readDocumentTypeId(
   }
 }
 
-function readInspectorAttributes(element: Element): readonly InspectorAttribute[] {
+function readInspectorAttributes(
+  element: Element,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
+): readonly InspectorAttribute[] {
   let attributes: ArrayLike<{ readonly name?: unknown; readonly value?: unknown }>;
   try {
     attributes = element.attributes;
@@ -6018,15 +6290,28 @@ function readInspectorAttributes(element: Element): readonly InspectorAttribute[
     return Object.freeze([]);
   }
   const result: InspectorAttribute[] = [];
-  const count = boundedArrayLikeLength(attributes, DOM_PROTOCOL_MAX_ATTRIBUTES);
+  const count = boundedArrayLikeLength(
+    attributes,
+    DOM_PROTOCOL_MAX_ATTRIBUTES + RUNTIME_ARTIFACT_SCAN_LIMIT,
+  );
+  let authorAttributeCount = 0;
+  let runtimeAttributeCount = 0;
   for (let index = 0; index < count; index += 1) {
     try {
       const attribute = attributes[index];
       const name = attribute?.name;
-      const value = attribute?.value;
-      if (typeof name !== "string" || name.length === 0 || typeof value !== "string") {
+      if (typeof name !== "string" || name.length === 0) {
         continue;
       }
+      if (isRuntimeArtifactAttributeName(name)) {
+        runtimeAttributeCount += 1;
+        if (runtimeAttributeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) break;
+        continue;
+      }
+      authorAttributeCount += 1;
+      if (authorAttributeCount > DOM_PROTOCOL_MAX_ATTRIBUTES) break;
+      const value = attribute?.value;
+      if (typeof value !== "string") continue;
       result.push(Object.freeze({
         name: truncateDomProtocolUtf16(
           name,
@@ -6044,7 +6329,12 @@ function readInspectorAttributes(element: Element): readonly InspectorAttribute[
   return Object.freeze(result);
 }
 
-function safeChildCount(node: Node, syntheticCount = 0): number {
+function safeChildCount(
+  node: Node,
+  syntheticCount = 0,
+  isExcluded: (node: Node) => boolean = () => false,
+  scanLimit = Number.MAX_SAFE_INTEGER,
+): number {
   const childNodes = readChildNodes(node);
   if (!childNodes) return syntheticCount;
   try {
@@ -6057,7 +6347,25 @@ function safeChildCount(node: Node, syntheticCount = 0): number {
     ) {
       return syntheticCount;
     }
-    return length + syntheticCount;
+    if (length > scanLimit + RUNTIME_ARTIFACT_SCAN_LIMIT) {
+      return syntheticCount;
+    }
+    let visibleCount = syntheticCount;
+    let runtimeNodeCount = 0;
+    for (let index = 0; index < length; index += 1) {
+      const child = childNodes[index];
+      if (!child) continue;
+      if (isExcluded(child)) {
+        runtimeNodeCount += 1;
+        if (runtimeNodeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) {
+          return syntheticCount;
+        }
+        continue;
+      }
+      visibleCount += 1;
+      if (visibleCount - syntheticCount > scanLimit) return syntheticCount;
+    }
+    return visibleCount;
   } catch {
     return syntheticCount;
   }
@@ -6397,7 +6705,10 @@ function snapshotPendingMutationOverflow(
     : undefined;
 }
 
-function createElementLabel(element: Element): string {
+function createElementLabel(
+  element: Element,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
+): string {
   let tagName = "element";
   try {
     tagName = boundedDisplayToken(
@@ -6419,7 +6730,10 @@ function createElementLabel(element: Element): string {
   for (const className of readElementClassNames(element)) {
     label = appendLabelSegment(label, `.${className}`);
   }
-  for (const attributeName of readApprovedAttributeNames(element)) {
+  for (const attributeName of readApprovedAttributeNames(
+    element,
+    isRuntimeArtifactAttributeName,
+  )) {
     label = appendLabelSegment(label, ` [${attributeName}]`);
   }
   return label;
@@ -6463,7 +6777,10 @@ function readElementClassNames(element: Element): readonly string[] {
   return Object.freeze(classes);
 }
 
-function readApprovedAttributeNames(element: Element): readonly string[] {
+function readApprovedAttributeNames(
+  element: Element,
+  isRuntimeArtifactAttributeName: (name: string) => boolean,
+): readonly string[] {
   let attributes: ArrayLike<{ readonly name?: unknown }>;
   try {
     attributes = element.attributes;
@@ -6473,14 +6790,23 @@ function readApprovedAttributeNames(element: Element): readonly string[] {
   const names: string[] = [];
   const count = boundedArrayLikeLength(
     attributes,
-    ELEMENT_LABEL_MAX_ATTRIBUTE_SCAN,
+    ELEMENT_LABEL_MAX_ATTRIBUTE_SCAN + RUNTIME_ARTIFACT_SCAN_LIMIT,
   );
+  let authorAttributeCount = 0;
+  let runtimeAttributeCount = 0;
   for (let index = 0; index < count; index += 1) {
     if (names.length >= ELEMENT_LABEL_MAX_ATTRIBUTES) {
       break;
     }
     try {
       const normalized = String(attributes[index]?.name).toLowerCase();
+      if (isRuntimeArtifactAttributeName(normalized)) {
+        runtimeAttributeCount += 1;
+        if (runtimeAttributeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) break;
+        continue;
+      }
+      authorAttributeCount += 1;
+      if (authorAttributeCount > ELEMENT_LABEL_MAX_ATTRIBUTE_SCAN) break;
       if (
         isApprovedDisplayAttribute(normalized) &&
         !names.includes(normalized)

@@ -62,6 +62,7 @@ export interface MatchedStylesStylesheetAuthority {
 export interface MatchedStylesCollectorOptions {
   readonly domTreeProvider: MatchedStylesNodeAuthority;
   readonly stylesheets: MatchedStylesStylesheetAuthority;
+  readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
   readonly isAuthorityCurrent?: (
     authority: MatchedStylesCollectionAuthority,
   ) => boolean;
@@ -253,6 +254,9 @@ export class MatchedStylesCollector {
       { pageUrl: pageUrlFor(element), styleSheets: roots },
       {
         workBudget,
+        ...(this.options.isRuntimeStylesheet
+          ? { isRuntimeStylesheet: this.options.isRuntimeStylesheet }
+          : {}),
         referenceRule: (nativeStylesheet, _identity, rulePath, nativeRule) => {
           const entry = entryBySheet.get(nativeStylesheet);
           if (!entry) {

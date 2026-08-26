@@ -1464,6 +1464,33 @@ describe("collectCssFacts", () => {
       .toBe(true);
     expect(result.inaccessibleStylesheets).toEqual([]);
   });
+
+  it("excludes only the exact runtime stylesheet from facts and rule evidence", () => {
+    const authorSheet = {
+      href: "https://example.test/author.css",
+      cssRules: [styleRule(".author", { color: "green" })],
+    };
+    const runtimeSheet = {
+      href: "https://example.test/runtime.css",
+      cssRules: [styleRule(".runtime", { background: "black" })],
+    };
+
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [authorSheet, runtimeSheet],
+      },
+      undefined,
+      { isRuntimeStylesheet: (sheet) => sheet === runtimeSheet },
+    );
+
+    expect(result.facts.map(({ property }) => property)).toEqual(["color"]);
+    expect(result.ruleEvidence.rules.map(({ selector }) => selector)).toEqual([
+      ".author",
+    ]);
+    expect(result.inaccessibleStylesheets).toEqual([]);
+  });
 });
 
 function completeFactMetadata(

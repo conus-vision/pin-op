@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { INSPECT_LIMITS } from "@pin-op/protocol";
 import {
   STYLESHEET_LIMITS,
   StylesheetRegistry,
   type StylesheetRegistryEntry,
 } from "../src/stylesheetRegistry.js";
+import { PinOpRuntimeArtifacts } from "../src/pinOpRuntimeArtifacts.js";
 
 describe("StylesheetRegistry", () => {
   it("fixes one session-global set of stylesheet budgets", () => {
@@ -814,6 +816,392 @@ describe("StylesheetRegistry", () => {
     registry.resetDocument(document as unknown as Document, 4);
     expect(registry.resolveRule(first)).toBeUndefined();
     expect(registry.referenceInlineRule(firstElement)).not.toBe(first);
+  });
+
+  it("excludes only exact runtime owners and sheets from inventory, digest, and mutations", () => {
+    let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
+    const authorSheet = sheet(null, [styleRule(".author", "color: green")]);
+    const spoofedOwner = styleOwner(".author { color: green; }", authorSheet);
+    spoofedOwner.attributes["data-pin-op-runtime-artifact"] = "";
+    const runtimeSheet = sheet(null, [styleRule(".runtime", "color: red")]);
+    const runtimeOwner = styleOwner(".runtime { color: red; }", runtimeSheet);
+    const document = scope(
+      "document",
+      [authorSheet, runtimeSheet],
+      [runtimeSheet],
+      [spoofedOwner, runtimeOwner],
+    );
+    const registry = createRegistry(document, {
+      isRuntimeNode: (node) => node === runtimeOwner,
+      isRuntimeStylesheet: (candidate) => candidate === runtimeSheet,
+      createMutationObserver(callback) {
+        mutationCallback = callback;
+        return { observe: vi.fn(), disconnect: vi.fn() };
+      },
+    });
+
+    expect(registry.snapshot().entries.map(({ sheet }) => sheet)).toEqual([authorSheet]);
+    mutationCallback?.([{
+      type: "childList",
+      target: document,
+      addedNodes: [runtimeOwner],
+      removedNodes: [],
+    }]);
+    expect(registry.revisions).toMatchObject({ stylesheetRevision: 0, stylesRevision: 0 });
+
+    const authorOwner = styleOwner(".late { color: blue; }", sheet(null, []));
+    const runtimeDescendants = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      () => runtimeOwner,
+    );
+    const container = {
+      tagName: "DIV",
+      querySelectorAll: () => [...runtimeDescendants, authorOwner],
+    };
+    mutationCallback?.([{
+      type: "childList",
+      target: document,
+      addedNodes: [container],
+      removedNodes: [],
+    }]);
+    expect(registry.revisions).toMatchObject({ stylesheetRevision: 1, stylesRevision: 1 });
+  });
+
+  it.each(["sheet", "owner"] as const)(
+    "fails closed with a partial inventory when runtime %s classification throws",
+    (variant) => {
+      const authorSheet = sheet(null, [styleRule(".author", "color: green")]);
+      const authorOwner = styleOwner(".author { color: green; }", authorSheet);
+      const document = scope("document", [authorSheet], [], [authorOwner]);
+      const registry = createRegistry(document, {
+        ...(variant === "sheet"
+          ? {
+              isRuntimeStylesheet(): boolean {
+                throw new Error("sheet ownership unavailable");
+              },
+            }
+          : {
+              isRuntimeNode(): boolean {
+                throw new Error("node ownership unavailable");
+              },
+            }),
+      });
+
+      expect(registry.snapshot()).toMatchObject({
+        entries: [],
+        partial: true,
+        inaccessibleStylesheetCount: 1,
+        diagnostics: [expect.objectContaining({
+          code: "runtime-artifact-exclusion-failed",
+        })],
+      });
+    },
+  );
+
+  it("reports partial inventory when exact runtime ownership cannot read ownerNode", () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(8);
+        return bytes;
+      },
+    });
+    const authorSheet = sheet("https://example.test/author.css", [
+      styleRule(".author", "color: green"),
+    ]);
+    Object.defineProperty(authorSheet, "ownerNode", {
+      get() {
+        throw new Error("owner identity unavailable");
+      },
+    });
+    const document = scope("document", [authorSheet], [], []);
+    const registry = createRegistry(document, {
+      isRuntimeStylesheet: (candidate) => artifacts.isRuntimeStylesheet(candidate),
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      entries: [],
+      partial: true,
+      inaccessibleStylesheetCount: 1,
+      diagnostics: [expect.objectContaining({
+        code: "runtime-artifact-exclusion-failed",
+      })],
+    });
+  });
+
+  it("invalidates and exposes a partial snapshot when mutation exclusion throws", () => {
+    let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
+    let throwDuringMutation = false;
+    const authorSheet = sheet(null, [styleRule(".author", "color: green")]);
+    const authorOwner = styleOwner(".author { color: green; }", authorSheet);
+    const document = scope("document", [authorSheet], [], [authorOwner]);
+    const registry = createRegistry(document, {
+      isRuntimeNode() {
+        if (throwDuringMutation) throw new Error("mutation ownership unavailable");
+        return false;
+      },
+      createMutationObserver(callback) {
+        mutationCallback = callback;
+        return { observe: vi.fn(), disconnect: vi.fn() };
+      },
+    });
+    throwDuringMutation = true;
+
+    mutationCallback?.([{
+      type: "attributes",
+      target: authorOwner,
+      attributeName: "media",
+    }]);
+
+    expect(registry.revisions).toMatchObject({ stylesheetRevision: 1, stylesRevision: 1 });
+    expect(registry.snapshot()).toMatchObject({
+      entries: [],
+      partial: true,
+      diagnostics: [expect.objectContaining({
+        code: "runtime-artifact-exclusion-failed",
+      })],
+    });
+  });
+
+  it("does not let runtime childList nodes exhaust author mutation authority", () => {
+    let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
+    const runtimeOwner = styleOwner(".runtime {}", sheet(null, []));
+    const authorOwner = styleOwner(".author {}", sheet(null, []));
+    const document = scope("document", [], [], []);
+    const registry = createRegistry(document, {
+      isRuntimeNode: (node) => node === runtimeOwner,
+      createMutationObserver(callback) {
+        mutationCallback = callback;
+        return { observe: vi.fn(), disconnect: vi.fn() };
+      },
+    });
+    const runtimeNodes = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      () => runtimeOwner,
+    );
+
+    mutationCallback?.([{
+      type: "childList",
+      target: document,
+      addedNodes: [...runtimeNodes, authorOwner],
+      removedNodes: [],
+    }]);
+
+    expect(registry.revisions).toMatchObject({ stylesheetRevision: 1, stylesRevision: 1 });
+  });
+
+  it("does not let bounded exact runtime candidates hide an author sheet", () => {
+    const runtimeSheet = sheet(null, []);
+    const runtimeOwner = styleOwner("", runtimeSheet);
+    const authorSheet = sheet(null, [styleRule(".author", "color: green")]);
+    const authorOwner = styleOwner(".author { color: green; }", authorSheet);
+    const runtimeOwners = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      () => runtimeOwner,
+    );
+    const runtimeSheets = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      () => runtimeSheet,
+    );
+    const document = scope(
+      "document",
+      [...runtimeSheets, authorSheet],
+      [],
+      [...runtimeOwners, authorOwner],
+    );
+    const registry = createRegistry(document, {
+      isRuntimeNode: (node) => node === runtimeOwner,
+      isRuntimeStylesheet: (candidate) => candidate === runtimeSheet,
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      entries: [{ sheet: authorSheet }],
+      partial: false,
+      omittedScopeSheetPairCount: 0,
+    });
+    expect(registry.checkForChanges()).toBe(false);
+    expect(registry.revisions).toMatchObject({ stylesheetRevision: 0, stylesRevision: 0 });
+  });
+
+  it("does not charge an iterable completion probe to author candidate authority", () => {
+    const runtimeSheet = sheet(null, []);
+    const authorSheets = Array.from(
+      { length: STYLESHEET_LIMITS.scopeSheetPairsPerSession },
+      (_, index) => sheet(`https://example.test/${index}.css`, []),
+    );
+    const document = scope("document", [], authorSheets, []);
+    Object.defineProperty(document, "styleSheets", {
+      configurable: true,
+      value: {
+        *[Symbol.iterator]() {
+          yield runtimeSheet;
+        },
+      },
+    });
+    const registry = createRegistry(document, {
+      isRuntimeStylesheet: (candidate) => candidate === runtimeSheet,
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      partial: false,
+      omittedScopeSheetPairCount: 0,
+    });
+    expect(registry.snapshot().entries).toHaveLength(authorSheets.length);
+  });
+
+  it("does not let exact runtime discovery nodes consume author scope authority", () => {
+    const authorSheet = sheet(null, [styleRule(".shadow", "color: green")]);
+    const authorOwner = styleOwner(".shadow { color: green; }", authorSheet);
+    const authorShadow = scope("shadow", [authorSheet], [], [authorOwner]);
+    const authorHost = host(authorShadow);
+    const pageNodes = Array.from({ length: 3_840 }, () => ({}));
+    const runtimeNodes = Array.from({ length: 256 }, () => ({}));
+    const runtimeSet = new Set(runtimeNodes);
+    const document = scope(
+      "document",
+      [],
+      [],
+      [...pageNodes, ...runtimeNodes, authorHost],
+    );
+    const registry = createRegistry(document, {
+      isRuntimeNode: (node) => runtimeSet.has(node),
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      entries: [{ sheet: authorSheet, scopeKind: "shadow-root" }],
+      partial: false,
+      omittedScopeCount: 0,
+    });
+  });
+
+  it("keeps inherited import mount ownership separate from inline range ownership", () => {
+    const imported = sheet(null, [styleRule(".imported", "color: green")]);
+    const root = sheet(null, [importRule(imported)]);
+    const owner = styleOwner(".imported { color: green; }", root);
+    const registry = createRegistry(scope("document", [root], [], [owner]));
+    const imports = registry.snapshot().entries.filter(({ kind }) => kind === "import");
+
+    expect(imports).toHaveLength(1);
+    expect(imports.every((entry) => entry.owner === owner)).toBe(true);
+    expect(imports[0]?.generatedRanges).toEqual({});
+  });
+
+  it("snapshots nested import media/supports and marks layer provenance unsupported", () => {
+    const leaf = sheet("https://example.test/leaf.css", []);
+    const supportsImport = Object.assign(importRule(leaf), {
+      supportsText: "(display: grid)",
+    });
+    const middle = sheet("https://example.test/middle.css", [supportsImport]);
+    const mediaImport = Object.assign(importRule(middle), {
+      media: { mediaText: "(min-width: 40rem)" },
+    });
+    const layered = sheet("https://example.test/layered.css", []);
+    const layerImport = Object.assign(importRule(layered), { layerName: "theme" });
+    const root = sheet("https://example.test/root.css", [mediaImport, layerImport]);
+    const registry = createRegistry(scope("document", [root], [], []));
+    const entries = registry.snapshot().entries;
+
+    expect(entries.find(({ sheet }) => sheet === middle)?.importContexts).toEqual([
+      { kind: "media", text: "(min-width: 40rem)" },
+    ]);
+    expect(entries.find(({ sheet }) => sheet === leaf)?.importContexts).toEqual([
+      { kind: "media", text: "(min-width: 40rem)" },
+      { kind: "supports", text: "(display: grid)" },
+    ]);
+    expect(entries.find(({ sheet }) => sheet === layered))
+      .toMatchObject({ importContextUnsupported: true });
+    const leafEntry = entries.find(({ sheet }) => sheet === leaf);
+    expect(leafEntry?.origin).toMatchObject({
+      kind: "external",
+      sheet: root,
+    });
+    expect(leafEntry?.importChain).toEqual([
+      expect.objectContaining({
+        parentSheet: root,
+        rule: mediaImport,
+        ruleIndex: 0,
+        importedSheet: middle,
+        contexts: [{ kind: "media", text: "(min-width: 40rem)" }],
+        unsupported: false,
+      }),
+      expect.objectContaining({
+        parentSheet: middle,
+        rule: supportsImport,
+        ruleIndex: 0,
+        importedSheet: leaf,
+        contexts: [{ kind: "supports", text: "(display: grid)" }],
+        unsupported: false,
+      }),
+    ]);
+  });
+
+  it("retains an adopted top sheet as the exact origin of imported entries", () => {
+    const leaf = sheet("https://example.test/leaf.css", []);
+    const exactImport = importRule(leaf);
+    const root = sheet(null, [exactImport]);
+    const registry = createRegistry(scope("document", [], [root], []));
+    const leafEntry = registry.snapshot().entries.find(({ sheet }) => sheet === leaf);
+
+    expect(leafEntry?.origin).toEqual({ kind: "adopted", sheet: root });
+    expect(leafEntry?.importChain).toEqual([
+      expect.objectContaining({
+        parentSheet: root,
+        rule: exactImport,
+        ruleIndex: 0,
+        importedSheet: leaf,
+      }),
+    ]);
+  });
+
+  it("snapshots stylesheet owner identity once per digest candidate", () => {
+    const authorSheet = sheet("https://example.test/author.css", [
+      styleRule(".author", "color: green"),
+    ]);
+    const owner = linkOwner(authorSheet, {
+      rel: "stylesheet",
+      href: "https://example.test/author.css",
+    });
+    let ownerReads = 0;
+    Object.defineProperty(authorSheet, "ownerNode", {
+      configurable: true,
+      get() {
+        ownerReads += 1;
+        return owner;
+      },
+    });
+    const registry = createRegistry(scope("document", [authorSheet], [], [owner]));
+    registry.snapshot();
+    ownerReads = 0;
+
+    expect(registry.checkForChanges()).toBe(false);
+    expect(ownerReads).toBe(1);
+  });
+
+  it.each([
+    ["rel", INSPECT_LIMITS.valueLength],
+    ["media", INSPECT_LIMITS.valueLength],
+    ["href", INSPECT_LIMITS.urlLength],
+  ] as const)("fails closed on an oversized owner %s value", (name, maximum) => {
+    const authorSheet = sheet("https://example.test/author.css", [
+      styleRule(".author", "color: green"),
+    ]);
+    const owner = linkOwner(authorSheet, {
+      rel: "stylesheet",
+      href: "https://example.test/author.css",
+      [name]: "x".repeat(maximum + 1),
+    });
+    authorSheet.ownerNode = owner;
+    const registry = createRegistry(scope("document", [authorSheet], [], [owner]));
+
+    const snapshot = registry.snapshot();
+
+    expect(snapshot).toMatchObject({
+      partial: true,
+      inaccessibleStylesheetCount: 1,
+    });
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "stylesheet-inaccessible",
+    }));
+    expect(snapshot.entries[0]?.ownerState).toBeUndefined();
   });
 });
 

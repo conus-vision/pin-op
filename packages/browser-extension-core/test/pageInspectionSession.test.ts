@@ -3,9 +3,11 @@ import { utf8ByteLength } from "@pin-op/protocol";
 import type { CssDocumentSource } from "../src/collectCssFacts.js";
 import {
   createInspectPayload as createWireInspectPayload,
+  type InspectPayloadOptions,
   type InspectPayloadWithDiagnostics,
   type LocationSource,
 } from "../src/inspectPayload.js";
+import { PinOpRuntimeArtifacts } from "../src/pinOpRuntimeArtifacts.js";
 import {
   InspectMode,
   type InspectDocument,
@@ -16,7 +18,9 @@ import {
 import { DomTreeController } from "../src/domTreeController.js";
 import {
   PageInspectionSession,
+  type PageInspectionMatchedStylesCollector,
   type PageInspectionSelection,
+  type PageInspectionStylesheetRegistry,
   type PageInspectionTreeProvider,
 } from "../src/pageInspectionSession.js";
 import {
@@ -28,6 +32,7 @@ import {
   type MatchedStylesApplicabilityObserverOptions,
 } from "../src/matchedStylesApplicabilityObserver.js";
 import type { MatchedStyles } from "../src/matchedStylesTypes.js";
+import type { MatchedStylesCollectorOptions } from "../src/matchedStylesCollector.js";
 import { DomTreeProviderError } from "../src/domTreeProvider.js";
 import type {
   DomTreeElementIdentity,
@@ -2058,6 +2063,166 @@ describe("PageInspectionSession", () => {
       .toBe(false);
   });
 
+  it("plumbs one exact runtime-artifact authority through every inspection surface", async () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(7);
+        return bytes;
+      },
+    });
+    const runtimeSheet = {} as CSSStyleSheet;
+    const runtimeStyle = { sheet: runtimeSheet } as HTMLStyleElement;
+    artifacts.registerStyleNode(runtimeStyle);
+    const runtimeMutation = vi.spyOn(artifacts, "isRuntimeAttributeMutation")
+      .mockReturnValue(true);
+    let registryOptions: StylesheetRegistryOptions | undefined;
+    let collectorOptions: MatchedStylesCollectorOptions | undefined;
+    let payloadOptions: InspectPayloadOptions | undefined;
+    const harness = createSessionHarness({
+      createRuntimeArtifacts: () => artifacts,
+      createStylesheetRegistry: (options) => {
+        registryOptions = options;
+        return new StylesheetRegistry(options);
+      },
+      createMatchedStylesCollector: (options) => {
+        collectorOptions = options;
+        return {
+          collect: (authority) => ({
+            ...authority,
+            rules: [],
+            inherited: [],
+            inaccessibleStylesheetCount: 0,
+            partial: false,
+            diagnostics: [],
+          }),
+        };
+      },
+      createInspectPayload: (selected, _document, _location, _matched, options) => {
+        payloadOptions = options;
+        return payload(selected.id);
+      },
+    });
+
+    await harness.session.selectByRef("node-2", 3);
+
+    const providerOptions = harness.providerOptions!;
+    const marker = artifacts.markerNames.hover;
+    expect(providerOptions.isRuntimeArtifactNode?.(runtimeStyle as unknown as Node))
+      .toBe(true);
+    expect(providerOptions.isExcludedNode?.(runtimeStyle as unknown as Node))
+      .toBe(true);
+    expect(providerOptions.isRuntimeArtifactAttributeName?.(marker)).toBe(true);
+    expect(providerOptions.isRuntimeArtifactAttributeMutation?.(
+      harness.card as unknown as Element,
+      marker,
+    )).toBe(true);
+    expect(runtimeMutation).toHaveBeenCalledWith(harness.card, marker);
+    expect(registryOptions?.isRuntimeNode?.(runtimeStyle as unknown as Node))
+      .toBe(true);
+    expect(registryOptions?.isRuntimeStylesheet?.(runtimeSheet)).toBe(true);
+    expect(collectorOptions?.isRuntimeStylesheet?.(runtimeSheet)).toBe(true);
+    expect(harness.overlayOptions?.isExcludedNode?.(runtimeStyle as unknown as Node))
+      .toBe(true);
+    expect(payloadOptions?.isRuntimeAttributeName?.(marker)).toBe(true);
+    expect(payloadOptions?.containsRuntimeMarker?.(`copied:${marker}`)).toBe(true);
+  });
+
+  it("preserves registry partial authority when runtime sheet ownership throws", () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(6);
+        return bytes;
+      },
+    });
+    const hostileSheet = {
+      href: "https://example.test/hostile.css",
+      cssRules: [],
+      disabled: false,
+      media: { mediaText: "" },
+    };
+    Object.defineProperty(hostileSheet, "ownerNode", {
+      get() {
+        throw new Error("owner identity unavailable");
+      },
+    });
+    let registry: StylesheetRegistry | undefined;
+    createSessionHarness({
+      createRuntimeArtifacts: () => artifacts,
+      createStylesheetRegistry(options) {
+        (options.document.styleSheets as unknown as object[]).push(hostileSheet);
+        registry = new StylesheetRegistry({
+          ...options,
+          createMutationObserver: () => ({
+            observe: vi.fn(),
+            disconnect: vi.fn(),
+          }),
+        });
+        return registry;
+      },
+    });
+
+    expect(registry?.snapshot()).toMatchObject({
+      partial: true,
+      inaccessibleStylesheetCount: 1,
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        code: "runtime-artifact-exclusion-failed",
+      })]),
+    });
+  });
+
+  it("suppresses copied runtime markers across selection and republish publication", async () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(9);
+        return bytes;
+      },
+    });
+    const outbound: string[] = [];
+    const errors: unknown[] = [];
+    const harness = createSessionHarness({
+      createRuntimeArtifacts: () => artifacts,
+      createInspectPayload: createWireInspectPayload,
+      createMatchedStylesCollector: () => ({
+        collect: (authority) => ({
+          ...authority,
+          rules: [],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
+      onError: (error) => errors.push(error),
+      onSelection: (selection) => {
+        outbound.push(JSON.stringify(selection));
+        return true;
+      },
+    });
+    const cleanId = harness.card.id;
+    harness.card.id = `copied-${artifacts.markerNames.hover}`;
+
+    await harness.session.selectByRef("node-2", 3);
+
+    expect(harness.selections).toEqual([]);
+    expect(harness.events).toEqual([]);
+    expect(outbound).toEqual([]);
+    expect(errors).toHaveLength(1);
+
+    harness.card.id = cleanId;
+    await harness.session.selectByRef("node-2", 3);
+    const cleanSelection = harness.selections[0];
+    expect(cleanSelection).toBeDefined();
+    harness.card.id = `copied-${artifacts.markerNames.focus}`;
+
+    await expect(harness.session.republishSelection(
+      inspectRepublishRequest(cleanSelection),
+    )).resolves.toBe(false);
+    expect(harness.selections).toHaveLength(1);
+    expect(outbound).toHaveLength(1);
+    expect(outbound.join("\n")).not.toContain(artifacts.markerNames.hover);
+    expect(outbound.join("\n")).not.toContain(artifacts.markerNames.focus);
+  });
+
   it("rejects selection when payload collection adopts the element", async () => {
     const replacement = new FakeSessionDocument([], {
       href: "https://other.test/adopted",
@@ -2916,16 +3081,22 @@ function createSessionHarness(overrides: {
     document: CssDocumentSource,
     location: LocationSource,
     matchedStyles: MatchedStyles,
+    options?: InspectPayloadOptions,
   ) => InspectPayloadWithDiagnostics;
+  readonly createRuntimeArtifacts?: () => PinOpRuntimeArtifacts;
   readonly onError?: (error: unknown) => void;
   readonly onEvent?: (event: DomEvent) => void;
   readonly onSelection?: (
     selection: PageInspectionSelection,
   ) => boolean;
   readonly contentSessionId?: string;
-  readonly createStylesheetRegistry?: (options: unknown) => unknown;
+  readonly createStylesheetRegistry?: (
+    options: StylesheetRegistryOptions,
+  ) => PageInspectionStylesheetRegistry;
   readonly createApplicabilityObserver?: (options: unknown) => unknown;
-  readonly createMatchedStylesCollector?: (options: unknown) => unknown;
+  readonly createMatchedStylesCollector?: (
+    options: MatchedStylesCollectorOptions,
+  ) => PageInspectionMatchedStylesCollector;
   readonly onStylesInvalidated?: (event: unknown) => void;
   readonly onStylesInspectPublicationRenewed?: (event: unknown) => void;
 } = {}) {
@@ -2946,6 +3117,9 @@ function createSessionHarness(overrides: {
   let providerOptions: Parameters<NonNullable<
     ConstructorParameters<typeof PageInspectionSession>[0]["createTreeProvider"]
   >>[1] | undefined;
+  let overlayOptions: Parameters<NonNullable<
+    ConstructorParameters<typeof PageInspectionSession>[0]["createOverlay"]
+  >>[2] | undefined;
   const session = new PageInspectionSession({
     document: document as unknown as Document & { readonly styleSheets: [] },
     location: {
@@ -2966,6 +3140,7 @@ function createSessionHarness(overrides: {
       return overrides.onSelection?.(selection) ?? true;
     },
     createStylesheetRegistry: overrides.createStylesheetRegistry,
+    createRuntimeArtifacts: overrides.createRuntimeArtifacts,
     createApplicabilityObserver: overrides.createApplicabilityObserver,
     createMatchedStylesCollector: overrides.createMatchedStylesCollector,
     onStylesInvalidated: overrides.onStylesInvalidated,
@@ -2979,7 +3154,10 @@ function createSessionHarness(overrides: {
       provider.setCallbacks(options);
       return provider;
     },
-    createOverlay: () => overlay,
+    createOverlay: (_document, _frameAuthority, options) => {
+      overlayOptions = options;
+      return overlay;
+    },
     createInspectMode: (options) => new InspectMode(options),
     requestAnimationFrame: (callback) => clock.requestFrame(callback),
     cancelAnimationFrame: (handle) => clock.cancelFrame(handle),
@@ -2994,6 +3172,9 @@ function createSessionHarness(overrides: {
     provider,
     get providerOptions() {
       return providerOptions;
+    },
+    get overlayOptions() {
+      return overlayOptions;
     },
     root,
     selections,

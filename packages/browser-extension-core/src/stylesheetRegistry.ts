@@ -30,6 +30,8 @@ const SCOPE_DISCOVERY_CANDIDATE_LIMIT = Math.min(
   STYLESHEET_LIMITS.rulesVisitedPerSessionSnapshot,
   STYLESHEET_LIMITS.scopeSheetPairsPerSession * STYLESHEET_LIMITS.scopesPerSession,
 );
+const RUNTIME_ARTIFACT_SCAN_ALLOWANCE =
+  STYLESHEET_LIMITS.scopeSheetPairsPerSession;
 
 export type StylesheetScope = Document | ShadowRoot;
 export type StylesheetEntryKind = "external" | "owner" | "adopted" | "import";
@@ -50,6 +52,26 @@ export interface StylesheetOwnerState {
   readonly alternate: boolean;
 }
 
+export interface StylesheetImportContext {
+  readonly kind: "media" | "supports";
+  readonly text: string;
+}
+
+export interface StylesheetRegistryOrigin {
+  readonly kind: "external" | "owner" | "adopted";
+  readonly sheet: CSSStyleSheet;
+  readonly owner?: Element;
+}
+
+export interface StylesheetImportChainEntry {
+  readonly parentSheet: CSSStyleSheet;
+  readonly rule: object;
+  readonly ruleIndex: number;
+  readonly importedSheet: CSSStyleSheet;
+  readonly contexts: readonly StylesheetImportContext[];
+  readonly unsupported: boolean;
+}
+
 export interface StylesheetRegistryEntry {
   readonly scope: StylesheetScope;
   readonly scopeRef: string;
@@ -64,11 +86,16 @@ export interface StylesheetRegistryEntry {
   readonly owner?: Element;
   readonly ownerState?: StylesheetOwnerState;
   readonly rulePathPrefix: string;
+  readonly origin: StylesheetRegistryOrigin;
+  readonly importChain: readonly StylesheetImportChainEntry[];
+  readonly importContexts?: readonly StylesheetImportContext[];
+  readonly importContextUnsupported?: boolean;
   readonly generatedRanges: Readonly<Record<string, GeneratedRuleRange>>;
 }
 
 export type StylesheetDiagnosticCode =
   | "stylesheet-inaccessible"
+  | "runtime-artifact-exclusion-failed"
   | "scope-limit"
   | "scope-sheet-pair-limit"
   | "unique-sheet-limit"
@@ -118,12 +145,20 @@ export interface StylesheetRegistryOptions {
   readonly documentEpoch: number;
   readonly onInvalidated?: (event: StylesheetInvalidationEvent) => void;
   readonly onError?: (error: unknown) => void;
+  readonly isRuntimeNode?: (node: object) => boolean;
+  readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
   readonly now?: () => number;
   readonly createMutationObserver?: (
     callback: (records: readonly unknown[]) => void,
   ) => StylesheetMutationObserver;
   readonly setInterval?: (callback: () => void, milliseconds: number) => unknown;
   readonly clearInterval?: (handle: unknown) => void;
+}
+
+interface RuntimeArtifactExclusion {
+  readonly isRuntimeNode?: (node: object) => boolean;
+  readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
+  readonly onRuntimeArtifactExclusionError?: (error: unknown) => void;
 }
 
 interface InventoryState {
@@ -278,6 +313,7 @@ export class StylesheetRegistry {
       (scope) => this.scopeRef(scope),
       (sheet) => this.sheetRef(sheet),
       (owner) => this.ownerRef(owner),
+      this.options,
     );
     if (currentStructureDigest !== this.inventoryStructureDigest) {
       this.inventoryDirty = true;
@@ -399,6 +435,7 @@ export class StylesheetRegistry {
       this.document,
       (scope) => this.scopeRef(scope),
       (sheet) => this.sheetRef(sheet),
+      this.options,
     );
     this.inventory = state;
     this.inventoryDirty = false;
@@ -407,6 +444,7 @@ export class StylesheetRegistry {
       (scope) => this.scopeRef(scope),
       (sheet) => this.sheetRef(sheet),
       (owner) => this.ownerRef(owner),
+      this.options,
     );
     if (!previousScopes || !sameObjectArray(previousScopes, state.scopes)) {
       this.installMutationObserver(state.scopes);
@@ -446,7 +484,7 @@ export class StylesheetRegistry {
     try {
       observer = create((records) => {
         if (this.disposed) return;
-        const kind = classifyStylesheetMutations(records);
+        const kind = classifyStylesheetMutations(records, this.options);
         if (kind !== "stylesheet") return;
         this.inventoryDirty = true;
         this.fingerprint.reset();
@@ -526,7 +564,9 @@ function inventoryStylesheets(
   document: Document,
   scopeRefFor: (scope: object) => string,
   sheetRefFor: (sheet: object) => string,
+  exclusion: RuntimeArtifactExclusion,
 ): InventoryState {
+  const ownerSnapshots = new WeakMap<object, object | undefined>();
   const state: MutableInventory = {
     entries: [],
     diagnostics: [],
@@ -541,24 +581,38 @@ function inventoryStylesheets(
     candidateBudget: { pulls: 0, partial: false, reported: false },
   };
   const discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false };
-  const scopes = discoverScopes(document, state, discoveryBudget);
+  let exclusionFailureReported = false;
+  const guardedExclusion = withRuntimeExclusionErrorHandler(exclusion, () => {
+    if (exclusionFailureReported) return;
+    exclusionFailureReported = true;
+    state.inaccessibleStylesheetCount += 1;
+    addDiagnostic(state, { code: "runtime-artifact-exclusion-failed" });
+  });
+  const scopes = discoverScopes(document, state, discoveryBudget, guardedExclusion);
   for (const scope of scopes) {
     const scopeRef = scopeRefFor(scope);
     let sourceOrder = 0;
-    const owned = readOwnerSheets(scope, state.candidateBudget);
+    const owned = readOwnerSheets(scope, state.candidateBudget, guardedExclusion);
     recordCandidatePartial(state, scopeRef);
     if (scopeKind(scope) === "shadow-root") {
       for (const { sheet, owner } of owned) {
         sourceOrder = addSheetTree(
           state, scope, scopeRef, sheet, "owner", sourceOrder,
-          owner, "", scopeRefFor, sheetRefFor, new Set(),
+          owner, "", scopeRefFor, sheetRefFor, new Set(), guardedExclusion,
         );
       }
     }
-    const scopeSheets = readScopeStyleSheets(scope, state.candidateBudget);
+    const scopeSheets = readScopeStyleSheets(
+      scope,
+      state.candidateBudget,
+      guardedExclusion,
+      ownerSnapshots,
+    );
     recordCandidatePartial(state, scopeRef);
     for (const sheet of scopeSheets.values) {
-      const owner = safeOwnerNode(sheet);
+      if (isRuntimeStylesheet(guardedExclusion, sheet)) continue;
+      const owner = snapshotOwnerNode(sheet, ownerSnapshots);
+      if (owner && isRuntimeNode(guardedExclusion, owner)) continue;
       sourceOrder = addSheetTree(
         state,
         scope,
@@ -571,22 +625,29 @@ function inventoryStylesheets(
         scopeRefFor,
         sheetRefFor,
         new Set(),
+        guardedExclusion,
       );
     }
     if (scopeKind(scope) === "document") {
       for (const { sheet, owner } of owned) {
         sourceOrder = addSheetTree(
           state, scope, scopeRef, sheet, "owner", sourceOrder,
-          owner, "", scopeRefFor, sheetRefFor, new Set(),
+          owner, "", scopeRefFor, sheetRefFor, new Set(), guardedExclusion,
         );
       }
     }
-    const adoptedSheets = readAdoptedSheets(scope, state.candidateBudget);
+    const adoptedSheets = readAdoptedSheets(
+      scope,
+      state.candidateBudget,
+      guardedExclusion,
+    );
     recordCandidatePartial(state, scopeRef);
     for (const sheet of adoptedSheets.values) {
+      if (isRuntimeStylesheet(guardedExclusion, sheet)) continue;
       sourceOrder = addSheetTree(
         state, scope, scopeRef, sheet, "adopted", sourceOrder,
-        safeOwnerNode(sheet), "", scopeRefFor, sheetRefFor, new Set(),
+        snapshotOwnerNode(sheet, ownerSnapshots), "", scopeRefFor, sheetRefFor,
+        new Set(), guardedExclusion,
       );
     }
   }
@@ -606,14 +667,20 @@ function inventoryStructureDigest(
   scopeRefFor: (scope: object) => string,
   sheetRefFor: (sheet: object) => string,
   ownerRefFor: (owner: object) => string,
+  exclusion: RuntimeArtifactExclusion,
 ): string {
+  const ownerSnapshots = new WeakMap<object, object | undefined>();
+  let runtimeExclusionFailed = false;
+  const guardedExclusion = withRuntimeExclusionErrorHandler(exclusion, () => {
+    runtimeExclusionFailed = true;
+  });
   const candidateBudget: CandidatePullBudget = {
     pulls: 0,
     partial: false,
     reported: false,
   };
   const discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false };
-  const scopes = discoverScopes(document, undefined, discoveryBudget);
+  const scopes = discoverScopes(document, undefined, discoveryBudget, guardedExclusion);
   const uniqueSheets = new Set<object>();
   const parts: string[] = [`scope-count:${scopes.length}`];
   let pairCount = 0;
@@ -631,6 +698,10 @@ function inventoryStructureDigest(
       }[],
     ): void => {
       for (const { sheet, owner } of candidates) {
+        if (
+          isRuntimeStylesheet(guardedExclusion, sheet) ||
+          (owner && isRuntimeNode(guardedExclusion, owner))
+        ) continue;
         if (seen.has(sheet)) continue;
         if (pairCount >= STYLESHEET_LIMITS.scopeSheetPairsPerSession) {
           truncated = true;
@@ -656,25 +727,36 @@ function inventoryStructureDigest(
         pairCount += 1;
       }
     };
-    const owned = readOwnerSheets(scope, candidateBudget);
+    const owned = readOwnerSheets(scope, candidateBudget, guardedExclusion);
     if (scopeKind(scope) === "shadow-root") {
       append("owner", owned);
     }
-    const scopeSheets = readScopeStyleSheets(scope, candidateBudget);
+    const scopeSheets = readScopeStyleSheets(
+      scope,
+      candidateBudget,
+      guardedExclusion,
+      ownerSnapshots,
+    );
     truncated ||= scopeSheets.truncated;
-    append("external", scopeSheets.values.map((sheet) => ({
-      sheet,
-      ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
-    })));
+    append("external", scopeSheets.values.map((sheet) => {
+      const owner = snapshotOwnerNode(sheet, ownerSnapshots);
+      return {
+        sheet,
+        ...(owner ? { owner } : {}),
+      };
+    }));
     if (scopeKind(scope) === "document") {
       append("owner", owned);
     }
-    const adoptedSheets = readAdoptedSheets(scope, candidateBudget);
+    const adoptedSheets = readAdoptedSheets(scope, candidateBudget, guardedExclusion);
     truncated ||= adoptedSheets.truncated;
-    append("adopted", adoptedSheets.values.map((sheet) => ({
-      sheet,
-      ...(safeOwnerNode(sheet) ? { owner: safeOwnerNode(sheet) } : {}),
-    })));
+    append("adopted", adoptedSheets.values.map((sheet) => {
+      const owner = snapshotOwnerNode(sheet, ownerSnapshots);
+      return {
+        sheet,
+        ...(owner ? { owner } : {}),
+      };
+    }));
   }
   parts.push(
     `pairs:${pairCount}`,
@@ -682,6 +764,7 @@ function inventoryStructureDigest(
     truncated || candidateBudget.partial || discoveryBudget.partial
       ? "truncated"
       : "complete",
+    runtimeExclusionFailed ? "runtime-exclusion-failed" : "runtime-exclusion-complete",
   );
   return digestStructureParts(parts);
 }
@@ -690,6 +773,7 @@ function discoverScopes(
   document: Document,
   state?: MutableInventory,
   discoveryBudget: ScopeDiscoveryBudget = { pulls: 0, partial: false },
+  exclusion: RuntimeArtifactExclusion = {},
 ): StylesheetScope[] {
   const scopes = state?.scopes ?? [];
   const queue: StylesheetScope[] = [document];
@@ -710,8 +794,13 @@ function discoverScopes(
     const nodeStack: object[] = [scope];
     while (nodeStack.length > 0) {
       const parent = nodeStack.pop()!;
-      const children = readScopeDiscoveryChildren(parent, discoveryBudget);
+      const children = readScopeDiscoveryChildren(
+        parent,
+        discoveryBudget,
+        exclusion,
+      );
       for (const node of children.values) {
+        if (isRuntimeNode(exclusion, node)) continue;
         if (seenNodes.has(node)) continue;
         seenNodes.add(node);
         const shadow = safeObjectProperty(node, "shadowRoot");
@@ -749,7 +838,16 @@ function addSheetTree(
   _scopeRefFor: (scope: object) => string,
   sheetRefFor: (sheet: object) => string,
   active: Set<object>,
+  exclusion: RuntimeArtifactExclusion,
+  importContexts: readonly StylesheetImportContext[] = Object.freeze([]),
+  importContextUnsupported = false,
+  origin?: StylesheetRegistryOrigin,
+  importChain: readonly StylesheetImportChainEntry[] = Object.freeze([]),
 ): number {
+  if (
+    isRuntimeStylesheet(exclusion, sheet) ||
+    (owner && isRuntimeNode(exclusion, owner))
+  ) return sourceOrder;
   if (active.has(sheet)) return sourceOrder;
   const pairs = state.pairs.get(scope) ?? new Set<object>();
   state.pairs.set(scope, pairs);
@@ -806,9 +904,23 @@ function addSheetTree(
       sheetIdentity,
     });
   }
-  const generatedRanges = owner && rulesComplete
+  const generatedRanges = owner && rulesComplete && kind !== "import"
     ? inlineRangesForOwner(state, rules, owner, scopeRef, sheetIdentity)
     : Object.freeze({});
+  const exactOrigin: StylesheetRegistryOrigin = origin ?? Object.freeze({
+    kind: kind as StylesheetRegistryOrigin["kind"],
+    sheet: sheet as CSSStyleSheet,
+    ...(owner && kind !== "adopted" ? { owner: owner as Element } : {}),
+  });
+  const ownerState = owner ? readStylesheetOwnerState(owner) : undefined;
+  if (owner && !ownerState) {
+    state.inaccessibleStylesheetCount += 1;
+    addDiagnostic(state, {
+      code: "stylesheet-inaccessible",
+      scopeRef,
+      sheetIdentity,
+    });
+  }
   const entry: StylesheetRegistryEntry = Object.freeze({
     scope,
     scopeRef,
@@ -821,9 +933,15 @@ function addSheetTree(
     ...(sourceUrl ? { sourceUrl } : {}),
     ...(owner ? {
       owner: owner as Element,
-      ownerState: readStylesheetOwnerState(owner),
+      ...(ownerState ? { ownerState } : {}),
     } : {}),
     rulePathPrefix,
+    origin: exactOrigin,
+    importChain: Object.freeze([...importChain]),
+    ...(kind === "import" ? {
+      importContexts: Object.freeze([...importContexts]),
+      ...(importContextUnsupported ? { importContextUnsupported: true } : {}),
+    } : {}),
     generatedRanges,
   });
   state.entries.push(entry);
@@ -832,6 +950,15 @@ function addSheetTree(
   for (let index = 0; index < rules.length; index += 1) {
     const imported = safeObjectProperty(rules[index]!, "styleSheet");
     if (!imported) continue;
+    const provenance = readStylesheetImportProvenance(rules[index]!);
+    const chainEntry: StylesheetImportChainEntry = Object.freeze({
+      parentSheet: sheet as CSSStyleSheet,
+      rule: rules[index]!,
+      ruleIndex: index,
+      importedSheet: imported as CSSStyleSheet,
+      contexts: provenance.contexts,
+      unsupported: provenance.unsupported,
+    });
     sourceOrder = addSheetTree(
       state,
       scope,
@@ -839,15 +966,73 @@ function addSheetTree(
       imported,
       "import",
       sourceOrder,
-      safeOwnerNode(imported),
+      exactOrigin.owner,
       rulePathPrefix ? `${rulePathPrefix}.${index}` : `${index}`,
       _scopeRefFor,
       sheetRefFor,
       active,
+      exclusion,
+      Object.freeze([...importContexts, ...provenance.contexts]),
+      importContextUnsupported || provenance.unsupported,
+      exactOrigin,
+      Object.freeze([...importChain, chainEntry]),
     );
   }
   active.delete(sheet);
   return sourceOrder;
+}
+
+export function readStylesheetImportProvenance(rule: object): {
+  readonly contexts: readonly StylesheetImportContext[];
+  readonly unsupported: boolean;
+} {
+  const contexts: StylesheetImportContext[] = [];
+  let unsupported = false;
+  try {
+    if ("layerName" in rule) {
+      const layerName = (rule as { readonly layerName?: unknown }).layerName;
+      if (layerName !== null && layerName !== undefined) unsupported = true;
+    }
+  } catch {
+    unsupported = true;
+  }
+  try {
+    if ("supportsText" in rule) {
+      const supports = (rule as { readonly supportsText?: unknown }).supportsText;
+      if (supports !== null && supports !== undefined && supports !== "") {
+        if (validImportCondition(supports)) {
+          contexts.push(Object.freeze({ kind: "supports", text: supports }));
+        } else {
+          unsupported = true;
+        }
+      }
+    }
+  } catch {
+    unsupported = true;
+  }
+  try {
+    const media = (rule as { readonly media?: unknown }).media;
+    if (media !== null && media !== undefined) {
+      const text = (media as { readonly mediaText?: unknown }).mediaText;
+      if (text !== null && text !== undefined && text !== "") {
+        if (validImportCondition(text)) {
+          contexts.push(Object.freeze({ kind: "media", text }));
+        } else {
+          unsupported = true;
+        }
+      }
+    }
+  } catch {
+    unsupported = true;
+  }
+  return Object.freeze({ contexts: Object.freeze(contexts), unsupported });
+}
+
+function validImportCondition(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= INSPECT_LIMITS.valueLength &&
+    !/[{};]/u.test(value);
 }
 
 function inlineRangesForOwner(
@@ -1050,14 +1235,25 @@ function sourceRange(node: ChildNode): GeneratedRuleRange | undefined {
 
 export function readStylesheetOwnerState(
   owner: object,
-): StylesheetOwnerState {
-  const rel = readOwnerAttribute(owner, "rel");
+): StylesheetOwnerState | undefined {
+  const media = readOwnerAttribute(owner, "media", INSPECT_LIMITS.valueLength);
+  const rel = readOwnerAttribute(owner, "rel", INSPECT_LIMITS.valueLength);
+  const href = readOwnerAttribute(owner, "href", INSPECT_LIMITS.urlLength);
+  const title = readOwnerAttribute(owner, "title", INSPECT_LIMITS.valueLength);
+  const disabled = readOwnerDisabled(owner);
+  if (
+    media === undefined ||
+    rel === undefined ||
+    href === undefined ||
+    title === undefined ||
+    disabled === undefined
+  ) return undefined;
   return Object.freeze({
-    media: readOwnerAttribute(owner, "media"),
-    disabled: safeBooleanProperty(owner, "disabled") || hasOwnerAttribute(owner, "disabled"),
+    media,
+    disabled,
     rel,
-    href: readOwnerAttribute(owner, "href"),
-    title: readOwnerAttribute(owner, "title"),
+    href,
+    title,
     alternate: rel.toLowerCase().split(/\s+/).includes("alternate"),
   });
 }
@@ -1065,6 +1261,7 @@ export function readStylesheetOwnerState(
 function readOwnerSheets(
   scope: StylesheetScope,
   candidateBudget: CandidatePullBudget,
+  exclusion: RuntimeArtifactExclusion,
 ): Array<{
   readonly sheet: object;
   readonly owner: object;
@@ -1074,11 +1271,14 @@ function readOwnerSheets(
     scope,
     "style,link[rel~='stylesheet']",
     candidateBudget,
+    (candidate) => isRuntimeNode(exclusion, candidate),
   );
   for (const owner of candidates.values) {
-    if (isPinOpOwned(owner)) continue;
+    if (isRuntimeNode(exclusion, owner)) continue;
     const sheet = safeObjectProperty(owner, "sheet");
-    if (sheet) result.push({ sheet, owner });
+    if (sheet && !isRuntimeStylesheet(exclusion, sheet)) {
+      result.push({ sheet, owner });
+    }
   }
   return result;
 }
@@ -1086,6 +1286,8 @@ function readOwnerSheets(
 function readScopeStyleSheets(
   scope: StylesheetScope,
   candidateBudget: CandidatePullBudget,
+  exclusion: RuntimeArtifactExclusion,
+  ownerSnapshots: WeakMap<object, object | undefined>,
 ): BoundedObjectScan {
   if (remainingCandidatePulls(candidateBudget) === 0) {
     candidateBudget.partial = true;
@@ -1094,7 +1296,15 @@ function readScopeStyleSheets(
   try {
     const sheets = (scope as unknown as { readonly styleSheets?: unknown }).styleSheets;
     return sheets
-      ? scanCandidateObjects(sheets, candidateBudget)
+      ? scanCandidateObjects(
+          sheets,
+          candidateBudget,
+          (sheet) => {
+            if (isRuntimeStylesheet(exclusion, sheet)) return true;
+            const owner = snapshotOwnerNode(sheet, ownerSnapshots);
+            return owner ? isRuntimeNode(exclusion, owner) : false;
+          },
+        )
       : emptyBoundedObjectScan();
   } catch {
     candidateBudget.partial = true;
@@ -1105,6 +1315,7 @@ function readScopeStyleSheets(
 function readAdoptedSheets(
   scope: StylesheetScope,
   candidateBudget: CandidatePullBudget,
+  exclusion: RuntimeArtifactExclusion,
 ): BoundedObjectScan {
   if (remainingCandidatePulls(candidateBudget) === 0) {
     candidateBudget.partial = true;
@@ -1114,7 +1325,11 @@ function readAdoptedSheets(
     const sheets = (scope as unknown as { readonly adoptedStyleSheets?: unknown })
       .adoptedStyleSheets;
     return sheets
-      ? scanCandidateObjects(sheets, candidateBudget)
+      ? scanCandidateObjects(
+          sheets,
+          candidateBudget,
+          (sheet) => isRuntimeStylesheet(exclusion, sheet),
+        )
       : emptyBoundedObjectScan();
   } catch {
     candidateBudget.partial = true;
@@ -1211,12 +1426,42 @@ function emptyBoundedObjectScan(
 function scanCandidateObjects(
   value: unknown,
   budget: CandidatePullBudget,
+  isExcluded: (candidate: object) => boolean = () => false,
 ): BoundedObjectScan {
   const remaining = remainingCandidatePulls(budget);
-  const bounded = scanBoundedObjects(value, remaining);
-  budget.pulls += bounded.pulls;
-  if (bounded.truncated || bounded.failures > 0) budget.partial = true;
-  return bounded;
+  const bounded = scanBoundedObjects(
+    value,
+    remaining + RUNTIME_ARTIFACT_SCAN_ALLOWANCE,
+  );
+  const retained: object[] = [];
+  let excludedPulls = 0;
+  for (const candidate of bounded.values) {
+    let excluded = true;
+    try {
+      excluded = isExcluded(candidate) === true;
+    } catch {
+      excluded = true;
+    }
+    if (excluded) {
+      excludedPulls += 1;
+    } else if (retained.length < remaining) {
+      retained.push(candidate);
+    }
+  }
+  const authorPulls = Math.min(
+    remaining,
+    Math.max(0, bounded.values.length - excludedPulls + bounded.failures),
+  );
+  budget.pulls += authorPulls;
+  const authorTruncated = bounded.values.length - excludedPulls > remaining;
+  const truncated = bounded.truncated || authorTruncated;
+  if (truncated || bounded.failures > 0) budget.partial = true;
+  return {
+    values: retained,
+    pulls: authorPulls,
+    failures: bounded.failures,
+    truncated,
+  };
 }
 
 function remainingCandidatePulls(budget: CandidatePullBudget): number {
@@ -1229,6 +1474,7 @@ function remainingCandidatePulls(budget: CandidatePullBudget): number {
 function readScopeDiscoveryChildren(
   node: object,
   budget: ScopeDiscoveryBudget,
+  exclusion: RuntimeArtifactExclusion,
 ): BoundedObjectScan {
   const remaining = remainingScopeDiscoveryPulls(budget);
   if (remaining === 0) {
@@ -1245,10 +1491,33 @@ function readScopeDiscoveryChildren(
   if (childNodes === undefined || childNodes === null) {
     return emptyBoundedObjectScan();
   }
-  const bounded = scanBoundedObjects(childNodes, remaining);
-  budget.pulls += bounded.pulls;
-  if (bounded.truncated || bounded.failures > 0) budget.partial = true;
-  return bounded;
+  const bounded = scanBoundedObjects(
+    childNodes,
+    remaining + RUNTIME_ARTIFACT_SCAN_ALLOWANCE,
+  );
+  const retained: object[] = [];
+  let excludedPulls = 0;
+  for (const candidate of bounded.values) {
+    if (isRuntimeNode(exclusion, candidate)) {
+      excludedPulls += 1;
+    } else if (retained.length < remaining) {
+      retained.push(candidate);
+    }
+  }
+  const authorPulls = Math.min(
+    remaining,
+    Math.max(0, bounded.values.length - excludedPulls + bounded.failures),
+  );
+  budget.pulls += authorPulls;
+  const authorTruncated = bounded.values.length - excludedPulls > remaining;
+  const truncated = bounded.truncated || authorTruncated;
+  if (truncated || bounded.failures > 0) budget.partial = true;
+  return {
+    values: retained,
+    pulls: authorPulls,
+    failures: bounded.failures,
+    truncated,
+  };
 }
 
 function remainingScopeDiscoveryPulls(budget: ScopeDiscoveryBudget): number {
@@ -1389,6 +1658,16 @@ function safeOwnerNode(sheet: object): object | undefined {
   return safeObjectProperty(sheet, "ownerNode");
 }
 
+function snapshotOwnerNode(
+  sheet: object,
+  snapshots: WeakMap<object, object | undefined>,
+): object | undefined {
+  if (snapshots.has(sheet)) return snapshots.get(sheet);
+  const owner = safeOwnerNode(sheet);
+  snapshots.set(sheet, owner);
+  return owner;
+}
+
 function safeHref(sheet: object): string | undefined {
   return safeStringProperty(sheet, "href");
 }
@@ -1416,6 +1695,7 @@ function safeQueryAll(
   scope: object,
   selector: string,
   candidateBudget: CandidatePullBudget,
+  isExcluded: (candidate: object) => boolean = () => false,
 ): BoundedObjectScan {
   if (remainingCandidatePulls(candidateBudget) === 0) {
     candidateBudget.partial = true;
@@ -1427,35 +1707,49 @@ function safeQueryAll(
       candidateBudget.partial = true;
       return emptyBoundedObjectScan(true, 1);
     }
-    return scanCandidateObjects(query.call(scope, selector), candidateBudget);
+    return scanCandidateObjects(
+      query.call(scope, selector),
+      candidateBudget,
+      isExcluded,
+    );
   } catch {
     candidateBudget.partial = true;
     return emptyBoundedObjectScan(true, 1);
   }
 }
 
-function safeQueryAllLimited(
+function scanMutationDescendants(
   scope: object,
   selector: string,
-  maximum: number,
-): object[] {
+  exclusion: RuntimeArtifactExclusion,
+): BoundedObjectScan {
   try {
     const query = (scope as { querySelectorAll?: unknown }).querySelectorAll;
-    if (typeof query !== "function") return [];
-    return boundedObjectList(query.call(scope, selector), maximum);
+    if (typeof query !== "function") return emptyBoundedObjectScan();
+    return scanCandidateObjects(
+      query.call(scope, selector),
+      { pulls: 0, partial: false, reported: false },
+      (candidate) => isRuntimeNode(exclusion, candidate),
+    );
   } catch {
-    return [];
+    return emptyBoundedObjectScan(true, 1);
   }
 }
 
 function classifyStylesheetMutations(
   records: readonly unknown[],
+  exclusion: RuntimeArtifactExclusion,
 ): "stylesheet" | undefined {
+  let runtimeExclusionFailed = false;
+  const guardedExclusion = withRuntimeExclusionErrorHandler(exclusion, () => {
+    runtimeExclusionFailed = true;
+  });
   for (const record of records) {
     if (typeof record !== "object" || record === null) continue;
     const type = safeStringProperty(record, "type");
     const target = safeObjectProperty(record, "target");
     if (!type || !target) continue;
+    if (isRuntimeNode(guardedExclusion, target)) continue;
     if (type === "attributes") {
       const attributeName = safeStringProperty(record, "attributeName") ?? "";
       if (
@@ -1469,7 +1763,11 @@ function classifyStylesheetMutations(
     if (type === "characterData") {
       const parent = safeObjectProperty(target, "parentElement") ??
         safeObjectProperty(target, "parentNode");
-      if (parent && isStylesheetOwner(parent)) return "stylesheet";
+      if (
+        parent &&
+        !isRuntimeNode(guardedExclusion, parent) &&
+        isStylesheetOwner(parent)
+      ) return "stylesheet";
       continue;
     }
     if (type === "childList") {
@@ -1477,19 +1775,26 @@ function classifyStylesheetMutations(
       for (const key of ["addedNodes", "removedNodes"] as const) {
         const nodes = safeObjectProperty(record, key);
         if (!nodes) continue;
-        for (const node of boundedObjectList(
+        const bounded = scanCandidateObjects(
           nodes,
-          STYLESHEET_LIMITS.scopeSheetPairsPerSession,
-        )) {
-          if (containsStylesheetStructure(node)) return "stylesheet";
+          { pulls: 0, partial: false, reported: false },
+          (candidate) => isRuntimeNode(guardedExclusion, candidate),
+        );
+        if (bounded.truncated || bounded.failures > 0) return "stylesheet";
+        for (const node of bounded.values) {
+          if (containsStylesheetStructure(node, guardedExclusion)) return "stylesheet";
         }
       }
     }
   }
-  return undefined;
+  return runtimeExclusionFailed ? "stylesheet" : undefined;
 }
 
-function containsStylesheetStructure(node: object): boolean {
+function containsStylesheetStructure(
+  node: object,
+  exclusion: RuntimeArtifactExclusion,
+): boolean {
+  if (isRuntimeNode(exclusion, node)) return false;
   if (isStylesheetOwner(node)) return true;
   const tagName = safeTagName(node);
   if (tagName === "IFRAME" || tagName === "FRAME") return true;
@@ -1497,11 +1802,15 @@ function containsStylesheetStructure(node: object): boolean {
   if (shadow && safeStringProperty(shadow, "mode") !== "closed") return true;
   const frameDocument = safeObjectProperty(node, "contentDocument");
   if (frameDocument && isDocumentScope(frameDocument)) return true;
-  return safeQueryAllLimited(
+  const descendants = scanMutationDescendants(
     node,
     "style,link[rel~='stylesheet'],iframe,frame",
-    STYLESHEET_LIMITS.scopeSheetPairsPerSession,
-  ).some((descendant) => containsStylesheetStructure(descendant));
+    exclusion,
+  );
+  return descendants.truncated || descendants.failures > 0 ||
+    descendants.values.some((descendant) => (
+      containsStylesheetStructure(descendant, exclusion)
+    ));
 }
 
 function isStylesheetOwner(node: object): boolean {
@@ -1509,28 +1818,89 @@ function isStylesheetOwner(node: object): boolean {
   return tagName === "STYLE" || tagName === "LINK";
 }
 
-function isPinOpOwned(owner: object): boolean {
-  return hasOwnerAttribute(owner, "data-pin-op-runtime-artifact") ||
-    hasOwnerAttribute(owner, "data-pin-op-pseudo-preview");
-}
-
-function readOwnerAttribute(owner: object, name: string): string {
+function isRuntimeNode(
+  exclusion: RuntimeArtifactExclusion,
+  node: object,
+): boolean {
+  const predicate = exclusion.isRuntimeNode;
+  if (!predicate) return false;
   try {
-    const getter = (owner as { getAttribute?: unknown }).getAttribute;
-    if (typeof getter !== "function") return "";
-    const value = getter.call(owner, name);
-    return typeof value === "string" ? value : "";
-  } catch {
-    return "";
+    return predicate(node) === true;
+  } catch (error) {
+    reportRuntimeExclusionError(exclusion, error);
+    return true;
   }
 }
 
-function hasOwnerAttribute(owner: object, name: string): boolean {
+function isRuntimeStylesheet(
+  exclusion: RuntimeArtifactExclusion,
+  stylesheet: object,
+): boolean {
+  const predicate = exclusion.isRuntimeStylesheet;
+  if (!predicate) return false;
   try {
-    const checker = (owner as { hasAttribute?: unknown }).hasAttribute;
-    return typeof checker === "function" && checker.call(owner, name) === true;
+    return predicate(stylesheet) === true;
+  } catch (error) {
+    reportRuntimeExclusionError(exclusion, error);
+    return true;
+  }
+}
+
+function withRuntimeExclusionErrorHandler(
+  exclusion: RuntimeArtifactExclusion,
+  onError: (error: unknown) => void,
+): RuntimeArtifactExclusion {
+  return Object.freeze({
+    isRuntimeNode: exclusion.isRuntimeNode,
+    isRuntimeStylesheet: exclusion.isRuntimeStylesheet,
+    onRuntimeArtifactExclusionError(error: unknown): void {
+      reportRuntimeExclusionError(exclusion, error);
+      onError(error);
+    },
+  });
+}
+
+function reportRuntimeExclusionError(
+  exclusion: RuntimeArtifactExclusion,
+  error: unknown,
+): void {
+  try {
+    exclusion.onRuntimeArtifactExclusionError?.(error);
   } catch {
-    return false;
+    // Runtime-artifact diagnostics cannot change exclusion authority.
+  }
+}
+
+function readOwnerAttribute(
+  owner: object,
+  name: string,
+  maximumLength: number,
+): string | undefined {
+  try {
+    const getter = (owner as { getAttribute?: unknown }).getAttribute;
+    if (typeof getter !== "function") return undefined;
+    const value = getter.call(owner, name);
+    if (value === null) return "";
+    return typeof value === "string" && value.length <= maximumLength
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readOwnerDisabled(owner: object): boolean | undefined {
+  try {
+    const disabled = (owner as { readonly disabled?: unknown }).disabled;
+    if (typeof disabled !== "boolean") return undefined;
+    const checker = (owner as { hasAttribute?: unknown }).hasAttribute;
+    if (typeof checker !== "function") return undefined;
+    const attribute = checker.call(owner, "disabled");
+    return typeof attribute === "boolean"
+      ? disabled || attribute
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

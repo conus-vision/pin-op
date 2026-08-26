@@ -119,4 +119,101 @@ describe("createElementSnapshot", () => {
     expect(() => decodeURIComponent(String(subject.metadata.pageUrl))).not.toThrow();
     expect(InspectSubjectSchema.parse(subject)).toEqual(subject);
   });
+
+  it("omits every session marker name even when page code copies it", () => {
+    const stateMarker = "data-pin-op-preview-hover-0123456789abcdef";
+    const styleMarker = "data-pin-op-runtime-fedcba9876543210";
+    const element = {
+      tagName: "BUTTON",
+      id: "target",
+      classList: ["button"],
+      attributes: [
+        { name: stateMarker, value: "" },
+        { name: styleMarker, value: "copied-by-page" },
+        { name: "data-page-state", value: "ready" },
+      ],
+    };
+    const exact = createElementSnapshot(
+      element,
+      "https://example.test",
+      undefined,
+      {
+        isRuntimeAttributeName: (name) => (
+          name === stateMarker || name === styleMarker
+        ),
+      },
+    );
+    const copied = createElementSnapshot(
+      { ...element },
+      "https://example.test",
+      undefined,
+      {
+        isRuntimeAttributeName: (name) => (
+          name === stateMarker || name === styleMarker
+        ),
+      },
+    );
+
+    expect(exact.attributes).toEqual([
+      { name: "data-page-state", value: "ready", metadata: {} },
+    ]);
+    expect(copied.attributes).toEqual(exact.attributes);
+  });
+
+  it("excludes runtime attributes before applying the author attribute budget", () => {
+    const runtimeAttributes = Array.from({ length: 64 }, (_, index) => ({
+      name: `data-pin-op-preview-runtime-${index}`,
+      value: "",
+    }));
+    const subject = createElementSnapshot(
+      {
+        tagName: "BUTTON",
+        id: "target",
+        classList: [],
+        attributes: [
+          ...runtimeAttributes,
+          { name: "data-page-state", value: "ready" },
+        ],
+      },
+      "https://example.test",
+      undefined,
+      {
+        isRuntimeAttributeName: (name) => (
+          name.startsWith("data-pin-op-preview-runtime-")
+        ),
+      },
+    );
+
+    expect(subject.attributes).toEqual([
+      { name: "data-page-state", value: "ready", metadata: {} },
+    ]);
+  });
+
+  it("fails closed when the runtime-attribute predicate throws", () => {
+    const subject = createElementSnapshot(
+      {
+        tagName: "BUTTON",
+        id: "target",
+        classList: [],
+        attributes: [
+          { name: "data-pin-op-preview-hostile", value: "secret" },
+          { name: "data-page-state", value: "ready" },
+        ],
+      },
+      "https://example.test",
+      undefined,
+      {
+        isRuntimeAttributeName: (name) => {
+          if (name === "data-pin-op-preview-hostile") {
+            throw new Error("hostile predicate");
+          }
+          return false;
+        },
+      },
+    );
+
+    expect(subject.attributes).toEqual([
+      { name: "data-page-state", value: "ready", metadata: {} },
+    ]);
+  });
 });

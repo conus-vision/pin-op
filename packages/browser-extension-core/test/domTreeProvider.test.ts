@@ -881,7 +881,7 @@ describe("DomTreeProvider", () => {
     expect(indexedRecordReads).toBeGreaterThan(0);
     expect(indexedRecordReads).toBeLessThanOrEqual(4_097);
     expect(targetReads).toBeGreaterThan(0);
-    expect(targetReads).toBeLessThanOrEqual(4_096);
+    expect(targetReads).toBeLessThanOrEqual(4_097);
     expect(state.pendingMutations).toHaveLength(4_096);
     expect(state.pendingMutations[0]).not.toHaveProperty("record");
     expect(state.pendingMutationNodeCount).toBe(0);
@@ -900,6 +900,166 @@ describe("DomTreeProvider", () => {
     });
     expect(() => harness.observers[0]!.emit(unreadTail)).not.toThrow();
     expect(tailReads).toBe(0);
+  });
+
+  it("filters exact runtime mutation records before the author record budget", () => {
+    const document = createDocument();
+    const target = createElement("button", document);
+    const runtimeStyle = createElement("style", document);
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    document.documentElement.append(target);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+      isRuntimeArtifactAttributeMutation: (element, name) => (
+        element === target as unknown as Element && name === marker
+      ),
+    });
+    const runtimeRecords = Array.from({ length: 4_096 }, (_, index) => {
+      if (index % 3 === 0) return attributeMutationRecord(target, marker);
+      if (index % 3 === 1) return characterDataMutationRecord(runtimeStyle);
+      return mutationRecord(document.documentElement, [runtimeStyle]);
+    });
+
+    harness.observers[0]!.emit([
+      ...runtimeRecords,
+      attributeMutationRecord(target, "data-author-state"),
+    ]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly Array<{
+        readonly target: Node;
+        readonly attributeName?: string;
+      }>;
+      pendingMutationOverflow?: unknown;
+    };
+    expect(state.pendingMutations).toHaveLength(1);
+    expect(state.pendingMutations[0]).toMatchObject({
+      target: target as unknown as Node,
+      attributeName: "data-author-state",
+    });
+    expect(state.pendingMutationOverflow).toBeUndefined();
+  });
+
+  it("accepts a bounded exact runtime record tail after the author record budget", () => {
+    const document = createDocument();
+    const target = createElement("button", document);
+    const runtimeStyle = createElement("style", document);
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    document.documentElement.append(target);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+      isRuntimeArtifactAttributeMutation: (element, name) => (
+        element === target as unknown as Element && name === marker
+      ),
+    });
+
+    harness.observers[0]!.emit([
+      ...Array.from(
+        { length: 4_096 },
+        () => attributeMutationRecord(target, "data-author-state"),
+      ),
+      attributeMutationRecord(target, marker),
+      mutationRecord(document.documentElement, [runtimeStyle]),
+    ]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly unknown[];
+      pendingMutationOverflow?: unknown;
+    };
+    expect(state.pendingMutations).toHaveLength(4_096);
+    expect(state.pendingMutationOverflow).toBeUndefined();
+  });
+
+  it("filters exact runtime child-list nodes before mutation node budgets", () => {
+    const document = createDocument();
+    const runtimeStyle = createElement("style", document);
+    const authorNode = createElement("aside", document);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+    });
+
+    harness.observers[0]!.emit([mutationRecord(
+      document.documentElement,
+      [
+        ...Array.from({ length: 256 }, () => runtimeStyle),
+        authorNode,
+      ],
+    )]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly Array<{ readonly addedNodes: readonly Node[] }>;
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: unknown;
+    };
+    expect(state.pendingMutations).toHaveLength(1);
+    expect(state.pendingMutations[0]?.addedNodes).toEqual([
+      authorNode as unknown as Node,
+    ]);
+    expect(state.pendingMutationNodeCount).toBe(1);
+    expect(state.pendingMutationOverflow).toBeUndefined();
+  });
+
+  it("accepts a bounded exact runtime node tail after the author node budget", () => {
+    const document = createDocument();
+    const authorNodes = Array.from(
+      { length: 256 },
+      () => createElement("aside", document),
+    );
+    const runtimeStyle = createElement("style", document);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+    });
+
+    harness.observers[0]!.emit([mutationRecord(
+      document.documentElement,
+      [
+        ...authorNodes,
+        ...Array.from({ length: 8 }, () => runtimeStyle),
+      ],
+    )]);
+
+    const state = harness.provider as unknown as {
+      pendingMutations: readonly Array<{ readonly addedNodes: readonly Node[] }>;
+      pendingMutationNodeCount: number;
+      pendingMutationOverflow?: unknown;
+    };
+    expect(state.pendingMutations).toHaveLength(1);
+    expect(state.pendingMutations[0]?.addedNodes).toEqual(
+      authorNodes as unknown as readonly Node[],
+    );
+    expect(state.pendingMutationNodeCount).toBe(256);
+    expect(state.pendingMutationOverflow).toBeUndefined();
+  });
+
+  it("fails closed after separate runtime mutation scan allowances", () => {
+    const document = createDocument();
+    const target = createElement("button", document);
+    const runtimeStyle = createElement("style", document);
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    const recordHarness = createProviderHarness(document, {
+      isRuntimeArtifactAttributeMutation: (element, name) => (
+        element === target as unknown as Element && name === marker
+      ),
+    });
+    recordHarness.observers[0]!.emit(Array.from(
+      { length: 4_097 },
+      () => attributeMutationRecord(target, marker),
+    ));
+    expect((recordHarness.provider as unknown as {
+      pendingMutationOverflow?: unknown;
+    }).pendingMutationOverflow).toBeDefined();
+
+    const nodeHarness = createProviderHarness(createDocument(), {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+    });
+    nodeHarness.observers[0]!.emit([mutationRecord(
+      (nodeHarness.provider as unknown as { topDocument: FakeDocument })
+        .topDocument.documentElement,
+      Array.from({ length: 4_097 }, () => runtimeStyle),
+    )]);
+    expect((nodeHarness.provider as unknown as {
+      pendingMutationOverflow?: unknown;
+    }).pendingMutationOverflow).toBeDefined();
   });
 
   it("does not retain hostile MutationRecord or NodeList access until its timer", () => {
@@ -6848,6 +7008,54 @@ describe("DomTreeProvider", () => {
     }
   });
 
+  it.each(["inserted", "removed"] as const)(
+    "keeps a child cursor stable when an exact runtime node is %s before it",
+    (change) => {
+      const document = createDocument();
+      const runtimeStyle = createElement("style", document);
+      const authorNodes = Array.from({ length: 52 }, (_, index) => {
+        const element = createElement("section", document);
+        element.id = `author-${index}`;
+        return element;
+      });
+      if (change === "removed") document.documentElement.append(runtimeStyle);
+      for (const authorNode of authorNodes) {
+        document.documentElement.append(authorNode);
+      }
+      const harness = createProviderHarness(document, {
+        isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+      });
+      const root = harness.provider.getRoot();
+      const first = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `runtime-cursor-first-${change}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+      });
+      expect(first.nodes.map(({ label }) => label)).toEqual(
+        authorNodes.slice(0, 50).map((node) => `section#${node.id}`),
+      );
+      expect(first.nextCursor).toBeDefined();
+
+      if (change === "inserted") document.documentElement.prepend(runtimeStyle);
+      else document.documentElement.remove(runtimeStyle);
+      const second = harness.provider.getChildren({
+        type: "dom.getChildren",
+        requestId: `runtime-cursor-second-${change}`,
+        documentEpoch: root.documentEpoch,
+        nodeRef: root.node.nodeRef,
+        branchRevision: root.node.branchRevision,
+        cursor: first.nextCursor,
+      });
+
+      expect(second.nodes.map(({ label }) => label)).toEqual([
+        "section#author-50",
+        "section#author-51",
+      ]);
+    },
+  );
+
   it("bounds physical traversal through non-element children", () => {
     const document = createDocument();
     for (let index = 0; index < 200; index += 1) {
@@ -7510,6 +7718,158 @@ describe("DomTreeProvider", () => {
     }).nodes.map(({ label }) => label)).toEqual(["main"]);
     expect(harness.provider.lookupElement(overlayHost as unknown as Element))
       .toBeUndefined();
+  });
+
+  it("excludes exact preview nodes and marker attributes from tree, mutation, and locator evidence", () => {
+    const document = createDocument();
+    const body = createElement("body", document);
+    const main = createElement("main", document);
+    const runtimeStyle = createElement("style", document);
+    const target = createElement("button", document);
+    const marker = "data-pin-op-preview-hover-0123456789abcdef";
+    const styleMarker = "data-pin-op-runtime-fedcba9876543210";
+    target.setAttribute(marker, "");
+    target.setAttribute(styleMarker, "copied-by-page");
+    document.documentElement.append(body);
+    body.append(main);
+    main.append(runtimeStyle);
+    main.append(target);
+    const invalidated: unknown[] = [];
+    const harness = createProviderHarness(document, {
+      onInvalidated: (branch) => invalidated.push(branch),
+      isExcludedNode: (node) => node === runtimeStyle,
+      isRuntimeArtifactNode: (node) => node === runtimeStyle,
+      isRuntimeArtifactAttributeName: (name) => (
+        name === marker || name === styleMarker
+      ),
+      isRuntimeArtifactAttributeMutation: (element, name) => element === target && name === marker,
+    });
+
+    const revealed = harness.provider.revealElement(target as unknown as Element);
+    const targetView = revealed.ancestorPath.at(-1)!;
+    expect(targetView.attributes).toEqual([]);
+    expect(targetView.label).not.toContain(marker);
+    expect(targetView.locator?.path.at(-1)?.siblingIndex).toBe(0);
+    expect(targetView.locator?.path.at(-1)?.attributes).toBeUndefined();
+
+    main.remove(runtimeStyle);
+    expect(harness.provider.resolveLocator(targetView.locator!)?.node.label).toBe("button");
+    harness.observers[0]!.emit([{
+      type: "attributes",
+      target,
+      attributeName: marker,
+      addedNodes: [],
+      removedNodes: [],
+    } as unknown as MutationRecord]);
+    harness.flushTimers();
+    expect(invalidated).toEqual([]);
+  });
+
+  it("applies artifact exclusion before tree attribute and child budgets", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const runtimeStyle = createElement("style", document);
+    const runtimeAttributes = Array.from({ length: 256 }, (_, index) => ({
+      name: `data-pin-op-preview-runtime-${index}`,
+      get value(): string {
+        if (index === 0) throw new Error("runtime value must not be read");
+        return "";
+      },
+    }));
+    Object.defineProperty(host, "attributes", {
+      configurable: true,
+      value: [
+        ...runtimeAttributes,
+        { name: "role", value: "region" },
+        { name: "data-author-state", value: "ready" },
+      ],
+    });
+    host.append(runtimeStyle);
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => node === runtimeStyle as unknown as Node,
+      isRuntimeArtifactAttributeName: (name) => (
+        name.startsWith("data-pin-op-preview-runtime-")
+      ),
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "runtime-budget-host",
+    );
+
+    expect(hostView.attributes).toEqual([
+      { name: "role", value: "region" },
+      { name: "data-author-state", value: "ready" },
+    ]);
+    expect(hostView.label).toContain("[role]");
+    expect(hostView.label).toContain("[data-author-state]");
+    expect(hostView.childCount).toBe(0);
+    expect(hostView.expandable).toBe(false);
+    expect(hostView.locator?.path.at(-1)?.attributes).toEqual([
+      { name: "data-author-state", value: "ready" },
+      { name: "role", value: "region" },
+    ]);
+  });
+
+  it("fails closed after the separate runtime child-page scan allowance", () => {
+    const document = createDocument();
+    const runtimeNodes = Array.from(
+      { length: 4_097 },
+      () => createElement("style", document),
+    );
+    for (const runtimeNode of runtimeNodes) {
+      document.documentElement.append(runtimeNode);
+    }
+    const runtimeSet = new Set(runtimeNodes);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => runtimeSet.has(node as unknown as FakeElement),
+    });
+    const root = harness.provider.getRoot();
+
+    expect(() => harness.provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "runtime-child-page-overflow",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    })).toThrowError("node-unavailable");
+  });
+
+  it("fails closed when exact artifact predicates throw", () => {
+    const document = createDocument();
+    const host = createElement("article", document);
+    const runtimeStyle = createElement("style", document);
+    const marker = "data-pin-op-preview-hostile";
+    host.setAttribute(marker, "secret");
+    host.setAttribute("role", "region");
+    host.append(runtimeStyle);
+    document.documentElement.append(host);
+    const harness = createProviderHarness(document, {
+      isRuntimeArtifactNode: (node) => {
+        if (node === runtimeStyle as unknown as Node) {
+          throw new Error("hostile node predicate");
+        }
+        return false;
+      },
+      isRuntimeArtifactAttributeName: (name) => {
+        if (name === marker) throw new Error("hostile attribute predicate");
+        return false;
+      },
+    });
+    const root = harness.provider.getRoot();
+    const hostView = onlyChild(
+      harness.provider,
+      root.node,
+      root.documentEpoch,
+      "hostile-artifact-predicates",
+    );
+
+    expect(hostView.attributes).toEqual([{ name: "role", value: "region" }]);
+    expect(hostView.childCount).toBe(0);
+    expect(hostView.expandable).toBe(false);
   });
 
   it("resolves an equivalent heading through fresh refs and its complete ancestor path", () => {
@@ -11327,6 +11687,9 @@ interface ProviderHarnessOptions {
   readonly maxCursors?: number;
   readonly maxRecords?: number;
   readonly isExcludedNode?: (node: Node) => boolean;
+  readonly isRuntimeArtifactNode?: (node: Node) => boolean;
+  readonly isRuntimeArtifactAttributeName?: (name: string) => boolean;
+  readonly isRuntimeArtifactAttributeMutation?: (element: Element, name: string) => boolean;
 }
 
 function createProviderHarness(
@@ -11365,6 +11728,9 @@ function createProviderHarness(
     onFrameLifecycle: options.onFrameLifecycle,
     onMutationSettled: options.onMutationSettled,
     isExcludedNode: options.isExcludedNode,
+    isRuntimeArtifactNode: options.isRuntimeArtifactNode,
+    isRuntimeArtifactAttributeName: options.isRuntimeArtifactAttributeName,
+    isRuntimeArtifactAttributeMutation: options.isRuntimeArtifactAttributeMutation,
     maxCursors: options.maxCursors,
     maxRecords: options.maxRecords,
   };
@@ -11478,6 +11844,7 @@ function repeatedIndexedList<T>(
 
 class FakeNode {
   private parentNodeValue: FakeNode | null = null;
+  private nextSiblingValue: FakeNode | null = null;
   public readonly childNodes: FakeNode[] = [];
   public previousElementSibling: FakeElement | null = null;
 
@@ -11495,9 +11862,15 @@ class FakeNode {
     this.parentNodeValue = parentNode;
   }
 
+  public get nextSibling(): FakeNode | null {
+    return this.nextSiblingValue;
+  }
+
   public prepend(child: FakeNode): void {
+    const first = this.childNodes[0] ?? null;
     child.parentNode = this;
     child.previousElementSibling = null;
+    child.nextSiblingValue = first;
     this.childNodes.unshift(child);
     for (let childIndex = 1; childIndex < this.childNodes.length; childIndex += 1) {
       const current = this.childNodes[childIndex]!;
@@ -11506,17 +11879,24 @@ class FakeNode {
   }
 
   public append(child: FakeNode): void {
+    const previous = this.childNodes.at(-1);
     child.parentNode = this;
     child.previousElementSibling = this.lastElementChild();
+    child.nextSiblingValue = null;
+    if (previous) previous.nextSiblingValue = child;
     this.childNodes.push(child);
   }
 
   public remove(child: FakeNode): void {
     const index = this.childNodes.indexOf(child);
     if (index < 0) return;
+    const previous = this.childNodes[index - 1];
+    const next = this.childNodes[index + 1] ?? null;
+    if (previous) previous.nextSiblingValue = next;
     this.childNodes.splice(index, 1);
     child.parentNode = null;
     child.previousElementSibling = null;
+    child.nextSiblingValue = null;
     for (let childIndex = index; childIndex < this.childNodes.length; childIndex += 1) {
       const current = this.childNodes[childIndex]!;
       current.previousElementSibling = this.lastElementBefore(childIndex);

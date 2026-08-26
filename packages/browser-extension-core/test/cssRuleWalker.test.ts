@@ -9,6 +9,7 @@ import {
   type CssDocumentSource,
   type CssRuleWalkRecord,
 } from "../src/cssRuleWalker.js";
+import { PinOpRuntimeArtifacts } from "../src/pinOpRuntimeArtifacts.js";
 
 describe("walkCssRules", () => {
   it("walks external, inline, and exposed adopted sheets in stylesheet order", () => {
@@ -558,6 +559,210 @@ describe("walkCssRules", () => {
       importChildReads: INSPECT_LIMITS.mediaConditions,
     });
     expect(importWalk.status.reasons).toContain("byte-limit");
+  });
+
+  it("excludes exact runtime stylesheets at roots and imports without spending walk authority", () => {
+    const ownedRoot = sheet("https://example.test/runtime-root.css", [
+      styleRule(".runtime-root", { color: "red" }),
+    ]);
+    const ownedImport = sheet("https://example.test/runtime-import.css", [
+      styleRule(".runtime-import", { color: "blue" }),
+    ]);
+    const author = sheet("https://example.test/author.css", [
+      importRule(ownedImport.href!, ownedImport),
+      styleRule(".author", { color: "green" }),
+    ]);
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test", styleSheets: [ownedRoot, author] },
+      { isRuntimeStylesheet: (candidate) => candidate === ownedRoot || candidate === ownedImport },
+    );
+
+    expect([...walk.records].map(({ selector }) => selector)).toEqual([".author"]);
+    expect(walk.inaccessibleStylesheets).toEqual([]);
+    expect(walk.status.truncated).toBe(false);
+  });
+
+  it("excludes a replacement sheet owned by an exact historical runtime style node", () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(7);
+        return bytes;
+      },
+    });
+    const style = { sheet: undefined as object | undefined };
+    const first = Object.assign(sheet(null, []), { ownerNode: style });
+    style.sheet = first;
+    artifacts.registerStyleNode(style as unknown as HTMLStyleElement);
+    const replacement = Object.assign(sheet(null, [
+      styleRule(".runtime", { color: "red" }),
+    ]), { ownerNode: style });
+    style.sheet = replacement;
+    const author = sheet(null, [styleRule(".author", { color: "green" })]);
+
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test", styleSheets: [replacement, author] },
+      { isRuntimeStylesheet: (candidate) => artifacts.isRuntimeStylesheet(candidate) },
+    );
+
+    expect([...walk.records].map(({ selector }) => selector)).toEqual([".author"]);
+    expect(walk.status.truncated).toBe(false);
+  });
+
+  it("fails closed with explicit status when runtime stylesheet classification throws", () => {
+    const author = sheet("https://example.test/author.css", [
+      styleRule(".author", { color: "green" }),
+    ]);
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test", styleSheets: [author] },
+      {
+        isRuntimeStylesheet() {
+          throw new Error("runtime ownership unavailable");
+        },
+      },
+    );
+
+    expect([...walk.records]).toEqual([]);
+    expect(walk.status).toMatchObject({
+      truncated: true,
+      reasons: expect.arrayContaining(["runtime-artifact-exclusion-failed"]),
+    });
+    expect(walk.inaccessibleStylesheets).toContainEqual(expect.objectContaining({
+      code: "browser.stylesheetInaccessible",
+      reason: expect.stringContaining("runtime ownership unavailable"),
+    }));
+  });
+
+  it("reports partial authority when runtime ownership cannot read sheet.ownerNode", () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(8);
+        return bytes;
+      },
+    });
+    const author = sheet("https://example.test/author.css", [
+      styleRule(".author", { color: "green" }),
+    ]);
+    Object.defineProperty(author, "ownerNode", {
+      get() {
+        throw new Error("owner identity unavailable");
+      },
+    });
+
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test", styleSheets: [author] },
+      { isRuntimeStylesheet: (candidate) => artifacts.isRuntimeStylesheet(candidate) },
+    );
+
+    expect([...walk.records]).toEqual([]);
+    expect(walk.status).toMatchObject({
+      truncated: true,
+      reasons: expect.arrayContaining(["runtime-artifact-exclusion-failed"]),
+    });
+    expect(walk.inaccessibleStylesheets).toContainEqual(expect.objectContaining({
+      reason: expect.stringContaining("owner identity unavailable"),
+    }));
+  });
+
+  it("keeps author root identity stable when an exact runtime root is present", () => {
+    const runtime = sheet(null, [styleRule(".runtime", { color: "red" })]);
+    const author = sheet(null, [styleRule(".author", { color: "green" })]);
+    const collect = (styleSheets: readonly ReturnType<typeof sheet>[]) => {
+      const walk = walkCssRules(
+        { matches: () => true },
+        { pageUrl: "https://example.test/page", styleSheets },
+        { isRuntimeStylesheet: (candidate) => candidate === runtime },
+      );
+      return [...walk.records].map((record) => ({
+        sourceUrl: record.sourceUrl,
+        rulePath: record.rulePath,
+        stylesheetIdentity: record.stylesheetIdentity,
+      }));
+    };
+
+    expect(collect([runtime, author])).toEqual(collect([author]));
+  });
+
+  it("resolves an own exact runtime import at the author stylesheet boundary", () => {
+    const runtime = sheet("https://example.test/runtime.css", [
+      styleRule(".runtime", { color: "red" }),
+    ]);
+    const authorImport = sheet("https://example.test/imported.css", []);
+    const runtimeImport = Object.create({
+      get styleSheet() {
+        return runtime;
+      },
+    }) as ReturnType<typeof importRule>;
+    Object.assign(runtimeImport, { href: runtime.href });
+    const root = sheet("https://example.test/root.css", [
+      importRule(authorImport.href!, authorImport),
+      runtimeImport,
+    ]);
+    const workBudget = createCssRuleWalkBudget();
+    workBudget.remainingStylesheets = 2;
+    let runtimePredicateReads = 0;
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets: [root] },
+      {
+        workBudget,
+        isRuntimeStylesheet(candidate) {
+          if (candidate === runtime) runtimePredicateReads += 1;
+          return candidate === runtime;
+        },
+      },
+    );
+
+    expect([...walk.records]).toEqual([]);
+    expect(runtimePredicateReads).toBe(1);
+    expect(walk.inaccessibleStylesheets).toEqual([]);
+    expect(walk.status.truncated).toBe(false);
+  });
+
+  it("fails closed when the separate raw runtime-root scan cap is exhausted", () => {
+    const runtime = sheet(null, []);
+    const styleSheets = Array.from(
+      { length: INSPECT_LIMITS.stylesheets * 2 + 1 },
+      () => runtime,
+    );
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets },
+      { isRuntimeStylesheet: (candidate) => candidate === runtime },
+    );
+
+    expect([...walk.records]).toEqual([]);
+    expect(walk.status.reasons).toContain("stylesheets-limit");
+  });
+
+  it("closes the boundary after one non-runtime import probe", () => {
+    const authorImport = sheet("https://example.test/imported.css", []);
+    let boundaryReads = 0;
+    const throwingBoundaryImport = () => Object.create({
+      get styleSheet(): never {
+        boundaryReads += 1;
+        throw new Error("blocked");
+      },
+    });
+    const root = sheet("https://example.test/root.css", [
+      importRule(authorImport.href!, authorImport),
+      throwingBoundaryImport(),
+      throwingBoundaryImport(),
+    ]);
+    const workBudget = createCssRuleWalkBudget();
+    workBudget.remainingStylesheets = 2;
+    const walk = walkCssRules(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets: [root] },
+      { workBudget, isRuntimeStylesheet: () => false },
+    );
+
+    expect([...walk.records]).toEqual([]);
+    expect(boundaryReads).toBe(1);
+    expect(walk.status.reasons).toContain("stylesheets-limit");
   });
 });
 
