@@ -58,6 +58,10 @@ test("browser notices deterministically include every Chromium-derived license i
     const metafile = {
       inputs: {
         "../../node_modules/example-package/index.js": { bytes: 1, imports: [] },
+        "(disabled):../../node_modules/.pnpm/postcss@8.5.16/node_modules/postcss/lib/terminal-highlight": {
+          bytes: 0,
+          imports: [],
+        },
       },
     };
     const chromeRoot = resolve(fixtureRoot, "extensions/chrome");
@@ -79,6 +83,9 @@ test("browser notices deterministically include every Chromium-derived license i
       chromeNotices,
       /Bundled package sections are generated from the inputs in esbuild's bundle metadata\./,
     );
+    assert.match(chromeNotices, /## example-package@1\.0\.0/);
+    assert.equal(countOccurrences(chromeNotices, "Example dependency license"), 1);
+    assert.doesNotMatch(chromeNotices, /^## postcss@8\.5\.16$/m);
     assert.match(
       chromeNotices,
       /Chromium-derived sections are generated from the pinned UPSTREAM\.json manifest, root license, and embedded source notices\./,

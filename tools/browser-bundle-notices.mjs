@@ -205,6 +205,7 @@ async function bundledPackages(metafile, extensionRoot) {
 
 function packageRootFromMetafilePath(input, extensionRoot) {
   const normalized = input.replaceAll("\\", "/");
+  if (normalized.startsWith("(disabled):")) return undefined;
   const marker = "node_modules/";
   const markerIndex = normalized.lastIndexOf(marker);
   if (markerIndex < 0) return undefined;
