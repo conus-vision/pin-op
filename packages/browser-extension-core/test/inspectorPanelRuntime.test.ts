@@ -1,4 +1,8 @@
 import { PROTOCOL_VERSION } from "@pin-op/protocol";
+import {
+  ElementsInspectorView,
+  type PseudoStateDataSource,
+} from "@pin-op/devtools-elements-ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   startInspectorPanelRuntime,
@@ -164,6 +168,224 @@ describe("startInspectorPanelRuntime", () => {
         pseudoStates: ["hover"],
       },
     });
+    runtime.dispose();
+  });
+
+  it("binds immutable :hov state only to the exact selected tree and matched-style authority", async () => {
+    const bindRules = vi.spyOn(
+      ElementsInspectorView.prototype,
+      "bindRulesDataSource",
+    );
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    const binding = bindRules.mock.calls.at(-1) as unknown[] | undefined;
+    const pseudo = binding?.[2] as PseudoStateDataSource | undefined;
+    expect(pseudo).toBeDefined();
+    if (!pseudo) throw new Error("Missing pseudo-state data source binding");
+
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const response = stylesMatched(request, 8, 3);
+    port.emitMessage({
+      ...response,
+      styles: {
+        ...response.styles,
+        partial: true,
+        unsupportedRuleCount: 2,
+        inaccessibleStylesheetCount: 1,
+        approximateRuleCount: 3,
+      },
+    });
+    await flushAsync();
+
+    const snapshot = pseudo.snapshot();
+    expect(snapshot).toEqual({
+      state: "partial",
+      states: [],
+      unsupportedRuleCount: 2,
+      inaccessibleStylesheetCount: 1,
+      approximateRuleCount: 3,
+    });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.states)).toBe(true);
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(false);
+
+    const mismatched = runtime.matchedStylesModel.select({
+      documentEpoch: 6,
+      nodeRef: "other-card",
+      selectionRevision: 4,
+    });
+    expect(pseudo.snapshot()).toMatchObject({
+      state: "unavailable",
+      reason: "mismatch",
+      states: [],
+    });
+    const mismatchRequest = lastMessage(port.sent, "styles.getMatched") as
+      typeof request;
+    port.emitMessage(stylesMatched(mismatchRequest, 9, 3));
+    await mismatched;
+    expect(pseudo.snapshot()).toMatchObject({
+      state: "unavailable",
+      reason: "mismatch",
+      states: [],
+    });
+    runtime.dispose();
+  });
+
+  it("routes one atomic checkbox replacement and fences stale preview lifecycle", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    const initialRequest = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      pseudoStateRevision: number;
+      pseudoStates: readonly ("hover" | "focus")[];
+    };
+    port.emitMessage(stylesMatched(initialRequest, 8, 3));
+    await flushAsync();
+
+    const hover = harness.document.querySelector(
+      '[data-pseudo-state="hover"]',
+    ) as MutableFakeElement | null;
+    expect(hover).not.toBeNull();
+    if (!hover) throw new Error("Missing :hover preview checkbox");
+    hover.checked = true;
+    hover.dispatch("change");
+    await waitForMessage(port.sent, "styles.setPseudoStates");
+    const pseudoRequests = port.sent.filter((message) => (
+      isType(message, "styles.setPseudoStates")
+    ));
+    expect(pseudoRequests).toHaveLength(1);
+    const pseudoRequest = pseudoRequests[0] as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      states: readonly ("hover" | "focus")[];
+    };
+    expect(pseudoRequest).toMatchObject({
+      documentEpoch: 6,
+      nodeRef: "selected-card",
+      selectionRevision: 4,
+      states: ["hover"],
+    });
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(true);
+
+    port.emitMessage(pseudoStatesResponse(pseudoRequest));
+    await waitForMessageCount(port.sent, "styles.getMatched", 2);
+    const reload = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialRequest;
+    port.emitMessage(stylesMatched(reload, 9, 3));
+    const pseudoButton = harness.document.querySelector(
+      '[data-part="pseudo-state-button"]',
+    );
+    if (!pseudoButton) throw new Error("Missing pseudo-state preview button");
+    await waitForDisabled(pseudoButton, false);
+    expect(harness.document.querySelector('[data-pseudo-state="hover"]')
+      ?.checked).toBe(true);
+    expect(pseudoButton.disabled).toBe(false);
+
+    port.emitMessage({
+      type: "dom.selectionCleared",
+      documentEpoch: 6,
+      selectionRevision: 5,
+      nodeRef: "selected-card",
+    });
+    await flushAsync();
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(true);
+    expect(harness.document.querySelector('[data-pseudo-state="hover"]')
+      ?.checked).toBe(false);
+
+    port.emitMessage(selection("next-card", 6, 6));
+    await flushAsync();
+    const nextRequest = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialRequest;
+    port.emitMessage(stylesMatched(nextRequest, 10, 3));
+    await flushAsync();
+    port.emitMessage(peerState(false, 1));
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(true);
+    port.emitMessage(stylesMatched(nextRequest, 10, 3));
+    await flushAsync();
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(true);
+
+    const requestCountBeforeReconnect = port.sent.filter((message) => (
+      isType(message, "styles.getMatched")
+    )).length;
+    port.emitMessage(peerState(true, 2));
+    await waitForMessageCount(
+      port.sent,
+      "styles.getMatched",
+      requestCountBeforeReconnect + 1,
+    );
+    const resumedRequest = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialRequest;
+    expect(resumedRequest.requestId).not.toBe(nextRequest.requestId);
+    port.emitMessage(stylesMatched(resumedRequest, 11, 3));
+    const resumedButton = harness.document.querySelector(
+      '[data-part="pseudo-state-button"]',
+    );
+    if (!resumedButton) throw new Error("Missing resumed pseudo-state button");
+    await waitForDisabled(resumedButton, false);
+
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: false,
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: PROTOCOL_VERSION - 1,
+    });
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(true);
     runtime.dispose();
   });
 
@@ -2037,6 +2259,17 @@ async function waitForPressed(element: FakeElement): Promise<void> {
   throw new Error("Timed out waiting for Inspect mode");
 }
 
+async function waitForDisabled(
+  element: FakeElement,
+  disabled: boolean,
+): Promise<void> {
+  for (let index = 0; index < 32; index += 1) {
+    if (element.disabled === disabled) return;
+    await Promise.resolve();
+  }
+  throw new Error(`Timed out waiting for disabled=${disabled}`);
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   resolve(value: T): void;
@@ -2091,6 +2324,19 @@ function stylesMatched(
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function peerState(connected: boolean, peerGeneration: number) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "peerState" as const,
+    messageId: `pseudo-peer-${peerGeneration}`,
+    sessionId: "pseudo-session",
+    role: "ide" as const,
+    connected,
+    peerGeneration,
+    metadata: {},
   };
 }
 

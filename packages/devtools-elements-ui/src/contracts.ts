@@ -172,6 +172,42 @@ export interface RulesDataSource {
   filter(query: string): void;
 }
 
+export type PseudoState = "hover" | "focus";
+
+export type PseudoStatePresentationState =
+  | "ready"
+  | "loading"
+  | "partial"
+  | "error"
+  | "unavailable";
+
+export type PseudoStateDisabledReason =
+  | "no-selection"
+  | "recovery"
+  | "disconnected"
+  | "mismatch";
+
+/**
+ * Browser-local, display-only state for the bounded author-style preview.
+ * Implementations must return an immutable snapshot and atomically replace the
+ * complete state set in setStates().
+ */
+export interface PseudoStateSnapshot {
+  readonly state: PseudoStatePresentationState;
+  readonly states: readonly PseudoState[];
+  readonly unsupportedRuleCount: number;
+  readonly inaccessibleStylesheetCount: number;
+  readonly approximateRuleCount: number;
+  readonly reason?: PseudoStateDisabledReason;
+  readonly message?: string;
+}
+
+export interface PseudoStateDataSource {
+  snapshot(): PseudoStateSnapshot;
+  subscribe(listener: () => void): () => void;
+  setStates(states: readonly PseudoState[]): Promise<void>;
+}
+
 export type RuleOriginConfidence = "exact" | "sourcemap";
 
 export type RuleOriginState = "pending" | "stale" | "incompatible";

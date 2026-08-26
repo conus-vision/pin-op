@@ -300,6 +300,10 @@
   position: sticky;
   z-index: 1;
   inset-block-start: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px;
   padding: 4px;
   border-block-end: 1px solid var(--pin-op-elements-border);
   background: Canvas;
@@ -316,7 +320,106 @@
   font: inherit;
 }
 
+.pin-op-elements-inspector .pseudo-state-controls {
+  display: contents;
+}
+
+.pin-op-elements-inspector .pseudo-state-button {
+  appearance: none;
+  grid-column: 2;
+  min-block-size: 24px;
+  min-inline-size: 42px;
+  margin: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--pin-op-elements-border);
+  border-radius: 2px;
+  color: inherit;
+  background: Canvas;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pin-op-elements-inspector .pseudo-state-button:hover:not(:disabled),
+.pin-op-elements-inspector .pseudo-state-button[aria-expanded="true"] {
+  background: var(--pin-op-elements-hover);
+}
+
+.pin-op-elements-inspector .pseudo-state-button:disabled {
+  border-color: GrayText;
+  color: GrayText;
+  cursor: default;
+}
+
+.pin-op-elements-inspector .pseudo-state-button[aria-busy="true"]::after {
+  margin-inline-start: 2px;
+  content: "\2026";
+}
+
+.pin-op-elements-inspector .pseudo-state-menu {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  min-inline-size: 0;
+  padding: 4px;
+  border: 1px solid var(--pin-op-elements-border);
+  border-radius: 2px;
+  color: CanvasText;
+  background: Canvas;
+  box-shadow: 0 2px 5px color-mix(in srgb, CanvasText 20%, transparent);
+}
+
+.pin-op-elements-inspector .pseudo-state-choice {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-block-size: 24px;
+  min-inline-size: 0;
+  padding: 2px 4px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.pin-op-elements-inspector .pseudo-state-choice:not(:has(input:disabled)):hover,
+.pin-op-elements-inspector .pseudo-state-choice:has(input:checked),
+.pin-op-elements-inspector .pseudo-state-choice:focus-within {
+  background: var(--pin-op-elements-hover);
+}
+
+.pin-op-elements-inspector .pseudo-state-choice:has(input:disabled) {
+  color: GrayText;
+  cursor: default;
+}
+
+.pin-op-elements-inspector .pseudo-state-choice input {
+  flex: none;
+  inline-size: 13px;
+  block-size: 13px;
+  margin: 0;
+  accent-color: Highlight;
+}
+
+.pin-op-elements-inspector .pseudo-state-description {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 1px 2px;
+  color: var(--pin-op-elements-rules-meta);
+  font-size: 11px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.pin-op-elements-inspector .pseudo-state-description[role="alert"] {
+  border-inline-start: 3px solid #b3261e;
+  padding-inline-start: 5px;
+  color: CanvasText;
+}
+
 .pin-op-elements-inspector .styles-filter-input:focus-visible,
+.pin-op-elements-inspector .pseudo-state-button:focus-visible,
+.pin-op-elements-inspector .pseudo-state-choice input:focus-visible,
 .pin-op-elements-inspector .styles-section:focus-visible {
   outline: 2px solid Highlight;
   outline-offset: -2px;
@@ -510,11 +613,37 @@
   }
 
   .pin-op-elements-inspector .styles-filter-input:focus-visible,
+  .pin-op-elements-inspector .pseudo-state-button:focus-visible,
+  .pin-op-elements-inspector .pseudo-state-choice input:focus-visible,
   .pin-op-elements-inspector .styles-section:focus-visible {
     forced-color-adjust: none;
     color: HighlightText;
     background: Highlight;
     outline-color: HighlightText;
+  }
+
+  .pin-op-elements-inspector .pseudo-state-button[aria-expanded="true"],
+  .pin-op-elements-inspector .pseudo-state-choice:not(:has(input:disabled)):hover,
+  .pin-op-elements-inspector .pseudo-state-choice:has(input:checked),
+  .pin-op-elements-inspector .pseudo-state-choice:focus-within {
+    forced-color-adjust: none;
+    color: HighlightText;
+    background: Highlight;
+  }
+
+  .pin-op-elements-inspector .pseudo-state-button:disabled,
+  .pin-op-elements-inspector .pseudo-state-choice:has(input:disabled) {
+    color: GrayText;
+    border-color: GrayText;
+  }
+
+  .pin-op-elements-inspector .pseudo-state-menu {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+
+  .pin-op-elements-inspector .pseudo-state-description[role="alert"] {
+    border-inline-start-color: Highlight;
   }
 }
 
@@ -527,6 +656,11 @@
   .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
     border-inline-end: 0;
     border-block-end: 1px solid var(--pin-op-elements-border);
+  }
+
+  .pin-op-elements-inspector .styles-sidebar-pane-toolbar-container {
+    gap: 3px;
+    padding: 3px;
   }
 
   .pin-op-elements-inspector .styles-section-subtitle {

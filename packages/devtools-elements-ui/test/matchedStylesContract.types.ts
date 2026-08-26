@@ -5,6 +5,11 @@ import type {
   MatchedDeclarationSnapshot,
   MatchedRuleSnapshot,
   MatchedStylesSnapshot,
+  PseudoState,
+  PseudoStateDataSource,
+  PseudoStateDisabledReason,
+  PseudoStatePresentationState,
+  PseudoStateSnapshot,
   RuleContextSnapshot,
   RulesDataSource,
   RulesDiagnosticSnapshot,
@@ -84,7 +89,36 @@ const dataSource: RulesDataSource = {
   filter: (_query) => {},
 };
 
+const pseudoState: PseudoState = "hover";
+const pseudoPresentationState: PseudoStatePresentationState = "partial";
+const pseudoDisabledReason: PseudoStateDisabledReason = "recovery";
+const pseudoSnapshot: PseudoStateSnapshot = {
+  state: pseudoPresentationState,
+  states: [pseudoState, "focus"],
+  unsupportedRuleCount: 1,
+  inaccessibleStylesheetCount: 2,
+  approximateRuleCount: 3,
+  reason: pseudoDisabledReason,
+};
+const pseudoDataSource: PseudoStateDataSource = {
+  snapshot: () => pseudoSnapshot,
+  subscribe: (_listener) => () => {},
+  setStates: async (_states) => {},
+};
+
 dataSource.filter("color");
+void pseudoDataSource.setStates(["hover", "focus"]);
+
+// @ts-expect-error Only the bounded hover/focus previews are exposed.
+const unsupportedPseudoState: PseudoState = "active";
+// @ts-expect-error Pseudo-state arrays are immutable snapshot data.
+pseudoSnapshot.states.push("hover");
+// @ts-expect-error Pseudo-state snapshot state is immutable.
+pseudoSnapshot.state = "ready";
+// @ts-expect-error Pseudo-state coverage counts are immutable.
+pseudoSnapshot.approximateRuleCount = 0;
+// @ts-expect-error setStates accepts only bounded preview states.
+void pseudoDataSource.setStates(["visited"]);
 
 // @ts-expect-error Matched selector indices are immutable snapshot data.
 rule.matchingSelectorIndices.push(2);

@@ -16,6 +16,33 @@ import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
+type PseudoState = "hover" | "focus";
+type PseudoStateSnapshot = Readonly<{
+  state: "ready";
+  states: readonly PseudoState[];
+  unsupportedRuleCount: number;
+  inaccessibleStylesheetCount: number;
+  approximateRuleCount: number;
+}>;
+
+interface PseudoStateDataSourceShape {
+  snapshot(): PseudoStateSnapshot;
+  subscribe(listener: () => void): () => void;
+  setStates(states: readonly PseudoState[]): Promise<void>;
+}
+
+type PseudoAwareElementsInspectorViewConstructor = new (
+  document: Document,
+  mount: HTMLElement,
+  treeDataSource: FakeElementsBackend,
+  rulesDataSource: RulesDataSource,
+  sourceLinkDelegate: SourceLinkDelegate,
+  pseudoStateDataSource: PseudoStateDataSourceShape,
+) => ElementsInspectorView;
+
+const PseudoAwareElementsInspectorView = ElementsInspectorView as unknown as
+  PseudoAwareElementsInspectorViewConstructor;
+
 describe("Chromium-derived read-only Rules renderer", () => {
   it("renders inline, matched, and inherited sections with honest cascade detail", () => {
     const harness = createHarness();
@@ -244,12 +271,29 @@ describe("Chromium-derived read-only Rules renderer", () => {
     expect(harness.document.createdTags()).not.toContain("script");
   });
 
-  it("contains no mutation, editor, checkbox, popover, or write shortcut surface", () => {
+  it("contains only the bounded preview checkboxes and no editor or write surface", () => {
     const harness = createHarness();
 
     expect(harness.rulesRoot.getAttribute("aria-readonly")).toBe("true");
-    expect(harness.rulesRoot.querySelector('input[type="checkbox"]')).toBeNull();
-    expect(harness.rulesRoot.querySelector("button")).toBeNull();
+    expect(harness.rulesRoot.querySelectorAll('input[type="checkbox"]')
+      .map((input) => input.getAttribute("data-pseudo-state")))
+      .toEqual(["hover", "focus"]);
+    expect(harness.rulesRoot.querySelectorAll("button")
+      .map((button) => button.textContent)).toEqual([":hov"]);
+    expect(harness.rulesRoot.querySelectorAll("input").map((input) => ({
+      part: input.getAttribute("data-part"),
+      pseudo: input.getAttribute("data-pseudo-state"),
+      type: input.getAttribute("type"),
+    }))).toEqual([
+      { part: "rules-filter", pseudo: null, type: "search" },
+      { part: "pseudo-state-checkbox", pseudo: "hover", type: "checkbox" },
+      { part: "pseudo-state-checkbox", pseudo: "focus", type: "checkbox" },
+    ]);
+    expect(harness.rulesRoot.textContent).not.toMatch(
+      /:active|:visited|:focus-within/i,
+    );
+    expect(harness.rulesRoot.querySelector('[data-part="pseudo-state-input"]'))
+      .toBeNull();
     expect(harness.rulesRoot.querySelector("[contenteditable]")).toBeNull();
     expect(harness.rulesRoot.querySelector('[data-action="add-rule"]')).toBeNull();
     expect(harness.rulesRoot.querySelector('[data-action="add-property"]')).toBeNull();
@@ -399,6 +443,28 @@ class FakeSourceLinkDelegate implements SourceLinkDelegate {
   }
 }
 
+class FakePseudoStateDataSource implements PseudoStateDataSourceShape {
+  private readonly listeners = new Set<() => void>();
+  private readonly current: PseudoStateSnapshot = Object.freeze({
+    state: "ready",
+    states: Object.freeze([]),
+    unsupportedRuleCount: 0,
+    inaccessibleStylesheetCount: 0,
+    approximateRuleCount: 0,
+  });
+
+  public snapshot(): PseudoStateSnapshot {
+    return this.current;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  public async setStates(_states: readonly PseudoState[]): Promise<void> {}
+}
+
 function createHarness(
   snapshot: RulesPresentationSnapshot = Object.freeze({
     state: "partial",
@@ -410,18 +476,21 @@ function createHarness(
   document.body.append(mount);
   const rules = new FakeRulesDataSource(snapshot);
   const sourceLinks = new FakeSourceLinkDelegate();
-  const view = new ElementsInspectorView(
+  const pseudo = new FakePseudoStateDataSource();
+  const view = new PseudoAwareElementsInspectorView(
     document.document,
     mount as unknown as HTMLElement,
     new FakeElementsBackend(elementsSession.tree),
     rules,
     sourceLinks,
+    pseudo,
   );
   return {
     document,
     mount,
     rules,
     rulesRoot: view.rulesRoot as unknown as FakeElement,
+    pseudo,
     sourceLinks,
     view,
   };

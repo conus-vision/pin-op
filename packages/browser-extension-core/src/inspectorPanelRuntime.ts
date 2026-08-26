@@ -2,10 +2,15 @@ import type {
   MatchedDeclarationSnapshot,
   MatchedRuleSnapshot,
   MatchedStylesSnapshot,
+  PseudoState,
+  PseudoStateDataSource,
+  PseudoStateDisabledReason,
+  PseudoStateSnapshot,
   RulesDataSource,
   RulesPresentationSnapshot,
   SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
+import type { DomTreeController } from "./domTreeController.js";
 import type { DomTreeDocument } from "./domTreeView.js";
 import { ElementsInspectorAdapter } from "./elementsInspectorAdapter.js";
 import {
@@ -113,12 +118,17 @@ function createInspectorPresentation(
         context.dispatchRulesOpen,
       );
       const rulesLifecycle: RulesLifecycleAuthority = {};
+      const pseudoStateAdapter = new MatchedStylesPseudoStateAdapter(
+        matchedStylesModel,
+        context.treeController,
+      );
       presentationState.matchedStylesModel = matchedStylesModel;
       presentationState.rulesSourcesController = rulesSourcesController;
       const removeInspectorMessages = context.subscribeInspectorMessages(
         (message) => routeInspectorLifecycle(
           matchedStylesModel,
           rulesSourcesController,
+          pseudoStateAdapter,
           rulesLifecycle,
           message,
         ),
@@ -130,13 +140,18 @@ function createInspectorPresentation(
       );
       let removeSettingsBindings: (() => void) | undefined;
       try {
-        view.mountTree(adapter).bindRulesDataSource(rulesAdapter, rulesAdapter);
+        view.mountTree(adapter).bindRulesDataSource(
+          rulesAdapter,
+          rulesAdapter,
+          pseudoStateAdapter,
+        );
         view.bindStylesRefresh(matchedStylesModel);
         removeSettingsBindings = view.bindSettings(
           context.settingsController,
         );
       } catch (error) {
         removeInspectorMessages();
+        pseudoStateAdapter.dispose();
         rulesSourcesController.dispose();
         matchedStylesModel.dispose();
         view.dispose();
@@ -149,6 +164,7 @@ function createInspectorPresentation(
         removeSourceNavigationBindings: noOp,
         removeLayoutBindings: noOp,
         contentLeaseReplaced() {
+          pseudoStateAdapter.contentLeaseReplaced();
           rulesLifecycle.selectionRevision = undefined;
           rulesLifecycle.documentEpoch = undefined;
           rulesSourcesController.invalidate("transport-invalidation");
@@ -158,6 +174,7 @@ function createInspectorPresentation(
           if (disposed) return;
           disposed = true;
           removeInspectorMessages();
+          pseudoStateAdapter.dispose();
           rulesSourcesController.dispose();
           matchedStylesModel.dispose();
           view.dispose();
@@ -170,9 +187,11 @@ function createInspectorPresentation(
 async function routeInspectorLifecycle(
   model: MatchedStylesModel,
   controller: RulesSourcesController,
+  pseudoStateAdapter: MatchedStylesPseudoStateAdapter,
   lifecycle: RulesLifecycleAuthority,
   message: unknown,
 ): Promise<void> {
+  pseudoStateAdapter.acceptLifecycle(message);
   routeRulesSourcesLifecycle(controller, lifecycle, message);
   await routeMatchedStylesLifecycle(model, message);
 }
@@ -349,6 +368,429 @@ class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
   public filter(_query: string): void {
     // Filtering is presentation-local and never changes browser authority.
   }
+}
+
+/** Browser-local projection for the bounded read-only pseudo-state controls. */
+class MatchedStylesPseudoStateAdapter implements PseudoStateDataSource {
+  private readonly listeners = new Set<() => void>();
+  private current: PseudoStateSnapshot = PSEUDO_UNAVAILABLE_NO_SELECTION;
+  private lastReady: PseudoReadyAuthority | undefined;
+  private selectionRevision: number | undefined;
+  private boundary: PseudoLifecycleBoundary | undefined;
+  private lifecycleRevision = 0;
+  private removeModel: () => void = noOp;
+  private removeTree: () => void = noOp;
+  private disposed = false;
+
+  public constructor(
+    private readonly model: MatchedStylesModel,
+    private readonly tree: DomTreeController,
+  ) {
+    let notificationsEnabled = false;
+    let removeModel: (() => void) | undefined;
+    let removeTree: (() => void) | undefined;
+    try {
+      removeModel = model.subscribe(() => {
+        if (notificationsEnabled) this.recompute();
+      });
+      removeTree = tree.subscribe(() => {
+        if (notificationsEnabled) this.recompute();
+      });
+      this.removeModel = removeModel;
+      this.removeTree = removeTree;
+      notificationsEnabled = true;
+      this.recompute();
+    } catch (error) {
+      try {
+        removeTree?.();
+      } catch {
+        // Preserve the initialization failure.
+      }
+      try {
+        removeModel?.();
+      } catch {
+        // Preserve the initialization failure.
+      }
+      throw error;
+    }
+  }
+
+  public snapshot(): PseudoStateSnapshot {
+    return this.current;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    if (this.disposed) return noOp;
+    this.listeners.add(listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.listeners.delete(listener);
+    };
+  }
+
+  public async setStates(states: readonly PseudoState[]): Promise<void> {
+    if (this.disposed || !isInteractivePseudoSnapshot(this.current)) return;
+    const canonical = canonicalPreviewStates(states);
+    const lifecycleRevision = this.lifecycleRevision;
+    const modelSnapshot = this.model.snapshot();
+    const treeSnapshot = this.tree.snapshot();
+    if (!this.isExactAuthority(modelSnapshot, treeSnapshot)) return;
+    if (
+      this.disposed ||
+      lifecycleRevision !== this.lifecycleRevision ||
+      modelSnapshot !== this.model.snapshot()
+    ) return;
+    const currentTree = this.tree.snapshot();
+    if (!sameTreeAuthority(treeSnapshot, currentTree)) return;
+    await this.model.setPseudoStates(canonical);
+  }
+
+  public acceptLifecycle(message: unknown): void {
+    if (this.disposed) return;
+    try {
+      const event = parseDomEvent(message);
+      if (event.type === "dom.selectionChanged") {
+        this.selectionRevision = event.selectionRevision;
+        this.recompute();
+      } else if (event.type === "dom.selectionCleared") {
+        this.selectionRevision = undefined;
+        this.beginBoundary("no-selection", false);
+      }
+      return;
+    } catch {
+      // Continue through non-DOM lifecycle families.
+    }
+
+    if (parseInspectPortInvalidated(message)) {
+      this.selectionRevision = undefined;
+      this.lastReady = undefined;
+      this.beginBoundary("recovery", false);
+      return;
+    }
+    const compatibility = parseProtocolCompatibilityMessage(message);
+    if (compatibility) {
+      if (compatibility.compatible) this.resumeBoundary("mismatch");
+      else {
+        this.selectionRevision = undefined;
+        this.lastReady = undefined;
+        this.beginBoundary("mismatch", true);
+      }
+      return;
+    }
+    const windowState = rulesWindowState(message);
+    if (windowState === "incompatible") {
+      this.selectionRevision = undefined;
+      this.lastReady = undefined;
+      this.beginBoundary("mismatch", true);
+      return;
+    }
+    if (windowState === "linked") {
+      this.resumeBoundary("disconnected");
+      return;
+    }
+    if (isConnectedPeer(message)) {
+      this.resumeBoundary("disconnected");
+      return;
+    }
+    if (
+      windowState === "offline" ||
+      windowState === "reconnecting" ||
+      windowState === "notLinked" ||
+      windowState === "linking" ||
+      windowState === "rateLimited" ||
+      windowState === "error" ||
+      isIdeDisconnectedState(message) ||
+      isDisconnectedPeer(message)
+    ) {
+      this.lastReady = undefined;
+      this.beginBoundary("disconnected", true);
+    }
+  }
+
+  public contentLeaseReplaced(): void {
+    if (this.disposed) return;
+    this.selectionRevision = undefined;
+    this.lastReady = undefined;
+    this.beginBoundary("disconnected", false);
+  }
+
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.lifecycleRevision += 1;
+    this.selectionRevision = undefined;
+    this.boundary = undefined;
+    this.lastReady = undefined;
+    this.listeners.clear();
+    const removeTree = this.removeTree;
+    const removeModel = this.removeModel;
+    this.removeTree = noOp;
+    this.removeModel = noOp;
+    let disposeError: unknown;
+    try {
+      removeTree();
+    } catch (error) {
+      disposeError = error;
+    }
+    try {
+      removeModel();
+    } catch (error) {
+      disposeError ??= error;
+    }
+    if (disposeError !== undefined) throw disposeError;
+  }
+
+  private beginBoundary(
+    reason: PseudoStateDisabledReason,
+    requiresResume: boolean,
+  ): void {
+    this.lifecycleRevision += 1;
+    this.boundary = Object.freeze({
+      reason,
+      minimumModelGeneration: this.model.snapshot().generation + 1,
+      requiresResume,
+    });
+    this.publish(pseudoUnavailable(reason));
+  }
+
+  private resumeBoundary(reason: PseudoStateDisabledReason): void {
+    const boundary = this.boundary;
+    if (!boundary || boundary.reason !== reason || !boundary.requiresResume) {
+      this.recompute();
+      return;
+    }
+    const source = this.model.snapshot();
+    const tree = this.tree.snapshot();
+    const shouldRefresh = this.isExactAuthority(source, tree);
+    this.lifecycleRevision += 1;
+    this.boundary = Object.freeze({ ...boundary, requiresResume: false });
+    this.recompute();
+    if (shouldRefresh && !this.disposed) {
+      void this.model.refresh().catch(() => {
+        // MatchedStylesModel publishes the fixed error projection itself.
+      });
+    }
+  }
+
+  private recompute(): void {
+    if (this.disposed) return;
+    const tree = this.tree.snapshot();
+    if (tree.recovering) {
+      this.publish(PSEUDO_UNAVAILABLE_RECOVERY);
+      return;
+    }
+    const source = this.model.snapshot();
+    const boundary = this.boundary;
+    const exact = this.isExactAuthority(source, tree);
+    if (boundary) {
+      if (
+        boundary.requiresResume ||
+        source.generation < boundary.minimumModelGeneration ||
+        !exact
+      ) {
+        this.publish(pseudoUnavailable(boundary.reason));
+        return;
+      }
+      this.boundary = undefined;
+    }
+    if (tree.documentEpoch === undefined || tree.selectedRef === undefined) {
+      this.publish(PSEUDO_UNAVAILABLE_NO_SELECTION);
+      return;
+    }
+    if (!exact) {
+      this.publish(PSEUDO_UNAVAILABLE_MISMATCH);
+      return;
+    }
+
+    if (source.state === "loading") {
+      const confirmed = pseudoStatesFromModelKey(source) ??
+        this.statesFromLastReady(tree);
+      this.publish(pseudoSnapshot("loading", confirmed));
+      return;
+    }
+    if (source.state === "error") {
+      this.publish(PSEUDO_ERROR);
+      return;
+    }
+    if ((source.state === "ready" || source.state === "partial") && source.styles) {
+      if (!stylesMatchPseudoAuthority(source, tree, this.selectionRevision)) {
+        this.publish(PSEUDO_UNAVAILABLE_MISMATCH);
+        return;
+      }
+      const states = canonicalPreviewStates(source.styles.pseudoStates);
+      this.lastReady = Object.freeze({
+        documentEpoch: source.styles.documentEpoch,
+        nodeRef: source.styles.nodeRef,
+        selectionRevision: source.styles.selectionRevision,
+        states,
+      });
+      this.publish(Object.freeze({
+        state: source.state,
+        states,
+        unsupportedRuleCount: source.styles.unsupportedRuleCount,
+        inaccessibleStylesheetCount: source.styles.inaccessibleStylesheetCount,
+        approximateRuleCount: source.styles.approximateRuleCount,
+      }));
+      return;
+    }
+    this.publish(PSEUDO_UNAVAILABLE_NO_SELECTION);
+  }
+
+  private isExactAuthority(
+    source: MatchedStylesModelSnapshot,
+    tree: ReturnType<DomTreeController["snapshot"]>,
+  ): boolean {
+    const key = source.key;
+    return !tree.recovering &&
+      tree.documentEpoch !== undefined &&
+      tree.selectedRef !== undefined &&
+      this.selectionRevision !== undefined &&
+      key !== undefined &&
+      key.documentEpoch === tree.documentEpoch &&
+      key.nodeRef === tree.selectedRef &&
+      key.selectionRevision === this.selectionRevision;
+  }
+
+  private statesFromLastReady(
+    tree: ReturnType<DomTreeController["snapshot"]>,
+  ): readonly PseudoState[] {
+    const ready = this.lastReady;
+    return ready &&
+        ready.documentEpoch === tree.documentEpoch &&
+        ready.nodeRef === tree.selectedRef &&
+        ready.selectionRevision === this.selectionRevision
+      ? ready.states
+      : NO_PSEUDO_STATES;
+  }
+
+  private publish(snapshot: PseudoStateSnapshot): void {
+    if (this.disposed || samePseudoSnapshot(this.current, snapshot)) return;
+    this.current = snapshot;
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // Presentation observers cannot change browser-local authority.
+      }
+    }
+  }
+}
+
+interface PseudoReadyAuthority {
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly states: readonly PseudoState[];
+}
+
+interface PseudoLifecycleBoundary {
+  readonly reason: PseudoStateDisabledReason;
+  readonly minimumModelGeneration: number;
+  readonly requiresResume: boolean;
+}
+
+const NO_PSEUDO_STATES = Object.freeze([] as PseudoState[]);
+const PSEUDO_UNAVAILABLE_NO_SELECTION = pseudoUnavailable("no-selection");
+const PSEUDO_UNAVAILABLE_RECOVERY = pseudoUnavailable("recovery");
+const PSEUDO_UNAVAILABLE_MISMATCH = pseudoUnavailable("mismatch");
+const PSEUDO_ERROR: PseudoStateSnapshot = Object.freeze({
+  state: "error",
+  states: NO_PSEUDO_STATES,
+  unsupportedRuleCount: 0,
+  inaccessibleStylesheetCount: 0,
+  approximateRuleCount: 0,
+  message: "Pseudo-state preview is unavailable",
+});
+
+function pseudoUnavailable(
+  reason: PseudoStateDisabledReason,
+): PseudoStateSnapshot {
+  return Object.freeze({
+    state: "unavailable",
+    states: NO_PSEUDO_STATES,
+    unsupportedRuleCount: 0,
+    inaccessibleStylesheetCount: 0,
+    approximateRuleCount: 0,
+    reason,
+  });
+}
+
+function pseudoSnapshot(
+  state: "loading",
+  states: readonly PseudoState[],
+): PseudoStateSnapshot {
+  return Object.freeze({
+    state,
+    states: canonicalPreviewStates(states),
+    unsupportedRuleCount: 0,
+    inaccessibleStylesheetCount: 0,
+    approximateRuleCount: 0,
+  });
+}
+
+function canonicalPreviewStates(
+  states: readonly PseudoState[],
+): readonly PseudoState[] {
+  return Object.freeze([
+    ...(states.includes("hover") ? ["hover" as const] : []),
+    ...(states.includes("focus") ? ["focus" as const] : []),
+  ]);
+}
+
+function pseudoStatesFromModelKey(
+  source: MatchedStylesModelSnapshot,
+): readonly PseudoState[] | undefined {
+  const key = source.key;
+  return key && "pseudoStates" in key
+    ? canonicalPreviewStates(key.pseudoStates)
+    : undefined;
+}
+
+function stylesMatchPseudoAuthority(
+  source: MatchedStylesModelSnapshot,
+  tree: ReturnType<DomTreeController["snapshot"]>,
+  selectionRevision: number | undefined,
+): boolean {
+  const styles = source.styles;
+  const key = source.key;
+  return styles !== undefined &&
+    key !== undefined &&
+    selectionRevision !== undefined &&
+    styles.documentEpoch === tree.documentEpoch &&
+    styles.nodeRef === tree.selectedRef &&
+    styles.selectionRevision === selectionRevision &&
+    key.documentEpoch === styles.documentEpoch &&
+    key.nodeRef === styles.nodeRef &&
+    key.selectionRevision === styles.selectionRevision;
+}
+
+function sameTreeAuthority(
+  left: ReturnType<DomTreeController["snapshot"]>,
+  right: ReturnType<DomTreeController["snapshot"]>,
+): boolean {
+  return left.documentEpoch === right.documentEpoch &&
+    left.selectedRef === right.selectedRef &&
+    left.recovering === right.recovering;
+}
+
+function isInteractivePseudoSnapshot(snapshot: PseudoStateSnapshot): boolean {
+  return snapshot.state === "ready" || snapshot.state === "partial";
+}
+
+function samePseudoSnapshot(
+  left: PseudoStateSnapshot,
+  right: PseudoStateSnapshot,
+): boolean {
+  return left.state === right.state &&
+    left.reason === right.reason &&
+    left.message === right.message &&
+    left.unsupportedRuleCount === right.unsupportedRuleCount &&
+    left.inaccessibleStylesheetCount === right.inaccessibleStylesheetCount &&
+    left.approximateRuleCount === right.approximateRuleCount &&
+    left.states.length === right.states.length &&
+    left.states.every((state, index) => state === right.states[index]);
 }
 
 const EMPTY_RULES_PRESENTATION: RulesPresentationSnapshot = Object.freeze({
@@ -591,6 +1033,23 @@ function isDisconnectedPeer(message: unknown): boolean {
       descriptors.connected?.enumerable === true &&
       Object.hasOwn(descriptors.connected, "value") &&
       descriptors.connected.value === false;
+  } catch {
+    return false;
+  }
+}
+
+function isConnectedPeer(message: unknown): boolean {
+  try {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      return false;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(message);
+    return descriptors.type?.enumerable === true &&
+      Object.hasOwn(descriptors.type, "value") &&
+      descriptors.type.value === "peerState" &&
+      descriptors.connected?.enumerable === true &&
+      Object.hasOwn(descriptors.connected, "value") &&
+      descriptors.connected.value === true;
   } catch {
     return false;
   }

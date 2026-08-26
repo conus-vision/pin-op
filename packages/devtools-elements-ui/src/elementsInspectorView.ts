@@ -1,6 +1,7 @@
 import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
 import { StylesSidebarPane } from "./chromium/rules/StylesSidebarPane.js";
 import type {
+  PseudoStateDataSource,
   RulesDataSource,
   RulesPresentationSnapshot,
   SourceLinkDelegate,
@@ -27,6 +28,7 @@ export class ElementsInspectorView {
     treeDataSource: TreeDataSource,
     rulesDataSource?: RulesDataSource,
     sourceLinkDelegate?: SourceLinkDelegate,
+    pseudoStateDataSource?: PseudoStateDataSource,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -109,7 +111,11 @@ export class ElementsInspectorView {
     );
     try {
       if (rulesDataSource) {
-        this.bindRulesDataSource(rulesDataSource, sourceLinkDelegate);
+        this.bindRulesDataSource(
+          rulesDataSource,
+          sourceLinkDelegate,
+          pseudoStateDataSource,
+        );
       } else {
         this.renderRules();
       }
@@ -127,6 +133,7 @@ export class ElementsInspectorView {
   public bindRulesDataSource(
     dataSource: RulesDataSource,
     sourceLinkDelegate?: SourceLinkDelegate,
+    pseudoStateDataSource?: PseudoStateDataSource,
   ): void {
     if (this.disposed) throw new Error("Elements Inspector is disposed");
     if (this.rulesDataSource || this.rulesPane || this.unsubscribeRules) {
@@ -136,6 +143,7 @@ export class ElementsInspectorView {
       this.document,
       dataSource,
       sourceLinkDelegate,
+      pseudoStateDataSource,
     );
     let unsubscribe: (() => void) | undefined;
     try {
@@ -203,21 +211,34 @@ export class ElementsInspectorView {
       snapshot.state === "loading" ? "true" : "false",
     );
     this.renderRulesProbe(snapshot);
-    this.rulesRoot.replaceChildren();
+    const rulesPane = this.rulesPane;
+    if (!rulesPane) {
+      this.rulesRoot.replaceChildren();
+      return;
+    }
+
+    const children: HTMLElement[] = [];
 
     if (snapshot.state === "loading") {
-      this.rulesRoot.append(this.createRulesMessage("Loading styles", "status"));
+      rulesPane.clear();
+      children.push(this.createRulesMessage("Loading styles", "status"));
     } else if (snapshot.state === "partial") {
-      this.rulesRoot.append(this.createRulesMessage(
+      children.push(this.createRulesMessage(
         "Some styles could not be inspected",
         "status",
       ));
-      this.renderMatchedStyles(snapshot.matchedStyles);
+      rulesPane.render(snapshot.matchedStyles);
     } else if (snapshot.state === "ready") {
-      this.renderMatchedStyles(snapshot.matchedStyles);
+      rulesPane.render(snapshot.matchedStyles);
     } else if (snapshot.state === "error") {
-      this.rulesRoot.append(this.createRulesMessage(snapshot.message, "alert"));
+      rulesPane.clear();
+      children.push(this.createRulesMessage(snapshot.message, "alert"));
+    } else {
+      rulesPane.clear();
     }
+    if (this.disposed || revision !== this.rulesRenderRevision) return;
+    children.push(rulesPane.element);
+    this.rulesRoot.replaceChildren(...children);
   }
 
   private renderRulesProbe(snapshot: RulesPresentationSnapshot): void {
@@ -252,18 +273,6 @@ export class ElementsInspectorView {
     );
     const ruleRef = primaryRuleRef(styles);
     if (ruleRef) this.rulesRoot.setAttribute("data-probe-rule-ref", ruleRef);
-  }
-
-  private renderMatchedStyles(
-    snapshot: Extract<
-      RulesPresentationSnapshot,
-      { readonly state: "ready" | "partial" }
-    >["matchedStyles"],
-  ): void {
-    const rulesPane = this.rulesPane;
-    if (!rulesPane || this.disposed) return;
-    rulesPane.render(snapshot);
-    if (!this.disposed) this.rulesRoot.append(rulesPane.element);
   }
 
   private createRulesMessage(

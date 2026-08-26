@@ -41,9 +41,11 @@
 
 import type {
   MatchedStylesSnapshot,
+  PseudoStateDataSource,
   RulesDataSource,
   SourceLinkDelegate,
 } from "../../contracts.js";
+import { PseudoStateController } from "../../pseudoStateController.js";
 import {
   StylePropertiesSection,
   type RulesSectionKind,
@@ -60,8 +62,10 @@ export class StylesSidebarPane {
   private readonly filterInput: HTMLInputElement;
   private readonly sectionsRoot: HTMLElement;
   private readonly diagnosticsRoot: HTMLElement;
+  private readonly pseudoStateController: PseudoStateController | undefined;
   private sections: readonly StylePropertiesSection[] = [];
   private inheritedGroups: readonly RenderedInheritedGroup[] = [];
+  private renderRevision = 0;
   private query = "";
   private disposed = false;
   private readonly onFilterInputListener = (): void => this.onFilterInput();
@@ -71,6 +75,7 @@ export class StylesSidebarPane {
     private readonly document: Document,
     private readonly dataSource: RulesDataSource,
     private readonly sourceLinkDelegate?: SourceLinkDelegate,
+    pseudoStateDataSource?: PseudoStateDataSource,
   ) {
     this.element = createRulesElement(document, "div", {
       className: "styles-pane matched-styles read-only",
@@ -94,7 +99,15 @@ export class StylesSidebarPane {
         type: "search",
       },
     }) as HTMLInputElement;
-    toolbar.append(this.filterInput);
+    this.pseudoStateController = pseudoStateDataSource
+      ? new PseudoStateController(document, pseudoStateDataSource)
+      : undefined;
+    toolbar.append(
+      this.filterInput,
+      ...(this.pseudoStateController
+        ? [this.pseudoStateController.element]
+        : []),
+    );
     this.sectionsRoot = createRulesElement(document, "div", {
       className: "styles-sections",
       attributes: {
@@ -115,6 +128,7 @@ export class StylesSidebarPane {
 
   public render(snapshot: MatchedStylesSnapshot): void {
     if (this.disposed) return;
+    const revision = ++this.renderRevision;
     const sections: StylePropertiesSection[] = [];
     const children: HTMLElement[] = [];
     const inheritedGroups: RenderedInheritedGroup[] = [];
@@ -196,6 +210,7 @@ export class StylesSidebarPane {
         attributes: { role: "status" },
       }));
     }
+    if (this.disposed || revision !== this.renderRevision) return;
     this.sections = Object.freeze(sections);
     this.inheritedGroups = Object.freeze(inheritedGroups);
     this.sectionsRoot.replaceChildren(...children);
@@ -203,15 +218,32 @@ export class StylesSidebarPane {
     this.applyFilter();
   }
 
+  public clear(): void {
+    if (this.disposed) return;
+    this.renderRevision += 1;
+    this.sections = [];
+    this.inheritedGroups = [];
+    this.sectionsRoot.replaceChildren();
+    this.diagnosticsRoot.replaceChildren();
+  }
+
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.renderRevision += 1;
+    let disposeError: unknown;
     this.filterInput.removeEventListener("input", this.onFilterInputListener);
     this.sectionsRoot.removeEventListener("keydown", this.onKeyDownListener);
+    try {
+      this.pseudoStateController?.dispose();
+    } catch (error) {
+      disposeError = error;
+    }
     this.sections = [];
     this.inheritedGroups = [];
     this.element.replaceChildren();
     this.element.remove();
+    if (disposeError !== undefined) throw disposeError;
   }
 
   private appendSection(

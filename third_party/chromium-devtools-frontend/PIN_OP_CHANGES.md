@@ -56,6 +56,14 @@ every derived source.
 - Adapt `MatchedStylesModel` through `RulesDataSource` in the shared Inspector
   runtime so selection and rendering remain browser-local and independent of
   IDE source resolution.
+- Adapt the Chromium Rules toolbar/pane boundary to a bounded, read-only `:hov`
+  preview controller. Replace SDK element-state forcing with immutable
+  `PseudoStateDataSource` snapshots and atomic complete-state replacement;
+  expose only `:hover` and `:focus`, and label every control as a preview.
+- Disable pseudo-state previews while selection authority is unavailable or an
+  update is pending. Report unsupported rules, inaccessible stylesheets, and
+  source-order approximation as author-style coverage limits; never claim
+  native browser forcing or exact cascade parity.
 - Decorate each rule origin through the narrow source-link delegate: keep the
   generated public label as non-clickable text until an exact current Rules
   authority is available, then make only the exact label and line clickable.
@@ -84,3 +92,7 @@ every derived source.
 - Reset an enabled Rules origin to a text-sized scoped button with an explicit
   keyboard-focus ring so the shared panel button chrome cannot distort the
   Chromium-style rule header.
+- Keep the compact `:hov` button, two-choice preview pane, coverage description,
+  disabled/busy states, checkbox focus, and forced-colors treatment entirely
+  below `.pin-op-elements-inspector`, without unscoped animation or theme
+  dependencies.

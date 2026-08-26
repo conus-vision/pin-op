@@ -3,7 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
-import type { TreePresentationSnapshot } from "../src/contracts.js";
+import type {
+  RulesDataSource,
+  RulesPresentationSnapshot,
+  TreePresentationSnapshot,
+} from "../src/contracts.js";
 import { ElementsInspectorView } from "../src/elementsInspectorView.js";
 import { elementsSession, withTextValue } from "./fixtures/elementsSession.js";
 import { FakeDocument, type FakeElement } from "./support/fakeDocument.js";
@@ -105,6 +109,96 @@ describe("ElementsInspectorView", () => {
     expect(updatedText.textContent).toBe("Updated <script>alert(1)</script>");
     expect(harness.document.createdTags()).not.toContain("script");
     expect(harness.mount.querySelector("script")).toBeNull();
+  });
+
+  it("binds the :hov preview to Rules and resets it with selection authority", () => {
+    const harness = createHarness();
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    const pseudo = new MutablePseudoStateDataSource({
+      state: "ready",
+      states: Object.freeze(["hover"]),
+      unsupportedRuleCount: 0,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 0,
+    });
+    const bindRulesDataSource = harness.view.bindRulesDataSource as unknown as (
+      dataSource: RulesDataSource,
+      sourceLinkDelegate: undefined,
+      pseudoStateDataSource: MutablePseudoStateDataSource,
+    ) => void;
+    bindRulesDataSource.call(harness.view, rules, undefined, pseudo);
+
+    const button = required(
+      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
+    ) as unknown as FakeElement;
+    const hover = required(
+      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
+    ) as unknown as FakeElement & { checked: boolean };
+    expect(button.textContent).toBe(":hov");
+    expect(button.getAttribute("aria-label")).toMatch(/preview/i);
+    expect(hover.checked).toBe(true);
+    expect(pseudo.listenerCount()).toBe(1);
+
+    pseudo.publish({
+      state: "unavailable",
+      reason: "no-selection",
+      states: Object.freeze([]),
+      unsupportedRuleCount: 0,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 0,
+    });
+
+    const resetButton = required(
+      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
+    ) as unknown as FakeElement;
+    const resetHover = required(
+      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
+    ) as unknown as FakeElement & { checked: boolean };
+    expect(resetButton.disabled).toBe(true);
+    expect(resetHover.checked).toBe(false);
+
+    harness.view.dispose();
+    expect(pseudo.listenerCount()).toBe(0);
+  });
+
+  it("keeps the :hov toolbar mounted while an atomic Rules reload is pending", () => {
+    const harness = createHarness();
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    const pseudo = new MutablePseudoStateDataSource({
+      state: "ready",
+      states: Object.freeze(["hover"]),
+      unsupportedRuleCount: 0,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 0,
+    });
+    const bindRulesDataSource = harness.view.bindRulesDataSource as unknown as (
+      dataSource: RulesDataSource,
+      sourceLinkDelegate: undefined,
+      pseudoStateDataSource: MutablePseudoStateDataSource,
+    ) => void;
+    bindRulesDataSource.call(harness.view, rules, undefined, pseudo);
+
+    pseudo.publish({
+      state: "loading",
+      states: Object.freeze(["hover"]),
+      unsupportedRuleCount: 0,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 0,
+    });
+    rules.publish(Object.freeze({ state: "loading" }));
+
+    const button = required(
+      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
+    ) as unknown as FakeElement;
+    const hover = required(
+      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
+    ) as unknown as FakeElement & { checked: boolean };
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(hover.checked).toBe(true);
+    expect(harness.view.rulesRoot.textContent).toContain("Loading styles");
+
+    harness.view.dispose();
   });
 
   it("contains no Pin-op toolbar ownership or editable/inline surfaces", () => {
@@ -367,6 +461,67 @@ class ThrowingUnsubscribeBackend extends FakeElementsBackend {
       unsubscribe();
       throw this.unsubscribeError;
     };
+  }
+}
+
+type PseudoState = "hover" | "focus";
+type PseudoSnapshot = Readonly<{
+  state: "ready" | "loading" | "unavailable";
+  states: readonly PseudoState[];
+  unsupportedRuleCount: number;
+  inaccessibleStylesheetCount: number;
+  approximateRuleCount: number;
+  reason?: "no-selection";
+}>;
+
+class StaticRulesDataSource implements RulesDataSource {
+  private readonly listeners = new Set<() => void>();
+
+  public constructor(private current: RulesPresentationSnapshot) {}
+
+  public snapshot(): RulesPresentationSnapshot {
+    return this.current;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  public filter(_query: string): void {}
+
+  public publish(snapshot: RulesPresentationSnapshot): void {
+    this.current = snapshot;
+    for (const listener of [...this.listeners]) listener();
+  }
+}
+
+class MutablePseudoStateDataSource {
+  private readonly listeners = new Set<() => void>();
+
+  public constructor(private current: PseudoSnapshot) {}
+
+  public snapshot(): PseudoSnapshot {
+    return this.current;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  public async setStates(_states: readonly PseudoState[]): Promise<void> {}
+
+  public publish(snapshot: PseudoSnapshot): void {
+    this.current = Object.freeze({
+      ...snapshot,
+      states: Object.freeze([...snapshot.states]),
+    });
+    for (const listener of [...this.listeners]) listener();
+  }
+
+  public listenerCount(): number {
+    return this.listeners.size;
   }
 }
 
