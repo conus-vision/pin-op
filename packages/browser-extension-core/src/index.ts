@@ -182,8 +182,10 @@ export type {
   StylesInspectPublicationRenewedEvent,
   StylesInvalidatedEvent,
   StylesMatchedResponse,
+  StylesPseudoStatesResponse,
   StylesRequest,
   StylesResponse,
+  StylesSetPseudoStatesRequest,
 } from "./stylesProtocol.js";
 export { DomNodeRegistry } from "./domNodeRegistry.js";
 export type {

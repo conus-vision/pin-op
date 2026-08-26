@@ -11,6 +11,8 @@ import {
 const RANDOM_BYTES_PER_MARKER = 16;
 const MAX_OWNED_NODE_ANCESTRY = 64;
 const MAX_ADOPTED_STYLESHEETS = INSPECT_LIMITS.stylesheets * 2;
+const MAX_EXPECTED_OWN_MUTATIONS = INSPECT_LIMITS.stylesheets * 8 + 16;
+const MAX_EXPECTED_MUTATION_NODES = 8;
 
 export interface PinOpRuntimeArtifactsOptions {
   readonly getRandomValues?: (bytes: Uint8Array) => Uint8Array;
@@ -29,6 +31,20 @@ interface OwnedAttribute {
   readonly name: string;
   readonly attribute: Attr;
 }
+
+type ExpectedOwnMutation =
+  | {
+      readonly kind: "attributes";
+      readonly target: Element;
+      readonly name: string;
+      readonly oldValue: string | null;
+    }
+  | {
+      readonly kind: "childList";
+      readonly target: object;
+      readonly addedNodes: readonly object[];
+      readonly removedNodes: readonly object[];
+    };
 
 interface OwnedAdoptedStylesheet {
   readonly root: Document | ShadowRoot;
@@ -77,6 +93,7 @@ export class PinOpRuntimeArtifacts {
   private readonly historicalMarkerElements = new WeakMap<object, Set<string>>();
   private readonly activeAttributes: OwnedAttribute[] = [];
   private readonly activeStyleNodes = new Set<HTMLStyleElement>();
+  private readonly detachedStyleNodes = new WeakSet<HTMLStyleElement>();
   private readonly activeStyleStylesheets = new WeakMap<HTMLStyleElement, CSSStyleSheet>();
   private readonly activeAdoptedStylesheets: OwnedAdoptedStylesheet[] = [];
   private readonly pendingAdoptedRemovalTargets = new WeakMap<
@@ -84,6 +101,8 @@ export class PinOpRuntimeArtifacts {
     PendingAdoptedRemoval
   >();
   private readonly intrinsics: BrowserIntrinsicAccess;
+  private readonly expectedOwnMutations: ExpectedOwnMutation[] = [];
+  private expectedOwnMutationsOverflow = false;
 
   public constructor(options: PinOpRuntimeArtifactsOptions = {}) {
     const random = options.getRandomValues ?? defaultGetRandomValues;
@@ -139,7 +158,10 @@ export class PinOpRuntimeArtifacts {
             attribute,
             this.intrinsics,
           );
-          if (inserted) this.recordMarkerHistory(element, name);
+          if (inserted) {
+            this.recordMarkerHistory(element, name);
+            this.recordExpectedAttributeMutation(element, name, null);
+          }
         }
       }
       return true;
@@ -151,6 +173,7 @@ export class PinOpRuntimeArtifacts {
 
   public registerStyleNode(node: HTMLStyleElement): void {
     this.registerDetachedStyleNode(node);
+    this.detachedStyleNodes.delete(node);
     try {
       const sheet = this.intrinsics.read(node, "style.sheet");
       if (isObject(sheet)) {
@@ -166,6 +189,7 @@ export class PinOpRuntimeArtifacts {
     if (!isObject(node)) throw new TypeError("style node must be an object");
     this.historicalNodes.add(node);
     this.activeStyleNodes.add(node);
+    this.detachedStyleNodes.add(node);
   }
 
   public markStyleNode(node: HTMLStyleElement): boolean {
@@ -198,6 +222,7 @@ export class PinOpRuntimeArtifacts {
         this.intrinsics,
       )) return false;
       this.recordMarkerHistory(node, this.styleMarkerName);
+      this.recordExpectedAttributeMutation(node, this.styleMarkerName, null);
       return true;
     } catch {
       return false;
@@ -216,6 +241,10 @@ export class PinOpRuntimeArtifacts {
       ) return false;
       this.historicalStylesheets.add(sheet);
       this.activeStyleStylesheets.set(node, sheet);
+      if (this.detachedStyleNodes.delete(node)) {
+        const parent = safeParentNode(node, this.intrinsics);
+        if (parent) this.recordExpectedChildListMutation(parent, [node], []);
+      }
       return true;
     } catch {
       return false;
@@ -279,6 +308,25 @@ export class PinOpRuntimeArtifacts {
     }
   }
 
+  /** Consume-once attribution for MutationObserver records caused by this authority. */
+  public consumeExpectedOwnMutation(record: unknown): boolean {
+    if (this.expectedOwnMutationsOverflow) return false;
+    const observed = readObservedMutation(record);
+    if (!observed) return false;
+    const index = this.expectedOwnMutations.findIndex((expected) => (
+      sameExpectedMutation(expected, observed)
+    ));
+    if (index < 0) return false;
+    this.expectedOwnMutations.splice(index, 1);
+    return true;
+  }
+
+  /** Ends one delivered MutationObserver batch and expires every unmatched expectation. */
+  public finishExpectedOwnMutationBatch(): void {
+    this.expectedOwnMutations.length = 0;
+    this.expectedOwnMutationsOverflow = false;
+  }
+
   public isRuntimeNode(node: Node): boolean {
     if (!isObject(node)) return false;
     let current: object | undefined = node;
@@ -309,6 +357,13 @@ export class PinOpRuntimeArtifacts {
   public cleanupStyleNode(node: HTMLStyleElement): boolean {
     if (!this.activeStyleNodes.has(node)) return true;
     try {
+      const parentBefore = safeParentNode(node, this.intrinsics);
+      if (parentBefore && this.detachedStyleNodes.delete(node)) {
+        this.recordExpectedChildListMutation(parentBefore, [node], []);
+      }
+      const contentBefore = snapshotMutationNodes(
+        (node as unknown as { readonly childNodes?: unknown }).childNodes,
+      );
       const registeredSheet = this.activeStyleStylesheets.get(node);
       if (!registeredSheet) {
         const currentSheet = this.intrinsics.read(node, "style.sheet");
@@ -326,6 +381,9 @@ export class PinOpRuntimeArtifacts {
         this.intrinsics,
       );
       if (!neutralized.complete) return false;
+      if (contentBefore && contentBefore.length > 0) {
+        this.recordExpectedChildListMutation(node, [], contentBefore);
+      }
       if (neutralized.currentSheet) {
         this.historicalStylesheets.add(neutralized.currentSheet);
         this.activeStyleStylesheets.set(node, neutralized.currentSheet);
@@ -333,7 +391,11 @@ export class PinOpRuntimeArtifacts {
         this.activeStyleStylesheets.delete(node);
       }
       if (!detachExactStyleNode(node, this.intrinsics)) return false;
+      if (parentBefore) {
+        this.recordExpectedChildListMutation(parentBefore, [], [node]);
+      }
       this.activeStyleNodes.delete(node);
+      this.detachedStyleNodes.delete(node);
       this.activeStyleStylesheets.delete(node);
       return true;
     } catch {
@@ -441,6 +503,8 @@ export class PinOpRuntimeArtifacts {
         this.intrinsics,
       );
       if (location.status === "owned") {
+        const mutationTarget = location.owner;
+        const oldValue = readAttributeValue(record.attribute, this.intrinsics);
         this.recordMarkerHistory(location.owner, record.name);
         try {
           this.intrinsics.call(
@@ -456,6 +520,13 @@ export class PinOpRuntimeArtifacts {
           record.attribute,
           this.intrinsics,
         );
+        if (location.status === "absent" && oldValue !== undefined) {
+          this.recordExpectedAttributeMutation(
+            mutationTarget,
+            record.name,
+            oldValue,
+          );
+        }
       }
       if (location.status === "owned" || location.status === "unknown") {
         failureCount += 1;
@@ -505,6 +576,143 @@ export class PinOpRuntimeArtifacts {
     const names = this.historicalMarkerElements.get(element) ?? new Set<string>();
     names.add(name);
     this.historicalMarkerElements.set(element, names);
+  }
+
+  private recordExpectedAttributeMutation(
+    target: Element,
+    name: string,
+    oldValue: string | null,
+  ): void {
+    if (!safeParentNode(target, this.intrinsics)) return;
+    this.recordExpectedOwnMutation(Object.freeze({
+      kind: "attributes",
+      target,
+      name,
+      oldValue,
+    }));
+  }
+
+  private recordExpectedChildListMutation(
+    target: object,
+    addedNodes: readonly object[],
+    removedNodes: readonly object[],
+  ): void {
+    this.recordExpectedOwnMutation(Object.freeze({
+      kind: "childList",
+      target,
+      addedNodes: Object.freeze([...addedNodes]),
+      removedNodes: Object.freeze([...removedNodes]),
+    }));
+  }
+
+  private recordExpectedOwnMutation(expected: ExpectedOwnMutation): void {
+    if (
+      this.expectedOwnMutationsOverflow ||
+      this.expectedOwnMutations.length >= MAX_EXPECTED_OWN_MUTATIONS
+    ) {
+      this.expectedOwnMutations.length = 0;
+      this.expectedOwnMutationsOverflow = true;
+      return;
+    }
+    this.expectedOwnMutations.push(expected);
+  }
+}
+
+function readObservedMutation(record: unknown): ExpectedOwnMutation | undefined {
+  if (!isObject(record) || Array.isArray(record)) return undefined;
+  try {
+    const candidate = record as {
+      readonly type?: unknown;
+      readonly target?: unknown;
+      readonly attributeName?: unknown;
+      readonly oldValue?: unknown;
+      readonly addedNodes?: unknown;
+      readonly removedNodes?: unknown;
+    };
+    if (candidate.type === "attributes") {
+      if (
+        !isObject(candidate.target) ||
+        typeof candidate.attributeName !== "string" ||
+        (candidate.oldValue !== null && typeof candidate.oldValue !== "string")
+      ) return undefined;
+      return Object.freeze({
+        kind: "attributes",
+        target: candidate.target as Element,
+        name: candidate.attributeName,
+        oldValue: candidate.oldValue,
+      });
+    }
+    if (candidate.type !== "childList" || !isObject(candidate.target)) {
+      return undefined;
+    }
+    const addedNodes = snapshotMutationNodes(candidate.addedNodes);
+    const removedNodes = snapshotMutationNodes(candidate.removedNodes);
+    if (!addedNodes || !removedNodes || addedNodes.length + removedNodes.length === 0) {
+      return undefined;
+    }
+    return Object.freeze({
+      kind: "childList",
+      target: candidate.target,
+      addedNodes,
+      removedNodes,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function sameExpectedMutation(
+  expected: ExpectedOwnMutation,
+  observed: ExpectedOwnMutation,
+): boolean {
+  if (expected.kind !== observed.kind || expected.target !== observed.target) {
+    return false;
+  }
+  if (expected.kind === "attributes" && observed.kind === "attributes") {
+    return expected.name === observed.name && expected.oldValue === observed.oldValue;
+  }
+  return expected.kind === "childList" && observed.kind === "childList" &&
+    sameObjectSequence(expected.addedNodes, observed.addedNodes) &&
+    sameObjectSequence(expected.removedNodes, observed.removedNodes);
+}
+
+function sameObjectSequence(left: readonly object[], right: readonly object[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function snapshotMutationNodes(value: unknown): readonly object[] | undefined {
+  if (!isObject(value)) return undefined;
+  try {
+    const length = (value as { readonly length?: unknown }).length;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > MAX_EXPECTED_MUTATION_NODES
+    ) return undefined;
+    const nodes: object[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const node = (value as ArrayLike<unknown>)[index];
+      if (!isObject(node)) return undefined;
+      nodes.push(node);
+    }
+    return Object.freeze(nodes);
+  } catch {
+    return undefined;
+  }
+}
+
+function readAttributeValue(
+  attribute: Attr,
+  intrinsics: BrowserIntrinsicAccess,
+): string | undefined {
+  try {
+    const value = intrinsics.read(attribute, "attr.value");
+    return typeof value === "string" && value.length <= INSPECT_LIMITS.valueLength
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

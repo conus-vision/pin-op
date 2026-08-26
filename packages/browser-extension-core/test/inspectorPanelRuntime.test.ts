@@ -2,6 +2,7 @@ import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   startInspectorPanelRuntime,
+  projectMatchedStylesSnapshot,
   type InspectorPanelRuntimeOptions,
 } from "../src/inspectorPanelRuntime.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
@@ -10,6 +11,29 @@ import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/
 
 describe("startInspectorPanelRuntime", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("projects pseudo-state authority and coverage counts into the neutral Rules snapshot", () => {
+    const request = {
+      requestId: "projection-pseudo",
+      documentEpoch: 4,
+      nodeRef: "node-projection",
+      selectionRevision: 7,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"] as const,
+    };
+    const styles = {
+      ...stylesMatched(request, 9, 3).styles,
+      unsupportedRuleCount: 2,
+      approximateRuleCount: 1,
+    };
+
+    expect(projectMatchedStylesSnapshot(styles)).toMatchObject({
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
+      unsupportedRuleCount: 2,
+      approximateRuleCount: 1,
+    });
+  });
 
   it("owns an IDE-independent matched-style model and resets it on inspect invalidation", async () => {
     const harness = createHarness();
@@ -23,6 +47,8 @@ describe("startInspectorPanelRuntime", () => {
       documentEpoch: 1,
       stylesRevision: 3,
       stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
     expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
 
@@ -46,6 +72,8 @@ describe("startInspectorPanelRuntime", () => {
       documentEpoch: 1,
       stylesRevision: 4,
       stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
     await Promise.resolve();
     const reload = lastMessage(port.sent, "styles.getMatched") as typeof request;
@@ -62,6 +90,80 @@ describe("startInspectorPanelRuntime", () => {
       reason: "documentDisconnected",
     });
     expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    runtime.dispose();
+  });
+
+  it("routes atomic pseudo-state changes and reloads Rules under the returned correlation", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    const initial = runtime.matchedStylesModel.select({
+      documentEpoch: 4,
+      nodeRef: "node-pseudo",
+      selectionRevision: 7,
+    });
+    const initialRequest = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      pseudoStateRevision: number;
+      pseudoStates: readonly ("hover" | "focus")[];
+    };
+    expect(initialRequest).toMatchObject({
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    port.emitMessage(stylesMatched(initialRequest, 8, 3));
+    await initial;
+
+    const preview = runtime.matchedStylesModel.setPseudoStates(["hover"]);
+    await waitForMessage(port.sent, "styles.setPseudoStates");
+    const pseudoRequest = lastMessage(port.sent, "styles.setPseudoStates") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+      expectedStylesRevision: number;
+      expectedPseudoStateRevision: number;
+      states: readonly ("hover" | "focus")[];
+    };
+    expect(pseudoRequest).toMatchObject({
+      documentEpoch: 4,
+      nodeRef: "node-pseudo",
+      selectionRevision: 7,
+      expectedStylesRevision: 8,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    port.emitMessage(pseudoStatesResponse(pseudoRequest));
+
+    await waitForMessageCount(port.sent, "styles.getMatched", 2);
+    const reload = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialRequest;
+    expect(reload).toMatchObject({
+      pseudoStateRevision: 1,
+      pseudoStates: ["hover"],
+    });
+    port.emitMessage(stylesMatched(reload, 9, 3));
+    await preview;
+    await flushAsync();
+
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "ready",
+      key: {
+        stylesRevision: 9,
+        stylesheetRevision: 3,
+        pseudoStateRevision: 1,
+        pseudoStates: ["hover"],
+      },
+      styles: {
+        pseudoStateRevision: 1,
+        pseudoStates: ["hover"],
+      },
+    });
     runtime.dispose();
   });
 
@@ -264,6 +366,8 @@ describe("startInspectorPanelRuntime", () => {
       documentEpoch: 6,
       stylesRevision: 10,
       stylesheetRevision: 3,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
     const invalidated = harness.document.querySelector(
       '[data-rule-origin="rule-card"]',
@@ -1953,10 +2057,14 @@ function stylesMatched(
     readonly documentEpoch: number;
     readonly nodeRef: string;
     readonly selectionRevision: number;
+    readonly pseudoStateRevision?: number;
+    readonly pseudoStates?: readonly ("hover" | "focus")[];
   },
   stylesRevision: number,
   stylesheetRevision: number,
 ) {
+  const pseudoStateRevision = request.pseudoStateRevision ?? 0;
+  const pseudoStates = request.pseudoStates ?? [];
   return {
     type: "styles.matched" as const,
     requestId: request.requestId,
@@ -1965,18 +2073,47 @@ function stylesMatched(
     selectionRevision: request.selectionRevision,
     stylesRevision,
     stylesheetRevision,
+    pseudoStateRevision,
+    pseudoStates,
     styles: {
       documentEpoch: request.documentEpoch,
       nodeRef: request.nodeRef,
       selectionRevision: request.selectionRevision,
       stylesRevision,
       stylesheetRevision,
+      pseudoStateRevision,
+      pseudoStates,
       rules: [],
       inherited: [],
       inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function pseudoStatesResponse(request: {
+  readonly requestId: string;
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly states: readonly ("hover" | "focus")[];
+}) {
+  return {
+    type: "styles.pseudoStates" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 9,
+    stylesheetRevision: 3,
+    pseudoStateRevision: 1,
+    states: request.states,
+    unsupportedRuleCount: 1,
+    inaccessibleStylesheetCount: 0,
+    approximateRuleCount: 1,
   };
 }
 

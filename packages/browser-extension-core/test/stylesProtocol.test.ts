@@ -13,6 +13,7 @@ import {
   parseStylesResponse,
   stylesProtocolEnvelopeWithinBudget,
   type StylesGetMatchedRequest,
+  type StylesSetPseudoStatesRequest,
 } from "../src/stylesProtocol.js";
 
 describe("stylesProtocol", () => {
@@ -24,24 +25,34 @@ describe("stylesProtocol", () => {
 
     const matched = matchedResponse();
     expect(parseStylesResponse(matched)).toEqual(matched);
+    const setRequest = pseudoStatesRequest();
+    expect(parseStylesRequest(setRequest)).toEqual(setRequest);
+    const setResponse = pseudoStatesResponse();
+    expect(parseStylesResponse(setResponse)).toEqual(setResponse);
     expect(parseStylesEvent({
       type: "styles.invalidated",
       documentEpoch: 4,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover", "focus"],
     })).toEqual({
       type: "styles.invalidated",
       documentEpoch: 4,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover", "focus"],
     });
 
     for (const code of [
       "invalid-request",
       "stale-document",
       "stale-selection",
+      "stale-styles",
+      "stale-pseudo-state",
       "unknown-node",
-      "inaccessible",
+      "node-unavailable",
       "cancelled",
       "internal-error",
     ] as const) {
@@ -50,6 +61,94 @@ describe("stylesProtocol", () => {
         requestId: "styles-1",
         code,
       })).toEqual({ type: "styles.error", requestId: "styles-1", code });
+    }
+  });
+
+  it("requires canonical pseudo-state commands and deeply freezes accepted arrays", () => {
+    for (const states of [
+      [],
+      ["hover"],
+      ["focus"],
+      ["hover", "focus"],
+    ] as const) {
+      const request = parseStylesRequest({ ...pseudoStatesRequest(), states });
+      const response = parseStylesResponse({ ...pseudoStatesResponse(), states });
+      expect(request).toMatchObject({ type: "styles.setPseudoStates", states });
+      expect(response).toMatchObject({ type: "styles.pseudoStates", states });
+      expect(Object.isFrozen(request)).toBe(true);
+      expect(Object.isFrozen(request.states)).toBe(true);
+      expect(Object.isFrozen(response)).toBe(true);
+      expect(Object.isFrozen(response.type === "styles.pseudoStates" && response.states)).toBe(true);
+    }
+
+    for (const states of [
+      ["focus", "hover"],
+      ["hover", "hover"],
+      ["focus", "focus"],
+      ["hover", "focus", "hover"],
+      ["active"],
+    ]) {
+      expect(() => parseStylesRequest({ ...pseudoStatesRequest(), states }))
+        .toThrow(/styles protocol/i);
+      expect(() => parseStylesResponse({ ...pseudoStatesResponse(), states }))
+        .toThrow(/styles protocol/i);
+    }
+
+    const sparse = new Array(2);
+    sparse[0] = "hover";
+    expect(() => parseStylesRequest({ ...pseudoStatesRequest(), states: sparse }))
+      .toThrow(/styles protocol/i);
+
+    let getterCalls = 0;
+    const accessor = ["hover"];
+    Object.defineProperty(accessor, 0, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "hover";
+      },
+    });
+    expect(() => parseStylesRequest({ ...pseudoStatesRequest(), states: accessor }))
+      .toThrow(/styles protocol/i);
+    expect(getterCalls).toBe(0);
+
+    const symbolStates = ["hover"] as unknown as Record<PropertyKey, unknown>;
+    symbolStates[Symbol("hidden")] = true;
+    expect(() => parseStylesRequest({ ...pseudoStatesRequest(), states: symbolStates }))
+      .toThrow(/styles protocol/i);
+  });
+
+  it("requires exact pseudo command keys, revision CAS values, and bounded result counts", () => {
+    expect(() => parseStylesRequest({ ...pseudoStatesRequest(), extra: true }))
+      .toThrow(/styles protocol/i);
+    const { expectedStylesRevision: _missing, ...missingCas } = pseudoStatesRequest();
+    expect(() => parseStylesRequest(missingCas)).toThrow(/styles protocol/i);
+    for (const [key, value] of [
+      ["expectedStylesRevision", -1],
+      ["expectedPseudoStateRevision", Number.MAX_SAFE_INTEGER + 1],
+    ] as const) {
+      expect(() => parseStylesRequest({ ...pseudoStatesRequest(), [key]: value }))
+        .toThrow(/styles protocol/i);
+    }
+    expect(() => parseStylesRequest({
+      ...pseudoStatesRequest(),
+      expectedStylesRevision: 1,
+      expectedPseudoStateRevision: 2,
+    })).toThrow(/styles protocol/i);
+
+    expect(() => parseStylesResponse({ ...pseudoStatesResponse(), extra: true }))
+      .toThrow(/styles protocol/i);
+    for (const [key, value] of [
+      ["stylesRevision", 2],
+      ["stylesheetRevision", 10],
+      ["pseudoStateRevision", 10],
+      ["unsupportedRuleCount", STYLES_PROTOCOL_MAX_RULES + 1],
+      ["inaccessibleStylesheetCount", 257],
+      ["approximateRuleCount", STYLES_PROTOCOL_MAX_RULES + 1],
+    ] as const) {
+      expect(() => parseStylesResponse({ ...pseudoStatesResponse(), [key]: value }))
+        .toThrow(/styles protocol/i);
     }
   });
 
@@ -74,6 +173,8 @@ describe("stylesProtocol", () => {
       documentEpoch: 4,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover", "focus"],
       reason: "page-controlled",
     })).toThrow(/styles protocol/i);
     for (const manualRefresh of [false, 1, "true", null]) {
@@ -99,6 +200,8 @@ describe("stylesProtocol", () => {
       ["selectionRevision", 99],
       ["stylesRevision", 99],
       ["stylesheetRevision", 99],
+      ["pseudoStateRevision", 99],
+      ["pseudoStates", ["focus"]],
     ] as const) {
       expect(() => parseStylesResponse({
         ...matchedResponse(),
@@ -110,6 +213,8 @@ describe("stylesProtocol", () => {
       documentEpoch: 1,
       stylesRevision: 1,
       stylesheetRevision: 2,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).toThrow(/styles protocol/i);
   });
 
@@ -286,6 +391,15 @@ describe("stylesProtocol", () => {
       requestId: request.requestId,
       code: "cancelled",
     })).toBe(true);
+
+    const setRequest = pseudoStatesRequest();
+    expect(isStylesResponseForRequest(setRequest, pseudoStatesResponse())).toBe(true);
+    expect(isStylesResponseForRequest(setRequest, matchedResponse())).toBe(false);
+    expect(isStylesResponseForRequest(request, pseudoStatesResponse())).toBe(false);
+    expect(isStylesResponseForRequest(setRequest, {
+      ...pseudoStatesResponse(),
+      selectionRevision: setRequest.selectionRevision + 1,
+    })).toBe(false);
   });
 });
 
@@ -296,6 +410,38 @@ function stylesRequest(): StylesGetMatchedRequest {
     documentEpoch: 4,
     nodeRef: "node-1",
     selectionRevision: 7,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover", "focus"],
+  };
+}
+
+function pseudoStatesRequest(): StylesSetPseudoStatesRequest {
+  return {
+    type: "styles.setPseudoStates",
+    requestId: "pseudo-1",
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    expectedStylesRevision: 8,
+    expectedPseudoStateRevision: 2,
+    states: ["hover", "focus"],
+  };
+}
+
+function pseudoStatesResponse() {
+  return {
+    type: "styles.pseudoStates" as const,
+    requestId: "pseudo-1",
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    stylesRevision: 9,
+    stylesheetRevision: 3,
+    pseudoStateRevision: 3,
+    states: ["hover", "focus"] as const,
+    unsupportedRuleCount: 1,
+    inaccessibleStylesheetCount: 0,
+    approximateRuleCount: 1,
   };
 }
 
@@ -308,12 +454,16 @@ function matchedResponse() {
     selectionRevision: 7,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover", "focus"] as const,
     styles: {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover", "focus"] as const,
       inline: {
         ruleRef: "rule-inline",
         selectorText: "element.style",
@@ -356,6 +506,8 @@ function matchedResponse() {
       }],
       inherited: [{ ancestorIndex: 1, elementName: "main", rules: [] }],
       inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 1,
+      approximateRuleCount: 1,
       partial: false,
       diagnostics: [],
     },

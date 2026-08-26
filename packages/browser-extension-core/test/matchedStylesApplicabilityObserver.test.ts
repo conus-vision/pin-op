@@ -59,6 +59,31 @@ describe("MatchedStylesApplicabilityObserver", () => {
     ))).toBe(true);
   });
 
+  it("tracks active-preview selectors under the original candidate identity", () => {
+    const document = documentHarness(eventTargetHarness());
+    const active = new Set<string>();
+    const changes: unknown[] = [];
+    const observer = createObserver(document, changes);
+    const previewSelector = "input[data-pin-op-preview-hover-abcdefghijklmnop]:checked:where([data-pin-op-preview-selected-abcdefghijklmnop])";
+    observer.setSelection(matchable(document, active), [candidate(
+      "preview-rule-ref",
+      document,
+      "input:hover:checked",
+      [],
+      previewSelector,
+    )]);
+    observer.check();
+
+    active.add(previewSelector);
+    const changed = observer.check();
+
+    expect(changed.changed).toBe(true);
+    expect(changed.matches).toEqual([expect.objectContaining({
+      candidateKey: "preview-rule-ref",
+    })]);
+    expect(changes).toEqual([{ reason: "applicability-change" }]);
+  });
+
   it("tracks media/supports applicability while keeping scope/container unknown", () => {
     const root = eventTargetHarness();
     const mql = mediaHarness(false);
@@ -130,6 +155,71 @@ describe("MatchedStylesApplicabilityObserver", () => {
     expect((changes[0] as { reason: string }).reason).toBe("observable-signal");
     expect(root.dispatchEvent).not.toHaveBeenCalled();
     expect(document.view.dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it("filters runtime-owned attribute and child-list mutation records", async () => {
+    const document = documentHarness(eventTargetHarness());
+    const mutation = mutationHarness();
+    const changes: unknown[] = [];
+    const finishRuntimeMutationBatch = vi.fn();
+    const observer = createObserver(document, changes, {
+      createMutationObserver: mutation.create,
+      isRuntimeArtifactMutation: (record) => (
+        typeof record === "object" &&
+        record !== null &&
+        (record as { readonly runtime?: unknown }).runtime === true
+      ),
+      onRuntimeArtifactMutationBatchComplete: finishRuntimeMutationBatch,
+    });
+    observer.setSelection(matchable(document, new Set([".card"])), [
+      candidate("card", document, ".card"),
+    ]);
+    expect(finishRuntimeMutationBatch).toHaveBeenCalledOnce();
+    finishRuntimeMutationBatch.mockClear();
+    observer.check();
+
+    mutation.emit([
+      { type: "attributes", attributeName: "data-pin-op-preview-hover", runtime: true },
+      { type: "childList", addedNodes: [{}], removedNodes: [], runtime: true },
+    ]);
+    await Promise.resolve();
+    expect(changes).toEqual([]);
+    expect(finishRuntimeMutationBatch).toHaveBeenCalledTimes(1);
+
+    mutation.emit([
+      { type: "attributes", attributeName: "class", runtime: false },
+    ]);
+    await Promise.resolve();
+    expect(changes).toEqual([{ reason: "observable-signal" }]);
+    expect(finishRuntimeMutationBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails open without scanning an oversized runtime mutation batch", async () => {
+    const document = documentHarness(eventTargetHarness());
+    const mutation = mutationHarness();
+    const changes: unknown[] = [];
+    const classify = vi.fn(() => true);
+    const finish = vi.fn();
+    const observer = createObserver(document, changes, {
+      createMutationObserver: mutation.create,
+      isRuntimeArtifactMutation: classify,
+      onRuntimeArtifactMutationBatchComplete: finish,
+    });
+    observer.setSelection(matchable(document, new Set([".card"])), [
+      candidate("card", document, ".card"),
+    ]);
+    expect(finish).toHaveBeenCalledOnce();
+    finish.mockClear();
+
+    mutation.emit(Array.from(
+      { length: APPLICABILITY_LIMITS.mutationRecordsPerBatch + 1 },
+      () => ({ runtime: true }),
+    ));
+    await Promise.resolve();
+
+    expect(changes).toEqual([{ reason: "observable-signal" }]);
+    expect(classify).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledOnce();
   });
 
   it("rotates non-overlapping windows without invalidating a stable large result", () => {
@@ -283,8 +373,15 @@ function candidate(
   scope: object,
   selectorText: string,
   contexts: ApplicabilityCandidate["contexts"] = [],
+  previewSelectorText?: string,
 ): ApplicabilityCandidate {
-  return { key, scope: scope as Document, selectorText, contexts };
+  return {
+    key,
+    scope: scope as Document,
+    selectorText,
+    contexts,
+    ...(previewSelectorText ? { previewSelectorText } : {}),
+  };
 }
 
 function matchable(root: object, active: Set<string>, parentElement: Element | null = null) {
@@ -352,14 +449,16 @@ function mediaHarness(initial: boolean) {
 function mutationHarness() {
   let callback: ((records: readonly unknown[]) => void) | undefined;
   const disconnect = vi.fn();
+  const observe = vi.fn();
   return {
     create(next: (records: readonly unknown[]) => void) {
       callback = next;
-      return { observe: vi.fn(), disconnect };
+      return { observe, disconnect };
     },
     emit(records: readonly unknown[]) {
       callback?.(records);
     },
     disconnect,
+    observe,
   };
 }

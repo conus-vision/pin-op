@@ -1,4 +1,7 @@
-import type { ContentInspectPort } from "./inspectPortProtocol.js";
+import type {
+  ContentInspectPort,
+  ContentSessionId,
+} from "./inspectPortProtocol.js";
 
 export interface InspectLeaseTarget {
   enable(): void;
@@ -78,6 +81,12 @@ export class ContentInspectLease {
 interface RegisteredInspectLease {
   readonly port: ContentInspectPort;
   readonly onDisconnect: () => void;
+  readonly contentSessionId?: ContentSessionId;
+}
+
+export interface DetachedBackgroundInspectLease {
+  readonly contentSessionId: ContentSessionId | undefined;
+  release(): void;
 }
 
 export class BackgroundInspectLeaseRegistry {
@@ -87,10 +96,12 @@ export class BackgroundInspectLeaseRegistry {
     tabId: number,
     port: ContentInspectPort,
     onUnexpectedDisconnect: () => void,
+    contentSessionId?: ContentSessionId,
   ): void {
     this.release(tabId);
     const lease: RegisteredInspectLease = {
       port,
+      contentSessionId,
       onDisconnect: () => {
         if (this.leases.get(tabId) === lease) {
           this.leases.delete(tabId);
@@ -103,16 +114,41 @@ export class BackgroundInspectLeaseRegistry {
   }
 
   public release(tabId: number): void {
+    this.detach(tabId)?.release();
+  }
+
+  public isCurrent(tabId: number, contentSessionId: ContentSessionId): boolean {
+    return this.leases.get(tabId)?.contentSessionId === contentSessionId;
+  }
+
+  public has(tabId: number): boolean {
+    return this.leases.has(tabId);
+  }
+
+  public contentSessionId(tabId: number): ContentSessionId | undefined {
+    return this.leases.get(tabId)?.contentSessionId;
+  }
+
+  /** Revokes disconnect callbacks now while retaining an addressable lease identity. */
+  public detach(tabId: number): DetachedBackgroundInspectLease | undefined {
     const lease = this.leases.get(tabId);
     if (!lease) {
-      return;
+      return undefined;
     }
     this.leases.delete(tabId);
     lease.port.onDisconnect.removeListener(lease.onDisconnect);
-    try {
-      lease.port.disconnect();
-    } catch {
-      // The content side may already have observed the disconnect.
-    }
+    let active = true;
+    return {
+      contentSessionId: lease.contentSessionId,
+      release() {
+        if (!active) return;
+        active = false;
+        try {
+          lease.port.disconnect();
+        } catch {
+          // The content side may already have observed the disconnect.
+        }
+      },
+    };
   }
 }

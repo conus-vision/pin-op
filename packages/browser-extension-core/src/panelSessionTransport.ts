@@ -36,7 +36,7 @@ import {
   parseStylesRequest,
   parseStylesResponse,
   type StylesErrorCode,
-  type StylesGetMatchedRequest,
+  type StylesRequest,
   type StylesInvalidatedEvent,
   type StylesResponse,
 } from "./stylesProtocol.js";
@@ -165,9 +165,9 @@ export class PanelSessionTransport {
 
   public async requestStyles(
     channel: string,
-    request: StylesGetMatchedRequest,
+    request: StylesRequest,
   ): Promise<StylesResponse> {
-    let parsed: StylesGetMatchedRequest;
+    let parsed: StylesRequest;
     try {
       parsed = parseStylesRequest(request);
     } catch {

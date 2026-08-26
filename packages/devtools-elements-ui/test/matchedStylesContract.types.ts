@@ -51,11 +51,15 @@ const matchedStyles: MatchedStylesSnapshot = {
   selectionRevision: 2,
   stylesRevision: 3,
   stylesheetRevision: 4,
+  pseudoStateRevision: 2,
+  pseudoStates: ["hover", "focus"],
   nodeRef: "body",
   inlineStyle: rule,
   matchedRules: [rule],
   inherited: [inheritedRule],
   inaccessibleStylesheetCount: 1,
+  unsupportedRuleCount: 1,
+  approximateRuleCount: 1,
   omittedRuleCount: 0,
   diagnostics: [diagnostic],
 };
@@ -96,6 +100,8 @@ matchedStyles.inherited.push(inheritedRule);
 inheritedRule.matchedRules.push(rule);
 // @ts-expect-error Diagnostics are immutable snapshot data.
 matchedStyles.diagnostics.push(diagnostic);
+// @ts-expect-error Active pseudo states are immutable snapshot data.
+matchedStyles.pseudoStates.push("hover");
 
 // @ts-expect-error Declaration values are immutable snapshot data.
 declaration.value = "blue";
@@ -147,10 +153,18 @@ matchedStyles.selectionRevision = 3;
 matchedStyles.stylesRevision = 4;
 // @ts-expect-error Stylesheet revisions are immutable snapshot data.
 matchedStyles.stylesheetRevision = 5;
+// @ts-expect-error Pseudo-state revisions are immutable snapshot data.
+matchedStyles.pseudoStateRevision = 3;
+// @ts-expect-error The pseudo-state array property is immutable snapshot data.
+matchedStyles.pseudoStates = [];
 // @ts-expect-error Selected node references are immutable snapshot data.
 matchedStyles.nodeRef = "html";
 // @ts-expect-error Inaccessible stylesheet counts are immutable snapshot data.
 matchedStyles.inaccessibleStylesheetCount = 0;
+// @ts-expect-error Unsupported rule counts are immutable snapshot data.
+matchedStyles.unsupportedRuleCount = 0;
+// @ts-expect-error Approximate rule counts are immutable snapshot data.
+matchedStyles.approximateRuleCount = 0;
 // @ts-expect-error Omitted rule counts are immutable snapshot data.
 matchedStyles.omittedRuleCount = 1;
 // @ts-expect-error The matched-rule array property is immutable snapshot data.

@@ -4,6 +4,7 @@ export const APPLICABILITY_LIMITS = Object.freeze({
   candidatesPerPass: 4096,
   composedAncestors: 32,
   selectorsPerRule: 256,
+  mutationRecordsPerBatch: 4096,
 });
 
 export type ApplicabilityContextKind =
@@ -24,6 +25,7 @@ export interface ApplicabilityCandidate {
   readonly key: string;
   readonly scope: Document | ShadowRoot;
   readonly selectorText: string;
+  readonly previewSelectorText?: string;
   readonly contexts: readonly ApplicabilityContext[];
 }
 
@@ -66,6 +68,8 @@ export interface MatchedStylesApplicabilityObserverOptions {
   readonly createMutationObserver?: (
     callback: (records: readonly unknown[]) => void,
   ) => ApplicabilityMutationObserver;
+  readonly isRuntimeArtifactMutation?: (record: unknown) => boolean;
+  readonly onRuntimeArtifactMutationBatchComplete?: () => void;
 }
 
 interface MediaRegistration {
@@ -129,6 +133,7 @@ export class MatchedStylesApplicabilityObserver {
     candidates: readonly ApplicabilityCandidate[],
   ): void {
     this.requireLive();
+    this.finishRuntimeArtifactMutationBatch();
     this.detachAll();
     this.selected = element;
     this.candidatesTruncated = candidates.length > CANDIDATES_PER_SELECTION;
@@ -139,6 +144,9 @@ export class MatchedStylesApplicabilityObserver {
         const selectorText = typeof candidate.selectorText === "string"
           ? candidate.selectorText
           : "";
+        const previewSelectorText = typeof candidate.previewSelectorText === "string"
+          ? candidate.previewSelectorText
+          : undefined;
         const contexts = Array.isArray(candidate.contexts)
           ? candidate.contexts
           : [];
@@ -149,6 +157,9 @@ export class MatchedStylesApplicabilityObserver {
           key: key.slice(0, CANDIDATE_KEY_LENGTH),
           scope: candidate.scope,
           selectorText: selectorText.slice(0, SELECTOR_TEXT_LENGTH),
+          ...(previewSelectorText
+            ? { previewSelectorText: previewSelectorText.slice(0, SELECTOR_TEXT_LENGTH) }
+            : {}),
           contexts: Object.freeze(contexts
             .slice(0, CONTEXTS_PER_CANDIDATE)
             .map((context) => Object.freeze({
@@ -158,6 +169,7 @@ export class MatchedStylesApplicabilityObserver {
           inputTruncated:
             key.length > CANDIDATE_KEY_LENGTH ||
             selectorText.length > SELECTOR_TEXT_LENGTH ||
+            (previewSelectorText?.length ?? 0) > SELECTOR_TEXT_LENGTH ||
             contexts.length > CONTEXTS_PER_CANDIDATE ||
             contextTextTruncated,
         });
@@ -209,9 +221,20 @@ export class MatchedStylesApplicabilityObserver {
     for (let offset = 0; offset < count; offset += 1) {
       const candidateIndex = start + offset;
       const candidate = this.candidates[candidateIndex]!;
-      const parsedSelectors = parseSelectorList(candidate.selectorText);
-      const selectors = parsedSelectors.selectors;
-      scanTruncated ||= candidate.inputTruncated || parsedSelectors.truncated;
+      const nativeSelectors = parseSelectorList(candidate.selectorText);
+      const previewSelectors = candidate.previewSelectorText
+        ? parseSelectorList(candidate.previewSelectorText)
+        : undefined;
+      const combinedSelectors = [
+        ...nativeSelectors.selectors,
+        ...(previewSelectors?.selectors ?? []),
+      ];
+      const selectors = combinedSelectors.slice(0, APPLICABILITY_LIMITS.selectorsPerRule);
+      scanTruncated ||=
+        candidate.inputTruncated ||
+        nativeSelectors.truncated ||
+        previewSelectors?.truncated === true ||
+        combinedSelectors.length > APPLICABILITY_LIMITS.selectorsPerRule;
       const groupApplicability = candidate.contexts.map((context) => (
         this.groupApplicability(context, candidate.scope)
       ));
@@ -311,13 +334,16 @@ export class MatchedStylesApplicabilityObserver {
     const create = this.options.createMutationObserver ?? defaultMutationObserver();
     if (!create) return;
     try {
-      const observer = create(() => this.scheduleObservableSignal());
+      const observer = create((records) => {
+        if (this.hasObservableMutation(records)) this.scheduleObservableSignal();
+      });
       this.mutationObserver = observer;
       for (const target of targets) {
         observer.observe(target as unknown as Node, {
           subtree: true,
           childList: true,
           attributes: true,
+          attributeOldValue: true,
           characterData: true,
         });
       }
@@ -391,6 +417,48 @@ export class MatchedStylesApplicabilityObserver {
       this.pendingSignal = false;
       this.emit({ reason: "observable-signal" });
     });
+  }
+
+  private hasObservableMutation(records: readonly unknown[]): boolean {
+    let observable = true;
+    try {
+      const length = records.length;
+      if (
+        !Number.isSafeInteger(length) ||
+        length < 0 ||
+        length > APPLICABILITY_LIMITS.mutationRecordsPerBatch
+      ) {
+        observable = true;
+      } else if (length === 0) {
+        observable = false;
+      } else {
+        const isRuntimeArtifact = this.options.isRuntimeArtifactMutation;
+        observable = !isRuntimeArtifact;
+        if (isRuntimeArtifact) {
+          for (let index = 0; index < length; index += 1) {
+            if (isRuntimeArtifact(records[index]) !== true) {
+              observable = true;
+              break;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      this.reportError(error);
+      observable = true;
+    }
+    if (!this.finishRuntimeArtifactMutationBatch()) observable = true;
+    return observable;
+  }
+
+  private finishRuntimeArtifactMutationBatch(): boolean {
+    try {
+      this.options.onRuntimeArtifactMutationBatchComplete?.();
+      return true;
+    } catch (error) {
+      this.reportError(error);
+      return false;
+    }
   }
 
   private listen(

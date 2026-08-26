@@ -11,6 +11,7 @@ import type {
 
 const CONTENT_SESSION_A = "content-session-a" as ContentSessionId;
 const CONTENT_SESSION_B = "content-session-b" as ContentSessionId;
+const CONTENT_SESSION_C = "content-session-c" as ContentSessionId;
 
 describe("background inspect session", () => {
   it("keeps the content lease alive while picker mode is off", async () => {
@@ -44,13 +45,48 @@ describe("background inspect session", () => {
     ]);
 
     session.disconnect();
-    expect(contentLease.disconnected).toBe(true);
+    expect(contentLease.disconnected).toBe(false);
     await session.whenIdle();
+    expect(contentLease.disconnected).toBe(true);
     expect(calls.at(-1)).toEqual([
       "tab",
       17,
-      { type: "pin-op.inspect.disposeSession" },
+      {
+        type: "pin-op.inspect.disposeSession",
+        contentSessionId: CONTENT_SESSION_A,
+      },
     ]);
+  });
+
+  it("does not send cleanup after a synchronously-fired timeout revokes it", async () => {
+    const calls: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push(["tab", tabId, message]);
+        return true;
+      },
+    }, {
+      setTimeout(callback) {
+        callback();
+        return 1 as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout() {},
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await session.whenIdle();
+    const contentLease = new FakePort("pin-op.inspect.contentLease");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
+
+    session.disconnect();
+    await session.whenIdle();
+
+    expect(calls).toEqual([]);
+    expect(contentLease.disconnected).toBe(true);
   });
 
   it("lets the router defer a successful acknowledgement until postflight", async () => {
@@ -153,7 +189,7 @@ describe("background inspect session", () => {
     ]);
   });
 
-  it("disposes the trusted content session after its panel disconnects during enable", async () => {
+  it("does not send unkeyed cleanup before a content lease exists", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
     const port = new FakePort("pin-op.devtools.channel-1");
@@ -182,7 +218,6 @@ describe("background inspect session", () => {
         { target: { tabId: 17 }, files: ["dist/contentScript.js"] },
       ],
       ["tab", 17, { type: "enableInspectMode" }],
-      ["tab", 17, { type: "pin-op.inspect.disposeSession" }],
     ]);
     expect(port.sent).toEqual([]);
   });
@@ -220,11 +255,7 @@ describe("background inspect session", () => {
     enable.resolve();
     await session.whenIdle();
 
-    expect(calls.at(-1)).toEqual([
-      "tab",
-      17,
-      { type: "pin-op.inspect.disposeSession" },
-    ]);
+    expect(calls.at(-1)).toEqual(["tab", 17, { type: "enableInspectMode" }]);
     expect(port.sent).toHaveLength(1);
   });
 
@@ -300,10 +331,12 @@ describe("background inspect session", () => {
     ]);
 
     panelPort.emitDisconnect();
-    expect(contentLease.disconnected).toBe(true);
+    expect(contentLease.disconnected).toBe(false);
     await session.whenIdle();
+    expect(contentLease.disconnected).toBe(true);
     expect(calls.at(-1)).toEqual({
       type: "pin-op.inspect.disposeSession",
+      contentSessionId: CONTENT_SESSION_A,
     });
   });
 
@@ -363,6 +396,171 @@ describe("background inspect session", () => {
       "attached:content-session-a",
       "documentDisconnected",
     ]);
+  });
+
+  it("serializes A-to-B-to-C lease replacement behind each predecessor cleanup", async () => {
+    const cleanupA = deferred<unknown>();
+    const cleanupB = deferred<unknown>();
+    const calls: unknown[] = [];
+    const attached: ContentSessionId[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        if (!isRecord(message) || message.type !== "pin-op.inspect.disposeSession") {
+          return undefined;
+        }
+        if (message.contentSessionId === CONTENT_SESSION_A) {
+          return await cleanupA.promise;
+        }
+        if (message.contentSessionId === CONTENT_SESSION_B) {
+          return await cleanupB.promise;
+        }
+        return true;
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      { onContentLeaseAttached: (id) => attached.push(id) },
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    const leaseC = new FakePort("lease-c");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+    await coordinator.whenIdle(17);
+
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    coordinator.attachContentLease(17, CONTENT_SESSION_C, leaseC);
+    await flushAsync();
+
+    expect(calls).toEqual([[
+      17,
+      {
+        type: "pin-op.inspect.disposeSession",
+        contentSessionId: CONTENT_SESSION_A,
+      },
+    ]]);
+    expect(attached).toEqual([CONTENT_SESSION_A]);
+    expect(leaseA.disconnected).toBe(false);
+    expect(leaseB.disconnected).toBe(false);
+    expect(leaseC.disconnected).toBe(false);
+
+    cleanupA.resolve(true);
+    await flushAsync();
+    expect(leaseA.disconnected).toBe(true);
+    expect(attached).toEqual([CONTENT_SESSION_A, CONTENT_SESSION_B]);
+    expect(calls.at(-1)).toEqual([
+      17,
+      {
+        type: "pin-op.inspect.disposeSession",
+        contentSessionId: CONTENT_SESSION_B,
+      },
+    ]);
+    expect(leaseB.disconnected).toBe(false);
+    expect(leaseC.disconnected).toBe(false);
+
+    cleanupB.resolve(true);
+    await coordinator.whenIdle(17);
+    expect(leaseB.disconnected).toBe(true);
+    expect(leaseC.disconnected).toBe(false);
+    expect(attached).toEqual([
+      CONTENT_SESSION_A,
+      CONTENT_SESSION_B,
+      CONTENT_SESSION_C,
+    ]);
+  });
+
+  it("never accepts a queued replacement disconnected during predecessor cleanup", async () => {
+    const cleanupA = deferred<unknown>();
+    const calls: unknown[] = [];
+    const attached: ContentSessionId[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        return isRecord(message) &&
+            message.type === "pin-op.inspect.disposeSession" &&
+            message.contentSessionId === CONTENT_SESSION_A
+          ? await cleanupA.promise
+          : true;
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      { onContentLeaseAttached: (id) => attached.push(id) },
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    const leaseC = new FakePort("lease-c");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+    await coordinator.whenIdle(17);
+
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    expect(leaseB.onDisconnect.listenerCount).toBe(1);
+    leaseB.disconnect();
+    coordinator.attachContentLease(17, CONTENT_SESSION_C, leaseC);
+    await flushAsync();
+
+    cleanupA.resolve(true);
+    await coordinator.whenIdle(17);
+
+    expect(attached).toEqual([CONTENT_SESSION_A, CONTENT_SESSION_C]);
+    expect(leaseB.onDisconnect.listenerCount).toBe(0);
+    expect(leaseC.disconnected).toBe(false);
+    expect(calls.filter(([, message]) =>
+      isRecord(message) && message.type === "pin-op.inspect.disposeSession"
+    )).toEqual([[
+      17,
+      {
+        type: "pin-op.inspect.disposeSession",
+        contentSessionId: CONTENT_SESSION_A,
+      },
+    ]]);
+  });
+
+  it("rejects a queued replacement when its original panel owner is revoked", async () => {
+    const cleanupA = deferred<unknown>();
+    const attached: ContentSessionId[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(_tabId, message) {
+        return isRecord(message) &&
+            message.type === "pin-op.inspect.disposeSession" &&
+            message.contentSessionId === CONTENT_SESSION_A
+          ? await cleanupA.promise
+          : true;
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      { onContentLeaseAttached: (id) => attached.push(id) },
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+    await coordinator.whenIdle(17);
+
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    expect(leaseB.onDisconnect.listenerCount).toBe(1);
+    await flushAsync();
+    session.disconnect();
+    cleanupA.resolve(true);
+    await session.whenIdle();
+    await coordinator.whenIdle(17);
+
+    expect(leaseA.disconnected).toBe(true);
+    expect(leaseB.disconnected).toBe(true);
+    expect(leaseB.onDisconnect.listenerCount).toBe(0);
+    expect(attached).toEqual([CONTENT_SESSION_A]);
   });
 
   it("reports injection failure without accepting an unowned content lease", async () => {
@@ -440,7 +638,13 @@ describe("background inspect session", () => {
     ]);
 
     newPort.emitDisconnect();
+    expect(contentLease.disconnected).toBe(false);
+    await newSession.whenIdle();
     expect(contentLease.disconnected).toBe(true);
+    expect(calls.at(-1)).toEqual({
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: CONTENT_SESSION_A,
+    });
   });
 
   it("lets the same owner retry a failed disable", async () => {
@@ -528,6 +732,10 @@ class FakePort {
 
 class FakeEvent<T extends (...args: never[]) => void> {
   private readonly listeners = new Set<T>();
+
+  public get listenerCount(): number {
+    return this.listeners.size;
+  }
 
   public addListener(listener: T): void {
     this.listeners.add(listener);

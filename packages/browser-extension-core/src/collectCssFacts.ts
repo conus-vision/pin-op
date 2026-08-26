@@ -126,10 +126,14 @@ export function collectCssFacts(
     selectionRevision: 0,
     stylesRevision: 0,
     stylesheetRevision: 0,
+    pseudoStateRevision: 0,
+    pseudoStates: Object.freeze([]),
     nodeRef: "v7-css-facts",
     rules: matchedRules,
     inherited: [],
     inaccessibleStylesheetCount: walk.inaccessibleStylesheets.length,
+    unsupportedRuleCount: 0,
+    approximateRuleCount: 0,
     partial: walk.inaccessibleStylesheets.length > 0,
     diagnostics: walk.inaccessibleStylesheets.length > 0
       ? ["stylesheet-inaccessible"]

@@ -242,6 +242,14 @@ export class ElementsInspectorView {
       "data-stylesheet-revision",
       String(styles.stylesheetRevision),
     );
+    this.rulesRoot.setAttribute(
+      "data-pseudo-state-revision",
+      String(styles.pseudoStateRevision),
+    );
+    this.rulesRoot.setAttribute(
+      "data-pseudo-states",
+      styles.pseudoStates.join(" "),
+    );
     const ruleRef = primaryRuleRef(styles);
     if (ruleRef) this.rulesRoot.setAttribute("data-probe-rule-ref", ruleRef);
   }
@@ -299,6 +307,8 @@ const RULES_PROBE_ATTRIBUTES = Object.freeze([
   "data-selection-revision",
   "data-styles-revision",
   "data-stylesheet-revision",
+  "data-pseudo-state-revision",
+  "data-pseudo-states",
   "data-probe-rule-ref",
 ]);
 

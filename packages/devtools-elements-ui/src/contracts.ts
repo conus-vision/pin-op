@@ -129,11 +129,15 @@ export interface MatchedStylesSnapshot {
   readonly selectionRevision: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly ("hover" | "focus")[];
   readonly nodeRef: string;
   readonly inlineStyle?: MatchedRuleSnapshot;
   readonly matchedRules: readonly MatchedRuleSnapshot[];
   readonly inherited: readonly InheritedRulesSnapshot[];
+  readonly unsupportedRuleCount: number;
   readonly inaccessibleStylesheetCount: number;
+  readonly approximateRuleCount: number;
   readonly omittedRuleCount: number;
   readonly diagnostics: readonly RulesDiagnosticSnapshot[];
 }

@@ -391,18 +391,22 @@ function projectRulesPresentation(
       }
       return Object.freeze({
         state: source.state,
-        matchedStyles: projectMatchedStyles(source.styles),
+        matchedStyles: projectMatchedStylesSnapshot(source.styles),
       });
     }
   }
 }
 
-function projectMatchedStyles(source: MatchedStyles): MatchedStylesSnapshot {
+export function projectMatchedStylesSnapshot(
+  source: MatchedStyles,
+): MatchedStylesSnapshot {
   return Object.freeze({
     documentEpoch: source.documentEpoch,
     selectionRevision: source.selectionRevision,
     stylesRevision: source.stylesRevision,
     stylesheetRevision: source.stylesheetRevision,
+    pseudoStateRevision: source.pseudoStateRevision,
+    pseudoStates: Object.freeze([...source.pseudoStates]),
     nodeRef: source.nodeRef,
     ...(source.inline ? { inlineStyle: projectMatchedRule(source.inline) } : {}),
     matchedRules: Object.freeze(source.rules.map(projectMatchedRule)),
@@ -411,6 +415,8 @@ function projectMatchedStyles(source: MatchedStyles): MatchedStylesSnapshot {
       matchedRules: Object.freeze(group.rules.map(projectMatchedRule)),
     }))),
     inaccessibleStylesheetCount: source.inaccessibleStylesheetCount,
+    unsupportedRuleCount: source.unsupportedRuleCount,
+    approximateRuleCount: source.approximateRuleCount,
     omittedRuleCount: 0,
     diagnostics: Object.freeze(source.diagnostics.map((message, index) => (
       Object.freeze({

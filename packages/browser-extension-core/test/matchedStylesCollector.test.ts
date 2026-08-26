@@ -17,13 +17,22 @@ import type {
   StylesheetRegistryEntry,
   StylesheetRegistrySnapshot,
 } from "../src/stylesheetRegistry.js";
+import type { PseudoStateMarkerNames } from "../src/pseudoStateSelector.js";
 
 const AUTHORITY = Object.freeze({
   documentEpoch: 7,
   selectionRevision: 11,
   stylesRevision: 13,
   stylesheetRevision: 5,
+  pseudoStateRevision: 0,
+  pseudoStates: Object.freeze([]),
   nodeRef: "node-selected",
+});
+
+const PREVIEW_MARKERS: PseudoStateMarkerNames = Object.freeze({
+  selection: "data-pin-op-preview-selected-abcdefghijklmnop",
+  hover: "data-pin-op-preview-hover-abcdefghijklmnop",
+  focus: "data-pin-op-preview-focus-abcdefghijklmnop",
 });
 
 describe("MatchedStylesCollector", () => {
@@ -808,7 +817,163 @@ describe("MatchedStylesCollector", () => {
       ".author",
     ]);
   });
+
+  it("matches supported preview selectors through shared markers while preserving original rule identity", () => {
+    const scope = documentScope();
+    const transformed = ".card[data-pin-op-preview-hover-abcdefghijklmnop]:where([data-pin-op-preview-selected-abcdefghijklmnop])";
+    const selected = element(scope, {
+      matches: new Set([transformed, ".always"]),
+    });
+    const supported = styleRule(".card:hover", { color: "red" });
+    const unsupported = styleRule(".parent:hover .card", { color: "blue" });
+    const mixed = styleRule(".never:hover, .always", { border: "0" });
+    const stable = styleRule(".always", { display: "block" });
+    const stylesheets = stylesheetAuthority(scope, [stylesheet(
+      "https://example.test/preview.css",
+      [supported, unsupported, mixed, stable],
+    )]);
+    const result = collector(
+      selected,
+      stylesheets,
+      () => true,
+      undefined,
+      undefined,
+      PREVIEW_MARKERS,
+    ).collect(Object.freeze({
+      ...AUTHORITY,
+      pseudoStateRevision: 1,
+      pseudoStates: Object.freeze(["hover"] as const),
+    }))!;
+
+    expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([
+      ".card:hover",
+      ".never:hover, .always",
+      ".always",
+    ]);
+    expect(result.rules[0]?.ruleRef).toBe(stylesheets.referenceRule(
+      stylesheets.entriesForElement(selected as unknown as Element)[0]!,
+      "0.0",
+      supported,
+    ));
+    expect(result.rules.map(({ matchingSelectorIndices }) => matchingSelectorIndices))
+      .toEqual([[0], [1], [0]]);
+    expect(result.rules.some(({ selectorText }) => selectorText === ".parent:hover .card"))
+      .toBe(false);
+  });
+
+  it("retains a native unaffected :is branch while hover preview is active", () => {
+    const scope = documentScope();
+    const selector = ":is(.button:hover, a)";
+    const selected = element(scope, { matches: new Set([selector]) });
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(
+        "https://example.test/native-functional.css",
+        [styleRule(selector, { color: "red" })],
+      )]),
+      () => true,
+      undefined,
+      undefined,
+      PREVIEW_MARKERS,
+    ).collect(Object.freeze({
+      ...AUTHORITY,
+      pseudoStateRevision: 1,
+      pseudoStates: Object.freeze(["hover"] as const),
+    }))!;
+
+    expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([selector]);
+    expect(result.rules[0]?.matchingSelectorIndices).toEqual([0]);
+  });
+
+  it("retains a native negated pseudo match while marking emulation partial", () => {
+    const scope = documentScope();
+    const selector = ".card:not(:hover)";
+    const selected = element(scope, { matches: new Set([selector]) });
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(
+        "https://example.test/native-negation.css",
+        [styleRule(selector, { color: "red" })],
+      )]),
+      () => true,
+      undefined,
+      undefined,
+      PREVIEW_MARKERS,
+    ).collect(Object.freeze({
+      ...AUTHORITY,
+      pseudoStateRevision: 1,
+      pseudoStates: Object.freeze(["hover"] as const),
+    }))!;
+
+    expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([selector]);
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("unsupported-pseudo-state-selector");
+  });
+
+  it("retains an exact native ancestor-pseudo match", () => {
+    const scope = documentScope();
+    const selector = ".parent:hover .card";
+    const selected = element(scope, { matches: new Set([selector]) });
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(
+        "https://example.test/native-ancestor.css",
+        [styleRule(selector, { color: "red" })],
+      )]),
+      () => true,
+      undefined,
+      undefined,
+      PREVIEW_MARKERS,
+    ).collect(Object.freeze({
+      ...AUTHORITY,
+      pseudoStateRevision: 1,
+      pseudoStates: Object.freeze(["hover"] as const),
+    }))!;
+
+    expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([selector]);
+    expect(result.partial).toBe(true);
+    expect(result.diagnostics).toContain("unsupported-pseudo-state-selector");
+  });
+
+  it("publishes bounded active-preview applicability semantics under the original rule identity", () => {
+    const scope = documentScope();
+    const selector = "input:hover:checked";
+    const transformed = "input[data-pin-op-preview-hover-abcdefghijklmnop]:checked:where([data-pin-op-preview-selected-abcdefghijklmnop])";
+    const selected = element(scope, { matches: new Set([transformed]) });
+    const candidates: ApplicabilityCandidateCapture[] = [];
+    const stylesheets = stylesheetAuthority(scope, [stylesheet(
+      "https://example.test/applicability-preview.css",
+      [styleRule(selector, { color: "red" })],
+    )]);
+    const result = collector(
+      selected,
+      stylesheets,
+      () => true,
+      (_authority, next) => candidates.push(...next),
+      undefined,
+      PREVIEW_MARKERS,
+    ).collect(Object.freeze({
+      ...AUTHORITY,
+      pseudoStateRevision: 1,
+      pseudoStates: Object.freeze(["hover"] as const),
+    }))!;
+
+    expect(candidates).toEqual([expect.objectContaining({
+      key: result.rules[0]?.ruleRef,
+      selectorText: selector,
+      previewSelectorText: transformed,
+    })]);
+    expect(Object.isFrozen(candidates[0])).toBe(true);
+  });
 });
+
+type ApplicabilityCandidateCapture = MatchedStylesCollectorOptions[
+  "onApplicabilityCandidates"
+] extends (...args: infer _Args) => void
+  ? Parameters<NonNullable<MatchedStylesCollectorOptions["onApplicabilityCandidates"]>>[1][number] & {
+      readonly previewSelectorText?: string;
+    }
+  : never;
 
 function collector(
   selected: ReturnType<typeof element>,
@@ -816,6 +981,7 @@ function collector(
   isAuthorityCurrent: (authority: MatchedStylesCollectionAuthority) => boolean = () => true,
   onApplicabilityCandidates?: MatchedStylesCollectorOptions["onApplicabilityCandidates"],
   isRuntimeStylesheet?: (stylesheet: object) => boolean,
+  pseudoStateMarkers?: PseudoStateMarkerNames,
 ) {
   return new MatchedStylesCollector({
     domTreeProvider: {
@@ -835,6 +1001,7 @@ function collector(
     isAuthorityCurrent,
     onApplicabilityCandidates,
     ...(isRuntimeStylesheet ? { isRuntimeStylesheet } : {}),
+    ...(pseudoStateMarkers ? { pseudoStateMarkers } : {}),
   });
 }
 
@@ -994,6 +1161,7 @@ function element(
     matches(selector: string) {
       options.onMatch?.(selector);
       if (options.throwSelectors?.has(selector)) throw new Error("hostile matches");
+      if (options.matches.has(selector)) return true;
       return selector.split(",").some((part) => options.matches.has(part.trim()));
     },
   };

@@ -9,6 +9,17 @@ import {
 } from "./inspectPortProtocol.js";
 import { BackgroundInspectLeaseRegistry } from "./inspectLease.js";
 
+const DEFAULT_CLEANUP_ACK_TIMEOUT_MS = 1_000;
+const MAX_CLEANUP_ACK_TIMEOUT_MS = 60_000;
+
+type InspectScheduleTimeout = (
+  callback: () => void,
+  delay: number,
+) => ReturnType<typeof globalThis.setTimeout>;
+type InspectCancelTimeout = (
+  timer: ReturnType<typeof globalThis.setTimeout>,
+) => void;
+
 export interface BackgroundInspectApi {
   executeScript(details: {
     target: { tabId: number };
@@ -17,15 +28,26 @@ export interface BackgroundInspectApi {
   sendTabMessage(tabId: number, message: unknown): Promise<unknown>;
 }
 
+export interface BackgroundInspectCoordinatorOptions {
+  readonly cleanupAckTimeoutMs?: number;
+  readonly setTimeout?: typeof globalThis.setTimeout;
+  readonly clearTimeout?: typeof globalThis.clearTimeout;
+}
+
 interface TabInspectState {
   queue: Promise<void>;
   owner: ActiveInspectOwner | undefined;
+  pendingLeaseAttachments: number;
 }
 
 interface ActiveInspectOwner {
   readonly token: object;
   readonly onInvalidated: (reason: InspectSessionInvalidationReason) => void;
   readonly onContentLeaseAttached: (contentSessionId: ContentSessionId) => void;
+  readonly onContentLeaseReplacing: (
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ) => void;
 }
 
 export type InspectSessionInvalidationReason =
@@ -37,13 +59,31 @@ export interface BackgroundInspectSessionLifecycle {
   readonly onContentLeaseAttached?: (
     contentSessionId: ContentSessionId,
   ) => void;
+  readonly onContentLeaseReplacing?: (
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ) => void;
 }
 
 export class BackgroundInspectCoordinator {
   private readonly tabs = new Map<number, TabInspectState>();
   private readonly leases = new BackgroundInspectLeaseRegistry();
+  private readonly cleanupAckTimeoutMs: number;
+  private readonly scheduleTimeout: InspectScheduleTimeout;
+  private readonly cancelTimeout: InspectCancelTimeout;
 
-  public constructor(private readonly api: BackgroundInspectApi) {}
+  public constructor(
+    private readonly api: BackgroundInspectApi,
+    options: BackgroundInspectCoordinatorOptions = {},
+  ) {
+    this.cleanupAckTimeoutMs = validCleanupAckTimeout(
+      options.cleanupAckTimeoutMs,
+    );
+    this.scheduleTimeout = options.setTimeout ??
+      ((handler, timeout) => globalThis.setTimeout(handler, timeout));
+    this.cancelTimeout = options.clearTimeout ??
+      ((timer) => globalThis.clearTimeout(timer));
+  }
 
   public attach(
     owner: object,
@@ -53,12 +93,21 @@ export class BackgroundInspectCoordinator {
     ) => void = () => {},
     onContentLeaseAttached: (contentSessionId: ContentSessionId) => void =
       () => {},
+    onContentLeaseReplacing: (
+      previousContentSessionId: ContentSessionId,
+      nextContentSessionId: ContentSessionId,
+    ) => void = () => {},
   ): Promise<void> {
     const state = this.stateFor(tabId);
     if (state.owner?.token === owner) {
       return state.queue;
     }
-    state.owner = { token: owner, onInvalidated, onContentLeaseAttached };
+    state.owner = {
+      token: owner,
+      onInvalidated,
+      onContentLeaseAttached,
+      onContentLeaseReplacing,
+    };
     return this.enqueue(state, async () => {
       if (state.owner?.token !== owner) {
         return;
@@ -101,15 +150,48 @@ export class BackgroundInspectCoordinator {
       return Promise.resolve();
     }
     state.owner = undefined;
-    this.leases.release(tabId);
+    const detachedLease = this.leases.detach(tabId);
     return this.enqueue(state, async () => {
       try {
-        await this.api.sendTabMessage(tabId, {
-          type: "pin-op.inspect.disposeSession",
-        });
-      } catch {
-        // Disconnecting the content lease already makes the session inert.
+        if (detachedLease?.contentSessionId) {
+          await this.requestCleanupAcknowledgement(tabId, {
+            type: "pin-op.inspect.disposeSession",
+            contentSessionId: detachedLease.contentSessionId,
+          });
+        }
+      } finally {
+        detachedLease?.release();
       }
+    });
+  }
+
+  public clearPseudoStates(
+    tabId: number,
+    contentSessionId: ContentSessionId,
+  ): Promise<boolean> {
+    const state = this.tabs.get(tabId);
+    const owner = state?.owner;
+    if (
+      !state ||
+      !owner ||
+      !this.leases.isCurrent(tabId, contentSessionId)
+    ) {
+      return Promise.resolve(false);
+    }
+    return this.enqueueResult(state, async () => {
+      if (
+        state.owner !== owner ||
+        !this.leases.isCurrent(tabId, contentSessionId)
+      ) {
+        return false;
+      }
+      const acknowledged = await this.requestCleanupAcknowledgement(tabId, {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId,
+      });
+      return acknowledged &&
+        state.owner === owner &&
+        this.leases.isCurrent(tabId, contentSessionId);
     });
   }
 
@@ -121,21 +203,74 @@ export class BackgroundInspectCoordinator {
     const state = this.tabs.get(tabId);
     const owner = state?.owner;
     if (!owner) {
-      try {
-        port.disconnect();
-      } catch {
-        // The content script may have disappeared before registration.
-      }
+      disconnectContentPort(port);
       return;
     }
-    this.leases.attach(tabId, port, () =>
-      this.invalidateContentOwner(tabId),
-    );
-    try {
-      owner.onContentLeaseAttached(contentSessionId);
-    } catch {
-      // Recovery bookkeeping cannot invalidate an accepted content lease.
+    if (!this.leases.has(tabId) && state.pendingLeaseAttachments === 0) {
+      this.acceptContentLease(
+        state,
+        owner,
+        tabId,
+        contentSessionId,
+        port,
+      );
+      return;
     }
+    const candidate = observePendingContentLease(port);
+    if (!candidate) return;
+    const queuedPredecessorId = this.leases.contentSessionId(tabId);
+    if (queuedPredecessorId) {
+      this.notifyContentLeaseReplacing(
+        state,
+        owner,
+        queuedPredecessorId,
+        contentSessionId,
+      );
+    }
+    state.pendingLeaseAttachments += 1;
+    const operation = this.enqueue(state, async () => {
+      if (state.owner !== owner) {
+        candidate.reject();
+        return;
+      }
+      const predecessor = this.leases.detach(tabId);
+      if (
+        predecessor?.contentSessionId &&
+        predecessor.contentSessionId !== queuedPredecessorId
+      ) {
+        this.notifyContentLeaseReplacing(
+          state,
+          owner,
+          predecessor.contentSessionId,
+          contentSessionId,
+        );
+      }
+      try {
+        if (predecessor?.contentSessionId) {
+          await this.requestCleanupAcknowledgement(tabId, {
+            type: "pin-op.inspect.disposeSession",
+            contentSessionId: predecessor.contentSessionId,
+          });
+        }
+      } finally {
+        predecessor?.release();
+      }
+      if (state.owner !== owner) {
+        candidate.reject();
+        return;
+      }
+      if (!candidate.accept()) {
+        return;
+      }
+      this.acceptContentLease(state, owner, tabId, contentSessionId, port);
+    });
+    void operation.then(
+      () => { state.pendingLeaseAttachments -= 1; },
+      () => {
+        state.pendingLeaseAttachments -= 1;
+        candidate.reject();
+      },
+    );
   }
 
   public whenIdle(tabId: number): Promise<void> {
@@ -157,6 +292,7 @@ export class BackgroundInspectCoordinator {
     const created: TabInspectState = {
       queue: Promise.resolve(),
       owner: undefined,
+      pendingLeaseAttachments: 0,
     };
     this.tabs.set(tabId, created);
     return created;
@@ -166,9 +302,112 @@ export class BackgroundInspectCoordinator {
     state: TabInspectState,
     operation: () => Promise<void>,
   ): Promise<void> {
+    return this.enqueueResult(state, operation);
+  }
+
+  private enqueueResult<T>(
+    state: TabInspectState,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const result = state.queue.then(operation);
-    state.queue = result.catch(() => undefined);
+    state.queue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private acceptContentLease(
+    state: TabInspectState,
+    owner: ActiveInspectOwner,
+    tabId: number,
+    contentSessionId: ContentSessionId,
+    port: ContentInspectPort,
+  ): void {
+    if (state.owner !== owner) {
+      disconnectContentPort(port);
+      return;
+    }
+    try {
+      this.leases.attach(
+        tabId,
+        port,
+        () => this.invalidateContentOwner(tabId),
+        contentSessionId,
+      );
+    } catch {
+      disconnectContentPort(port);
+      return;
+    }
+    try {
+      owner.onContentLeaseAttached(contentSessionId);
+    } catch {
+      // Recovery bookkeeping cannot invalidate an accepted content lease.
+    }
+  }
+
+  private notifyContentLeaseReplacing(
+    state: TabInspectState,
+    owner: ActiveInspectOwner,
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ): void {
+    if (state.owner !== owner) return;
+    try {
+      owner.onContentLeaseReplacing(
+        previousContentSessionId,
+        nextContentSessionId,
+      );
+    } catch {
+      // Routing invalidation remains best-effort; cleanup still owns the boundary.
+    }
+  }
+
+  private requestCleanupAcknowledgement(
+    tabId: number,
+    message: unknown,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      let active = true;
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+      const finish = (acknowledged: boolean): void => {
+        if (!active) return;
+        active = false;
+        if (timer !== undefined) {
+          try {
+            this.cancelTimeout(timer);
+          } catch {
+            // Timeout authority is already revoked after settlement.
+          }
+        }
+        resolve(acknowledged);
+      };
+      try {
+        timer = this.scheduleTimeout(
+          () => finish(false),
+          this.cleanupAckTimeoutMs,
+        );
+      } catch {
+        finish(false);
+        return;
+      }
+      if (!active) {
+        try {
+          this.cancelTimeout(timer);
+        } catch {
+          // A synchronously-fired timer has already revoked cleanup authority.
+        }
+        return;
+      }
+      let pending: Promise<unknown>;
+      try {
+        pending = this.api.sendTabMessage(tabId, message);
+      } catch {
+        finish(false);
+        return;
+      }
+      void pending.then(
+        (response) => finish(response === true),
+        () => finish(false),
+      );
+    });
   }
 
   private invalidateContentOwner(tabId: number): void {
@@ -205,6 +444,79 @@ export class BackgroundInspectCoordinator {
   }
 }
 
+function disconnectContentPort(port: ContentInspectPort): void {
+  try {
+    port.disconnect();
+  } catch {
+    // The content script may have disappeared before registration settled.
+  }
+}
+
+interface PendingContentLeaseCandidate {
+  accept(): boolean;
+  reject(): void;
+}
+
+function observePendingContentLease(
+  port: ContentInspectPort,
+): PendingContentLeaseCandidate | undefined {
+  let live = true;
+  let listening = false;
+  let settled = false;
+  const onDisconnect = (): void => {
+    live = false;
+  };
+  try {
+    port.onDisconnect.addListener(onDisconnect);
+    listening = true;
+  } catch {
+    try {
+      port.onDisconnect.removeListener(onDisconnect);
+    } catch {
+      // A partially registered observer is harmless after fail-closed disconnect.
+    }
+    disconnectContentPort(port);
+    return undefined;
+  }
+
+  const stopListening = (): boolean => {
+    if (!listening) return false;
+    listening = false;
+    try {
+      port.onDisconnect.removeListener(onDisconnect);
+    } catch {
+      live = false;
+      disconnectContentPort(port);
+      return false;
+    }
+    return live;
+  };
+
+  return {
+    accept(): boolean {
+      if (settled) return false;
+      settled = true;
+      const accepted = stopListening();
+      if (!accepted) disconnectContentPort(port);
+      return accepted;
+    },
+    reject(): void {
+      if (settled) return;
+      settled = true;
+      stopListening();
+      disconnectContentPort(port);
+    },
+  };
+}
+
+function validCleanupAckTimeout(value: unknown): number {
+  return Number.isSafeInteger(value) &&
+      (value as number) > 0 &&
+      (value as number) <= MAX_CLEANUP_ACK_TIMEOUT_MS
+    ? value as number
+    : DEFAULT_CLEANUP_ACK_TIMEOUT_MS;
+}
+
 export class BackgroundInspectSession {
   private readonly owner = {};
   private readonly pendingRequests = new Set<PendingInspectRequest>();
@@ -229,6 +541,7 @@ export class BackgroundInspectSession {
       this.tabId,
       (reason) => this.handleInvalidation(reason),
       (contentSessionId) => this.handleContentLeaseAttached(contentSessionId),
+      (previous, next) => this.handleContentLeaseReplacing(previous, next),
     );
     this.lastOperation = this.ready.catch(() => undefined);
   }
@@ -396,6 +709,17 @@ export class BackgroundInspectSession {
       return;
     }
     this.lifecycle.onContentLeaseAttached?.(contentSessionId);
+  }
+
+  private handleContentLeaseReplacing(
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ): void {
+    if (this.disconnected) return;
+    this.lifecycle.onContentLeaseReplacing?.(
+      previousContentSessionId,
+      nextContentSessionId,
+    );
   }
 }
 

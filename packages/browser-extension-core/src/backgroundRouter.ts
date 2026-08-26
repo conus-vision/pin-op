@@ -83,7 +83,7 @@ import {
   parseStylesResponse,
   type StylesErrorCode,
   type StylesEvent,
-  type StylesGetMatchedRequest,
+  type StylesRequest,
 } from "./stylesProtocol.js";
 import {
   createPanelTabStateMessage,
@@ -1814,11 +1814,46 @@ export class BackgroundRouter {
         this.postToActiveChannel(record.channel, message);
       },
       {
+        onContentLeaseReplacing: (previousContentSessionId) => {
+          if (
+            this.panelPorts.get(record.channel) !== record ||
+            record.inspectSession !== session ||
+            record.contentSessionId !== previousContentSessionId
+          ) {
+            return;
+          }
+          this.postToActiveChannel(record.channel, {
+            type: "pin-op.inspect.invalidated",
+            reason: "documentDisconnected",
+          });
+          record.panelSessionBinding?.dispose();
+          record.panelSessionBinding = undefined;
+          record.contentSessionId = undefined;
+          record.stylesSelectionAuthority = undefined;
+          record.stylesInvalidationAuthority = undefined;
+          record.contentRecoveryAvailable = false;
+        },
         onContentLeaseAttached: (contentSessionId) => {
           if (
             this.panelPorts.get(record.channel) === record &&
             record.inspectSession === session
           ) {
+            if (!record.panelSessionBinding) {
+              record.panelSessionBinding = this.panelSessions.bind(
+                record.channel,
+                binding.tabId,
+              );
+            }
+            const previousContentSessionId = record.contentSessionId;
+            if (
+              previousContentSessionId &&
+              previousContentSessionId !== contentSessionId
+            ) {
+              this.postToActiveChannel(record.channel, {
+                type: "pin-op.inspect.invalidated",
+                reason: "documentDisconnected",
+              });
+            }
             record.contentSessionId = contentSessionId;
             record.stylesSelectionAuthority = undefined;
             record.stylesInvalidationAuthority = undefined;
@@ -2240,7 +2275,10 @@ export class BackgroundRouter {
         return;
       }
       const inspectorRequest = parseInspectorLocalRequest(message);
-      if (inspectorRequest?.type === "styles.getMatched") {
+      if (
+        inspectorRequest?.type === "styles.getMatched" ||
+        inspectorRequest?.type === "styles.setPseudoStates"
+      ) {
         this.queueStylesRequest(record, activationToken, inspectorRequest);
         return;
       }
@@ -2251,7 +2289,7 @@ export class BackgroundRouter {
       const stylesRequestId = readInspectorQueryRequestId(
         message,
         "styles.getMatched",
-      );
+      ) ?? readInspectorQueryRequestId(message, "styles.setPseudoStates");
       if (stylesRequestId) {
         this.postStylesQueryError(record, stylesRequestId, "invalid-request");
         return;
@@ -2739,9 +2777,12 @@ export class BackgroundRouter {
         this.postDomQueryError(record, requestId, code);
       }
     };
+    const contentSessionId = record.contentSessionId;
     const operation = record.inspectCommandTail.then(async () => {
       const binding = this.bindings.get(record.channel);
       if (
+        !contentSessionId ||
+        record.contentSessionId !== contentSessionId ||
         !binding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -2755,6 +2796,7 @@ export class BackgroundRouter {
       );
       if (
         refreshed !== binding ||
+        record.contentSessionId !== contentSessionId ||
         record.activationToken !== activationToken ||
         !record.inspectSession ||
         !record.panelSessionBinding ||
@@ -2768,6 +2810,7 @@ export class BackgroundRouter {
       await inspectSession.whenIdle();
       if (
         record.inspectSession !== inspectSession ||
+        record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -2778,6 +2821,7 @@ export class BackgroundRouter {
         const response = await this.panelSessions.request(record.channel, request);
         if (
           record.inspectSession !== inspectSession ||
+          record.contentSessionId !== contentSessionId ||
           record.panelSessionBinding !== panelSessionBinding ||
           !this.isCurrentActivation(record, activationToken, binding)
         ) {
@@ -2788,6 +2832,14 @@ export class BackgroundRouter {
         return;
       }
       await this.panelSessions.dispatch(record.channel, request);
+      if (
+        record.inspectSession !== inspectSession ||
+        record.contentSessionId !== contentSessionId ||
+        record.panelSessionBinding !== panelSessionBinding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return;
+      }
     });
     record.inspectCommandTail = operation.catch((error) => {
       this.reportError(error);
@@ -2798,14 +2850,20 @@ export class BackgroundRouter {
   private queueStylesRequest(
     record: PanelPortRecord,
     activationToken: object,
-    request: StylesGetMatchedRequest,
+    request: StylesRequest,
   ): void {
     const settle = (code: StylesErrorCode): void => {
       this.postStylesQueryError(record, request.requestId, code);
     };
+    const contentSessionId = record.contentSessionId;
     const operation = record.inspectCommandTail.then(async () => {
       const binding = this.bindings.get(record.channel);
-      if (!binding || !this.isCurrentActivation(record, activationToken, binding)) {
+      if (
+        !contentSessionId ||
+        record.contentSessionId !== contentSessionId ||
+        !binding ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
         settle("cancelled");
         return;
       }
@@ -2816,6 +2874,7 @@ export class BackgroundRouter {
       );
       if (
         refreshed !== binding ||
+        record.contentSessionId !== contentSessionId ||
         record.activationToken !== activationToken ||
         !record.inspectSession ||
         !record.panelSessionBinding ||
@@ -2829,6 +2888,7 @@ export class BackgroundRouter {
       await inspectSession.whenIdle();
       if (
         record.inspectSession !== inspectSession ||
+        record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -2841,6 +2901,7 @@ export class BackgroundRouter {
       );
       if (
         record.inspectSession !== inspectSession ||
+        record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -3371,6 +3432,7 @@ export class BackgroundRouter {
     }
     record.windowStateRevision += 1;
     const revision = record.windowStateRevision;
+    let inspectionCleanupFailed = false;
     if (revokesSourcePresentationAuthority(state)) {
       this.revokeInspectWindow(binding.windowId);
     }
@@ -3395,6 +3457,44 @@ export class BackgroundRouter {
       ) {
         return;
       }
+      if (
+        state === "offline" ||
+        (state === "notLinked" && this.browserLocalInspection)
+      ) {
+        const contentSessionId = record.contentSessionId;
+        if (contentSessionId) {
+          const acknowledged = await this.inspectCoordinator.clearPseudoStates(
+            binding.tabId,
+            contentSessionId,
+          );
+          await this.inspectCoordinator.whenIdle(binding.tabId);
+          if (
+            record.windowStateQueue !== queue ||
+            !record.registration ||
+            !this.isCurrentActivation(record, token, binding)
+          ) {
+            return;
+          }
+          if (
+            !acknowledged ||
+            record.contentSessionId !== contentSessionId
+          ) {
+            inspectionCleanupFailed = true;
+            record.inspectionFailedClosed = true;
+            const session = record.inspectSession;
+            this.disposeInspectionSession(record, false);
+            await session?.whenIdle();
+            await this.inspectCoordinator.whenIdle(binding.tabId);
+            if (
+              record.windowStateQueue !== queue ||
+              !record.registration ||
+              !this.isCurrentActivation(record, token, binding)
+            ) {
+              return;
+            }
+          }
+        }
+      }
       const previousState = record.lastWindowState;
       record.lastWindowState = state;
       if (state === "notLinked") {
@@ -3403,7 +3503,7 @@ export class BackgroundRouter {
         this.availabilityStates.delete(binding.windowId);
         record.republishInFlightEpoch = undefined;
         record.republishedAvailabilityEpoch = 0;
-        record.inspectionFailedClosed = false;
+        record.inspectionFailedClosed = inspectionCleanupFailed;
       } else if (state === "incompatible") {
         this.peerBlockedWindows.add(binding.windowId);
       }
@@ -4483,7 +4583,7 @@ function domQueryRequestId(request: DomRequest): string | undefined {
 
 function readInspectorQueryRequestId(
   value: unknown,
-  expectedType?: "styles.getMatched",
+  expectedType?: "styles.getMatched" | "styles.setPseudoStates",
 ): string | undefined {
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {

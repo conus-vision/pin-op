@@ -56,7 +56,7 @@ import {
 } from "./inspectPortProtocol.js";
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
 import type {
-  StylesGetMatchedRequest,
+  StylesRequest,
   StylesResponse,
 } from "./stylesProtocol.js";
 
@@ -97,7 +97,7 @@ interface PanelRuntimePresentationContext {
   readonly settingsController: PanelSettingsController;
   readonly treeController: DomTreeController;
   readonly requestStyles: (
-    request: StylesGetMatchedRequest,
+    request: StylesRequest,
     signal: AbortSignal,
   ) => Promise<StylesResponse>;
   readonly dispatchRulesOpen: (command: PanelRulesOpenCommand) => void;

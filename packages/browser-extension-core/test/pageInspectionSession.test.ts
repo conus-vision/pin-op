@@ -33,6 +33,11 @@ import {
 } from "../src/matchedStylesApplicabilityObserver.js";
 import type { MatchedStyles } from "../src/matchedStylesTypes.js";
 import type { MatchedStylesCollectorOptions } from "../src/matchedStylesCollector.js";
+import type { PseudoState } from "../src/pseudoStateSelector.js";
+import type {
+  PseudoStatePreviewResult,
+  PseudoStatePreviewStylesheet,
+} from "../src/pseudoStatePreview.js";
 import { DomTreeProviderError } from "../src/domTreeProvider.js";
 import type {
   DomTreeElementIdentity,
@@ -112,6 +117,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: selection.documentEpoch,
       nodeRef: selection.nodeRef,
       selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
     expect(response).toMatchObject({
       type: "styles.matched",
@@ -283,6 +290,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: visibleSelection.documentEpoch,
       nodeRef: visibleSelection.nodeRef,
       selectionRevision: visibleSelection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toMatchObject({
       type: "styles.matched",
       requestId: "restored-visible-selection",
@@ -311,12 +320,16 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toMatchObject({
       type: "styles.matched",
       requestId: "styles-current",
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
       styles: { rules: [], inherited: [] },
     });
     await expect(harness.session.handle({
@@ -325,6 +338,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 2,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toEqual({
       type: "styles.error",
       requestId: "styles-stale-document",
@@ -336,6 +351,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision: selectionRevision + 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toEqual({
       type: "styles.error",
       requestId: "styles-stale-selection",
@@ -347,6 +364,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-other",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toEqual({
       type: "styles.error",
       requestId: "styles-unknown-node",
@@ -359,10 +378,923 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     })).resolves.toEqual({
       type: "styles.error",
       requestId: "styles-disposed",
       code: "cancelled",
+    });
+  });
+
+  it("applies one atomic pseudo-state CAS, preserves stylesheet identity, and makes identical sets inert", async () => {
+    const preview = new FakePseudoStatePreview();
+    const renewals: unknown[] = [];
+    let sharedArtifacts: PinOpRuntimeArtifacts | undefined;
+    const harness = createSessionHarness({
+      createRuntimeArtifacts: () => {
+        sharedArtifacts = new PinOpRuntimeArtifacts({
+          getRandomValues(bytes) {
+            bytes.fill(11);
+            return bytes;
+          },
+        });
+        return sharedArtifacts;
+      },
+      createPseudoStatePreview: (artifacts) => {
+        expect(artifacts).toBe(sharedArtifacts);
+        return preview;
+      },
+      onStylesInspectPublicationRenewed: (event) => renewals.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "pseudo-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    expect(before).toMatchObject({
+      type: "styles.matched",
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+      styles: {
+        pseudoStateRevision: 0,
+        pseudoStates: [],
+        unsupportedRuleCount: 0,
+        inaccessibleStylesheetCount: 0,
+        approximateRuleCount: 0,
+      },
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+
+    const changed = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-change",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover", "focus"],
+    });
+    expect(changed).toEqual({
+      type: "styles.pseudoStates",
+      requestId: "pseudo-change",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      stylesRevision: before.stylesRevision + 1,
+      stylesheetRevision: before.stylesheetRevision,
+      pseudoStateRevision: 1,
+      states: ["hover", "focus"],
+      unsupportedRuleCount: 1,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 1,
+    });
+    expect(preview.apply).toHaveBeenCalledOnce();
+    expect(preview.apply.mock.calls[0]?.[0]).toBe(harness.card);
+
+    await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "pseudo-after",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 1,
+      pseudoStates: ["hover", "focus"],
+    });
+    await Promise.resolve();
+    expect(renewals).toEqual([{
+      type: "styles.inspectPublicationRenewed",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+    }]);
+
+    const same = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-same",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision + 1,
+      expectedPseudoStateRevision: 1,
+      states: ["hover", "focus"],
+    });
+    expect(same).toMatchObject({
+      type: "styles.pseudoStates",
+      stylesRevision: before.stylesRevision + 1,
+      stylesheetRevision: before.stylesheetRevision,
+      pseudoStateRevision: 1,
+    });
+    expect(preview.apply).toHaveBeenCalledOnce();
+    expect(preview.clear).toHaveBeenCalledOnce();
+
+    for (const request of [
+      {
+        requestId: "pseudo-stale-styles",
+        expectedStylesRevision: before.stylesRevision + 2,
+        expectedPseudoStateRevision: 1,
+        code: "stale-styles",
+      },
+      {
+        requestId: "pseudo-stale-state",
+        expectedStylesRevision: before.stylesRevision + 1,
+        expectedPseudoStateRevision: 0,
+        code: "stale-pseudo-state",
+      },
+    ] as const) {
+      await expect(harness.session.handle({
+        type: "styles.setPseudoStates",
+        requestId: request.requestId,
+        documentEpoch: 3,
+        nodeRef: "node-2",
+        selectionRevision: selection.selectionRevision,
+        expectedStylesRevision: request.expectedStylesRevision,
+        expectedPseudoStateRevision: request.expectedPseudoStateRevision,
+        states: [],
+      })).resolves.toEqual({
+        type: "styles.error",
+        requestId: request.requestId,
+        code: request.code,
+      });
+    }
+    expect(preview.apply).toHaveBeenCalledOnce();
+    expect(preview.clear).toHaveBeenCalledOnce();
+  });
+
+  it("filters only exact runtime preview mutations so apply and clear each advance styles once", async () => {
+    const artifacts = new PinOpRuntimeArtifacts({
+      getRandomValues(bytes) {
+        bytes.fill(13);
+        return bytes;
+      },
+    });
+    const preview = new FakePseudoStatePreview();
+    const runtimeStyle = { parentNode: null } as unknown as HTMLStyleElement;
+    artifacts.registerDetachedStyleNode(runtimeStyle);
+    const marker = artifacts.markerNames.hover;
+    let ownedElement: Element | undefined;
+    vi.spyOn(artifacts, "isRuntimeAttributeMutation").mockImplementation(
+      (element, name) => element === ownedElement && name === marker,
+    );
+    const ownMarkerMutation = {
+      type: "attributes",
+      target: undefined as Element | undefined,
+      attributeName: marker,
+      oldValue: null,
+    };
+    const ownChildMutation = {
+      type: "childList",
+      target: { id: "runtime-parent" },
+      addedNodes: [],
+      removedNodes: [runtimeStyle],
+    };
+    const consumeExpectedOwnMutation = vi.fn((record: unknown) => (
+      record === ownMarkerMutation || record === ownChildMutation
+    ));
+    const finishExpectedOwnMutationBatch = vi.fn();
+    Object.assign(artifacts, {
+      consumeExpectedOwnMutation,
+      finishExpectedOwnMutationBatch,
+    });
+    let stylesRevision = 5;
+    const registry = pseudoStateRegistry(
+      () => ({ documentEpoch: 3, stylesheetRevision: 2, stylesRevision }),
+      () => { stylesRevision += 1; },
+    );
+    let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
+    let runtimeMutationFilter: ((record: unknown) => boolean) | undefined;
+    const harness = createSessionHarness({
+      createRuntimeArtifacts: () => artifacts,
+      createPseudoStatePreview: () => preview,
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: pseudoStateMatchedStylesCollector,
+      createApplicabilityObserver(options) {
+        const typed = options as MatchedStylesApplicabilityObserverOptions;
+        runtimeMutationFilter = typed.isRuntimeArtifactMutation;
+        return new MatchedStylesApplicabilityObserver({
+          ...typed,
+          queueMicrotask: (callback) => callback(),
+          createMutationObserver(callback) {
+            mutationCallback = callback;
+            return { observe: vi.fn(), disconnect: vi.fn() };
+          },
+        });
+      },
+    });
+    ownedElement = harness.card as unknown as Element;
+    ownMarkerMutation.target = ownedElement;
+    const pageMarkerRemoval = {
+      type: "attributes",
+      target: ownedElement,
+      attributeName: marker,
+      oldValue: "",
+    };
+    const pageStyleRemoval = {
+      type: "childList",
+      target: ownChildMutation.target,
+      addedNodes: [],
+      removedNodes: [runtimeStyle],
+    };
+    const historicalReattach = {
+      type: "childList",
+      target: ownChildMutation.target,
+      addedNodes: [runtimeStyle],
+      removedNodes: [],
+    };
+    expect(runtimeMutationFilter?.(ownMarkerMutation)).toBe(true);
+    expect(consumeExpectedOwnMutation).toHaveBeenCalledWith(ownMarkerMutation);
+    expect(runtimeMutationFilter?.(pageMarkerRemoval)).toBe(false);
+    expect(runtimeMutationFilter?.(pageStyleRemoval)).toBe(false);
+    expect(runtimeMutationFilter?.(historicalReattach)).toBe(false);
+    expect(runtimeMutationFilter?.({
+      type: "attributes",
+      target: harness.root,
+      attributeName: marker,
+    })).toBe(false);
+    expect(runtimeMutationFilter?.({ type: "childList" })).toBe(false);
+    expect(runtimeMutationFilter?.({
+      get type() {
+        throw new Error("hostile mutation record");
+      },
+    })).toBe(false);
+    consumeExpectedOwnMutation.mockClear();
+
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const applied = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "runtime-mutation-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: 5,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+
+    expect(applied).toMatchObject({
+      type: "styles.pseudoStates",
+      stylesRevision: 6,
+      stylesheetRevision: 2,
+      pseudoStateRevision: 1,
+    });
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 6,
+      stylesheetRevision: 2,
+    });
+    mutationCallback?.([ownMarkerMutation]);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 6,
+      stylesheetRevision: 2,
+    });
+    mutationCallback?.([pageMarkerRemoval]);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 7,
+      stylesheetRevision: 2,
+    });
+    mutationCallback?.([pageStyleRemoval]);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 8,
+      stylesheetRevision: 2,
+    });
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "runtime-mutation-stale-fast-path",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: 6,
+      expectedPseudoStateRevision: 1,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "runtime-mutation-stale-fast-path",
+      code: "stale-styles",
+    });
+    expect(harness.session.clearPseudoStates()).toBe(true);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 9,
+      stylesheetRevision: 2,
+    });
+    mutationCallback?.([ownChildMutation]);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 9,
+      stylesheetRevision: 2,
+    });
+    mutationCallback?.([historicalReattach]);
+    expect(harness.session.styleRevisions).toMatchObject({
+      stylesRevision: 10,
+      stylesheetRevision: 2,
+    });
+    expect(finishExpectedOwnMutationBatch).toHaveBeenCalled();
+  });
+
+  it("rejects an identical pseudo-state fast path when the selected element is no longer live", async () => {
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "same-live-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    const applied = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "same-live-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    if (applied.type !== "styles.pseudoStates") throw new Error("missing pseudo authority");
+    harness.provider.remove("node-2");
+
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "same-live-detached",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: applied.stylesRevision,
+      expectedPseudoStateRevision: applied.pseudoStateRevision,
+      states: applied.states,
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "same-live-detached",
+      code: "node-unavailable",
+    });
+  });
+
+  it("rejects pseudo-state success when applicability revision authority does not advance exactly once", async () => {
+    const preview = new FakePseudoStatePreview();
+    let stylesRevision = 5;
+    const registry = pseudoStateRegistry(
+      () => ({ documentEpoch: 3, stylesheetRevision: 2, stylesRevision }),
+      () => { stylesRevision += 2; },
+    );
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: pseudoStateMatchedStylesCollector,
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-revision-jump",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: 5,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "pseudo-revision-jump",
+      code: "stale-styles",
+    });
+  });
+
+  it("does not return pseudo-state success after reentrant cleanup disposes its authority", async () => {
+    const preview = new FakePseudoStatePreview();
+    let stylesRevision = 5;
+    let session!: PageInspectionSession;
+    const registry = pseudoStateRegistry(
+      () => ({ documentEpoch: 3, stylesheetRevision: 2, stylesRevision }),
+      () => {
+        stylesRevision += 1;
+        session.dispose();
+      },
+    );
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: pseudoStateMatchedStylesCollector,
+    });
+    session = harness.session;
+    await session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+
+    await expect(session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-reentrant-dispose",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: 5,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "pseudo-reentrant-dispose",
+      code: "cancelled",
+    });
+  });
+
+  it("clears preview synchronously at controlled exits but retains it for same-selection republish", async () => {
+    const preview = new FakePseudoStatePreview();
+    let assertCleanupInvalidation = false;
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      onStylesInvalidated: () => {
+        if (assertCleanupInvalidation) expectNoPseudoArtifacts(preview);
+      },
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "cleanup-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "cleanup-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    expect(preview.activeStates).toEqual(["hover"]);
+    expect(preview.markerCount).toBe(1);
+    expect(preview.styleCount).toBe(1);
+
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
+    expect(preview.activeStates).toEqual(["hover"]);
+    expect(preview.markerCount).toBe(1);
+    expect(preview.styleCount).toBe(1);
+    expect(preview.clear).toHaveBeenCalledOnce();
+
+    assertCleanupInvalidation = true;
+    harness.session.clearOverlayForRefresh();
+    assertCleanupInvalidation = false;
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(2);
+
+    preview.arm(["focus"]);
+    harness.provider.onResolve = () => expectNoPseudoArtifacts(preview);
+    await harness.session.selectByRef("node-1", 3);
+    harness.provider.onResolve = undefined;
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(3);
+
+    preview.arm(["focus"]);
+    expect(harness.document.listenerCount("pointerleave")).toBe(1);
+    expect(harness.document.listenerCount("pagehide")).toBe(0);
+    expect(harness.document.defaultView.listenerCount("pointerleave")).toBe(0);
+    expect(harness.document.defaultView.listenerCount("pagehide")).toBe(1);
+    harness.document.dispatch("pagehide", { type: "pagehide", isTrusted: false });
+    expect(preview.markerCount).toBe(1);
+    expect(preview.styleCount).toBe(1);
+    harness.document.dispatch("pagehide", { type: "pagehide", isTrusted: true });
+    expect(preview.markerCount).toBe(1);
+    expect(preview.styleCount).toBe(1);
+    harness.document.defaultView.dispatch(
+      "pagehide",
+      { type: "pagehide", isTrusted: true },
+    );
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(4);
+
+    preview.arm(["focus"]);
+    harness.document.dispatch("unload", { type: "unload", isTrusted: true });
+    expect(preview.markerCount).toBe(1);
+    expect(preview.styleCount).toBe(1);
+    harness.document.defaultView.dispatch(
+      "unload",
+      { type: "unload", isTrusted: true },
+    );
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(5);
+
+    preview.arm(["hover"]);
+    harness.provider.onResetDocument = () => expectNoPseudoArtifacts(preview);
+    harness.session.resetDocument(
+      new FakeSessionDocument() as unknown as Document & { readonly styleSheets: [] },
+      4,
+    );
+    harness.provider.onResetDocument = undefined;
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(6);
+
+    preview.arm(["hover"]);
+    harness.provider.onDispose = () => expectNoPseudoArtifacts(preview);
+    harness.session.dispose();
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(7);
+    expect(harness.document.listenerCount("pointerleave")).toBe(0);
+    expect(harness.document.defaultView.listenerCount("pagehide")).toBe(0);
+    expect(harness.document.defaultView.listenerCount("unload")).toBe(0);
+  });
+
+  it("keeps pseudo authority retryable when cooperative cleanup is incomplete", async () => {
+    const preview = new FakePseudoStatePreview();
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "incomplete-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    const applied = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "incomplete-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    if (applied.type !== "styles.pseudoStates") throw new Error("missing pseudo authority");
+    const invalidationCount = invalidations.length;
+    preview.clear.mockImplementationOnce(() =>
+      Object.freeze({ complete: false, failureCount: 1 })
+    );
+
+    expect(harness.session.clearPseudoStates()).toBe(false);
+    expect(preview.activeStates).toEqual(["hover"]);
+    expect(invalidations).toHaveLength(invalidationCount);
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "incomplete-preserved",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: applied.pseudoStateRevision,
+      pseudoStates: applied.states,
+    })).resolves.toMatchObject({
+      type: "styles.matched",
+      pseudoStateRevision: applied.pseudoStateRevision,
+      pseudoStates: ["hover"],
+    });
+
+    expect(harness.session.clearPseudoStates()).toBe(true);
+    expectNoPseudoArtifacts(preview);
+    expect(invalidations).toHaveLength(invalidationCount + 1);
+    expect(invalidations.at(-1)).toMatchObject({
+      pseudoStateRevision: applied.pseudoStateRevision + 1,
+      pseudoStates: [],
+    });
+  });
+
+  it("cleans orphan preview artifacts even when every advertised state is empty", async () => {
+    const retryPreview = new FakePseudoStatePreview();
+    const retryInvalidations: unknown[] = [];
+    const retry = createSessionHarness({
+      createPseudoStatePreview: () => retryPreview,
+      onStylesInvalidated: (event) => retryInvalidations.push(event),
+    });
+    retryPreview.armOrphan();
+    retryPreview.clear.mockImplementationOnce(() => (
+      Object.freeze({ complete: false, failureCount: 1 })
+    ));
+
+    expect(retry.session.clearPseudoStates()).toBe(false);
+    expect(retryPreview.clear).toHaveBeenCalledOnce();
+    expect(retryPreview.markerCount).toBe(1);
+    expect(retryPreview.styleCount).toBe(1);
+    expect(retryInvalidations).toEqual([]);
+
+    expect(retry.session.clearPseudoStates()).toBe(true);
+    expect(retryPreview.clear).toHaveBeenCalledTimes(2);
+    expectNoPseudoArtifacts(retryPreview);
+    expect(retryInvalidations).toEqual([]);
+
+    const terminalPreview = new FakePseudoStatePreview();
+    const terminal = createSessionHarness({
+      createPseudoStatePreview: () => terminalPreview,
+    });
+    terminalPreview.armOrphan();
+    terminalPreview.clear.mockReturnValue(
+      Object.freeze({ complete: false, failureCount: 1 }),
+    );
+
+    terminal.session.dispose();
+
+    expect(terminalPreview.clear).toHaveBeenCalledOnce();
+    expect(terminalPreview.markerCount).toBe(1);
+    expect(terminalPreview.styleCount).toBe(1);
+    await expect(terminal.session.handle({
+      type: "dom.getRoot",
+      requestId: "orphan-terminal-disposed",
+    })).resolves.toEqual({
+      type: "dom.error",
+      requestId: "orphan-terminal-disposed",
+      code: "session-disposed",
+    });
+  });
+
+  it("fails closed when a controlled transition cannot clear pseudo artifacts", async () => {
+    const incomplete = Object.freeze({ complete: false, failureCount: 1 });
+    const transitions = [
+      ["selection", async (harness: ReturnType<typeof createSessionHarness>) => {
+        await harness.session.selectByRef("node-1", 3);
+      }],
+      ["soft refresh", (harness: ReturnType<typeof createSessionHarness>) => {
+        harness.session.clearOverlayForRefresh();
+      }],
+      ["document reset", (harness: ReturnType<typeof createSessionHarness>) => {
+        harness.session.resetDocument(
+          new FakeSessionDocument() as unknown as Document & {
+            readonly styleSheets: [];
+          },
+          4,
+        );
+      }],
+      ["selection removal", (harness: ReturnType<typeof createSessionHarness>) => {
+        harness.provider.emitSelectedRemoval("node-2");
+      }],
+      ["frame lifecycle", (harness: ReturnType<typeof createSessionHarness>) => {
+        const frameDocument = new FakeSessionDocument();
+        harness.provider.emitFrameLifecycle(
+          "registered",
+          frameContext(frameDocument, "frame-cleanup-failed", 1),
+        );
+      }],
+      ["page lifecycle", (harness: ReturnType<typeof createSessionHarness>) => {
+        harness.document.defaultView.dispatch(
+          "pagehide",
+          { type: "pagehide", isTrusted: true },
+        );
+      }],
+    ] as const;
+
+    for (const [name, transition] of transitions) {
+      const preview = new FakePseudoStatePreview();
+      const invalidations: unknown[] = [];
+      const harness = createSessionHarness({
+        createPseudoStatePreview: () => preview,
+        onStylesInvalidated: (event) => invalidations.push(event),
+      });
+      await harness.session.selectByRef("node-2", 3);
+      preview.arm(["hover"]);
+      preview.clear.mockReturnValue(incomplete);
+
+      await transition(harness);
+
+      await expect(harness.session.handle({
+        type: "dom.getRoot",
+        requestId: `cleanup-failed-${name}`,
+      }), name).resolves.toEqual({
+        type: "dom.error",
+        requestId: `cleanup-failed-${name}`,
+        code: "session-disposed",
+      });
+      expect(invalidations, name).toEqual([]);
+      expect(preview.activeStates, name).toEqual(["hover"]);
+    }
+  });
+
+  it("fails closed when pseudo-apply recovery cannot clear partial artifacts", async () => {
+    const preview = new FakePseudoStatePreview();
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "recovery-incomplete-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    preview.onApply = () => {
+      throw new Error("partial preview apply");
+    };
+    preview.clear.mockReturnValue(
+      Object.freeze({ complete: false, failureCount: 1 }),
+    );
+
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "recovery-incomplete",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "recovery-incomplete",
+      code: "internal-error",
+    });
+    expect(preview.activeStates).toEqual(["hover"]);
+    expect(invalidations).toEqual([]);
+    await expect(harness.session.handle({
+      type: "dom.getRoot",
+      requestId: "recovery-incomplete-disposed",
+    })).resolves.toEqual({
+      type: "dom.error",
+      requestId: "recovery-incomplete-disposed",
+      code: "session-disposed",
+    });
+  });
+
+  it("keeps a failed replacement selection from restoring the cleared preview", async () => {
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+    });
+    await harness.session.selectByRef("node-2", 3);
+    preview.arm(["hover"]);
+    harness.provider.throwOnReveal = true;
+    harness.provider.onResolve = () => expectNoPseudoArtifacts(preview);
+
+    await expect(harness.session.selectByRef("node-1", 3)).resolves.toBeUndefined();
+
+    harness.provider.onResolve = undefined;
+    harness.provider.throwOnReveal = false;
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(2);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
+    expectNoPseudoArtifacts(preview);
+  });
+
+  it("clears preview before a same-node selection generation resolves", async () => {
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+    });
+    await harness.session.selectByRef("node-2", 3);
+    preview.arm(["focus"]);
+    harness.provider.onResolve = () => expectNoPseudoArtifacts(preview);
+
+    await harness.session.selectByRef("node-2", 3);
+
+    harness.provider.onResolve = undefined;
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(2);
+    expect(harness.selections.map(({ nodeRef }) => nodeRef))
+      .toEqual(["node-2", "node-2"]);
+  });
+
+  it("clears preview before releasing removed selected-node authority", async () => {
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+    });
+    await harness.session.selectByRef("node-2", 3);
+    preview.arm(["hover", "focus"]);
+    harness.provider.onRelease = (_nodeRef, reason) => {
+      if (reason === "selected") expectNoPseudoArtifacts(preview);
+    };
+
+    harness.provider.emitSelectedRemoval("node-2");
+
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(2);
+    await expect(republishCurrentSelection(harness)).resolves.toBe(false);
+  });
+
+  it("rolls back a pseudo preview when stylesheet authority drifts during apply", async () => {
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({ createPseudoStatePreview: () => preview });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "drift-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    preview.onApply = () => harness.session.clearOverlayForRefresh();
+
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "drift-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "drift-apply",
+      code: "stale-styles",
+    });
+    expect(preview.activeStates).toEqual([]);
+    expect(preview.clear).toHaveBeenCalled();
+  });
+
+  it("restores the prior pseudo authority when the aggregate revision cannot advance", async () => {
+    const preview = new FakePseudoStatePreview();
+    const revisions = {
+      documentEpoch: 3,
+      stylesheetRevision: 2,
+      stylesRevision: 5,
+    };
+    const registry = {
+      get revisions() {
+        return Object.freeze({ ...revisions });
+      },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(() => {
+        throw new Error("aggregate revision unavailable");
+      }),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+      entriesForElement: vi.fn(() => Object.freeze([])),
+    };
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect: (authority) => ({
+          ...authority,
+          rules: [],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          unsupportedRuleCount: 0,
+          approximateRuleCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+
+    await expect(harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-no-aggregate-revision",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: revisions.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    })).resolves.toEqual({
+      type: "styles.error",
+      requestId: "pseudo-no-aggregate-revision",
+      code: "internal-error",
+    });
+    expect(preview.activeStates).toEqual([]);
+
+    await expect(harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "pseudo-authority-restored",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    })).resolves.toMatchObject({
+      type: "styles.matched",
+      requestId: "pseudo-authority-restored",
+      stylesRevision: revisions.stylesRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
   });
 
@@ -441,6 +1373,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     };
 
     const normal = await harness.session.handle({
@@ -548,6 +1482,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     };
     await harness.session.handle(request);
     await harness.session.handle({ ...request, requestId: "styles-2" });
@@ -827,6 +1763,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     };
 
     const first = await harness.session.handle({
@@ -857,12 +1795,14 @@ describe("PageInspectionSession", () => {
       stylesRevision: 1,
       stylesheetRevision: 0,
     });
-    expect(invalidations).toEqual([expect.objectContaining({
-      kind: "applicability",
-      reason: "applicability-change",
+    expect(invalidations).toEqual([{
+      type: "styles.invalidated",
+      documentEpoch: 3,
       stylesRevision: 1,
       stylesheetRevision: 0,
-    })]);
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    }]);
     const second = await harness.session.handle({
       ...request,
       requestId: "eventless-after",
@@ -981,6 +1921,8 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
     });
 
     expect(response).toEqual({
@@ -1057,12 +1999,14 @@ describe("PageInspectionSession", () => {
       stylesheetRevision: 0,
       stylesRevision: 1,
     });
-    expect(invalidations).toEqual([expect.objectContaining({
-      kind: "applicability",
-      reason: "observable-signal",
+    expect(invalidations).toEqual([{
+      type: "styles.invalidated",
+      documentEpoch: 3,
       stylesheetRevision: 0,
       stylesRevision: 1,
-    })]);
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    }]);
     expect(registry!.resolveRule(ruleRef)).toBe(nativeRule);
   });
 
@@ -2072,7 +3016,6 @@ describe("PageInspectionSession", () => {
     });
     const runtimeSheet = {} as CSSStyleSheet;
     const runtimeStyle = { sheet: runtimeSheet } as HTMLStyleElement;
-    artifacts.registerStyleNode(runtimeStyle);
     const runtimeMutation = vi.spyOn(artifacts, "isRuntimeAttributeMutation")
       .mockReturnValue(true);
     let registryOptions: StylesheetRegistryOptions | undefined;
@@ -2104,6 +3047,7 @@ describe("PageInspectionSession", () => {
     });
 
     await harness.session.selectByRef("node-2", 3);
+    artifacts.registerStyleNode(runtimeStyle);
 
     const providerOptions = harness.providerOptions!;
     const marker = artifacts.markerNames.hover;
@@ -2776,7 +3720,10 @@ describe("PageInspectionSession", () => {
   });
 
   it("clears frame-owned hover and selection when that frame is removed", async () => {
-    const harness = createSessionHarness();
+    const preview = new FakePseudoStatePreview();
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+    });
     const frameDocument = new FakeSessionDocument();
     const context = frameContext(frameDocument, "frame-2", 1);
     const frameButton = element("BUTTON", "frame-button", frameDocument);
@@ -2794,12 +3741,16 @@ describe("PageInspectionSession", () => {
     )).toBe(1);
     await harness.session.selectByRef("node-frame", 3);
     harness.session.hoverByRef("node-frame", 3);
+    preview.arm(["hover"]);
+    harness.provider.onRelease = () => expectNoPseudoArtifacts(preview);
     const eventOffset = harness.events.length;
 
     harness.provider.remove("node-frame");
     harness.provider.setFrameContexts([]);
     harness.provider.emitFrameLifecycle("removed", context);
 
+    expectNoPseudoArtifacts(preview);
+    expect(preview.clear).toHaveBeenCalledTimes(4);
     expect(frameDocument.listenerCount(
       "pointerleave" as InspectEventType,
     )).toBe(0);
@@ -3075,6 +4026,44 @@ describe("PageInspectionSession", () => {
   });
 });
 
+function pseudoStateRegistry(
+  revisions: () => {
+    readonly documentEpoch: number;
+    readonly stylesheetRevision: number;
+    readonly stylesRevision: number;
+  },
+  invalidateApplicability: () => void,
+): PageInspectionStylesheetRegistry {
+  return {
+    get revisions() {
+      return Object.freeze({ ...revisions() });
+    },
+    startPolling: vi.fn(),
+    stopPolling: vi.fn(),
+    checkForChanges: vi.fn(() => false),
+    invalidate: vi.fn(),
+    invalidateApplicability: vi.fn(invalidateApplicability),
+    resetDocument: vi.fn(),
+    dispose: vi.fn(),
+    entriesForElement: vi.fn(() => Object.freeze([])),
+  };
+}
+
+function pseudoStateMatchedStylesCollector(): PageInspectionMatchedStylesCollector {
+  return {
+    collect: (authority) => ({
+      ...authority,
+      rules: [],
+      inherited: [],
+      inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
+      partial: false,
+      diagnostics: [],
+    }),
+  };
+}
+
 function createSessionHarness(overrides: {
   readonly createInspectPayload?: (
     element: ReturnType<typeof element>,
@@ -3097,6 +4086,9 @@ function createSessionHarness(overrides: {
   readonly createMatchedStylesCollector?: (
     options: MatchedStylesCollectorOptions,
   ) => PageInspectionMatchedStylesCollector;
+  readonly createPseudoStatePreview?: (
+    artifacts: PinOpRuntimeArtifacts,
+  ) => FakePseudoStatePreview;
   readonly onStylesInvalidated?: (event: unknown) => void;
   readonly onStylesInspectPublicationRenewed?: (event: unknown) => void;
 } = {}) {
@@ -3143,6 +4135,7 @@ function createSessionHarness(overrides: {
     createRuntimeArtifacts: overrides.createRuntimeArtifacts,
     createApplicabilityObserver: overrides.createApplicabilityObserver,
     createMatchedStylesCollector: overrides.createMatchedStylesCollector,
+    createPseudoStatePreview: overrides.createPseudoStatePreview,
     onStylesInvalidated: overrides.onStylesInvalidated,
     onStylesInspectPublicationRenewed:
       overrides.onStylesInspectPublicationRenewed,
@@ -3225,6 +4218,8 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   public startFrameTrackingCount = 0;
   public throwOnReveal = false;
   public onResolve: (() => void) | undefined;
+  public onRelease: ((nodeRef: string, reason: DomTreeSessionRetention) => void) |
+    undefined;
   public onResetDocument: (() => void) | undefined;
   public onDispose: (() => void) | undefined;
   public readonly hiddenLookups = new Set<object>();
@@ -3422,6 +4417,7 @@ class FakeTreeProvider implements PageInspectionTreeProvider {
   }
 
   public releaseNode(nodeRef: string, reason: DomTreeSessionRetention): void {
+    this.onRelease?.(nodeRef, reason);
     this.retentions.push({ action: "release", nodeRef, reason });
   }
 
@@ -3481,7 +4477,105 @@ class FakeOverlay {
   }
 }
 
-type SessionEventType = InspectEventType | "pointerleave";
+class FakePseudoStatePreview {
+  private states: readonly PseudoState[] = Object.freeze([]);
+  private markers = 0;
+  private styles = 0;
+  public onApply: (() => void) | undefined;
+  public onClear: (() => void) | undefined;
+
+  public readonly apply = vi.fn((
+    _element: Element,
+    _stylesheets: readonly PseudoStatePreviewStylesheet[],
+    states: readonly PseudoState[],
+  ): PseudoStatePreviewResult => {
+    this.states = Object.freeze([...states]);
+    this.markers = states.length;
+    this.styles = states.length === 0 ? 0 : 1;
+    this.onApply?.();
+    return Object.freeze({
+      states: this.states,
+      mountedRuleCount: this.states.length === 0 ? 0 : 1,
+      unsupportedRuleCount: this.states.length === 0 ? 0 : 1,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: this.states.length === 0 ? 0 : 1,
+      diagnostics: Object.freeze([]),
+    });
+  });
+
+  public readonly clear = vi.fn(() => {
+    this.states = Object.freeze([]);
+    this.markers = 0;
+    this.styles = 0;
+    this.onClear?.();
+    return Object.freeze({ complete: true, failureCount: 0 });
+  });
+
+  public get activeStates(): readonly PseudoState[] {
+    return this.states;
+  }
+
+  public get markerCount(): number {
+    return this.markers;
+  }
+
+  public get styleCount(): number {
+    return this.styles;
+  }
+
+  public arm(states: readonly PseudoState[]): void {
+    this.states = Object.freeze([...states]);
+    this.markers = states.length;
+    this.styles = states.length === 0 ? 0 : 1;
+  }
+
+  public armOrphan(): void {
+    this.states = Object.freeze([]);
+    this.markers = 1;
+    this.styles = 1;
+  }
+}
+
+function expectNoPseudoArtifacts(preview: FakePseudoStatePreview): void {
+  expect(preview.activeStates).toEqual([]);
+  expect(preview.markerCount).toBe(0);
+  expect(preview.styleCount).toBe(0);
+}
+
+type SessionEventType = InspectEventType | "pointerleave" | "pagehide" | "unload";
+
+class FakeSessionWindow {
+  private readonly listeners = new Map<
+    SessionEventType,
+    Set<(event: any) => void>
+  >();
+
+  public addEventListener(
+    type: SessionEventType,
+    listener: (event: any) => void,
+    _options: InspectListenerOptions,
+  ): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  public removeEventListener(
+    type: SessionEventType,
+    listener: (event: any) => void,
+    _options: InspectListenerOptions,
+  ): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  public dispatch(type: SessionEventType, event: unknown): void {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+  }
+
+  public listenerCount(type: SessionEventType): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+}
 
 class FakeSessionDocument implements InspectDocument {
   private readonly listeners = new Map<
@@ -3498,10 +4592,11 @@ class FakeSessionDocument implements InspectDocument {
   public constructor(
     public readonly styleSheets: CssDocumentSource["styleSheets"] = [],
     public readonly location?: LocationSource,
+    public readonly defaultView = new FakeSessionWindow(),
   ) {}
 
   public addEventListener(
-    type: InspectEventType,
+    type: SessionEventType,
     listener: (event: any) => void,
     _options: InspectListenerOptions,
   ): void {
@@ -3511,7 +4606,7 @@ class FakeSessionDocument implements InspectDocument {
   }
 
   public removeEventListener(
-    type: InspectEventType,
+    type: SessionEventType,
     listener: (event: any) => void,
     _options: InspectListenerOptions,
   ): void {

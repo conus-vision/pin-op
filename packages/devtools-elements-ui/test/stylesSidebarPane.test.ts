@@ -162,6 +162,8 @@ describe("Chromium-derived read-only Rules renderer", () => {
     expect(harness.rulesRoot.getAttribute("data-selection-revision")).toBe("5");
     expect(harness.rulesRoot.getAttribute("data-styles-revision")).toBe("8");
     expect(harness.rulesRoot.getAttribute("data-stylesheet-revision")).toBe("3");
+    expect(harness.rulesRoot.getAttribute("data-pseudo-state-revision")).toBe("2");
+    expect(harness.rulesRoot.getAttribute("data-pseudo-states")).toBe("hover focus");
     expect(harness.rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule:card");
 
     harness.rules.publish(Object.freeze({
@@ -169,11 +171,15 @@ describe("Chromium-derived read-only Rules renderer", () => {
       matchedStyles: deepFreeze({
         ...initialStyles,
         stylesRevision: 9,
+        pseudoStateRevision: 3,
+        pseudoStates: ["focus"],
       }),
     }));
 
     expect(harness.rulesRoot.getAttribute("data-styles-revision")).toBe("9");
     expect(harness.rulesRoot.getAttribute("data-stylesheet-revision")).toBe("3");
+    expect(harness.rulesRoot.getAttribute("data-pseudo-state-revision")).toBe("3");
+    expect(harness.rulesRoot.getAttribute("data-pseudo-states")).toBe("focus");
     expect(harness.rulesRoot.getAttribute("data-probe-rule-ref")).toBe("rule:card");
 
     harness.rules.publish(Object.freeze({ state: "loading" }));
@@ -182,6 +188,8 @@ describe("Chromium-derived read-only Rules renderer", () => {
       "data-selection-revision",
       "data-styles-revision",
       "data-stylesheet-revision",
+      "data-pseudo-state-revision",
+      "data-pseudo-states",
       "data-probe-rule-ref",
     ]) {
       expect(harness.rulesRoot.getAttribute(attribute)).toBeNull();
@@ -425,10 +433,14 @@ function emptyMatchedStyles(): MatchedStylesSnapshot {
     selectionRevision: 5,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: 0,
+    pseudoStates: [],
     nodeRef: "node:empty",
     matchedRules: [],
     inherited: [],
     inaccessibleStylesheetCount: 0,
+    unsupportedRuleCount: 0,
+    approximateRuleCount: 0,
     omittedRuleCount: 0,
     diagnostics: [],
   });
@@ -440,6 +452,8 @@ function richMatchedStyles(): MatchedStylesSnapshot {
     selectionRevision: 5,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover", "focus"],
     nodeRef: "node:card",
     inlineStyle: {
       ruleRef: "rule:inline",
@@ -510,6 +524,8 @@ function richMatchedStyles(): MatchedStylesSnapshot {
       },
     ],
     inaccessibleStylesheetCount: 2,
+    unsupportedRuleCount: 1,
+    approximateRuleCount: 1,
     omittedRuleCount: 3,
     diagnostics: [
       {

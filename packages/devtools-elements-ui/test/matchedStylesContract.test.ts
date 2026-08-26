@@ -39,8 +39,16 @@ describe("matched styles contract", () => {
       inherited,
       inherited.matchedRules,
       styles.diagnostics,
+      styles.pseudoStates,
       generatedSource,
     ].every((value) => Object.isFrozen(value))).toBe(true);
+    expect(styles).toMatchObject({
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover", "focus"],
+      unsupportedRuleCount: 1,
+      inaccessibleStylesheetCount: 0,
+      approximateRuleCount: 1,
+    });
     expect(generatedSource).toEqual({
       label: "app.css",
       lineNumber: 17,

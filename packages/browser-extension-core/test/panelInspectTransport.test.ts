@@ -20,6 +20,7 @@ import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 import {
   STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES,
   type StylesGetMatchedRequest,
+  type StylesSetPseudoStatesRequest,
 } from "../src/stylesProtocol.js";
 
 describe("PanelInspectTransport DOM integration", () => {
@@ -102,6 +103,60 @@ describe("PanelInspectTransport DOM integration", () => {
       type: "styles.matched",
       requestId: caller.requestId,
       nodeRef: caller.nodeRef,
+    });
+  });
+
+  it("rewrites and correlates one atomic pseudo-state request on the shared styles path", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const caller = pseudoStatesRequest("caller-pseudo");
+    const pending = transport.requestStyles(caller);
+    const wire = port.sent.at(-1) as StylesSetPseudoStatesRequest;
+
+    expect(wire).toMatchObject({
+      type: "styles.setPseudoStates",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      expectedStylesRevision: 8,
+      expectedPseudoStateRevision: 2,
+      states: ["hover", "focus"],
+    });
+    expect(wire.requestId).not.toBe(caller.requestId);
+
+    port.emitMessage(pseudoStatesResponse({ ...wire, states: ["hover"] as const }));
+    const state = promiseState(pending);
+    await flushPanelTasks();
+    expect(state).toEqual({ status: "pending" });
+
+    port.emitMessage(pseudoStatesResponse(wire));
+    await expect(pending).resolves.toEqual({
+      ...pseudoStatesResponse(caller),
+      requestId: caller.requestId,
+    });
+  });
+
+  it("rejects duplicate caller IDs across matched and pseudo-state requests", async () => {
+    const port = new FakePort();
+    const transport = new PanelInspectTransport(() => port);
+    const matchedPending = transport.requestStyles(stylesRequest("shared-id"));
+
+    await expect(transport.requestStyles(pseudoStatesRequest("shared-id")))
+      .rejects.toThrow(/duplicate/i);
+    const matchedWire = port.sent.at(-1) as StylesGetMatchedRequest;
+    port.emitMessage(stylesMatched(matchedWire));
+    await expect(matchedPending).resolves.toMatchObject({ requestId: "shared-id" });
+
+    const pseudoPending = transport.requestStyles(pseudoStatesRequest("shared-id"));
+    await expect(transport.requestStyles(stylesRequest("shared-id")))
+      .rejects.toThrow(/duplicate/i);
+    const pseudoWire = port.sent.at(-1) as StylesSetPseudoStatesRequest;
+    expect(pseudoWire.requestId).not.toBe(matchedWire.requestId);
+    port.emitMessage(pseudoStatesResponse(pseudoWire));
+    await expect(pseudoPending).resolves.toMatchObject({
+      type: "styles.pseudoStates",
+      requestId: "shared-id",
+      states: ["hover", "focus"],
     });
   });
 
@@ -1527,6 +1582,21 @@ function stylesRequest(requestId: string): StylesGetMatchedRequest {
     documentEpoch: 4,
     nodeRef: "node-1",
     selectionRevision: 7,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover"],
+  };
+}
+
+function pseudoStatesRequest(requestId: string): StylesSetPseudoStatesRequest {
+  return {
+    type: "styles.setPseudoStates",
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    expectedStylesRevision: 8,
+    expectedPseudoStateRevision: 2,
+    states: ["hover", "focus"],
   };
 }
 
@@ -1553,17 +1623,40 @@ function stylesMatched(request: StylesGetMatchedRequest) {
     selectionRevision: request.selectionRevision,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: request.pseudoStateRevision,
+    pseudoStates: request.pseudoStates,
     styles: {
       documentEpoch: request.documentEpoch,
       nodeRef: request.nodeRef,
       selectionRevision: request.selectionRevision,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: request.pseudoStateRevision,
+      pseudoStates: request.pseudoStates,
       rules: [],
       inherited: [],
       inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function pseudoStatesResponse(request: StylesSetPseudoStatesRequest) {
+  return {
+    type: "styles.pseudoStates" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 9,
+    stylesheetRevision: 3,
+    pseudoStateRevision: 3,
+    states: request.states,
+    unsupportedRuleCount: 1,
+    inaccessibleStylesheetCount: 2,
+    approximateRuleCount: 1,
   };
 }

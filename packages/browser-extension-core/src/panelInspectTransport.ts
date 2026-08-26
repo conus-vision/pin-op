@@ -41,7 +41,7 @@ import {
   parseStylesEvent,
   parseStylesRequest,
   parseStylesResponse,
-  type StylesGetMatchedRequest,
+  type StylesRequest,
   type StylesResponse,
 } from "./stylesProtocol.js";
 
@@ -85,8 +85,8 @@ export class PanelInspectTransport {
   private readonly pendingStyles = new Map<
     string,
     {
-      readonly callerRequest: StylesGetMatchedRequest;
-      readonly wireRequest: StylesGetMatchedRequest;
+      readonly callerRequest: StylesRequest;
+      readonly wireRequest: StylesRequest;
       readonly removeAbort: () => void;
       resolve(value: StylesResponse): void;
       reject(reason: unknown): void;
@@ -223,7 +223,7 @@ export class PanelInspectTransport {
     if (this.disposed) {
       return Promise.reject(new Error("Inspect connection is closed"));
     }
-    let request: StylesGetMatchedRequest;
+    let request: StylesRequest;
     try {
       request = parseStylesRequest(message);
     } catch {
@@ -536,10 +536,10 @@ export class PanelInspectTransport {
 
   private takePendingStyles(
     wireRequestId: string,
-    wireRequest: StylesGetMatchedRequest,
+    wireRequest: StylesRequest,
   ): {
-    readonly callerRequest: StylesGetMatchedRequest;
-    readonly wireRequest: StylesGetMatchedRequest;
+    readonly callerRequest: StylesRequest;
+    readonly wireRequest: StylesRequest;
     readonly removeAbort: () => void;
     resolve(value: StylesResponse): void;
     reject(reason: unknown): void;

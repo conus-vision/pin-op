@@ -15,6 +15,8 @@ import type {
   StylesGetMatchedRequest,
   StylesInvalidatedEvent,
   StylesMatchedResponse,
+  StylesPseudoStatesResponse,
+  StylesSetPseudoStatesRequest,
 } from "../src/stylesProtocol.js";
 
 declare const sourceNavigationState: SourceNavigationStateMessage;
@@ -63,11 +65,16 @@ const rulesPanelResponses: readonly BackgroundToPanelInspectPortMessage[] = [
 ];
 
 declare const stylesRequest: StylesGetMatchedRequest;
+declare const pseudoStatesRequest: StylesSetPseudoStatesRequest;
 declare const stylesResponse: StylesMatchedResponse;
+declare const pseudoStatesResponse: StylesPseudoStatesResponse;
 declare const stylesInvalidated: StylesInvalidatedEvent;
 const stylesPanelRequest: PanelToBackgroundInspectPortMessage = stylesRequest;
+const pseudoStatesPanelRequest: PanelToBackgroundInspectPortMessage =
+  pseudoStatesRequest;
 const stylesPanelResponses: readonly BackgroundToPanelInspectPortMessage[] = [
   stylesResponse,
+  pseudoStatesResponse,
   stylesInvalidated,
 ];
 
@@ -75,4 +82,5 @@ void sourceMatchesBackgroundMessage;
 void panelMessages;
 void rulesPanelResponses;
 void stylesPanelRequest;
+void pseudoStatesPanelRequest;
 void stylesPanelResponses;

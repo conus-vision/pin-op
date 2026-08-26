@@ -37,6 +37,8 @@ describe("startContentScriptRuntime", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
       manualRefresh: true,
     })).resolves.toMatchObject({ type: "styles.matched", requestId: "styles-1" });
     expect(pageSession.handle).toHaveBeenLastCalledWith({
@@ -45,6 +47,8 @@ describe("startContentScriptRuntime", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
       manualRefresh: true,
     });
     await expect(runtimeMessages.emit({ type: "styles.evil", requestId: "x" }))
@@ -61,6 +65,8 @@ describe("startContentScriptRuntime", () => {
       documentEpoch: 4,
       stylesRevision: 9,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
       reason: "fingerprint-change",
       kind: "stylesheet",
     });
@@ -79,6 +85,8 @@ describe("startContentScriptRuntime", () => {
         documentEpoch: 4,
         stylesRevision: 9,
         stylesheetRevision: 3,
+        pseudoStateRevision: 2,
+        pseudoStates: ["hover"],
       },
     });
     expect(sent).toContainEqual({
@@ -91,6 +99,145 @@ describe("startContentScriptRuntime", () => {
         selectionRevision: 7,
       },
     });
+    runtime.dispose();
+  });
+
+  it("routes pseudo-state commands only to the local page session", async () => {
+    const runtimeMessages = messageHarness();
+    const pageSession = pageSessionHarness();
+    const sent: unknown[] = [];
+    const request = pseudoStatesRequest("pseudo-local");
+    pageSession.handle.mockResolvedValue(pseudoStatesResponse(request));
+    const runtime = startContentScriptRuntime({
+      globalScope: {},
+      document: documentHarness().document,
+      location: locationSource(),
+      connectRuntimePort: () => portHarness().port,
+      sendRuntimeMessage: async (message) => { sent.push(message); },
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      createContentSessionId: () => "content-pseudo",
+      createPageInspectionSession: () => pageSession.session,
+    });
+
+    await expect(runtimeMessages.emit(request)).resolves.toEqual(
+      pseudoStatesResponse(request),
+    );
+    expect(pageSession.handle).toHaveBeenCalledWith(request);
+    expect(sent).toEqual([]);
+
+    runtime.dispose();
+  });
+
+  it("cleans page-owned preview artifacts only for the exact lease before acknowledging disposal", async () => {
+    const runtimeMessages = messageHarness();
+    const pageSession = pageSessionHarness();
+    const leasePort = portHarness();
+    const order: string[] = [];
+    pageSession.clearPseudoStates
+      .mockImplementationOnce(() => {
+        order.push("pseudo-incomplete");
+        return false;
+      })
+      .mockImplementation(() => {
+        order.push("pseudo-complete");
+        return true;
+      });
+    pageSession.dispose.mockImplementation(() => { order.push("page-session"); });
+    leasePort.port.disconnect.mockImplementation(() => { order.push("lease"); });
+    const runtime = startContentScriptRuntime({
+      globalScope: {},
+      document: documentHarness().document,
+      location: locationSource(),
+      connectRuntimePort: () => leasePort.port,
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      createContentSessionId: () => "content-cleanup",
+      createPageInspectionSession: () => pageSession.session,
+    });
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.disposeSession",
+    })).resolves.toBeUndefined();
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: "retired-content-session",
+    })).resolves.toBe(false);
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: "content-cleanup",
+      extra: true,
+    })).resolves.toBeUndefined();
+    expect(order).toEqual([]);
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: "content-cleanup",
+    })).resolves.toBe(false);
+    expect(order).toEqual(["pseudo-incomplete"]);
+    expect(runtimeMessages.remove).not.toHaveBeenCalled();
+    expect(pageSession.dispose).not.toHaveBeenCalled();
+    expect(leasePort.remove).not.toHaveBeenCalled();
+    expect(leasePort.port.disconnect).not.toHaveBeenCalled();
+    await expect(runtimeMessages.emit({
+      type: "dom.getRoot",
+      requestId: "still-live-after-incomplete-cleanup",
+    })).resolves.toEqual(rootResponse("still-live-after-incomplete-cleanup"));
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: "content-cleanup",
+    })).resolves.toBe(true);
+
+    expect(order).toEqual([
+      "pseudo-incomplete",
+      "pseudo-complete",
+      "page-session",
+      "lease",
+    ]);
+    expect(runtimeMessages.remove).toHaveBeenCalledOnce();
+    expect(leasePort.remove).toHaveBeenCalledOnce();
+    runtime.dispose();
+  });
+
+  it("acknowledges an exact lease-bound pseudo cleanup without disposing the local tree", async () => {
+    const runtimeMessages = messageHarness();
+    const pageSession = pageSessionHarness();
+    pageSession.clearPseudoStates.mockReturnValueOnce(false).mockReturnValue(true);
+    const leasePort = portHarness();
+    const runtime = startContentScriptRuntime({
+      globalScope: {},
+      document: documentHarness().document,
+      location: locationSource(),
+      connectRuntimePort: () => leasePort.port,
+      sendRuntimeMessage: async () => undefined,
+      subscribeRuntimeMessages: runtimeMessages.subscribe,
+      createContentSessionId: () => "content-clear-pseudo",
+      createPageInspectionSession: () => pageSession.session,
+    });
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.clearPseudoStates",
+      contentSessionId: "retired-content-session",
+    })).resolves.toBe(false);
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.clearPseudoStates",
+      contentSessionId: "content-clear-pseudo",
+      extra: true,
+    })).resolves.toBeUndefined();
+    expect(pageSession.clearPseudoStates).not.toHaveBeenCalled();
+
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.clearPseudoStates",
+      contentSessionId: "content-clear-pseudo",
+    })).resolves.toBe(false);
+    await expect(runtimeMessages.emit({
+      type: "pin-op.inspect.clearPseudoStates",
+      contentSessionId: "content-clear-pseudo",
+    })).resolves.toBe(true);
+    expect(pageSession.clearPseudoStates).toHaveBeenCalledTimes(2);
+    expect(pageSession.dispose).not.toHaveBeenCalled();
+    expect(leasePort.port.disconnect).not.toHaveBeenCalled();
+
     runtime.dispose();
   });
   it("is idempotent, owns the inspect lease, and cleans up listeners", async () => {
@@ -200,6 +347,8 @@ describe("startContentScriptRuntime", () => {
     expect(publicInspectPayload).not.toContain("ancestorPath");
     expect(publicInspectPayload).not.toContain("dom.selectionChanged");
     expect(publicInspectPayload).not.toContain("dom.getRoot");
+    expect(publicInspectPayload).not.toContain("styles.setPseudoStates");
+    expect(publicInspectPayload).not.toContain("pseudoStates");
     expect(sent[1]).toEqual({
       type: "pin-op.dom.event",
       contentSessionId: "content-session-a",
@@ -1079,6 +1228,7 @@ function pageSessionHarness() {
   const disablePicker = vi.fn();
   const republishSelection = vi.fn(async () => true);
   const clearOverlayForRefresh = vi.fn();
+  const clearPseudoStates = vi.fn(() => true);
   const handle = vi.fn(async (request: { requestId?: string }) =>
     rootResponse(request.requestId ?? "missing")
   );
@@ -1088,6 +1238,7 @@ function pageSessionHarness() {
     disablePicker,
     republishSelection,
     clearOverlayForRefresh,
+    clearPseudoStates,
     handle,
     dispose,
     session: {
@@ -1095,6 +1246,7 @@ function pageSessionHarness() {
       disablePicker,
       republishSelection,
       clearOverlayForRefresh,
+      clearPseudoStates,
       handle,
       dispose,
     },
@@ -1171,18 +1323,54 @@ function stylesMatchedResponse(requestId: string) {
     selectionRevision: 7,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover"],
     styles: {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
       rules: [],
       inherited: [],
       inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function pseudoStatesRequest(requestId: string) {
+  return {
+    type: "styles.setPseudoStates" as const,
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    expectedStylesRevision: 8,
+    expectedPseudoStateRevision: 2,
+    states: ["hover", "focus"] as const,
+  };
+}
+
+function pseudoStatesResponse(request: ReturnType<typeof pseudoStatesRequest>) {
+  return {
+    type: "styles.pseudoStates" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 9,
+    stylesheetRevision: 3,
+    pseudoStateRevision: 3,
+    states: request.states,
+    unsupportedRuleCount: 1,
+    inaccessibleStylesheetCount: 2,
+    approximateRuleCount: 1,
   };
 }
 

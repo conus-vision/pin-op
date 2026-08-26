@@ -264,6 +264,137 @@ describe("PinOpRuntimeArtifacts", () => {
       .toBe(false);
   });
 
+  it("consumes only exact expected marker mutations once and fails open for page tampering", () => {
+    const artifacts = deterministicArtifacts();
+    const parent = new FakeParent();
+    const element = new FakeElement("button");
+    parent.append(element);
+    expect(artifacts.setStateMarkers(element as unknown as Element, ["hover"]))
+      .toBe(true);
+    expect(artifacts.consumeExpectedOwnMutation).toBeTypeOf("function");
+    const selection = {
+      type: "attributes",
+      target: element,
+      attributeName: artifacts.markerNames.selection,
+      oldValue: null,
+    };
+    const hover = {
+      type: "attributes",
+      target: element,
+      attributeName: artifacts.markerNames.hover,
+      oldValue: null,
+    };
+
+    expect(artifacts.consumeExpectedOwnMutation(selection)).toBe(true);
+    expect(artifacts.consumeExpectedOwnMutation(selection)).toBe(false);
+    expect(artifacts.consumeExpectedOwnMutation(hover)).toBe(true);
+
+    element.removePageAttribute(artifacts.markerNames.hover);
+    expect(artifacts.consumeExpectedOwnMutation({
+      ...hover,
+      oldValue: "",
+    })).toBe(false);
+    element.setAttribute(artifacts.markerNames.hover, "page-replacement");
+    expect(artifacts.consumeExpectedOwnMutation(hover)).toBe(false);
+  });
+
+  it("consumes exact own cleanup mutations but exposes historical marker and node reuse", () => {
+    const artifacts = deterministicArtifacts();
+    const parent = new FakeParent();
+    const element = new FakeElement("button");
+    parent.append(element);
+    expect(artifacts.setStateMarkers(element as unknown as Element, ["hover"]))
+      .toBe(true);
+    expect(artifacts.consumeExpectedOwnMutation).toBeTypeOf("function");
+    for (const name of [artifacts.markerNames.selection, artifacts.markerNames.hover]) {
+      expect(artifacts.consumeExpectedOwnMutation({
+        type: "attributes",
+        target: element,
+        attributeName: name,
+        oldValue: null,
+      })).toBe(true);
+    }
+
+    const style = new FakeElement("style");
+    const sheet = Object.assign(constructableSheet("preview", []), {
+      ownerNode: style,
+    });
+    artifacts.registerDetachedStyleNode(style as unknown as HTMLStyleElement);
+    expect(artifacts.markStyleNode(style as unknown as HTMLStyleElement)).toBe(true);
+    style.sheet = sheet;
+    parent.append(style);
+    expect(artifacts.registerAttachedStyleNodeStylesheet(
+      style as unknown as HTMLStyleElement,
+      sheet,
+    )).toBe(true);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "childList",
+      target: parent,
+      addedNodes: [style],
+      removedNodes: [],
+    })).toBe(true);
+    parent.remove(style);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "childList",
+      target: parent,
+      addedNodes: [],
+      removedNodes: [style],
+    })).toBe(false);
+    const pageReplacementStyle = new FakeElement("style");
+    parent.append(pageReplacementStyle);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "childList",
+      target: parent,
+      addedNodes: [pageReplacementStyle],
+      removedNodes: [],
+    })).toBe(false);
+    parent.append(style);
+    const styleMarker = style.attributes[0]!.name;
+
+    expect(artifacts.cleanup()).toEqual({ complete: true, failureCount: 0 });
+    for (const name of [artifacts.markerNames.selection, artifacts.markerNames.hover]) {
+      expect(artifacts.consumeExpectedOwnMutation({
+        type: "attributes",
+        target: element,
+        attributeName: name,
+        oldValue: "",
+      })).toBe(true);
+    }
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "attributes",
+      target: style,
+      attributeName: styleMarker,
+      oldValue: "",
+    })).toBe(true);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "childList",
+      target: parent,
+      addedNodes: [],
+      removedNodes: [style],
+    })).toBe(true);
+    artifacts.finishExpectedOwnMutationBatch();
+
+    element.setAttribute(artifacts.markerNames.hover, "page");
+    parent.append(style);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "attributes",
+      target: element,
+      attributeName: artifacts.markerNames.hover,
+      oldValue: null,
+    })).toBe(false);
+    expect(artifacts.consumeExpectedOwnMutation({
+      type: "childList",
+      target: parent,
+      addedNodes: [style],
+      removedNodes: [],
+    })).toBe(false);
+    expect(artifacts.isRuntimeNode(style as unknown as Node)).toBe(true);
+    expect(artifacts.isRuntimeAttributeMutation(
+      element as unknown as Element,
+      artifacts.markerNames.hover,
+    )).toBe(true);
+  });
+
   it("neutralizes an exact adopted mirror before removing it from its owned root", () => {
     const artifacts = deterministicArtifacts();
     const owned = constructableSheet("owned", [{}]);

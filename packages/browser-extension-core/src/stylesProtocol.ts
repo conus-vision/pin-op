@@ -8,6 +8,7 @@ import type {
   MatchedRule,
   MatchedStyles,
 } from "./matchedStylesTypes.js";
+import type { PseudoState } from "./pseudoStateSelector.js";
 
 export const STYLES_PROTOCOL_MAX_SERIALIZED_RESPONSE_BYTES = 512 * 1024;
 export const STYLES_PROTOCOL_MAX_RULES = INSPECT_LIMITS.cssRules;
@@ -25,7 +26,20 @@ export interface StylesGetMatchedRequest {
   readonly documentEpoch: number;
   readonly nodeRef: string;
   readonly selectionRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
   readonly manualRefresh?: true;
+}
+
+export interface StylesSetPseudoStatesRequest {
+  readonly type: "styles.setPseudoStates";
+  readonly requestId: string;
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly expectedStylesRevision: number;
+  readonly expectedPseudoStateRevision: number;
+  readonly states: readonly PseudoState[];
 }
 
 export interface StylesMatchedResponse {
@@ -36,15 +50,34 @@ export interface StylesMatchedResponse {
   readonly selectionRevision: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
   readonly styles: MatchedStyles;
+}
+
+export interface StylesPseudoStatesResponse {
+  readonly type: "styles.pseudoStates";
+  readonly requestId: string;
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly stylesRevision: number;
+  readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly states: readonly PseudoState[];
+  readonly unsupportedRuleCount: number;
+  readonly inaccessibleStylesheetCount: number;
+  readonly approximateRuleCount: number;
 }
 
 export type StylesErrorCode =
   | "invalid-request"
   | "stale-document"
   | "stale-selection"
+  | "stale-styles"
+  | "stale-pseudo-state"
   | "unknown-node"
-  | "inaccessible"
+  | "node-unavailable"
   | "cancelled"
   | "internal-error";
 
@@ -59,6 +92,8 @@ export interface StylesInvalidatedEvent {
   readonly documentEpoch: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
 }
 
 /** A content-only signal asking the background to renew current inspect evidence. */
@@ -69,8 +104,11 @@ export interface StylesInspectPublicationRenewedEvent {
   readonly selectionRevision: number;
 }
 
-export type StylesRequest = StylesGetMatchedRequest;
-export type StylesResponse = StylesMatchedResponse | StylesErrorResponse;
+export type StylesRequest = StylesGetMatchedRequest | StylesSetPseudoStatesRequest;
+export type StylesResponse =
+  | StylesMatchedResponse
+  | StylesPseudoStatesResponse
+  | StylesErrorResponse;
 export type StylesEvent =
   | StylesInvalidatedEvent
   | StylesInspectPublicationRenewedEvent;
@@ -88,8 +126,10 @@ const ERROR_CODES = new Set<StylesErrorCode>([
   "invalid-request",
   "stale-document",
   "stale-selection",
+  "stale-styles",
+  "stale-pseudo-state",
   "unknown-node",
-  "inaccessible",
+  "node-unavailable",
   "cancelled",
   "internal-error",
 ]);
@@ -131,15 +171,46 @@ const CONTEXT_KINDS = new Set([
 
 export function parseStylesRequest(value: unknown): StylesRequest {
   try {
+    const type = recordType(value);
+    if (type === "styles.setPseudoStates") {
+      const record = exactRecord(value, [
+        "type",
+        "requestId",
+        "documentEpoch",
+        "nodeRef",
+        "selectionRevision",
+        "expectedStylesRevision",
+        "expectedPseudoStateRevision",
+        "states",
+      ]);
+      const request = Object.freeze({
+        type,
+        requestId: identifier(read(record, "requestId")),
+        documentEpoch: revision(read(record, "documentEpoch")),
+        nodeRef: identifier(read(record, "nodeRef")),
+        selectionRevision: revision(read(record, "selectionRevision")),
+        expectedStylesRevision: revision(read(record, "expectedStylesRevision")),
+        expectedPseudoStateRevision: revision(
+          read(record, "expectedPseudoStateRevision"),
+        ),
+        states: pseudoStates(read(record, "states")),
+      });
+      if (request.expectedPseudoStateRevision > request.expectedStylesRevision) {
+        fail();
+      }
+      return request;
+    }
+    if (type !== "styles.getMatched") fail();
     const record = exactRecord(value, [
       "type",
       "requestId",
       "documentEpoch",
       "nodeRef",
       "selectionRevision",
+      "pseudoStateRevision",
+      "pseudoStates",
       "manualRefresh",
     ], ["manualRefresh"]);
-    if (read(record, "type") !== "styles.getMatched") fail();
     if (has(record, "manualRefresh") && read(record, "manualRefresh") !== true) {
       fail();
     }
@@ -149,6 +220,8 @@ export function parseStylesRequest(value: unknown): StylesRequest {
       documentEpoch: revision(read(record, "documentEpoch")),
       nodeRef: identifier(read(record, "nodeRef")),
       selectionRevision: revision(read(record, "selectionRevision")),
+      pseudoStateRevision: revision(read(record, "pseudoStateRevision")),
+      pseudoStates: pseudoStates(read(record, "pseudoStates")),
       ...(has(record, "manualRefresh") ? { manualRefresh: true as const } : {}),
     });
   } catch (error) {
@@ -171,6 +244,52 @@ export function parseStylesResponse(value: unknown): StylesResponse {
         code: code as StylesErrorCode,
       });
     }
+    if (type === "styles.pseudoStates") {
+      const record = exactRecord(value, [
+        "type",
+        "requestId",
+        "documentEpoch",
+        "nodeRef",
+        "selectionRevision",
+        "stylesRevision",
+        "stylesheetRevision",
+        "pseudoStateRevision",
+        "states",
+        "unsupportedRuleCount",
+        "inaccessibleStylesheetCount",
+        "approximateRuleCount",
+      ]);
+      const response = Object.freeze({
+        type,
+        requestId: identifier(read(record, "requestId")),
+        documentEpoch: revision(read(record, "documentEpoch")),
+        nodeRef: identifier(read(record, "nodeRef")),
+        selectionRevision: revision(read(record, "selectionRevision")),
+        stylesRevision: revision(read(record, "stylesRevision")),
+        stylesheetRevision: revision(read(record, "stylesheetRevision")),
+        pseudoStateRevision: revision(read(record, "pseudoStateRevision")),
+        states: pseudoStates(read(record, "states")),
+        unsupportedRuleCount: boundedRevision(
+          read(record, "unsupportedRuleCount"),
+          INSPECT_LIMITS.cssRules,
+        ),
+        inaccessibleStylesheetCount: boundedRevision(
+          read(record, "inaccessibleStylesheetCount"),
+          INSPECT_LIMITS.stylesheets,
+        ),
+        approximateRuleCount: boundedRevision(
+          read(record, "approximateRuleCount"),
+          INSPECT_LIMITS.cssRules,
+        ),
+      });
+      assertRevisionTriple(
+        response.stylesRevision,
+        response.stylesheetRevision,
+        response.pseudoStateRevision,
+      );
+      if (!stylesProtocolEnvelopeWithinBudget(response)) fail();
+      return response;
+    }
     if (type !== "styles.matched") fail();
     const record = exactRecord(value, [
       "type",
@@ -180,6 +299,8 @@ export function parseStylesResponse(value: unknown): StylesResponse {
       "selectionRevision",
       "stylesRevision",
       "stylesheetRevision",
+      "pseudoStateRevision",
+      "pseudoStates",
       "styles",
     ]);
     const response = Object.freeze({
@@ -190,15 +311,23 @@ export function parseStylesResponse(value: unknown): StylesResponse {
       selectionRevision: revision(read(record, "selectionRevision")),
       stylesRevision: revision(read(record, "stylesRevision")),
       stylesheetRevision: revision(read(record, "stylesheetRevision")),
+      pseudoStateRevision: revision(read(record, "pseudoStateRevision")),
+      pseudoStates: pseudoStates(read(record, "pseudoStates")),
       styles: parseMatchedStyles(read(record, "styles")),
     });
-    assertRevisionPair(response.stylesRevision, response.stylesheetRevision);
+    assertRevisionTriple(
+      response.stylesRevision,
+      response.stylesheetRevision,
+      response.pseudoStateRevision,
+    );
     if (
       response.styles.documentEpoch !== response.documentEpoch ||
       response.styles.nodeRef !== response.nodeRef ||
       response.styles.selectionRevision !== response.selectionRevision ||
       response.styles.stylesRevision !== response.stylesRevision ||
       response.styles.stylesheetRevision !== response.stylesheetRevision ||
+      response.styles.pseudoStateRevision !== response.pseudoStateRevision ||
+      !samePseudoStates(response.styles.pseudoStates, response.pseudoStates) ||
       !stylesProtocolEnvelopeWithinBudget(response)
     ) {
       fail();
@@ -218,14 +347,22 @@ export function parseStylesEvent(value: unknown): StylesEvent {
         "documentEpoch",
         "stylesRevision",
         "stylesheetRevision",
+        "pseudoStateRevision",
+        "pseudoStates",
       ]);
       const event = Object.freeze({
         type,
         documentEpoch: revision(read(record, "documentEpoch")),
         stylesRevision: revision(read(record, "stylesRevision")),
         stylesheetRevision: revision(read(record, "stylesheetRevision")),
+        pseudoStateRevision: revision(read(record, "pseudoStateRevision")),
+        pseudoStates: pseudoStates(read(record, "pseudoStates")),
       });
-      assertRevisionPair(event.stylesRevision, event.stylesheetRevision);
+      assertRevisionTriple(
+        event.stylesRevision,
+        event.stylesheetRevision,
+        event.pseudoStateRevision,
+      );
       return event;
     }
     if (type !== "styles.inspectPublicationRenewed") fail();
@@ -254,11 +391,22 @@ export function isStylesResponseForRequest(
     const request = parseStylesRequest(requestValue);
     const response = parseStylesResponse(responseValue);
     if (response.requestId !== request.requestId) return false;
-    return response.type === "styles.error" || (
-      response.documentEpoch === request.documentEpoch &&
-      response.nodeRef === request.nodeRef &&
-      response.selectionRevision === request.selectionRevision
-    );
+    if (response.type === "styles.error") return true;
+    const expectedResponseType = request.type === "styles.getMatched"
+      ? "styles.matched"
+      : "styles.pseudoStates";
+    if (
+      response.type !== expectedResponseType ||
+      response.documentEpoch !== request.documentEpoch ||
+      response.nodeRef !== request.nodeRef ||
+      response.selectionRevision !== request.selectionRevision
+    ) return false;
+    return request.type === "styles.getMatched"
+      ? response.type === "styles.matched" &&
+        response.pseudoStateRevision === request.pseudoStateRevision &&
+        samePseudoStates(response.pseudoStates, request.pseudoStates)
+      : response.type === "styles.pseudoStates" &&
+        samePseudoStates(response.states, request.states);
   } catch {
     return false;
   }
@@ -289,22 +437,29 @@ function parseMatchedStyles(value: unknown): MatchedStyles {
     "selectionRevision",
     "stylesRevision",
     "stylesheetRevision",
+    "pseudoStateRevision",
+    "pseudoStates",
     "nodeRef",
     "inline",
     "rules",
     "inherited",
     "inaccessibleStylesheetCount",
+    "unsupportedRuleCount",
+    "approximateRuleCount",
     "partial",
     "diagnostics",
   ], ["inline"]);
   const stylesRevision = revision(read(record, "stylesRevision"));
   const stylesheetRevision = revision(read(record, "stylesheetRevision"));
-  assertRevisionPair(stylesRevision, stylesheetRevision);
+  const pseudoStateRevision = revision(read(record, "pseudoStateRevision"));
+  assertRevisionTriple(stylesRevision, stylesheetRevision, pseudoStateRevision);
   const result: MatchedStyles = {
     documentEpoch: revision(read(record, "documentEpoch")),
     selectionRevision: revision(read(record, "selectionRevision")),
     stylesRevision,
     stylesheetRevision,
+    pseudoStateRevision,
+    pseudoStates: pseudoStates(read(record, "pseudoStates")),
     nodeRef: identifier(read(record, "nodeRef")),
     ...(has(record, "inline")
       ? { inline: parseMatchedRule(read(record, "inline"), budget) }
@@ -322,6 +477,14 @@ function parseMatchedStyles(value: unknown): MatchedStyles {
     inaccessibleStylesheetCount: boundedRevision(
       read(record, "inaccessibleStylesheetCount"),
       INSPECT_LIMITS.stylesheets,
+    ),
+    unsupportedRuleCount: boundedRevision(
+      read(record, "unsupportedRuleCount"),
+      INSPECT_LIMITS.cssRules,
+    ),
+    approximateRuleCount: boundedRevision(
+      read(record, "approximateRuleCount"),
+      INSPECT_LIMITS.cssRules,
     ),
     partial: boolean(read(record, "partial")),
     diagnostics: boundedArray(
@@ -675,8 +838,38 @@ function boolean(value: unknown): boolean {
   return value;
 }
 
+function pseudoStates(value: unknown): readonly PseudoState[] {
+  const parsed = boundedArray(value, 2, (state) => {
+    if (state !== "hover" && state !== "focus") fail();
+    return state;
+  });
+  if (
+    parsed.length === 2 &&
+    (parsed[0] !== "hover" || parsed[1] !== "focus")
+  ) fail();
+  return parsed;
+}
+
+function samePseudoStates(
+  left: readonly PseudoState[],
+  right: readonly PseudoState[],
+): boolean {
+  return left.length === right.length && left.every((state, index) => (
+    state === right[index]
+  ));
+}
+
 function assertRevisionPair(stylesRevision: number, stylesheetRevision: number): void {
   if (stylesheetRevision > stylesRevision) fail();
+}
+
+function assertRevisionTriple(
+  stylesRevision: number,
+  stylesheetRevision: number,
+  pseudoStateRevision: number,
+): void {
+  assertRevisionPair(stylesRevision, stylesheetRevision);
+  if (pseudoStateRevision > stylesRevision) fail();
 }
 
 function fail(): never {

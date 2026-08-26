@@ -30,6 +30,12 @@ import type {
   StylesheetRegistryEntry,
   StylesheetRegistrySnapshot,
 } from "./stylesheetRegistry.js";
+import {
+  selectorContainsRequestedPseudoState,
+  transformPseudoStateSelector,
+  type PseudoState,
+  type PseudoStateMarkerNames,
+} from "./pseudoStateSelector.js";
 
 export const MATCHED_STYLES_MAX_ANCESTORS = 32;
 
@@ -38,6 +44,8 @@ export interface MatchedStylesCollectionAuthority {
   readonly selectionRevision: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
   readonly nodeRef: string;
 }
 
@@ -63,6 +71,7 @@ export interface MatchedStylesCollectorOptions {
   readonly domTreeProvider: MatchedStylesNodeAuthority;
   readonly stylesheets: MatchedStylesStylesheetAuthority;
   readonly isRuntimeStylesheet?: (stylesheet: object) => boolean;
+  readonly pseudoStateMarkers?: PseudoStateMarkerNames;
   readonly isAuthorityCurrent?: (
     authority: MatchedStylesCollectionAuthority,
   ) => boolean;
@@ -124,6 +133,7 @@ export class MatchedStylesCollector {
     const inline = this.collectInline(selected.element, diagnostics, workBudget);
     const direct = this.collectElement(
       selected.element,
+      authority,
       before,
       diagnostics,
       workBudget,
@@ -145,6 +155,7 @@ export class MatchedStylesCollector {
       const ancestorInline = this.collectInline(ancestor, diagnostics, workBudget);
       const collected = this.collectElement(
         ancestor,
+        authority,
         before,
         diagnostics,
         workBudget,
@@ -207,6 +218,8 @@ export class MatchedStylesCollector {
       rules,
       inherited: ancestors,
       inaccessibleStylesheetCount,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
       partial: before.partial || diagnostics.size > before.diagnostics.length,
       diagnostics: [...diagnostics],
     };
@@ -221,6 +234,7 @@ export class MatchedStylesCollector {
 
   private collectElement(
     element: Element,
+    authority: MatchedStylesCollectionAuthority,
     snapshot: StylesheetRegistrySnapshot,
     diagnostics: Set<string>,
     workBudget: CssRuleWalkBudget,
@@ -249,8 +263,19 @@ export class MatchedStylesCollector {
     const drafts: RuleDraft[] = [];
     const draftByRef = new Map<string, RuleDraft>();
     let sourceOrder = 0;
+    const matchElement = this.options.pseudoStateMarkers
+      ? {
+          matches: (selector: string) => pseudoAwareMatches(
+            element,
+            selector,
+            authority.pseudoStates,
+            this.options.pseudoStateMarkers!,
+            diagnostics,
+          ),
+        }
+      : element;
     const walk = walkCssRules(
-      element,
+      matchElement,
       { pageUrl: pageUrlFor(element), styleSheets: roots },
       {
         workBudget,
@@ -285,10 +310,16 @@ export class MatchedStylesCollector {
             diagnostics.add("rule-reference-unavailable");
           }
           if (!key || applicabilityCandidates.has(key)) return;
+          const previewSelectorText = activePreviewSelectorText(
+            record.resolvedSelector,
+            authority.pseudoStates,
+            this.options.pseudoStateMarkers,
+          );
           applicabilityCandidates.set(key, Object.freeze({
             key,
             scope: entry.scope,
             selectorText: record.resolvedSelector,
+            ...(previewSelectorText ? { previewSelectorText } : {}),
             contexts: Object.freeze(record.contexts.map((context) => (
               Object.freeze({ ...context })
             ))),
@@ -298,7 +329,13 @@ export class MatchedStylesCollector {
           if (!record.ruleRef) return;
           const entry = entryBySheet.get(record.nativeStylesheet);
           if (!entry) return;
-          const matching = matchingSelectors(element, record, diagnostics);
+          const matching = matchingSelectors(
+            element,
+            record,
+            diagnostics,
+            this.options.pseudoStateMarkers,
+            authority.pseudoStates,
+          );
           const localPath = localRulePath(record.rulePath);
           const range = entry.generatedRanges[localPath];
           const source: GeneratedMatchedRuleSource = {
@@ -459,6 +496,8 @@ function matchingSelectors(
   element: Element,
   record: CssMatchedRuleWalkRecord,
   diagnostics: Set<string>,
+  markerNames?: PseudoStateMarkerNames,
+  states: readonly PseudoState[] = Object.freeze([]),
 ): { readonly indices: readonly number[]; readonly specificity: SelectorSpecificity | undefined } {
   if (record.selector !== record.resolvedSelector) {
     diagnostics.add("unsupported-nested-selector");
@@ -478,12 +517,9 @@ function matchingSelectors(
   for (let index = 0; index < selectors.length; index += 1) {
     const selector = selectors[index]!;
     let matches = false;
-    try {
-      matches = element.matches(selector);
-    } catch {
-      diagnostics.add("selector-unavailable");
-      continue;
-    }
+    matches = markerNames
+      ? pseudoAwareMatches(element, selector, states, markerNames, diagnostics)
+      : safeMatches(element, selector, diagnostics);
     if (!matches) continue;
     indices.push(index);
     const next = specificityFor(selector);
@@ -497,6 +533,79 @@ function matchingSelectors(
     }
   }
   return { indices, specificity };
+}
+
+function pseudoAwareMatches(
+  element: Element,
+  selector: string,
+  states: readonly PseudoState[],
+  markerNames: PseudoStateMarkerNames,
+  diagnostics: Set<string>,
+): boolean {
+  let branches: readonly string[];
+  try {
+    branches = selectorParser().astSync(selector).nodes.map((branch) => (
+      branch.toString().trim()
+    ));
+  } catch {
+    diagnostics.add("selector-unavailable");
+    return false;
+  }
+  return branches.some((branch) => pseudoAwareBranchMatches(
+    element,
+    branch,
+    states,
+    markerNames,
+    diagnostics,
+  ));
+}
+
+function pseudoAwareBranchMatches(
+  element: Element,
+  selector: string,
+  states: readonly PseudoState[],
+  markerNames: PseudoStateMarkerNames,
+  diagnostics: Set<string>,
+): boolean {
+  const nativeMatch = safeMatches(element, selector, diagnostics);
+  const contains = selectorContainsRequestedPseudoState(selector, states);
+  if (contains === false) return nativeMatch;
+  if (contains !== true) {
+    diagnostics.add("selector-unavailable");
+    return nativeMatch;
+  }
+  const transformed = transformPseudoStateSelector(selector, markerNames, states);
+  if (transformed.kind !== "supported") {
+    diagnostics.add("unsupported-pseudo-state-selector");
+    return nativeMatch;
+  }
+  if (transformed.unsupportedOmittedBranches > 0) {
+    diagnostics.add("unsupported-pseudo-state-selector");
+  }
+  return nativeMatch || safeMatches(element, transformed.selectorText, diagnostics);
+}
+
+function activePreviewSelectorText(
+  selectorText: string,
+  states: readonly PseudoState[],
+  markerNames: PseudoStateMarkerNames | undefined,
+): string | undefined {
+  if (!markerNames || states.length === 0) return undefined;
+  const transformed = transformPseudoStateSelector(selectorText, markerNames, states);
+  return transformed.kind === "supported" ? transformed.selectorText : undefined;
+}
+
+function safeMatches(
+  element: Element,
+  selector: string,
+  diagnostics: Set<string>,
+): boolean {
+  try {
+    return element.matches(selector);
+  } catch {
+    diagnostics.add("selector-unavailable");
+    return false;
+  }
 }
 
 function ownerActive(
@@ -912,7 +1021,19 @@ function validAuthority(authority: MatchedStylesCollectionAuthority): boolean {
       authority.selectionRevision,
       authority.stylesRevision,
       authority.stylesheetRevision,
-    ].every((value) => Number.isSafeInteger(value) && value >= 0);
+      authority.pseudoStateRevision,
+    ].every((value) => Number.isSafeInteger(value) && value >= 0) &&
+    authority.stylesheetRevision <= authority.stylesRevision &&
+    authority.pseudoStateRevision <= authority.stylesRevision &&
+    canonicalPseudoStates(authority.pseudoStates);
+}
+
+function canonicalPseudoStates(states: readonly PseudoState[]): boolean {
+  return Array.isArray(states) && (
+    states.length === 0 ||
+    (states.length === 1 && (states[0] === "hover" || states[0] === "focus")) ||
+    (states.length === 2 && states[0] === "hover" && states[1] === "focus")
+  );
 }
 
 function sameRevisions(

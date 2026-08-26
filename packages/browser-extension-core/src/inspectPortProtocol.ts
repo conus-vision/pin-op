@@ -59,6 +59,7 @@ export const INSPECTOR_LOCAL_REQUEST_TYPES = Object.freeze([
   "dom.hover",
   "dom.clearHover",
   "styles.getMatched",
+  "styles.setPseudoStates",
 ] as const);
 
 const INSPECTOR_LOCAL_REQUEST_TYPE_SET: ReadonlySet<string> = new Set(
@@ -95,6 +96,16 @@ export interface InspectRepublishRequest {
   readonly documentEpoch: number;
   readonly nodeRef: string;
   readonly selectionRevision: number;
+}
+
+export interface InspectClearPseudoStatesRequest {
+  readonly type: "pin-op.inspect.clearPseudoStates";
+  readonly contentSessionId: ContentSessionId;
+}
+
+export interface InspectDisposeSessionRequest {
+  readonly type: "pin-op.inspect.disposeSession";
+  readonly contentSessionId: ContentSessionId;
 }
 
 export interface PanelSourceNavigateCommand {
@@ -168,6 +179,8 @@ export type BackgroundToPanelInspectPortMessage =
 export type BackgroundToContentInspectPortMessage =
   | InspectPortRequest
   | InspectRepublishRequest
+  | InspectClearPseudoStatesRequest
+  | InspectDisposeSessionRequest
   | RefreshExecutionCommand
   | DomRequest
   | StylesRequest;
@@ -208,7 +221,7 @@ export function parseInspectorLocalRequest(
   const type = readExactDataType(value);
   if (!type || !INSPECTOR_LOCAL_REQUEST_TYPE_SET.has(type)) return undefined;
   try {
-    return type === "styles.getMatched"
+    return type === "styles.getMatched" || type === "styles.setPseudoStates"
       ? parseStylesRequest(value)
       : parseDomRequest(value);
   } catch {
@@ -335,6 +348,40 @@ export function parseInspectRepublishRequest(
     documentEpoch: record.documentEpoch,
     nodeRef: record.nodeRef,
     selectionRevision: record.selectionRevision,
+  });
+}
+
+export function parseInspectClearPseudoStatesRequest(
+  value: unknown,
+): InspectClearPseudoStatesRequest | undefined {
+  const record = snapshotExactDataRecord(value, ["type", "contentSessionId"]);
+  if (
+    !record ||
+    record.type !== "pin-op.inspect.clearPseudoStates" ||
+    !isValidContentSessionId(record.contentSessionId)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    contentSessionId: record.contentSessionId,
+  });
+}
+
+export function parseInspectDisposeSessionRequest(
+  value: unknown,
+): InspectDisposeSessionRequest | undefined {
+  const record = snapshotExactDataRecord(value, ["type", "contentSessionId"]);
+  if (
+    !record ||
+    record.type !== "pin-op.inspect.disposeSession" ||
+    !isValidContentSessionId(record.contentSessionId)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    contentSessionId: record.contentSessionId,
   });
 }
 

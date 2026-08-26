@@ -1,4 +1,5 @@
 import type { CssRuleContextRecord } from "./cssRuleWalker.js";
+import type { PseudoState } from "./pseudoStateSelector.js";
 
 export type MatchedDeclarationState =
   | "winning-known-author"
@@ -65,6 +66,8 @@ export interface MatchedStyles {
   readonly selectionRevision: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
   readonly nodeRef: string;
   /** Composed-ancestor index whose element is exactly the selected node's DOM parent. */
   readonly domParentAncestorIndex?: number;
@@ -72,6 +75,8 @@ export interface MatchedStyles {
   readonly rules: readonly MatchedRule[];
   readonly inherited: readonly InheritedMatchedRules[];
   readonly inaccessibleStylesheetCount: number;
+  readonly unsupportedRuleCount: number;
+  readonly approximateRuleCount: number;
   readonly partial: boolean;
   readonly diagnostics: readonly string[];
 }

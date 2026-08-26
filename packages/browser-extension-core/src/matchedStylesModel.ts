@@ -1,4 +1,5 @@
 import type { MatchedStyles } from "./matchedStylesTypes.js";
+import type { PseudoState } from "./pseudoStateSelector.js";
 import {
   isStylesResponseForRequest,
   parseStylesEvent,
@@ -6,6 +7,7 @@ import {
   type StylesErrorCode,
   type StylesGetMatchedRequest,
   type StylesInvalidatedEvent,
+  type StylesRequest,
   type StylesResponse,
 } from "./stylesProtocol.js";
 
@@ -25,6 +27,8 @@ export interface MatchedStylesModelSelection {
 export interface MatchedStylesModelKey extends MatchedStylesModelSelection {
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
 }
 
 export interface MatchedStylesModelSnapshot {
@@ -46,7 +50,7 @@ export type MatchedStylesResetReason =
 
 export interface MatchedStylesModelOptions {
   readonly request: (
-    request: StylesGetMatchedRequest,
+    request: StylesRequest,
     signal: AbortSignal,
   ) => Promise<StylesResponse>;
   readonly createRequestId?: () => string;
@@ -64,6 +68,7 @@ export class MatchedStylesModel {
     generation: 0,
   });
   private generation = 0;
+  private pseudoIntentGeneration = 0;
   private nextRequestSequence = 1;
   private controller: AbortController | undefined;
   private selection: MatchedStylesModelSelection | undefined;
@@ -130,6 +135,187 @@ export class MatchedStylesModel {
   public async refresh(): Promise<void> {
     if (this.disposed || !this.selection) return;
     await this.load(this.selection, true);
+  }
+
+  /** Atomically replaces the browser-local preview set for the current selection. */
+  public async setPseudoStates(states: readonly PseudoState[]): Promise<void> {
+    this.requireLive();
+    const canonical = canonicalPseudoStates(states);
+    const selection = this.selection;
+    const accepted = this.lastAcceptedKey;
+    if (!selection || !accepted || !sameSelection(selection, accepted)) return;
+    const intentGeneration = ++this.pseudoIntentGeneration;
+    this.cancelCurrent();
+    await this.setPseudoStatesForIntent(
+      canonical,
+      selection,
+      intentGeneration,
+      0,
+    );
+  }
+
+  private async setPseudoStatesForIntent(
+    canonical: readonly PseudoState[],
+    selection: MatchedStylesModelSelection,
+    intentGeneration: number,
+    reconciliationCount: number,
+  ): Promise<void> {
+    if (!this.isPseudoIntentCurrent(intentGeneration, selection)) return;
+    const accepted = this.lastAcceptedKey;
+    if (!accepted || !sameSelection(selection, accepted)) return;
+    if (reconciliationCount >= MAX_PSEUDO_INTENT_RECONCILIATIONS) {
+      this.cancelCurrent();
+      const generation = ++this.generation;
+      this.pendingReloadGeneration = undefined;
+      this.publish(Object.freeze({
+        state: "error",
+        generation,
+        key: accepted,
+        errorCode: "internal-error",
+      }));
+      return;
+    }
+
+    const preflightFloor = this.revisionAuthority;
+    if (
+      preflightFloor?.documentEpoch === selection.documentEpoch &&
+      !revisionPairMeetsFloor(accepted, preflightFloor)
+    ) {
+      await this.load(selection);
+      if (this.isPseudoIntentCurrent(intentGeneration, selection)) {
+        await this.setPseudoStatesForIntent(
+          canonical,
+          selection,
+          intentGeneration,
+          reconciliationCount + 1,
+        );
+      }
+      return;
+    }
+    if (samePseudoStates(canonical, accepted.pseudoStates)) {
+      if (this.state.state === "loading") {
+        await this.load(selection);
+        if (this.isPseudoIntentCurrent(intentGeneration, selection)) {
+          await this.setPseudoStatesForIntent(
+            canonical,
+            selection,
+            intentGeneration,
+            reconciliationCount + 1,
+          );
+        }
+      }
+      return;
+    }
+
+    this.cancelCurrent();
+    const generation = ++this.generation;
+    this.pendingReloadGeneration = undefined;
+    const controller = new AbortController();
+    this.controller = controller;
+    this.publish(Object.freeze({ state: "loading", generation, key: accepted }));
+    if (!this.isPseudoSetCurrent(
+      generation,
+      controller,
+      selection,
+      accepted,
+      intentGeneration,
+    )) return;
+    const request = Object.freeze({
+      type: "styles.setPseudoStates" as const,
+      requestId: this.createRequestId(),
+      documentEpoch: selection.documentEpoch,
+      nodeRef: selection.nodeRef,
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: accepted.stylesRevision,
+      expectedPseudoStateRevision: accepted.pseudoStateRevision,
+      states: canonical,
+    });
+    if (!this.isPseudoSetCurrent(
+      generation,
+      controller,
+      selection,
+      accepted,
+      intentGeneration,
+    )) return;
+    const fail = (errorCode: StylesErrorCode): void => {
+      this.publishPseudoSetErrorOrReload(
+        generation,
+        selection,
+        accepted,
+        errorCode,
+      );
+    };
+    let response: StylesResponse;
+    try {
+      response = parseStylesResponse(await this.options.request(request, controller.signal));
+    } catch {
+      if (!this.isPseudoSetCurrent(
+        generation,
+        controller,
+        selection,
+        accepted,
+        intentGeneration,
+      )) return;
+      this.controller = undefined;
+      fail("internal-error");
+      return;
+    }
+    if (!this.isPseudoSetCurrent(
+      generation,
+      controller,
+      selection,
+      accepted,
+      intentGeneration,
+    )) return;
+    this.controller = undefined;
+    if (!isStylesResponseForRequest(request, response)) {
+      fail("internal-error");
+      return;
+    }
+    if (response.type === "styles.error") {
+      fail(response.code);
+      return;
+    }
+    if (response.type !== "styles.pseudoStates") {
+      fail("internal-error");
+      return;
+    }
+    if (
+      response.stylesRevision !== accepted.stylesRevision + 1 ||
+      response.stylesheetRevision !== accepted.stylesheetRevision ||
+      response.pseudoStateRevision !== accepted.pseudoStateRevision + 1
+    ) {
+      fail("internal-error");
+      return;
+    }
+    const authority = freezeRevisionAuthority({
+      ...response,
+      pseudoStates: response.states,
+    });
+    const floor = this.revisionAuthority;
+    if (
+      floor &&
+      (
+        floor.documentEpoch !== authority.documentEpoch ||
+        !revisionPairMeetsFloor(authority, floor)
+      )
+    ) {
+      fail("internal-error");
+      return;
+    }
+    this.revisionAuthority = authority;
+    this.lastAcceptedKey = Object.freeze({
+      ...selection,
+      stylesRevision: response.stylesRevision,
+      stylesheetRevision: response.stylesheetRevision,
+      pseudoStateRevision: response.pseudoStateRevision,
+      pseudoStates: response.states,
+    });
+    if (
+      !this.disposed &&
+      this.generation === generation &&
+      this.selection === selection
+    ) await this.load(selection);
   }
 
   public invalidate(value: unknown): void {
@@ -216,12 +402,15 @@ export class MatchedStylesModel {
     const controller = new AbortController();
     this.controller = controller;
     this.publish(Object.freeze({ state: "loading", generation, key: selection }));
+    const pseudoAuthority = this.freshestPseudoAuthority(selection);
     const request: StylesGetMatchedRequest = Object.freeze({
       type: "styles.getMatched",
       requestId: this.createRequestId(),
       documentEpoch: selection.documentEpoch,
       nodeRef: selection.nodeRef,
       selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: pseudoAuthority?.pseudoStateRevision ?? 0,
+      pseudoStates: pseudoAuthority?.pseudoStates ?? EMPTY_PSEUDO_STATES,
       ...(manualRefresh ? { manualRefresh: true } : {}),
     });
     let response: StylesResponse;
@@ -230,39 +419,21 @@ export class MatchedStylesModel {
     } catch {
       if (!this.isCurrent(generation, controller)) return;
       this.controller = undefined;
-      if (this.reloadPendingFloor(generation, selection)) return;
-      this.pendingReloadGeneration = undefined;
-      this.publish(Object.freeze({
-        state: "error",
-        generation,
-        key: selection,
-        errorCode: "internal-error",
-      }));
+      this.publishLoadErrorOrReload(generation, selection, "internal-error");
       return;
     }
     if (!this.isCurrent(generation, controller)) return;
     this.controller = undefined;
     if (!isStylesResponseForRequest(request, response)) {
-      this.publish(Object.freeze({
-        state: "error",
-        generation,
-        key: selection,
-        errorCode: "internal-error",
-      }));
+      this.publishLoadErrorOrReload(generation, selection, "internal-error");
       return;
     }
     if (response.type === "styles.error") {
-      if (
-        (response.code === "cancelled" || response.code === "internal-error") &&
-        this.reloadPendingFloor(generation, selection)
-      ) return;
-      this.pendingReloadGeneration = undefined;
-      this.publish(Object.freeze({
-        state: "error",
-        generation,
-        key: selection,
-        errorCode: response.code,
-      }));
+      this.publishLoadErrorOrReload(generation, selection, response.code);
+      return;
+    }
+    if (response.type !== "styles.matched") {
+      this.publishLoadErrorOrReload(generation, selection, "internal-error");
       return;
     }
     const responseAuthority = freezeRevisionAuthority(response);
@@ -274,23 +445,23 @@ export class MatchedStylesModel {
         !revisionPairMeetsFloor(responseAuthority, floor)
       )
     ) {
-      if (this.reloadPendingFloor(generation, selection)) return;
-      this.pendingReloadGeneration = undefined;
-      this.publish(Object.freeze({
-        state: "error",
-        generation,
-        key: selection,
-        errorCode: "internal-error",
-      }));
+      this.publishLoadErrorOrReload(generation, selection, "internal-error");
       return;
     }
     this.pendingReloadGeneration = undefined;
     this.notifyStylesheetReset(responseAuthority);
+    if (
+      this.disposed ||
+      this.generation !== generation ||
+      this.selection !== selection
+    ) return;
     this.revisionAuthority = responseAuthority;
     const key: MatchedStylesModelKey = Object.freeze({
       ...selection,
       stylesRevision: response.stylesRevision,
       stylesheetRevision: response.stylesheetRevision,
+      pseudoStateRevision: response.pseudoStateRevision,
+      pseudoStates: response.pseudoStates,
     });
     this.lastAcceptedKey = key;
     this.publish(Object.freeze({
@@ -320,6 +491,75 @@ export class MatchedStylesModel {
     } catch {
       // The generation fence remains authoritative.
     }
+  }
+
+  private isPseudoSetCurrent(
+    generation: number,
+    controller: AbortController,
+    selection: MatchedStylesModelSelection,
+    accepted: MatchedStylesModelKey,
+    intentGeneration: number,
+  ): boolean {
+    return this.isCurrent(generation, controller) &&
+      this.pseudoIntentGeneration === intentGeneration &&
+      this.selection === selection &&
+      this.lastAcceptedKey === accepted;
+  }
+
+  private isPseudoIntentCurrent(
+    intentGeneration: number,
+    selection: MatchedStylesModelSelection,
+  ): boolean {
+    return !this.disposed &&
+      this.pseudoIntentGeneration === intentGeneration &&
+      this.selection === selection;
+  }
+
+  private freshestPseudoAuthority(
+    selection: MatchedStylesModelSelection,
+  ): StylesRevisionAuthority | undefined {
+    const accepted = this.lastAcceptedKey &&
+        sameSelection(this.lastAcceptedKey, selection)
+      ? this.lastAcceptedKey
+      : undefined;
+    const authority = this.revisionAuthority?.documentEpoch ===
+        selection.documentEpoch
+      ? this.revisionAuthority
+      : undefined;
+    if (!accepted) return authority;
+    if (!authority) return accepted;
+    return revisionPairMeetsFloor(accepted, authority) ? accepted : authority;
+  }
+
+  private publishPseudoSetErrorOrReload(
+    generation: number,
+    selection: MatchedStylesModelSelection,
+    accepted: MatchedStylesModelKey,
+    errorCode: StylesErrorCode,
+  ): void {
+    if (this.reloadPendingFloor(generation, selection)) return;
+    this.pendingReloadGeneration = undefined;
+    this.publish(Object.freeze({
+      state: "error",
+      generation,
+      key: accepted,
+      errorCode,
+    }));
+  }
+
+  private publishLoadErrorOrReload(
+    generation: number,
+    selection: MatchedStylesModelSelection,
+    errorCode: StylesErrorCode,
+  ): void {
+    if (this.reloadPendingFloor(generation, selection)) return;
+    this.pendingReloadGeneration = undefined;
+    this.publish(Object.freeze({
+      state: "error",
+      generation,
+      key: selection,
+      errorCode,
+    }));
   }
 
   private notifyStylesheetReset(authority: StylesRevisionAuthority): void {
@@ -407,6 +647,8 @@ interface StylesRevisionAuthority {
   readonly documentEpoch: number;
   readonly stylesRevision: number;
   readonly stylesheetRevision: number;
+  readonly pseudoStateRevision: number;
+  readonly pseudoStates: readonly PseudoState[];
 }
 
 function requireSelection(value: MatchedStylesModelSelection): MatchedStylesModelSelection {
@@ -454,6 +696,8 @@ function freezeRevisionAuthority(
     documentEpoch: value.documentEpoch,
     stylesRevision: value.stylesRevision,
     stylesheetRevision: value.stylesheetRevision,
+    pseudoStateRevision: value.pseudoStateRevision,
+    pseudoStates: Object.freeze([...value.pseudoStates]),
   });
 }
 
@@ -462,7 +706,12 @@ function strictlyNewerRevisionPair(
   floor: StylesRevisionAuthority,
 ): boolean {
   return candidate.stylesRevision > floor.stylesRevision &&
-    candidate.stylesheetRevision >= floor.stylesheetRevision;
+    candidate.stylesheetRevision >= floor.stylesheetRevision &&
+    candidate.pseudoStateRevision >= floor.pseudoStateRevision &&
+    (
+      candidate.pseudoStateRevision > floor.pseudoStateRevision ||
+      samePseudoStates(candidate.pseudoStates, floor.pseudoStates)
+    );
 }
 
 function revisionPairMeetsFloor(
@@ -471,6 +720,31 @@ function revisionPairMeetsFloor(
 ): boolean {
   return (
     candidate.stylesRevision === floor.stylesRevision &&
-    candidate.stylesheetRevision === floor.stylesheetRevision
+    candidate.stylesheetRevision === floor.stylesheetRevision &&
+    candidate.pseudoStateRevision === floor.pseudoStateRevision &&
+    samePseudoStates(candidate.pseudoStates, floor.pseudoStates)
   ) || strictlyNewerRevisionPair(candidate, floor);
+}
+
+const EMPTY_PSEUDO_STATES: readonly PseudoState[] = Object.freeze([]);
+const MAX_PSEUDO_INTENT_RECONCILIATIONS = 8;
+
+function canonicalPseudoStates(value: readonly PseudoState[]): readonly PseudoState[] {
+  if (!Array.isArray(value)) throw new TypeError("Invalid pseudo states");
+  const states = [...value];
+  if (
+    states.length > 2 ||
+    states.some((state) => state !== "hover" && state !== "focus") ||
+    (states.length === 2 && (states[0] !== "hover" || states[1] !== "focus"))
+  ) throw new TypeError("Invalid pseudo states");
+  return Object.freeze(states);
+}
+
+function samePseudoStates(
+  left: readonly PseudoState[],
+  right: readonly PseudoState[],
+): boolean {
+  return left.length === right.length && left.every((state, index) => (
+    state === right[index]
+  ));
 }

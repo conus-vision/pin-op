@@ -54,7 +54,9 @@ describe("panel inspect transport", () => {
   it("keeps a closed exact allowlist for browser-local DOM and styles requests", () => {
     expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("dom.getRoot");
     expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("styles.getMatched");
+    expect(INSPECTOR_LOCAL_REQUEST_TYPES).toContain("styles.setPseudoStates");
     expect(isInspectorLocalRequestType("styles.getMatched")).toBe(true);
+    expect(isInspectorLocalRequestType("styles.setPseudoStates")).toBe(true);
     expect(isInspectorLocalRequestType("styles.setProperty")).toBe(false);
     expect(parseInspectorLocalRequest({
       type: "styles.getMatched",
@@ -62,7 +64,24 @@ describe("panel inspect transport", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
     })).toMatchObject({ type: "styles.getMatched", requestId: "styles-1" });
+    const pseudoRequest = {
+      type: "styles.setPseudoStates",
+      requestId: "pseudo-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      expectedStylesRevision: 8,
+      expectedPseudoStateRevision: 2,
+      states: ["hover", "focus"],
+    };
+    expect(parseInspectorLocalRequest(pseudoRequest)).toEqual(pseudoRequest);
+    expect(parseInspectorLocalRequest({
+      ...pseudoRequest,
+      tabId: 99,
+    })).toBeUndefined();
     expect(parseInspectorLocalRequest({
       type: "styles.getMatched",
       requestId: "styles-1",

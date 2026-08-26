@@ -4,6 +4,8 @@ import type { LocationSource } from "./inspectPayload.js";
 import {
   createInspectContentLeasePortName,
   isValidContentSessionId,
+  parseInspectClearPseudoStatesRequest,
+  parseInspectDisposeSessionRequest,
   parseInspectRepublishRequest,
   parseInspectorLocalRequest,
   type ContentSessionId,
@@ -140,6 +142,7 @@ export interface ContentPageInspectionSession {
   disablePicker(): void;
   handle(request: DomRequest | StylesRequest): Promise<unknown>;
   republishSelection(request: InspectRepublishRequest): Promise<boolean>;
+  clearPseudoStates(): boolean;
   clearOverlayForRefresh?(): void;
   dispose(): void;
 }
@@ -206,6 +209,8 @@ export function startContentScriptRuntime(
         documentEpoch: event.documentEpoch,
         stylesRevision: event.stylesRevision,
         stylesheetRevision: event.stylesheetRevision,
+        pseudoStateRevision: event.pseudoStateRevision,
+        pseudoStates: event.pseudoStates,
       },
       reportError,
     ),
@@ -245,9 +250,27 @@ export function startContentScriptRuntime(
         return false;
       });
     }
-    if (isExactTypeMessage(message, "pin-op.inspect.disposeSession")) {
+    const clearPseudoStates = parseInspectClearPseudoStatesRequest(message);
+    if (clearPseudoStates) {
+      if (clearPseudoStates.contentSessionId !== contentSessionId) return false;
+      try {
+        return session.clearPseudoStates();
+      } catch (error) {
+        reportError(error);
+        return false;
+      }
+    }
+    const disposeSession = parseInspectDisposeSessionRequest(message);
+    if (disposeSession) {
+      if (disposeSession.contentSessionId !== contentSessionId) return false;
+      try {
+        if (!session.clearPseudoStates()) return false;
+      } catch (error) {
+        reportError(error);
+        return false;
+      }
       runtime.dispose();
-      return undefined;
+      return true;
     }
     const request = parseInspectorLocalRequest(message);
     return request ? session.handle(request) : undefined;
@@ -266,6 +289,11 @@ export function startContentScriptRuntime(
       removeRuntimeMessages();
       const port = leasePort;
       leasePort = undefined;
+      try {
+        session.dispose();
+      } catch (error) {
+        reportError(error);
+      }
       if (port) {
         port.onDisconnect.removeListener(onLeaseDisconnected);
         try {
@@ -274,7 +302,6 @@ export function startContentScriptRuntime(
           // The background may already have released the content lease.
         }
       }
-      session.dispose();
       if (scope[CONTENT_OVERLAY_CLEAR_KEY] === clearOverlayForRefresh) {
         delete scope[CONTENT_OVERLAY_CLEAR_KEY];
       }
@@ -794,12 +821,6 @@ function createRefreshRuntimeId(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
-}
-
-function isExactTypeMessage(value: unknown, type: string): boolean {
-  return isRecord(value) &&
-    Object.keys(value).length === 1 &&
-    value.type === type;
 }
 
 function createContentSessionId(

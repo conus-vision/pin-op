@@ -171,6 +171,8 @@ const rules: RulesPresentationSnapshot = deepFreeze({
     selectionRevision: 7,
     stylesRevision: 11,
     stylesheetRevision: 4,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover", "focus"],
     nodeRef: "body",
     inlineStyle: {
       ruleRef: "rule:inline:body",
@@ -250,6 +252,8 @@ const rules: RulesPresentationSnapshot = deepFreeze({
       },
     ],
     inaccessibleStylesheetCount: 0,
+    unsupportedRuleCount: 1,
+    approximateRuleCount: 1,
     omittedRuleCount: 0,
     diagnostics: [],
   },

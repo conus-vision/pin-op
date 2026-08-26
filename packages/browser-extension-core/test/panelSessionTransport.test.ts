@@ -12,7 +12,10 @@ import {
   type DomRequest,
 } from "../src/domProtocol.js";
 import { PanelSessionTransport } from "../src/panelSessionTransport.js";
-import type { StylesGetMatchedRequest } from "../src/stylesProtocol.js";
+import type {
+  StylesGetMatchedRequest,
+  StylesSetPseudoStatesRequest,
+} from "../src/stylesProtocol.js";
 
 describe("PanelSessionTransport", () => {
   it("routes matched-style queries only through the bound trusted tab and validates correlation", async () => {
@@ -38,6 +41,48 @@ describe("PanelSessionTransport", () => {
       type: "styles.error",
       requestId: "styles-a",
       code: "cancelled",
+    });
+  });
+
+  it("routes an atomic pseudo-state command only through the bound trusted tab", async () => {
+    const sent: Array<{ tabId: number; message: unknown }> = [];
+    const request = pseudoStatesRequest("pseudo-a");
+    const transport = new PanelSessionTransport({
+      async sendTabMessage(tabId, message) {
+        sent.push({ tabId, message });
+        return pseudoStatesResponse(request);
+      },
+      postPanelMessage: vi.fn(),
+    });
+    const binding = transport.bind("panel-a", 7);
+
+    await expect(transport.requestStyles("panel-a", request))
+      .resolves.toEqual(pseudoStatesResponse(request));
+    expect(sent).toEqual([{ tabId: 7, message: request }]);
+
+    binding.dispose();
+    await expect(transport.requestStyles("panel-a", request)).resolves.toEqual({
+      type: "styles.error",
+      requestId: "pseudo-a",
+      code: "cancelled",
+    });
+  });
+
+  it("fails closed when a pseudo-state response does not echo the requested states", async () => {
+    const request = pseudoStatesRequest("pseudo-mismatch");
+    const transport = new PanelSessionTransport({
+      sendTabMessage: async () => pseudoStatesResponse({
+        ...request,
+        states: ["hover"] as const,
+      }),
+      postPanelMessage: vi.fn(),
+    });
+    transport.bind("panel-a", 7);
+
+    await expect(transport.requestStyles("panel-a", request)).resolves.toEqual({
+      type: "styles.error",
+      requestId: "pseudo-mismatch",
+      code: "internal-error",
     });
   });
 
@@ -735,6 +780,21 @@ function stylesRequest(requestId: string): StylesGetMatchedRequest {
     documentEpoch: 4,
     nodeRef: "node-1",
     selectionRevision: 7,
+    pseudoStateRevision: 2,
+    pseudoStates: ["hover"],
+  };
+}
+
+function pseudoStatesRequest(requestId: string): StylesSetPseudoStatesRequest {
+  return {
+    type: "styles.setPseudoStates",
+    requestId,
+    documentEpoch: 4,
+    nodeRef: "node-1",
+    selectionRevision: 7,
+    expectedStylesRevision: 8,
+    expectedPseudoStateRevision: 2,
+    states: ["hover", "focus"],
   };
 }
 
@@ -747,18 +807,41 @@ function stylesMatched(request: StylesGetMatchedRequest) {
     selectionRevision: request.selectionRevision,
     stylesRevision: 8,
     stylesheetRevision: 3,
+    pseudoStateRevision: request.pseudoStateRevision,
+    pseudoStates: request.pseudoStates,
     styles: {
       documentEpoch: request.documentEpoch,
       nodeRef: request.nodeRef,
       selectionRevision: request.selectionRevision,
       stylesRevision: 8,
       stylesheetRevision: 3,
+      pseudoStateRevision: request.pseudoStateRevision,
+      pseudoStates: request.pseudoStates,
       rules: [],
       inherited: [],
       inaccessibleStylesheetCount: 0,
+      unsupportedRuleCount: 0,
+      approximateRuleCount: 0,
       partial: false,
       diagnostics: [],
     },
+  };
+}
+
+function pseudoStatesResponse(request: StylesSetPseudoStatesRequest) {
+  return {
+    type: "styles.pseudoStates" as const,
+    requestId: request.requestId,
+    documentEpoch: request.documentEpoch,
+    nodeRef: request.nodeRef,
+    selectionRevision: request.selectionRevision,
+    stylesRevision: 9,
+    stylesheetRevision: 3,
+    pseudoStateRevision: 3,
+    states: request.states,
+    unsupportedRuleCount: 1,
+    inaccessibleStylesheetCount: 2,
+    approximateRuleCount: 1,
   };
 }
 
