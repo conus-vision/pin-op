@@ -18,6 +18,17 @@ const STATUS_TOKENS = [
 ] as const;
 
 describe("DevTools panel assets", () => {
+  it("checks out the pinned Inspector asset with LF endings", () => {
+    const attributes = readFileSync(
+      new URL("../.gitattributes", import.meta.url),
+      "utf8",
+    );
+
+    expect(attributes.split(/\r?\n/u)).toContain(
+      "assets/inspector-panel.html text eol=lf",
+    );
+  });
+
   it("ships a separate fixed Inspector asset with the existing toolbar contract", () => {
     for (const id of [
       "toolbar-features",
