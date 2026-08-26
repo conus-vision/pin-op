@@ -49,9 +49,10 @@ legacy panel remained the default rollback asset. Fresh Chrome and Firefox
 profiles kept Source available, resolved `.card`, `.card:hover`, and `.featured`
 from the active `card.scss`, and the `.featured` Open action moved VS Code to
 line 10, column 1. Firefox exercised Source in the wide split presentation. The
-Inspector asset was not made the store-build default.
+Inspector asset was not made the store-build default. This is historical
+Checkpoint 1 evidence only and does not describe the current package default.
 
-## Checkpoint 2 Rules Manual Gate (Pending)
+## Checkpoint 2 Rules Manual Gate (PARTIAL/HARNESS_BLOCKED)
 
 The checkpoint 2 automated suite verifies the shared CSSOM backend, immutable
 matched-style protocol/model, read-only Rules renderer, package markers, and the
@@ -62,19 +63,17 @@ native-panel rows below is claimed as performed until a tester records both a
 Chrome result and a Firefox result. Firefox must use its registered Pin-op
 DevTools tab; a package/asset assertion is not native Firefox runtime evidence.
 
-For this checkpoint only, build the unpacked browser extensions explicitly with
-the Inspector entrypoint:
+The rollout now makes the Inspector entrypoint the ordinary build default. Build
+both unpacked extensions without a panel-variant environment variable:
 
 ```powershell
-$env:PIN_OP_PANEL_VARIANT = "inspector"
 corepack pnpm --filter pin-op-chrome build
 corepack pnpm --filter pin-op-firefox build
-Remove-Item Env:PIN_OP_PANEL_VARIANT
 ```
 
-Ordinary and store-candidate builds remain on the legacy default until the
-rollout checkpoint. After manual testing, rebuild without the environment
-variable if the same checkout will be used for ordinary packaging.
+The legacy panel is an explicit non-default rollback asset. A release owner can
+select it only with `PIN_OP_PANEL_VARIANT=legacy`; rebuild without that variable
+before ordinary packaging.
 
 Record the visible selector, declaration state, origin label, diagnostic, and
 revision probe for every row in each browser:
@@ -105,14 +104,14 @@ sections continue to expose their exact `data-rule-ref` values.
 
 | Rules case | Chrome | Firefox | Required observation |
 | --- | --- | --- | --- |
-| Document adopted sheet | Pending | Pending | `#document-adopted-target` includes the constructed document rule. |
-| Open-shadow adopted sheet | Pending | Pending | `.shadow-adopted-target` includes the shadow-root rule. |
-| One constructed sheet shared across roots | Pending | Pending | The shared declaration appears under both document and open-shadow selections with root-correct rule identity. |
-| Media and viewport changes | Pending | Pending | Active/inactive state changes without inventing unsupported cascade facts. |
-| Focus and pointer applicability | Pending | Pending | `:focus`/`:hover` applicability follows the fixture state and remains read-only. |
-| Sibling and slot mutation | Pending | Pending | The selected scope requeries after `toggleSiblingApplicability()` and `toggleSlottedApplicability()`. |
-| CSSOM mutation | Pending | Pending | `insertRule`, `deleteRule`, and `replaceSync` invalidate the current Rules result. |
-| Inaccessible and unknown data | Pending | Pending | Available rules remain visible; the panel shows a bounded partial diagnostic and never fabricates declarations or origins. |
+| Document adopted sheet | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | `#document-adopted-target` includes the constructed document rule. |
+| Open-shadow adopted sheet | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | `.shadow-adopted-target` includes the shadow-root rule. |
+| One constructed sheet shared across roots | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | The shared declaration appears under both document and open-shadow selections with root-correct rule identity. |
+| Media and viewport changes | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Active/inactive state changes without inventing unsupported cascade facts. |
+| Focus and pointer applicability | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | `:focus`/`:hover` applicability follows the fixture state and remains read-only. |
+| Sibling and slot mutation | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | The selected scope requeries after `toggleSiblingApplicability()` and `toggleSlottedApplicability()`. |
+| CSSOM mutation | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | `insertRule`, `deleteRule`, and `replaceSync` invalidate the current Rules result. |
+| Inaccessible and unknown data | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Available rules remain visible; the panel shows a bounded partial diagnostic and never fabricates declarations or origins. |
 
 Run these two eventless matrices from the inspected page console while the
 corresponding target stays selected. Do not dispatch an event or edit a DOM
@@ -254,9 +253,8 @@ reconnect/cleanup as described in the
 
 ### Expected Inspector Rules-Origin Scenario
 
-These remain manual acceptance steps. Build and load Chrome and Firefox with
-`PIN_OP_PANEL_VARIANT=inspector`; ordinary/store artifacts retain the legacy
-default until the rollout checkpoint.
+These remain manual acceptance steps. Build and load the ordinary Chrome and
+Firefox artifacts; both register the shared Inspector by default.
 
 1. Confirm the new Inspector shows DOM Tree and Rules with no visible Source tab.
 2. Verify exact CSS, inline-map SCSS, external-map SCSS, nested SCSS, and a
@@ -270,8 +268,9 @@ default until the rollout checkpoint.
    only; stale authority cannot move the cursor or reveal a range.
 5. Confirm no workspace URI/path, full range, document version, source-map path,
    or command appears in browser/bridge diagnostics or wire capture.
-6. Switch back to the legacy rollback panel. Existing Source must remain
-   active-document-only and otherwise unchanged.
+6. Separately build with `PIN_OP_PANEL_VARIANT=legacy` and verify the explicit
+   rollback `panel.html`. Existing Source must remain active-document-only and
+   otherwise unchanged.
 
 Record Chrome and Firefox outcomes in the Checkpoint 3 matrix in
 `docs/installed-verification.md`. If the native UI harness cannot perform the
@@ -328,8 +327,9 @@ That smoke asserts page/package markers (`styles.getMatched`, read-only Rules,
 `rules-sources`, `rules.sources`, `rules.open`, and scoped Chromium CSS) plus
 fixture/runtime CSSOM facts. Its CDP target is an ordinary fixture page: it does
 not open the DevTools extension panel, link VS Code, click a Rules origin, or
-receive an open acknowledgement. It cannot replace the pending Chrome/Firefox
-Rules manual gate above.
+receive an open acknowledgement. It cannot replace the Chrome/Firefox Rules
+manual gate above, whose unperformed native cells remain
+`PARTIAL/HARNESS_BLOCKED`.
 
 On Linux, `smoke:chrome-package` requires a graphical session or Xvfb. Set
 `DISPLAY` or `WAYLAND_DISPLAY`, or run it under `xvfb-run -a`; the script refuses
@@ -498,41 +498,82 @@ variants. Confirm `SCSS source map missing`, `SCSS source map invalid`, or
 `No matching rules in active file`, with no guessed highlight. Restore the
 fixture after the checks.
 
-### Source Pane And IDE Highlight
+### IDE Highlight And Default Inspector Layout
+
+Keep the ordinary default Inspector loaded for this block.
+
+1. Select an element with several Selected matches and an immediate Parent
+   match while the intended CSS or SCSS file is active.
+2. Confirm DOM Tree and Rules are visible and no Source tab is rendered.
+3. Confirm no full source document, workspace path, URI, or browser tab ID is
+   displayed or exposed by panel diagnostics.
+4. Confirm Previous/Next cycles only through Selected matches and its counter
+   follows the VS Code primary cursor.
+5. Turn **IDE Highlight** off. Confirm all decorations clear while resolution,
+   Rules origins, and Selected-only navigation remain usable. Turn it on and
+   make a new selection; confirm Selected and Parent decorations return.
+6. At wide width, confirm DOM Tree and Rules use the side-by-side presentation.
+   At 320 px, confirm DOM Tree stacks above Rules, the toolbar remains reachable,
+   and neither pane is clipped.
+
+### Legacy Rollback Source And DOM/Source Layout
+
+This block alone uses the legacy rollback. Build both adapters with the explicit
+legacy selector, then reload the Chrome extension card and reload the Firefox
+Temporary Add-on (or restart its `web-ext` development process) before opening
+fresh DevTools panels:
+
+```powershell
+$env:PIN_OP_PANEL_VARIANT = "legacy"
+corepack pnpm --filter pin-op-chrome build
+corepack pnpm --filter pin-op-firefox build
+Remove-Item Env:PIN_OP_PANEL_VARIANT
+```
+
+Confirm both panels registered packaged `dist/panel.html`, then:
 
 1. Select an element with several Selected matches and an immediate Parent
    match while the intended CSS or SCSS file is active.
 2. Confirm the Source pane contains excerpts only from that active document;
    Selected is expanded and Parent is initially collapsed.
-3. Confirm no full source document, workspace path, URI, or browser tab ID is
-   displayed or exposed by panel diagnostics.
-4. Click each excerpt and confirm VS Code reveals the exact current range by
+3. Click each excerpt and confirm VS Code reveals the exact current range by
    opaque match identity. Repeat after a newer inspect and confirm an old click
    is ignored.
-5. Confirm Previous/Next cycles only through Selected matches and its counter
-   follows the VS Code primary cursor.
-6. Turn **IDE Highlight** off. Confirm all decorations clear, while the Source
-   pane, exact excerpt opening, resolution footer, and navigation still work.
-7. Turn it on and make a new selection; confirm Selected and Parent decorations
-   return.
-8. Resize DevTools to 680 px or wider. When the measured usable workspace width
+4. Turn **IDE Highlight** off. Confirm decorations clear while the Source pane,
+   exact excerpt opening, resolution footer, and navigation remain usable; turn
+   it back on.
+5. Resize DevTools to 680 px or wider. When the measured usable workspace width
    fits two 160 px panes plus the measured separator, confirm side-by-side
    DOM/Source remains split.
-9. Keep the viewport at least 680 px wide and 520 px tall, then constrain the
+6. Keep the viewport at least 680 px wide and 520 px tall, then constrain the
    measured workspace width below that horizontal fit threshold while its
    height still fits two 160 px panes plus the measured separator. Confirm DOM
    stacks above Source, both panes remain visible, tabs are hidden, and the
    visible separator is horizontal.
-10. Resize below 680 px while keeping the viewport at least 520 px tall. When
-   the measured usable workspace height fits two 160 px panes plus the measured
+7. Resize below 680 px while keeping the viewport at least 520 px tall. When the
+   measured usable workspace height fits two 160 px panes plus the measured
    separator (currently at least 325 px total), confirm DOM/Source stacks.
-11. Keep split unavailable in a tall viewport and reduce the usable workspace
-    height below the vertical fit threshold, for example with the mismatch
-    banner or window constraints. Confirm tabs appear with no clipping, then
-    restore enough workspace and confirm stack re-entry.
-12. When split is unavailable, reduce the viewport below 520 px tall and
-    confirm tabs remain active because neither two-pane arrangement fits. In
-    every mode, confirm the toolbar code and controls do not overlap.
+8. Keep split unavailable in a tall viewport and reduce the usable workspace
+   height below the vertical fit threshold, for example with the mismatch
+   banner or window constraints. Confirm tabs appear with no clipping, then
+   restore enough workspace and confirm stack re-entry.
+9. When split is unavailable, reduce the viewport below 520 px tall and confirm
+   tabs remain active because neither two-pane arrangement fits. In every mode,
+   confirm the toolbar code and controls do not overlap.
+
+### Restore The Default Inspector
+
+Before continuing the ordinary development matrix, rebuild without the legacy
+selector and reload both browser extensions again:
+
+```powershell
+corepack pnpm --filter pin-op-chrome build
+corepack pnpm --filter pin-op-firefox build
+```
+
+Open fresh DevTools panels and confirm both register
+`dist/inspector-panel.html`, show DOM Tree and Rules, and expose no Source tab.
+Reconnect each browser window if the extension reload revoked its session.
 
 ### Auto Refresh
 
@@ -565,8 +606,8 @@ Use intentionally mismatched development artifacts once:
 2. Confirm the panel shows `Extensions are incompatible`, tells the user to
    update both extensions and reconnect, and reports expected/received protocol
    versions when known.
-3. Confirm picker, settings, Source, and navigation actions are blocked while
-   Link/Disconnect remains usable.
+3. Confirm picker, settings, Rules-origin, and selected-match navigation actions
+   are blocked while Link/Disconnect remains usable.
 4. Restore matching protocol-v7 artifacts, restart both extensions, reconnect,
    and confirm a fresh compatible handshake and tab state restore the defaults.
 

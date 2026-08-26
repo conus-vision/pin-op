@@ -273,8 +273,9 @@ There is no open acknowledgement message. Local transport acceptance cannot
 prove bridge-to-browser delivery, so stale or mismatched generations fail
 closed and a fresh inspect republishes authority. Existing `source.matches`,
 `source.open`, and active-document-only Source semantics remain separate. The
-new Inspector has no visible Source tab; Source remains available only in the
-legacy rollback panel until its later milestone.
+default Inspector has no visible Source tab; Source remains available only in
+the packaged, non-default legacy rollback panel for its one published rollback
+release.
 
 ## Auto Refresh
 
@@ -486,6 +487,51 @@ The current state is sent after authentication and transitions are sent when
 IDE availability changes. Older generations cannot overwrite newer panel
 state.
 
+## Browser-Local Pseudo-State Preview
+
+The shared Chromium-derived Inspector in Firefox and Chrome is read-only and
+uses one browser-local pseudo-state API. Pseudo state is deliberately absent
+from the public WebSocket capabilities and messages: requests and responses
+move only among the panel, background, and inspected content runtime on the
+validated opaque Inspector channel.
+
+`styles.setPseudoStates` atomically replaces the requested canonical state set
+with `hover`, `focus`, both in that order, or neither. The strict request carries
+`requestId`, `documentEpoch`, `nodeRef`, `selectionRevision`,
+`expectedStylesRevision`, `expectedPseudoStateRevision`, and `states`.
+Independent toggle messages are not accepted. The content session compares
+every authority and revision before applying supported readable author rules.
+
+A successful `styles.pseudoStates` response echoes the request and selection
+identity and returns `stylesRevision`, `stylesheetRevision`,
+`pseudoStateRevision`, canonical `states`, and bounded
+`unsupportedRuleCount`, `inaccessibleStylesheetCount`, and
+`approximateRuleCount`. Pseudo changes advance the pseudo-state and aggregate
+styles revisions but do not change stylesheet identity. `styles.getMatched`
+and `styles.matched` carry the same `pseudoStateRevision` and canonical
+`pseudoStates`, so a pre-preview Rules response cannot replace a post-preview
+model generation. Stale document, selection, styles, or pseudo authority fails
+closed with a typed browser-local error.
+
+This API controls author-style `:hover`/`:focus` emulation, not native
+pseudo-state forcing. The runtime adds random extension-owned marker attributes
+and temporary mirror styles only for supported selectors in the selected
+accessible scope. It does not expose user-authored CSS/DOM editing operations,
+directly call inspected-page functions such as `focus()`, or dispatch input,
+focus, mouse, pointer, or keyboard events into the inspected page. Inaccessible
+stylesheets, unsupported selectors or grouping contexts, failed mounts, and
+unprovable source order are partial/unavailable rather than guessed.
+
+Preview artifacts are excluded from Pin-op DOM, Rules, inspect, overlay,
+recovery, and stable-locator evidence but are not invisible to the page. Page
+scripts and MutationObservers can observe them while enabled, and mirrored
+styles can indirectly trigger transitions, animations, resource loads,
+callbacks, and application observers. Controlled toggle, selection, recovery,
+refresh, navigation, disconnect, compatibility loss, lease replacement, and
+disposal remove the exact owned objects while the content context can run.
+Abrupt extension termination, disable, update, or crash can leave artifacts
+until page navigation or reload.
+
 ## Browser-Local DOM Protocol And Recovery
 
 The Inspector DOM tree is deliberately outside the product WebSocket protocol.
@@ -559,10 +605,13 @@ The router enforces direction and authority:
 
 ## Read-Only Security Model
 
-Pin-op is read-only with respect to page-owned content, application state,
-and source code. The browser extension can execute only its packaged extension
-runtime and permitted browser APIs. It can read bounded accessible DOM
-structure, approved attributes, CSSOM evidence, and box geometry.
+Pin-op is read-only: it exposes no user-authored CSS, DOM, or source editing
+operations and no direct application-state commands. Its bounded runtime
+exceptions are the extension-owned inspection overlay, pseudo-preview
+marker/style mutations, and `styles` Auto Refresh link replacement described
+below. The browser extension can execute only its packaged extension runtime and
+permitted browser APIs. It can read bounded accessible DOM structure, approved
+attributes, CSSOM evidence, and box geometry.
 
 For visual inspection, the extension temporarily inserts an isolated
 Pin-op inspection overlay DOM under a dedicated pointer-inert host with a
@@ -572,12 +621,17 @@ rendered overlay is removed. Disconnecting disposes the inspection session;
 disposal removes its host and any remaining overlay DOM.
 
 Pin-op exposes no arbitrary page-owned DOM write and does not modify source
-code. Beyond the isolated overlay, the only page-DOM mutation is `styles` Auto
-Refresh: it inserts a cloned external top-document HTTP(S) stylesheet link,
-removes the old link only after the clone loads successfully, and retains the
-old link on failure. It cannot fill or submit forms or invoke page handlers, and
-it does not execute page commands or arbitrary page scripts received from VS
-Code or the WebSocket.
+code. It exposes no user-authored CSS/DOM editing operation. Beyond the isolated
+overlay, extension-owned page mutations are the temporary pseudo-preview
+markers/mirror styles described above and `styles` Auto Refresh: it inserts a
+cloned external top-document HTTP(S) stylesheet link, removes the old link only
+after the clone loads successfully, and retains the old link on failure. It
+cannot fill or submit forms. It does not execute page commands received from VS
+Code or the WebSocket, directly call arbitrary inspected-page functions, or
+dispatch input/focus events into the inspected page. CSS transitions,
+animations, resource loads, MutationObservers, and related application
+callbacks can still run indirectly when preview artifacts or mirror styles take
+effect.
 
 The IDE extension can read the active workspace document through source plugins
 and can read bounded workspace CSS, SCSS, and source-map dependencies through
@@ -596,7 +650,9 @@ origin labels/start positions, opaque IDs, and protocol state cross the
 loopback WebSocket. Browser-local locators and node refs never cross it. Full
 source documents, full editor ranges, local file paths and URIs, document
 versions, source maps, and browser tab IDs never cross in the reverse direction.
-Protocol 7 exposes no arbitrary page-owned DOM writes, source writes, shell
-execution, workspace command execution, or reverse synchronization. Its only
-DOM changes are the extension-owned overlay and the typed stylesheet-link
-replacement described above.
+Protocol 7 exposes no user-authored CSS/DOM editing, source writes, shell
+execution, workspace command execution, or reverse synchronization. Its
+extension-owned DOM/style changes are the overlay, temporary author-style
+pseudo-preview artifacts, and typed stylesheet-link replacement described
+above. Pseudo-preview state remains browser-local and never becomes a public
+protocol command.

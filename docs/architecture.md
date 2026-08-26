@@ -33,19 +33,23 @@ Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
 WebSocket.
 
-The separately selectable Inspector panel reuses a small BSD-licensed view
-derivation from pinned Chromium DevTools Elements sources. It is presentation
-code only: Pin-op does not embed Chromium's `ElementsPanel`, Chrome DevTools
-Protocol backend, SDK models, target discovery, host integration, or browser
-branding. `DomTreeProvider`, `DomTreeController`, page inspection, overlay,
-selection, refresh, and bridge routing remain Pin-op-owned. The checked-in
-upstream snapshot is provenance and reproduction input and is never imported by
-production code.
+The default panel in Chrome and Firefox is one shared Chromium-derived,
+read-only Inspector UI. It reuses a small BSD-licensed view derivation from a
+pinned Chromium DevTools Elements revision. It is presentation code only:
+Pin-op does not embed Chromium's `ElementsPanel`, Chrome DevTools Protocol
+backend, SDK models, target discovery, host integration, or browser branding.
+`DomTreeProvider`, `DomTreeController`, page inspection, overlay, selection,
+refresh, pseudo preview, and bridge routing remain Pin-op-owned. The checked-in
+[upstream manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
+[BSD license](../third_party/chromium-devtools-frontend/LICENSE), and
+[derivation record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
+are provenance and reproduction inputs; the upstream snapshot is never
+imported by production code.
 
-The new Inspector sidebar contains read-only Rules and has no visible Source
-tab. Existing Source remains active-document-only in the legacy rollback panel.
-Remounting Source beside Rules and adding first-party PHP/template providers are
-future scope.
+The default Inspector sidebar contains read-only Rules and has no visible Source
+tab. Existing Source remains active-document-only in the packaged, non-default
+legacy rollback panel for its one published rollback release. Remounting Source
+beside Rules and adding first-party PHP/template providers are future scope.
 
 The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,
@@ -58,10 +62,12 @@ authority.
 
 Chrome and Firefox copy the same two panel HTML entrypoints, core stylesheet,
 scoped `devtools-elements.css`, logo, and icons through one deterministic asset
-assembler. Both bundles emit the legacy `panel.js` rollback path and the
-feature-selected `inspectorPanel.js`; the legacy page remains the default in
-this checkpoint. Release verification requires byte-identical derived CSS and
-Chromium notice inventory across browsers.
+assembler. Both bundles select `inspectorPanel.js` by default and emit the
+non-default legacy `panel.js` rollback path. The legacy page is retained for
+exactly one published rollback release and is selected only by an explicit
+local `PIN_OP_PANEL_VARIANT=legacy` rollback build. Release verification
+requires byte-identical derived CSS and Chromium notice inventory across
+browsers.
 
 ### Inspected-Page Runtime
 
@@ -76,12 +82,32 @@ authority serves both page clicks and DOM-tree commands. It:
 - represents cross-origin frames as inaccessible locked leaves and ignores
   closed shadow roots;
 - collects bounded page, DOM, and CSS facts only for a valid selection;
+- owns one reversible author-style pseudo preview for supported positive
+  `:hover` and `:focus` rules in the selected element's accessible scope;
 - emits one selected target and, when present, its immediate DOM parent.
 
 Browser-local node refs are scoped by panel channel, document epoch, frame
 identity/epoch, and branch revision. Cursors are also bound to their node,
 epoch, and revision. Mutation, navigation, collapse, frame lifecycle changes,
 and session disposal invalidate stale authority instead of guessing.
+
+`PseudoStatePreview` parses readable author selectors and replaces only a
+supported positive pseudo on the selected subject compound with a random,
+session-scoped marker of equal specificity plus a zero-specificity selection
+guard. It groups mirror rules by source sheet/root and mounts exact
+extension-owned style nodes or constructable sheets beside their source where
+possible. The original stylesheet is never modified. Temporary markers,
+mounts, and mirror rules are excluded from Pin-op DOM, Rules, overlay, inspect,
+and stable-locator evidence.
+
+This is author-style emulation, not native pseudo-state forcing. Unsupported
+selector shapes, inaccessible sheets, unprovable grouping/cascade positions,
+and mount failures contribute bounded partial diagnostics rather than guessed
+rules. Cross-sheet source-order equivalence that cannot be proven contributes
+an approximation count. No preview path calls `focus()` or dispatches input,
+focus, mouse, pointer, or keyboard events. Page scripts can still observe the
+marker/style mutations, and the applied author styles can trigger transitions,
+animations, resource loads, and mutation records.
 
 ### Browser-Window Coordinator
 
@@ -234,6 +260,25 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
    the opaque authority; the IDE may then switch files and reveal its private
    exact block after pre/post revalidation.
 
+### Preview Author Pseudo States
+
+1. The Rules `:hov` control replaces the requested canonical state set with
+   `:hover`, `:focus`, both, or neither through the browser-local Inspector
+   channel; it never sends pseudo state over the product WebSocket.
+2. The content session compares document, node, selection, styles, and pseudo
+   revisions before applying the request.
+3. Supported readable author rules are mirrored only for the selected element's
+   accessible document or open-shadow scope. Unsupported and inaccessible work
+   is returned as partial counts.
+4. A successful change advances the pseudo-state and aggregate styles revisions
+   without changing stylesheet identity. Rules is re-collected against that
+   exact correlated generation.
+5. Controlled replacement, selection, recovery, refresh, navigation,
+   disconnect, compatibility loss, and disposal remove the exact owned marker
+   and stylesheet objects synchronously while the content context is alive.
+   Abrupt extension termination may leave artifacts until page navigation or
+   reload because no context remains to perform object-identity cleanup.
+
 ### Refresh After Save
 
 1. VS Code records actual document changes and ignores an unchanged save.
@@ -275,9 +320,12 @@ origins, handshake order, roles, session identity, message size, and schemas.
 
 VS Code and installed source plugins can read workspace documents. Separately
 installed plugins are independently trusted extension code. Pin-op itself has
-no remote service and exposes no arbitrary page-owned DOM write, source write,
-or arbitrary command path. Its extension-owned noninteractive overlay lives in
-an isolated shadow DOM. The narrow page-DOM exception is `styles` Auto Refresh:
+no remote service and exposes no user-authored CSS/DOM editing operation,
+source write, or arbitrary command path. Its extension-owned noninteractive
+overlay lives in an isolated shadow DOM. Pseudo preview temporarily adds
+extension-owned marker attributes and mirror styles in the selected accessible
+scope; those artifacts are page-observable and follow the cleanup boundary
+described above. The other narrow page-DOM exception is `styles` Auto Refresh:
 it inserts a cloned external top-document HTTP(S) stylesheet link, removes the
 old link only after the clone loads successfully, and retains the old link on
 failure. Reload mode uses the browser tab reload API. Neither refresh mode is a

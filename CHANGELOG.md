@@ -28,22 +28,35 @@ All notable changes to Pin-op will be documented in this file.
 - Tab-local Auto Refresh for changed CSS/preprocessor, JavaScript, TypeScript,
   Vue, PHP, and HTML saves, including soft stylesheet replacement and reload
   scroll restore.
-- A responsive DevTools Source pane with bounded active-document excerpts for
-  Selected and immediate Parent matches and exact opaque-ID opening in VS Code.
+- In the packaged non-default legacy rollback panel, a responsive DevTools
+  Source pane with bounded active-document excerpts for Selected and immediate
+  Parent matches and exact opaque-ID opening in VS Code.
 - A tab-local IDE Highlight setting that controls decorations without removing
   resolution, Source presentation, or navigation.
+- One shared Chromium-derived, read-only DOM Tree and Rules UI enabled by
+  default in Firefox and Chrome, with its BSD attribution, pinned Chromium
+  source manifest, and auditable Pin-op change record included in the source
+  distribution.
+- Exact generated CSS and source-mapped SCSS Rules origins that open only after
+  an explicit current origin click.
+- A browser-local author-style `:hover` and `:focus` preview for supported
+  readable rules, with bounded partial diagnostics for unsupported,
+  inaccessible, and source-order-approximate cases.
 
 ### Changed
 
 - Advanced the product release to `0.3.0` and the exact wire protocol to the
-  breaking version `6`.
+  breaking version `7`.
 - Added capability-gated auto-refresh, source-presentation, presentation-
   settings, navigation intents, and repeated navigation-state updates. Protocol
-  v5 is closed with code `1002`; there is no adapter or fallback.
+  v6 is closed with code `1002`; there is no adapter or fallback.
 - Replaced the old linked-panel actions with one **Disconnect** action that
   unlinks only the current browser window.
 - Kept Firefox Stable and current Chrome/Chromium on the shared Inspector
   behavior and read-only resolution path.
+- Made the Chromium-derived Inspector the default panel in both browser
+  packages. The non-default legacy panel and its Source UI remain packaged for
+  exactly one published rollback release.
 
 ### Fixed
 
@@ -62,3 +75,11 @@ All notable changes to Pin-op will be documented in this file.
 - Documented that the two-digit PIN is accidental-cross-link protection, not
   strong authentication, and that Pin-op cannot write source or execute
   commands.
+- Kept user-authored CSS and DOM editing operations absent. Pseudo preview does
+  not call `focus()` or dispatch input, focus, mouse, pointer, or keyboard
+  events.
+- Documented that random extension-owned marker attributes and temporary
+  mirror styles are observable by page scripts while preview is enabled and
+  may cause transitions, animations, resource loads, or mutation records.
+  Controlled exits remove exact owned artifacts; abrupt extension termination
+  can leave them until page navigation or reload.

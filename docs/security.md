@@ -123,10 +123,16 @@ DOM inspection injection requires all of these conditions:
 - its browser window has an explicit link;
 - the user enables the page picker or requests the tab's DOM tree.
 
-Browser-protected pages can reject injection. Pin-op does not submit forms,
-edit page-owned DOM or source, read cookies, or invoke user-supplied code. Auto
-Refresh is limited to extension-owned replacement of eligible stylesheet links
-or a browser API reload of the current participating tab.
+Browser-protected pages can reject injection. Pin-op exposes no user-authored
+CSS or DOM editing operations, does not submit forms, edit source, or read
+cookies. Pseudo preview does not directly call inspected-page functions such as
+`focus()` and does not dispatch input, focus, mouse, pointer, or keyboard events
+into the inspected page. CSS transitions, animations, resource loads,
+MutationObservers, and related application callbacks can still run indirectly
+when mirror styles or preview artifacts take effect. The packaged runtime can
+create the isolated inspection overlay, temporary pseudo-preview markers and
+mirror styles, and an Auto Refresh replacement for an eligible stylesheet link;
+reload uses the browser API for the current participating tab.
 
 ## Browser-Local DOM Tree
 
@@ -161,11 +167,16 @@ approximated.
 
 ## Chromium-Derived View Boundary
 
-Pin-op ships a small BSD-licensed derivation of Chromium DevTools DOM-tree view
-code, not Chromium's native Inspector backend. Production bundles cannot import
-the checked-in upstream snapshot and contain no CDP/SDK model, DevTools host,
-target discovery, remote code, or browser branding. The snapshot, manifest,
-licenses, and patch record are source-provenance inputs only.
+Firefox and Chrome ship one shared Chromium-derived, read-only Inspector UI by
+default. Pin-op uses a small BSD-licensed derivation of Chromium DevTools DOM
+Tree and Rules view code, not Chromium's native Inspector backend. Production
+bundles cannot import the checked-in upstream snapshot and contain no CDP/SDK
+model, DevTools host, target discovery, remote code, or browser branding. The
+[pinned upstream manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
+[BSD license](../third_party/chromium-devtools-frontend/LICENSE), and
+[Pin-op patch record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
+are source-provenance and reproduction inputs available in the repository and
+Firefox source submission.
 
 The shared derived stylesheet is required to scope every selector below
 `.pin-op-elements-inspector`. Browser package verification rejects unscoped
@@ -209,14 +220,14 @@ IDE revalidates workspace/dependency ownership and document identity both before
 and after the editor-host call; stale authority prevents cursor/reveal and is
 revoked. Passive inspection never switches editors.
 
-The pinned browser runtime includes PostCSS `8.5.16` and
-`postcss-selector-parser` `7.1.0` for bounded parsing and selector analysis.
-Their bundled constructor uses were reviewed as typed AST cloning/prototype
-wiring, not global `Function` or `eval`. Package verification still rejects
-dynamic code evaluation and remote code loading, and accepts the existing Zod
-schema-clone helper only for exact reviewed legacy/Inspector bundle SHA-256
-provenance. Generated Chrome and Firefox notices include PostCSS and every
-bundled transitive license.
+The pinned browser runtime includes PostCSS `8.5.16`,
+`postcss-selector-parser` `7.1.0`, and `postcss-value-parser` `4.2.0` for bounded
+parsing, selector analysis, and URL rebasing. Their bundled constructor uses
+were reviewed as typed AST cloning/prototype wiring, not global `Function` or
+`eval`. Package verification still rejects dynamic code evaluation and remote
+code loading, and accepts the existing Zod schema-clone helper only for exact
+reviewed legacy/Inspector bundle SHA-256 provenance. Generated Chrome and
+Firefox notices include these packages and every bundled transitive license.
 
 Stylesheet identity changes advance `stylesheetRevision` and aggregate
 `stylesRevision`. Selector/group applicability changes advance only
@@ -224,6 +235,42 @@ Stylesheet identity changes advance `stylesheetRevision` and aggregate
 can delay bounded polling in a background tab, so manual Refresh is the
 deterministic recomputation fallback; throttling never authorizes a write or a
 fabricated result.
+
+## Author-Style Pseudo Preview Boundary
+
+The Rules `:hov` control offers `Preview :hover` and `Preview :focus` for a
+supported subset of readable author rules. This is not native pseudo-state
+forcing: it cannot reproduce UA/user rules, inaccessible CSS, closed-shadow
+internals, or browser-engine state outside those author rules. Unsupported
+selectors and grouping contexts, inaccessible stylesheets, mount rejection,
+and unprovable cross-sheet source order are reported as partial or unavailable;
+Pin-op does not guess their result.
+
+The content runtime uses cryptographically random, session-scoped marker
+attribute names and exact extension-owned temporary style node or constructable
+sheet objects. It rewrites only supported positive `:hover`/`:focus` targets on
+the selected subject compound and adds a zero-specificity selection guard.
+Negated targets such as `:not(:hover)`, ancestor or sibling targets, `:has()`
+targets, multiple target compounds, malformed selectors, and unsupported
+grouping/cascade contexts fail closed. Marker attributes, temporary mounts, and
+mirror rules are excluded from Pin-op DOM, Rules, inspect, overlay, recovery,
+and stable-locator evidence.
+
+The preview never directly calls an inspected-page function such as `focus()`
+and does not dispatch input, focus, mouse, pointer, or keyboard events into the
+inspected page. It nevertheless mutates the inspected page with extension-owned
+markers/styles while enabled. Page scripts and MutationObservers can observe
+those temporary preview artifacts, and applying author styles can indirectly
+trigger transitions, animations, resource loads, callbacks, or other
+application observers.
+
+Controlled toggle replacement, selection, recovery, refresh, navigation,
+disconnect, compatibility loss, lease replacement, and disposal remove only
+the exact owned objects while the content context can still execute. Teardown
+makes a bounded best-effort cleanup request before losing that context. Abrupt
+extension termination, disable, update, or crash may leave artifacts until page
+navigation or reload; no remaining extension context can promise earlier
+object-identity cleanup.
 
 ## Bounded Facts Sent To VS Code
 
@@ -302,9 +349,10 @@ other-document cases fail closed and produce a bounded footer status.
 Rules origin resolution is a separate IDE-owned batch over bounded workspace
 CSS/SCSS/map dependencies. It can authorize a cross-file open only after exact
 CSS or source-mapped SCSS verification. Existing Source remains
-active-document-only in the legacy rollback panel; the new Inspector has no
-visible Source tab. A new Source tab and first-party PHP/template providers
-remain future scope.
+active-document-only in the packaged, non-default legacy rollback panel for its
+one published rollback release; the default Inspector has no visible Source
+tab. A new Source tab and first-party PHP/template providers remain future
+scope.
 
 Pin-op does not load executable code from an inspected workspace. Built-in CSS
 and SCSS resolvers use source-plugin API v3; its synchronous refresh classifiers

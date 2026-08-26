@@ -81,6 +81,24 @@ attribute values or DOM text. Open shadow roots and same-origin frame documents
 can be traversed. Cross-origin frames become locked leaves and fail closed.
 Closed shadow roots are not traversed and fail closed.
 
+The `:hover` and `:focus` controls are an author-style preview, not native
+pseudo-state forcing. While a preview is enabled, the inspected-page runtime
+adds random extension-owned marker attributes to the selected element and
+mounts temporary mirror styles in the accessible document or open shadow root.
+Pin-op filters those artifacts from its own DOM, Rules, locator, and inspect
+evidence, but page scripts and MutationObservers can observe those temporary
+preview artifacts while the preview is enabled. Applying the mirrored author
+styles can also trigger CSS transitions, animations, resource loads, and
+application observers.
+
+Pseudo preview does not call `focus()` and does not dispatch input, focus,
+mouse, pointer, or keyboard events. Controlled state changes, selection,
+refresh, navigation, disconnect, compatibility loss, and disposal remove the
+exact extension-owned artifacts while the content context can still run.
+Abrupt extension termination, disable, update, or crash can destroy that
+cleanup context first and leave preview artifacts until page navigation or
+reload.
+
 ## Clipboard And Session Storage
 
 VS Code places the link code on the operating-system clipboard only after the
@@ -120,20 +138,24 @@ reject injection.
 
 ## Read-Only Design
 
-Pin-op does not write or edit page or workspace source and does not execute
-page, shell, workspace, or user-supplied commands. Passive inspection and the
-legacy Source flow highlight or reveal only the document already active in VS
-Code. An explicit Rules origin click may switch VS Code to a verified workspace
-CSS or SCSS file using a current IDE-issued opaque authority. Missing or invalid
-source maps expose verified generated CSS only, never an approximate SCSS
-location. Auto Refresh can replace eligible stylesheet links or reload the
-current participating tab; it does not edit page-owned source or application
-data. These commitments apply to Pin-op-operated components, not to separately
-installed source plugins.
+Pin-op exposes no user-authored CSS or DOM editing operations, does not write or
+edit workspace source, and does not execute page, shell, workspace, or
+user-supplied commands. Its extension-owned page changes are limited to the
+inspection overlay, the temporary pseudo-preview markers and mirror styles
+described above, and typed Auto Refresh replacement of an eligible stylesheet
+link. Passive inspection and the legacy Source flow highlight or reveal only
+the document already active in VS Code. An explicit Rules origin click may
+switch VS Code to a verified workspace CSS or SCSS file using a current
+IDE-issued opaque authority. Missing or invalid source maps expose verified
+generated CSS only, never an approximate SCSS location. Auto Refresh can
+replace eligible stylesheet links or reload the current participating tab; it
+does not edit page-owned source or application data. These commitments apply to
+Pin-op-operated components, not to separately installed source plugins.
 
-The new Inspector has no visible Source tab. Existing Source remains
-active-document-only in the legacy rollback panel; a new Source tab and
-first-party PHP/template providers remain a future milestone.
+The default Inspector has no visible Source tab. Existing Source remains
+active-document-only in the packaged, non-default legacy rollback panel for its
+one published rollback release; a new Source tab and first-party PHP/template
+providers remain a future milestone.
 
 ## Source Plugins
 

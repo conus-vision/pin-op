@@ -15,6 +15,10 @@ const securityGuide = await readFile("docs/security.md", "utf8");
 const vscodeReadme = await readFile("extensions/vscode/README.md", "utf8");
 const storeListings = await readFile("docs/store-listings.md", "utf8");
 const releaseGuide = await readFile("docs/release.md", "utf8");
+const firefoxSourceSubmission = await readFile(
+  "docs/firefox-source-submission.md",
+  "utf8",
+);
 const sourcePluginGuide = await readFile(
   "docs/source-plugin-authoring.md",
   "utf8",
@@ -228,37 +232,108 @@ test("normal Inspector workflow is explicit and scoped to one browser window", (
   assert.doesNotMatch(normalFlow, /Change IDE|\bUnlink\b/);
 });
 
-test("ordinary installed artifacts keep Rules clicks out of the legacy flow", () => {
-  const [, legacyAndLater = ""] = installedGuide.split(
-    "## Ordinary/Store Legacy Panel Flow",
+test("ordinary installed artifacts use the shared Inspector by default", () => {
+  const defaultParagraph = requireMarkdownParagraph(
+    installedGuide,
+    /ordinary\/store artifacts/i,
+    "installed default panel disclosure",
   );
-  const [legacyFlow = ""] = legacyAndLater.split("\n## ");
-  assert.ok(legacyFlow, "ordinary/store legacy panel flow is required");
-  assert.match(legacyFlow, /ordinary\/store artifacts/i);
-  assert.match(legacyFlow, /legacy rollback panel/i);
-  assert.doesNotMatch(legacyFlow, /Rules origin|Rules-origin|PIN_OP_PANEL_VARIANT/i);
+  assert.match(defaultParagraph, /default[\s\S]*Chromium-derived[\s\S]*Inspector/i);
+  assert.match(defaultParagraph, /Rules origin/i);
+  assert.doesNotMatch(defaultParagraph, /default[\s\S]*legacy rollback panel/i);
 
-  const [, candidateAndLater = ""] = installedGuide.split(
-    "## Checkpoint 3 Rules-Origin Installed Matrix",
+  const rollbackParagraph = requireMarkdownParagraph(
+    installedGuide,
+    /PIN_OP_PANEL_VARIANT=legacy/i,
+    "installed legacy rollback instructions",
   );
-  const [candidateFlow = ""] = candidateAndLater.split("\n## ");
-  assert.match(candidateFlow, /PIN_OP_PANEL_VARIANT=inspector/);
-  assert.match(candidateFlow, /Rules-origin/i);
+  assert.match(rollbackParagraph, /legacy rollback[\s\S]*`?panel\.html`?/i);
 });
 
-test("read-only Rules backend is scoped to unpacked Inspector candidates", () => {
-  const [, rulesAndLater = ""] = installedGuide.split(
-    "## Read-Only Rules Backend",
+test("current rollout docs reject stale opt-in and store-default legacy claims", () => {
+  const [, currentChangelogAndLater = ""] = changelog.split(
+    "## [0.3.0] - Unreleased",
   );
-  const [rulesBackend = ""] = rulesAndLater.split("\n## ");
-  assert.ok(rulesBackend, "read-only Rules backend section is required");
-  assert.match(rulesBackend, /unpacked/i);
-  assert.match(rulesBackend, /PIN_OP_PANEL_VARIANT=inspector/);
-  assert.match(rulesBackend, /ordinary\/store artifacts[\s\S]*legacy/i);
-  assert.doesNotMatch(
-    rulesBackend,
-    /run it in both the installed Chrome package[\s\S]*installed Firefox/i,
+  const [currentChangelog = ""] = currentChangelogAndLater.split("\n## ");
+  const currentScopes = [
+    ["README.md", readme],
+    ["CHANGELOG.md 0.3.0", currentChangelog],
+    ["PRIVACY.md", privacy],
+    ["docs/architecture.md", architectureGuide],
+    ["docs/security.md", securityGuide],
+    ["docs/protocol.md", protocolGuide],
+    ["docs/mvp-usage.md", usageGuide],
+    ["docs/mvp-verification.md installed runbook", installedProductRunbook],
+    ["docs/installed-verification.md current runbook", primaryPath],
+    ["docs/release.md", releaseGuide],
+    ["docs/store-listings.md", storeListings],
+  ];
+
+  for (const [name, content] of currentScopes) {
+    const staleClaim = findStaleRolloutClaim(content);
+    assert.equal(
+      staleClaim,
+      undefined,
+      staleClaim
+        ? `${name}: stale affirmative rollout claim: ${staleClaim}`
+        : name,
+    );
+  }
+
+  const [, checkpointOneAndLater = ""] = developmentGuide.split(
+    "## Checkpoint 1 Development-Host Evidence (2026-08-24)",
   );
+  const [checkpointOneEvidence = ""] = checkpointOneAndLater.split(
+    "## Checkpoint 2 Rules Manual Gate",
+  );
+  assert.match(
+    checkpointOneEvidence,
+    /legacy panel remained the default rollback asset/i,
+    "historical Checkpoint 1 evidence must remain historical",
+  );
+});
+
+test("stale rollout detector distinguishes retirement text from current instructions", () => {
+  for (const allowed of [
+    "Store artifacts do not use the legacy rollback panel.",
+    "Store artifacts no longer use the legacy rollback panel.",
+    "The build does not default to legacy.",
+    "The build no longer defaults to legacy.",
+    "`PIN_OP_PANEL_VARIANT=inspector` is obsolete.",
+    "`PIN_OP_PANEL_VARIANT=inspector` is no longer needed.",
+    "The removed opt-in Inspector candidate remains only in historical evidence.",
+    "The retired opt-in Inspector candidate is not a current package.",
+    "The legacy panel is an explicit non-default rollback asset.",
+    "The legacy rollback panel is not the store default.",
+    "Store artifacts use the legacy page as an explicit non-default rollback.",
+    "Store artifacts use the legacy page for an explicit non-default rollback.",
+    "Store artifacts can use the legacy page only when the explicit legacy rollback flag is selected.",
+  ]) {
+    assert.equal(findStaleRolloutClaim(allowed), undefined, allowed);
+  }
+
+  for (const stale of [
+    "The build defaults to legacy.",
+    "The legacy rollback panel remains the store default.",
+    "The store default is the legacy panel.",
+    "Set `PIN_OP_PANEL_VARIANT=inspector` to enable the current UI.",
+    "The opt-in Inspector candidate is the current package.",
+    "Ordinary/store artifacts use the legacy rollback panel.",
+    "Store artifacts load the legacy page by default.",
+    "Do not remove the rollback asset; Store artifacts use the legacy rollback panel.",
+  ]) {
+    assert.ok(findStaleRolloutClaim(stale), stale);
+  }
+});
+
+test("read-only Rules verification applies to installed Chrome and Firefox", () => {
+  const rulesParagraph = requireMarkdownParagraph(
+    installedGuide,
+    /read-only Rules/i,
+    "installed read-only Rules verification",
+  );
+  assert.match(rulesParagraph, /installed Chrome[\s\S]*installed Firefox/i);
+  assert.doesNotMatch(rulesParagraph, /PIN_OP_PANEL_VARIANT=inspector|opt-in/i);
 });
 
 test("installed runbook covers source navigation and fail-closed recovery", () => {
@@ -303,6 +378,195 @@ test("Inspector materials cover the lazy DOM tree and box-model overlay", () => 
   assert.match(materials, /cross-origin[\s\S]*locked/i);
   assert.match(materials, /selected element[\s\S]*immediate parent/i);
   assert.match(materials, /multiple (?:source )?ranges/i);
+});
+
+test("MVP usage scopes structured DOM values to the default Inspector", () => {
+  const domTreeUsage = markdownSection(usageGuide, "Select From The DOM Tree");
+  const defaultInspector = requireMarkdownParagraph(
+    domTreeUsage,
+    /default Inspector/i,
+    "default Inspector structured DOM presentation",
+  );
+  assert.match(defaultInspector, /bounded attribute names and values/i);
+  assert.match(defaultInspector, /bounded (?:text and comment|text\/comment) rows/i);
+  assert.doesNotMatch(
+    defaultInspector,
+    /attribute values[^.]*do not appear|DOM text[^.]*do(?:es)? not appear/i,
+  );
+
+  const namesOnlyParagraphs = domTreeUsage
+    .split(/\r?\n\s*\r?\n/)
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter((value) =>
+      /attribute names only|attribute values[^.]*do not appear|names[^.]*not values|DOM text[^.]*do(?:es)? not appear/i.test(
+        value,
+      ),
+    );
+  assert.notEqual(
+    namesOnlyParagraphs.length,
+    0,
+    "legacy names-only DOM boundary is required",
+  );
+  for (const paragraph of namesOnlyParagraphs) {
+    assert.match(
+      paragraph,
+      /legacy rollback/i,
+      "every names-only DOM claim must be scoped to the legacy rollback",
+    );
+  }
+});
+
+test("MVP usage preserves CORS-readable cross-origin stylesheet support", () => {
+  for (const broadClaim of [
+    "Cross-origin stylesheets are unavailable.",
+    "Cross-origin stylesheets remain unsupported.",
+    "Cross-origin stylesheets are inaccessible.",
+  ]) {
+    assert.equal(isBroadCrossOriginStylesheetClaim(broadClaim), true);
+  }
+  for (const boundedClaim of [
+    "Only cross-origin stylesheets whose CSSOM is inaccessible are unavailable.",
+    "Cross-origin stylesheets with unreadable CSSOM remain unsupported.",
+    "CORS-readable cross-origin stylesheets remain supported.",
+  ]) {
+    assert.equal(isBroadCrossOriginStylesheetClaim(boundedClaim), false);
+  }
+
+  const limits = markdownSection(usageGuide, "Known Limits");
+  const stylesheetLimit = requireMarkdownParagraph(
+    limits,
+    /cross-origin stylesheet/i,
+    "cross-origin stylesheet CSSOM boundary",
+  );
+  assert.match(
+    stylesheetLimit,
+    /(?:only\s+cross-origin stylesheets? (?:whose|with) (?:an? )?inaccessible CSSOM|cross-origin stylesheets? whose CSSOM is inaccessible)[^.]*unavailable/i,
+  );
+  assert.match(
+    stylesheetLimit,
+    /CORS-readable(?: cross-origin stylesheets?| CSSOM)[^.]*(?:supported|available|inspectable|readable)/i,
+  );
+  assert.doesNotMatch(
+    usageGuide,
+    /cross-origin or otherwise inaccessible stylesheets/i,
+  );
+
+  assert.deepEqual(
+    securityClauses(usageGuide).filter(isBroadCrossOriginStylesheetClaim),
+    [],
+    "cross-origin stylesheet limits must be qualified by inaccessible or unreadable CSSOM",
+  );
+});
+
+test("release docs identify the shared Chromium-derived UI and auditable source", () => {
+  for (const [name, document] of [
+    ["README.md", readme],
+    ["docs/architecture.md", architectureGuide],
+  ]) {
+    const paragraph = requireMarkdownParagraph(
+      document,
+      /Chromium-derived/i,
+      `${name} shared Inspector disclosure`,
+    );
+    assert.match(paragraph, /(?:Chrome and Firefox|both browsers)/i, name);
+    assert.match(paragraph, /one shared[\s\S]*read-only Inspector UI/i, name);
+  }
+
+  const provenance = requireMarkdownParagraph(
+    firefoxSourceSubmission,
+    /Chromium/i,
+    "Firefox source-submission Chromium provenance",
+  );
+  assert.match(provenance, /BSD[\s-]*(?:licensed|attribution|notice)/i);
+  assert.match(provenance, /pinned[\s\S]*source[\s\S]*(?:available|included)/i);
+  assert.match(provenance, /UPSTREAM\.json[\s\S]*THIRD_PARTY_NOTICES/i);
+});
+
+test("product docs distinguish exact origin opening from pseudo preview", () => {
+  const origin = requireMarkdownParagraph(
+    usageGuide,
+    /Rules origin click/i,
+    "Rules origin opening disclosure",
+  );
+  assert.match(origin, /only (?:after|on)[\s\S]*explicit/i);
+  assert.match(origin, /exact[\s\S]*CSS[\s\S]*(?:source-mapped|original) SCSS/i);
+
+  const preview = requireMarkdownParagraph(
+    usageGuide,
+    /author-style pseudo preview/i,
+    "pseudo-state preview disclosure",
+  );
+  assert.match(preview, /:hover[\s\S]*:focus/i);
+  assert.match(preview, /not native (?:pseudo-state )?forc(?:e|ing)/i);
+
+  const readOnly = requireMarkdownParagraph(
+    securityGuide,
+    /user-authored (?:CSS|DOM)/i,
+    "read-only preview boundary",
+  );
+  assert.match(readOnly, /no user-authored CSS or DOM editing operations/i);
+  assert.match(readOnly, /does not dispatch[^.]*\binput\b[^.]*events/i);
+  assert.match(readOnly, /does not dispatch[^.]*\bfocus\b[^.]*events/i);
+  assert.match(readOnly, /does not dispatch[^.]*\bmouse\b[^.]*events/i);
+  assert.match(readOnly, /does not dispatch[^.]*\bpointer\b[^.]*events/i);
+  assert.match(readOnly, /does not dispatch[^.]*\bkeyboard\b[^.]*events/i);
+});
+
+test("preview docs disclose observable artifacts, abrupt loss, and unsupported cases", () => {
+  const observable = requireMarkdownParagraph(
+    privacy,
+    /temporary preview artifacts/i,
+    "observable preview-artifact disclosure",
+  );
+  assert.match(observable, /page scripts[\s\S]*(?:may|can) observe/i);
+  assert.match(observable, /while (?:the )?preview is enabled/i);
+
+  const abruptLoss = requireMarkdownParagraph(
+    installedGuide,
+    /abrupt extension termination/i,
+    "abrupt extension termination disclosure",
+  );
+  const abruptClause = requireMarkdownClause(
+    abruptLoss,
+    /abrupt extension termination/i,
+    "abrupt extension artifact lifetime",
+  );
+  assertAbruptArtifactClause(abruptClause);
+
+  const limits = markdownSection(usageGuide, "Known Limits");
+  assert.match(limits, /UA and user styles/i);
+  assert.match(
+    limits,
+    /inaccessible[\s\S]{0,180}stylesheet[\s\S]{0,180}(?:unavailable|PARTIAL)/i,
+  );
+  assertExplicitFidelityLimit(
+    limits,
+    /cross-origin frames?/i,
+    "cross-origin frame fidelity limit",
+  );
+  assertExplicitFidelityLimit(
+    limits,
+    /closed shadow(?: roots?)?/i,
+    "closed shadow fidelity limit",
+  );
+  assert.match(limits, /:not\(:hover\)[\s\S]{0,180}PARTIAL/i);
+  assert.match(limits, /ancestor[\s\S]{0,180}(?:hover|focus)[\s\S]{0,180}PARTIAL/i);
+  assert.match(limits, /unsupported[\s\S]{0,240}not guessed/i);
+});
+
+test("release docs bound the legacy rollback asset to one published release", () => {
+  const rollback = requireMarkdownParagraph(
+    releaseGuide,
+    /legacy rollback/i,
+    "legacy rollback lifetime",
+  );
+  assert.match(rollback, /`?panel\.html`?/i);
+  assert.match(rollback, /exactly one published rollback release/i);
+  assert.match(
+    rollback,
+    /remove[\s\S]*only after[\s\S]*(?:support evidence|support reports?|manual field reports?)[\s\S]*confirm(?:s|ed)?[\s\S]*no blocking regression/i,
+  );
+  assert.doesNotMatch(rollback, /\btelemetry\b/i);
 });
 
 test("architecture and security document structured Inspector DOM data and the legacy label boundary", () => {
@@ -520,20 +784,20 @@ test("current product wording describes explicit opaque Rules navigation", () =>
   );
 });
 
-test("README keeps Rules-origin opening on the opt-in Inspector candidate", () => {
+test("README makes Rules-origin opening part of the default Inspector", () => {
   const [, quickStartAndLater = ""] = readme.split("## Quick Start");
   const [quickStart = ""] = quickStartAndLater.split("\n## ");
 
   assert.match(
     readme,
-    /`PIN_OP_PANEL_VARIANT=inspector`[\s\S]*(?:candidate|opt-in)/i,
+    /Chrome and Firefox[\s\S]*shared Chromium-derived[\s\S]*read-only Inspector/i,
   );
   assert.match(
     readme,
-    /ordinary\/store artifacts[\s\S]*legacy rollback panel/i,
+    /ordinary\/store artifacts[\s\S]*default[\s\S]*Inspector/i,
   );
-  assert.match(quickStart, /legacy rollback\s+panel[\s\S]*Source/i);
-  assert.doesNotMatch(quickStart, /Rules origin/i);
+  assert.match(quickStart, /explicit Rules origin click/i);
+  assert.doesNotMatch(readme, /PIN_OP_PANEL_VARIANT=inspector[\s\S]*(?:candidate|opt-in)/i);
 });
 
 test("privacy wording accounts for the complete Rules publication envelope", () => {
@@ -564,22 +828,17 @@ test("privacy docs disclose bounded browser-local DOM text processing", () => {
   }
 });
 
-test("release separates unpacked Inspector checks from final legacy artifacts", () => {
-  const [, candidateAndLater = ""] = releaseGuide.split(
-    "## Verify Checkpoint 3 Unpacked Inspector Candidate",
-  );
-  const [candidateSection = ""] = candidateAndLater.split("\n## ");
+test("release verifies the default Inspector and an explicit legacy rollback", () => {
   const [, installedAndLater = ""] = releaseGuide.split(
     "## Verify Installed Artifacts",
   );
   const [installedSection = ""] = installedAndLater.split("\n## ");
 
-  assert.match(candidateSection, /\$env:PIN_OP_PANEL_VARIANT\s*=\s*"inspector"/);
-  assert.match(candidateSection, /pin-op-chrome build/);
-  assert.match(candidateSection, /pin-op-firefox build/);
-  assert.match(candidateSection, /unpacked/i);
-  assert.doesNotMatch(installedSection, /PIN_OP_PANEL_VARIANT/);
-  assert.match(installedSection, /ordinary\/store artifacts[\s\S]*legacy rollback panel/i);
+  assert.match(installedSection, /shared Chromium-derived[\s\S]*Inspector/i);
+  assert.match(installedSection, /Rules origin/i);
+  assert.doesNotMatch(installedSection, /default[\s\S]*legacy rollback panel/i);
+  assert.match(releaseGuide, /PIN_OP_PANEL_VARIANT\s*=\s*"?legacy"?/i);
+  assert.match(releaseGuide, /legacy rollback[\s\S]*`?panel\.html`?/i);
 });
 
 test("installed guide contains the honest Chrome and Firefox Rules-origin matrix", () => {
@@ -726,6 +985,56 @@ test("protocol guide bounds browser-local locator recovery and keeps it off WebS
   assert.match(protocolGuide, /identity/i);
   assert.match(protocolGuide, /fail(?:s)? closed/i);
   assert.match(protocolGuide, /locators never cross (?:the )?WebSocket/i);
+});
+
+test("protocol read-only scope names bounded runtime exceptions immediately", () => {
+  for (const staleClaim of [
+    "Pin-op is read-only with respect to page-owned content.",
+    "Pin-op is read-only with respect to application state.",
+    "Pin-op is read-only with respect to page-owned content and application state.",
+    "Application state is immutable under the read-only model.",
+  ]) {
+    assert.equal(isUnqualifiedReadOnlyClaim(staleClaim), true);
+  }
+  for (const boundedClaim of [
+    "Pin-op is read-only: it exposes no user-authored CSS, DOM, or source editing operations and no direct application-state commands.",
+    "Read-only does not mean page-owned content is immutable.",
+    "Read-only does not imply application state is immutable.",
+    "The read-only boundary documents page-owned content without claiming it is immutable.",
+  ]) {
+    assert.equal(isUnqualifiedReadOnlyClaim(boundedClaim), false);
+  }
+
+  assert.ok(readOnlySecuritySection, "Read-Only Security Model section is required");
+  const clauses = securityClauses(readOnlySecuritySection);
+  const scopedIndex = clauses.findIndex(
+    (clause) =>
+      /read-only/i.test(clause) &&
+      /user-authored/i.test(clause) &&
+      /editing operations/i.test(clause) &&
+      /direct application[- ]state commands/i.test(clause),
+  );
+  assert.notEqual(
+    scopedIndex,
+    -1,
+    "read-only must be scoped to user-authored editing and direct application-state commands",
+  );
+  const scopedClause = clauses[scopedIndex] ?? "";
+  assert.match(scopedClause, /\bCSS\b/);
+  assert.match(scopedClause, /\bDOM\b/);
+  assert.match(scopedClause, /\bsource\b/i);
+
+  const immediateExceptions = clauses[scopedIndex + 1] ?? "";
+  assert.match(immediateExceptions, /inspection overlay/i);
+  assert.match(immediateExceptions, /pseudo[- ]preview/i);
+  assert.match(immediateExceptions, /Auto Refresh/i);
+  assert.match(immediateExceptions, /(?:bounded|extension-owned) (?:runtime )?(?:exceptions|mutations)/i);
+
+  assert.deepEqual(
+    clauses.filter(isUnqualifiedReadOnlyClaim),
+    [],
+    "read-only must not be asserted broadly over application state or page-owned content",
+  );
 });
 
 test("protocol guide states the read-only browser and IDE execution boundary", () => {
@@ -959,6 +1268,225 @@ function securityClauses(section) {
     .trim()
     .split(/(?<=[.!?])\s+/)
     .filter(Boolean);
+}
+
+function isBroadCrossOriginStylesheetClaim(clause) {
+  if (!/\bcross-origin stylesheets?\b/i.test(clause)) {
+    return false;
+  }
+
+  const categoricalLimit =
+    /\bcross-origin stylesheets?\b[^.!?]{0,120}\b(?:are|remain|stay)\s+(?:categorically\s+)?(?:unavailable|unsupported|inaccessible)\b/i.test(
+      clause,
+    ) ||
+    /\b(?:unavailable|unsupported|inaccessible)\s+cross-origin stylesheets?\b/i.test(
+      clause,
+    );
+  if (!categoricalLimit) {
+    return false;
+  }
+
+  const cssomBoundary =
+    /\b(?:inaccessible|unreadable)\s+CSSOM\b/i.test(clause) ||
+    /\bCSSOM\b[^.;!?]{0,60}\b(?:is|remains?|stays?)\s+(?:inaccessible|unreadable)\b/i.test(
+      clause,
+    );
+  return !cssomBoundary;
+}
+
+function isUnqualifiedReadOnlyClaim(clause) {
+  if (!/read-only/i.test(clause)) {
+    return false;
+  }
+  if (!/(?:application[- ]state|page-owned content)/i.test(clause)) {
+    return false;
+  }
+
+  const scopedBoundary =
+    /\bno\s+user-authored\b/i.test(clause) &&
+    /\bediting operations\b/i.test(clause) &&
+    /\bno\s+direct application[- ]state commands\b/i.test(clause);
+  if (scopedBoundary) {
+    return false;
+  }
+
+  const clarification =
+    /\bread-only\b[^.!?]{0,80}\b(?:does|do|did)\s+not\s+(?:mean|imply|assert|claim|guarantee|make)\b/i.test(
+      clause,
+    ) ||
+    /\bread-only\b[^.!?]{0,80}\b(?:is|are)\s+not\s+(?:a\s+)?(?:claim|guarantee)\b/i.test(
+      clause,
+    ) ||
+    /\bread-only\b[^.!?]{0,120}\bwithout\s+(?:asserting|claiming|implying|guaranteeing)\b/i.test(
+      clause,
+    ) ||
+    /\b(?:is|are)\s+not\s+read-only\b[^.!?]{0,80}\b(?:application[- ]state|page-owned content)\b/i.test(
+      clause,
+    );
+  if (clarification) {
+    return false;
+  }
+
+  return (
+    /\bread-only\b[^.!?]{0,100}\b(?:with respect to|for|over)\b[^.!?]*(?:application[- ]state|page-owned content)/i.test(
+      clause,
+    ) ||
+    /\bread-only\b[^.!?]{0,100}\b(?:means?|implies?|asserts?|guarantees?|makes?)\b[^.!?]*(?:application[- ]state|page-owned content)/i.test(
+      clause,
+    ) ||
+    /(?:application[- ]state|page-owned content)[^.!?]{0,100}\b(?:is|are|remains?|stays?)\s+(?:fully\s+)?(?:immutable|read-only)\b/i.test(
+      clause,
+    )
+  );
+}
+
+function findStaleRolloutClaim(document) {
+  const patterns = [
+    {
+      kind: "flag",
+      pattern: /PIN_OP_PANEL_VARIANT\s*=\s*["']?inspector["']?/gi,
+    },
+    {
+      kind: "candidate",
+      pattern: /(?:opt-in|unpacked)\s+Inspector candidate/gi,
+    },
+    {
+      kind: "default",
+      pattern: /\bdefaults?\s+to\s+(?:the\s+)?legacy(?: rollback)?(?: panel| page| asset)?\b/gi,
+    },
+    {
+      kind: "default",
+      pattern: /\b(?:store[- ]default|default for (?:ordinary\/store|store) artifacts?)\s+(?:is|remains?|stays?)\s+(?:the\s+)?legacy(?: rollback)?(?: panel| page| asset)?\b/gi,
+    },
+    {
+      kind: "default",
+      pattern: /\blegacy(?: rollback)? (?:panel|page|asset)\s+(?:is|remains?|stays?)\s+(?:still\s+)?(?:the\s+)?(?:store[- ])?default\b/gi,
+    },
+    {
+      kind: "default",
+      pattern: /\bstore[- ]default\s+legacy(?: rollback)? (?:panel|page|asset)\b/gi,
+    },
+    {
+      kind: "artifact-use",
+      pattern: /\b(?:ordinary\/store|store|these) artifacts?\b[^.;!?]{0,160}\b(?:use|uses|run|runs|open|opens|load|loads|remain|remains|stay|stays)(?:\s+on)?\s+(?:the\s+)?legacy(?: rollback)? (?:panel|page)\b/gi,
+    },
+  ];
+
+  for (const clause of securityClauses(document)) {
+    for (const { kind, pattern } of patterns) {
+      for (const match of clause.matchAll(pattern)) {
+        if (!isNonCurrentRolloutReference(clause, match, kind)) {
+          return `${JSON.stringify(match[0])} in ${JSON.stringify(clause)}`;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function isNonCurrentRolloutReference(clause, match, kind) {
+  const start = match.index ?? 0;
+  const end = start + match[0].length;
+  const matched = match[0];
+  const before = clause
+    .slice(Math.max(0, start - 100), start)
+    .replace(/[`*_([{\s]+$/g, "");
+  const after = clause
+    .slice(end, Math.min(clause.length, end + 180))
+    .replace(/^[`*_)\]}\s]+/g, "");
+
+  if (
+    /\b(?:do|does|did|must|should|can)\s+not\s+(?:default|use|run|open|load|remain|stay|set|enable|build|select)\b/i.test(
+      matched,
+    ) ||
+    /\bnever\s+(?:defaults?|uses?|runs?|opens?|loads?|remains?|stays?|sets?|enables?|builds?|selects?)\b/i.test(
+      matched,
+    ) ||
+    /\bno longer\s+(?:defaults?|uses?|runs?|opens?|loads?|remains?|stays?|sets?|enables?|builds?|selects?)\b/i.test(
+      matched,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:do|does|did|must|should|can)\s+not(?:\s+(?:set|use|enable|build|select)(?:\s+the)?)?\s*$/i.test(
+      before,
+    ) ||
+    /\bnever\s*$/i.test(before) ||
+    /\bno longer\s*$/i.test(before)
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:removed|retired|deprecated|obsolete|former|historical)(?:\s+the)?\s*$/i.test(
+      before,
+    ) ||
+    /^(?:(?:is|was|are|were|has been|have been)\s+)?(?:now\s+)?(?:obsolete|removed|retired|deprecated|historical|not (?:current|used|supported|active|needed)|no longer (?:used|supported|current|available|needed))\b/i.test(
+      after,
+    )
+  ) {
+    return true;
+  }
+  return (
+    kind === "artifact-use" &&
+    /^(?:[^.;!?]{0,40}\bonly\s+(?:when|after|for|as|with)\b[^.;!?]{0,100}\b(?:explicit|rollback|fallback|PIN_OP_PANEL_VARIANT)\b|\s*(?:as|for)\s+(?:an?\s+)?explicit\s+non-default\s+(?:rollback|fallback)\b)/i.test(
+      after,
+    )
+  );
+}
+
+function requireMarkdownParagraph(document, marker, label) {
+  const paragraph = document
+    .split(/\r?\n\s*\r?\n/)
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter((value) => !value.startsWith("#"))
+    .find((value) => marker.test(value));
+  assert.ok(paragraph, `${label} paragraph is required`);
+  return paragraph;
+}
+
+function requireMarkdownClause(document, marker, label) {
+  const clause = securityClauses(document).find((value) => marker.test(value));
+  assert.ok(clause, `${label} clause is required`);
+  return clause;
+}
+
+function assertAbruptArtifactClause(clause) {
+  assert.doesNotMatch(
+    clause,
+    /\b(?:does not|never)\b[^.]{0,100}\b(?:leaves?|remains?)\b/i,
+  );
+  assert.match(
+    clause,
+    /(?:abrupt extension termination[^.]*(?:leaves?|remains?)|(?:markers?|styles?|artifacts?)[^.]*remains?[^.]*(?:after|following|because of) (?:an? )?abrupt extension termination)/i,
+  );
+  assert.match(clause, /(?:markers?|styles?|artifacts?)/i);
+  assert.match(clause, /until[^.]*(?:navigat|reload)/i);
+}
+
+function assertExplicitFidelityLimit(document, marker, label) {
+  const directPattern = new RegExp(
+    `${marker.source}[^.;!?]{0,100}(?:is|are|remain|remains|:)` +
+      String.raw`(?:\s+(?:reported|shown|marked)\s+as)?\s+(?:PARTIAL|unavailable)`,
+    "i",
+  );
+  const clauses = securityClauses(document);
+  const direct = clauses.some((clause) => directPattern.test(clause));
+  const unified = clauses.some(
+    (clause) =>
+      marker.test(clause) &&
+      /(?:\b(?:all|both)\b|\bthese (?:cases|limits)\b)[^.!?]{0,160}(?:PARTIAL|unavailable)|(?:PARTIAL|unavailable)[^.!?]{0,160}(?:\b(?:all|both)\b|\bthese (?:cases|limits)\b)/i.test(
+        clause,
+      ),
+  );
+  assert.ok(direct || unified, `${label} must be explicitly PARTIAL or unavailable`);
+}
+
+function markdownSection(document, heading) {
+  const [, sectionAndLater = ""] = document.split(`## ${heading}`);
+  const [section = ""] = sectionAndLater.split("\n## ");
+  assert.ok(section, `${heading} section is required`);
+  return section;
 }
 
 function assertDisclosureFailure(clauses, message) {

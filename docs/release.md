@@ -264,30 +264,41 @@ This fail-closed rule intentionally replaces ad hoc manual release-asset recover
 It preserves the binding between the AMO-returned bytes, the trusted workflow run,
 the draft identity, and the later manual Firefox Stable test.
 
-## Verify Checkpoint 3 Unpacked Inspector Candidate
+## Verify The Default Inspector And Explicit Rollback
 
-This development gate is separate from verification of the downloaded
-ordinary/store artifacts. From the final committed checkout, build the unpacked
-browser candidates with the Inspector entrypoint:
+From the final committed checkout, build both browser extensions without a
+panel-variant environment variable:
 
 ```powershell
-$env:PIN_OP_PANEL_VARIANT = "inspector"
+corepack pnpm --filter pin-op-chrome build
+corepack pnpm --filter pin-op-firefox build
+```
+
+These ordinary builds register the shared Chromium-derived read-only Inspector
+and its Rules UI by default. Load `extensions/chrome` through Chrome's **Load
+unpacked** flow. Load `extensions/firefox/manifest.json` as a Firefox Temporary
+Add-on or use the documented `web-ext` development flow. Run the complete
+matrix in `docs/installed-verification.md`, including pseudo preview, Rules
+origins, cleanup, parity, accessibility, and recovery. Automated, static, and
+package checks are supplementary: every unperformed native browser cell remains
+`PARTIAL/HARNESS_BLOCKED`, not `PASS`, and is not signed-XPI, store-release, or
+native installed-product evidence.
+
+Check the non-default legacy rollback separately from the same committed tree.
+The packaged legacy rollback `panel.html` remains for exactly one published
+rollback release; remove it only after support reports or manual field reports
+confirm no blocking regression in the default Inspector:
+
+```powershell
+$env:PIN_OP_PANEL_VARIANT = "legacy"
 corepack pnpm --filter pin-op-chrome build
 corepack pnpm --filter pin-op-firefox build
 Remove-Item Env:PIN_OP_PANEL_VARIANT
 ```
 
-Load `extensions/chrome` through Chrome's **Load unpacked** flow. Load
-`extensions/firefox/manifest.json` as a Firefox Temporary Add-on or use the
-documented `web-ext` development flow. Run the complete Rules-origin matrix in
-`docs/installed-verification.md`, including exact CSS, inline/external/nested
-and split-mapping SCSS, invalid-map fallback, CSS/map edits, stale authority,
-cross-file switching, and absence of a visible Source tab. This gate remains
-`PARTIAL/HARNESS_BLOCKED` until a native cross-product harness or manual run
-records the browser results; it is not signed-XPI or store-release evidence.
-
-Before ordinary packaging from the same checkout, rebuild without
-`PIN_OP_PANEL_VARIANT`. Setting the variable after an archive is built or
+That explicit build must register packaged `panel.html` and preserve its
+active-document-only Source behavior. Rebuild without `PIN_OP_PANEL_VARIANT`
+before ordinary packaging. Setting the variable after an archive is built or
 downloaded cannot change that archive's panel entrypoint.
 
 ## Verify Installed Artifacts
@@ -300,17 +311,20 @@ Download all six draft assets and validate `SHA256SUMS`. Complete
 3. open a project and confirm that the VS Code service starts without a terminal;
 4. click the VS Code status item to copy the port and two-digit PIN, then paste it
    into Pin-op DevTools in one browser window and confirm the same display code;
-5. in the active document, which must be the intended CSS or SCSS file, verify the
-   visual picker and box-model overlay, lazy DOM tree boundaries, and
-   selected-element plus immediate-parent multi-range highlighting;
-6. confirm these final ordinary/store artifacts use the legacy rollback panel
-   and Existing Source remains active-document-only. Do not infer the unpacked
-   Inspector candidate's Rules-origin click from a downloaded ZIP or XPI. A new
-   Source tab and first-party PHP/template providers remain future scope;
-7. record the exact footer outcome, including `No active editor` and SCSS source-map
+5. confirm the final ordinary/store artifacts use the shared Chromium-derived
+   Inspector by default, with DOM Tree and read-only Rules and no visible Source
+   tab;
+6. in the active document, verify the visual picker and box-model overlay, lazy
+   DOM tree boundaries, selected-element plus immediate-parent multi-range
+   highlighting, and an explicit Rules origin click for exact verified CSS and
+   source-mapped SCSS;
+7. verify the author-style `:hover`/`:focus` preview is labelled as a preview,
+   exposes partial coverage honestly, performs no user-authored CSS/DOM editing,
+   and dispatches no input or focus events;
+8. record the exact footer outcome, including `No active editor` and SCSS source-map
    failures, and confirm that **Disconnect** unlinks only that browser window;
-8. complete the two VS Code window and two browser window isolation checks;
-9. preserve the verification record with the sign run ID and exact XPI SHA-256.
+9. complete the two VS Code window and two browser window isolation checks;
+10. preserve the verification record with the sign run ID and exact XPI SHA-256.
 
 The packaged Chrome smoke opens only an ordinary fixture page and validates
 page/package markers. Task 6 VS Code integration and Task 7 browser UI tests do
@@ -334,6 +348,41 @@ The value must exactly match the digest in the signing workflow summary and
 `signed-xpi-provenance.json`. Do not continue if a checksum, restart, isolation, or
 installed workflow check fails. Fix code in a new version rather than changing the
 pushed tag.
+
+## Legacy Rollback Removal Follow-Up
+
+Status: **Open**. The packaged legacy rollback `panel.html` remains for exactly
+one published rollback release. Remove it only after support reports or manual
+field reports confirm no blocking regression in the default Inspector.
+
+Pin-op has no product telemetry. The removal decision uses only reviewed support
+evidence and deliberately recorded manual field reports from that published
+release.
+
+Before deleting a legacy-owned module, extract every contract still shared by
+the default Inspector into presentation-neutral modules and update its imports.
+In particular, preserve `startPanelRuntimeWithPresentation` and the shared
+runtime types currently exported by `panelRuntime.ts`, and move
+`DomTreeDocument` out of `domTreeView.ts` into a shared DOM contract owner.
+
+- [ ] Extract and preserve `startPanelRuntimeWithPresentation` plus its shared
+  runtime types, update current Inspector imports, and prove the default runtime
+  no longer imports `panelRuntime.ts`.
+- [ ] Move and preserve `DomTreeDocument`, update all consumers, and prove the
+  default Inspector no longer imports `domTreeView.ts`.
+- [ ] Remove `panel.html` and its package assembly entry.
+- [ ] Remove the remaining legacy-only `panelRuntime.ts` presentation wiring and
+  then remove the file.
+- [ ] Remove the remaining legacy-only `DomTreeView` presentation and then remove
+  `domTreeView.ts`.
+- [ ] Remove presentation-only tests, exports, and rollback documentation.
+- [ ] Preserve `DomTreeController`, the provider, recovery, picker, overlay,
+  Source owners, and every browser/IDE bridge owner.
+
+Do not start the removal checklist before the criterion above is met. Source may
+be remounted in the default Inspector only through its separately approved
+future milestone; removing the legacy presentation does not remove Source
+ownership.
 
 ## Publish
 

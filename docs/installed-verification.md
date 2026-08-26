@@ -50,6 +50,15 @@ workspace files and source maps to resolve the active document; Pin-op does
 not upload them. Separately installed source plugins are independent trusted VS
 Code extensions and may have their own data behavior.
 
+The author-style `:hover`/`:focus` preview temporarily adds Pin-op-owned markers
+and mirror styles. Page scripts may observe these temporary preview artifacts
+while the preview is enabled, and their style effects may cause transitions,
+animations, resource loads, or mutation records. Pin-op dispatches no input,
+focus, mouse, pointer, or keyboard events. Controlled toggle, selection,
+refresh, navigation, disconnect, and mismatch exits remove the artifacts.
+Abrupt extension termination can leave preview markers or styles until page
+navigation or reload because no content context remains to clean them.
+
 Avoid private pages unless sending the bounded selection values to the linked
 local VS Code window is acceptable. Read the [privacy policy](../PRIVACY.md),
 [security policy](../SECURITY.md), and [security model](security.md).
@@ -91,10 +100,11 @@ until that exact file exists.
 4. Confirm Pin-op `0.3.0` is enabled.
 5. Restart every Firefox process and confirm the signed add-on remains enabled.
 
-## Ordinary/Store Legacy Panel Flow
+## Default Inspector Flow
 
-Run this flow with the ordinary/store artifacts once in Firefox Stable and once
-in current Chrome/Chromium. These artifacts use the legacy rollback panel:
+The ordinary/store artifacts default to the shared Chromium-derived Inspector.
+Run its read-only Rules verification in installed Chrome and installed Firefox;
+a current explicit Rules origin click is part of this normal flow.
 
 1. Open the project in the intended local VS Code window and keep its intended
    CSS or SCSS document active.
@@ -110,10 +120,10 @@ in current Chrome/Chromium. These artifacts use the legacy rollback panel:
 7. Use either the visual page picker or the lazy DOM tree to select an element.
 8. Confirm passive selection highlights the expected active-document ranges
    without opening or switching editor tabs.
-9. In the legacy rollback panel, confirm Source shows active-document Selected
-    and immediate Parent excerpts, then click one and verify the exact range
-    opens without switching the active editor.
-10. Read and record the exact footer outcome in DevTools.
+9. Confirm DOM Tree and Rules are visible and no Source tab is rendered.
+10. Explicitly click a current verified Rules origin and confirm the exact CSS
+    or source-mapped SCSS block opens through its opaque IDE authority.
+11. Read and record the exact footer outcome in DevTools.
 
 The page picker is the mouse-pointer button. Hover a normal element and verify a
 noninteractive box-model overlay with distinct margin, border, padding, and
@@ -178,10 +188,9 @@ inaccessible-stylesheet count. Other exact outcomes are listed in the
 
 ## Read-Only Rules Backend
 
-This manual panel matrix applies only to unpacked Chrome and Firefox Inspector
-candidates built with `PIN_OP_PANEL_VARIANT=inspector`. Ordinary/store artifacts
-remain on the legacy rollback panel and cannot satisfy this Rules gate. Package
-tests and the Chrome page-target smoke do not constitute native DevTools-panel
+This read-only Rules matrix applies to the default Inspector in installed Chrome
+and installed Firefox. Package tests and the Chrome page-target smoke establish
+static and page/runtime invariants, but do not constitute native DevTools-panel
 evidence.
 
 1. Select the specificity, `!important`, inline-style, inherited, inactive
@@ -215,18 +224,17 @@ origins become explicit click targets. An explicit Rules origin click may switch
 VS Code using a current IDE-issued opaque authority. No workspace URI/path, full
 range, document version, source-map path, or command crosses the bridge.
 Missing or invalid source maps show verified generated CSS only, with no
-approximate SCSS authority. The new Inspector has no visible Source tab;
-Existing Source remains active-document-only in the legacy rollback panel. A
-new Source tab and first-party PHP/template providers remain future scope.
+approximate SCSS authority. The default Inspector has no visible Source tab.
+Existing Source remains
+active-document-only in the explicit legacy rollback panel. A new Source tab
+and first-party PHP/template providers remain future scope.
 
 ## Checkpoint 3 Rules-Origin Installed Matrix
 
-Run this matrix with unpacked Chrome and Firefox builds created with
-`PIN_OP_PANEL_VARIANT=inspector`. Ordinary/store artifacts remain on the legacy
-default until the rollout checkpoint. Automated package smoke covers only the
-ordinary fixture page and static package markers; Task 6 VS Code integration and
-Task 7 browser controller/UI tests are supplementary and do not prove a native
-DevTools-to-installed-VS Code click.
+Run this matrix with the default Inspector from the Chrome and Firefox packages.
+Automated package smoke covers only the ordinary fixture page and static package
+markers; Task 6 VS Code integration and Task 7 browser controller/UI tests are
+supplementary and do not prove a native DevTools-to-installed-VS Code click.
 
 | Scenario | Chrome | Firefox | Required evidence |
 | --- | --- | --- | --- |
@@ -255,16 +263,55 @@ Until a native cross-product harness or manual run can exercise these clicks,
 record the browser cell as `PARTIAL/HARNESS_BLOCKED`, not `PASS`. Do not infer a
 signed-XPI, store release, or native result from automated archive verification.
 
+## Rollout Installed Native Matrix
+
+The user-approved checkpoint disposition permits this native gate to remain
+partial; it does not convert an unperformed check into a pass. Automated unit,
+integration, static package, archive, and ordinary-page smoke evidence cover
+their named invariants only. No available harness opens the native Pin-op
+DevTools panel in both browsers and drives the complete installed product path,
+so every unperformed cell below remains `PARTIAL/HARNESS_BLOCKED`.
+
+| Native scenario | Chrome | Firefox | Required evidence |
+| --- | --- | --- | --- |
+| Link, Disconnect, reconnect, mismatch, two-window isolation | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Link ownership, reconnect, protocol rejection, and isolation are observed in the installed panel. |
+| Picker/tree hover and selection; frame/shadow/mutation recovery | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Page and tree use one selection/overlay authority and recover only current bounded identities. |
+| Read-only inline, matched, inherited, overridden, and unknown Rules | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Every state is visible without selector, property, value, declaration, rule, or DOM editors. |
+| Document/open-shadow adopted sheets and shared constructed sheet | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Document and shadow selections show each readable rule once with selected-root isolation. |
+| Live CSSOM and adoption mutation | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | `insertRule`, `deleteRule`, `replaceSync`, adoption-list replacement, and exposed in-place mutation invalidate the current result. |
+| Eventless stylesheet and element-state mutation under throttling | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Disabled/MediaList changes advance both revisions; JS-only checked/value/validity/placeholder/custom-state changes advance only styles while `ruleRef` stays stable; manual Refresh is deterministic. |
+| CSP temporary-mount rejection and fallback | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Temporary style and constructable-sheet rejection fails closed or uses only the documented safe fallback with a partial diagnostic. |
+| CSS/SCSS origin and authority lifecycle | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Exact CSS, valid SCSS map, invalid-map CSS fallback, cross-file opening, and stale authority all follow explicit-click authority. |
+| Hover/focus supported and partial preview | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Supported author rules preview `:hover`/`:focus`; unsupported and inaccessible coverage is labelled PARTIAL and not guessed. |
+| Auto Refresh styles/reload and scroll restore | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Styles replacement preserves the page; reload restores bounded top-level scroll and respects tab-local state. |
+| IDE Highlight and Source boundary | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | IDE Highlight remains independent; default Inspector has no Source tab, while explicit rollback Source remains active-document-only. |
+| Preview cleanup and abrupt context loss | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Toggle, selection, refresh, navigation, disconnect, and mismatch clean synchronously; abrupt extension termination is separately documented and page reload is the final cleanup boundary. |
+| Themes, keyboard, screen reader, 320 px and wide layouts | PARTIAL/HARNESS_BLOCKED | PARTIAL/HARNESS_BLOCKED | Dark, light, high contrast, accessible labels/focus, narrow stacking, and wide split are exercised in the native panel. |
+
+No signed XPI, store artifact, screenshot, or native result is inferred from this
+matrix. Replace a cell only with dated evidence from the corresponding native
+browser panel and installed VS Code extension.
+
+## Explicit Legacy Rollback Verification
+
+The explicit `PIN_OP_PANEL_VARIANT=legacy` release-owner build is the only
+legacy rollback path; it registers packaged `panel.html` instead of the default
+Inspector. Use it only for the rollback checks below, never as evidence for the
+ordinary/store package.
+
 ## Source, Highlight, And Responsive Layout
 
-1. In the legacy rollback panel, confirm Source shows only bounded excerpts from
-   the active IDE document, with Selected expanded and immediate Parent collapsed.
-2. Click several excerpts. Confirm each opaque match ID opens its exact current
+1. In the default Inspector, confirm DOM Tree and Rules are visible and Source
+   is absent. Turn **IDE Highlight** off and confirm decorations clear while
+   Rules origins and resolution remain usable; turn it back on.
+2. In the explicit legacy rollback panel, confirm Source shows only bounded
+   excerpts from the active IDE document, with Selected expanded and immediate
+   Parent collapsed.
+3. Click several excerpts. Confirm each opaque match ID opens its exact current
    range and a stale excerpt cannot open after a newer selection.
-3. Confirm Previous/Next remains Selected-only and its counter follows the
-   primary VS Code cursor.
-4. Turn **IDE Highlight** off. Decorations must clear, but resolution, Source
-   excerpts, exact opening, and navigation must remain usable.
+4. Confirm Previous/Next remains Selected-only and its counter follows the
+   primary VS Code cursor. Turning **IDE Highlight** off clears decorations but
+   leaves rollback Source excerpts, exact opening, and navigation usable.
 5. Resize DevTools to 680 px or wider. When the measured usable workspace width
    fits two 160 px panes plus the measured separator, confirm the side-by-side
    split remains active.

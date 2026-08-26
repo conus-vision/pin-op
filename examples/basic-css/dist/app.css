@@ -19,6 +19,47 @@
   max-width: 32rem;
 }
 
+.pseudo-preview-action {
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #7f8c8d;
+  outline: 3px solid transparent;
+  background-color: #eef6fc;
+  transition: outline-color 80ms linear;
+}
+
+.pseudo-preview-action:hover {
+  --pin-op-preview-hover: active;
+  --pin-op-preview-source-order: hover-original;
+  outline-color: #1769aa;
+  background-image: url("../virtual.css?pin-op-preview-resource");
+}
+
+.pseudo-preview-action:focus {
+  --pin-op-preview-focus: active;
+  outline-color: #7c3aed;
+}
+
+.pseudo-preview-action:hover:focus {
+  --pin-op-preview-combined: active;
+  border-color: #b42318;
+}
+
+.pseudo-preview-action:not(:hover) {
+  --pin-op-preview-unsupported-negation: active;
+}
+
+.pseudo-preview-ancestor:hover .pseudo-preview-action {
+  --pin-op-preview-unsupported-ancestor: active;
+}
+
+:is(.pseudo-preview-action:hover, #pseudo-preview-mixed-specificity-branch) {
+  --pin-op-preview-mixed-function: active;
+}
+
+.pseudo-preview-scope .pseudo-preview-action {
+  --pin-op-preview-source-order: later-original;
+}
+
 .specificity-target {
   color: #5f6368;
 }

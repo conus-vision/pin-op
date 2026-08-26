@@ -4,6 +4,15 @@ Normal use with installed Pin-op extensions is terminal-free. Contributor
 commands belong in [development-host verification](mvp-verification.md), not in
 the installed workflow.
 
+Ordinary and store Firefox/Chrome packages open one shared Chromium-derived,
+read-only Inspector UI by default. It adapts pinned BSD-licensed Chromium
+DevTools DOM Tree and Rules presentation to Pin-op's browser-local models; it is
+not either browser's native Inspector backend. The
+[pinned source manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
+[BSD license](../third_party/chromium-devtools-frontend/LICENSE), and
+[Pin-op change record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
+are available with the source distribution.
+
 ## Link One Browser Window
 
 1. Open the project in the local VS Code window that should receive selections.
@@ -99,8 +108,14 @@ once.
 - A cross-origin frame is a locked leaf and cannot be selected or expanded.
 - A closed shadow root is not traversed and fails closed.
 
-Tree labels are plain bounded text containing tag, ID, classes, and approved
-attribute names. Attribute values and DOM text do not appear in tree labels.
+The default Inspector renders structured bounded attribute names and values and
+bounded text and comment rows through text APIs. Text, comment, and document-type
+rows are display-only and cannot drive selection or stable-locator recovery.
+
+The legacy rollback renderer alone uses names-only element labels containing
+tag, ID, classes, and approved attribute names. Attribute values and DOM text do
+not appear in those legacy rollback labels.
+
 Browser-local node refs are valid only inside their panel channel, document
 epoch, frame epoch, and branch revision. Navigation, mutation, collapse, and
 session disposal invalidate stale work rather than reusing it.
@@ -147,28 +162,74 @@ Sources` lists the same ranges without changing the active editor.
 
 ## Rules Origins And Exact Open
 
-The new Inspector's read-only Rules rows first show a verified generated CSS
+The default Inspector's read-only Rules rows first show a verified generated CSS
 origin when one is available. After the IDE proves the exact generated rule, a
 usable source map, one original SCSS file, and the smallest complete original
 block, the label upgrades atomically to that SCSS origin. Missing, invalid,
 ambiguous, stale, or outside-workspace source maps show verified generated CSS
 only, with no approximate SCSS label or authority.
 
-An explicit Rules origin click may switch VS Code to another verified workspace
+Exact CSS and source-mapped original SCSS blocks open only after an explicit
+Rules origin click. That click may switch VS Code to another verified workspace
 CSS or SCSS document using a current IDE-issued opaque authority. The IDE
 revalidates workspace ownership, document identity, private range, dependency
-hashes/versions, and Rules generation around the editor-host call. Passive
-selection never switches files, and stale authority cannot move the cursor or
-reveal a range.
+hashes/versions, and Rules generation around the editor-host call. Merely
+selecting an element, reading Rules, or enabling pseudo preview never switches
+files, and stale authority cannot move the cursor or reveal a range.
 
 The wire carries only the inspect ID, independent Rules generation, safe
 basename label and one-based start position for display, confidence, and opaque
 authority ID. No workspace URI/path, full range, document version, source-map
 path/content, or command crosses the bridge. There is no open acknowledgement.
 
-The new Inspector has no visible Source tab. Existing Source remains
-active-document-only in the legacy rollback panel. A new Source tab and
-first-party PHP/template providers remain future scope.
+The default Inspector has no visible Source tab. Existing Source remains
+active-document-only in the packaged, non-default legacy rollback panel for its
+one published rollback release. A new Source tab and first-party PHP/template
+providers remain future scope.
+
+## Preview `:hover` And `:focus`
+
+The read-only Rules toolbar has a `:hov` menu with **Preview :hover** and
+**Preview :focus** checkboxes. Select one or both to preview supported readable
+author rules on the currently selected element. The operation replaces the
+complete requested state set atomically; it does not edit user-authored CSS or
+DOM.
+
+This is author-style pseudo preview, not native pseudo-state forcing. Pin-op
+mirrors a supported positive `:hover` or `:focus` selector using random,
+extension-owned markers and temporary styles in the selected element's
+accessible document or open shadow root. The preview runtime does not directly
+call inspected-page `focus()` or dispatch input, focus, mouse, pointer, or
+keyboard events into the inspected page. Consequently, **Preview :focus**
+changes supported CSS presentation without changing focus in the inspected page
+or sending focus/input events to the inspected application. Ordinary keyboard
+focus changes inside the DevTools UI remain available for accessible controls.
+
+The preview menu reports partial coverage rather than guessing. Known partial
+or unavailable cases include:
+
+- inaccessible or unreadable stylesheet CSSOM; CORS-readable cross-origin
+  stylesheets remain supported;
+- UA/user rules, closed shadow roots, and rejected temporary
+  style/constructable-sheet mounts;
+- negated targets such as `:not(:hover)` or `:not(:focus)`, pseudo targets in
+  `:has()`, and ancestor/sibling or multiple target compounds;
+- mixed functional selector branches whose specificity would change, malformed
+  selectors, and unsupported layer/scope/container/starting-style contexts;
+- cross-sheet source order whose equivalent cascade position cannot be proven.
+
+Temporary marker attributes, style nodes, and constructed mirror sheets are
+filtered out of Pin-op's own DOM, Rules, locator, overlay, and inspect evidence,
+but page scripts and MutationObservers may observe them while preview is
+enabled. Mirrored author styles may trigger transitions, animations, resource
+loads, and application observers even though Pin-op dispatches no input/focus
+events.
+
+Turning preview off, replacing the selection, Refresh, navigation, Disconnect,
+compatibility loss, or normal panel/runtime disposal removes the exact owned
+artifacts while the inspected content context can still run. Abrupt extension
+termination, disable, update, or crash may leave them until page navigation or
+reload. If that happens, reload the inspected page before continuing.
 
 ## Source Pane And Navigation
 
@@ -278,9 +339,22 @@ status remains offline until a port becomes available.
 ## Known Limits
 
 - Browser-protected pages can deny content-script injection.
-- Cross-origin stylesheets may be inaccessible through CSSOM; the footer reports
-  their bounded count.
-- Cross-origin frame contents and closed shadow roots cannot be traversed.
+- UA and user styles are unavailable to author-style pseudo preview.
+- Only cross-origin stylesheets whose CSSOM is inaccessible are unavailable;
+  CORS-readable cross-origin stylesheets remain supported and inspectable.
+- Readable stylesheets with unsupported selectors are reported as PARTIAL; the
+  omitted rules are not reconstructed or guessed.
+- Cross-origin frames are unavailable.
+- Closed shadow roots are unavailable.
+- `:not(:hover)` and `:not(:focus)` targets are PARTIAL because additive mirror
+  CSS cannot suppress the original native match.
+- Ancestor or sibling hover/focus targets are PARTIAL because Pin-op cannot
+  prove that the selected element is the pseudo subject.
+- Pseudo preview covers only supported readable author `:hover`/`:focus` rules;
+  unsupported, inaccessible, or source-order-approximate cases are visibly
+  PARTIAL and are not guessed or presented as native forcing.
+- Temporary pseudo-preview artifacts are page-observable while enabled and can
+  remain after abrupt extension termination until navigation or reload.
 - Transformed or unsafe overlay geometry can be omitted rather than guessed.
 - SCSS requires generated CSS and a usable source map in the workspace.
 - Remote SSH and WSL extension hosts, editing, reverse sync, and arbitrary

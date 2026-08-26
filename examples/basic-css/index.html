@@ -69,7 +69,7 @@
         <div id="nested-group-rule" class="nested-group-rule">
           Nested supports/media group
         </div>
-        <div id="document-adopted-target" class="document-adopted-target shared-constructed-target constructed-mutation-target">
+        <div id="document-adopted-target" class="document-adopted-target shared-constructed-target constructed-mutation-target" tabindex="0">
           Document adopted and shared constructed sheets
         </div>
         <label>
@@ -96,6 +96,29 @@
             Slotted target
           </span>
         </div>
+      </section>
+
+      <section
+        id="pseudo-preview-ancestor"
+        class="fixture-section pseudo-preview-scope pseudo-preview-ancestor"
+        aria-labelledby="pseudo-preview-heading"
+      >
+        <h2 id="pseudo-preview-heading">Pseudo-state preview fixtures</h2>
+        <p>
+          The two matching controls expose selected-element isolation and
+          passive side-effect counters for installed verification.
+        </p>
+        <button id="pseudo-preview-target" class="pseudo-preview-action" type="button">
+          Selected preview target
+        </button>
+        <button id="pseudo-preview-non-selected" class="pseudo-preview-action" type="button">
+          Non-selected matching target
+        </button>
+        <p>Transitions: <output id="pseudo-preview-transition-count" aria-live="polite">0</output></p>
+        <p>Resources: <output id="pseudo-preview-resource-count" aria-live="polite">0</output></p>
+        <p>Mutations: <output id="pseudo-preview-mutation-count" aria-live="polite">0</output></p>
+        <p>Input events: <output id="pseudo-preview-input-event-count" aria-live="polite">0</output></p>
+        <p>Focus events: <output id="pseudo-preview-focus-event-count" aria-live="polite">0</output></p>
       </section>
 
       <section class="fixture-section" aria-labelledby="geometry-heading">
@@ -140,6 +163,32 @@
       `;
       document.head.append(runtimeStyle);
 
+      const sameOriginFrame = document.getElementById("same-origin-frame");
+      function installSameOriginPreviewFixture() {
+        const frameDocument = sameOriginFrame.contentDocument;
+        if (
+          !frameDocument?.head ||
+          frameDocument.getElementById("same-origin-pseudo-preview-style")
+        ) {
+          return;
+        }
+        const style = frameDocument.createElement("style");
+        style.id = "same-origin-pseudo-preview-style";
+        style.textContent = `
+          .same-origin-frame-target:hover {
+            --pin-op-preview-frame-hover: active;
+          }
+          .same-origin-frame-target:focus {
+            --pin-op-preview-frame-focus: active;
+          }
+        `;
+        frameDocument.head.append(style);
+      }
+      sameOriginFrame.addEventListener("load", installSameOriginPreviewFixture);
+      if (sameOriginFrame.contentDocument?.readyState === "complete") {
+        installSameOriginPreviewFixture();
+      }
+
       const shadowHost = document.getElementById("open-shadow-host");
       const root = shadowHost.attachShadow({ mode: "open" });
       const shadowStyle = document.createElement("style");
@@ -147,6 +196,15 @@
         .shadow-action {
           padding: 0.5rem 0.75rem;
           border: 2px solid #7c3aed;
+        }
+        .shadow-action:hover {
+          --pin-op-preview-shadow-hover: active;
+        }
+        .shadow-action:focus {
+          --pin-op-preview-shadow-focus: active;
+        }
+        .shadow-action:hover:focus {
+          --pin-op-preview-shadow-combined: active;
         }
         .shadow-action:hover,
         .shadow-action:focus {
@@ -161,6 +219,7 @@
       const shadowAdoptedTarget = Object.assign(document.createElement("div"), {
         className: "shadow-adopted-target shared-constructed-target",
         textContent: "Shadow adopted and shared constructed sheets",
+        tabIndex: 0,
       });
       root.replaceChildren(shadowStyle, shadowAction, shadowAdoptedTarget);
 
@@ -169,17 +228,26 @@
         .document-adopted-target {
           border-block-end: 3px solid #1769aa;
         }
+        .document-adopted-target:hover {
+          --pin-op-preview-document-adopted: active;
+        }
       `);
       const shadowAdoptedSheet = new CSSStyleSheet();
       shadowAdoptedSheet.replaceSync(`
         .shadow-adopted-target {
           outline: 2px solid #7c3aed;
         }
+        .shadow-adopted-target:hover {
+          --pin-op-preview-shadow-adopted: active;
+        }
       `);
       const sharedConstructedSheet = new CSSStyleSheet();
       sharedConstructedSheet.replaceSync(`
         .shared-constructed-target {
           --pin-op-shared-constructed: ready;
+        }
+        .shared-constructed-target:hover:focus {
+          --pin-op-preview-shared-constructed: active;
         }
       `);
       const mutableConstructedSheet = new CSSStyleSheet();
@@ -293,6 +361,162 @@
         toggleEventlessApplicability,
         toggleSiblingApplicability,
         toggleSlottedApplicability,
+      });
+
+      const pseudoPreviewTarget = document.getElementById("pseudo-preview-target");
+      const pseudoPreviewNonSelected = document.getElementById("pseudo-preview-non-selected");
+      const pseudoPreviewCounters = {
+        transition: 0,
+        resource: 0,
+        mutation: 0,
+        inputEvent: 0,
+        focusEvent: 0,
+      };
+      const pseudoPreviewCounterOutputs = {
+        transition: document.getElementById("pseudo-preview-transition-count"),
+        resource: document.getElementById("pseudo-preview-resource-count"),
+        mutation: document.getElementById("pseudo-preview-mutation-count"),
+        inputEvent: document.getElementById("pseudo-preview-input-event-count"),
+        focusEvent: document.getElementById("pseudo-preview-focus-event-count"),
+      };
+
+      function updatePseudoPreviewCounter(name, amount = 1) {
+        pseudoPreviewCounters[name] += amount;
+        pseudoPreviewCounterOutputs[name].value = String(pseudoPreviewCounters[name]);
+      }
+
+      function readCounters() {
+        return Object.freeze({ ...pseudoPreviewCounters });
+      }
+
+      function resetCounters() {
+        for (const name of Object.keys(pseudoPreviewCounters)) {
+          pseudoPreviewCounters[name] = 0;
+          pseudoPreviewCounterOutputs[name].value = "0";
+        }
+      }
+
+      const previewStyleProperties = Object.freeze([
+        "--pin-op-preview-hover",
+        "--pin-op-preview-focus",
+        "--pin-op-preview-combined",
+        "--pin-op-preview-source-order",
+        "outline-color",
+        "border-color",
+        "background-image",
+      ]);
+
+      function snapshotComputedProperties(style) {
+        return Object.freeze(Object.fromEntries(
+          previewStyleProperties.map((property) => [
+            property,
+            style.getPropertyValue(property),
+          ]),
+        ));
+      }
+
+      function readStyleSnapshot() {
+        const selectedStyle = getComputedStyle(pseudoPreviewTarget);
+        const nonSelectedStyle = getComputedStyle(pseudoPreviewNonSelected);
+        return Object.freeze({
+          selected: snapshotComputedProperties(selectedStyle),
+          nonSelected: snapshotComputedProperties(nonSelectedStyle),
+        });
+      }
+
+      function compareStyleSnapshots(before, after) {
+        const selectedChanged = JSON.stringify(before.selected) !==
+          JSON.stringify(after.selected);
+        const nonSelectedChanged = JSON.stringify(before.nonSelected) !==
+          JSON.stringify(after.nonSelected);
+        return Object.freeze({ selectedChanged, nonSelectedChanged });
+      }
+
+      function recordTransition() {
+        updatePseudoPreviewCounter("transition");
+      }
+      pseudoPreviewTarget.addEventListener("transitionrun", recordTransition);
+      pseudoPreviewNonSelected.addEventListener("transitionrun", recordTransition);
+
+      for (const eventType of [
+        "beforeinput",
+        "input",
+        "change",
+        "keydown",
+        "keyup",
+        "pointerdown",
+        "pointerup",
+        "mousedown",
+        "mouseup",
+      ]) {
+        document.addEventListener(
+          eventType,
+          () => updatePseudoPreviewCounter("inputEvent"),
+          true,
+        );
+      }
+      for (const eventType of ["focus", "focusin", "blur", "focusout"]) {
+        document.addEventListener(
+          eventType,
+          () => updatePseudoPreviewCounter("focusEvent"),
+          true,
+        );
+      }
+
+      if (typeof PerformanceObserver !== "undefined") {
+        try {
+          const resourceObserver = new PerformanceObserver((entries) => {
+            for (const entry of entries.getEntries()) {
+              if (entry.name.includes("pin-op-preview-resource")) {
+                updatePseudoPreviewCounter("resource");
+              }
+            }
+          });
+          resourceObserver.observe({ type: "resource", buffered: true });
+        } catch {
+          // The counter remains available when resource observation is unsupported.
+        }
+      }
+
+      function elementHasRuntimeMarker(element) {
+        return [...element.attributes].some((attribute) =>
+          attribute.name.startsWith("data-pin-op-preview-") ||
+          attribute.name.startsWith("data-pin-op-runtime-")
+        );
+      }
+
+      function containsRuntimeArtifact(node) {
+        if (!(node instanceof Element)) return false;
+        return elementHasRuntimeMarker(node) ||
+          [...node.querySelectorAll("*")].some(elementHasRuntimeMarker);
+      }
+
+      const previewMutationObserver = new MutationObserver((records) => {
+        for (const record of records) {
+          const runtimeAttribute = record.type === "attributes" &&
+            (
+              record.attributeName?.startsWith("data-pin-op-preview-") ||
+              record.attributeName?.startsWith("data-pin-op-runtime-")
+            );
+          const runtimeNode = record.type === "childList" &&
+            [...record.addedNodes, ...record.removedNodes]
+              .some(containsRuntimeArtifact);
+          if (runtimeAttribute || runtimeNode) {
+            updatePseudoPreviewCounter("mutation");
+          }
+        }
+      });
+      previewMutationObserver.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+
+      window.pinOpPseudoPreviewFixture = Object.freeze({
+        readCounters,
+        resetCounters,
+        readStyleSnapshot,
+        compareStyleSnapshots,
       });
 
       let dynamicCardCount = 0;

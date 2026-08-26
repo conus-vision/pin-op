@@ -10,6 +10,9 @@ source you can actually change. Pin-op keeps those two views synchronized so
 you can move from a live element to its source without searching across a
 stylesheet by hand.
 
+Chrome and Firefox use one shared Chromium-derived read-only Inspector UI for
+the DOM Tree and Rules.
+
 [Website](https://pin-op.conus.vision) ·
 [Documentation](docs/mvp-usage.md) ·
 [Issues](https://github.com/conus-vision/pin-op/issues)
@@ -43,17 +46,20 @@ is terminal-free:
 3. Open Pin-op in Firefox or Chrome DevTools, paste the code, and select **Link**.
 4. Keep the source document you want to highlight active in VS Code.
 5. Select an element with the page picker or the lazy DOM tree.
-6. Read highlighted Selected and Parent ranges, or use the legacy rollback
-   panel's bounded active-document Source excerpts.
+6. Inspect the shared Chromium-derived, read-only DOM Tree and Rules UI, then
+   use an explicit Rules origin click when you want to open its exact verified
+   CSS or source-mapped SCSS block in VS Code.
 
 Each browser window links explicitly to one VS Code window. **Disconnect**
 unlinks only the current browser window.
 
-The opt-in Inspector candidate is built with
-`PIN_OP_PANEL_VARIANT=inspector`. In that candidate, an explicit current Rules
-origin click can open its exact verified CSS or source-mapped SCSS block.
-Ordinary/store artifacts keep the legacy rollback panel until the rollout
-checkpoint.
+Ordinary/store artifacts default to this Inspector. It is a small BSD-licensed
+presentation derivation from a pinned Chromium DevTools revision, backed by
+Pin-op's browser-local models rather than either browser's native Inspector
+backend. The [pinned source manifest](third_party/chromium-devtools-frontend/UPSTREAM.json),
+[BSD license and notices](third_party/chromium-devtools-frontend/LICENSE), and
+[Pin-op change record](third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
+are available in the source tree and Firefox source submission.
 
 ## Who It Is For
 
@@ -64,27 +70,47 @@ checkpoint.
 
 ## What You Get
 
-- An Inspector-like page picker with a box-model overlay and lazy DOM tree.
+- One shared Chromium-derived read-only Inspector UI in Firefox and Chrome,
+  with a page picker, box-model overlay, and lazy DOM tree.
 - Multiple complete CSS or source-mapped SCSS ranges highlighted in the active file.
-- In the opt-in Inspector candidate, exact Rules origins that can open a
-  verified CSS or source-mapped SCSS block.
+- Read-only inline, matched, inherited, overridden, and unknown Rules, with
+  exact CSS/SCSS origins that open only after an explicit origin click.
+- An author-style `:hover` and `:focus` preview for supported readable rules;
+  this is not native pseudo-state forcing.
 - Separate Selected and immediate Parent source decorations.
-- Bounded Source excerpts with exact navigation back to the IDE.
+- In the packaged non-default legacy rollback panel, bounded Source excerpts
+  with exact navigation back to the IDE.
 - Auto Refresh for changed styles and tab reloads with scroll restoration after
   changed script, Vue, PHP, or HTML saves.
 - Explicit browser-window linking over a loopback-only WebSocket.
 
-Pin-op is read-only. It does not edit source or execute caller-supplied IDE
-commands. In the opt-in Inspector candidate, an explicit Rules origin click may
-switch VS Code to a verified workspace file using a current IDE-issued opaque
-authority; passive inspection never switches editors. No workspace URI/path,
-full range, document version, or command crosses the bridge for this action.
-Missing or invalid source maps show verified generated CSS only, with no
-approximate SCSS origin.
+Pin-op exposes no user-authored CSS or DOM editing operations. It does not edit
+source or execute caller-supplied IDE commands. An explicit Rules origin click
+may switch VS Code to a verified workspace file using a current IDE-issued
+opaque authority; passive inspection never switches editors. No workspace
+URI/path, full range, document version, or command crosses the bridge for this
+action. Missing or invalid source maps show verified generated CSS only, with
+no approximate SCSS origin.
 
-The new Inspector has no visible Source tab. Existing Source remains
-active-document-only in the legacy rollback panel. A remounted Source tab and
-first-party PHP/template providers remain future scope.
+The pseudo-state feature mirrors only supported readable author rules by adding
+random, extension-owned marker attributes and temporary styles while the
+preview is enabled. It does not call `focus()` or dispatch input, focus, mouse,
+pointer, or keyboard events. Page scripts and MutationObservers can observe
+these temporary preview artifacts, and the mirrored styles can trigger CSS
+transitions, animations, or resource loads. Controlled exits remove the exact
+owned artifacts. Abrupt extension termination can leave them in the page until
+page navigation or reload.
+
+Known cases are reported as partial or unavailable and are not guessed.
+Negated targets such as `:not(:hover)`, ancestor or sibling pseudo targets,
+`:has()` targets, and unprovable cascade positions are partial. Inaccessible
+stylesheets/scopes and closed shadow roots are unavailable; closed-shadow
+internals do not contribute an unsupported pseudo-rule count.
+
+The default Inspector has no visible Source tab. Existing Source remains
+active-document-only in the packaged, non-default legacy rollback panel for
+exactly one published rollback release. A remounted Source tab and first-party
+PHP/template providers remain future scope.
 
 ## Compatibility
 

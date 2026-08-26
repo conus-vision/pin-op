@@ -60,21 +60,124 @@ test("store listings use ordered, attributed browser sections", () => {
       true,
       `${heading} must end with the exact attribution`,
     );
-    const rulesParagraph = content
-      .split(/\r?\n\r?\n/)
-      .find((paragraph) => /Rules origin click/i.test(paragraph));
-    assert.ok(rulesParagraph, `${heading} must describe Rules origin scope`);
-    assert.match(
-      rulesParagraph,
-      /opt-in\s+unpacked Inspector candidate/i,
-      `${heading} must not advertise Rules origin opening as store-default`,
-    );
-    assert.match(content, /store-default legacy rollback panel/i);
   }
 
   const escapedAttribution = escapeRegExp(attribution);
   const matches = storeListings.match(new RegExp(escapedAttribution, "g"));
   assert.equal(matches?.length ?? 0, 2);
+});
+
+test("browser listings state the Inspector preview and rollback truth", () => {
+  for (const heading of ["Firefox AMO", "Chrome Web Store"]) {
+    const content = requireSection(listingSections, heading).content;
+    const sharedUi = requireParagraph(
+      content,
+      /Chromium-derived/i,
+      `${heading} shared Inspector disclosure`,
+    );
+    assert.match(sharedUi, /one shared[\s\S]*read-only Inspector UI/i, heading);
+    assert.match(sharedUi, /BSD[\s-]*(?:licensed|attribution|notice)/i, heading);
+    assert.match(sharedUi, /pinned[\s\S]*source[\s\S]*available/i, heading);
+
+    const origin = requireParagraph(
+      content,
+      /Rules origin click/i,
+      `${heading} Rules origin disclosure`,
+    );
+    assert.match(origin, /only (?:after|on)[\s\S]*explicit/i, heading);
+    assert.match(
+      origin,
+      /exact[\s\S]*CSS[\s\S]*(?:source-mapped|original) SCSS/i,
+      heading,
+    );
+
+    const preview = requireParagraph(
+      content,
+      /author-style pseudo preview/i,
+      `${heading} pseudo preview disclosure`,
+    );
+    assert.match(preview, /:hover[\s\S]*:focus/i, heading);
+    assert.match(preview, /not native (?:pseudo-state )?forc(?:e|ing)/i, heading);
+    assert.match(
+      preview,
+      /no user-authored CSS or DOM editing operations/i,
+      heading,
+    );
+    assert.match(
+      preview,
+      /does not dispatch[^.]*\binput\b[^.]*events/i,
+      heading,
+    );
+    assert.match(preview, /does not dispatch[^.]*\bfocus\b[^.]*events/i, heading);
+    assert.match(
+      preview,
+      /does not dispatch[^.]*\bmouse\b[^.]*events/i,
+      heading,
+    );
+    assert.match(
+      preview,
+      /does not dispatch[^.]*\bpointer\b[^.]*events/i,
+      heading,
+    );
+    assert.match(
+      preview,
+      /does not dispatch[^.]*\bkeyboard\b[^.]*events/i,
+      heading,
+    );
+
+    const artifacts = requireParagraph(
+      content,
+      /temporary preview artifacts/i,
+      `${heading} preview artifact disclosure`,
+    );
+    assert.match(
+      artifacts,
+      /page scripts[\s\S]*(?:may|can) observe[\s\S]*while enabled/i,
+      heading,
+    );
+    const abruptClause = requireClause(
+      artifacts,
+      /abrupt extension termination/i,
+      `${heading} abrupt extension artifact lifetime`,
+    );
+    assertAbruptArtifactClause(abruptClause, heading);
+
+    const limits = requireParagraph(
+      content,
+      /unsupported/i,
+      `${heading} unsupported-case disclosure`,
+    );
+    assert.match(
+      limits,
+      /inaccessible stylesheet[\s\S]*(?:unavailable|PARTIAL)/i,
+      heading,
+    );
+    assertExplicitFidelityLimit(
+      limits,
+      /cross-origin frames?/i,
+      `${heading} cross-origin frame limit`,
+    );
+    assertExplicitFidelityLimit(
+      limits,
+      /closed shadow(?: roots?)?/i,
+      `${heading} closed shadow limit`,
+    );
+    assert.match(limits, /:not\(:hover\)[\s\S]*PARTIAL/i, heading);
+    assert.match(limits, /not guessed/i, heading);
+
+    const rollback = requireParagraph(
+      content,
+      /legacy rollback/i,
+      `${heading} legacy rollback disclosure`,
+    );
+    assert.match(rollback, /exactly one published rollback release/i, heading);
+    assert.match(
+      rollback,
+      /remove[\s\S]*only after[\s\S]*(?:support evidence|support reports?|manual field reports?)[\s\S]*confirm(?:s|ed)?[\s\S]*no blocking regression/i,
+      heading,
+    );
+    assert.doesNotMatch(rollback, /\btelemetry\b/i, heading);
+  }
 });
 
 test("GitHub About avoids unsupported speed claims", () => {
@@ -202,6 +305,56 @@ function topLevelOrderedListNumbers(markdown) {
 
 function collapseWhitespace(value) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function requireParagraph(document, marker, label) {
+  const paragraph = document
+    .split(/\r?\n\s*\r?\n/)
+    .map(collapseWhitespace)
+    .find((value) => marker.test(value));
+  assert.ok(paragraph, `${label} paragraph is required`);
+  return paragraph;
+}
+
+function requireClause(document, marker, label) {
+  const clause = collapseWhitespace(document)
+    .split(/(?<=[.!?])\s+/)
+    .find((value) => marker.test(value));
+  assert.ok(clause, `${label} clause is required`);
+  return clause;
+}
+
+function assertAbruptArtifactClause(clause, label) {
+  assert.doesNotMatch(
+    clause,
+    /\b(?:does not|never)\b[^.]{0,100}\b(?:leaves?|remains?)\b/i,
+    label,
+  );
+  assert.match(
+    clause,
+    /(?:abrupt extension termination[^.]*(?:leaves?|remains?)|(?:markers?|styles?|artifacts?)[^.]*remains?[^.]*(?:after|following|because of) (?:an? )?abrupt extension termination)/i,
+    label,
+  );
+  assert.match(clause, /(?:markers?|styles?|artifacts?)/i, label);
+  assert.match(clause, /until[^.]*(?:navigat|reload)/i, label);
+}
+
+function assertExplicitFidelityLimit(document, marker, label) {
+  const directPattern = new RegExp(
+    `${marker.source}[^.;!?]{0,100}(?:is|are|remain|remains|:)` +
+      String.raw`(?:\s+(?:reported|shown|marked)\s+as)?\s+(?:PARTIAL|unavailable)`,
+    "i",
+  );
+  const clauses = collapseWhitespace(document).split(/(?<=[.!?])\s+/);
+  const direct = clauses.some((clause) => directPattern.test(clause));
+  const unified = clauses.some(
+    (clause) =>
+      marker.test(clause) &&
+      /(?:\b(?:all|both)\b|\bthese (?:cases|limits)\b)[^.!?]{0,160}(?:PARTIAL|unavailable)|(?:PARTIAL|unavailable)[^.!?]{0,160}(?:\b(?:all|both)\b|\bthese (?:cases|limits)\b)/i.test(
+        clause,
+      ),
+  );
+  assert.ok(direct || unified, `${label} must be explicitly PARTIAL or unavailable`);
 }
 
 function escapeRegExp(value) {

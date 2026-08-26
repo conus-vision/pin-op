@@ -19,7 +19,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm --filter pin-op-firefox run build
 ```
 
-The version command must print `9.15.0`. The build output is written to `extensions/firefox/dist/` and contains both panel entrypoints, the legacy and Inspector bundles, the core and scoped Chromium-derived stylesheets, `pin-op.svg`, and the `icons/pin-op-*.png` extension icons.
+The version command must print `9.15.0`. The build output is written to `extensions/firefox/dist/`; it registers the shared Chromium-derived Inspector by default and contains both panel entrypoints, the Inspector and legacy bundles, the core and scoped derived stylesheets, `pin-op.svg`, and the `icons/pin-op-*.png` extension icons. Its pinned Chromium source is available and included in the source archive together with `UPSTREAM.json`, the Chromium root license, and the Pin-op change record; the BSD-licensed derivation carries its attribution in `THIRD_PARTY_NOTICES`. The non-default legacy `panel.html` is retained only for the single bounded rollback release and is selected only by an explicit `PIN_OP_PANEL_VARIANT=legacy` build.
 
 ## Create The Submission ZIP
 
