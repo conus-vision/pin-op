@@ -9,6 +9,12 @@ interface FixtureSourceMap {
   readonly sources: string[];
 }
 
+function extractToggleEventlessApplicability(page: string): string | undefined {
+  return page.match(
+    /(function toggleEventlessApplicability\(\) \{[\s\S]*?\r?\n      \})\r?\n\r?\n      function toggleSiblingApplicability/,
+  )?.[1];
+}
+
 describe("basic CSS example server", () => {
   it("serves the complete deterministic page and stylesheet matrix", async () => {
     const servers = await startFixtureServers();
@@ -513,11 +519,13 @@ describe("basic CSS example server", () => {
 
     try {
       const page = await responseText(servers.pageUrl);
-      const functionSource = page.match(
-        /(function toggleEventlessApplicability\(\) \{[\s\S]*?\n      \})\n\n      function toggleSiblingApplicability/,
-      )?.[1];
+      const functionSource = extractToggleEventlessApplicability(page);
+      const crlfPage = page.replace(/\r?\n/g, "\r\n");
 
       expect(functionSource).toBeDefined();
+      expect(extractToggleEventlessApplicability(crlfPage)).toBe(
+        functionSource?.replace(/\r?\n/g, "\r\n"),
+      );
       expect(functionSource).toContain(
         'supportsCustomStates.has("pin-op-active")',
       );
