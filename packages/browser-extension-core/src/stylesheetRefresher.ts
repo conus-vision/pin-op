@@ -1,6 +1,13 @@
 export const STYLESHEET_REFRESH_TIMEOUT_MS = 5_000;
 export const MAX_STYLESHEET_REFRESH_LINKS = 256;
 
+const transientStylesheetRefreshNodes = new WeakSet<object>();
+
+/** Exact-identity exclusion for replacement links that are not author-owned yet. */
+export function isTransientStylesheetRefreshNode(node: object): boolean {
+  return transientStylesheetRefreshNodes.has(node);
+}
+
 export interface StylesheetRefreshResult {
   readonly attempted: number;
   readonly updated: number;
@@ -12,6 +19,11 @@ export interface StylesheetRefreshOptions {
   readonly setTimeout?: typeof globalThis.setTimeout;
   readonly clearTimeout?: typeof globalThis.clearTimeout;
   readonly signal?: AbortSignal;
+  readonly beforeControlledTransition?: () =>
+    | boolean
+    | void
+    | Promise<boolean | void>;
+  readonly onStylesheetsUpdated?: () => void | Promise<void>;
 }
 
 interface LinkLike extends Node {
@@ -37,6 +49,16 @@ export async function refreshExternalStylesheets(
     return result(0, 0, 0);
   }
 
+  if (options.beforeControlledTransition) {
+    const acknowledged = await options.beforeControlledTransition();
+    if (acknowledged === false) {
+      throw new Error("Stylesheet refresh cleanup was not acknowledged");
+    }
+  }
+  if (options.signal?.aborted || !isTopDocument(document)) {
+    return result(0, 0, 0);
+  }
+
   const links = eligibleLinks(document);
   const timeoutMs = requireTimeout(
     options.timeoutMs ?? STYLESHEET_REFRESH_TIMEOUT_MS,
@@ -55,6 +77,9 @@ export async function refreshExternalStylesheets(
     )),
   );
   const updated = outcomes.filter(Boolean).length;
+  if (updated > 0) {
+    await options.onStylesheetsUpdated?.();
+  }
   return result(links.length, updated, links.length - updated);
 }
 
@@ -86,13 +111,19 @@ function refreshLink(
       }
       if (
         loaded &&
-        hasExpectedParent(replacement, parent) &&
-        removeChild(parent, original)
+        hasExpectedParent(replacement, parent)
       ) {
-        resolve(true);
-        return;
+        transientStylesheetRefreshNodes.add(original);
+        if (removeChild(parent, original)) {
+          releaseTransientStylesheetRefreshNode(original);
+          releaseTransientStylesheetRefreshNode(replacement);
+          resolve(true);
+          return;
+        }
       }
-      removeChild(parent, replacement);
+      removeFromCurrentParent(replacement);
+      releaseTransientStylesheetRefreshNode(original);
+      releaseTransientStylesheetRefreshNode(replacement);
       resolve(false);
     };
     const onLoad: EventListener = () => finish(true);
@@ -116,6 +147,7 @@ function refreshLink(
         return;
       }
       replacement = clone;
+      transientStylesheetRefreshNodes.add(replacement);
       replacement.setAttribute(
         "href",
         refreshedHref(original, document, generation),
@@ -138,14 +170,24 @@ function refreshLink(
         } catch {
           // A hostile clone cannot retain useful refresh authority.
         }
-        if (typeof parent! === "object" && parent !== null) {
-          removeChild(parent, replacement);
-        }
+        removeFromCurrentParent(replacement);
+        releaseTransientStylesheetRefreshNode(original);
+        releaseTransientStylesheetRefreshNode(replacement);
       }
       if (timer !== undefined) cancel(timer);
       resolve(false);
     }
   });
+}
+
+function releaseTransientStylesheetRefreshNode(node: object): void {
+  try {
+    globalThis.queueMicrotask(() => {
+      transientStylesheetRefreshNodes.delete(node);
+    });
+  } catch {
+    transientStylesheetRefreshNodes.delete(node);
+  }
 }
 
 function eligibleLinks(document: Document): LinkLike[] {
@@ -253,6 +295,15 @@ function removeChild(parent: ParentLike, child: Node): boolean {
     if (child.parentNode !== parent) return false;
     parent.removeChild(child);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeFromCurrentParent(child: Node): boolean {
+  try {
+    const parent = child.parentNode;
+    return isParentLike(parent) && removeChild(parent, child);
   } catch {
     return false;
   }

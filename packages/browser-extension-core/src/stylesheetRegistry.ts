@@ -217,6 +217,7 @@ export class StylesheetRegistry {
   private readonly ruleReferences: RuleReferenceRegistry;
   private mutationObserver: StylesheetMutationObserver | undefined;
   private pollHandle: unknown;
+  private pollToken: object | undefined;
   private pollApplicability: ((stylesheetChanged: boolean) => void) | undefined;
   private readonly setIntervalFn: (callback: () => void, milliseconds: number) => unknown;
   private readonly clearIntervalFn: (handle: unknown) => void;
@@ -351,8 +352,10 @@ export class StylesheetRegistry {
     this.requireLive();
     if (applicabilityCheck) this.pollApplicability = applicabilityCheck;
     if (this.pollHandle !== undefined) return;
+    const token = {};
+    this.pollToken = token;
     this.pollHandle = this.setIntervalFn(() => {
-      if (this.disposed) return;
+      if (this.disposed || this.pollToken !== token) return;
       let stylesheetChanged = false;
       try {
         stylesheetChanged = this.checkForChanges();
@@ -368,6 +371,7 @@ export class StylesheetRegistry {
   }
 
   public stopPolling(): void {
+    this.pollToken = undefined;
     if (this.pollHandle === undefined) return;
     const handle = this.pollHandle;
     this.pollHandle = undefined;

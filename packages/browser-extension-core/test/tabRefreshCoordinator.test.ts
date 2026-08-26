@@ -4,7 +4,10 @@ import {
 } from "@pin-op/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionStorage } from "../src/browserWindowLinkStore.js";
-import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
+import {
+  TabRefreshCoordinator,
+  type TabRefreshCompletion,
+} from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("TabRefreshCoordinator", () => {
@@ -424,6 +427,220 @@ describe("TabRefreshCoordinator", () => {
       ]);
   });
 
+  it.each(["reject", "throw"] as const)(
+    "completes active success and deferred %s failure exactly once",
+    async (failure) => {
+      let activeTabId = 11;
+      const completions: TabRefreshCompletion[] = [];
+      const onError = vi.fn();
+      const dispatchError = new Error("content unavailable");
+      const context = setup(
+        undefined,
+        () => activeTabId,
+        (tabId) => {
+          if (tabId !== 12) return Promise.resolve();
+          if (failure === "throw") throw dispatchError;
+          return Promise.reject(dispatchError);
+        },
+        onError,
+      );
+      await context.coordinator.panelOpened(11, 7);
+      await context.coordinator.panelOpened(12, 7);
+
+      await expect(context.coordinator.acceptPageRefresh(
+        7,
+        refresh(1, "styles"),
+        undefined,
+        (completion) => completions.push(completion),
+      )).resolves.toBe(true);
+
+      expect(completions).toEqual([{
+        tabId: 11,
+        windowId: 7,
+        refreshGeneration: 1,
+        mode: "styles",
+        accepted: true,
+      }]);
+      expect(Object.isFrozen(completions[0])).toBe(true);
+      expect(await context.coordinator.state(12, 7)).toHaveProperty(
+        "pending",
+        { generation: 1, mode: "styles" },
+      );
+
+      activeTabId = 12;
+      await context.coordinator.activateTab(12, 7);
+      await context.coordinator.activateTab(12, 7);
+
+      expect(completions).toEqual([
+        {
+          tabId: 11,
+          windowId: 7,
+          refreshGeneration: 1,
+          mode: "styles",
+          accepted: true,
+        },
+        {
+          tabId: 12,
+          windowId: 7,
+          refreshGeneration: 1,
+          mode: "styles",
+          accepted: false,
+        },
+      ]);
+      expect(Object.isFrozen(completions[1])).toBe(true);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledWith(dispatchError);
+    },
+  );
+
+  it("completes superseded, cleared, and closed pending work as rejected", async () => {
+    const completions: TabRefreshCompletion[] = [];
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+
+    await context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+      undefined,
+      (completion) => completions.push(completion),
+    );
+    expect(completions).toEqual([]);
+
+    await context.coordinator.acceptPageRefresh(
+      7,
+      refresh(2, "styles"),
+      undefined,
+      (completion) => completions.push(completion),
+    );
+    expect(completions.map(({ refreshGeneration, accepted }) =>
+      [refreshGeneration, accepted]
+    )).toEqual([[1, false]]);
+
+    await context.coordinator.clearWindowPending(7);
+    await context.coordinator.acceptPageRefresh(
+      7,
+      refresh(3, "reload"),
+      undefined,
+      (completion) => completions.push(completion),
+    );
+    await context.coordinator.panelClosed(11, 7);
+
+    expect(completions.map(({ refreshGeneration, mode, accepted }) =>
+      [refreshGeneration, mode, accepted]
+    )).toEqual([
+      [1, "styles", false],
+      [2, "styles", false],
+      [3, "reload", false],
+    ]);
+  });
+
+  it("does not complete tabs for stale or unadmitted refreshes", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.acceptPageRefresh(7, refresh(1, "styles"));
+    const staleCompletion = vi.fn();
+    const unadmittedCompletion = vi.fn();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+      undefined,
+      staleCompletion,
+    )).resolves.toBe(false);
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(2, "styles"),
+      () => false,
+      unadmittedCompletion,
+    )).resolves.toBe(false);
+
+    expect(staleCompletion).not.toHaveBeenCalled();
+    expect(unadmittedCompletion).not.toHaveBeenCalled();
+  });
+
+  it("awaits controlled-transition cleanup before dispatching an accepted refresh", async () => {
+    const cleanupGate = deferred<void>();
+    const events: string[] = [];
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => { events.push("dispatch"); },
+      vi.fn(),
+      async () => {
+        events.push("cleanup-started");
+        await cleanupGate.promise;
+        events.push("cleanup-finished");
+      },
+    );
+    await context.coordinator.panelOpened(11, 7);
+
+    const accepting = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(context.beforeControlledTransition).toHaveBeenCalledWith(11)
+      );
+      expect(events).toEqual(["cleanup-started"]);
+      expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+      cleanupGate.resolve();
+      await expect(accepting).resolves.toBe(true);
+      expect(events).toEqual([
+        "cleanup-started",
+        "cleanup-finished",
+        "dispatch",
+      ]);
+    } finally {
+      cleanupGate.resolve();
+      await accepting;
+    }
+  });
+
+  it("drops a refresh whose tab lifecycle becomes stale during deferred cleanup", async () => {
+    const cleanupGate = deferred<void>();
+    const completions: TabRefreshCompletion[] = [];
+    const context = setup(
+      undefined,
+      () => 11,
+      async () => undefined,
+      vi.fn(),
+      async () => cleanupGate.promise,
+    );
+    await context.coordinator.panelOpened(11, 7);
+
+    const accepting = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+      undefined,
+      (completion) => completions.push(completion),
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(context.beforeControlledTransition).toHaveBeenCalledWith(11)
+      );
+      expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+      await context.coordinator.panelClosed(11, 7);
+      expect(completions).toEqual([{
+        tabId: 11,
+        windowId: 7,
+        refreshGeneration: 1,
+        mode: "reload",
+        accepted: false,
+      }]);
+      cleanupGate.resolve();
+
+      await expect(accepting).resolves.toBe(true);
+      expect(context.dispatchRefresh).not.toHaveBeenCalled();
+      expect(completions).toHaveLength(1);
+    } finally {
+      cleanupGate.resolve();
+      await accepting;
+    }
+  });
+
   it("reports page refresh admission only for a newly committed watermark", async () => {
     const context = setup();
     await context.coordinator.panelOpened(11, 7);
@@ -449,6 +666,215 @@ describe("TabRefreshCoordinator", () => {
     await expect(
       context.coordinator.acceptPageRefresh(7, refresh(2, "reload")),
     ).resolves.toBe(false);
+  });
+
+  it("does not commit or dispatch when deferred refresh admission is revoked", async () => {
+    const admissionGate = deferred<void>();
+    const context = setup(memoryStorage(), () => 11);
+    await context.coordinator.panelOpened(11, 7);
+
+    const accepting = context.coordinator.acceptPageRefresh(
+      7,
+      refresh(3, "reload"),
+      async () => {
+        await admissionGate.promise;
+        return false;
+      },
+    );
+    await Promise.resolve();
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+    admissionGate.resolve();
+    await expect(accepting).resolves.toBe(false);
+    expect(await context.coordinator.state(11, 7)).toMatchObject({
+      lastAcceptedGeneration: 0,
+    });
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(3, "reload"),
+    )).resolves.toBe(true);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("atomically rolls back a partially persisted multi-tab admission", async () => {
+    let activeTabId = 99;
+    const context = setup(undefined, () => activeTabId);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    const updateTab = context.store.updateTab.bind(context.store);
+    const admissionFailure = new Error("second participant write failed");
+    let updateCalls = 0;
+    vi.spyOn(context.store, "updateTab").mockImplementation((tabId, update) => {
+      updateCalls += 1;
+      return updateCalls === 2
+        ? Promise.reject(admissionFailure)
+        : updateTab(tabId, update);
+    });
+    const failedCompletion = vi.fn();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+      undefined,
+      failedCompletion,
+    )).rejects.toBe(admissionFailure);
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+    expect(failedCompletion).not.toHaveBeenCalled();
+
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+
+    activeTabId = 11;
+    const retryCompletion = vi.fn();
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+      undefined,
+      retryCompletion,
+    )).resolves.toBe(true);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+    expect(retryCompletion).toHaveBeenCalledOnce();
+    expect(retryCompletion).toHaveBeenCalledWith({
+      tabId: 11,
+      windowId: 7,
+      refreshGeneration: 1,
+      mode: "styles",
+      accepted: true,
+    });
+  });
+
+  it("keeps prior deferred work until replacement admission fully persists", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    const priorCompletions: TabRefreshCompletion[] = [];
+    await context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+      undefined,
+      (completion) => priorCompletions.push(completion),
+    );
+
+    const updateTab = context.store.updateTab.bind(context.store);
+    const admissionFailure = new Error("replacement write failed");
+    let updateCalls = 0;
+    vi.spyOn(context.store, "updateTab").mockImplementation((tabId, update) => {
+      updateCalls += 1;
+      return updateCalls === 2
+        ? Promise.reject(admissionFailure)
+        : updateTab(tabId, update);
+    });
+    const replacementCompletion = vi.fn();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(2, "styles"),
+      undefined,
+      replacementCompletion,
+    )).rejects.toBe(admissionFailure);
+    expect(priorCompletions).toEqual([]);
+    expect(replacementCompletion).not.toHaveBeenCalled();
+    expect(await context.coordinator.state(11, 7)).toHaveProperty(
+      "pending",
+      { generation: 1, mode: "reload" },
+    );
+    expect(await context.coordinator.state(12, 7)).toHaveProperty(
+      "pending",
+      { generation: 1, mode: "reload" },
+    );
+
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "reload",
+    });
+    expect(priorCompletions).toEqual([{
+      tabId: 11,
+      windowId: 7,
+      refreshGeneration: 1,
+      mode: "reload",
+      accepted: true,
+    }]);
+    expect(replacementCompletion).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a failing participant whose write applied before rejection", async () => {
+    let activeTabId = 99;
+    const context = setup(undefined, () => activeTabId);
+    await context.coordinator.panelOpened(11, 7);
+    await context.coordinator.panelOpened(12, 7);
+    const updateTab = context.store.updateTab.bind(context.store);
+    const admissionFailure = new Error("applied participant write rejected");
+    let updateCalls = 0;
+    vi.spyOn(context.store, "updateTab").mockImplementation(async (
+      tabId,
+      update,
+    ) => {
+      const occurrence = ++updateCalls;
+      const updated = await updateTab(tabId, update);
+      if (occurrence === 2) throw admissionFailure;
+      return updated;
+    });
+    const failedCompletion = vi.fn();
+
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+      undefined,
+      failedCompletion,
+    )).rejects.toBe(admissionFailure);
+    expect(failedCompletion).not.toHaveBeenCalled();
+    expect(await context.store.loadAll()).toEqual([
+      expect.objectContaining({ tabId: 11, lastAcceptedGeneration: 0 }),
+      expect.objectContaining({ tabId: 12, lastAcceptedGeneration: 0 }),
+    ]);
+
+    activeTabId = 11;
+    await expect(context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "reload"),
+    )).resolves.toBe(true);
+    expect(context.dispatchRefresh).toHaveBeenCalledOnce();
+    expect(context.dispatchRefresh).toHaveBeenCalledWith(11, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "reload",
+    });
+  });
+
+  it("cancels pending work before a same-window panel reopen advances lifecycle", async () => {
+    const context = setup(undefined, () => 99);
+    await context.coordinator.panelOpened(11, 7);
+    const completions: TabRefreshCompletion[] = [];
+    await context.coordinator.acceptPageRefresh(
+      7,
+      refresh(1, "styles"),
+      undefined,
+      (completion) => completions.push(completion),
+    );
+
+    const reopened = await context.coordinator.panelOpened(11, 7);
+
+    expect(reopened).not.toHaveProperty("pending");
+    expect(completions).toEqual([{
+      tabId: 11,
+      windowId: 7,
+      refreshGeneration: 1,
+      mode: "styles",
+      accepted: false,
+    }]);
+    await context.coordinator.activateTab(11, 7);
+    expect(context.dispatchRefresh).not.toHaveBeenCalled();
+    expect(completions).toHaveLength(1);
   });
 
   it("rejects a same-generation reload replay after restart", async () => {
@@ -1348,17 +1774,20 @@ describe("TabRefreshCoordinator", () => {
 function setup(
   storage = memoryStorage(),
   activeTab: () => number | undefined = () => undefined,
-  dispatch: (tabId: number, command: unknown) => Promise<void> = async () => undefined,
+  dispatch: (tabId: number, command: unknown) => Promise<void> | void = async () => undefined,
   onError = vi.fn(),
+  beforeTransition: (tabId: number) => Promise<void> | void = async () => undefined,
 ) {
   const store = new TabRefreshStateStore(storage);
   const dispatchRefresh = vi.fn(dispatch);
   const setRefreshParticipant = vi.fn();
+  const beforeControlledTransition = vi.fn(beforeTransition);
   const coordinator = new TabRefreshCoordinator({
     store,
     getActiveTabId: async () => activeTab(),
     dispatchRefresh,
     setRefreshParticipant,
+    beforeControlledTransition,
     onError,
   });
   return {
@@ -1367,6 +1796,7 @@ function setup(
     coordinator,
     dispatchRefresh,
     setRefreshParticipant,
+    beforeControlledTransition,
   };
 }
 

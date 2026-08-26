@@ -7,7 +7,10 @@ import {
   type InspectPortRequest,
   type InspectPortResult,
 } from "./inspectPortProtocol.js";
-import { BackgroundInspectLeaseRegistry } from "./inspectLease.js";
+import {
+  BackgroundInspectLeaseRegistry,
+  type DetachedBackgroundInspectLease,
+} from "./inspectLease.js";
 
 const DEFAULT_CLEANUP_ACK_TIMEOUT_MS = 1_000;
 const MAX_CLEANUP_ACK_TIMEOUT_MS = 60_000;
@@ -36,7 +39,11 @@ export interface BackgroundInspectCoordinatorOptions {
 
 interface TabInspectState {
   queue: Promise<void>;
+  activationQueue: Promise<void>;
+  leaseQueue: Promise<void>;
+  cleanupBarrier: Promise<void>;
   owner: ActiveInspectOwner | undefined;
+  pendingOwner: ActiveInspectOwner | undefined;
   pendingLeaseAttachments: number;
 }
 
@@ -45,6 +52,10 @@ interface ActiveInspectOwner {
   readonly onInvalidated: (reason: InspectSessionInvalidationReason) => void;
   readonly onContentLeaseAttached: (contentSessionId: ContentSessionId) => void;
   readonly onContentLeaseReplacing: (
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ) => void;
+  readonly onContentLeaseReplacementStarted: (
     previousContentSessionId: ContentSessionId,
     nextContentSessionId: ContentSessionId,
   ) => void;
@@ -60,6 +71,10 @@ export interface BackgroundInspectSessionLifecycle {
     contentSessionId: ContentSessionId,
   ) => void;
   readonly onContentLeaseReplacing?: (
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ) => void;
+  readonly onContentLeaseReplacementStarted?: (
     previousContentSessionId: ContentSessionId,
     nextContentSessionId: ContentSessionId,
   ) => void;
@@ -97,21 +112,33 @@ export class BackgroundInspectCoordinator {
       previousContentSessionId: ContentSessionId,
       nextContentSessionId: ContentSessionId,
     ) => void = () => {},
+    onContentLeaseReplacementStarted: (
+      previousContentSessionId: ContentSessionId,
+      nextContentSessionId: ContentSessionId,
+    ) => void = () => {},
   ): Promise<void> {
     const state = this.stateFor(tabId);
-    if (state.owner?.token === owner) {
+    if (
+      state.owner?.token === owner ||
+      state.pendingOwner?.token === owner
+    ) {
       return state.queue;
     }
-    state.owner = {
+    const pendingOwner: ActiveInspectOwner = {
       token: owner,
       onInvalidated,
       onContentLeaseAttached,
       onContentLeaseReplacing,
+      onContentLeaseReplacementStarted,
     };
-    return this.enqueue(state, async () => {
-      if (state.owner?.token !== owner) {
+    state.owner = undefined;
+    state.pendingOwner = pendingOwner;
+    return this.enqueueActivation(state, async () => {
+      if (state.pendingOwner !== pendingOwner) {
         return;
       }
+      state.pendingOwner = undefined;
+      state.owner = pendingOwner;
       try {
         await this.api.executeScript({
           target: { tabId },
@@ -146,23 +173,25 @@ export class BackgroundInspectCoordinator {
 
   public release(owner: object, tabId: number): Promise<void> {
     const state = this.tabs.get(tabId);
-    if (!state || state.owner?.token !== owner) {
+    const ownsActive = state?.owner?.token === owner;
+    const ownsPending = state?.pendingOwner?.token === owner;
+    if (!state || (!ownsActive && !ownsPending)) {
       return Promise.resolve();
     }
-    state.owner = undefined;
+    if (ownsActive) state.owner = undefined;
+    if (ownsPending) state.pendingOwner = undefined;
+    const predecessorQueue = Promise.all([
+      state.queue,
+      state.leaseQueue,
+    ]).then(() => undefined);
     const detachedLease = this.leases.detach(tabId);
-    return this.enqueue(state, async () => {
-      try {
-        if (detachedLease?.contentSessionId) {
-          await this.requestCleanupAcknowledgement(tabId, {
-            type: "pin-op.inspect.disposeSession",
-            contentSessionId: detachedLease.contentSessionId,
-          });
-        }
-      } finally {
-        detachedLease?.release();
-      }
-    });
+    const released = this.enqueueBoundedLeaseRelease(
+      predecessorQueue,
+      tabId,
+      detachedLease,
+    );
+    state.queue = released.then(() => undefined, () => undefined);
+    return released;
   }
 
   public clearPseudoStates(
@@ -178,21 +207,45 @@ export class BackgroundInspectCoordinator {
     ) {
       return Promise.resolve(false);
     }
-    return this.enqueueResult(state, async () => {
-      if (
-        state.owner !== owner ||
-        !this.leases.isCurrent(tabId, contentSessionId)
-      ) {
-        return false;
-      }
-      const acknowledged = await this.requestCleanupAcknowledgement(tabId, {
+    const cleanup = this.enqueueBoundedCleanupAcknowledgement(
+      state,
+      () =>
+        state.owner === owner &&
+        this.leases.isCurrent(tabId, contentSessionId),
+      tabId,
+      {
         type: "pin-op.inspect.clearPseudoStates",
         contentSessionId,
-      });
-      return acknowledged &&
-        state.owner === owner &&
-        this.leases.isCurrent(tabId, contentSessionId);
-    });
+      },
+    );
+    const previousBarrier = state.cleanupBarrier;
+    state.cleanupBarrier = Promise.all([previousBarrier, cleanup]).then(
+      () => undefined,
+      () => undefined,
+    );
+    return cleanup;
+  }
+
+  public retireContentLease(
+    owner: object,
+    tabId: number,
+    contentSessionId: ContentSessionId,
+  ): boolean {
+    const state = this.tabs.get(tabId);
+    if (
+      !state ||
+      state.owner?.token !== owner ||
+      !this.leases.isCurrent(tabId, contentSessionId)
+    ) {
+      return false;
+    }
+    const detached = this.leases.detach(tabId);
+    if (!detached || detached.contentSessionId !== contentSessionId) {
+      detached?.release();
+      return false;
+    }
+    detached.release();
+    return true;
   }
 
   public attachContentLease(
@@ -220,7 +273,7 @@ export class BackgroundInspectCoordinator {
     if (!candidate) return;
     const queuedPredecessorId = this.leases.contentSessionId(tabId);
     if (queuedPredecessorId) {
-      this.notifyContentLeaseReplacing(
+      this.notifyContentLeaseReplacementStarted(
         state,
         owner,
         queuedPredecessorId,
@@ -228,7 +281,8 @@ export class BackgroundInspectCoordinator {
       );
     }
     state.pendingLeaseAttachments += 1;
-    const operation = this.enqueue(state, async () => {
+    const operation = this.enqueueLeaseTransition(state, async () => {
+      await this.waitForCleanupBarrier(state);
       if (state.owner !== owner) {
         candidate.reject();
         return;
@@ -238,7 +292,7 @@ export class BackgroundInspectCoordinator {
         predecessor?.contentSessionId &&
         predecessor.contentSessionId !== queuedPredecessorId
       ) {
-        this.notifyContentLeaseReplacing(
+        this.notifyContentLeaseReplacementStarted(
           state,
           owner,
           predecessor.contentSessionId,
@@ -251,6 +305,12 @@ export class BackgroundInspectCoordinator {
             type: "pin-op.inspect.disposeSession",
             contentSessionId: predecessor.contentSessionId,
           });
+          this.notifyContentLeaseReplacing(
+            state,
+            owner,
+            predecessor.contentSessionId,
+            contentSessionId,
+          );
         }
       } finally {
         predecessor?.release();
@@ -274,7 +334,10 @@ export class BackgroundInspectCoordinator {
   }
 
   public whenIdle(tabId: number): Promise<void> {
-    return this.tabs.get(tabId)?.queue ?? Promise.resolve();
+    const state = this.tabs.get(tabId);
+    return state
+      ? Promise.all([state.queue, state.leaseQueue]).then(() => undefined)
+      : Promise.resolve();
   }
 
   public sendTabMessage(tabId: number, message: unknown): Promise<unknown> {
@@ -291,7 +354,11 @@ export class BackgroundInspectCoordinator {
     }
     const created: TabInspectState = {
       queue: Promise.resolve(),
+      activationQueue: Promise.resolve(),
+      leaseQueue: Promise.resolve(),
+      cleanupBarrier: Promise.resolve(),
       owner: undefined,
+      pendingOwner: undefined,
       pendingLeaseAttachments: 0,
     };
     this.tabs.set(tabId, created);
@@ -303,6 +370,38 @@ export class BackgroundInspectCoordinator {
     operation: () => Promise<void>,
   ): Promise<void> {
     return this.enqueueResult(state, operation);
+  }
+
+  private enqueueActivation(
+    state: TabInspectState,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const predecessor = Promise.all([
+      state.queue,
+      state.activationQueue,
+    ]).then(() => undefined);
+    const result = predecessor.then(operation);
+    const settled = result.then(() => undefined, () => undefined);
+    state.queue = settled;
+    state.activationQueue = settled;
+    return result;
+  }
+
+  private enqueueLeaseTransition(
+    state: TabInspectState,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const result = state.leaseQueue.then(operation);
+    state.leaseQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async waitForCleanupBarrier(state: TabInspectState): Promise<void> {
+    while (true) {
+      const barrier = state.cleanupBarrier;
+      await barrier;
+      if (state.cleanupBarrier === barrier) return;
+    }
   }
 
   private enqueueResult<T>(
@@ -360,6 +459,23 @@ export class BackgroundInspectCoordinator {
     }
   }
 
+  private notifyContentLeaseReplacementStarted(
+    state: TabInspectState,
+    owner: ActiveInspectOwner,
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ): void {
+    if (state.owner !== owner) return;
+    try {
+      owner.onContentLeaseReplacementStarted(
+        previousContentSessionId,
+        nextContentSessionId,
+      );
+    } catch {
+      // The exact cleanup lease remains authoritative until bounded settlement.
+    }
+  }
+
   private requestCleanupAcknowledgement(
     tabId: number,
     message: unknown,
@@ -407,6 +523,148 @@ export class BackgroundInspectCoordinator {
         (response) => finish(response === true),
         () => finish(false),
       );
+    });
+  }
+
+  private enqueueBoundedCleanupAcknowledgement(
+    state: TabInspectState,
+    isCurrent: () => boolean,
+    tabId: number,
+    message: unknown,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      let active = true;
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+      let expireQueued!: () => void;
+      const expired = new Promise<boolean>((resolveExpired) => {
+        expireQueued = () => resolveExpired(false);
+      });
+      const finish = (acknowledged: boolean): void => {
+        if (!active) return;
+        active = false;
+        if (timer !== undefined) {
+          try {
+            this.cancelTimeout(timer);
+          } catch {
+            // Timeout authority is already revoked after settlement.
+          }
+        }
+        resolve(acknowledged);
+      };
+      const expire = (): void => {
+        if (!active) return;
+        active = false;
+        expireQueued();
+        resolve(false);
+      };
+      try {
+        timer = this.scheduleTimeout(expire, this.cleanupAckTimeoutMs);
+      } catch {
+        expire();
+        return;
+      }
+      if (!active) {
+        try {
+          this.cancelTimeout(timer);
+        } catch {
+          // A synchronously-fired timer has already revoked cleanup authority.
+        }
+        return;
+      }
+
+      const queued = this.enqueueResult(state, async () => {
+        if (!active || !isCurrent()) return false;
+        let pending: Promise<unknown>;
+        try {
+          pending = this.api.sendTabMessage(tabId, message);
+        } catch {
+          return false;
+        }
+        const acknowledged = await Promise.race([
+          pending.then(
+            (response) => response === true,
+            () => false,
+          ),
+          expired,
+        ]);
+        return active && acknowledged && isCurrent();
+      });
+      void queued.then(finish, () => finish(false));
+    });
+  }
+
+  private enqueueBoundedLeaseRelease(
+    predecessorQueue: Promise<void>,
+    tabId: number,
+    lease: DetachedBackgroundInspectLease | undefined,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let active = true;
+      let released = false;
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+      let expireQueued!: () => void;
+      const expired = new Promise<boolean>((resolveExpired) => {
+        expireQueued = () => resolveExpired(false);
+      });
+      const releaseLease = (): void => {
+        if (released) return;
+        released = true;
+        lease?.release();
+      };
+      const finish = (): void => {
+        if (!active) return;
+        active = false;
+        if (timer !== undefined) {
+          try {
+            this.cancelTimeout(timer);
+          } catch {
+            // Cleanup completion already owns the detached lease.
+          }
+        }
+        releaseLease();
+        resolve();
+      };
+      const expire = (): void => {
+        if (!active) return;
+        active = false;
+        expireQueued();
+        releaseLease();
+        resolve();
+      };
+      try {
+        timer = this.scheduleTimeout(expire, this.cleanupAckTimeoutMs);
+      } catch {
+        expire();
+        return;
+      }
+      if (!active) {
+        try {
+          this.cancelTimeout(timer);
+        } catch {
+          // A synchronous deadline has already released the lease.
+        }
+        return;
+      }
+      const queued = predecessorQueue.then(async () => {
+        if (!active || !lease?.contentSessionId) return false;
+        let pending: Promise<unknown>;
+        try {
+          pending = this.api.sendTabMessage(tabId, {
+            type: "pin-op.inspect.disposeSession",
+            contentSessionId: lease.contentSessionId,
+          });
+        } catch {
+          return false;
+        }
+        return await Promise.race([
+          pending.then(
+            (response) => response === true,
+            () => false,
+          ),
+          expired,
+        ]);
+      });
+      void queued.then(finish, finish);
     });
   }
 
@@ -542,6 +800,8 @@ export class BackgroundInspectSession {
       (reason) => this.handleInvalidation(reason),
       (contentSessionId) => this.handleContentLeaseAttached(contentSessionId),
       (previous, next) => this.handleContentLeaseReplacing(previous, next),
+      (previous, next) =>
+        this.handleContentLeaseReplacementStarted(previous, next),
     );
     this.lastOperation = this.ready.catch(() => undefined);
   }
@@ -565,8 +825,15 @@ export class BackgroundInspectSession {
   }
 
   public disconnect(): void {
+    void this.controlledDispose();
+  }
+
+  public controlledDispose(): Promise<void> {
+    if (this.disconnected) {
+      return this.lastOperation;
+    }
     this.settlePending("stalePanel", false);
-    this.close();
+    return this.close();
   }
 
   public retire(error: string): void {
@@ -574,7 +841,7 @@ export class BackgroundInspectSession {
       return;
     }
     this.settlePending(error, true);
-    this.close();
+    void this.close();
   }
 
   public suspend(error = "stalePanel"): void {
@@ -590,6 +857,20 @@ export class BackgroundInspectSession {
         .setEnabled(this.owner, this.tabId, false)
         .catch(() => undefined);
     }
+  }
+
+  public retireContentLease(contentSessionId: ContentSessionId): boolean {
+    if (this.disconnected) return false;
+    const retired = this.coordinator.retireContentLease(
+      this.owner,
+      this.tabId,
+      contentSessionId,
+    );
+    if (retired) {
+      this.settlePending("stalePanel", true);
+      this.pickerEnabled = false;
+    }
+    return retired;
   }
 
   public whenIdle(): Promise<void> {
@@ -681,13 +962,14 @@ export class BackgroundInspectSession {
     }
   }
 
-  private close(): void {
+  private close(): Promise<void> {
     if (this.disconnected) {
-      return;
+      return this.lastOperation;
     }
     this.disconnected = true;
     this.lastOperation = this.coordinator.release(this.owner, this.tabId)
       .catch(() => undefined);
+    return this.lastOperation;
   }
 
   private handleInvalidation(reason: InspectSessionInvalidationReason): void {
@@ -717,6 +999,17 @@ export class BackgroundInspectSession {
   ): void {
     if (this.disconnected) return;
     this.lifecycle.onContentLeaseReplacing?.(
+      previousContentSessionId,
+      nextContentSessionId,
+    );
+  }
+
+  private handleContentLeaseReplacementStarted(
+    previousContentSessionId: ContentSessionId,
+    nextContentSessionId: ContentSessionId,
+  ): void {
+    if (this.disconnected) return;
+    this.lifecycle.onContentLeaseReplacementStarted?.(
       previousContentSessionId,
       nextContentSessionId,
     );

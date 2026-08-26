@@ -111,6 +111,7 @@ interface PanelRuntimePresentationBinding {
   readonly removeSettingsBindings: () => void;
   readonly removeSourceNavigationBindings: () => void;
   readonly removeLayoutBindings: () => void;
+  beforeControlledTransition?(): boolean | Promise<boolean>;
   contentLeaseReplaced(): void;
   disposePresentation(): void;
 }
@@ -232,13 +233,16 @@ export function startPanelRuntimeWithPresentation(
     },
     onError: reportError,
   });
+  let presentationBinding!: PanelRuntimePresentationBinding;
   const recoveryCoordinator = new DomTreeRecoveryCoordinator({
     controller: treeController,
     transport: {
       request: (request) => inspectTransport.requestDom(request),
     },
+    beforeControlledTransition: () =>
+      presentationBinding.beforeControlledTransition?.() ?? true,
   });
-  const presentationBinding = presentation.attach({
+  presentationBinding = presentation.attach({
     sourcePaneController,
     sourceNavigationController,
     settingsController,
@@ -1293,6 +1297,7 @@ function createLegacyPresentation(
         removeSettingsBindings,
         removeSourceNavigationBindings,
         removeLayoutBindings,
+        beforeControlledTransition: () => true,
         contentLeaseReplaced() {},
         disposePresentation() {
           if (disposed) return;

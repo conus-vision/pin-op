@@ -22,9 +22,11 @@ import {
 import {
   WindowConnectionCoordinator,
   type BrowserWindowConnectionState,
+  type ControlledWindowTransition,
 } from "./windowConnectionCoordinator.js";
 import { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "./tabRefreshStateStore.js";
+import type { RefreshExecutionCommand } from "./refreshRuntimeProtocol.js";
 
 export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly browserLocalInspection?: boolean;
@@ -54,6 +56,9 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   >;
   readonly createWindowConnectionCoordinator?: (
     store: BrowserWindowLinkStore,
+    beforeControlledTransition: (
+      transition: ControlledWindowTransition,
+    ) => Promise<boolean>,
   ) => BackgroundWindowCoordinator &
     Pick<
       WindowConnectionCoordinator,
@@ -74,12 +79,16 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   ) => BackgroundTabRefreshCoordinator & { initialize?(): Promise<void> };
   readonly createContentRefreshCoordinator?: (
     storage: SessionTopScrollSnapshotStorage,
+    beforeControlledTransition: (
+      tabId: number,
+      command?: RefreshExecutionCommand,
+    ) => Promise<boolean>,
   ) => BackgroundContentRefreshRuntime;
   readonly onError?: (error: unknown) => void;
 }
 
 export interface BackgroundRuntime {
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 export function startBackgroundRuntime(
@@ -90,12 +99,32 @@ export function startBackgroundRuntime(
     sendTabMessage: options.sendTabMessage,
   });
   const store = new BrowserWindowLinkStore(options.storage);
-  const coordinator = options.createWindowConnectionCoordinator?.(store) ??
-    new WindowConnectionCoordinator({ store });
+  let router: ReturnType<typeof createBackgroundRouter> | undefined;
+  const beforeControlledWindowTransition = (
+    transition: ControlledWindowTransition,
+  ): Promise<boolean> => router
+    ? router.beforeControlledWindowTransition(transition)
+    : Promise.resolve(true);
+  const beforeControlledTabTransition = (
+    tabId: number,
+    command?: RefreshExecutionCommand,
+  ): Promise<boolean> =>
+    router
+      ? router.beforeControlledTabTransition(tabId, command)
+      : Promise.resolve(true);
+  const coordinator = options.createWindowConnectionCoordinator?.(
+    store,
+    beforeControlledWindowTransition,
+  ) ?? new WindowConnectionCoordinator({
+    store,
+    beforeControlledTransition: beforeControlledWindowTransition,
+    onError: options.onError,
+  });
   const tabRefreshStore = new TabRefreshStateStore(options.storage);
   const snapshotStorage = new SessionTopScrollSnapshotStorage(options.storage);
   const contentRefreshCoordinator = options.createContentRefreshCoordinator?.(
     snapshotStorage,
+    beforeControlledTabTransition,
   ) ?? new BackgroundContentRefreshCoordinator({
     snapshotStorage,
     executeContentScript: (tabId) => options.executeScript({
@@ -106,6 +135,7 @@ export function startBackgroundRuntime(
     reloadTab: options.reloadTab ?? (async () => {
       throw new Error("Browser tab reload is unavailable");
     }),
+    beforeControlledTransition: beforeControlledTabTransition,
     onError: options.onError,
   });
   const tabRefreshCoordinator = options.createTabRefreshCoordinator?.(
@@ -172,7 +202,7 @@ export function startBackgroundRuntime(
   void tabRefreshCoordinator.initialize?.().catch((error) =>
     options.onError?.(error),
   );
-  const router = createBackgroundRouter({
+  router = createBackgroundRouter({
     browserLocalInspection: options.browserLocalInspection === true,
     expectedDevtoolsUrl: options.expectedDevtoolsUrl,
     expectedPanelUrl: options.expectedPanelUrl,
@@ -235,20 +265,21 @@ export function startBackgroundRuntime(
     },
     onError: options.onError,
   });
-  let disposed = false;
+  let disposal: Promise<void> | undefined;
 
   return {
-    dispose(): void {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      router.dispose();
-      refreshStateSubscription.dispose();
-      refreshPeerSubscription.dispose();
-      refreshMismatchSubscription.dispose();
-      refreshWindows.clear();
-      coordinator.dispose();
+    dispose(): Promise<void> {
+      if (disposal) return disposal;
+      const routerDisposal = router?.dispose() ?? Promise.resolve();
+      disposal = routerDisposal.then(async () => {
+        refreshStateSubscription.dispose();
+        refreshPeerSubscription.dispose();
+        refreshMismatchSubscription.dispose();
+        refreshWindows.clear();
+        await coordinator.dispose();
+        router = undefined;
+      });
+      return disposal;
     },
   };
 }

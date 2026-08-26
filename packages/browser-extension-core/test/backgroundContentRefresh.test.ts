@@ -10,6 +10,27 @@ import { TabRefreshCoordinator } from "../src/tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "../src/tabRefreshStateStore.js";
 
 describe("BackgroundContentRefreshCoordinator", () => {
+  it.each([
+    ["a disposed coordinator", 45, true],
+    ["an invalid tab", -1, false],
+  ] as const)("rejects dispatch for %s", async (_scenario, tabId, disposed) => {
+    const coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(
+        new MemorySessionStorage(),
+      ),
+      executeContentScript: vi.fn(),
+      sendTopFrameMessage: vi.fn(),
+      reloadTab: vi.fn(),
+    });
+    if (disposed) coordinator.dispose();
+
+    await expect(coordinator.dispatch(tabId, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    })).rejects.toThrow("Content refresh dispatch unavailable");
+  });
+
   it("reports only authoritative tab lifecycle navigation", async () => {
     const coordinator = new BackgroundContentRefreshCoordinator({
       snapshotStorage: new SessionTopScrollSnapshotStorage(
@@ -45,6 +66,182 @@ describe("BackgroundContentRefreshCoordinator", () => {
       url: sender.url,
       windowId: 7,
     })).toBe(false);
+  });
+
+  it.each(["styles", "reload"] as const)(
+    "awaits controlled-transition cleanup before sending a %s command or reloading",
+    async (mode) => {
+      const cleanupGate = deferred<void>();
+      const events: string[] = [];
+      const sender = topSender(42, "https://example.test/page");
+      const beforeControlledTransition = vi.fn(async (tabId: number) => {
+        expect(tabId).toBe(42);
+        events.push("cleanup-started");
+        await cleanupGate.promise;
+        events.push("cleanup-finished");
+      });
+      const reloadTab = vi.fn(async () => { events.push("reload"); });
+      let coordinator!: BackgroundContentRefreshCoordinator;
+      const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => {
+        events.push("content-command");
+        const command = message as {
+          readonly contentRuntimeId: string;
+          readonly refreshCommandId: string;
+          readonly refreshGeneration: number;
+        };
+        if (mode === "reload") {
+          const reloadResult = await coordinator.routeMessage(reloadRequest(
+            42,
+            command.contentRuntimeId,
+            command.refreshGeneration,
+            command.refreshCommandId,
+          ), sender) as { readonly accepted?: boolean } | undefined;
+          return {
+            ...message as object,
+            type: "pin-op.refresh.content.result",
+            accepted: reloadResult?.accepted === true,
+          };
+        }
+        return {
+          ...message as object,
+          type: "pin-op.refresh.content.result",
+          accepted: true,
+          stylesheet: { attempted: 1, updated: 1, failed: 0 },
+        };
+      });
+      coordinator = new BackgroundContentRefreshCoordinator({
+        snapshotStorage: new SessionTopScrollSnapshotStorage(
+          new MemorySessionStorage(),
+        ),
+        executeContentScript: vi.fn(),
+        sendTopFrameMessage,
+        reloadTab,
+        beforeControlledTransition,
+        createRefreshCommandId: () => `command-cleanup-${mode}`,
+      });
+      authorize(coordinator, 42);
+      await bind(coordinator, sender, "runtime-cleanup-order");
+
+      const pending = coordinator.dispatch(42, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: 2,
+        mode,
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(beforeControlledTransition).toHaveBeenCalledWith(42, {
+            type: "pin-op.refresh.execute",
+            refreshGeneration: 2,
+            mode,
+          })
+        );
+        expect(events).toEqual(["cleanup-started"]);
+        expect(sendTopFrameMessage).not.toHaveBeenCalled();
+        expect(reloadTab).not.toHaveBeenCalled();
+
+        cleanupGate.resolve();
+        await expect(pending).resolves.toBeUndefined();
+        expect(events).toEqual([
+          "cleanup-started",
+          "cleanup-finished",
+          "content-command",
+          ...(mode === "reload" ? ["reload"] : []),
+        ]);
+      } finally {
+        cleanupGate.resolve();
+        await pending.catch(() => undefined);
+      }
+    },
+  );
+
+  it("drops a content refresh whose lifecycle becomes stale during deferred cleanup", async () => {
+    const cleanupGate = deferred<void>();
+    const sender = topSender(43, "https://example.test/page");
+    const beforeControlledTransition = vi.fn(async () => cleanupGate.promise);
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => ({
+      ...message as object,
+      type: "pin-op.refresh.content.result",
+      accepted: true,
+      stylesheet: { attempted: 1, updated: 1, failed: 0 },
+    }));
+    const coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(
+        new MemorySessionStorage(),
+      ),
+      executeContentScript: vi.fn(),
+      sendTopFrameMessage,
+      reloadTab: vi.fn(),
+      beforeControlledTransition,
+    });
+    authorize(coordinator, 43);
+    await bind(coordinator, sender, "runtime-cleanup-stale");
+
+    const pending = coordinator.dispatch(43, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 3,
+      mode: "styles",
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(beforeControlledTransition).toHaveBeenCalledWith(43, {
+          type: "pin-op.refresh.execute",
+          refreshGeneration: 3,
+          mode: "styles",
+        })
+      );
+      expect(sendTopFrameMessage).not.toHaveBeenCalled();
+
+      expect(coordinator.observeTabUpdate(43, {
+        status: "loading",
+        url: sender.url,
+        windowId: 7,
+      })).toBe(true);
+      cleanupGate.resolve();
+
+      await expect(pending).rejects.toThrow("Content refresh command revoked");
+      expect(sendTopFrameMessage).not.toHaveBeenCalled();
+    } finally {
+      cleanupGate.resolve();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it("reports abrupt cleanup failure while immediately revoking the destroyed context", async () => {
+    const cleanupFailure = new Error("content context already disappeared");
+    const beforeControlledTransition = vi.fn(async () => {
+      throw cleanupFailure;
+    });
+    const onError = vi.fn();
+    const sender = topSender(44, "https://example.test/page");
+    const coordinator = new BackgroundContentRefreshCoordinator({
+      snapshotStorage: new SessionTopScrollSnapshotStorage(
+        new MemorySessionStorage(),
+      ),
+      executeContentScript: vi.fn(),
+      sendTopFrameMessage: vi.fn(),
+      reloadTab: vi.fn(),
+      beforeControlledTransition,
+      onError,
+    });
+    authorize(coordinator, 44);
+    await bind(coordinator, sender, "runtime-abrupt-loss");
+
+    expect(coordinator.observeTabUpdate(44, {
+      status: "loading",
+      url: sender.url,
+      windowId: 7,
+    })).toBe(true);
+    await flushAsync();
+
+    expect(beforeControlledTransition).toHaveBeenCalledWith(44);
+    expect(onError).toHaveBeenCalledWith(cleanupFailure);
+    await expect(coordinator.routeMessage({
+      type: "pin-op.refresh.content.ready",
+      tabId: 44,
+      frameId: 0,
+      pageUrl: sender.url,
+      contentRuntimeId: "runtime-abrupt-loss",
+    }, sender)).resolves.toBeUndefined();
   });
 
   it("binds default readiness timers to the host global", async () => {

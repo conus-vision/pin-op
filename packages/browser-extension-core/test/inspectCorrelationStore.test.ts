@@ -767,37 +767,70 @@ describe("InspectCorrelationStore", () => {
   });
 
   it.each([
-    ["selection", (store: InspectCorrelationStore) => store.record(
+    ["record replacement", (store: InspectCorrelationStore) => store.record(
       "panel-a",
       "inspect-next",
       7,
       10,
       serializedRuleEvidence("rule-next"),
     )],
-    ["stylesheet refresh", (store: InspectCorrelationStore) =>
-      store.disposeWindow(10)],
-    ["page refresh", (store: InspectCorrelationStore) =>
-      store.disposeWindow(10)],
-    ["document navigation", (store: InspectCorrelationStore) =>
-      store.disposeTab(7)],
-    ["frame navigation", (store: InspectCorrelationStore) =>
-      store.disposeChannel("panel-a")],
-    ["disconnect", (store: InspectCorrelationStore) =>
-      store.disposeWindow(10)],
-    ["protocol mismatch", (store: InspectCorrelationStore) =>
-      store.disposeWindow(10)],
-    ["disposal", (store: InspectCorrelationStore) =>
+    ["inspect discard", (store: InspectCorrelationStore) =>
       store.discard("inspect-a")],
-  ] as const)("revokes Rules authority on %s", (_reason, revoke) => {
-    const store = readyRulesStore();
-    const authority = store.authorizeRulesOpen(rulesOpenRoute());
-    expect(authority).toBeDefined();
+    ["channel disposal", (store: InspectCorrelationStore) =>
+      store.disposeChannel("panel-a")],
+    ["tab disposal", (store: InspectCorrelationStore) =>
+      store.disposeTab(7)],
+    ["window disposal", (store: InspectCorrelationStore) =>
+      store.disposeWindow(10)],
+  ] as const)(
+    "fences prepared Rules sources and stale opens on %s",
+    (_boundary, revoke) => {
+      const store = readyRulesStore();
+      const context = trustedPeer();
+      const prepared = store.prepareRulesSources(
+        rulesSources("inspect-a", 2, ["rule-a"]),
+        context,
+      );
+      const authority = store.authorizeRulesOpen(rulesOpenRoute());
+      expect(prepared).toBeDefined();
+      expect(authority).toBeDefined();
 
-    revoke(store);
+      revoke(store);
 
-    expect(store.authorizeRulesOpen(rulesOpenRoute())).toBeUndefined();
-    expect(authority && store.discardRulesOpenAuthority(authority)).toBe(false);
-  });
+      expect(prepared?.commit()).toBe(false);
+      expect(store.acceptRulesSources(
+        rulesSources("inspect-a", 2, ["rule-a"]),
+        context,
+      )).toBeUndefined();
+      expect(store.authorizeRulesOpen(rulesOpenRoute())).toBeUndefined();
+      expect(authority && store.discardRulesOpenAuthority(authority))
+        .toBe(false);
+
+      store.record(
+        "panel-a",
+        "inspect-fresh",
+        7,
+        10,
+        serializedRuleEvidence("rule-fresh"),
+      );
+      expect(store.acceptRulesSources(
+        rulesSources("inspect-fresh", 2, ["rule-fresh"]),
+        context,
+      )).toBeUndefined();
+      expect(store.acceptRulesSources(
+        rulesSources("inspect-fresh", 1, ["rule-fresh"]),
+        context,
+      )).toBe("panel-a");
+      expect(store.authorizeRulesOpen({
+        channel: "panel-a",
+        tabId: 7,
+        windowId: 10,
+        inspectMessageId: "inspect-fresh",
+        rulesGeneration: 1,
+        openAuthorityId: "open-rule-fresh",
+      })).toBeDefined();
+    },
+  );
 });
 
 function resolution(

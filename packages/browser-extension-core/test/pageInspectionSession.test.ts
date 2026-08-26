@@ -811,10 +811,12 @@ describe("PageInspectionSession", () => {
 
   it("clears preview synchronously at controlled exits but retains it for same-selection republish", async () => {
     const preview = new FakePseudoStatePreview();
+    const invalidations: unknown[] = [];
     let assertCleanupInvalidation = false;
     const harness = createSessionHarness({
       createPseudoStatePreview: () => preview,
-      onStylesInvalidated: () => {
+      onStylesInvalidated: (event) => {
+        invalidations.push(event);
         if (assertCleanupInvalidation) expectNoPseudoArtifacts(preview);
       },
     });
@@ -830,7 +832,7 @@ describe("PageInspectionSession", () => {
       pseudoStates: [],
     });
     if (before.type !== "styles.matched") throw new Error("missing styles authority");
-    await harness.session.handle({
+    const applied = await harness.session.handle({
       type: "styles.setPseudoStates",
       requestId: "cleanup-apply",
       documentEpoch: 3,
@@ -840,6 +842,9 @@ describe("PageInspectionSession", () => {
       expectedPseudoStateRevision: 0,
       states: ["hover"],
     });
+    if (applied.type !== "styles.pseudoStates") {
+      throw new Error("missing pseudo authority");
+    }
     expect(preview.activeStates).toEqual(["hover"]);
     expect(preview.markerCount).toBe(1);
     expect(preview.styleCount).toBe(1);
@@ -855,6 +860,18 @@ describe("PageInspectionSession", () => {
     assertCleanupInvalidation = false;
     expectNoPseudoArtifacts(preview);
     expect(preview.clear).toHaveBeenCalledTimes(2);
+    expect(harness.session.styleRevisions).toEqual({
+      documentEpoch: applied.documentEpoch,
+      stylesRevision: applied.stylesRevision + 1,
+      stylesheetRevision: applied.stylesheetRevision,
+    });
+    expect(invalidations.at(-1)).toMatchObject({
+      documentEpoch: applied.documentEpoch,
+      stylesRevision: applied.stylesRevision + 1,
+      stylesheetRevision: applied.stylesheetRevision,
+      pseudoStateRevision: applied.pseudoStateRevision + 1,
+      pseudoStates: [],
+    });
 
     preview.arm(["focus"]);
     harness.provider.onResolve = () => expectNoPseudoArtifacts(preview);
@@ -994,7 +1011,12 @@ describe("PageInspectionSession", () => {
     expect(retry.session.clearPseudoStates()).toBe(true);
     expect(retryPreview.clear).toHaveBeenCalledTimes(2);
     expectNoPseudoArtifacts(retryPreview);
-    expect(retryInvalidations).toEqual([]);
+    expect(retryInvalidations).toEqual([expect.objectContaining({
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+    })]);
 
     const terminalPreview = new FakePseudoStatePreview();
     const terminal = createSessionHarness({
@@ -1079,6 +1101,101 @@ describe("PageInspectionSession", () => {
       expect(invalidations, name).toEqual([]);
       expect(preview.activeStates, name).toEqual(["hover"]);
     }
+  });
+
+  it("coalesces lease cleanup and the following styles refresh into one styles boundary", async () => {
+    const preview = new FakePseudoStatePreview();
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "coalesced-cleanup-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "coalesced-cleanup-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    const invalidationsBeforeBoundary = invalidations.length;
+
+    expect(harness.session.clearPseudoStates()).toBe(true);
+    expect(harness.session.clearOverlayForRefresh()).toBe(true);
+
+    expect(invalidations).toHaveLength(invalidationsBeforeBoundary + 1);
+    expect(invalidations.at(-1)).toMatchObject({
+      pseudoStates: [],
+      pseudoStateRevision: 2,
+    });
+  });
+
+  it("does not reuse controlled-window cleanup for an unrelated later styles refresh", async () => {
+    const preview = new FakePseudoStatePreview();
+    const invalidations: unknown[] = [];
+    const harness = createSessionHarness({
+      createPseudoStatePreview: () => preview,
+      onStylesInvalidated: (event) => invalidations.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const before = await harness.session.handle({
+      type: "styles.getMatched",
+      requestId: "scoped-cleanup-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    if (before.type !== "styles.matched") throw new Error("missing styles authority");
+    const applied = await harness.session.handle({
+      type: "styles.setPseudoStates",
+      requestId: "scoped-cleanup-apply",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      expectedStylesRevision: before.stylesRevision,
+      expectedPseudoStateRevision: 0,
+      states: ["hover"],
+    });
+    if (applied.type !== "styles.pseudoStates") {
+      throw new Error("missing pseudo authority");
+    }
+    const invalidationsBeforeBoundary = invalidations.length;
+
+    expect(harness.session.clearPseudoStates()).toBe(true);
+    await Promise.resolve();
+    expect(harness.session.clearOverlayForRefresh()).toBe(true);
+
+    expect(invalidations.slice(invalidationsBeforeBoundary)).toMatchObject([
+      {
+        kind: "applicability",
+        stylesRevision: applied.stylesRevision + 1,
+        pseudoStates: [],
+        pseudoStateRevision: applied.pseudoStateRevision + 1,
+      },
+      {
+        kind: "applicability",
+        stylesRevision: applied.stylesRevision + 2,
+        pseudoStates: [],
+        pseudoStateRevision: applied.pseudoStateRevision + 1,
+      },
+    ]);
   });
 
   it("fails closed when pseudo-apply recovery cannot clear partial artifacts", async () => {
@@ -1519,7 +1636,66 @@ describe("PageInspectionSession", () => {
     });
   });
 
-  it("commits renewed evidence only after payload postflight succeeds", async () => {
+  it("does not fabricate a renewal before the background completes a no-op refresh", async () => {
+    const renewals: unknown[] = [];
+    const registry = {
+      revisions: { documentEpoch: 3, stylesheetRevision: 1, stylesRevision: 2 },
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      checkForChanges: vi.fn(() => false),
+      invalidate: vi.fn(),
+      invalidateApplicability: vi.fn(() => {
+        registry.revisions.stylesRevision += 1;
+      }),
+      resetDocument: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const harness = createSessionHarness({
+      createStylesheetRegistry: () => registry,
+      createMatchedStylesCollector: () => ({
+        collect: (authority: {
+          documentEpoch: number;
+          nodeRef: string;
+          selectionRevision: number;
+          stylesRevision: number;
+          stylesheetRevision: number;
+        }): MatchedStyles => ({
+          ...authority,
+          rules: [matchedRule("rule-same", ".same", "color", "red")],
+          inherited: [],
+          inaccessibleStylesheetCount: 0,
+          partial: false,
+          diagnostics: [],
+        }),
+      }),
+      onStylesInspectPublicationRenewed: (event) => renewals.push(event),
+    });
+    await harness.session.selectByRef("node-2", 3);
+    const selection = harness.selections.at(-1)!;
+    const request = {
+      type: "styles.getMatched" as const,
+      requestId: "refresh-same-before",
+      documentEpoch: 3,
+      nodeRef: "node-2",
+      selectionRevision: selection.selectionRevision,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    };
+    await harness.session.handle(request);
+
+    expect(harness.session.clearOverlayForRefresh()).toBe(true);
+    await harness.session.handle({ ...request, requestId: "refresh-same-after" });
+    await Promise.resolve();
+
+    expect(registry.revisions).toEqual({
+      documentEpoch: 3,
+      stylesheetRevision: 1,
+      stylesRevision: 3,
+    });
+    expect(renewals).toEqual([]);
+  });
+
+  it("commits renewed evidence after explicit republish without a duplicate renewal", async () => {
     const renewals: unknown[] = [];
     let value = "red";
     let invalidatePayloadPostflight = false;
@@ -1566,17 +1742,17 @@ describe("PageInspectionSession", () => {
     invalidatePayloadPostflight = true;
     await expect(republishCurrentSelection(harness)).resolves.toBe(false);
     await Promise.resolve();
-    expect(renewals).toEqual([]);
-    expect(harness.selections).toHaveLength(1);
-
-    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
-    await Promise.resolve();
     expect(renewals).toEqual([{
       type: "styles.inspectPublicationRenewed",
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision: 1,
     }]);
+    expect(harness.selections).toHaveLength(1);
+
+    await expect(republishCurrentSelection(harness)).resolves.toBe(true);
+    await Promise.resolve();
+    expect(renewals).toHaveLength(1);
     expect(collect).toHaveBeenCalledTimes(3);
     expect(harness.selections).toHaveLength(2);
   });
@@ -1653,7 +1829,11 @@ describe("PageInspectionSession", () => {
     expect(registry.invalidate).toHaveBeenCalledWith("frame-lifecycle");
 
     harness.session.clearOverlayForRefresh();
-    expect(registry.invalidate).toHaveBeenCalledWith("soft-refresh");
+    expect(registry.invalidate).not.toHaveBeenCalledWith("soft-refresh");
+    expect(registry.invalidate).toHaveBeenCalledTimes(1);
+    expect(registry.invalidateApplicability).toHaveBeenCalledWith(
+      "soft-refresh",
+    );
     const applicabilityOptions = createApplicabilityObserver.mock.calls[0]?.[0] as {
       readonly onInvalidated: (event: { readonly reason: string }) => void;
     };
@@ -1800,6 +1980,7 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       stylesRevision: 1,
       stylesheetRevision: 0,
+      kind: "applicability",
       pseudoStateRevision: 0,
       pseudoStates: [],
     }]);
@@ -2006,8 +2187,17 @@ describe("PageInspectionSession", () => {
       stylesRevision: 1,
       pseudoStateRevision: 0,
       pseudoStates: [],
+      kind: "applicability",
     }]);
     expect(registry!.resolveRule(ruleRef)).toBe(nativeRule);
+    registry!.invalidate("author-change");
+    expect(invalidations.at(-1)).toMatchObject({
+      type: "styles.invalidated",
+      stylesheetRevision: 1,
+      stylesRevision: 2,
+      kind: "stylesheet",
+    });
+    expect(registry!.resolveRule(ruleRef)).toBeUndefined();
   });
 
   it("streams every unique branch through bounded settlement chunks", async () => {
@@ -2383,6 +2573,7 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision: 1,
+      republishToken: "republish-retired-selection",
     };
 
     await harness.session.selectByRef("node-1", 3);
@@ -4185,6 +4376,7 @@ function inspectRepublishRequest(
     documentEpoch: selection?.documentEpoch ?? 3,
     nodeRef: selection?.nodeRef ?? "missing-node",
     selectionRevision: selection?.selectionRevision ?? 0,
+    republishToken: "republish-page-selection",
   };
 }
 

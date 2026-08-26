@@ -93,6 +93,7 @@ export {
 } from "./tabRefreshStateStore.js";
 export { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 export type {
+  TabRefreshCompletion,
   TabRefreshCoordinatorOptions,
   TabRefreshSettings,
 } from "./tabRefreshCoordinator.js";

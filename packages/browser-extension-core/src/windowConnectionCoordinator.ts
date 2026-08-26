@@ -113,9 +113,23 @@ export type WindowConnectionClientFactory = (
   options: BrowserBridgeClientOptions,
 ) => WindowConnectionClient;
 
+export interface ControlledWindowTransition {
+  readonly kind:
+    | "relink"
+    | "unlink"
+    | "remove"
+    | "dispose"
+    | "protocolMismatch";
+  readonly windowId: number;
+}
+
 export interface WindowConnectionCoordinatorOptions {
   readonly store: BrowserWindowLinkStore;
   readonly createClient?: WindowConnectionClientFactory;
+  readonly beforeControlledTransition?: (
+    transition: ControlledWindowTransition,
+  ) => boolean | Promise<boolean>;
+  readonly onError?: (error: unknown) => void;
   readonly setTimeout?: (
     callback: () => void,
     delay: number,
@@ -162,6 +176,14 @@ interface WindowRecord {
   reconnectTimer?: ReturnType<typeof setTimeout>;
   reconnectAttempts: number;
   protocolMismatch?: BrowserProtocolMismatch;
+  protocolMismatchTransition?: ProtocolMismatchTransition;
+  linkOperationToken?: object;
+}
+
+interface ProtocolMismatchTransition {
+  readonly generation: number;
+  readonly clientToken: object;
+  details?: BrowserProtocolMismatch;
 }
 
 interface ClientAuthorityEpoch {
@@ -187,6 +209,10 @@ const inertRegistrationHandle = Object.freeze({ dispose(): void {} });
 export class WindowConnectionCoordinator {
   private readonly store: BrowserWindowLinkStore;
   private readonly createClient: WindowConnectionClientFactory;
+  private readonly beforeControlledTransition: (
+    transition: ControlledWindowTransition,
+  ) => boolean | Promise<boolean>;
+  private readonly onError: ((error: unknown) => void) | undefined;
   private readonly scheduleTimer: NonNullable<
     WindowConnectionCoordinatorOptions["setTimeout"]
   >;
@@ -231,6 +257,9 @@ export class WindowConnectionCoordinator {
     this.store = options.store;
     this.createClient =
       options.createClient ?? ((clientOptions) => new BrowserBridgeClient(clientOptions));
+    this.beforeControlledTransition = options.beforeControlledTransition ??
+      (() => true);
+    this.onError = options.onError;
     this.scheduleTimer = options.setTimeout ??
       ((callback, delay) => globalThis.setTimeout(callback, delay));
     this.cancelScheduledTimer = options.clearTimeout ??
@@ -249,6 +278,34 @@ export class WindowConnectionCoordinator {
     const parsedCode = parseLinkCode(code);
     const connectionSource = validatedConnectionSource(source);
     const record = this.recordFor(windowId);
+    const preparationGeneration = record.generation;
+    const operationToken = {};
+    const requiresCleanup = this.hasLinkReplacement(record);
+    record.linkOperationToken = operationToken;
+
+    if (requiresCleanup) {
+      try {
+        await waitForAbort(
+          this.awaitControlledTransition({ kind: "relink", windowId }),
+          signal,
+          () => this.cancelLinkPreparation(record, operationToken),
+        );
+      } catch (error) {
+        this.cancelLinkPreparation(record, operationToken);
+        throw asError(error);
+      }
+      if (
+        !this.isCurrentLinkPreparation(
+          record,
+          preparationGeneration,
+          operationToken,
+        )
+      ) {
+        this.cancelLinkPreparation(record, operationToken);
+        return;
+      }
+    }
+
     const generation = this.invalidate(record);
 
     this.revokeClient(record);
@@ -262,20 +319,30 @@ export class WindowConnectionCoordinator {
 
     try {
       await waitForAbort(
-        this.enqueueStore(windowId, () => {
+        this.enqueueStore(windowId, async () => {
           throwIfAborted(signal);
-          return this.store.remove(windowId);
+          if (!this.isCurrentLinkOperation(record, generation, operationToken)) {
+            return;
+          }
+          await this.store.remove(windowId);
         }),
         signal,
-        () => this.cancelWindowOperation(record, generation),
+        () => this.cancelLinkOperation(record, generation, operationToken),
       );
     } catch (error) {
-      if (this.isCurrent(record, generation)) {
+      const isCurrent = this.isCurrentLinkOperation(
+        record,
+        generation,
+        operationToken,
+      );
+      this.cancelLinkPreparation(record, operationToken);
+      if (isCurrent) {
         this.setState(record, "error");
       }
       throw asError(error);
     }
-    if (!this.isCurrent(record, generation)) {
+    if (!this.isCurrentLinkOperation(record, generation, operationToken)) {
+      this.cancelLinkPreparation(record, operationToken);
       return;
     }
 
@@ -297,6 +364,9 @@ export class WindowConnectionCoordinator {
         (client) => client.link(pendingLink.pin),
       );
     }
+    if (record.linkOperationToken === operationToken) {
+      record.linkOperationToken = undefined;
+    }
   }
 
   public async unlinkWindow(
@@ -307,6 +377,41 @@ export class WindowConnectionCoordinator {
     assertWindowId(windowId);
     throwIfAborted(signal);
     const record = this.records.get(windowId);
+    const preparationGeneration = record?.generation;
+    const operationToken = {};
+    if (record) {
+      record.linkOperationToken = operationToken;
+    }
+
+    try {
+      await waitForAbort(
+        this.awaitControlledTransition({ kind: "unlink", windowId }),
+        signal,
+        () => {
+          if (record) {
+            this.cancelLinkPreparation(record, operationToken);
+          }
+        },
+      );
+    } catch (error) {
+      if (record) this.cancelLinkPreparation(record, operationToken);
+      throw asError(error);
+    }
+
+    if (
+      record
+        ? preparationGeneration === undefined ||
+          !this.isCurrentLinkPreparation(
+            record,
+            preparationGeneration,
+            operationToken,
+          )
+        : this.records.has(windowId)
+    ) {
+      if (record) this.cancelLinkPreparation(record, operationToken);
+      return;
+    }
+
     let generation: number | undefined;
     if (record) {
       generation = this.invalidate(record);
@@ -330,20 +435,22 @@ export class WindowConnectionCoordinator {
         signal,
         () => {
           if (record && generation !== undefined) {
-            this.cancelWindowOperation(record, generation);
+            this.cancelLinkOperation(record, generation, operationToken);
           }
         },
       );
     } catch (error) {
-      if (
+      const isCurrent =
         record &&
         generation !== undefined &&
-        this.isCurrent(record, generation)
-      ) {
+        this.isCurrentLinkOperation(record, generation, operationToken);
+      if (record) this.cancelLinkPreparation(record, operationToken);
+      if (isCurrent && record) {
         this.setState(record, "error");
       }
       throw asError(error);
     }
+    if (record) this.cancelLinkPreparation(record, operationToken);
   }
 
   public registerPanel(registration: PanelRegistration): { dispose(): void } {
@@ -617,6 +724,26 @@ export class WindowConnectionCoordinator {
   public async removeWindow(windowId: number): Promise<void> {
     assertWindowId(windowId);
     const record = this.records.get(windowId);
+    const preparationGeneration = record?.generation;
+    const operationToken = {};
+    if (record) record.linkOperationToken = operationToken;
+
+    await this.awaitControlledTransition({ kind: "remove", windowId });
+
+    if (
+      record
+        ? preparationGeneration === undefined ||
+          !this.isCurrentLinkPreparation(
+            record,
+            preparationGeneration,
+            operationToken,
+          )
+        : this.records.has(windowId)
+    ) {
+      if (record) this.cancelLinkPreparation(record, operationToken);
+      return;
+    }
+
     if (record) {
       this.invalidate(record);
       this.revokeClient(record);
@@ -641,6 +768,10 @@ export class WindowConnectionCoordinator {
     this.disposed = true;
 
     for (const record of this.records.values()) {
+      this.startControlledTransitionBestEffort({
+        kind: "dispose",
+        windowId: record.windowId,
+      });
       this.invalidate(record);
       this.disconnectClient(record);
       this.releaseRegistrations(record);
@@ -1001,9 +1132,7 @@ export class WindowConnectionCoordinator {
         this.setState(record, "error");
         return;
       case "incompatible":
-        record.clientConnected = false;
-        this.revokeClientAuthority(record);
-        this.setState(record, "incompatible");
+        this.beginProtocolMismatchTransition(record, generation, token);
     }
   }
 
@@ -1122,6 +1251,7 @@ export class WindowConnectionCoordinator {
   ): boolean {
     return (
       record.reconnectTimer === undefined &&
+      record.linkOperationToken === undefined &&
       this.hasConnectionOwner(record) &&
       this.hasReconnectIntent(record) &&
       record.client !== undefined &&
@@ -1187,6 +1317,7 @@ export class WindowConnectionCoordinator {
   }
 
   private invalidate(record: WindowRecord): number {
+    record.protocolMismatchTransition = undefined;
     this.revokeClientAuthority(record);
     record.generation += 1;
     this.cancelReconnect(record);
@@ -1238,6 +1369,53 @@ export class WindowConnectionCoordinator {
     return record.registrations.size > 0 || record.refreshParticipants.size > 0;
   }
 
+  private hasLinkReplacement(record: WindowRecord): boolean {
+    return record.state === "linked" ||
+      record.state === "linking" ||
+      record.client !== undefined ||
+      record.clientAuthority !== undefined ||
+      record.link !== undefined ||
+      record.pendingLink !== undefined;
+  }
+
+  private isCurrentLinkPreparation(
+    record: WindowRecord,
+    generation: number,
+    operationToken: object,
+  ): boolean {
+    return this.isCurrent(record, generation) &&
+      record.linkOperationToken === operationToken;
+  }
+
+  private isCurrentLinkOperation(
+    record: WindowRecord,
+    generation: number,
+    operationToken: object,
+  ): boolean {
+    return this.isCurrentLinkPreparation(record, generation, operationToken);
+  }
+
+  private cancelLinkPreparation(
+    record: WindowRecord,
+    operationToken: object,
+  ): void {
+    if (record.linkOperationToken === operationToken) {
+      record.linkOperationToken = undefined;
+    }
+  }
+
+  private cancelLinkOperation(
+    record: WindowRecord,
+    generation: number,
+    operationToken: object,
+  ): void {
+    if (!this.isCurrentLinkOperation(record, generation, operationToken)) {
+      return;
+    }
+    record.linkOperationToken = undefined;
+    this.cancelWindowOperation(record, generation);
+  }
+
   private releaseUnownedConnection(record: WindowRecord): void {
     this.invalidate(record);
     this.disconnectClient(record);
@@ -1265,6 +1443,53 @@ export class WindowConnectionCoordinator {
     record.credentialsWritePending = false;
     record.reconnectAttempts = 0;
     this.setState(record, "notLinked");
+  }
+
+  private async awaitControlledTransition(
+    transition: ControlledWindowTransition,
+  ): Promise<void> {
+    const snapshot = Object.freeze({ ...transition });
+    try {
+      const acknowledged = await this.beforeControlledTransition(snapshot);
+      if (!acknowledged) {
+        this.report(new Error(
+          `Controlled ${transition.kind} cleanup was not acknowledged`,
+        ));
+      }
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  private startControlledTransitionBestEffort(
+    transition: ControlledWindowTransition,
+  ): void {
+    const snapshot = Object.freeze({ ...transition });
+    let result: boolean | Promise<boolean>;
+    try {
+      result = this.beforeControlledTransition(snapshot);
+    } catch (error) {
+      this.report(error);
+      return;
+    }
+    void Promise.resolve(result).then(
+      (acknowledged) => {
+        if (!acknowledged) {
+          this.report(new Error(
+            `Controlled ${transition.kind} cleanup was not acknowledged`,
+          ));
+        }
+      },
+      (error: unknown) => this.report(error),
+    );
+  }
+
+  private report(error: unknown): void {
+    try {
+      this.onError?.(error);
+    } catch {
+      // Diagnostics must not interrupt controlled teardown.
+    }
   }
 
   private stopStoredReconnect(record: WindowRecord): void {
@@ -1562,25 +1787,82 @@ export class WindowConnectionCoordinator {
         ? {}
         : { peerProtocolVersion: details.peerProtocolVersion }),
     });
-    record.protocolMismatch = snapshot;
+    const transition = this.beginProtocolMismatchTransition(
+      record,
+      generation,
+      token,
+    );
+    if (!transition) {
+      return;
+    }
+    transition.details = snapshot;
+  }
+
+  private beginProtocolMismatchTransition(
+    record: WindowRecord,
+    generation: number,
+    clientToken: object,
+  ): ProtocolMismatchTransition | undefined {
+    if (!this.isCurrentToken(record, generation, clientToken)) {
+      return undefined;
+    }
+    const current = record.protocolMismatchTransition;
+    if (
+      current?.generation === generation &&
+      current.clientToken === clientToken
+    ) {
+      return current;
+    }
+    const transition: ProtocolMismatchTransition = {
+      generation,
+      clientToken,
+    };
+    record.protocolMismatchTransition = transition;
+    void this.completeProtocolMismatchTransition(record, transition);
+    return transition;
+  }
+
+  private async completeProtocolMismatchTransition(
+    record: WindowRecord,
+    transition: ProtocolMismatchTransition,
+  ): Promise<void> {
+    await this.awaitControlledTransition({
+      kind: "protocolMismatch",
+      windowId: record.windowId,
+    });
+    if (record.protocolMismatchTransition !== transition) {
+      return;
+    }
+    record.protocolMismatchTransition = undefined;
+    if (!this.isCurrentToken(
+      record,
+      transition.generation,
+      transition.clientToken,
+    )) {
+      return;
+    }
+    record.clientConnected = false;
+    record.protocolMismatch = transition.details;
     const alreadyIncompatible = record.state === "incompatible";
     this.setState(record, "incompatible");
-    if (alreadyIncompatible) {
+    if (alreadyIncompatible && transition.details) {
       const displayLinkCode = displayLinkCodeFor(record);
       for (const entry of [...record.registrations.values()]) {
         notifyRegistration(
           entry,
           "incompatible",
           displayLinkCode,
-          snapshot,
+          transition.details,
         );
       }
     }
-    notifyWindowEvent(
-      this.protocolMismatchListeners,
-      record.windowId,
-      snapshot,
-    );
+    if (transition.details) {
+      notifyWindowEvent(
+        this.protocolMismatchListeners,
+        record.windowId,
+        transition.details,
+      );
+    }
   }
 
   private disposeClientSubscriptions(record: WindowRecord): void {

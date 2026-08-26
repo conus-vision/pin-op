@@ -18,6 +18,142 @@ import type {
 import type { DomStableLocator } from "../src/domStableLocator.js";
 
 describe("DomTreeRecoveryCoordinator", () => {
+  it("awaits controlled cleanup before recovery state and root transport", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
+    await controller.loadRoot();
+    transport.requests.length = 0;
+
+    const cleanup = deferred<boolean>();
+    const events: string[] = [];
+    let observedRecovery = false;
+    controller.subscribe(() => {
+      if (!observedRecovery && controller.snapshot().recovering) {
+        observedRecovery = true;
+        events.push("recovery");
+      }
+    });
+    let requestId = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({
+      controller,
+      transport,
+      createRequestId: () => `recovery-${++requestId}`,
+      beforeControlledTransition: async () => {
+        events.push("cleanup-started");
+        const acknowledged = await cleanup.promise;
+        events.push("cleanup-finished");
+        return acknowledged;
+      },
+    } as RecoveryOptionsWithTransitionHook);
+    transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+
+    const recovery = coordinator.begin();
+    await Promise.resolve();
+
+    expect(events).toEqual(["cleanup-started"]);
+    expect(controller.snapshot().recovering).toBe(false);
+    expect(transport.requests).toEqual([]);
+
+    cleanup.resolve(true);
+    await recovery;
+
+    expect(events).toEqual([
+      "cleanup-started",
+      "cleanup-finished",
+      "recovery",
+    ]);
+    expect(transport.requests.map(({ type }) => type)).toEqual(["dom.getRoot"]);
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
+  });
+
+  it("fences late controlled cleanup completion after recovery cancellation", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
+    await controller.loadRoot();
+    transport.requests.length = 0;
+
+    const cleanup = deferred<boolean>();
+    let cleanupCalls = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({
+      controller,
+      transport,
+      beforeControlledTransition: () => {
+        cleanupCalls += 1;
+        return cleanup.promise;
+      },
+    } as RecoveryOptionsWithTransitionHook);
+    transport.enqueue(rootResponse(node("late-root", locator(1, 0)), 2));
+
+    const recovery = coordinator.begin();
+    await Promise.resolve();
+    coordinator.cancel("controlled recovery cancelled");
+    cleanup.resolve(true);
+    await recovery;
+
+    expect(cleanupCalls).toBe(1);
+    expect(transport.requests).toEqual([]);
+    expect(nodeRefs(controller)).toEqual(["old-root"]);
+    expect(controller.snapshot().recovering).toBe(false);
+  });
+
+  it("lets a newer recovery supersede deferred controlled cleanup", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
+    await controller.loadRoot();
+    transport.requests.length = 0;
+
+    const firstCleanup = deferred<boolean>();
+    let cleanupCalls = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({
+      controller,
+      transport,
+      beforeControlledTransition: () => {
+        cleanupCalls += 1;
+        return cleanupCalls === 1 ? firstCleanup.promise : true;
+      },
+    } as RecoveryOptionsWithTransitionHook);
+    transport.enqueue(rootResponse(node("current-root", locator(1, 0)), 2));
+    transport.enqueue(rootResponse(node("unexpected-root", locator(1, 0)), 3));
+
+    const first = coordinator.begin();
+    await Promise.resolve();
+    const second = coordinator.begin();
+    await second;
+    firstCleanup.resolve(true);
+    await first;
+
+    expect(cleanupCalls).toBe(2);
+    expect(transport.requests.map(({ type }) => type)).toEqual(["dom.getRoot"]);
+    expect(nodeRefs(controller)).toEqual(["current-root"]);
+    expect(controller.snapshot()).toMatchObject({
+      documentEpoch: 2,
+      recovering: false,
+    });
+  });
+
+  it("fails closed when controlled recovery cleanup is not acknowledged", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
+    await controller.loadRoot();
+    transport.requests.length = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({
+      controller,
+      transport,
+      beforeControlledTransition: () => false,
+    } as RecoveryOptionsWithTransitionHook);
+    transport.enqueue(rootResponse(node("forbidden-root", locator(1, 0)), 2));
+
+    await expect(coordinator.begin()).rejects.toThrow();
+
+    expect(transport.requests).toEqual([]);
+    expect(nodeRefs(controller)).toEqual(["old-root"]);
+    expect(controller.snapshot().recovering).toBe(false);
+  });
+
   it("restores an expanded selection with one locator resolution", async () => {
     const transport = new TestTransport();
     const selectedLocator = locator(1, 3);
@@ -1084,6 +1220,11 @@ interface Deferred<T> {
   resolve(value: T): void;
   reject(reason: unknown): void;
 }
+
+type RecoveryOptionsWithTransitionHook =
+  ConstructorParameters<typeof DomTreeRecoveryCoordinator>[0] & {
+    readonly beforeControlledTransition: () => boolean | Promise<boolean>;
+  };
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;

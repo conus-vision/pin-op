@@ -78,6 +78,7 @@ import {
   type StylesheetRegistryOptions,
   type StylesheetRevisionState,
 } from "./stylesheetRegistry.js";
+import { isTransientStylesheetRefreshNode } from "./stylesheetRefresher.js";
 import {
   parseStylesRequest,
   parseStylesResponse,
@@ -155,7 +156,9 @@ export interface PageInspectionSessionOptions {
     selection: PageInspectionSelection,
   ) => boolean;
   readonly onEvent?: (event: DomEvent) => void;
-  readonly onStylesInvalidated?: (event: StylesInvalidatedEvent) => void;
+  readonly onStylesInvalidated?: (
+    event: PageInspectionStylesInvalidatedEvent,
+  ) => void;
   readonly onStylesInspectPublicationRenewed?: (
     event: StylesInspectPublicationRenewedEvent,
   ) => void;
@@ -196,6 +199,12 @@ export interface PageInspectionSessionOptions {
   readonly createPseudoStatePreview?: (
     artifacts: PinOpRuntimeArtifacts,
   ) => PageInspectionPseudoStatePreview;
+}
+
+export interface PageInspectionStylesInvalidatedEvent
+  extends StylesInvalidatedEvent {
+  /** Content-local cause metadata; omitted from the background wire event. */
+  readonly kind: StylesheetInvalidationEvent["kind"];
 }
 
 export interface PageInspectionStylesheetRegistry {
@@ -388,6 +397,7 @@ export class PageInspectionSession {
   private pendingStylesPublicationRenewalAuthority:
     MatchedStylesCollectionAuthority | undefined;
   private stylesPublicationRenewalGeneration = 0;
+  private synchronousPseudoCleanupPreparation: object | undefined;
   private readonly pendingInvalidationBranches = new Map<
     string,
     DomInvalidationBranch
@@ -490,7 +500,10 @@ export class PageInspectionSession {
       documentEpoch: this.provider.currentDocumentEpoch,
       onInvalidated: (event) => this.handleStylesInvalidated(event),
       onError: (error) => this.reportError(error),
-      isRuntimeNode: (node) => this.isRuntimeArtifactNode(node as Node),
+      isRuntimeNode: (node) => (
+        isTransientStylesheetRefreshNode(node) ||
+        this.isRuntimeArtifactNode(node as Node)
+      ),
       isRuntimeStylesheet: (sheet) => this.runtimeArtifacts.isRuntimeStylesheet(sheet),
       now: options.now,
     });
@@ -721,22 +734,71 @@ export class PageInspectionSession {
     this.clearHoverState("emit");
   }
 
-  public clearOverlayForRefresh(): void {
+  public clearOverlayForRefresh(): boolean {
     if (this.disposed) {
-      return;
+      return false;
     }
+    const preparedCleanup = this.synchronousPseudoCleanupPreparation !== undefined;
+    this.synchronousPseudoCleanupPreparation = undefined;
+    const stylesRevision = this.stylesheetRegistry.revisions.stylesRevision;
     if (!this.clearPseudoStatePreview("soft-refresh")) {
       this.dispose();
-      return;
+      return false;
     }
     this.clearHoverState("emit");
-    this.stylesheetRegistry.invalidate("soft-refresh");
+    if (
+      !preparedCleanup &&
+      this.stylesheetRegistry.revisions.stylesRevision === stylesRevision
+    ) {
+      try {
+        this.stylesheetRegistry.invalidateApplicability("soft-refresh");
+      } catch (error) {
+        this.reportError(error);
+        this.dispose();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public invalidateStylesheetsForRefresh(): boolean {
+    if (this.disposed) return false;
+    try {
+      this.stylesheetRegistry.invalidate("author-refresh");
+      return true;
+    } catch (error) {
+      this.reportError(error);
+      return false;
+    }
   }
 
   /** Browser-local cooperative cleanup for lease/window connection transitions. */
   public clearPseudoStates(): boolean {
     if (this.disposed) return false;
-    return this.clearPseudoStatePreview("connection-transition");
+    let stylesRevision: number;
+    try {
+      stylesRevision = this.stylesheetRegistry.revisions.stylesRevision;
+    } catch (error) {
+      this.reportError(error);
+      return false;
+    }
+    if (!this.clearPseudoStatePreview("connection-transition")) return false;
+    if (this.stylesheetRegistry.revisions.stylesRevision === stylesRevision) {
+      try {
+        this.stylesheetRegistry.invalidateApplicability("connection-transition");
+      } catch (error) {
+        this.reportError(error);
+        return false;
+      }
+    }
+    const preparation = {};
+    this.synchronousPseudoCleanupPreparation = preparation;
+    globalThis.queueMicrotask(() => {
+      if (this.synchronousPseudoCleanupPreparation === preparation) {
+        this.synchronousPseudoCleanupPreparation = undefined;
+      }
+    });
+    return true;
   }
 
   public async selectByRef(
@@ -782,6 +844,7 @@ export class PageInspectionSession {
     this.republishingSelection = true;
     try {
       let payload: InspectPayloadWithDiagnostics | undefined;
+      let matchedAuthorityBefore: MatchedStylesCollectionAuthority | undefined;
       try {
         const resolved = this.resolveLiveSelection(authority);
         if (!resolved) {
@@ -790,6 +853,7 @@ export class PageInspectionSession {
           }
           return false;
         }
+        matchedAuthorityBefore = this.currentMatchedStylesAuthority(authority);
         payload = this.createPayloadFor(
           resolved.element as InspectableElement,
           selected,
@@ -803,8 +867,14 @@ export class PageInspectionSession {
         }
         return false;
       }
+      if (!payload) {
+        this.scheduleRepublishRetryAfterStylesDrift(
+          authority,
+          matchedAuthorityBefore,
+        );
+        return false;
+      }
       if (
-        !payload ||
         !this.isSelectionAuthorityCurrent(authority) ||
         !this.isExpectedRepublishCurrent(
           request,
@@ -820,7 +890,9 @@ export class PageInspectionSession {
         ancestorPath: selected.ancestorPath,
         payload,
       }), authority);
-      return published && this.isSelectionAuthorityCurrent(authority);
+      const accepted = published && this.isSelectionAuthorityCurrent(authority);
+      if (accepted) this.cancelStylesPublicationRenewal();
+      return accepted;
     } finally {
       this.republishingSelection = false;
     }
@@ -2344,6 +2416,7 @@ export class PageInspectionSession {
         stylesheetRevision: event.stylesheetRevision,
         pseudoStateRevision: this.pseudoStateRevision,
         pseudoStates: this.pseudoStateResult.states,
+        kind: event.kind,
       }));
     } catch (error) {
       this.reportError(error);
@@ -2743,6 +2816,7 @@ export class PageInspectionSession {
       fingerprint,
       styles,
     });
+    if (this.republishingSelection) return;
     const sameSelection = Boolean(
       previous &&
       previous.documentEpoch === authority.documentEpoch &&
@@ -2753,7 +2827,19 @@ export class PageInspectionSession {
       this.pendingStylesPublicationRenewalAuthority = authority;
       return;
     }
-    if (!sameSelection || previous?.fingerprint === fingerprint) return;
+    if (
+      (!sameSelection || previous?.fingerprint === fingerprint)
+    ) return;
+    this.scheduleStylesPublicationRenewal(authority);
+  }
+
+  private scheduleStylesPublicationRenewal(
+    authority: MatchedStylesCollectionAuthority,
+  ): void {
+    if (this.stylesPublicationRenewalScheduled) {
+      this.pendingStylesPublicationRenewalAuthority = authority;
+      return;
+    }
     this.stylesPublicationRenewalScheduled = true;
     this.pendingStylesPublicationRenewalAuthority = authority;
     const generation = this.stylesPublicationRenewalGeneration;
@@ -2784,6 +2870,54 @@ export class PageInspectionSession {
     });
   }
 
+  private scheduleRepublishRetryAfterStylesDrift(
+    selectionAuthority: SelectionAuthorityToken,
+    previous: MatchedStylesCollectionAuthority | undefined,
+  ): void {
+    if (!previous || !this.isSelectionAuthorityCurrent(selectionAuthority)) return;
+    const current = this.currentMatchedStylesAuthority(selectionAuthority);
+    if (
+      !current ||
+      (
+        current.stylesRevision === previous.stylesRevision &&
+        current.stylesheetRevision === previous.stylesheetRevision &&
+        current.pseudoStateRevision === previous.pseudoStateRevision &&
+        samePseudoStates(current.pseudoStates, previous.pseudoStates)
+      )
+    ) return;
+    this.scheduleStylesPublicationRenewal(current);
+  }
+
+  private currentMatchedStylesAuthority(
+    selectionAuthority: SelectionAuthorityToken,
+  ): MatchedStylesCollectionAuthority | undefined {
+    if (!this.isSelectionAuthorityCurrent(selectionAuthority)) return undefined;
+    let revisions: StylesheetRevisionState;
+    try {
+      revisions = this.stylesheetRegistry.revisions;
+    } catch {
+      return undefined;
+    }
+    if (revisions.documentEpoch !== selectionAuthority.documentEpoch) {
+      return undefined;
+    }
+    return Object.freeze({
+      documentEpoch: selectionAuthority.documentEpoch,
+      nodeRef: selectionAuthority.selected.nodeRef,
+      selectionRevision: selectionAuthority.selectionRevision,
+      stylesRevision: revisions.stylesRevision,
+      stylesheetRevision: revisions.stylesheetRevision,
+      pseudoStateRevision: this.pseudoStateRevision,
+      pseudoStates: this.pseudoStateResult.states,
+    });
+  }
+
+  private cancelStylesPublicationRenewal(): void {
+    this.stylesPublicationRenewalScheduled = false;
+    this.pendingStylesPublicationRenewalAuthority = undefined;
+    this.stylesPublicationRenewalGeneration += 1;
+  }
+
   private cachedMatchedStyles(
     authority: MatchedStylesCollectionAuthority,
   ): MatchedStyles | undefined {
@@ -2803,9 +2937,7 @@ export class PageInspectionSession {
 
   private clearMatchedStylesEvidence(): void {
     this.matchedStylesEvidence = undefined;
-    this.stylesPublicationRenewalScheduled = false;
-    this.pendingStylesPublicationRenewalAuthority = undefined;
-    this.stylesPublicationRenewalGeneration += 1;
+    this.cancelStylesPublicationRenewal();
   }
 
   private readClock(): number | undefined {

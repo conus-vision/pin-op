@@ -205,15 +205,58 @@ describe("RulesSourcesController", () => {
     "document-navigation",
     "frame-navigation",
     "transport-invalidation",
-  ] as const)("clears Rules authority on %s", (reason) => {
-    const sent = vi.fn();
-    const controller = readyController(sent);
+  ] as const)(
+    "revokes Rules authority synchronously before %s continues",
+    (reason) => {
+      const sent = vi.fn();
+      const controller = readyController(sent);
+      const order: string[] = [];
+      const unsubscribe = controller.subscribe(() => {
+        order.push(`rules:${controller.status()}`);
+      });
+      const downstream = vi.fn(() => {
+        expect(controller.status()).toBe("stale");
+        expect(controller.originFor("rule-1")).toBeUndefined();
+        controller.open("rule-1");
+        order.push("downstream");
+      });
 
-    controller.invalidate(reason);
-    expect(controller.originFor("rule-1")).toBeUndefined();
-    controller.open("rule-1");
-    expect(sent).not.toHaveBeenCalled();
-  });
+      controller.invalidate(reason);
+      downstream();
+
+      expect(order).toEqual(["rules:stale", "downstream"]);
+      expect(downstream).toHaveBeenCalledOnce();
+      expect(sent).not.toHaveBeenCalled();
+      expect(controller.accept(rulesSources({ rulesGeneration: 2 })))
+        .toBe("ignored");
+
+      unsubscribe();
+      controller.beginInspect("inspect-2", new Set(["rule-2"]));
+      expect(controller.accept(rulesSources({
+        inspectMessageId: "inspect-2",
+        rulesGeneration: 2,
+        sources: [source({
+          ruleRef: "rule-2",
+          openAuthorityId: "authority-fresh",
+        })],
+      }))).toBe("ignored");
+      expect(controller.accept(rulesSources({
+        inspectMessageId: "inspect-2",
+        sources: [source({
+          ruleRef: "rule-2",
+          openAuthorityId: "authority-fresh",
+        })],
+      }))).toBe("published");
+      controller.open("rule-2");
+      expect(sent).toHaveBeenCalledOnce();
+      expect(sent).toHaveBeenCalledWith({
+        type: "pin-op.rules.open",
+        inspectMessageId: "inspect-2",
+        rulesGeneration: 1,
+        openAuthorityId: "authority-fresh",
+      });
+    },
+  );
 
   it("clears on incompatibility and requires a fresh inspect after recovery", () => {
     const controller = readyController();

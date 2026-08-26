@@ -760,6 +760,7 @@ describe("StylesheetRegistry", () => {
     [...intervals.values()][0]?.();
     expect(applicabilityCheck).toHaveBeenLastCalledWith(false);
 
+    const stalePoll = [...intervals.values()][0];
     const oldIdentity = registry.snapshot().entries[0]?.sheetIdentity;
     const nextDocument = scope("document", [app], [], []);
     registry.resetDocument(nextDocument as unknown as Document, 8);
@@ -772,11 +773,91 @@ describe("StylesheetRegistry", () => {
     expect(clearInterval).toHaveBeenCalled();
     expect(intervals).toHaveLength(1);
 
+    applicabilityCheck.mockClear();
+    app.cssRules[0]!.cssText = ".a { color: green }";
+    stalePoll?.();
+    expect(registry.revisions).toEqual({
+      documentEpoch: 8,
+      stylesheetRevision: 0,
+      stylesRevision: 0,
+    });
+    expect(applicabilityCheck).not.toHaveBeenCalled();
+    [...intervals.values()][0]?.();
+    expect(registry.revisions.stylesheetRevision).toBe(1);
+    expect(applicabilityCheck).toHaveBeenLastCalledWith(true);
+
     registry.stopPolling();
     expect(intervals).toHaveLength(0);
     registry.dispose();
     expect(() => registry.snapshot()).toThrow(/disposed/i);
   });
+
+  it.each(["stopPolling", "dispose"] as const)(
+    "makes a captured fingerprint poll inert after %s and accepts only a fresh poll generation",
+    (boundary) => {
+      const intervals = new Map<number, () => void>();
+      let nextHandle = 1;
+      const setInterval = (callback: () => void) => {
+        const handle = nextHandle++;
+        intervals.set(handle, callback);
+        return handle;
+      };
+      const clearInterval = (handle: number) => intervals.delete(handle);
+      const invalidated = vi.fn();
+      const applicabilityCheck = vi.fn();
+      const app = sheet(
+        "https://example.test/app.css",
+        [styleRule(".a", "color:red")],
+      );
+      const document = scope("document", [app], [], []);
+      const registry = createRegistry(document, {
+        setInterval,
+        clearInterval,
+        onInvalidated: invalidated,
+      });
+      registry.startPolling(applicabilityCheck);
+      const stalePoll = [...intervals.values()][0];
+
+      if (boundary === "stopPolling") registry.stopPolling();
+      else registry.dispose();
+      expect(intervals).toHaveLength(0);
+
+      app.cssRules[0]!.cssText = ".a { color: green }";
+      stalePoll?.();
+      expect(invalidated).not.toHaveBeenCalled();
+      expect(applicabilityCheck).not.toHaveBeenCalled();
+      if (boundary === "stopPolling") {
+        expect(registry.revisions).toMatchObject({
+          stylesheetRevision: 0,
+          stylesRevision: 0,
+        });
+      }
+
+      const freshRegistry = boundary === "stopPolling"
+        ? registry
+        : createRegistry(document, {
+          setInterval,
+          clearInterval,
+          onInvalidated: invalidated,
+        });
+      freshRegistry.startPolling(applicabilityCheck);
+      if (boundary === "dispose") {
+        app.cssRules[0]!.cssText = ".a { color: blue }";
+      }
+      const freshPoll = [...intervals.values()][0];
+      expect(freshPoll).not.toBe(stalePoll);
+      freshPoll?.();
+
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(applicabilityCheck).toHaveBeenCalledOnce();
+      expect(applicabilityCheck).toHaveBeenCalledWith(true);
+      expect(freshRegistry.revisions).toMatchObject({
+        stylesheetRevision: 1,
+        stylesRevision: 1,
+      });
+      freshRegistry.dispose();
+    },
+  );
 
   it("preserves rule identity for applicability-only changes and revokes it on sheet changes", () => {
     const nativeRule = styleRule(".card", "color: red");

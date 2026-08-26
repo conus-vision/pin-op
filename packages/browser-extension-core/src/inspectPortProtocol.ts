@@ -96,6 +96,7 @@ export interface InspectRepublishRequest {
   readonly documentEpoch: number;
   readonly nodeRef: string;
   readonly selectionRevision: number;
+  readonly republishToken: string;
 }
 
 export interface InspectClearPseudoStatesRequest {
@@ -331,6 +332,7 @@ export function parseInspectRepublishRequest(
     "documentEpoch",
     "nodeRef",
     "selectionRevision",
+    "republishToken",
   ]);
   if (
     !record ||
@@ -338,7 +340,8 @@ export function parseInspectRepublishRequest(
     !isValidContentSessionId(record.contentSessionId) ||
     !isSelectionRevision(record.documentEpoch) ||
     !isProtocolOpaqueId(record.nodeRef) ||
-    !isSelectionRevision(record.selectionRevision)
+    !isSelectionRevision(record.selectionRevision) ||
+    !isValidInspectRepublishToken(record.republishToken)
   ) {
     return undefined;
   }
@@ -348,7 +351,14 @@ export function parseInspectRepublishRequest(
     documentEpoch: record.documentEpoch,
     nodeRef: record.nodeRef,
     selectionRevision: record.selectionRevision,
+    republishToken: record.republishToken,
   });
+}
+
+export function isValidInspectRepublishToken(
+  value: unknown,
+): value is string {
+  return isProtocolOpaqueId(value);
 }
 
 export function parseInspectClearPseudoStatesRequest(

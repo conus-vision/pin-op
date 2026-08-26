@@ -59,6 +59,7 @@ import type {
 import {
   isValidContentSessionId,
   isValidDevtoolsChannel,
+  isValidInspectRepublishToken,
   parseInspectContentLeasePortName,
   parseInspectorLocalRequest,
   parseDevtoolsPanelPortName,
@@ -88,14 +89,17 @@ import {
 import {
   createPanelTabStateMessage,
   type ProtocolCompatibilityMessage,
+  type RefreshExecutionCommand,
   type TabRefreshState,
 } from "./refreshRuntimeProtocol.js";
 import type {
+  TabRefreshCompletion,
   TabRefreshCoordinator,
   TabRefreshSettings,
 } from "./tabRefreshCoordinator.js";
 import type {
   BrowserWindowConnectionState,
+  ControlledWindowTransition,
   PanelRegistration,
 } from "./windowConnectionCoordinator.js";
 import { parseLinkCode } from "./linkCode.js";
@@ -315,6 +319,26 @@ interface StylesInvalidationAuthority {
   readonly stylesheetRevision: number;
 }
 
+type StylesSelectionEvent = Extract<
+  DomEvent,
+  { readonly type: "dom.selectionChanged" | "dom.selectionCleared" }
+>;
+
+interface BufferedInspectSelection {
+  readonly payload: InspectPayload;
+  readonly selectionRevision: number;
+  readonly contentSessionId: ContentSessionId;
+  readonly selectionEvent?: StylesSelectionEvent;
+}
+
+interface RefreshRepublishAuthority extends StylesInvalidationAuthority {
+  readonly contentSessionId: ContentSessionId;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+  readonly republishToken: string;
+  readonly phase: "pending" | "committed";
+}
+
 interface PanelPortRecord {
   readonly channel: string;
   readonly port: BackgroundRuntimePort;
@@ -328,9 +352,20 @@ interface PanelPortRecord {
   inspectTabId?: number;
   inspectWindowId?: number;
   contentSessionId?: ContentSessionId;
+  replacingContentSessionId?: ContentSessionId;
+  rejectPendingContentLeaseReplacements?: boolean;
   stylesSelectionAuthority?: StylesSelectionAuthority;
   stylesInvalidationAuthority?: StylesInvalidationAuthority;
+  refreshRepublishAuthority?: RefreshRepublishAuthority;
+  pendingRefreshRenewalToken?: string;
+  pendingWindowTransitionSelection?: PendingWindowTransitionSelection;
   inspectPublicationToken?: InspectPublicationToken;
+  republishPublication?: InspectRepublishRequest;
+  availabilityRepublish?: {
+    readonly token: string;
+    readonly windowId: number;
+    readonly epoch: number;
+  };
   panelSessionBinding?: { dispose(): void };
   inspectCommandTail: Promise<void>;
   windowStateQueue?: WindowStateQueue;
@@ -356,6 +391,65 @@ interface WindowStateQueue {
   tail: Promise<void>;
 }
 
+interface BufferedSelectionHolder {
+  bufferedSelectionEvent?: StylesSelectionEvent;
+  bufferedInspectSelection?: BufferedInspectSelection;
+}
+
+interface ControlledInspectCleanup extends BufferedSelectionHolder {
+  readonly record: PanelPortRecord;
+  readonly activationToken: object;
+  readonly binding: ChannelBinding;
+  readonly contentSessionId: ContentSessionId;
+  readonly promise: Promise<boolean>;
+  readonly transientRetainers: Set<object>;
+  readonly windowTransitionRetainers: Set<object>;
+  settled: boolean;
+  retainForWindowState: boolean;
+  republishOnRelease: boolean;
+}
+
+interface PreparedControlledWindowTransition {
+  readonly cleanups: readonly ControlledInspectCleanup[];
+  readonly promise: Promise<boolean>;
+  readonly retainToken?: object;
+}
+
+interface ExpectedNestedWindowTransition {
+  readonly commandToken: object;
+  readonly kind: ControlledWindowTransition["kind"];
+  readonly prepared: PreparedControlledWindowTransition;
+}
+
+interface PendingTabRefreshTransition extends BufferedSelectionHolder {
+  readonly token: object;
+  readonly record: PanelPortRecord;
+  readonly activationToken: object;
+  readonly binding: ChannelBinding;
+  readonly contentSessionId: ContentSessionId;
+  readonly windowId: number;
+  readonly refreshGeneration: number;
+  readonly mode: PageRefreshMessage["mode"];
+  readonly initialStylesInvalidationAuthority:
+    | StylesInvalidationAuthority
+    | undefined;
+  cleanup?: ControlledInspectCleanup;
+}
+
+interface PendingTabRefreshAdmission {
+  readonly token: object;
+  readonly record: PanelPortRecord;
+  readonly windowId: number;
+  readonly transition: PendingTabRefreshTransition;
+}
+
+interface PendingWindowTransitionSelection extends BufferedSelectionHolder {
+  readonly activationToken: object;
+  readonly binding: ChannelBinding;
+  readonly contentSessionId: ContentSessionId;
+  readonly windowId: number;
+}
+
 interface WindowAvailabilityState {
   bridgeConnected: boolean | undefined;
   epoch: number;
@@ -376,7 +470,19 @@ interface WindowCommandCompletion {
 
 interface PanelTeardownRequirement {
   readonly binding: ChannelBinding;
+  record?: PanelPortRecord;
+  inspectRetirement?: Promise<void>;
+  deferControlledSideEffects?: boolean;
+  preservePanelState?: boolean;
   invalidateBinding: boolean;
+}
+
+interface RetiringInspectCleanup {
+  readonly requirement: PanelTeardownRequirement;
+  readonly binding: ChannelBinding;
+  readonly recordGeneration: number;
+  readonly contentSessionId: ContentSessionId;
+  latestAuthority: StylesInvalidationAuthority | undefined;
 }
 
 type PanelWindowCommand =
@@ -433,6 +539,10 @@ export class BackgroundRouter {
     number,
     WindowCommandCompletion
   >();
+  private readonly expectedNestedWindowTransitions = new Map<
+    number,
+    ExpectedNestedWindowTransition
+  >();
   private readonly panelTeardowns = new Map<
     string,
     { readonly binding: ChannelBinding; readonly promise: Promise<boolean> }
@@ -441,9 +551,25 @@ export class BackgroundRouter {
     string,
     PanelTeardownRequirement
   >();
+  private readonly retiringInspectCleanups = new Map<
+    number,
+    RetiringInspectCleanup
+  >();
   private readonly removedWindows = new Set<number>();
   private readonly peerBlockedWindows = new Set<number>();
   private readonly windowRefreshEpochs = new Map<number, number>();
+  private readonly controlledInspectCleanups = new Map<
+    string,
+    ControlledInspectCleanup
+  >();
+  private readonly pendingTabRefreshTransitions = new Map<
+    string,
+    PendingTabRefreshTransition
+  >();
+  private readonly pendingTabRefreshAdmissions = new Map<
+    string,
+    PendingTabRefreshAdmission
+  >();
   private readonly removeSubscriptions: Array<() => void> = [];
   private readonly peerStates = new Map<
     number,
@@ -453,13 +579,18 @@ export class BackgroundRouter {
       readonly generation: number;
     }
   >();
+  private readonly peerTransitionTails = new Map<number, Promise<void>>();
+  private readonly peerTransitionAuthorities = new Map<number, object>();
   private readonly availabilityStates = new Map<
     number,
     WindowAvailabilityState
   >();
   private nextGeneration = 1;
+  private nextRepublishToken = 1;
   private disposeGeneration = 1;
   private disposed = false;
+  private disposing = false;
+  private disposePromise: Promise<void> | undefined;
 
   public constructor(options: BackgroundRouterOptions) {
     this.browserLocalInspection = options.browserLocalInspection === true;
@@ -541,8 +672,15 @@ export class BackgroundRouter {
     message: unknown,
     sender: BackgroundMessageSender,
   ): Promise<unknown> {
-    if (this.disposed) {
-      return undefined;
+    const stylesEvent = parseContentStylesEventMessage(message);
+    if (this.disposed || this.disposing) {
+      return stylesEvent
+        ? this.publishRetiringStylesInvalidation(
+            stylesEvent.event,
+            stylesEvent.contentSessionId,
+            sender,
+          )
+        : undefined;
     }
 
     const registration = parseRegistrationMessage(message);
@@ -575,8 +713,13 @@ export class BackgroundRouter {
         sender,
       );
     }
-    const stylesEvent = parseContentStylesEventMessage(message);
     if (stylesEvent) {
+      const retiring = this.publishRetiringStylesInvalidation(
+        stylesEvent.event,
+        stylesEvent.contentSessionId,
+        sender,
+      );
+      if (retiring) return retiring;
       return this.publishContentStylesEvent(
         stylesEvent.event,
         stylesEvent.contentSessionId,
@@ -592,12 +735,14 @@ export class BackgroundRouter {
       selection.payload,
       selection.selectionRevision,
       selection.contentSessionId,
+      selection.republishToken,
+      selection.selectionEvent,
       sender,
     );
   }
 
   public connectPort(port: BackgroundRuntimePort): void {
-    if (this.disposed) {
+    if (this.disposed || this.disposing) {
       safeDisconnect(port);
       return;
     }
@@ -647,8 +792,44 @@ export class BackgroundRouter {
     }
   }
 
+  public beforeControlledWindowTransition(
+    transition: ControlledWindowTransition,
+  ): Promise<boolean> {
+    if (this.disposed || !isBrowserId(transition.windowId)) {
+      return Promise.resolve(true);
+    }
+    const expected = this.expectedNestedWindowTransitions.get(
+      transition.windowId,
+    );
+    if (
+      expected?.kind === transition.kind &&
+      this.isCurrentWindowCommand(transition.windowId, expected.commandToken)
+    ) {
+      this.expectedNestedWindowTransitions.delete(transition.windowId);
+      return expected.prepared.promise;
+    }
+    return this.prepareControlledWindowTransition(
+      transition.windowId,
+      true,
+    );
+  }
+
+  public beforeControlledTabTransition(
+    tabId: number,
+    command?: RefreshExecutionCommand,
+  ): Promise<boolean> {
+    if (this.disposed || !isBrowserId(tabId)) {
+      return Promise.resolve(true);
+    }
+    return this.prepareControlledInspectTabTransition(tabId, command);
+  }
+
   public async removeWindow(windowId: number): Promise<void> {
     if (this.disposed || !isBrowserId(windowId)) {
+      return;
+    }
+    await this.prepareControlledWindowTransition(windowId, false);
+    if (this.disposed || this.removedWindows.has(windowId)) {
       return;
     }
     const tabRefreshRemoval = this.tabRefreshCoordinator.removeWindow(
@@ -659,6 +840,8 @@ export class BackgroundRouter {
     this.removedWindows.add(windowId);
     this.windowRefreshEpochs.delete(windowId);
     this.peerStates.delete(windowId);
+    this.peerTransitionTails.delete(windowId);
+    this.peerTransitionAuthorities.delete(windowId);
     this.availabilityStates.delete(windowId);
     const removedBindings = [...this.bindings.values()].filter(
       (binding) => !binding.suspended && binding.windowId === windowId,
@@ -676,17 +859,38 @@ export class BackgroundRouter {
     ]);
   }
 
-  public dispose(): void {
-    if (this.disposed) {
-      return;
-    }
-    this.disposed = true;
+  public dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    let resolveDisposal!: () => void;
+    this.disposePromise = new Promise<void>((resolve) => {
+      resolveDisposal = resolve;
+    });
+    this.disposing = true;
     this.disposeGeneration += 1;
 
     for (const record of this.panelPorts.values()) {
       record.inspectPublicationToken = undefined;
     }
+    for (const record of [...this.panelPorts.values()]) {
+      this.closePanelPort(record, true);
+    }
+    this.disposed = true;
+    this.disposing = false;
+    const teardowns = [...this.panelTeardowns.values()].map(
+      ({ promise }) => promise,
+    );
+    void this.finishDisposal(teardowns).then(resolveDisposal);
+    return this.disposePromise;
+  }
 
+  private async finishDisposal(
+    teardowns: readonly Promise<boolean>[],
+  ): Promise<void> {
+    try {
+      await Promise.all(teardowns);
+    } catch (error) {
+      this.reportError(error);
+    }
     for (const removeSubscription of this.removeSubscriptions.splice(0)) {
       try {
         removeSubscription();
@@ -694,17 +898,19 @@ export class BackgroundRouter {
         this.reportError(error);
       }
     }
-    for (const record of [...this.panelPorts.values()]) {
-      this.closePanelPort(record, true);
-    }
     this.pendingRegistrations.clear();
     this.panelCommands.clear();
     for (const commandToken of new Set(this.windowCommands.values())) {
       this.releaseWindowCommand(commandToken);
     }
     this.windowCommandCompletions.clear();
+    this.expectedNestedWindowTransitions.clear();
     this.panelTeardowns.clear();
     this.requiredPanelTeardowns.clear();
+    this.retiringInspectCleanups.clear();
+    this.controlledInspectCleanups.clear();
+    this.pendingTabRefreshTransitions.clear();
+    this.pendingTabRefreshAdmissions.clear();
     this.bindings.clear();
     this.channelByTab.clear();
     this.channelBySource.clear();
@@ -712,8 +918,14 @@ export class BackgroundRouter {
     this.peerBlockedWindows.clear();
     this.windowRefreshEpochs.clear();
     this.peerStates.clear();
+    this.peerTransitionTails.clear();
+    this.peerTransitionAuthorities.clear();
     this.availabilityStates.clear();
-    this.contentRefreshCoordinator.dispose();
+    try {
+      this.contentRefreshCoordinator.dispose();
+    } catch (error) {
+      this.reportError(error);
+    }
   }
 
   private attachSubscriptions(
@@ -815,28 +1027,79 @@ export class BackgroundRouter {
     ) {
       return;
     }
-    this.contentRefreshCoordinator.revokeTab(tabId);
-    this.revokeInspectTab(tabId);
+    const channel = this.channelByTab.get(tabId);
+    const binding = channel ? this.bindings.get(channel) : undefined;
+    const record = binding ? this.panelPorts.get(binding.channel) : undefined;
+    const joinsExistingTeardown = Boolean(
+      binding &&
+      binding.tabId === tabId &&
+      (binding.windowId === oldWindowId || binding.suspended) &&
+      this.hasRequiredPanelTeardown(binding),
+    );
+    const moveRetirement =
+      binding &&
+        record &&
+        !joinsExistingTeardown &&
+        binding.tabId === tabId &&
+        binding.windowId === oldWindowId &&
+        !binding.suspended &&
+        record.inspectSession &&
+        record.contentSessionId
+        ? this.requestPanelTeardown(binding, false, record, true)
+        : undefined;
+    const moveRetirementRequirement = moveRetirement && binding
+      ? this.requiredPanelTeardowns.get(binding.channel)
+      : undefined;
+    const joinsRequiredTeardown = joinsExistingTeardown ||
+      moveRetirement !== undefined;
     for (const pending of this.pendingRegistrations.values()) {
       if (pending.tabId === tabId && this.isCurrentPending(pending)) {
         pending.detachedWindowId = oldWindowId;
       }
     }
-    void this.tabRefreshCoordinator
-      .detachTab(tabId, oldWindowId)
-      .catch((error) => this.reportError(error));
-    void this.contentRefreshCoordinator
-      .detachTab(tabId)
-      .catch((error) => this.reportError(error));
-
-    const channel = this.channelByTab.get(tabId);
-    const binding = channel ? this.bindings.get(channel) : undefined;
+    const detach = (teardownCompleted = false): void => {
+      const teardownRevokedTab = Boolean(
+        teardownCompleted &&
+        moveRetirementRequirement &&
+        (!moveRetirementRequirement.preservePanelState ||
+          moveRetirementRequirement.invalidateBinding),
+      );
+      if (
+        !joinsRequiredTeardown ||
+        (moveRetirement && !teardownRevokedTab)
+      ) {
+        this.contentRefreshCoordinator.revokeTab(tabId);
+        this.revokeInspectTab(tabId);
+      }
+      void this.tabRefreshCoordinator
+        .detachTab(tabId, oldWindowId)
+        .catch((error) => this.reportError(error));
+      void this.contentRefreshCoordinator
+        .detachTab(tabId)
+        .catch((error) => this.reportError(error));
+    };
     if (
       !binding ||
       binding.tabId !== tabId ||
       binding.windowId !== oldWindowId ||
       binding.suspended
     ) {
+      if (joinsExistingTeardown && binding) {
+        const detachedBinding = binding.suspended
+          ? {
+              ...binding,
+              generation: this.allocateGeneration(),
+            }
+          : binding;
+        if (detachedBinding !== binding) {
+          this.bindings.set(detachedBinding.channel, detachedBinding);
+        }
+        void this.awaitPanelTeardownForActivation(detachedBinding)
+          .then(detach)
+          .catch((error) => this.reportError(error));
+      } else {
+        detach();
+      }
       return;
     }
 
@@ -846,9 +1109,15 @@ export class BackgroundRouter {
       suspended: true,
     };
     this.bindings.set(suspended.channel, suspended);
-    const record = this.panelPorts.get(suspended.channel);
-    if (record) {
+    if (record && !joinsRequiredTeardown) {
       this.clearPanelActivation(record, true);
+    }
+    if (joinsRequiredTeardown) {
+      void (moveRetirement ?? this.awaitPanelTeardownForActivation(binding))
+        .then(detach)
+        .catch((error) => this.reportError(error));
+    } else {
+      detach();
     }
   }
 
@@ -867,7 +1136,17 @@ export class BackgroundRouter {
         return;
       }
       if (this.hasRequiredPanelTeardown(binding)) {
-        void this.attachMovedBindingAfterTeardown(binding, newWindowId);
+        const pendingBinding: ChannelBinding = {
+          ...binding,
+          windowId: newWindowId,
+          generation: this.allocateGeneration(),
+          suspended: true,
+        };
+        this.bindings.set(pendingBinding.channel, pendingBinding);
+        void this.attachMovedBindingAfterTeardown(
+          pendingBinding,
+          newWindowId,
+        );
         return;
       }
       const replacement = this.replaceBindingWindow(binding, newWindowId);
@@ -1174,11 +1453,38 @@ export class BackgroundRouter {
     ) {
       return;
     }
-    const replacement = this.replaceBindingWindow(binding, newWindowId);
-    const record = this.panelPorts.get(replacement.channel);
-    if (record) {
-      this.activatePanelPort(record, replacement);
+    const record = this.panelPorts.get(binding.channel);
+    if (!record) {
+      return;
     }
+    let tab: BackgroundTab | undefined;
+    let lookupFailed = false;
+    try {
+      tab = await this.getTab(binding.tabId);
+    } catch {
+      lookupFailed = true;
+    }
+    if (
+      this.disposed ||
+      this.panelPorts.get(record.channel) !== record ||
+      this.bindings.get(binding.channel) !== binding ||
+      !binding.suspended
+    ) {
+      return;
+    }
+    const resolved = resolvedTab(tab, binding.tabId);
+    const resolvedWindowId = lookupFailed
+      ? newWindowId
+      : resolved?.windowId;
+    if (
+      resolvedWindowId === undefined ||
+      this.removedWindows.has(resolvedWindowId)
+    ) {
+      await this.invalidatePanelBinding(binding);
+      return;
+    }
+    const replacement = this.replaceBindingWindow(binding, resolvedWindowId);
+    this.activatePanelPort(record, replacement);
   }
 
   private async attachPendingAfterTeardown(
@@ -1697,8 +2003,19 @@ export class BackgroundRouter {
     }
     this.beginWindowRefreshEpoch(windowId);
     this.peerBlockedWindows.add(windowId);
+    const acknowledged = await this.prepareControlledWindowTransition(
+      windowId,
+      true,
+    );
+    if (!acknowledged) {
+      this.reportError(new Error(
+        "Failed refresh restore cleanup was not acknowledged",
+      ));
+    }
+    if (!this.isCurrentWindowCommand(windowId, commandToken)) {
+      return false;
+    }
     this.contentRefreshCoordinator.revokeWindow(windowId);
-    this.revokeInspectWindow(windowId);
     this.invalidateWindowPanelTabStates(windowId);
     try {
       await this.coordinator.unlinkWindow(windowId);
@@ -1757,6 +2074,9 @@ export class BackgroundRouter {
     settlePendingInspect = false,
     preserveInspection = false,
   ): void {
+    this.dropPendingTabRefreshTransition(record);
+    record.pendingWindowTransitionSelection = undefined;
+    this.controlledInspectCleanups.delete(record.channel);
     const activationToken = record.activationToken;
     if (preserveInspection) {
       this.revokeInspectChannel(record.channel);
@@ -1770,6 +2090,9 @@ export class BackgroundRouter {
     record.bindingGeneration = undefined;
     record.stylesSelectionAuthority = undefined;
     record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
     record.windowStateQueue = undefined;
     record.windowStateRevision += 1;
     record.tabStateInitialization = undefined;
@@ -1800,8 +2123,14 @@ export class BackgroundRouter {
     }
     record.contentRecoveryAvailable = false;
     record.contentSessionId = undefined;
+    record.replacingContentSessionId = undefined;
+    record.rejectPendingContentLeaseReplacements = undefined;
+    record.pendingWindowTransitionSelection = undefined;
     record.stylesSelectionAuthority = undefined;
     record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
     const panelSessionBinding = this.panelSessions.bind(
       record.channel,
       binding.tabId,
@@ -1814,6 +2143,36 @@ export class BackgroundRouter {
         this.postToActiveChannel(record.channel, message);
       },
       {
+        onContentLeaseReplacementStarted: (previousContentSessionId) => {
+          if (
+            this.panelPorts.get(record.channel) !== record ||
+            record.inspectSession !== session ||
+            record.contentSessionId !== previousContentSessionId
+          ) {
+            return;
+          }
+          record.replacingContentSessionId = previousContentSessionId;
+          record.panelSessionBinding?.dispose();
+          record.panelSessionBinding = this.panelSessions.bind(
+            record.channel,
+            binding.tabId,
+          );
+          const cleanup = this.controlledInspectCleanups.get(record.channel);
+          const refreshTransition = this.pendingTabRefreshTransitions.get(
+            record.channel,
+          );
+          const expectsReloadReplacement =
+            refreshTransition?.mode === "reload" &&
+            refreshTransition.cleanup === cleanup &&
+            refreshTransition.contentSessionId === previousContentSessionId;
+          if (
+            cleanup?.contentSessionId === previousContentSessionId &&
+            this.isCurrentControlledCleanup(cleanup) &&
+            !expectsReloadReplacement
+          ) {
+            record.rejectPendingContentLeaseReplacements = true;
+          }
+        },
         onContentLeaseReplacing: (previousContentSessionId) => {
           if (
             this.panelPorts.get(record.channel) !== record ||
@@ -1822,6 +2181,11 @@ export class BackgroundRouter {
           ) {
             return;
           }
+          this.revokeInspectChannel(record.channel);
+          record.replacingContentSessionId = undefined;
+          this.dropPendingTabRefreshTransition(record);
+          record.pendingWindowTransitionSelection = undefined;
+          this.controlledInspectCleanups.delete(record.channel);
           this.postToActiveChannel(record.channel, {
             type: "pin-op.inspect.invalidated",
             reason: "documentDisconnected",
@@ -1831,6 +2195,9 @@ export class BackgroundRouter {
           record.contentSessionId = undefined;
           record.stylesSelectionAuthority = undefined;
           record.stylesInvalidationAuthority = undefined;
+          record.refreshRepublishAuthority = undefined;
+          record.republishPublication = undefined;
+          record.availabilityRepublish = undefined;
           record.contentRecoveryAvailable = false;
         },
         onContentLeaseAttached: (contentSessionId) => {
@@ -1838,6 +2205,15 @@ export class BackgroundRouter {
             this.panelPorts.get(record.channel) === record &&
             record.inspectSession === session
           ) {
+            if (record.rejectPendingContentLeaseReplacements) {
+              record.inspectionFailedClosed = true;
+              this.disposeInspectionSession(record, false);
+              return;
+            }
+            record.replacingContentSessionId = undefined;
+            this.dropPendingTabRefreshTransition(record);
+            record.pendingWindowTransitionSelection = undefined;
+            this.controlledInspectCleanups.delete(record.channel);
             if (!record.panelSessionBinding) {
               record.panelSessionBinding = this.panelSessions.bind(
                 record.channel,
@@ -1857,6 +2233,9 @@ export class BackgroundRouter {
             record.contentSessionId = contentSessionId;
             record.stylesSelectionAuthority = undefined;
             record.stylesInvalidationAuthority = undefined;
+            record.refreshRepublishAuthority = undefined;
+            record.republishPublication = undefined;
+            record.availabilityRepublish = undefined;
             record.contentRecoveryAvailable = true;
             record.inspectionFailedClosed = false;
           }
@@ -1883,8 +2262,14 @@ export class BackgroundRouter {
       return;
     }
     record.contentSessionId = undefined;
+    record.replacingContentSessionId = undefined;
+    record.rejectPendingContentLeaseReplacements = undefined;
+    record.pendingWindowTransitionSelection = undefined;
     record.stylesSelectionAuthority = undefined;
     record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
     const binding = this.bindings.get(record.channel);
     const token = record.activationToken;
     const recover = reason === "documentDisconnected" &&
@@ -1916,13 +2301,21 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     settlePendingInspect: boolean,
   ): void {
+    this.dropPendingTabRefreshTransition(record);
+    record.pendingWindowTransitionSelection = undefined;
+    this.controlledInspectCleanups.delete(record.channel);
     const session = record.inspectSession;
     record.inspectSession = undefined;
     record.inspectTabId = undefined;
     record.inspectWindowId = undefined;
     record.contentSessionId = undefined;
+    record.replacingContentSessionId = undefined;
+    record.rejectPendingContentLeaseReplacements = undefined;
     record.stylesSelectionAuthority = undefined;
     record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
     record.panelSessionBinding?.dispose();
     record.panelSessionBinding = undefined;
     record.contentRecoveryAvailable = false;
@@ -1945,6 +2338,14 @@ export class BackgroundRouter {
         this.isCurrentActivation(record, token, binding)
       ? binding
       : undefined;
+    const requiredTeardown = binding
+      ? this.requiredPanelTeardowns.get(binding.channel)
+      : undefined;
+    const joinsRequiredTeardown = Boolean(
+      binding &&
+      requiredTeardown &&
+      sameIdentity(requiredTeardown.binding, binding),
+    );
     const pending = this.pendingRegistrations.get(record.channel);
     const closedPending = pending && this.isCurrentPending(pending)
       ? pending
@@ -1966,12 +2367,18 @@ export class BackgroundRouter {
     this.panelPorts.delete(record.channel);
     record.port.onMessage.removeListener(record.onMessage);
     record.port.onDisconnect.removeListener(record.onDisconnect);
-    this.clearPanelActivation(record);
+    if (!activeBinding && joinsRequiredTeardown && binding) {
+      void this.requestPanelTeardown(binding, false, record, false)
+        .then(() => this.clearRetiredPanelActivation(record))
+        .catch((error) => this.reportError(error));
+    } else if (!activeBinding) {
+      this.clearPanelActivation(record);
+    }
     if (closedTabId !== undefined) {
-      this.contentRefreshCoordinator.revokeTab(closedTabId);
       if (activeBinding) {
-        void this.requestPanelTeardown(activeBinding, false);
-      } else {
+        void this.requestPanelTeardown(activeBinding, false, record);
+      } else if (!joinsRequiredTeardown) {
+        this.contentRefreshCoordinator.revokeTab(closedTabId);
         void this.tabRefreshCoordinator
           .panelClosed(closedTabId, closedWindowId)
           .catch((error) => this.reportError(error));
@@ -2037,6 +2444,7 @@ export class BackgroundRouter {
     this.acquireWindowCommand(leasedWindowId, commandToken);
     let dispatchedBinding: ChannelBinding | undefined;
     let dispatchedCommand: PanelCommandRecord | undefined;
+    let unlinkTransition: PreparedControlledWindowTransition | undefined;
     try {
       const pendingRecord: PanelCommandRecord = {
         commandToken,
@@ -2118,12 +2526,33 @@ export class BackgroundRouter {
         );
       } else {
         this.beginWindowRefreshEpoch(refreshed.windowId);
-        this.contentRefreshCoordinator.revokeWindow(refreshed.windowId);
-        this.revokeInspectWindow(refreshed.windowId);
         this.peerBlockedWindows.add(refreshed.windowId);
-        await this.coordinator.unlinkWindow(
+        unlinkTransition = this.beginControlledWindowTransition(
+          refreshed.windowId,
+          true,
+        );
+        const acknowledged = await unlinkTransition.promise;
+        if (!acknowledged) {
+          this.reportError(new Error(
+            "Window unlink cleanup was not acknowledged",
+          ));
+        }
+        if (
+          !this.isCurrentWindowPanelCommand(
+            refreshed.windowId,
+            record,
+            refreshed,
+            dispatchedRecord,
+          )
+        ) {
+          return { ok: false, error: "stalePanel" };
+        }
+        this.contentRefreshCoordinator.revokeWindow(refreshed.windowId);
+        await this.invokeCoordinatorUnlink(
           refreshed.windowId,
           abortController.signal,
+          commandToken,
+          unlinkTransition,
         );
         this.invalidateWindowPanelTabStates(refreshed.windowId);
         await this.tabRefreshCoordinator.removeWindow(refreshed.windowId);
@@ -2223,7 +2652,11 @@ export class BackgroundRouter {
       ) {
         this.panelCommands.delete(command.channel);
       }
+      this.releasePendingWindowTransitionSelections(leasedWindowId);
       this.releaseWindowCommand(commandToken);
+      if (unlinkTransition) {
+        this.releasePreparedControlledWindowTransition(unlinkTransition);
+      }
     }
   }
 
@@ -2302,6 +2735,7 @@ export class BackgroundRouter {
       const binding = this.bindings.get(record.channel);
       if (
         !binding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         this.postInspectFailure(record, request.requestId);
@@ -2319,6 +2753,7 @@ export class BackgroundRouter {
         !refreshed ||
         !currentToken ||
         !session ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, currentToken, refreshed)
       ) {
         this.postInspectFailure(record, request.requestId);
@@ -2332,6 +2767,7 @@ export class BackgroundRouter {
       if (
         record.activationToken !== currentToken ||
         record.inspectSession !== session ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, currentToken, refreshed)
       ) {
         this.postInspectFailure(record, request.requestId);
@@ -2426,6 +2862,7 @@ export class BackgroundRouter {
       if (
         !binding ||
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding) ||
         !this.correlations.authorizeNavigation({
           channel: record.channel,
@@ -2445,6 +2882,7 @@ export class BackgroundRouter {
       if (
         refreshed !== binding ||
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding) ||
         !this.correlations.authorizeNavigation({
           channel: record.channel,
@@ -2472,6 +2910,7 @@ export class BackgroundRouter {
       }
       if (
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding) ||
         !this.correlations.authorizeNavigation({
           channel: record.channel,
@@ -2503,6 +2942,7 @@ export class BackgroundRouter {
       if (
         !binding ||
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2537,6 +2977,7 @@ export class BackgroundRouter {
         !record.registration ||
         !currentAuthority ||
         currentAuthority.context !== authority.context ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2576,6 +3017,7 @@ export class BackgroundRouter {
       if (
         !binding ||
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2608,6 +3050,7 @@ export class BackgroundRouter {
         !record.registration ||
         !currentAuthority ||
         currentAuthority.context !== authority.context ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2652,6 +3095,7 @@ export class BackgroundRouter {
     if (
       postflight !== binding ||
       !record.registration ||
+      this.hasInspectTransitionGate(record) ||
       !this.isCurrentActivation(record, activationToken, binding) ||
       outcome === "sent" ||
       !this.correlations.discardRulesOpenAuthority(authority)
@@ -2674,6 +3118,7 @@ export class BackgroundRouter {
       if (
         !binding ||
         !record.registration ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2704,6 +3149,7 @@ export class BackgroundRouter {
         !record.registration ||
         !currentAuthority ||
         currentAuthority.context !== authority.context ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2750,6 +3196,7 @@ export class BackgroundRouter {
     if (
       postflight !== binding ||
       !record.registration ||
+      this.hasInspectTransitionGate(record) ||
       !this.isCurrentActivation(record, activationToken, binding)
     ) {
       return;
@@ -2783,6 +3230,7 @@ export class BackgroundRouter {
       if (
         !contentSessionId ||
         record.contentSessionId !== contentSessionId ||
+        this.hasInspectTransitionGate(record) ||
         !binding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -2800,6 +3248,7 @@ export class BackgroundRouter {
         record.activationToken !== activationToken ||
         !record.inspectSession ||
         !record.panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         settleQuery("session-disposed");
@@ -2812,6 +3261,7 @@ export class BackgroundRouter {
         record.inspectSession !== inspectSession ||
         record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         settleQuery("session-disposed");
@@ -2820,10 +3270,11 @@ export class BackgroundRouter {
       if (requestId) {
         const response = await this.panelSessions.request(record.channel, request);
         if (
-          record.inspectSession !== inspectSession ||
-          record.contentSessionId !== contentSessionId ||
-          record.panelSessionBinding !== panelSessionBinding ||
-          !this.isCurrentActivation(record, activationToken, binding)
+        record.inspectSession !== inspectSession ||
+        record.contentSessionId !== contentSessionId ||
+        record.panelSessionBinding !== panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
+        !this.isCurrentActivation(record, activationToken, binding)
         ) {
           settleQuery("session-disposed");
           return;
@@ -2836,6 +3287,7 @@ export class BackgroundRouter {
         record.inspectSession !== inspectSession ||
         record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         return;
@@ -2861,6 +3313,7 @@ export class BackgroundRouter {
       if (
         !contentSessionId ||
         record.contentSessionId !== contentSessionId ||
+        this.hasInspectTransitionGate(record) ||
         !binding ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
@@ -2878,6 +3331,7 @@ export class BackgroundRouter {
         record.activationToken !== activationToken ||
         !record.inspectSession ||
         !record.panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         settle("cancelled");
@@ -2890,6 +3344,7 @@ export class BackgroundRouter {
         record.inspectSession !== inspectSession ||
         record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         settle("cancelled");
@@ -2903,6 +3358,7 @@ export class BackgroundRouter {
         record.inspectSession !== inspectSession ||
         record.contentSessionId !== contentSessionId ||
         record.panelSessionBinding !== panelSessionBinding ||
+        this.hasInspectTransitionGate(record) ||
         !this.isCurrentActivation(record, activationToken, binding)
       ) {
         settle("cancelled");
@@ -2991,6 +3447,22 @@ export class BackgroundRouter {
       return binding;
     }
 
+    if (record.inspectSession && record.contentSessionId) {
+      this.abortPanelCommand(record, activationToken);
+      const retirement = this.requestPanelTeardown(
+        binding,
+        false,
+        record,
+        true,
+      );
+      void this.finishQuietBindingMoveAfterRetirement(
+        binding,
+        record,
+        retirement,
+      ).catch((error) => this.reportError(error));
+      return undefined;
+    }
+
     const replacement: ChannelBinding = {
       channel: binding.channel,
       tabId: binding.tabId,
@@ -3009,39 +3481,89 @@ export class BackgroundRouter {
       : undefined;
   }
 
+  private async finishQuietBindingMoveAfterRetirement(
+    binding: ChannelBinding,
+    record: PanelPortRecord,
+    retirement: Promise<boolean>,
+  ): Promise<void> {
+    if (
+      !await retirement ||
+      this.disposed ||
+      this.panelPorts.get(record.channel) !== record ||
+      this.bindings.get(binding.channel) !== binding
+    ) {
+      return;
+    }
+    let tab: BackgroundTab | undefined;
+    try {
+      tab = await this.getTab(binding.tabId);
+    } catch {
+      tab = undefined;
+    }
+    if (
+      this.disposed ||
+      this.panelPorts.get(record.channel) !== record ||
+      this.bindings.get(binding.channel) !== binding
+    ) {
+      return;
+    }
+    const resolved = resolvedTab(tab, binding.tabId);
+    if (!resolved || this.removedWindows.has(resolved.windowId)) {
+      await this.invalidatePanelBinding(binding);
+      return;
+    }
+    const replacement = resolved.windowId === binding.windowId
+      ? binding
+      : this.replaceBindingWindow(binding, resolved.windowId);
+    this.activatePanelPort(record, replacement);
+  }
+
   private invalidatePanelBinding(
     binding: ChannelBinding,
   ): Promise<boolean> {
-    this.contentRefreshCoordinator.revokeTab(binding.tabId);
     return this.requestPanelTeardown(binding, true);
   }
 
   private requestPanelTeardown(
     binding: ChannelBinding,
     invalidateBinding: boolean,
+    record = this.panelPorts.get(binding.channel),
+    preservePanelState = false,
   ): Promise<boolean> {
     const required = this.requiredPanelTeardowns.get(binding.channel);
-    if (required && required.binding !== binding) {
+    if (required && !sameIdentity(required.binding, binding)) {
       return Promise.resolve(false);
     }
     if (required) {
       required.invalidateBinding ||= invalidateBinding;
+      required.record ??= record;
+      required.preservePanelState &&= preservePanelState && !invalidateBinding;
     } else {
       this.requiredPanelTeardowns.set(binding.channel, {
         binding,
+        record,
         invalidateBinding,
+        preservePanelState: preservePanelState && !invalidateBinding,
       });
     }
     const existing = this.panelTeardowns.get(binding.channel);
-    if (existing?.binding === binding) {
+    if (
+      existing &&
+      required &&
+      existing.binding === required.binding
+    ) {
       return existing.promise;
     }
-    const promise = this.performPanelBindingTeardown(binding).finally(() => {
+    const teardownBinding = required?.binding ?? binding;
+    const promise = this.performPanelBindingTeardown(teardownBinding).finally(() => {
       if (this.panelTeardowns.get(binding.channel)?.promise === promise) {
         this.panelTeardowns.delete(binding.channel);
       }
     });
-    this.panelTeardowns.set(binding.channel, { binding, promise });
+    this.panelTeardowns.set(binding.channel, {
+      binding: teardownBinding,
+      promise,
+    });
     return promise;
   }
 
@@ -3050,13 +3572,13 @@ export class BackgroundRouter {
   ): Promise<boolean> {
     const pending = this.panelTeardowns.get(binding.channel);
     const required = this.requiredPanelTeardowns.get(binding.channel);
-    if (pending?.binding !== binding && required?.binding !== binding) {
+    if (!required || !sameIdentity(required.binding, binding)) {
       return true;
     }
-    return pending?.binding === binding
+    return pending?.binding === required.binding
       ? await pending.promise
       : await this.requestPanelTeardown(
-          binding,
+          required.binding,
           required?.invalidateBinding ?? false,
         );
   }
@@ -3068,18 +3590,19 @@ export class BackgroundRouter {
     const required = this.requiredPanelTeardowns.get(binding.channel);
     if (
       !completed &&
-      required?.binding === binding
+      required &&
+      sameIdentity(required.binding, binding)
     ) {
       await this.requestPanelTeardown(
-        binding,
+        required.binding,
         required.invalidateBinding,
       );
     }
   }
 
   private hasRequiredPanelTeardown(binding: ChannelBinding): boolean {
-    return this.panelTeardowns.get(binding.channel)?.binding === binding ||
-      this.requiredPanelTeardowns.get(binding.channel)?.binding === binding;
+    const required = this.requiredPanelTeardowns.get(binding.channel);
+    return Boolean(required && sameIdentity(required.binding, binding));
   }
 
   private async performPanelBindingTeardown(
@@ -3089,29 +3612,66 @@ export class BackgroundRouter {
     if (required?.binding !== binding) {
       return true;
     }
+    const inspectRetirement = this.beginPanelInspectRetirement(required);
     try {
-      await this.tabRefreshCoordinator.panelClosed(
-        binding.tabId,
-        binding.windowId,
-      );
+      if (required.deferControlledSideEffects) {
+        await inspectRetirement;
+        if (!required.preservePanelState || required.invalidateBinding) {
+          this.contentRefreshCoordinator.revokeTab(binding.tabId);
+          await this.tabRefreshCoordinator.panelClosed(
+            binding.tabId,
+            binding.windowId,
+          );
+        }
+      } else if (required.preservePanelState && !required.invalidateBinding) {
+        await inspectRetirement;
+      } else {
+        this.contentRefreshCoordinator.revokeTab(binding.tabId);
+        await Promise.all([
+          inspectRetirement,
+          this.tabRefreshCoordinator.panelClosed(
+            binding.tabId,
+            binding.windowId,
+          ),
+        ]);
+      }
     } catch (error) {
       this.reportError(error);
       return false;
+    }
+    if (required.preservePanelState && !required.invalidateBinding) {
+      const currentBinding = this.bindings.get(binding.channel);
+      const record = required.record;
+      if (
+        currentBinding &&
+        sameIdentity(currentBinding, binding) &&
+        record &&
+        this.panelPorts.get(binding.channel) === record
+      ) {
+        this.clearPanelActivation(record, true);
+      }
     }
     const completed = this.requiredPanelTeardowns.get(binding.channel);
     if (completed?.binding !== binding) {
       return true;
     }
     if (completed.invalidateBinding) {
+      const currentBinding = this.bindings.get(binding.channel);
       const record = this.panelPorts.get(binding.channel);
-      if (record?.bindingGeneration === binding.generation) {
+      if (
+        currentBinding &&
+        sameIdentity(currentBinding, binding) &&
+        record
+      ) {
         record.port.onMessage.removeListener(record.onMessage);
         this.clearPanelActivation(record, true);
         record.onMessage = (message) =>
           this.rejectPendingInspect(record, message);
         record.port.onMessage.addListener(record.onMessage);
       }
-      this.removeBinding(binding, true);
+      if (currentBinding && sameIdentity(currentBinding, binding)) {
+        this.removeBinding(currentBinding, true);
+      }
     }
     if (this.requiredPanelTeardowns.get(binding.channel) === completed) {
       this.requiredPanelTeardowns.delete(binding.channel);
@@ -3154,6 +3714,8 @@ export class BackgroundRouter {
     payload: InspectPayload,
     selectionRevision: number,
     contentSessionId: ContentSessionId,
+    republishToken: string | undefined,
+    selectionEvent: StylesSelectionEvent | undefined,
     sender: BackgroundMessageSender,
   ): Promise<BackgroundRouteResult | undefined> {
     const senderTab = validatedSenderTab(sender);
@@ -3163,18 +3725,28 @@ export class BackgroundRouter {
     const channel = this.channelByTab.get(senderTab.id);
     const binding = channel ? this.bindings.get(channel) : undefined;
     const record = channel ? this.panelPorts.get(channel) : undefined;
+    const activationToken = record?.activationToken;
     if (
       !binding ||
       !record ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      record.replacingContentSessionId === contentSessionId ||
       record.bindingGeneration !== binding.generation ||
       !record.registration ||
-      !record.activationToken
+      !activationToken ||
+      !this.isCurrentActivation(record, activationToken, binding)
     ) {
       return undefined;
     }
-    const selectionAuthority = record.stylesSelectionAuthority;
+    if (
+      senderTab.windowId !== undefined &&
+      senderTab.windowId !== binding.windowId
+    ) {
+      await this.refreshPanelBinding(binding, record, activationToken);
+      return undefined;
+    }
+    let selectionAuthority = record.stylesSelectionAuthority;
     if (
       selectionAuthority &&
       (selectionRevision < selectionAuthority.selectionRevision ||
@@ -3183,18 +3755,102 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
+    if (this.hasInspectTransitionGate(record)) {
+      this.bufferPendingInspectSelection(
+        record,
+        payload,
+        selectionRevision,
+        contentSessionId,
+        republishToken,
+        selectionEvent,
+      );
+      return undefined;
+    }
+    if (
+      republishToken === undefined &&
+      selectionEvent &&
+      !(
+        selectionAuthority?.selected &&
+        selectionAuthority.documentEpoch === selectionEvent.documentEpoch &&
+        selectionAuthority.nodeRef === selectionEvent.nodeRef &&
+        selectionAuthority.selectionRevision ===
+          selectionEvent.selectionRevision
+      )
+    ) {
+      if (!this.observeStylesSelectionAuthority(record, selectionEvent)) {
+        return undefined;
+      }
+      this.panelSessions.publish(binding.channel, selectionEvent);
+      selectionAuthority = record.stylesSelectionAuthority;
+    }
+    if (
+      republishToken === undefined &&
+      selectionAuthority?.selected &&
+      this.matchesRefreshRepublishAuthority(
+        record,
+        contentSessionId,
+        selectionAuthority.documentEpoch,
+        selectionAuthority.nodeRef,
+        selectionRevision,
+      )
+    ) {
+      return undefined;
+    }
+    const refreshRepublishAuthority = republishToken !== undefined &&
+        record.refreshRepublishAuthority?.republishToken === republishToken
+      ? record.refreshRepublishAuthority
+      : undefined;
+    if (republishToken !== undefined) {
+      const republishPublication = record.republishPublication;
+      if (
+        !republishPublication ||
+        republishPublication.republishToken !== republishToken ||
+        republishPublication.contentSessionId !== contentSessionId ||
+        republishPublication.selectionRevision !== selectionRevision ||
+        !selectionAuthority?.selected ||
+        selectionAuthority.documentEpoch !==
+          republishPublication.documentEpoch ||
+        selectionAuthority.nodeRef !== republishPublication.nodeRef ||
+        selectionAuthority.selectionRevision !==
+          republishPublication.selectionRevision ||
+        (selectionEvent !== undefined &&
+          (selectionEvent.documentEpoch !==
+              republishPublication.documentEpoch ||
+            selectionEvent.nodeRef !== republishPublication.nodeRef ||
+            selectionEvent.selectionRevision !==
+              republishPublication.selectionRevision))
+      ) {
+        this.rejectPendingRefreshRepublishAuthority(
+          record,
+          refreshRepublishAuthority,
+        );
+        return undefined;
+      }
+    }
+    const availabilityRepublish = republishToken === undefined
+      ? undefined
+      : record.availabilityRepublish?.token === republishToken
+      ? record.availabilityRepublish
+      : undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
     const publicationToken: InspectPublicationToken = {
       documentEpoch: selectionAuthority?.documentEpoch,
       selectionRevision,
     };
     record.inspectPublicationToken = publicationToken;
     this.correlations.disposeChannel(binding.channel);
-    const token = record.activationToken;
-    const refreshed = await this.refreshPanelBinding(binding, record, token);
+    try {
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
     if (
       !refreshed ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      this.hasInspectTransitionGate(record) ||
       record.inspectPublicationToken !== publicationToken ||
       (senderTab.windowId !== undefined &&
         senderTab.windowId !== refreshed.windowId)
@@ -3216,6 +3872,7 @@ export class BackgroundRouter {
     if (
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      this.hasInspectTransitionGate(record) ||
       record.inspectPublicationToken !== publicationToken ||
       !record.activationToken ||
       !this.isCurrentActivation(record, record.activationToken, refreshed)
@@ -3230,7 +3887,10 @@ export class BackgroundRouter {
       metadata: payload.metadata,
     };
     try {
-      if (record.inspectPublicationToken !== publicationToken) {
+      if (
+        record.inspectPublicationToken !== publicationToken ||
+        this.hasInspectTransitionGate(record)
+      ) {
         return undefined;
       }
       inspectMessageId = this.inspectMessageId();
@@ -3273,8 +3933,30 @@ export class BackgroundRouter {
         refreshed.channel,
         inspectMessageId,
       );
+    } else {
+      this.commitRefreshRepublishAuthority(
+        record,
+        refreshRepublishAuthority,
+      );
+      if (
+        availabilityRepublish &&
+        !this.hasInspectTransitionGate(record) &&
+        this.availabilityStates.get(availabilityRepublish.windowId)?.epoch ===
+          availabilityRepublish.epoch
+      ) {
+        record.republishedAvailabilityEpoch = Math.max(
+          record.republishedAvailabilityEpoch,
+          availabilityRepublish.epoch,
+        );
+      }
     }
-    return okResult;
+      return okResult;
+    } finally {
+      this.rejectPendingRefreshRepublishAuthority(
+        record,
+        refreshRepublishAuthority,
+      );
+    }
   }
 
   private async publishContentDomEvent(
@@ -3289,15 +3971,24 @@ export class BackgroundRouter {
     const channel = this.channelByTab.get(senderTab.id);
     const binding = channel ? this.bindings.get(channel) : undefined;
     const record = channel ? this.panelPorts.get(channel) : undefined;
+    const activationToken = record?.activationToken;
     if (
       !binding ||
       !record ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      record.replacingContentSessionId === contentSessionId ||
       record.bindingGeneration !== binding.generation ||
+      !record.registration ||
+      !activationToken ||
+      !this.isCurrentActivation(record, activationToken, binding) ||
       (senderTab.windowId !== undefined &&
         senderTab.windowId !== binding.windowId)
     ) {
+      return undefined;
+    }
+    if (this.hasInspectTransitionGate(record)) {
+      this.bufferPendingSelectionEvent(record, event);
       return undefined;
     }
     if (!this.observeStylesSelectionAuthority(record, event)) {
@@ -3322,6 +4013,8 @@ export class BackgroundRouter {
       !record ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
+      (this.hasInspectTransitionGate(record) &&
+        event.type !== "styles.invalidated") ||
       record.bindingGeneration !== binding.generation ||
       (senderTab.windowId !== undefined && senderTab.windowId !== binding.windowId)
     ) return undefined;
@@ -3341,7 +4034,10 @@ export class BackgroundRouter {
         stylesRevision: event.stylesRevision,
         stylesheetRevision: event.stylesheetRevision,
       });
+      record.refreshRepublishAuthority = undefined;
       record.inspectPublicationToken = undefined;
+      record.republishPublication = undefined;
+      record.availabilityRepublish = undefined;
       this.correlations.disposeChannel(binding.channel);
       this.panelSessions.publish(binding.channel, event);
       return okResult;
@@ -3355,17 +4051,67 @@ export class BackgroundRouter {
     ) {
       return undefined;
     }
+    if (
+      event.type === "styles.inspectPublicationRenewed" &&
+      this.matchesRefreshRepublishAuthority(
+        record,
+        contentSessionId,
+        event.documentEpoch,
+        event.nodeRef,
+        event.selectionRevision,
+      )
+    ) {
+      if (record.refreshRepublishAuthority?.phase === "pending") {
+        record.pendingRefreshRenewalToken =
+          record.refreshRepublishAuthority.republishToken;
+      }
+      return okResult;
+    }
+    const request = this.currentRepublishRequest(record);
+    if (!request) return undefined;
     const republished = await this.panelSessions.republishSelection(
       binding.channel,
-      Object.freeze({
-        type: "pin-op.inspect.republish",
-        contentSessionId,
-        documentEpoch: event.documentEpoch,
-        nodeRef: event.nodeRef,
-        selectionRevision: event.selectionRevision,
-      }),
+      request,
     );
     return republished ? okResult : undefined;
+  }
+
+  private publishRetiringStylesInvalidation(
+    event: StylesEvent,
+    contentSessionId: ContentSessionId,
+    sender: BackgroundMessageSender,
+  ): BackgroundRouteResult | undefined {
+    if (event.type !== "styles.invalidated") return undefined;
+    const senderTab = validatedSenderTab(sender);
+    if (!senderTab) return undefined;
+    const cleanup = this.retiringInspectCleanups.get(senderTab.id);
+    if (
+      !cleanup ||
+      cleanup.contentSessionId !== contentSessionId ||
+      cleanup.binding.tabId !== senderTab.id ||
+      cleanup.requirement.record?.generation !== cleanup.recordGeneration ||
+      this.requiredPanelTeardowns.get(cleanup.binding.channel) !==
+        cleanup.requirement ||
+      cleanup.requirement.binding !== cleanup.binding
+    ) {
+      return undefined;
+    }
+    const previous = cleanup.latestAuthority;
+    if (
+      previous &&
+      (event.documentEpoch < previous.documentEpoch ||
+        (event.documentEpoch === previous.documentEpoch &&
+          (event.stylesRevision <= previous.stylesRevision ||
+            event.stylesheetRevision < previous.stylesheetRevision)))
+    ) {
+      return undefined;
+    }
+    cleanup.latestAuthority = Object.freeze({
+      documentEpoch: event.documentEpoch,
+      stylesRevision: event.stylesRevision,
+      stylesheetRevision: event.stylesheetRevision,
+    });
+    return okResult;
   }
 
   private observeStylesSelectionAuthority(
@@ -3379,19 +4125,7 @@ export class BackgroundRouter {
       return true;
     }
     const current = record.stylesSelectionAuthority;
-    const selectedToClearedTie = current?.selected === true &&
-      event.type === "dom.selectionCleared" &&
-      event.documentEpoch === current.documentEpoch &&
-      event.selectionRevision === current.selectionRevision &&
-      event.nodeRef === current.nodeRef;
-    if (
-      current &&
-      (event.documentEpoch < current.documentEpoch ||
-        (event.documentEpoch === current.documentEpoch &&
-          (event.selectionRevision < current.selectionRevision ||
-            (event.selectionRevision === current.selectionRevision &&
-              !selectedToClearedTie))))
-    ) {
+    if (!this.canObserveStylesSelectionEvent(current, event)) {
       return false;
     }
     const publicationToken = record.inspectPublicationToken;
@@ -3406,6 +4140,7 @@ export class BackgroundRouter {
       record.inspectPublicationToken = undefined;
       this.correlations.disposeChannel(record.channel);
     }
+    record.refreshRepublishAuthority = undefined;
     record.stylesSelectionAuthority = {
       documentEpoch: event.documentEpoch,
       nodeRef: event.nodeRef,
@@ -3413,6 +4148,507 @@ export class BackgroundRouter {
       selected: event.type === "dom.selectionChanged",
     };
     return true;
+  }
+
+  private beginPanelInspectRetirement(
+    requirement: PanelTeardownRequirement,
+  ): Promise<void> {
+    if (requirement.inspectRetirement) {
+      return requirement.inspectRetirement;
+    }
+    const { binding, record } = requirement;
+    if (!record) {
+      const completed = Promise.resolve();
+      requirement.inspectRetirement = completed;
+      return completed;
+    }
+    const session = record.inspectSession;
+    const contentSessionId = record.contentSessionId;
+    let cleanup: RetiringInspectCleanup | undefined;
+    if (session && contentSessionId) {
+      requirement.deferControlledSideEffects = true;
+      cleanup = {
+        requirement,
+        binding,
+        recordGeneration: record.generation,
+        contentSessionId,
+        latestAuthority: record.stylesInvalidationAuthority,
+      };
+      this.retiringInspectCleanups.set(binding.tabId, cleanup);
+    }
+
+    let retirement: Promise<void>;
+    if (!session) {
+      retirement = Promise.resolve();
+    } else if (requirement.invalidateBinding) {
+      session.retire("stalePanel");
+      retirement = contentSessionId
+        ? session.whenIdle()
+        : Promise.resolve();
+    } else {
+      const controlledDispose = session.controlledDispose();
+      retirement = contentSessionId
+        ? controlledDispose
+        : Promise.resolve();
+    }
+
+    this.dropPendingTabRefreshTransition(record);
+    record.pendingWindowTransitionSelection = undefined;
+    this.controlledInspectCleanups.delete(record.channel);
+    record.inspectSession = undefined;
+    record.inspectTabId = undefined;
+    record.inspectWindowId = undefined;
+    record.contentSessionId = undefined;
+    record.replacingContentSessionId = undefined;
+    record.rejectPendingContentLeaseReplacements = undefined;
+    record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    record.pendingRefreshRenewalToken = undefined;
+    record.inspectPublicationToken = undefined;
+    record.republishPublication = undefined;
+    record.availabilityRepublish = undefined;
+    record.contentRecoveryAvailable = false;
+    record.panelSessionBinding?.dispose();
+    record.panelSessionBinding = undefined;
+    this.panelSessions.disposeChannel(record.channel);
+    if (!cleanup && this.panelPorts.get(record.channel) !== record) {
+      this.clearRetiredPanelActivation(record);
+    }
+
+    const completed = retirement.then(
+      () => undefined,
+      (error: unknown) => {
+        this.reportError(error);
+      },
+    ).then(() => {
+      if (
+        cleanup &&
+        this.retiringInspectCleanups.get(binding.tabId) === cleanup
+      ) {
+        this.retiringInspectCleanups.delete(binding.tabId);
+      }
+      this.revokeInspectChannel(binding.channel);
+      if (cleanup && this.panelPorts.get(record.channel) !== record) {
+        this.clearRetiredPanelActivation(record);
+      }
+    });
+    requirement.inspectRetirement = completed;
+    return completed;
+  }
+
+  private clearRetiredPanelActivation(record: PanelPortRecord): void {
+    const activationToken = record.activationToken;
+    record.activationToken = undefined;
+    record.bindingGeneration = undefined;
+    record.windowStateQueue = undefined;
+    record.windowStateRevision += 1;
+    record.tabStateInitialization = undefined;
+    record.tabStateInitialized = false;
+    record.tabStateInvalidatedByUnlink = false;
+    record.lastWindowState = undefined;
+    record.republishWindowId = undefined;
+    record.republishInFlightEpoch = undefined;
+    record.republishedAvailabilityEpoch = 0;
+    if (activationToken) this.abortPanelCommand(record, activationToken);
+    const registration = record.registration;
+    record.registration = undefined;
+    registration?.dispose();
+  }
+
+  private canObserveStylesSelectionEvent(
+    current: StylesSelectionAuthority | undefined,
+    event: StylesSelectionEvent,
+  ): boolean {
+    if (!current) return true;
+    const selectedToClearedTie = current.selected &&
+      event.type === "dom.selectionCleared" &&
+      event.documentEpoch === current.documentEpoch &&
+      event.selectionRevision === current.selectionRevision &&
+      event.nodeRef === current.nodeRef;
+    return event.documentEpoch > current.documentEpoch ||
+      (event.documentEpoch === current.documentEpoch &&
+        (event.selectionRevision > current.selectionRevision ||
+          (event.selectionRevision === current.selectionRevision &&
+            selectedToClearedTie)));
+  }
+
+  private selectionAuthorityForEvent(
+    event: StylesSelectionEvent,
+  ): StylesSelectionAuthority {
+    return {
+      documentEpoch: event.documentEpoch,
+      nodeRef: event.nodeRef,
+      selectionRevision: event.selectionRevision,
+      selected: event.type === "dom.selectionChanged",
+    };
+  }
+
+  private sameSelectionEvent(
+    first: StylesSelectionEvent,
+    second: StylesSelectionEvent,
+  ): boolean {
+    return first.type === second.type &&
+      first.documentEpoch === second.documentEpoch &&
+      first.nodeRef === second.nodeRef &&
+      first.selectionRevision === second.selectionRevision;
+  }
+
+  private bufferedInspectMatchesEvent(
+    buffered: BufferedInspectSelection | undefined,
+    event: StylesSelectionEvent,
+    contentSessionId: ContentSessionId,
+  ): buffered is BufferedInspectSelection {
+    if (
+      event.type !== "dom.selectionChanged" ||
+      buffered?.contentSessionId !== contentSessionId ||
+      buffered.selectionRevision !== event.selectionRevision
+    ) return false;
+    const embedded = buffered.selectionEvent;
+    return !embedded || this.sameSelectionEvent(embedded, event);
+  }
+
+  private matchesSelectionAuthority(
+    authority: StylesSelectionAuthority | undefined,
+    event: StylesSelectionEvent,
+  ): boolean {
+    return authority?.documentEpoch === event.documentEpoch &&
+      authority.nodeRef === event.nodeRef &&
+      authority.selectionRevision === event.selectionRevision &&
+      authority.selected === (event.type === "dom.selectionChanged");
+  }
+
+  private latestBufferedSelectionEvent(
+    holder: BufferedSelectionHolder,
+  ): StylesSelectionEvent | undefined {
+    const explicit = holder.bufferedSelectionEvent;
+    const embedded = holder.bufferedInspectSelection?.selectionEvent;
+    if (!explicit) return embedded;
+    return embedded && this.canObserveStylesSelectionEvent(
+        this.selectionAuthorityForEvent(explicit),
+        embedded,
+      )
+      ? embedded
+      : explicit;
+  }
+
+  private mergeBufferedSelectionEvent(
+    record: PanelPortRecord,
+    holder: BufferedSelectionHolder,
+    event: StylesSelectionEvent,
+  ): boolean {
+    const latest = this.latestBufferedSelectionEvent(holder);
+    const current = latest
+      ? this.selectionAuthorityForEvent(latest)
+      : record.stylesSelectionAuthority;
+    if (
+      !this.canObserveStylesSelectionEvent(current, event) &&
+      !this.matchesSelectionAuthority(current, event)
+    ) return false;
+    if (!latest || !this.sameSelectionEvent(latest, event)) {
+      holder.bufferedSelectionEvent = event;
+    }
+    return true;
+  }
+
+  private mergeBufferedInspectSelection(
+    record: PanelPortRecord,
+    holder: BufferedSelectionHolder,
+    candidate: BufferedInspectSelection,
+    preferCandidateOnTie: boolean,
+  ): void {
+    const candidateEvent = candidate.selectionEvent;
+    if (
+      candidateEvent &&
+      !this.mergeBufferedSelectionEvent(record, holder, candidateEvent)
+    ) return;
+    const latest = this.latestBufferedSelectionEvent(holder);
+    if (
+      candidateEvent &&
+      latest &&
+      !this.sameSelectionEvent(candidateEvent, latest)
+    ) return;
+    const current = holder.bufferedInspectSelection;
+    if (!current) {
+      holder.bufferedInspectSelection = candidate;
+      return;
+    }
+    const currentEvent = current.selectionEvent;
+    if (candidateEvent && currentEvent) {
+      if (this.canObserveStylesSelectionEvent(
+        this.selectionAuthorityForEvent(currentEvent),
+        candidateEvent,
+      ) ||
+        (preferCandidateOnTie &&
+          this.sameSelectionEvent(currentEvent, candidateEvent))) {
+        holder.bufferedInspectSelection = candidate;
+      }
+      return;
+    }
+    if (candidateEvent && !currentEvent) {
+      holder.bufferedInspectSelection = candidate;
+      return;
+    }
+    if (
+      !candidateEvent &&
+      !currentEvent &&
+      (candidate.selectionRevision > current.selectionRevision ||
+        (preferCandidateOnTie &&
+          candidate.selectionRevision === current.selectionRevision))
+    ) {
+      holder.bufferedInspectSelection = candidate;
+    }
+  }
+
+  private mergeBufferedSelections(
+    record: PanelPortRecord,
+    source: BufferedSelectionHolder,
+    target: BufferedSelectionHolder,
+  ): void {
+    const event = this.latestBufferedSelectionEvent(source);
+    if (event) this.mergeBufferedSelectionEvent(record, target, event);
+    const inspect = source.bufferedInspectSelection;
+    if (inspect) {
+      this.mergeBufferedInspectSelection(record, target, inspect, false);
+    }
+  }
+
+  private bufferPendingSelectionEvent(
+    record: PanelPortRecord,
+    event: DomEvent,
+  ): void {
+    if (
+      event.type !== "dom.selectionChanged" &&
+      event.type !== "dom.selectionCleared"
+    ) return;
+    const transition = this.currentGatedTabRefreshTransition(record);
+    const cleanup = this.controlledInspectCleanups.get(record.channel);
+    const holder = transition ??
+      (cleanup && this.isCurrentControlledCleanup(cleanup) ? cleanup : undefined) ??
+      this.currentPendingWindowTransitionSelection(record);
+    if (!holder) return;
+    this.mergeBufferedSelectionEvent(record, holder, event);
+  }
+
+  private bufferPendingInspectSelection(
+    record: PanelPortRecord,
+    payload: InspectPayload,
+    selectionRevision: number,
+    contentSessionId: ContentSessionId,
+    republishToken: string | undefined,
+    selectionEvent: StylesSelectionEvent | undefined,
+  ): void {
+    if (republishToken !== undefined) return;
+    const transition = this.currentGatedTabRefreshTransition(record);
+    const cleanup = this.controlledInspectCleanups.get(record.channel);
+    const holder = transition ??
+      (cleanup && this.isCurrentControlledCleanup(cleanup) ? cleanup : undefined) ??
+      this.currentPendingWindowTransitionSelection(record);
+    if (!holder) return;
+    this.mergeBufferedInspectSelection(record, holder, {
+      payload,
+      selectionRevision,
+      contentSessionId,
+      ...(selectionEvent ? { selectionEvent } : {}),
+    }, true);
+  }
+
+  private commitBufferedSelectionEvent(
+    transition: PendingTabRefreshTransition,
+    transitionCurrent = this.isCurrentPendingTabRefreshTransition(transition),
+  ): BufferedInspectSelection | undefined {
+    const bufferedInspect = transition.bufferedInspectSelection;
+    const event = this.latestBufferedSelectionEvent(transition);
+    transition.bufferedSelectionEvent = undefined;
+    transition.bufferedInspectSelection = undefined;
+    if (
+      !event ||
+      !transitionCurrent ||
+      !this.observeStylesSelectionAuthority(transition.record, event)
+    ) {
+      return undefined;
+    }
+    this.panelSessions.publish(transition.record.channel, event);
+    return this.bufferedInspectMatchesEvent(
+        bufferedInspect,
+        event,
+        transition.contentSessionId,
+      )
+      ? bufferedInspect
+      : undefined;
+  }
+
+  private currentGatedTabRefreshTransition(
+    record: PanelPortRecord,
+  ): PendingTabRefreshTransition | undefined {
+    const admission = this.pendingTabRefreshAdmissions.get(record.channel);
+    if (
+      admission?.record === record &&
+        this.pendingTabRefreshAdmissions.get(record.channel) === admission &&
+        this.isCurrentTabRefreshTransitionSnapshot(admission.transition)
+    ) {
+      return admission.transition;
+    }
+    const pending = this.pendingTabRefreshTransitions.get(record.channel);
+    return pending && this.isCurrentPendingTabRefreshTransition(pending)
+      ? pending
+      : undefined;
+  }
+
+  private inheritPendingTabRefreshSelection(
+    previous:
+      | PendingTabRefreshTransition
+      | PendingWindowTransitionSelection,
+    next: PendingTabRefreshTransition | ControlledInspectCleanup,
+  ): void {
+    this.mergeBufferedSelections(next.record, previous, next);
+  }
+
+  private currentPendingWindowTransitionSelection(
+    record: PanelPortRecord,
+  ): PendingWindowTransitionSelection | undefined {
+    const pending = record.pendingWindowTransitionSelection;
+    return pending &&
+        pending.windowId === pending.binding.windowId &&
+        record.contentSessionId === pending.contentSessionId &&
+        this.isCurrentActivation(
+          record,
+          pending.activationToken,
+          pending.binding,
+        )
+      ? pending
+      : undefined;
+  }
+
+  private releaseTabRefreshAdmission(
+    admission: PendingTabRefreshAdmission,
+    replayBuffered: boolean,
+  ): void {
+    if (
+      this.pendingTabRefreshAdmissions.get(admission.record.channel) !==
+        admission
+    ) return;
+    const bufferedInspect = replayBuffered
+      ? this.commitBufferedSelectionEvent(
+          admission.transition,
+          this.isCurrentTabRefreshTransitionSnapshot(admission.transition),
+        )
+      : undefined;
+    this.pendingTabRefreshAdmissions.delete(admission.record.channel);
+    if (!bufferedInspect) return;
+    void this.publishSelection(
+      bufferedInspect.payload,
+      bufferedInspect.selectionRevision,
+      bufferedInspect.contentSessionId,
+      undefined,
+      bufferedInspect.selectionEvent,
+      {
+        tab: {
+          id: admission.transition.binding.tabId,
+          windowId: admission.windowId,
+        },
+      },
+    ).catch((error: unknown) => this.reportError(error));
+  }
+
+  private matchesRefreshRepublishAuthority(
+    record: PanelPortRecord,
+    contentSessionId: ContentSessionId,
+    documentEpoch: number,
+    nodeRef: string,
+    selectionRevision: number,
+  ): boolean {
+    const refresh = record.refreshRepublishAuthority;
+    const invalidation = record.stylesInvalidationAuthority;
+    return Boolean(
+      refresh &&
+        invalidation &&
+        refresh.contentSessionId === contentSessionId &&
+        refresh.documentEpoch === documentEpoch &&
+        refresh.nodeRef === nodeRef &&
+        refresh.selectionRevision === selectionRevision &&
+        invalidation.documentEpoch === refresh.documentEpoch &&
+        invalidation.stylesRevision === refresh.stylesRevision &&
+        invalidation.stylesheetRevision === refresh.stylesheetRevision,
+    );
+  }
+
+  private commitRefreshRepublishAuthority(
+    record: PanelPortRecord,
+    authority: RefreshRepublishAuthority | undefined,
+  ): void {
+    if (
+      !authority ||
+      authority.phase !== "pending" ||
+      record.refreshRepublishAuthority !== authority
+    ) return;
+    record.refreshRepublishAuthority = Object.freeze({
+      ...authority,
+      phase: "committed",
+    });
+    if (record.pendingRefreshRenewalToken === authority.republishToken) {
+      record.pendingRefreshRenewalToken = undefined;
+    }
+  }
+
+  private rejectPendingRefreshRepublishAuthority(
+    record: PanelPortRecord,
+    authority: RefreshRepublishAuthority | undefined,
+  ): void {
+    if (
+      authority?.phase === "pending" &&
+      record.refreshRepublishAuthority === authority
+    ) {
+      const retry = record.pendingRefreshRenewalToken ===
+          authority.republishToken &&
+        this.matchesRefreshRepublishAuthority(
+          record,
+          authority.contentSessionId,
+          authority.documentEpoch,
+          authority.nodeRef,
+          authority.selectionRevision,
+        );
+      record.refreshRepublishAuthority = undefined;
+      if (record.pendingRefreshRenewalToken === authority.republishToken) {
+        record.pendingRefreshRenewalToken = undefined;
+      }
+      if (retry && !this.hasInspectTransitionGate(record)) {
+        const request = this.currentRepublishRequest(record);
+        if (request) {
+          const retryAuthority: RefreshRepublishAuthority = Object.freeze({
+            ...authority,
+            republishToken: request.republishToken,
+            phase: "pending",
+          });
+          record.refreshRepublishAuthority = retryAuthority;
+          void this.panelSessions.republishSelection(record.channel, request)
+            .then((republished) => {
+              if (
+                !republished &&
+                record.republishPublication === request
+              ) {
+                record.republishPublication = undefined;
+              }
+              if (!republished) {
+                this.rejectPendingRefreshRepublishAuthority(
+                  record,
+                  retryAuthority,
+                );
+              }
+            })
+            .catch((error: unknown) => {
+              if (record.republishPublication === request) {
+                record.republishPublication = undefined;
+              }
+              this.rejectPendingRefreshRepublishAuthority(
+                record,
+                retryAuthority,
+              );
+              this.reportError(error);
+            });
+        }
+      }
+    }
   }
 
   private queueWindowState(
@@ -3433,137 +4669,173 @@ export class BackgroundRouter {
     record.windowStateRevision += 1;
     const revision = record.windowStateRevision;
     let inspectionCleanupFailed = false;
-    if (revokesSourcePresentationAuthority(state)) {
-      this.revokeInspectWindow(binding.windowId);
-    }
-    const operation = queue.tail.then(async () => {
-      if (
-        record.windowStateQueue !== queue ||
-        !record.registration ||
-        !this.isCurrentActivation(record, token, binding)
-      ) {
-        return;
-      }
-      const refreshed = await this.refreshPanelBinding(
-        binding,
-        record,
-        token,
-      );
-      if (
-        refreshed !== binding ||
-        record.windowStateQueue !== queue ||
-        !record.registration ||
-        !this.isCurrentActivation(record, token, binding)
-      ) {
-        return;
-      }
-      if (
-        state === "offline" ||
-        (state === "notLinked" && this.browserLocalInspection)
-      ) {
-        const contentSessionId = record.contentSessionId;
-        if (contentSessionId) {
-          const acknowledged = await this.inspectCoordinator.clearPseudoStates(
-            binding.tabId,
-            contentSessionId,
-          );
-          await this.inspectCoordinator.whenIdle(binding.tabId);
-          if (
-            record.windowStateQueue !== queue ||
-            !record.registration ||
-            !this.isCurrentActivation(record, token, binding)
-          ) {
-            return;
-          }
-          if (
-            !acknowledged ||
-            record.contentSessionId !== contentSessionId
-          ) {
-            inspectionCleanupFailed = true;
-            record.inspectionFailedClosed = true;
-            const session = record.inspectSession;
-            this.disposeInspectionSession(record, false);
-            await session?.whenIdle();
-            await this.inspectCoordinator.whenIdle(binding.tabId);
-            if (
-              record.windowStateQueue !== queue ||
-              !record.registration ||
-              !this.isCurrentActivation(record, token, binding)
-            ) {
-              return;
-            }
-          }
-        }
-      }
-      const previousState = record.lastWindowState;
-      record.lastWindowState = state;
-      if (state === "notLinked") {
-        this.peerBlockedWindows.add(binding.windowId);
-        this.peerStates.delete(binding.windowId);
-        this.availabilityStates.delete(binding.windowId);
-        record.republishInFlightEpoch = undefined;
-        record.republishedAvailabilityEpoch = 0;
-        record.inspectionFailedClosed = inspectionCleanupFailed;
-      } else if (state === "incompatible") {
-        this.peerBlockedWindows.add(binding.windowId);
-      }
-      if (
-        state === "incompatible" ||
-        (state === "notLinked" && !this.browserLocalInspection)
-      ) {
-        if (record.inspectSession || record.panelSessionBinding) {
-          this.disposeInspectionSession(record, false);
-        }
-      } else if (
-        (
-          this.browserLocalInspection ||
-          state === "linking" ||
-          state === "linked"
-        ) &&
-        !record.inspectSession &&
-        !record.inspectionFailedClosed
-      ) {
-        try {
-          this.startInspectionSession(record, binding);
-        } catch (error) {
-          record.inspectionFailedClosed = true;
-          this.reportError(error);
-        }
-      }
-      if (state === "linking" || state === "linked") {
-        this.peerBlockedWindows.delete(binding.windowId);
-      }
-      this.updateBridgeAvailability(
-        binding.windowId,
-        previousState,
-        state,
-      );
-      const windowStateMessage: Record<string, unknown> = {
-        type: "pin-op.windowState",
-        state,
-      };
-      if (displayLinkCode !== undefined) {
-        windowStateMessage.displayLinkCode = displayLinkCode;
-      }
-      this.postToCurrentPort(record, token, windowStateMessage);
-      if (state === "incompatible") {
-        this.postToCurrentPort(
-          record,
-          token,
-          incompatibleProtocolMessage(protocolMismatch),
-        );
-      } else if (state === "linked") {
-        this.postToCurrentPort(record, token, {
-          type: "pin-op.protocol.compatibility",
-          compatible: true,
-          browserProtocolVersion: PROTOCOL_VERSION,
-        } satisfies ProtocolCompatibilityMessage);
-        void this.publishFreshLinkedTabState(
+    const controlledContentSessionId = record.contentSessionId;
+    const revokesAuthority = revokesSourcePresentationAuthority(state);
+    const existingControlledCleanup = controlledContentSessionId
+      ? this.controlledInspectCleanups.get(record.channel)
+      : undefined;
+    const controlledCleanup = revokesAuthority && controlledContentSessionId
+      ? this.prepareControlledRecordCleanup(
           record,
           token,
           binding,
-          revision,
-        ).catch((error) => this.reportError(error));
+          controlledContentSessionId,
+          true,
+        )
+      : (state === "linking" || state === "linked") &&
+          existingControlledCleanup &&
+          this.isCurrentControlledCleanup(existingControlledCleanup)
+      ? existingControlledCleanup
+      : undefined;
+    const cleanupRetainer = controlledCleanup ? {} : undefined;
+    if (controlledCleanup && cleanupRetainer) {
+      if (state === "linking" || state === "linked") {
+        controlledCleanup.republishOnRelease = true;
+      }
+      controlledCleanup.transientRetainers.add(cleanupRetainer);
+    }
+    const operation = queue.tail.then(async () => {
+      try {
+        if (
+          record.windowStateQueue !== queue ||
+          !record.registration ||
+          !this.isCurrentActivation(record, token, binding)
+        ) {
+          return;
+        }
+        const cleanupAcknowledged = controlledCleanup
+          ? await controlledCleanup.promise
+          : true;
+        if (controlledCleanup && !cleanupAcknowledged) {
+          inspectionCleanupFailed = true;
+        }
+        if (revokesAuthority) {
+          this.revokeInspectWindow(binding.windowId);
+        }
+        if (
+          record.windowStateQueue !== queue ||
+          !record.registration ||
+          !this.isCurrentActivation(record, token, binding)
+        ) {
+          return;
+        }
+        const refreshed = await this.refreshPanelBinding(
+          binding,
+          record,
+          token,
+        );
+        if (
+          refreshed !== binding ||
+          record.windowStateQueue !== queue ||
+          !record.registration ||
+          !this.isCurrentActivation(record, token, binding)
+        ) {
+          return;
+        }
+        if (
+          state === "offline" ||
+          (state === "notLinked" && this.browserLocalInspection)
+        ) {
+          const contentSessionId = record.contentSessionId;
+          if (contentSessionId) {
+            if (
+              controlledContentSessionId === undefined ||
+              !cleanupAcknowledged ||
+              contentSessionId !== controlledContentSessionId
+            ) {
+              inspectionCleanupFailed = true;
+              record.inspectionFailedClosed = true;
+              const session = record.inspectSession;
+              this.disposeInspectionSession(record, false);
+              await session?.whenIdle();
+              await this.inspectCoordinator.whenIdle(binding.tabId);
+              if (
+                record.windowStateQueue !== queue ||
+                !record.registration ||
+                !this.isCurrentActivation(record, token, binding)
+              ) {
+                return;
+              }
+            }
+          }
+        }
+        const previousState = record.lastWindowState;
+        record.lastWindowState = state;
+        if (state === "notLinked") {
+          this.peerBlockedWindows.add(binding.windowId);
+          this.peerStates.delete(binding.windowId);
+          this.peerTransitionAuthorities.delete(binding.windowId);
+          this.availabilityStates.delete(binding.windowId);
+          record.republishInFlightEpoch = undefined;
+          record.republishedAvailabilityEpoch = 0;
+          record.inspectionFailedClosed =
+            record.inspectionFailedClosed || inspectionCleanupFailed;
+        } else if (state === "incompatible") {
+          this.peerBlockedWindows.add(binding.windowId);
+        }
+        if (
+          state === "incompatible" ||
+          (state === "notLinked" && !this.browserLocalInspection)
+        ) {
+          if (record.inspectSession || record.panelSessionBinding) {
+            this.disposeInspectionSession(record, false);
+          }
+        } else if (
+          (
+            this.browserLocalInspection ||
+            state === "linking" ||
+            state === "linked"
+          ) &&
+          !record.inspectSession &&
+          !record.inspectionFailedClosed
+        ) {
+          try {
+            this.startInspectionSession(record, binding);
+          } catch (error) {
+            record.inspectionFailedClosed = true;
+            this.reportError(error);
+          }
+        }
+        if (state === "linking" || state === "linked") {
+          this.peerBlockedWindows.delete(binding.windowId);
+        }
+        this.updateBridgeAvailability(
+          binding.windowId,
+          previousState,
+          state,
+        );
+        const windowStateMessage: Record<string, unknown> = {
+          type: "pin-op.windowState",
+          state,
+        };
+        if (displayLinkCode !== undefined) {
+          windowStateMessage.displayLinkCode = displayLinkCode;
+        }
+        this.postToCurrentPort(record, token, windowStateMessage);
+        if (state === "incompatible") {
+          this.postToCurrentPort(
+            record,
+            token,
+            incompatibleProtocolMessage(protocolMismatch),
+          );
+        } else if (state === "linked") {
+          this.postToCurrentPort(record, token, {
+            type: "pin-op.protocol.compatibility",
+            compatible: true,
+            browserProtocolVersion: PROTOCOL_VERSION,
+          } satisfies ProtocolCompatibilityMessage);
+          void this.publishFreshLinkedTabState(
+            record,
+            token,
+            binding,
+            revision,
+          ).catch((error) => this.reportError(error));
+        }
+      } finally {
+        if (controlledCleanup && cleanupRetainer) {
+          controlledCleanup.transientRetainers.delete(cleanupRetainer);
+          this.releaseControlledCleanup(controlledCleanup);
+        }
       }
     });
     queue.tail = operation.catch((error) =>
@@ -3695,7 +4967,8 @@ export class BackgroundRouter {
     if (
       record.republishWindowId !== windowId ||
       record.republishedAvailabilityEpoch >= epoch ||
-      record.republishInFlightEpoch !== undefined
+      record.republishInFlightEpoch !== undefined ||
+      this.hasInspectTransitionGate(record)
     ) {
       return;
     }
@@ -3713,9 +4986,14 @@ export class BackgroundRouter {
     ) {
       return;
     }
+    record.availabilityRepublish = Object.freeze({
+      token: republishRequest.republishToken,
+      windowId,
+      epoch,
+    });
     record.republishInFlightEpoch = epoch;
     void this.panelSessions.republishSelection(record.channel, republishRequest)
-      .then((republished) => {
+      .then(() => {
         if (
           record.republishInFlightEpoch !== epoch ||
           record.republishWindowId !== windowId
@@ -3723,16 +5001,6 @@ export class BackgroundRouter {
           return;
         }
         record.republishInFlightEpoch = undefined;
-        if (
-          republished &&
-          record.inspectSession === session &&
-          this.isCurrentActivation(record, token, binding)
-        ) {
-          record.republishedAvailabilityEpoch = Math.max(
-            record.republishedAvailabilityEpoch,
-            epoch,
-          );
-        }
         const current = this.availabilityStates.get(windowId);
         if (current && current.epoch > epoch) {
           this.scheduleAvailabilityRepublish(windowId, current);
@@ -3746,10 +5014,796 @@ export class BackgroundRouter {
       });
   }
 
+  private prepareControlledWindowTransition(
+    windowId: number,
+    retainForWindowState: boolean,
+  ): Promise<boolean> {
+    return this.beginControlledWindowTransition(
+      windowId,
+      retainForWindowState,
+    ).promise;
+  }
+
+  private beginControlledWindowTransition(
+    windowId: number,
+    retainForWindowState: boolean,
+  ): PreparedControlledWindowTransition {
+    const retainer = {};
+    const retainToken = retainForWindowState ? {} : undefined;
+    const cleanups: ControlledInspectCleanup[] = [];
+    const retirements = this.retiringInspectRetirementsForWindow(windowId);
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      const activationToken = record.activationToken;
+      if (
+        !binding ||
+        !activationToken ||
+        binding.windowId !== windowId ||
+        !record.registration ||
+        !record.inspectSession ||
+        !record.contentSessionId ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        continue;
+      }
+      const cleanup = this.prepareControlledRecordCleanup(
+        record,
+        activationToken,
+        binding,
+        record.contentSessionId,
+        false,
+      );
+      cleanup.transientRetainers.add(retainer);
+      if (retainToken) cleanup.windowTransitionRetainers.add(retainToken);
+      cleanups.push(cleanup);
+    }
+    const finish = (): void => {
+      this.revokeInspectWindow(windowId);
+      for (const cleanup of cleanups) {
+        cleanup.transientRetainers.delete(retainer);
+        this.tryReleaseControlledCleanup(cleanup);
+      }
+    };
+    const promise = Promise.all([
+      Promise.all(cleanups.map((cleanup) => cleanup.promise)),
+      Promise.all(retirements),
+    ]).then(
+      ([results]) => {
+        finish();
+        return results.every(Boolean);
+      },
+      (error: unknown) => {
+        finish();
+        throw error;
+      },
+    );
+    return {
+      cleanups: Object.freeze([...cleanups]),
+      promise,
+      ...(retainToken ? { retainToken } : {}),
+    };
+  }
+
+  private releasePreparedControlledWindowTransition(
+    transition: PreparedControlledWindowTransition,
+  ): void {
+    if (!transition.retainToken) return;
+    for (const cleanup of transition.cleanups) {
+      if (
+        this.controlledInspectCleanups.get(cleanup.record.channel) === cleanup &&
+        this.isCurrentControlledCleanup(cleanup)
+      ) {
+        cleanup.windowTransitionRetainers.delete(transition.retainToken);
+        this.tryReleaseControlledCleanup(cleanup);
+      }
+    }
+  }
+
+  private invokeCoordinatorUnlink(
+    windowId: number,
+    signal: AbortSignal,
+    commandToken: object,
+    prepared: PreparedControlledWindowTransition,
+  ): Promise<void> {
+    const expected: ExpectedNestedWindowTransition = {
+      commandToken,
+      kind: "unlink",
+      prepared,
+    };
+    this.expectedNestedWindowTransitions.set(windowId, expected);
+    try {
+      return this.coordinator.unlinkWindow(windowId, signal);
+    } finally {
+      if (this.expectedNestedWindowTransitions.get(windowId) === expected) {
+        this.expectedNestedWindowTransitions.delete(windowId);
+      }
+    }
+  }
+
+  private prepareControlledInspectTabTransition(
+    tabId: number,
+    command?: RefreshExecutionCommand,
+  ): Promise<boolean> {
+    const retainer = {};
+    const cleanups: ControlledInspectCleanup[] = [];
+    const retirements = this.retiringInspectRetirementsForTab(tabId);
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      const activationToken = record.activationToken;
+      if (
+        !binding ||
+        !activationToken ||
+        binding.tabId !== tabId ||
+        !record.registration ||
+        !record.inspectSession ||
+        !record.contentSessionId ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        continue;
+      }
+      const cleanup = this.prepareControlledRecordCleanup(
+        record,
+        activationToken,
+        binding,
+        record.contentSessionId,
+        false,
+      );
+      cleanup.transientRetainers.add(retainer);
+      const transition = this.pendingTabRefreshTransitions.get(record.channel);
+      if (
+        transition &&
+        transition.record === record &&
+        transition.activationToken === activationToken &&
+        transition.binding === binding &&
+        transition.contentSessionId === record.contentSessionId &&
+        transition.windowId === binding.windowId &&
+        command?.refreshGeneration === transition.refreshGeneration &&
+        command.mode === transition.mode
+      ) {
+        const previousCleanup = transition.cleanup;
+        if (previousCleanup !== cleanup) {
+          if (previousCleanup) {
+            previousCleanup.transientRetainers.delete(transition.token);
+            this.tryReleaseControlledCleanup(previousCleanup);
+          }
+          cleanup.transientRetainers.add(transition.token);
+          transition.cleanup = cleanup;
+        }
+      }
+      cleanups.push(cleanup);
+    }
+    const finish = (): void => {
+      this.revokeInspectTab(tabId);
+      for (const cleanup of cleanups) {
+        cleanup.transientRetainers.delete(retainer);
+        this.tryReleaseControlledCleanup(cleanup);
+      }
+    };
+    return Promise.all([
+      Promise.all(cleanups.map((cleanup) => cleanup.promise)),
+      Promise.all(retirements),
+    ]).then(
+      ([results]) => {
+        finish();
+        return results.every(Boolean);
+      },
+      (error: unknown) => {
+        finish();
+        throw error;
+      },
+    );
+  }
+
+  private hasControlledInspectionTarget(windowId: number): boolean {
+    for (const record of this.panelPorts.values()) {
+      const binding = this.bindings.get(record.channel);
+      const activationToken = record.activationToken;
+      if (
+        binding &&
+        activationToken &&
+        binding.windowId === windowId &&
+        record.registration &&
+        record.inspectSession &&
+        record.contentSessionId &&
+        this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return true;
+      }
+    }
+    return this.retiringInspectRetirementsForWindow(windowId).length > 0;
+  }
+
+  private retiringInspectRetirementsForTab(tabId: number): Promise<void>[] {
+    const cleanup = this.retiringInspectCleanups.get(tabId);
+    const retirement = cleanup?.requirement.inspectRetirement;
+    return cleanup && retirement ? [retirement] : [];
+  }
+
+  private retiringInspectRetirementsForWindow(
+    windowId: number,
+  ): Promise<void>[] {
+    const retirements: Promise<void>[] = [];
+    for (const cleanup of this.retiringInspectCleanups.values()) {
+      const current = this.bindings.get(cleanup.binding.channel);
+      const matchesCurrentWindow = Boolean(
+        current &&
+        sameIdentity(current, cleanup.binding) &&
+        current.windowId === windowId,
+      );
+      if (
+        cleanup.binding.windowId === windowId ||
+        matchesCurrentWindow
+      ) {
+        const retirement = cleanup.requirement.inspectRetirement;
+        if (retirement) retirements.push(retirement);
+      }
+    }
+    return retirements;
+  }
+
+  private prepareControlledRecordCleanup(
+    record: PanelPortRecord,
+    activationToken: object,
+    binding: ChannelBinding,
+    contentSessionId: ContentSessionId,
+    retainForWindowState: boolean,
+  ): ControlledInspectCleanup {
+    const existing = this.controlledInspectCleanups.get(record.channel);
+    if (
+      existing &&
+      this.isCurrentControlledCleanup(existing) &&
+      existing.record === record &&
+      existing.activationToken === activationToken &&
+      existing.binding === binding &&
+      existing.contentSessionId === contentSessionId
+    ) {
+      if (retainForWindowState) existing.retainForWindowState = true;
+      this.consumePendingWindowTransitionSelection(record, existing);
+      return existing;
+    }
+    if (existing) this.controlledInspectCleanups.delete(record.channel);
+
+    const promise = this.inspectCoordinator
+      .clearPseudoStates(binding.tabId, contentSessionId)
+      .then((acknowledged) => {
+        const current = this.isCurrentControlledCleanupSnapshot(
+          record,
+          activationToken,
+          binding,
+          contentSessionId,
+        );
+        if (!acknowledged && current) {
+          this.failCloseControlledCleanup(
+            record,
+            activationToken,
+            binding,
+            contentSessionId,
+          );
+        }
+        return acknowledged && current;
+      })
+      .catch((error: unknown) => {
+        this.reportError(error);
+        if (this.isCurrentControlledCleanupSnapshot(
+          record,
+          activationToken,
+          binding,
+          contentSessionId,
+        )) {
+          this.failCloseControlledCleanup(
+            record,
+            activationToken,
+            binding,
+            contentSessionId,
+          );
+        }
+        return false;
+      });
+    const cleanup: ControlledInspectCleanup = {
+      record,
+      activationToken,
+      binding,
+      contentSessionId,
+      promise,
+      transientRetainers: new Set(),
+      windowTransitionRetainers: new Set(),
+      settled: false,
+      retainForWindowState,
+      republishOnRelease: false,
+    };
+    this.controlledInspectCleanups.set(record.channel, cleanup);
+    this.consumePendingWindowTransitionSelection(record, cleanup);
+    void promise.then(() => {
+      cleanup.settled = true;
+      this.tryReleaseControlledCleanup(cleanup);
+    });
+    return cleanup;
+  }
+
+  private consumePendingWindowTransitionSelection(
+    record: PanelPortRecord,
+    cleanup: ControlledInspectCleanup,
+  ): void {
+    const pending = this.currentPendingWindowTransitionSelection(record);
+    if (!pending) {
+      record.pendingWindowTransitionSelection = undefined;
+      return;
+    }
+    this.inheritPendingTabRefreshSelection(pending, cleanup);
+    pending.bufferedSelectionEvent = undefined;
+    pending.bufferedInspectSelection = undefined;
+    record.pendingWindowTransitionSelection = undefined;
+    cleanup.republishOnRelease = true;
+  }
+
+  private isCurrentControlledCleanup(
+    cleanup: ControlledInspectCleanup,
+  ): boolean {
+    return this.isCurrentControlledCleanupSnapshot(
+      cleanup.record,
+      cleanup.activationToken,
+      cleanup.binding,
+      cleanup.contentSessionId,
+    );
+  }
+
+  private isCurrentControlledCleanupSnapshot(
+    record: PanelPortRecord,
+    activationToken: object,
+    binding: ChannelBinding,
+    contentSessionId: ContentSessionId,
+  ): boolean {
+    return record.contentSessionId === contentSessionId &&
+      record.inspectSession !== undefined &&
+      this.isCurrentActivation(record, activationToken, binding);
+  }
+
+  private releaseControlledCleanup(cleanup: ControlledInspectCleanup): void {
+    cleanup.retainForWindowState = false;
+    cleanup.windowTransitionRetainers.clear();
+    this.tryReleaseControlledCleanup(cleanup);
+  }
+
+  private tryReleaseControlledCleanup(cleanup: ControlledInspectCleanup): void {
+    if (
+      !cleanup.settled ||
+      cleanup.retainForWindowState ||
+      cleanup.windowTransitionRetainers.size > 0 ||
+      cleanup.transientRetainers.size > 0
+    ) return;
+    if (this.controlledInspectCleanups.get(cleanup.record.channel) === cleanup) {
+      this.commitControlledCleanupSelection(cleanup);
+      this.controlledInspectCleanups.delete(cleanup.record.channel);
+      if (cleanup.republishOnRelease) {
+        const availability = this.availabilityStates.get(
+          cleanup.binding.windowId,
+        );
+        if (availability) {
+          this.scheduleAvailabilityRepublish(
+            cleanup.binding.windowId,
+            availability,
+          );
+        }
+      }
+    }
+  }
+
+  private commitControlledCleanupSelection(
+    cleanup: ControlledInspectCleanup,
+  ): void {
+    const event = this.latestBufferedSelectionEvent(cleanup);
+    cleanup.bufferedSelectionEvent = undefined;
+    cleanup.bufferedInspectSelection = undefined;
+    if (
+      !event ||
+      !this.isCurrentControlledCleanup(cleanup) ||
+      !this.observeStylesSelectionAuthority(cleanup.record, event)
+    ) return;
+    this.panelSessions.publish(cleanup.record.channel, event);
+  }
+
+  private hasInspectTransitionGate(record: PanelPortRecord): boolean {
+    return record.replacingContentSessionId !== undefined ||
+      this.controlledInspectCleanups.has(record.channel) ||
+      this.pendingTabRefreshTransitions.has(record.channel) ||
+      this.pendingTabRefreshAdmissions.has(record.channel) ||
+      this.currentPendingWindowTransitionSelection(record) !== undefined;
+  }
+
+  private async preparePendingTabRefreshTransitions(
+    windowId: number,
+    message: PageRefreshMessage,
+  ): Promise<PendingTabRefreshTransition[]> {
+    const transitions: PendingTabRefreshTransition[] = [];
+    const admissions = new Map<
+      PendingTabRefreshTransition,
+      PendingTabRefreshAdmission
+    >();
+    for (const record of this.activeInspectionRecords(windowId)) {
+      const activationToken = record.activationToken;
+      const binding = this.bindings.get(record.channel);
+      const contentSessionId = record.contentSessionId;
+      if (
+        !activationToken ||
+        !binding ||
+        !contentSessionId ||
+        binding.windowId !== windowId ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        continue;
+      }
+      const transition: PendingTabRefreshTransition = {
+        token: {},
+        record,
+        activationToken,
+        binding,
+        contentSessionId,
+        windowId,
+        refreshGeneration: message.refreshGeneration,
+        mode: message.mode,
+        initialStylesInvalidationAuthority:
+          record.stylesInvalidationAuthority,
+      };
+      const admission: PendingTabRefreshAdmission = {
+        token: {},
+        record,
+        windowId,
+        transition,
+      };
+      this.pendingTabRefreshAdmissions.set(record.channel, admission);
+      admissions.set(transition, admission);
+      transitions.push(transition);
+    }
+
+    try {
+      const states = await Promise.all(transitions.map((transition) =>
+        this.tabRefreshCoordinator.state(
+          transition.binding.tabId,
+          transition.windowId,
+        )
+      ));
+      const participating: PendingTabRefreshTransition[] = [];
+      for (let index = 0; index < transitions.length; index += 1) {
+        const transition = transitions[index]!;
+        const state = states[index]!;
+        const admission = admissions.get(transition);
+        if (
+          admission &&
+          this.pendingTabRefreshAdmissions.get(transition.record.channel) ===
+            admission &&
+          this.isCurrentTabRefreshTransitionSnapshot(transition) &&
+          state.tabId === transition.binding.tabId &&
+          state.windowId === transition.windowId &&
+          state.autoRefreshEnabled &&
+          state.participant
+        ) {
+          const previous = this.pendingTabRefreshTransitions.get(
+            transition.record.channel,
+          );
+          if (previous && previous !== transition) {
+            this.inheritPendingTabRefreshSelection(previous, transition);
+          }
+          this.pendingTabRefreshTransitions.set(
+            transition.record.channel,
+            transition,
+          );
+          if (previous) this.releasePendingTabRefreshTransition(previous);
+          participating.push(transition);
+        }
+        if (admission) {
+          this.releaseTabRefreshAdmission(
+            admission,
+            this.pendingTabRefreshTransitions.get(transition.record.channel) !==
+              transition,
+          );
+        }
+      }
+      return participating;
+    } catch (error) {
+      for (const transition of transitions) {
+        this.releasePendingTabRefreshTransition(transition);
+        const admission = admissions.get(transition);
+        if (admission) this.releaseTabRefreshAdmission(admission, true);
+      }
+      throw error;
+    }
+  }
+
+  private isCurrentPendingTabRefreshTransition(
+    transition: PendingTabRefreshTransition,
+  ): boolean {
+    return !this.disposed &&
+      this.pendingTabRefreshTransitions.get(transition.record.channel) ===
+        transition &&
+      this.isCurrentTabRefreshTransitionSnapshot(transition);
+  }
+
+  private isCurrentTabRefreshTransitionSnapshot(
+    transition: PendingTabRefreshTransition,
+  ): boolean {
+    return !this.disposed &&
+      transition.record.contentSessionId === transition.contentSessionId &&
+      transition.record.inspectSession !== undefined &&
+      this.isCurrentActivation(
+        transition.record,
+        transition.activationToken,
+        transition.binding,
+      );
+  }
+
+  private deferTabRefreshSelectionForWindowTransition(
+    transition: PendingTabRefreshTransition,
+  ): void {
+    if (
+      !transition.bufferedSelectionEvent &&
+      !transition.bufferedInspectSelection
+    ) return;
+    const cleanup = this.controlledInspectCleanups.get(
+      transition.record.channel,
+    );
+    if (cleanup && this.isCurrentControlledCleanup(cleanup)) {
+      this.inheritPendingTabRefreshSelection(transition, cleanup);
+      cleanup.republishOnRelease = true;
+      transition.bufferedSelectionEvent = undefined;
+      transition.bufferedInspectSelection = undefined;
+      return;
+    }
+    const existing = this.currentPendingWindowTransitionSelection(
+      transition.record,
+    );
+    const pending: PendingWindowTransitionSelection = {
+      activationToken: transition.activationToken,
+      binding: transition.binding,
+      contentSessionId: transition.contentSessionId,
+      windowId: transition.windowId,
+      bufferedSelectionEvent: existing?.bufferedSelectionEvent,
+      bufferedInspectSelection: existing?.bufferedInspectSelection,
+    };
+    this.mergeBufferedSelections(transition.record, transition, pending);
+    transition.record.pendingWindowTransitionSelection = pending;
+    transition.bufferedSelectionEvent = undefined;
+    transition.bufferedInspectSelection = undefined;
+  }
+
+  private releasePendingWindowTransitionSelection(
+    record: PanelPortRecord,
+  ): void {
+    const pending = this.currentPendingWindowTransitionSelection(record);
+    record.pendingWindowTransitionSelection = undefined;
+    if (!pending) return;
+    const bufferedInspect = pending.bufferedInspectSelection;
+    const event = this.latestBufferedSelectionEvent(pending);
+    if (!event || !this.observeStylesSelectionAuthority(record, event)) return;
+    this.panelSessions.publish(record.channel, event);
+    if (!this.bufferedInspectMatchesEvent(
+      bufferedInspect,
+      event,
+      pending.contentSessionId,
+    )) return;
+    void this.publishSelection(
+      bufferedInspect.payload,
+      bufferedInspect.selectionRevision,
+      bufferedInspect.contentSessionId,
+      undefined,
+      event,
+      {
+        tab: {
+          id: pending.binding.tabId,
+          windowId: pending.windowId,
+        },
+      },
+    ).catch((error: unknown) => this.reportError(error));
+  }
+
+  private releasePendingWindowTransitionSelections(windowId: number): void {
+    for (const record of this.panelPorts.values()) {
+      if (record.pendingWindowTransitionSelection?.windowId === windowId) {
+        this.releasePendingWindowTransitionSelection(record);
+      }
+    }
+  }
+
+  private releasePendingTabRefreshTransition(
+    transition: PendingTabRefreshTransition,
+    replayBuffered = false,
+  ): void {
+    const bufferedInspect = replayBuffered &&
+        this.isCurrentPendingTabRefreshTransition(transition)
+      ? this.commitBufferedSelectionEvent(transition)
+      : undefined;
+    if (
+      this.pendingTabRefreshTransitions.get(transition.record.channel) ===
+        transition
+    ) {
+      this.pendingTabRefreshTransitions.delete(transition.record.channel);
+    }
+    const cleanup = transition.cleanup;
+    transition.cleanup = undefined;
+    if (cleanup) {
+      cleanup.transientRetainers.delete(transition.token);
+      this.tryReleaseControlledCleanup(cleanup);
+    }
+    if (bufferedInspect) {
+      void this.publishSelection(
+        bufferedInspect.payload,
+        bufferedInspect.selectionRevision,
+        bufferedInspect.contentSessionId,
+        undefined,
+        bufferedInspect.selectionEvent,
+        {
+          tab: {
+            id: transition.binding.tabId,
+            windowId: transition.windowId,
+          },
+        },
+      ).catch((error: unknown) => this.reportError(error));
+    }
+  }
+
+  private dropPendingTabRefreshTransition(record: PanelPortRecord): void {
+    const admission = this.pendingTabRefreshAdmissions.get(record.channel);
+    if (admission?.record === record) {
+      this.pendingTabRefreshAdmissions.delete(record.channel);
+    }
+    const transition = this.pendingTabRefreshTransitions.get(record.channel);
+    if (transition?.record === record) {
+      this.releasePendingTabRefreshTransition(transition);
+    }
+  }
+
+  private completePendingTabRefreshTransition(
+    completion: TabRefreshCompletion,
+  ): void {
+    const channel = this.channelByTab.get(completion.tabId);
+    const transition = channel
+      ? this.pendingTabRefreshTransitions.get(channel)
+      : undefined;
+    if (
+      !transition ||
+      transition.binding.tabId !== completion.tabId ||
+      transition.windowId !== completion.windowId ||
+      transition.refreshGeneration !== completion.refreshGeneration ||
+      transition.mode !== completion.mode
+    ) {
+      return;
+    }
+    const transitionCurrent = this.isCurrentPendingTabRefreshTransition(
+      transition,
+    );
+    const controlledCleanupCompleted = transition.cleanup?.settled === true;
+    if (completion.accepted && !controlledCleanupCompleted) {
+      this.reportError(new Error(
+        "Accepted tab refresh completed without controlled inspect cleanup",
+      ));
+    }
+    if (
+      completion.accepted &&
+      completion.mode === "reload" &&
+      controlledCleanupCompleted &&
+      transitionCurrent
+    ) {
+      transition.bufferedSelectionEvent = undefined;
+      transition.bufferedInspectSelection = undefined;
+      return;
+    }
+    const bufferedInspect = transitionCurrent
+      ? this.commitBufferedSelectionEvent(transition)
+      : undefined;
+    const request = completion.accepted &&
+        controlledCleanupCompleted &&
+        this.isCurrentPendingTabRefreshTransition(transition)
+      ? this.currentRepublishRequest(transition.record)
+      : undefined;
+    if (request) {
+      const invalidation = transition.record.stylesInvalidationAuthority;
+      if (
+        invalidation &&
+        invalidation !== transition.initialStylesInvalidationAuthority &&
+        invalidation.documentEpoch === request.documentEpoch
+      ) {
+        transition.record.pendingRefreshRenewalToken = undefined;
+        transition.record.refreshRepublishAuthority = Object.freeze({
+          ...invalidation,
+          contentSessionId: request.contentSessionId,
+          nodeRef: request.nodeRef,
+          selectionRevision: request.selectionRevision,
+          republishToken: request.republishToken,
+          phase: "pending",
+        });
+      }
+    }
+    this.releasePendingTabRefreshTransition(transition);
+    if (!request) {
+      if (!completion.accepted && bufferedInspect) {
+        void this.publishSelection(
+          bufferedInspect.payload,
+          bufferedInspect.selectionRevision,
+          bufferedInspect.contentSessionId,
+          undefined,
+          bufferedInspect.selectionEvent,
+          {
+            tab: {
+              id: transition.binding.tabId,
+              windowId: transition.windowId,
+            },
+          },
+        ).catch((error: unknown) => this.reportError(error));
+      }
+      return;
+    }
+
+    void this.panelSessions.republishSelection(
+      transition.record.channel,
+      request,
+    ).then((republished) => {
+      if (
+        !republished &&
+        transition.record.republishPublication === request
+      ) {
+        transition.record.republishPublication = undefined;
+      }
+      if (
+        !republished &&
+        transition.record.refreshRepublishAuthority?.republishToken ===
+          request.republishToken
+      ) {
+        transition.record.refreshRepublishAuthority = undefined;
+      }
+    }).catch((error: unknown) => {
+      if (transition.record.republishPublication === request) {
+        transition.record.republishPublication = undefined;
+      }
+      if (
+        transition.record.refreshRepublishAuthority?.republishToken ===
+        request.republishToken
+      ) {
+        transition.record.refreshRepublishAuthority = undefined;
+      }
+      this.reportError(error);
+    });
+  }
+
+  private failCloseControlledCleanup(
+    record: PanelPortRecord,
+    activationToken: object,
+    binding: ChannelBinding,
+    contentSessionId: ContentSessionId,
+  ): void {
+    if (!this.isCurrentControlledCleanupSnapshot(
+      record,
+      activationToken,
+      binding,
+      contentSessionId,
+    )) {
+      return;
+    }
+    if (!record.inspectSession?.retireContentLease(contentSessionId)) {
+      return;
+    }
+    this.dropPendingTabRefreshTransition(record);
+    record.inspectionFailedClosed = true;
+    record.contentRecoveryAvailable = false;
+    record.contentSessionId = undefined;
+    record.replacingContentSessionId = undefined;
+    record.pendingWindowTransitionSelection = undefined;
+    record.stylesSelectionAuthority = undefined;
+    record.stylesInvalidationAuthority = undefined;
+    record.refreshRepublishAuthority = undefined;
+    this.postToActiveChannel(record.channel, {
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    record.panelSessionBinding?.dispose();
+    record.panelSessionBinding = undefined;
+    this.revokeInspectChannel(record.channel);
+  }
+
   private revokeInspectChannel(channel: string): void {
     const record = this.panelPorts.get(channel);
     if (record) {
       record.inspectPublicationToken = undefined;
+      record.republishPublication = undefined;
+      record.availabilityRepublish = undefined;
     }
     this.correlations.disposeChannel(channel);
   }
@@ -3759,6 +5813,8 @@ export class BackgroundRouter {
       const binding = this.bindings.get(record.channel);
       if (record.inspectTabId === tabId || binding?.tabId === tabId) {
         record.inspectPublicationToken = undefined;
+        record.republishPublication = undefined;
+        record.availabilityRepublish = undefined;
       }
     }
     this.correlations.disposeTab(tabId);
@@ -3772,6 +5828,8 @@ export class BackgroundRouter {
         binding?.windowId === windowId
       ) {
         record.inspectPublicationToken = undefined;
+        record.republishPublication = undefined;
+        record.availabilityRepublish = undefined;
       }
     }
     this.correlations.disposeWindow(windowId);
@@ -3800,6 +5858,11 @@ export class BackgroundRouter {
     if (this.disposed) {
       return;
     }
+    const route = this.correlations.routeForInspect(message.inspectMessageId);
+    const record = route ? this.panelPorts.get(route.channel) : undefined;
+    if (!route || !record || this.hasInspectTransitionGate(record)) {
+      return;
+    }
     const channel = this.correlations.accept(message, peerContext);
     if (!channel) {
       return;
@@ -3812,6 +5875,11 @@ export class BackgroundRouter {
     message: SourceNavigationStateMessage,
   ): void {
     if (this.disposed) {
+      return;
+    }
+    const route = this.correlations.routeForInspect(message.inspectMessageId);
+    const routeRecord = route ? this.panelPorts.get(route.channel) : undefined;
+    if (!route || !routeRecord || this.hasInspectTransitionGate(routeRecord)) {
       return;
     }
     const channel = this.correlations.acceptNavigationState(
@@ -3875,6 +5943,7 @@ export class BackgroundRouter {
       peerContext.windowId !== route.windowId ||
       isProtocolIncompatible(record) ||
       !maintainsInspectionSession(record.lastWindowState) ||
+      this.hasInspectTransitionGate(record) ||
       !this.isCurrentActivation(record, token, binding)
     ) {
       return;
@@ -3915,6 +5984,7 @@ export class BackgroundRouter {
       peerContext.windowId !== route.windowId ||
       isProtocolIncompatible(record) ||
       !maintainsInspectionSession(record.lastWindowState) ||
+      this.hasInspectTransitionGate(record) ||
       !this.isCurrentActivation(record, token, binding)
     ) {
       return;
@@ -3945,10 +6015,10 @@ export class BackgroundRouter {
       this.peerBlockedWindows.has(windowId)
     ) {
       this.peerStates.delete(windowId);
+      this.peerTransitionAuthorities.delete(windowId);
       this.availabilityStates.delete(windowId);
       return;
     }
-    const activeRecords = this.activeInspectionRecords(windowId);
     const previous = this.peerStates.get(windowId);
     if (
       previous?.sessionId === message.sessionId &&
@@ -3959,7 +6029,13 @@ export class BackgroundRouter {
     const connectedSessionChanged = message.connected &&
       previous !== undefined &&
       previous.sessionId !== message.sessionId;
-    if (!message.connected || connectedSessionChanged) {
+    const requiresCleanup = !message.connected || connectedSessionChanged;
+    const hasCleanupTarget = requiresCleanup &&
+      this.hasControlledInspectionTarget(windowId);
+    const cleanup = hasCleanupTarget
+      ? this.prepareControlledWindowTransition(windowId, false)
+      : undefined;
+    if (requiresCleanup && !hasCleanupTarget) {
       this.revokeInspectWindow(windowId);
     }
     const availability = this.getAvailabilityState(windowId);
@@ -3979,44 +6055,103 @@ export class BackgroundRouter {
     } else if (connectedSessionChanged && wasAvailable) {
       this.beginAvailabilityEpoch(availability);
     }
-    this.peerStates.set(windowId, {
+    const nextPeer = {
       sessionId: message.sessionId,
       connected: message.connected,
       generation: message.peerGeneration,
-    });
-    if (message.connected) {
-      void this.tabRefreshCoordinator
-        .beginWindowEpoch(windowId)
-        .catch((error) => this.reportError(error));
-    }
-    for (const record of activeRecords) {
-      const token = record.activationToken;
-      const binding = this.bindings.get(record.channel);
+    };
+    const transitionAuthority = {};
+    const refreshEpoch = this.windowRefreshEpoch(windowId);
+    this.peerStates.set(windowId, nextPeer);
+    this.peerTransitionAuthorities.set(windowId, transitionAuthority);
+    const previousTransition = this.peerTransitionTails.get(windowId) ??
+      undefined;
+    const publishAcceptedPeerState = (acknowledged: boolean): void => {
       if (
-        !token ||
-        !binding ||
-        binding.windowId !== windowId ||
-        !record.inspectSession ||
-        !this.isCurrentActivation(record, token, binding)
+        this.disposed ||
+        this.removedWindows.has(windowId) ||
+        this.peerBlockedWindows.has(windowId) ||
+        this.peerTransitionAuthorities.get(windowId) !== transitionAuthority ||
+        this.peerStates.get(windowId) !== nextPeer ||
+        this.windowRefreshEpoch(windowId) !== refreshEpoch
       ) {
-        continue;
+        return;
       }
-      this.panelSessions.publish(record.channel, message);
+      if (!acknowledged) {
+        this.reportError(new Error(
+          "Peer transition cleanup was not acknowledged",
+        ));
+      }
+      if (message.connected) {
+        void this.tabRefreshCoordinator
+          .beginWindowEpoch(windowId)
+          .catch((error) => this.reportError(error));
+      }
+      for (const record of this.activeInspectionRecords(windowId)) {
+        const token = record.activationToken;
+        const binding = this.bindings.get(record.channel);
+        if (
+          !token ||
+          !binding ||
+          binding.windowId !== windowId ||
+          !record.inspectSession ||
+          !this.isCurrentActivation(record, token, binding)
+        ) {
+          continue;
+        }
+        this.panelSessions.publish(record.channel, message);
+      }
+      if (message.connected) {
+        this.scheduleAvailabilityRepublish(windowId, availability);
+      }
+    };
+    if (!cleanup && !previousTransition) {
+      publishAcceptedPeerState(true);
+      return;
     }
-    if (message.connected) {
-      this.scheduleAvailabilityRepublish(windowId, availability);
-    }
+    const operation = (previousTransition ?? Promise.resolve()).then(async () => {
+      publishAcceptedPeerState(cleanup ? await cleanup : true);
+    });
+    const tail = operation.then(
+      () => undefined,
+      (error: unknown) => this.reportError(error),
+    );
+    this.peerTransitionTails.set(windowId, tail);
+    void tail.finally(() => {
+      if (this.peerTransitionTails.get(windowId) === tail) {
+        this.peerTransitionTails.delete(windowId);
+      }
+    });
   }
 
   private receiveProtocolMismatch(windowId: number): void {
     if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
-    this.contentRefreshCoordinator.revokeWindow(windowId);
+    const cleanup = this.hasControlledInspectionTarget(windowId)
+      ? this.prepareControlledWindowTransition(windowId, false)
+      : undefined;
+    if (cleanup) {
+      void cleanup.then(
+        () => this.commitProtocolMismatch(windowId),
+        (error: unknown) => {
+          this.reportError(error);
+          this.commitProtocolMismatch(windowId);
+        },
+      );
+      return;
+    }
+    this.commitProtocolMismatch(windowId);
+  }
+
+  private commitProtocolMismatch(windowId: number): void {
+    if (this.disposed) return;
     this.revokeInspectWindow(windowId);
     this.peerBlockedWindows.add(windowId);
     this.peerStates.delete(windowId);
+    this.peerTransitionAuthorities.delete(windowId);
     this.availabilityStates.delete(windowId);
+    this.contentRefreshCoordinator.revokeWindow(windowId);
     void this.tabRefreshCoordinator
       .clearWindowPending(windowId)
       .catch((error) => this.reportError(error));
@@ -4137,22 +6272,46 @@ export class BackgroundRouter {
       );
       return;
     }
+    let refreshTransitions: PendingTabRefreshTransition[] = [];
+    const releaseRefreshTransitions = (): void => {
+      for (const transition of refreshTransitions) {
+        this.releasePendingTabRefreshTransition(transition, true);
+      }
+      refreshTransitions = [];
+    };
     void this.tabRefreshCoordinator
-      .acceptPageRefresh(windowId, message, () => {
+      .acceptPageRefresh(windowId, message, async () => {
         try {
           if (
             this.disposed ||
             this.removedWindows.has(windowId) ||
             this.windowRefreshEpoch(windowId) !== refreshEpoch
           ) {
-            return;
+            return false;
           }
-          this.revokeInspectWindow(windowId);
+          if (refreshTransitions.length > 0) return false;
+          refreshTransitions = await this.preparePendingTabRefreshTransitions(
+            windowId,
+            message,
+          );
+          const current = !this.disposed &&
+            !this.removedWindows.has(windowId) &&
+            this.windowRefreshEpoch(windowId) === refreshEpoch;
+          if (!current) releaseRefreshTransitions();
+          return current;
         } catch (error) {
+          releaseRefreshTransitions();
           this.reportError(error);
+          return false;
         }
+      }, (completion) => this.completePendingTabRefreshTransition(completion))
+      .then((accepted) => {
+        if (!accepted) releaseRefreshTransitions();
       })
-      .catch((error) => this.reportError(error));
+      .catch((error) => {
+        releaseRefreshTransitions();
+        this.reportError(error);
+      });
   }
 
   private windowRefreshEpoch(windowId: number): number {
@@ -4164,6 +6323,22 @@ export class BackgroundRouter {
       windowId,
       this.windowRefreshEpoch(windowId) + 1,
     );
+    const transitions = [...this.pendingTabRefreshTransitions.values()]
+      .filter((transition) => transition.windowId === windowId);
+    const admissions = [...this.pendingTabRefreshAdmissions.values()]
+      .filter((admission) => admission.windowId === windowId);
+    for (const transition of transitions) {
+      this.deferTabRefreshSelectionForWindowTransition(transition);
+    }
+    for (const admission of admissions) {
+      this.deferTabRefreshSelectionForWindowTransition(admission.transition);
+    }
+    for (const transition of transitions) {
+      this.releasePendingTabRefreshTransition(transition);
+    }
+    for (const admission of admissions) {
+      this.releaseTabRefreshAdmission(admission, false);
+    }
   }
 
   private createWindowCommandCompletion(): WindowCommandCompletion {
@@ -4294,13 +6469,24 @@ export class BackgroundRouter {
     const contentSessionId = record.contentSessionId;
     const authority = record.stylesSelectionAuthority;
     if (!contentSessionId || !authority?.selected) return undefined;
-    return Object.freeze({
+    const republishToken = this.allocateRepublishToken();
+    const request = Object.freeze({
       type: "pin-op.inspect.republish",
       contentSessionId,
       documentEpoch: authority.documentEpoch,
       nodeRef: authority.nodeRef,
       selectionRevision: authority.selectionRevision,
-    });
+      republishToken,
+    } satisfies InspectRepublishRequest);
+    record.republishPublication = request;
+    record.availabilityRepublish = undefined;
+    return request;
+  }
+
+  private allocateRepublishToken(): string {
+    const token = "republish-" + this.nextRepublishToken;
+    this.nextRepublishToken += 1;
+    return token;
   }
 
   private reportError(error: unknown): void {
@@ -4378,6 +6564,8 @@ function parsePanelWindowCommand(
 interface ContentSelectionEnvelope {
   readonly contentSessionId: ContentSessionId;
   readonly selectionRevision: number;
+  readonly republishToken?: string;
+  readonly selectionEvent?: StylesSelectionEvent;
   readonly payload: InspectPayload;
 }
 
@@ -4394,22 +6582,47 @@ interface ContentStylesEventEnvelope {
 function parseElementSelectedMessage(
   value: unknown,
 ): ContentSelectionEnvelope | undefined {
+  if (!isRecord(value)) return undefined;
+  const hasDocumentEpoch = Object.hasOwn(value, "documentEpoch");
+  const hasNodeRef = Object.hasOwn(value, "nodeRef");
+  const hasAncestorPath = Object.hasOwn(value, "ancestorPath");
+  const hasSelectionIdentity = hasDocumentEpoch || hasNodeRef || hasAncestorPath;
   if (
-    !isRecord(value) ||
+    (hasSelectionIdentity &&
+      !(hasDocumentEpoch && hasNodeRef && hasAncestorPath)) ||
     !hasOnlyKeys(value, [
       "type",
       "contentSessionId",
       "selectionRevision",
       "payload",
+      ...(Object.hasOwn(value, "republishToken") ? ["republishToken"] : []),
+      ...(hasSelectionIdentity
+        ? ["documentEpoch", "nodeRef", "ancestorPath"]
+        : []),
     ]) ||
     value.type !== "elementSelected" ||
     !isValidContentSessionId(value.contentSessionId) ||
     !isSelectionRevision(value.selectionRevision) ||
+    (Object.hasOwn(value, "republishToken") &&
+      !isValidInspectRepublishToken(value.republishToken)) ||
     !isRecord(value.payload)
   ) {
     return undefined;
   }
   try {
+    const parsedSelectionEvent = hasSelectionIdentity
+      ? parseDomEvent({
+          type: "dom.selectionChanged",
+          documentEpoch: value.documentEpoch,
+          selectionRevision: value.selectionRevision,
+          nodeRef: value.nodeRef,
+          ancestorPath: value.ancestorPath,
+        })
+      : undefined;
+    const selectionEvent = parsedSelectionEvent?.type === "dom.selectionChanged"
+      ? parsedSelectionEvent
+      : undefined;
+    if (hasSelectionIdentity && !selectionEvent) return undefined;
     const parsed = InspectMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       messageId: "background-payload-validation",
@@ -4430,6 +6643,10 @@ function parseElementSelectedMessage(
       ? {
           contentSessionId: value.contentSessionId,
           selectionRevision: value.selectionRevision,
+          ...(value.republishToken === undefined
+            ? {}
+            : { republishToken: value.republishToken as string }),
+          ...(selectionEvent ? { selectionEvent } : {}),
           payload: {
             targets: parsed.data.targets,
             ruleEvidence: parsed.data.ruleEvidence,

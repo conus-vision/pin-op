@@ -29,6 +29,7 @@ describe("panel inspect transport", () => {
       documentEpoch: 4,
       nodeRef: "node-1",
       selectionRevision: 7,
+      republishToken: "republish-1",
     };
     expect(parseInspectRepublishRequest(request)).toEqual(request);
     for (const invalid of [
@@ -36,6 +37,7 @@ describe("panel inspect transport", () => {
       { ...request, contentSessionId: "content/session" },
       { ...request, nodeRef: "" },
       { ...request, selectionRevision: -1 },
+      { ...request, republishToken: "" },
       { ...request, tabId: 17 },
     ]) {
       expect(parseInspectRepublishRequest(invalid)).toBeUndefined();

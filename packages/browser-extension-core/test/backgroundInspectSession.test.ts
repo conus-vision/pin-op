@@ -89,6 +89,119 @@ describe("background inspect session", () => {
     expect(contentLease.disconnected).toBe(true);
   });
 
+  it("bounds queued pseudo cleanup and never sends it after its deadline", async () => {
+    const blockedEnable = deferred<void>();
+    const calls: unknown[] = [];
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await blockedEnable.promise;
+        }
+        return true;
+      },
+    }, {
+      cleanupAckTimeoutMs: 25,
+      setTimeout(callback) {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout(timer) {
+        timers.delete(timer as unknown as number);
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+
+    const enable = session.execute(request("blocked-enable", true));
+    await flushAsync();
+    const cleanup = coordinator.clearPseudoStates(17, CONTENT_SESSION_A);
+
+    expect(timers.size).toBe(1);
+    const [deadlineId, deadline] = [...timers.entries()][0]!;
+    timers.delete(deadlineId);
+    deadline();
+    await expect(cleanup).resolves.toBe(false);
+
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    blockedEnable.resolve();
+    await enable;
+    await coordinator.whenIdle(17);
+
+    expect(calls.some(([, message]) =>
+      isRecord(message) && message.type === "pin-op.inspect.clearPseudoStates"
+    )).toBe(false);
+    expect(leaseA.disconnected).toBe(true);
+    expect(leaseB.disconnected).toBe(false);
+  });
+
+  it("bounds a queued session release and never sends late disposal", async () => {
+    const blockedEnable = deferred<void>();
+    const calls: unknown[] = [];
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await blockedEnable.promise;
+        }
+        return true;
+      },
+    }, {
+      cleanupAckTimeoutMs: 25,
+      setTimeout(callback) {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout(timer) {
+        timers.delete(timer as unknown as number);
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await session.whenIdle();
+    const contentLease = new FakePort("lease-release-deadline");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, contentLease);
+
+    const enable = session.execute(request("blocked-before-release", true));
+    await flushAsync();
+    session.disconnect();
+
+    expect(timers.size).toBe(1);
+    const [deadlineId, deadline] = [...timers.entries()][0]!;
+    timers.delete(deadlineId);
+    deadline();
+    await session.whenIdle();
+    expect(contentLease.disconnected).toBe(true);
+    expect(calls.some(([, message]) =>
+      isRecord(message) && message.type === "pin-op.inspect.disposeSession"
+    )).toBe(false);
+
+    blockedEnable.resolve();
+    await enable;
+    await coordinator.whenIdle(17);
+    expect(calls.some(([, message]) =>
+      isRecord(message) && message.type === "pin-op.inspect.disposeSession"
+    )).toBe(false);
+  });
+
   it("lets the router defer a successful acknowledgement until postflight", async () => {
     const sent: unknown[] = [];
     const coordinator = new BackgroundInspectCoordinator({
@@ -396,6 +509,326 @@ describe("background inspect session", () => {
       "attached:content-session-a",
       "documentDisconnected",
     ]);
+  });
+
+  it("rejects a stale lease from a retiring injection before activating its replacement owner", async () => {
+    const firstInjection = deferred<void>();
+    const secondInjection = deferred<void>();
+    const replacementAttachments: ContentSessionId[] = [];
+    let injectionCount = 0;
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {
+        injectionCount += 1;
+        await (injectionCount === 1
+          ? firstInjection.promise
+          : secondInjection.promise);
+      },
+      async sendTabMessage() {
+        return true;
+      },
+    });
+    const retiring = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await flushAsync();
+    expect(injectionCount).toBe(1);
+
+    const retirement = retiring.controlledDispose();
+    const replacement = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      {
+        onContentLeaseAttached: (contentSessionId) =>
+          replacementAttachments.push(contentSessionId),
+      },
+    );
+    const staleLease = new FakePort("stale-retiring-injection");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, staleLease);
+    const staleLeaseWasRejected = staleLease.disconnected;
+    const attachmentsBeforeReplacementInjection = [...replacementAttachments];
+
+    firstInjection.resolve();
+    await retirement;
+    await flushAsync();
+    expect(injectionCount).toBe(2);
+    secondInjection.resolve();
+    await replacement.whenIdle();
+
+    expect(staleLeaseWasRejected).toBe(true);
+    expect(attachmentsBeforeReplacementInjection).toEqual([]);
+    expect(replacementAttachments).toEqual([]);
+    replacement.disconnect();
+    await replacement.whenIdle();
+  });
+
+  it("keeps replacement activation behind a bounded retiring injection", async () => {
+    const firstInjection = deferred<void>();
+    const secondInjection = deferred<void>();
+    const replacementAttachments: ContentSessionId[] = [];
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    let injectionCount = 0;
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {
+        injectionCount += 1;
+        await (injectionCount === 1
+          ? firstInjection.promise
+          : secondInjection.promise);
+      },
+      async sendTabMessage() {
+        return true;
+      },
+    }, {
+      cleanupAckTimeoutMs: 25,
+      setTimeout(callback) {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout(timer) {
+        timers.delete(timer as unknown as number);
+      },
+    });
+    const retiring = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await flushAsync();
+    expect(injectionCount).toBe(1);
+
+    const retirement = retiring.controlledDispose();
+    await flushAsync();
+    expect(timers.size).toBe(1);
+    const [deadlineId, deadline] = [...timers.entries()][0]!;
+    timers.delete(deadlineId);
+    deadline();
+    await retirement;
+
+    const replacement = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      {
+        onContentLeaseAttached: (contentSessionId) =>
+          replacementAttachments.push(contentSessionId),
+      },
+    );
+    await flushAsync();
+    const replacementStartedBeforeRetiredInjectionSettled = injectionCount > 1;
+
+    firstInjection.resolve();
+    const staleLease = new FakePort("late-retired-injection");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, staleLease);
+    const staleLeaseWasRejected = staleLease.disconnected;
+    await flushAsync();
+    expect(injectionCount).toBe(2);
+
+    secondInjection.resolve();
+    await replacement.whenIdle();
+    const currentLease = new FakePort("replacement-injection");
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, currentLease);
+    await coordinator.whenIdle(17);
+
+    expect(replacementStartedBeforeRetiredInjectionSettled).toBe(false);
+    expect(staleLeaseWasRejected).toBe(true);
+    expect(replacementAttachments).toEqual([CONTENT_SESSION_B]);
+    expect(currentLease.disconnected).toBe(false);
+    replacement.disconnect();
+    await replacement.whenIdle();
+  });
+
+  it("replaces a content lease when an older dispatch never settles", async () => {
+    const never = new Promise<never>(() => undefined);
+    const calls: unknown[] = [];
+    const attached: ContentSessionId[] = [];
+    const invalidated: string[] = [];
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        if (
+          isRecord(message) &&
+          (message.type === "enableInspectMode" ||
+            message.type === "pin-op.inspect.disposeSession")
+        ) {
+          await never;
+        }
+        return true;
+      },
+    }, {
+      cleanupAckTimeoutMs: 25,
+      setTimeout(callback) {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout(timer) {
+        timers.delete(timer as unknown as number);
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      {
+        onInvalidated: (reason) => invalidated.push(reason),
+        onContentLeaseAttached: (id) => attached.push(id),
+      },
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+
+    void session.execute(request("never-settles", true));
+    await flushAsync();
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    await flushAsync();
+
+    expect(calls).toContainEqual([
+      17,
+      {
+        type: "pin-op.inspect.disposeSession",
+        contentSessionId: CONTENT_SESSION_A,
+      },
+    ]);
+    expect(timers.size).toBe(1);
+    const [deadlineId, deadline] = [...timers.entries()][0]!;
+    timers.delete(deadlineId);
+    deadline();
+    await flushAsync();
+
+    expect(leaseA.disconnected).toBe(true);
+    expect(leaseB.disconnected).toBe(false);
+    expect(attached).toEqual([CONTENT_SESSION_A, CONTENT_SESSION_B]);
+    leaseA.emitDisconnect();
+    expect(invalidated).toEqual([]);
+    expect(leaseB.disconnected).toBe(false);
+  });
+
+  it("revokes replacement authority only after predecessor cleanup settles", async () => {
+    const cleanup = deferred<unknown>();
+    const timeline: string[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(_tabId, message) {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          timeline.push(`cleanup:${String(message.contentSessionId)}`);
+          return await cleanup.promise;
+        }
+        return true;
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+      {
+        onContentLeaseAttached: (contentSessionId) =>
+          timeline.push(`attached:${contentSessionId}`),
+        onContentLeaseReplacementStarted: (
+          previousContentSessionId,
+          nextContentSessionId,
+        ) => timeline.push(
+          `starting:${previousContentSessionId}->${nextContentSessionId}`,
+        ),
+        onContentLeaseReplacing: (previousContentSessionId, nextContentSessionId) =>
+          timeline.push(
+            `replacing:${previousContentSessionId}->${nextContentSessionId}`,
+          ),
+      },
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    await flushAsync();
+
+    expect(timeline).toEqual([
+      `attached:${CONTENT_SESSION_A}`,
+      `starting:${CONTENT_SESSION_A}->${CONTENT_SESSION_B}`,
+      `cleanup:${CONTENT_SESSION_A}`,
+    ]);
+    expect(leaseA.disconnected).toBe(false);
+    expect(leaseB.disconnected).toBe(false);
+
+    cleanup.resolve(true);
+    await coordinator.whenIdle(17);
+
+    expect(timeline).toEqual([
+      `attached:${CONTENT_SESSION_A}`,
+      `starting:${CONTENT_SESSION_A}->${CONTENT_SESSION_B}`,
+      `cleanup:${CONTENT_SESSION_A}`,
+      `replacing:${CONTENT_SESSION_A}->${CONTENT_SESSION_B}`,
+      `attached:${CONTENT_SESSION_B}`,
+    ]);
+    expect(leaseA.disconnected).toBe(true);
+    expect(leaseB.disconnected).toBe(false);
+  });
+
+  it("holds session release behind an in-flight predecessor lease cleanup", async () => {
+    const cleanup = deferred<unknown>();
+    const calls: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(tabId, message) {
+        calls.push([tabId, message]);
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession" &&
+          message.contentSessionId === CONTENT_SESSION_A
+        ) {
+          return await cleanup.promise;
+        }
+        return true;
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      () => undefined,
+    );
+    await session.whenIdle();
+    const leaseA = new FakePort("lease-a");
+    const leaseB = new FakePort("lease-b");
+    coordinator.attachContentLease(17, CONTENT_SESSION_A, leaseA);
+    coordinator.attachContentLease(17, CONTENT_SESSION_B, leaseB);
+    await flushAsync();
+
+    const release = session.controlledDispose();
+    let released = false;
+    void release.then(() => {
+      released = true;
+    });
+    await flushAsync();
+
+    expect(released).toBe(false);
+    expect(leaseA.disconnected).toBe(false);
+    expect(leaseB.disconnected).toBe(false);
+
+    cleanup.resolve(true);
+    await release;
+    await coordinator.whenIdle(17);
+
+    expect(leaseA.disconnected).toBe(true);
+    expect(leaseB.disconnected).toBe(true);
+    expect(calls.filter(([, message]) =>
+      isRecord(message) && message.type === "pin-op.inspect.disposeSession"
+    )).toEqual([[17, {
+      type: "pin-op.inspect.disposeSession",
+      contentSessionId: CONTENT_SESSION_A,
+    }]]);
   });
 
   it("serializes A-to-B-to-C lease replacement behind each predecessor cleanup", async () => {

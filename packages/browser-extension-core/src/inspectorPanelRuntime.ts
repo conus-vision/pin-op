@@ -122,6 +122,7 @@ function createInspectorPresentation(
         matchedStylesModel,
         context.treeController,
       );
+      let preparedRecoveryFence = false;
       presentationState.matchedStylesModel = matchedStylesModel;
       presentationState.rulesSourcesController = rulesSourcesController;
       const removeInspectorMessages = context.subscribeInspectorMessages(
@@ -131,6 +132,11 @@ function createInspectorPresentation(
           pseudoStateAdapter,
           rulesLifecycle,
           message,
+          () => {
+            const prepared = preparedRecoveryFence;
+            preparedRecoveryFence = false;
+            return prepared;
+          },
         ),
       );
       const adapter = new ElementsInspectorAdapter(context.treeController);
@@ -158,17 +164,34 @@ function createInspectorPresentation(
         throw error;
       }
       let disposed = false;
+      const resetPreviewAuthority = (
+        pseudoBoundary: "recovery" | "content-lease-replaced",
+      ): boolean => {
+        if (disposed) return false;
+        if (pseudoBoundary === "recovery") {
+          pseudoStateAdapter.beginRecovery();
+        } else {
+          pseudoStateAdapter.contentLeaseReplaced();
+        }
+        rulesLifecycle.selectionRevision = undefined;
+        rulesLifecycle.documentEpoch = undefined;
+        matchedStylesModel.reset("content-lease-replaced");
+        rulesSourcesController.invalidate("transport-invalidation");
+        return true;
+      };
       return {
         sourcePaneView: NO_VISIBLE_SOURCE_PANE,
         removeSettingsBindings,
         removeSourceNavigationBindings: noOp,
         removeLayoutBindings: noOp,
+        beforeControlledTransition() {
+          const reset = resetPreviewAuthority("recovery");
+          if (reset) preparedRecoveryFence = true;
+          return reset;
+        },
         contentLeaseReplaced() {
-          pseudoStateAdapter.contentLeaseReplaced();
-          rulesLifecycle.selectionRevision = undefined;
-          rulesLifecycle.documentEpoch = undefined;
-          rulesSourcesController.invalidate("transport-invalidation");
-          matchedStylesModel.reset("content-lease-replaced");
+          preparedRecoveryFence = false;
+          resetPreviewAuthority("content-lease-replaced");
         },
         disposePresentation() {
           if (disposed) return;
@@ -190,10 +213,22 @@ async function routeInspectorLifecycle(
   pseudoStateAdapter: MatchedStylesPseudoStateAdapter,
   lifecycle: RulesLifecycleAuthority,
   message: unknown,
+  consumePreparedRecoveryFence: () => boolean,
 ): Promise<void> {
+  if (parseInspectPortInvalidated(message)) {
+    if (!consumePreparedRecoveryFence()) {
+      pseudoStateAdapter.acceptLifecycle(message);
+      lifecycle.selectionRevision = undefined;
+      lifecycle.documentEpoch = undefined;
+      model.reset("inspect-port-invalidated");
+      controller.invalidate("transport-invalidation");
+    }
+    return;
+  }
   pseudoStateAdapter.acceptLifecycle(message);
+  const matchedLifecycle = routeMatchedStylesLifecycle(model, message);
   routeRulesSourcesLifecycle(controller, lifecycle, message);
-  await routeMatchedStylesLifecycle(model, message);
+  await matchedLifecycle;
 }
 
 function routeRulesSourcesLifecycle(
@@ -514,6 +549,13 @@ class MatchedStylesPseudoStateAdapter implements PseudoStateDataSource {
     this.selectionRevision = undefined;
     this.lastReady = undefined;
     this.beginBoundary("disconnected", false);
+  }
+
+  public beginRecovery(): void {
+    if (this.disposed) return;
+    this.selectionRevision = undefined;
+    this.lastReady = undefined;
+    this.beginBoundary("recovery", false);
   }
 
   public dispose(): void {

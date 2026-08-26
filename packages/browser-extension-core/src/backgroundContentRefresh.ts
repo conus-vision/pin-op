@@ -57,6 +57,10 @@ export interface BackgroundContentRefreshCoordinatorOptions {
   readonly setTimeout?: typeof globalThis.setTimeout;
   readonly clearTimeout?: typeof globalThis.clearTimeout;
   readonly createRefreshCommandId?: () => string;
+  readonly beforeControlledTransition?: (
+    tabId: number,
+    command?: RefreshExecutionCommand,
+  ) => boolean | void | Promise<boolean | void>;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -133,6 +137,7 @@ export class BackgroundContentRefreshCoordinator {
   private readonly schedule: BackgroundScheduleTimeout;
   private readonly cancel: BackgroundCancelTimeout;
   private readonly createRefreshCommandId: () => string;
+  private readonly beforeControlledTransition: BackgroundContentRefreshCoordinatorOptions["beforeControlledTransition"];
   private readonly onError: BackgroundContentRefreshCoordinatorOptions["onError"];
   private readonly lifecycle = new Map<number, TabLifecycle>();
   private readonly eligibleWindows = new Set<number>();
@@ -159,6 +164,7 @@ export class BackgroundContentRefreshCoordinator {
       ((timer) => globalThis.clearTimeout(timer));
     this.createRefreshCommandId = options.createRefreshCommandId ??
       defaultRefreshCommandId;
+    this.beforeControlledTransition = options.beforeControlledTransition;
     this.onError = options.onError;
   }
 
@@ -166,12 +172,18 @@ export class BackgroundContentRefreshCoordinator {
     tabId: number,
     command: RefreshExecutionCommand,
   ): Promise<void> {
-    if (this.disposed || !isBrowserId(tabId)) return;
+    if (this.disposed || !isBrowserId(tabId)) {
+      throw new Error("Content refresh dispatch unavailable");
+    }
     this.commandLeases.delete(tabId);
     const lifecycle = this.authorizedLifecycle(tabId);
     if (!lifecycle) throw new Error("Content refresh tab is not eligible");
     const lifecycleEpoch = lifecycle.lifecycleEpoch;
     const binding = await this.ensureReady(tabId, lifecycleEpoch);
+    if (!this.isCurrentBinding(binding)) {
+      throw new Error("Content refresh command revoked");
+    }
+    await this.prepareControlledTransition(tabId, command);
     if (!this.isCurrentBinding(binding)) {
       throw new Error("Content refresh command revoked");
     }
@@ -334,6 +346,9 @@ export class BackgroundContentRefreshCoordinator {
       const currentRuntimeId = this.ready.get(tabId)?.contentRuntimeId ??
         this.provisional.get(tabId)?.contentRuntimeId;
       if (expectedReloadLoading) reloadTransition.navigationObserved = true;
+      if (!expectedReloadLoading) {
+        this.attemptBestEffortControlledTransition(tabId);
+      }
       const preserveSnapshot = expectedReloadLoading && !urlChanged;
       this.invalidateLifecycle(
         tabId,
@@ -860,6 +875,44 @@ export class BackgroundContentRefreshCoordinator {
       throw new TypeError("Invalid refresh command ID");
     }
     return value;
+  }
+
+  private async prepareControlledTransition(
+    tabId: number,
+    command: RefreshExecutionCommand,
+  ): Promise<void> {
+    const callback = this.beforeControlledTransition;
+    if (!callback) return;
+    try {
+      const acknowledged = await callback(tabId, command);
+      if (acknowledged === false) {
+        this.report(new Error("Content refresh cleanup was not acknowledged"));
+      }
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  private attemptBestEffortControlledTransition(tabId: number): void {
+    const callback = this.beforeControlledTransition;
+    if (!callback) return;
+    let result: boolean | void | Promise<boolean | void>;
+    try {
+      result = callback(tabId);
+    } catch (error) {
+      this.report(error);
+      return;
+    }
+    void Promise.resolve(result).then(
+      (acknowledged) => {
+        if (acknowledged === false) {
+          this.report(new Error(
+            "Content context cleanup was not acknowledged before loss",
+          ));
+        }
+      },
+      (error: unknown) => this.report(error),
+    );
   }
 
   private enqueueTab<T>(tabId: number, operation: () => Promise<T>): Promise<T> {

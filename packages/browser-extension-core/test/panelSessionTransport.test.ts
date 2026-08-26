@@ -306,26 +306,43 @@ describe("PanelSessionTransport", () => {
       documentEpoch: 4,
       nodeRef: "node-a",
       selectionRevision: 7,
+      republishToken: "republish-a",
     };
 
     const first = transport.republishSelection("panel-a", firstRequest);
     const second = transport.republishSelection("panel-a", firstRequest);
     const replacement = transport.republishSelection("panel-a", {
       ...firstRequest,
-      nodeRef: "node-b",
-      selectionRevision: 8,
+      republishToken: "republish-b",
     });
 
     expect(sendTabMessage).toHaveBeenCalledTimes(2);
     expect(sendTabMessage.mock.calls).toEqual([
       [7, firstRequest],
-      [7, { ...firstRequest, nodeRef: "node-b", selectionRevision: 8 }],
+      [7, { ...firstRequest, republishToken: "republish-b" }],
     ]);
     resolvers[0]!(false);
     resolvers[1]!(true);
     await expect(first).resolves.toBe(false);
     await expect(second).resolves.toBe(false);
     await expect(replacement).resolves.toBe(true);
+  });
+
+  it("requires an explicit true republish acknowledgement", async () => {
+    const transport = new PanelSessionTransport({
+      sendTabMessage: async () => undefined,
+      postPanelMessage: vi.fn(),
+    });
+    transport.bind("panel-a", 7);
+
+    await expect(transport.republishSelection("panel-a", {
+      type: "pin-op.inspect.republish",
+      contentSessionId: "content-a",
+      documentEpoch: 4,
+      nodeRef: "node-a",
+      selectionRevision: 7,
+      republishToken: "republish-missing-ack",
+    })).resolves.toBe(false);
   });
 
   it("publishes only validated events to the bound panel channel", () => {

@@ -46,6 +46,7 @@ import type {
   PanelRegistration,
 } from "../src/windowConnectionCoordinator.js";
 import type {
+  TabRefreshCompletion,
   TabRefreshSettings,
 } from "../src/tabRefreshCoordinator.js";
 import type { TabRefreshState } from "../src/refreshRuntimeProtocol.js";
@@ -2650,6 +2651,209 @@ describe("BackgroundRouter", () => {
     },
   );
 
+  it.each(LIFECYCLE_REVOCATION_SCENARIOS)(
+    "fences late source and Rules authority after $label",
+    async (scenario) => {
+      const events = createRouterSubscriptionHarness();
+      const correlations = new InspectCorrelationStore();
+      const harness = createHarness({
+        inspectCorrelationStore: correlations,
+        subscriptions: events.subscriptions,
+      });
+      const panel = await harness.registerAndConnect(
+        "channel-1",
+        17,
+        "source-17",
+      );
+      await harness.attachContentSession(17, "content-lifecycle-authority");
+      await scenario.prepare?.(harness);
+      await harness.router.routeMessage(
+        selectedMessage(
+          "content-lifecycle-authority",
+          rulesInspectPayload(),
+        ),
+        contentSender(17, 10),
+      );
+      const context = trustedIdePeer();
+      harness.resolutions.emit(context, matchedResolution("inspect-1", 1));
+      harness.sourceMatches.emit(
+        context,
+        sourceMatchesMessage("inspect-1", 1),
+      );
+      harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+      const oldRulesRoute = {
+        channel: "channel-1",
+        tabId: 17,
+        windowId: 10,
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+        openAuthorityId: "open-rule-a",
+      } as const;
+      expect(correlations.authorizeRulesOpen(oldRulesRoute)).toBeDefined();
+      expect(messagesOfType(panel, "source.matches")).toHaveLength(1);
+      expect(messagesOfType(panel, "rules.sources")).toHaveLength(1);
+
+      await scenario.trigger(harness, events);
+      await vi.waitFor(() => {
+        expect(correlations.routeForInspect("inspect-1"), scenario.label)
+          .toBeUndefined();
+      });
+
+      harness.sourceMatches.emit(
+        context,
+        sourceMatchesMessage("inspect-1", 1, { matches: [] }),
+      );
+      harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 2));
+      panel.emitMessage({
+        type: "pin-op.rules.open",
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+        openAuthorityId: "open-rule-a",
+      });
+      await flushMicrotasks();
+
+      expect(messagesOfType(panel, "source.matches"), scenario.label)
+        .toHaveLength(1);
+      expect(messagesOfType(panel, "rules.sources"), scenario.label)
+        .toHaveLength(1);
+      expect(harness.coordinator.rulesOpens, scenario.label).toEqual([]);
+    },
+  );
+
+  it.each<{
+    readonly label: string;
+    readonly useStaleStylesTuple?: boolean;
+    readonly trigger: (
+      harness: LifecycleHarness,
+      panel: FakePort,
+      contentLease: FakePort,
+    ) => void | Promise<void>;
+  }>([
+    {
+      label: "stylesheet refresh",
+      useStaleStylesTuple: true,
+      trigger: async (harness) => {
+        await completeAcceptedTabRefresh(harness, "styles");
+      },
+    },
+    {
+      label: "page reload",
+      trigger: async (harness, _panel, contentLease) => {
+        await completeAcceptedTabRefresh(harness, "reload");
+        const replacementLease = await harness.attachContentSession(
+          17,
+          "content-owner-reload-replacement",
+        );
+        await harness.inspectCoordinator.whenIdle(17);
+        expect(contentLease.disconnected).toBe(true);
+        expect(replacementLease.disconnected).toBe(false);
+      },
+    },
+    {
+      label: "panel disconnect",
+      trigger: async (harness, panel) => {
+        panel.disconnect();
+        await harness.inspectCoordinator.whenIdle(17);
+      },
+    },
+    {
+      label: "content lease replacement",
+      trigger: async (harness, _panel, contentLease) => {
+        const replacementLease = await harness.attachContentSession(
+          17,
+          "content-owner-authority-replacement",
+        );
+        await harness.inspectCoordinator.whenIdle(17);
+        expect(contentLease.disconnected).toBe(true);
+        expect(replacementLease.disconnected).toBe(false);
+      },
+    },
+  ])(
+    "fences late source and Rules authority after $label",
+    async (scenario) => {
+      const correlations = new InspectCorrelationStore();
+      const harness = createHarness({ inspectCorrelationStore: correlations });
+      const panel = await harness.registerAndConnect(
+        "channel-1",
+        17,
+        "source-17",
+      );
+      const contentLease = await harness.attachContentSession(
+        17,
+        "content-owner-authority",
+      );
+      const oldStylesInvalidation = {
+        type: "styles.invalidated" as const,
+        documentEpoch: 1,
+        stylesRevision: 1,
+        stylesheetRevision: 0,
+        pseudoStateRevision: 0,
+        pseudoStates: [] as const,
+      };
+      await expect(harness.router.routeMessage({
+        type: "pin-op.styles.event",
+        contentSessionId: "content-owner-authority",
+        event: oldStylesInvalidation,
+      }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+      await harness.router.routeMessage(
+        selectedMessage("content-owner-authority", rulesInspectPayload()),
+        contentSender(17, 10),
+      );
+      const context = trustedIdePeer();
+      harness.resolutions.emit(context, matchedResolution("inspect-1", 1));
+      harness.sourceMatches.emit(
+        context,
+        sourceMatchesMessage("inspect-1", 1),
+      );
+      harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 1));
+      expect(messagesOfType(panel, "source.matches")).toHaveLength(1);
+      expect(messagesOfType(panel, "rules.sources")).toHaveLength(1);
+      expect(messagesOfType(panel, "styles.invalidated")).toEqual([
+        oldStylesInvalidation,
+      ]);
+
+      await scenario.trigger(harness, panel, contentLease);
+      await vi.waitFor(() => {
+        expect(correlations.routeForInspect("inspect-1"), scenario.label)
+          .toBeUndefined();
+      });
+
+      const lateOldSessionInvalidation = scenario.useStaleStylesTuple
+        ? oldStylesInvalidation
+        : {
+            ...oldStylesInvalidation,
+            stylesRevision: 2,
+            pseudoStateRevision: 1,
+          };
+      await expect(harness.router.routeMessage({
+        type: "pin-op.styles.event",
+        contentSessionId: "content-owner-authority",
+        event: lateOldSessionInvalidation,
+      }, contentSender(17, 10)), scenario.label).resolves.toBeUndefined();
+      expect(messagesOfType(panel, "styles.invalidated"), scenario.label)
+        .toEqual([oldStylesInvalidation]);
+
+      harness.sourceMatches.emit(
+        context,
+        sourceMatchesMessage("inspect-1", 1, { matches: [] }),
+      );
+      harness.rulesSources.emit(context, rulesSourcesMessage("inspect-1", 2));
+      panel.emitMessage({
+        type: "pin-op.rules.open",
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+        openAuthorityId: "open-rule-a",
+      });
+      await flushMicrotasks();
+
+      expect(messagesOfType(panel, "source.matches"), scenario.label)
+        .toHaveLength(1);
+      expect(messagesOfType(panel, "rules.sources"), scenario.label)
+        .toHaveLength(1);
+      expect(harness.coordinator.rulesOpens, scenario.label).toEqual([]);
+    },
+  );
+
   it("posts the exact local inspect start before publishing over WebSocket", async () => {
     let panel!: FakePort;
     let localMessagesAtPublish: unknown[] = [];
@@ -3250,6 +3454,89 @@ describe("BackgroundRouter", () => {
 
     blockedLookup.resolve({ id: 17, windowId: 10 });
     await flushMicrotasks();
+  });
+
+  it("keeps old Rules authority until cleanup and fences selection through the state commit", async () => {
+    const correlations = new InspectCorrelationStore();
+    const cleanupAck = deferred<unknown>();
+    const lookupStarted = deferred<void>();
+    const blockedLookup = deferred<
+      { id: number; windowId: number } | undefined
+    >();
+    let blockNextLookup = false;
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      getTab: async (tabId) => {
+        if (blockNextLookup) {
+          blockNextLookup = false;
+          lookupStarted.resolve();
+          return await blockedLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
+      },
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) &&
+          message.type === "pin-op.inspect.clearPseudoStates"
+          ? await cleanupAck.promise
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const route = await establishRulesAuthority(harness, correlations);
+
+    harness.coordinator.emitState(10, "offline");
+    await vi.waitFor(() => {
+      expect(harness.inspectCalls).toContainEqual([
+        "tab",
+        17,
+        {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId: "content-rules",
+        },
+      ]);
+    });
+
+    const boundarySelection = selectionChangedWithRevision("node-boundary", 2);
+    await expect(harness.router.routeMessage(
+      domEventMessage("content-rules", boundarySelection),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([]);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision("content-rules", 2, rulesInspectPayload()),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    blockNextLookup = true;
+    cleanupAck.resolve(true);
+    await lookupStarted.promise;
+    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision("content-rules", 2, rulesInspectPayload()),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    blockedLookup.resolve({ id: 17, windowId: 10 });
+    await vi.waitFor(() => {
+      expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+        boundarySelection,
+      ]);
+    });
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision("content-rules", 2, rulesInspectPayload()),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
+      expect.objectContaining({ inspectMessageId: "inspect-1" }),
+      expect.objectContaining({ inspectMessageId: "inspect-2" }),
+    ]);
   });
 
   it("revokes source presentation authority on peer disconnect and explicit unlink", async () => {
@@ -3945,16 +4232,243 @@ describe("BackgroundRouter", () => {
     harness.peerStates.emit(10, peerState(false, 3));
     harness.peerStates.emit(10, peerState(true, 4));
     harness.peerStates.emit(10, peerState(false, 2));
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(messagesOfType(panel, "peerState")).toEqual([
+        peerState(true, 4),
+      ]);
+    });
 
-    expect(messagesOfType(panel, "peerState")).toEqual([
-      peerState(false, 3),
-      peerState(true, 4),
-    ]);
     expect(harness.inspectCalls).toContainEqual([
       "tab",
       17,
       inspectRepublishRequest(),
+    ]);
+  });
+
+  it("fences new selections and stale peer publication during deferred cleanup", async () => {
+    const cleanupAck = deferred<unknown>();
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) &&
+          message.type === "pin-op.inspect.clearPseudoStates"
+          ? await cleanupAck.promise
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-peer-cleanup-fence",
+      17,
+      "source-peer-cleanup-fence",
+    );
+    await establishSelectionAuthority(harness);
+    const publishedBeforeCleanup = harness.coordinator.published.length;
+
+    harness.peerStates.emit(10, peerState(false, 3));
+    await flushMicrotasks();
+    expect(harness.inspectCalls).toContainEqual([
+      "tab",
+      17,
+      {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId: DEFAULT_CONTENT_SESSION_ID,
+      },
+    ]);
+
+    await expect(harness.router.routeMessage(
+      selectedMessage(DEFAULT_CONTENT_SESSION_ID, inspectPayload(), 2),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    harness.peerStates.emit(10, peerState(true, 4));
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "peerState")).toEqual([]);
+    expect(harness.coordinator.published).toHaveLength(publishedBeforeCleanup);
+
+    cleanupAck.resolve(true);
+    await vi.waitFor(() => {
+      expect(messagesOfType(panel, "peerState")).toEqual([
+        peerState(true, 4),
+      ]);
+    });
+    expect(harness.coordinator.published).toHaveLength(publishedBeforeCleanup);
+  });
+
+  it("hands a relink cleanup gate to the linking state and accepts fresh authority afterward", async () => {
+    const correlations = new InspectCorrelationStore();
+    const cleanupAck = deferred<unknown>();
+    let republishCount = 0;
+    const contentSessionId = "content-relink-cleanup-handoff";
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          return await cleanupAck.promise;
+        }
+        if (message.type === "pin-op.inspect.republish") {
+          republishCount += 1;
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-relink-cleanup-handoff",
+      17,
+      "source-relink-cleanup-handoff",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, selectionChangedWithRevision("node-1", 1)),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessageWithRevision(contentSessionId, 1, rulesInspectPayload()),
+      contentSender(17, 10),
+    );
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    const cleanup = harness.router.beforeControlledWindowTransition({
+      kind: "relink",
+      windowId: 10,
+    });
+    await flushMicrotasks();
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision(contentSessionId, 2, rulesInspectPayload()),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+
+    cleanupAck.resolve(true);
+    await expect(cleanup).resolves.toBe(true);
+    harness.coordinator.emitState(10, "linking");
+    await flushMicrotasks();
+
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, selectionChangedWithRevision("node-2", 2)),
+      contentSender(17, 10),
+    );
+    await expect(harness.router.routeMessage(
+      selectedMessageWithRevision(contentSessionId, 2, rulesInspectPayload()),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 1,
+        nodeRef: "node-2",
+        selectionRevision: 2,
+      },
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(republishCount).toBe(1));
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
+      expect.objectContaining({ inspectMessageId: "inspect-1" }),
+      expect.objectContaining({ inspectMessageId: "inspect-2" }),
+    ]);
+  });
+
+  it("isolates a controlled tab transition from sibling inspector authority", async () => {
+    const correlations = new InspectCorrelationStore();
+    const cleanupB = deferred<unknown>();
+    const contentA = "content-tab-cleanup-a";
+    const contentB = "content-tab-cleanup-b";
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 10],
+      ]),
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.clearPseudoStates" &&
+          message.contentSessionId === contentB
+        ) {
+          return await cleanupB.promise;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect("channel-tab-a", 17, "source-tab-a");
+    const panelB = await harness.registerAndConnect(
+      "channel-tab-b",
+      18,
+      "source-tab-b",
+    );
+    await harness.attachContentSession(17, contentA);
+    await harness.attachContentSession(18, contentB);
+    await harness.router.routeMessage(
+      selectedMessage(contentA, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessage(contentB, rulesInspectPayload(), 1),
+      contentSender(18, 10),
+    );
+    const context = trustedIdePeer();
+    expect(correlations.acceptRulesSources(
+      rulesSourcesMessage("inspect-1", 1),
+      context,
+    )).toBe("channel-tab-a");
+    expect(correlations.acceptRulesSources(
+      rulesSourcesMessage("inspect-2", 1),
+      context,
+    )).toBe("channel-tab-b");
+    const routeA = {
+      channel: "channel-tab-a",
+      tabId: 17,
+      windowId: 10,
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    } as const;
+    const routeB = {
+      channel: "channel-tab-b",
+      tabId: 18,
+      windowId: 10,
+      inspectMessageId: "inspect-2",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    } as const;
+    expect(correlations.authorizeRulesOpen(routeA)).toBeDefined();
+    expect(correlations.authorizeRulesOpen(routeB)).toBeDefined();
+
+    const transition = harness.router.beforeControlledTabTransition(18);
+    await vi.waitFor(() => {
+      expect(harness.inspectCalls).toContainEqual([
+        "tab",
+        18,
+        {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId: contentB,
+        },
+      ]);
+    });
+    expect(harness.inspectCalls).not.toContainEqual([
+      "tab",
+      17,
+      {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId: contentA,
+      },
+    ]);
+    await expect(harness.router.routeMessage(
+      selectedMessage(contentB, rulesInspectPayload(), 2),
+      contentSender(18, 10),
+    )).resolves.toBeUndefined();
+    expect(correlations.authorizeRulesOpen(routeA)).toBeDefined();
+    expect(correlations.authorizeRulesOpen(routeB)).toBeDefined();
+
+    cleanupB.resolve(true);
+    await expect(transition).resolves.toBe(true);
+    expect(correlations.authorizeRulesOpen(routeA)).toBeDefined();
+    expect(correlations.authorizeRulesOpen(routeB)).toBeUndefined();
+    await expect(harness.router.routeMessage(
+      selectedMessage(contentB, rulesInspectPayload(), 2),
+      contentSender(18, 10),
+    )).resolves.toEqual({ ok: true });
+    expect(messagesOfType(panelB, "pin-op.inspect.started")).toEqual([
+      expect.objectContaining({ inspectMessageId: "inspect-2" }),
+      expect.objectContaining({ inspectMessageId: "inspect-3" }),
     ]);
   });
 
@@ -4027,6 +4541,8 @@ describe("BackgroundRouter", () => {
     const publishToPanel = vi.spyOn(panel, "postMessage");
 
     harness.peerStates.emit(10, replacement);
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
 
     expect(disposeWindow).toHaveBeenCalledWith(10);
     expect(publishToPanel).toHaveBeenCalledWith(replacement);
@@ -4166,7 +4682,10 @@ describe("BackgroundRouter", () => {
 
     harness.peerStates.emit(10, peerState(false, 1));
     harness.peerStates.emit(10, peerState(true, 2));
-    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await vi.waitFor(() => {
+      expect(harness.coordinator.published).toHaveLength(2);
+    });
 
     const secondId = harness.coordinator.published[1]?.inspectMessageId;
     expect(firstId).toBe("inspect-1");
@@ -4312,14 +4831,18 @@ describe("BackgroundRouter", () => {
 
     harness.peerStates.emit(10, peerState(false, 1));
     harness.peerStates.emit(10, peerState(true, 2));
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(messagesOfType(panelA, "peerState")).toEqual([
+        peerState(true, 2),
+      ]);
+    });
 
-    expect(messagesOfType(panelA, "peerState")).toEqual([
-      peerState(false, 1),
-      peerState(true, 2),
-    ]);
     expect(messagesOfType(panelB, "peerState")).toEqual([]);
     expect(harness.inspectCalls).toEqual([
+      ["tab", 17, {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId: DEFAULT_CONTENT_SESSION_ID,
+      }],
       ["tab", 17, inspectRepublishRequest()],
     ]);
   });
@@ -4741,11 +5264,12 @@ describe("BackgroundRouter", () => {
     });
   });
 
-  it("invalidates panel lifecycle before accepting a replacement content lease", async () => {
+  it("admits only exact cleanup traffic while replacing a content lease", async () => {
+    const cleanupAck = deferred<unknown>();
     const harness = createHarness({
       sendTabMessage: async (_tabId, message) => (
         isRecord(message) && message.type === "pin-op.inspect.disposeSession"
-          ? true
+          ? await cleanupAck.promise
           : undefined
       ),
     });
@@ -4760,6 +5284,18 @@ describe("BackgroundRouter", () => {
       17,
       "content-session-replacement-a",
     );
+    await harness.inspectCoordinator.whenIdle(17);
+    await expect(harness.router.routeMessage(
+      domEventMessage(
+        "content-session-replacement-a",
+        selectionChangedWithRevision("node-a", 1),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-session-replacement-a"),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
     expect(messagesOfType(panel, "pin-op.inspect.invalidated")).toEqual([]);
 
     const marker = panel.sent.length;
@@ -4770,6 +5306,60 @@ describe("BackgroundRouter", () => {
 
     expect(firstLease.disconnected).toBe(false);
     expect(secondLease.disconnected).toBe(false);
+    expect(panel.sent.slice(marker)).not.toContainEqual({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    await expect(harness.router.routeMessage(
+      domEventMessage(
+        "content-session-replacement-a",
+        selectionChangedWithRevision("node-stale", 2),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-session-replacement-a", inspectPayload(), 2),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    const cleanupInvalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 1,
+      pseudoStateRevision: 1,
+      pseudoStates: [] as const,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-session-replacement-a",
+      event: cleanupInvalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-session-replacement-a",
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 1,
+        nodeRef: "node-a",
+        selectionRevision: 1,
+      },
+    }, contentSender(17, 10))).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "styles.invalidated")).toEqual([
+      cleanupInvalidation,
+    ]);
+    expect(harness.inspectCalls.filter((entry) =>
+      JSON.stringify(entry).includes("pin-op.inspect.republish")
+    )).toEqual([]);
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-session-replacement-b"),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+
+    cleanupAck.resolve(true);
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+    expect(firstLease.disconnected).toBe(true);
+    expect(secondLease.disconnected).toBe(false);
     expect(panel.sent.slice(marker)).toContainEqual({
       type: "pin-op.inspect.invalidated",
       reason: "documentDisconnected",
@@ -4777,15 +5367,8 @@ describe("BackgroundRouter", () => {
     await expect(harness.router.routeMessage(
       selectedMessage("content-session-replacement-b"),
       contentSender(17, 10),
-    )).resolves.toBeUndefined();
-
-    await harness.inspectCoordinator.whenIdle(17);
-    expect(firstLease.disconnected).toBe(true);
-    expect(secondLease.disconnected).toBe(false);
-    await expect(harness.router.routeMessage(
-      selectedMessage("content-session-replacement-b"),
-      contentSender(17, 10),
     )).resolves.toEqual({ ok: true });
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(2);
   });
 
   it("revokes current Rules correlation before publishing stylesheet invalidation", async () => {
@@ -5187,7 +5770,7 @@ describe("BackgroundRouter", () => {
     expect(correlations.routeForInspect("inspect-3")).toBeUndefined();
   });
 
-  it("revokes current Rules correlation before accepting page refresh", async () => {
+  it("retains Rules correlation at admission and revokes it at exact tab cleanup", async () => {
     const correlations = new InspectCorrelationStore();
     const harness = createHarness({ inspectCorrelationStore: correlations });
     await harness.registerAndConnect("channel-1", 17, "source-17");
@@ -5200,15 +5783,1988 @@ describe("BackgroundRouter", () => {
       participant: true,
       lastAcceptedGeneration: 0,
     });
-    const disposeWindow = vi.spyOn(correlations, "disposeWindow");
+    const disposeTab = vi.spyOn(correlations, "disposeTab");
     const refresh = pageRefresh(1);
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
 
     harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+
+    expect(disposeTab).not.toHaveBeenCalled();
+    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([[10, refresh]]);
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+
+    expect(disposeTab).toHaveBeenCalledWith(17);
+    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+    completion?.(tabRefreshCompletion(17, 10, refresh, false));
+  });
+
+  it("cleans and republishes exact tabs only when their accepted refresh completes", async () => {
+    const contentSessions = new Map([
+      [17, "content-refresh-exact-a"],
+      [18, "content-refresh-exact-b"],
+    ]);
+    const completions = new Map<
+      number,
+      (completion: TabRefreshCompletion) => void
+    >();
+    const republishRequests: Array<[number, Record<string, unknown>]> = [];
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      tabs: new Map([[17, 10], [18, 10]]),
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (message.type !== "pin-op.inspect.republish") return undefined;
+        republishRequests.push([tabId, message]);
+        const contentSessionId = contentSessions.get(tabId);
+        if (
+          !contentSessionId ||
+          typeof message.republishToken !== "string" ||
+          typeof message.selectionRevision !== "number"
+        ) return false;
+        await harness.router.routeMessage({
+          ...selectedMessage(
+            contentSessionId,
+            rulesInspectPayload(),
+            message.selectionRevision,
+          ),
+          republishToken: message.republishToken,
+        }, contentSender(tabId, 10));
+        return true;
+      },
+    });
+    const panelA = await harness.registerAndConnect(
+      "channel-refresh-exact-a",
+      17,
+      "source-refresh-exact-a",
+    );
+    const panelB = await harness.registerAndConnect(
+      "channel-refresh-exact-b",
+      18,
+      "source-refresh-exact-b",
+    );
+    for (const [tabId, contentSessionId] of contentSessions) {
+      await harness.attachContentSession(tabId, contentSessionId);
+      await harness.router.routeMessage(domEventMessage(contentSessionId, {
+        ...selectionChangedWithRevision(`node-refresh-exact-${tabId}`, 1),
+        documentEpoch: 4,
+      }), contentSender(tabId, 10));
+      await harness.router.routeMessage(
+        selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+        contentSender(tabId, 10),
+      );
+      harness.tabRefresh.setState({
+        ...defaultTabState(tabId, 10),
+        autoRefreshEnabled: true,
+        participant: true,
+      });
+    }
+    const startedBeforeA = messagesOfType(
+      panelA,
+      "pin-op.inspect.started",
+    ).length;
+    const startedBeforeB = messagesOfType(
+      panelB,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      if (onTabCompleted) {
+        completions.set(message.refreshGeneration, onTabCompleted);
+      }
+      return true;
+    };
+
+    harness.pageRefreshes.emit(10, pageRefresh(1));
+    await vi.waitFor(() => expect(completions.has(1)).toBe(true));
+
+    expect(inspectTabMessagesOfType(
+      harness,
+      "pin-op.inspect.clearPseudoStates",
+    )).toEqual([]);
+    expect(republishRequests).toEqual([]);
+
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+    expect(inspectTabMessagesOfType(
+      harness,
+      "pin-op.inspect.clearPseudoStates",
+    ).map(([tabId]) => tabId)).toEqual([17]);
+
+    completions.get(1)?.(tabRefreshCompletion(17, 10, pageRefresh(1), true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    expect(republishRequests[0]?.[0]).toBe(17);
+    expect(republishRequests[0]?.[1].republishToken).toEqual(expect.any(String));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panelA, "pin-op.inspect.started"))
+        .toHaveLength(startedBeforeA + 1)
+    );
+
+    await harness.router.routeMessage(
+      selectedMessage(
+        contentSessions.get(18) as string,
+        rulesInspectPayload(),
+        1,
+      ),
+      contentSender(18, 10),
+    );
+    expect(messagesOfType(panelB, "pin-op.inspect.started"))
+      .toHaveLength(startedBeforeB);
+    expect(republishRequests).toHaveLength(1);
+
+    await harness.router.beforeControlledTabTransition(18, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 1,
+      mode: "styles",
+    });
+    expect(inspectTabMessagesOfType(
+      harness,
+      "pin-op.inspect.clearPseudoStates",
+    ).map(([tabId]) => tabId)).toEqual([17, 18]);
+    completions.get(1)?.(tabRefreshCompletion(18, 10, pageRefresh(1), true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(2));
+    expect(republishRequests[1]?.[0]).toBe(18);
+    await vi.waitFor(() =>
+      expect(messagesOfType(panelB, "pin-op.inspect.started"))
+        .toHaveLength(startedBeforeB + 1)
+    );
+  });
+
+  it("commits the latest buffered selection once after exact refresh completion", async () => {
+    const contentSessionId = "content-refresh-buffered-selection";
+    const cleanupAck = deferred<unknown>();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const republishResults: unknown[] = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-buffered-a", 1),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-buffered-b", 2),
+      documentEpoch: 4,
+    };
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          return await cleanupAck.promise;
+        }
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string" ||
+          typeof message.selectionRevision !== "number"
+        ) return undefined;
+        republishRequests.push(message);
+        const result = await harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selectionB,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        republishResults.push(result);
+        return result?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-buffered-selection",
+      17,
+      "source-refresh-buffered-selection",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    );
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh = pageRefresh(5);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    const cleanup = harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    await vi.waitFor(() => {
+      expect(inspectTabMessagesOfType(
+        harness,
+        "pin-op.inspect.clearPseudoStates",
+      )).toHaveLength(1);
+    });
+
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore);
+
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 4,
+      stylesRevision: 2,
+      stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(messagesOfType(panel, "styles.invalidated")).toEqual([
+      invalidation,
+    ]);
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+
+    cleanupAck.resolve(true);
+    await expect(cleanup).resolves.toBe(true);
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+
+    expect(republishRequests[0]).toEqual(expect.objectContaining({
+      documentEpoch: 4,
+      nodeRef: "node-refresh-buffered-b",
+      selectionRevision: 2,
+      republishToken: expect.any(String),
+    }));
+    expect(republishResults).toEqual([{ ok: true }]);
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+      selectionB,
+    ]);
+    const invalidationIndex = panel.sent.findIndex((message) =>
+      isRecord(message) && message.type === "styles.invalidated"
+    );
+    const selectionBIndex = panel.sent.findIndex((message) =>
+      isRecord(message) &&
+      message.type === "dom.selectionChanged" &&
+      message.nodeRef === "node-refresh-buffered-b"
+    );
+    expect(invalidationIndex).toBeGreaterThanOrEqual(0);
+    expect(selectionBIndex).toBeGreaterThan(invalidationIndex);
+
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await flushMicrotasks();
+    expect(republishRequests).toHaveLength(1);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+  });
+
+  it("keeps reload refresh gated until a replacement content lease arrives", async () => {
+    const oldContentSessionId = "content-refresh-reload-old";
+    const newContentSessionId = "content-refresh-reload-new";
+    const republishRequests: unknown[] = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (message.type === "pin-op.inspect.republish") {
+          republishRequests.push(message);
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-reload-boundary",
+      17,
+      "source-refresh-reload-boundary",
+    );
+    const oldLease = await harness.attachContentSession(
+      17,
+      oldContentSessionId,
+    );
+    const oldSelection = {
+      ...selectionChangedWithRevision("node-refresh-reload-old", 1),
+      documentEpoch: 4,
+    };
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        oldContentSessionId,
+        oldSelection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh: PageRefreshMessage = {
+      ...pageRefresh(7),
+      mode: "reload",
+    };
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
     await flushMicrotasks();
 
-    expect(disposeWindow).toHaveBeenCalledWith(10);
-    expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([[10, refresh]]);
-    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+    expect(republishRequests).toEqual([]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore);
+    const staleOldSelection = {
+      ...selectionChangedWithRevision("node-refresh-reload-stale", 2),
+      documentEpoch: 4,
+    };
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        oldContentSessionId,
+        staleOldSelection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      oldSelection,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore);
+
+    const newLease = await harness.attachContentSession(
+      17,
+      newContentSessionId,
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    const newSelection = selectionChangedWithRevision(
+      "node-refresh-reload-new",
+      1,
+    );
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        newContentSessionId,
+        newSelection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+
+    expect(oldLease.disconnected).toBe(true);
+    expect(newLease.disconnected).toBe(false);
+    expect(republishRequests).toEqual([]);
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      oldSelection,
+      newSelection,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        oldContentSessionId,
+        staleOldSelection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+  });
+
+  it("replays one exact selection when refresh admission resolves nonparticipant", async () => {
+    const contentSessionId = "content-refresh-nonparticipant-replay";
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-nonparticipant-replay",
+      17,
+      "source-refresh-nonparticipant-replay",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-nonparticipant-a", 1),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-nonparticipant-b", 2),
+      documentEpoch: 4,
+    };
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    const publicationsBefore = harness.coordinator.published.length;
+    const pendingState = deferred<TabRefreshState>();
+    const admissionStarted = deferred<void>();
+    harness.tabRefresh.stateBehavior = async () => await pendingState.promise;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+    ) => {
+      const admission = onAccepted?.();
+      admissionStarted.resolve();
+      return await admission !== false;
+    };
+
+    harness.pageRefreshes.emit(10, pageRefresh(8));
+    await admissionStarted.promise;
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore);
+
+    pendingState.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: false,
+    });
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+      selectionB,
+    ]);
+    expect(harness.coordinator.published)
+      .toHaveLength(publicationsBefore + 1);
+    expect(messagesOfType(panel, "pin-op.inspect.started").at(-1))
+      .toEqual(expect.objectContaining({ selectionRevision: 2 }));
+  });
+
+  it("keeps B buffered when its admission supersedes pending refresh A", async () => {
+    const contentSessionId = "content-refresh-overlap-a-b";
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-overlap-a", 1),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-overlap-b", 2),
+      documentEpoch: 4,
+    };
+    const completions = new Map<
+      number,
+      (completion: TabRefreshCompletion) => void
+    >();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const admissionBState = deferred<TabRefreshState>();
+    const admissionBStarted = deferred<void>();
+    let deferAdmissionB = false;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string"
+        ) return undefined;
+        republishRequests.push(message);
+        const selection = message.nodeRef === selectionB.nodeRef
+          ? selectionB
+          : selectionA;
+        const result = await harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selection,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        return (result as { readonly ok?: boolean } | undefined)?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-overlap-a-b",
+      17,
+      "source-refresh-overlap-a-b",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => {
+      if (deferAdmissionB) {
+        admissionBStarted.resolve();
+        return await admissionBState.promise;
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        autoRefreshEnabled: true,
+        participant: true,
+      };
+    };
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      if (onTabCompleted) {
+        completions.set(message.refreshGeneration, onTabCompleted);
+      }
+      return true;
+    };
+
+    const refreshA = pageRefresh(11);
+    harness.pageRefreshes.emit(10, refreshA);
+    await vi.waitFor(() => expect(completions.has(11)).toBe(true));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refreshA.refreshGeneration,
+      mode: refreshA.mode,
+    });
+
+    deferAdmissionB = true;
+    const refreshB = pageRefresh(12);
+    harness.pageRefreshes.emit(10, refreshB);
+    await admissionBStarted.promise;
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+
+    deferAdmissionB = false;
+    admissionBState.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    await vi.waitFor(() => expect(completions.has(12)).toBe(true));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refreshB.refreshGeneration,
+      mode: refreshB.mode,
+    });
+    completions.get(11)?.(tabRefreshCompletion(17, 10, refreshA, true));
+    await flushMicrotasks();
+    expect(republishRequests).toEqual([]);
+
+    completions.get(12)?.(tabRefreshCompletion(17, 10, refreshB, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(2)
+    );
+
+    expect(republishRequests[0]).toEqual(expect.objectContaining({
+      nodeRef: selectionB.nodeRef,
+      selectionRevision: selectionB.selectionRevision,
+    }));
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+      selectionB,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started").at(-1))
+      .toEqual(expect.objectContaining({ selectionRevision: 2 }));
+  });
+
+  it("carries buffered refresh selection into successor relink cleanup", async () => {
+    const contentSessionId = "content-refresh-relink-successor";
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-relink-a", 1),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-relink-b", 2),
+      documentEpoch: 4,
+    };
+    const cleanupAck = deferred<unknown>();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      linkWindow: async (windowId) => {
+        await harness.router.beforeControlledWindowTransition({
+          kind: "relink",
+          windowId,
+        });
+        harness.coordinator.emitState(windowId, "linking");
+        harness.coordinator.emitState(windowId, "linked");
+      },
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          return await cleanupAck.promise;
+        }
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string"
+        ) return undefined;
+        republishRequests.push(message);
+        const result = await harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selectionB,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        return (result as { readonly ok?: boolean } | undefined)?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-relink-successor",
+      17,
+      "source-refresh-relink-successor",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh = pageRefresh(13);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+
+    const relink = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-refresh-relink-successor",
+      code: "4873507",
+    }, panelSender("channel-refresh-relink-successor"));
+    await vi.waitFor(() => {
+      expect(inspectTabMessagesOfType(
+        harness,
+        "pin-op.inspect.clearPseudoStates",
+      )).toHaveLength(1);
+    });
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+    ]);
+
+    cleanupAck.resolve(true);
+    await expect(relink).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+        selectionA,
+        selectionB,
+      ])
+    );
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await flushMicrotasks();
+
+    expect(republishRequests.every((request) =>
+      request.nodeRef === selectionB.nodeRef &&
+      request.selectionRevision === selectionB.selectionRevision
+    )).toBe(true);
+    const republishCountBeforeRenewal = republishRequests.length;
+    const renewal = {
+      type: "styles.inspectPublicationRenewed" as const,
+      documentEpoch: selectionB.documentEpoch,
+      nodeRef: selectionB.nodeRef,
+      selectionRevision: selectionB.selectionRevision,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(republishRequests).toHaveLength(republishCountBeforeRenewal + 1)
+    );
+    expect(republishRequests.at(-1)).toEqual(expect.objectContaining({
+      nodeRef: selectionB.nodeRef,
+      selectionRevision: selectionB.selectionRevision,
+    }));
+  });
+
+  it("prefers a newer refresh admission selection when relink inherits an exact cleanup", async () => {
+    const contentSessionId = "content-refresh-relink-admission-wins";
+    const selectionBase = {
+      ...selectionChangedWithRevision("node-refresh-relink-base", 1),
+      documentEpoch: 4,
+    };
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-relink-admission-a", 2),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-relink-admission-b", 3),
+      documentEpoch: 4,
+    };
+    const admissionBState = deferred<TabRefreshState>();
+    const admissionBStarted = deferred<void>();
+    const linkWindowStarted = deferred<void>();
+    const relinkCleanupStarted = deferred<void>();
+    const relinkCleanupAck = deferred<unknown>();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    let clearPseudoStatesCalls = 0;
+    let deferAdmissionB = false;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      linkWindow: async (windowId) => {
+        linkWindowStarted.resolve();
+        await harness.router.beforeControlledWindowTransition({
+          kind: "relink",
+          windowId,
+        });
+        harness.coordinator.emitState(windowId, "linking");
+        harness.coordinator.emitState(windowId, "linked");
+      },
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          clearPseudoStatesCalls += 1;
+          if (clearPseudoStatesCalls === 1) return true;
+          relinkCleanupStarted.resolve();
+          return await relinkCleanupAck.promise;
+        }
+        if (message.type === "pin-op.inspect.republish") {
+          republishRequests.push(message);
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-relink-admission-wins",
+      17,
+      "source-refresh-relink-admission-wins",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionBase,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => {
+      if (deferAdmissionB) {
+        admissionBStarted.resolve();
+        return await admissionBState.promise;
+      }
+      return {
+        ...defaultTabState(tabId, windowId),
+        autoRefreshEnabled: true,
+        participant: true,
+      };
+    };
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+    ) => await onAccepted?.() !== false;
+
+    const refreshA = pageRefresh(14);
+    harness.pageRefreshes.emit(10, refreshA);
+    await vi.waitFor(() =>
+      expect(harness.tabRefresh.acceptedRefreshCalls).toContainEqual([
+        10,
+        refreshA,
+      ])
+    );
+    await expect(harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refreshA.refreshGeneration,
+      mode: refreshA.mode,
+    })).resolves.toBe(true);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+
+    deferAdmissionB = true;
+    const refreshB = pageRefresh(15);
+    harness.pageRefreshes.emit(10, refreshB);
+    await admissionBStarted.promise;
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+
+    const relink = harness.router.routeMessage({
+      type: "pin-op.linkWindow",
+      channel: "channel-refresh-relink-admission-wins",
+      code: "4873507",
+    }, panelSender("channel-refresh-relink-admission-wins"));
+    await linkWindowStarted.promise;
+    await relinkCleanupStarted.promise;
+    admissionBState.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    relinkCleanupAck.resolve(true);
+    await expect(relink).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+        selectionBase,
+        selectionB,
+      ])
+    );
+
+    expect(messagesOfType(panel, "dom.selectionChanged"))
+      .not.toContainEqual(selectionA);
+    const republishCountBeforeRenewal = republishRequests.length;
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: selectionB.documentEpoch,
+        nodeRef: selectionB.nodeRef,
+        selectionRevision: selectionB.selectionRevision,
+      },
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(republishRequests).toHaveLength(republishCountBeforeRenewal + 1)
+    );
+    expect(republishRequests.at(-1)).toEqual(expect.objectContaining({
+      nodeRef: selectionB.nodeRef,
+      selectionRevision: selectionB.selectionRevision,
+    }));
+  });
+
+  it("keeps one correlation when exact selection identity precedes its DOM event", async () => {
+    const contentSessionId = "content-selection-identity-before-dom";
+    const correlations = new InspectCorrelationStore();
+    const recordCorrelation = vi.spyOn(correlations, "record");
+    const harness = createHarness({ inspectCorrelationStore: correlations });
+    const panel = await harness.registerAndConnect(
+      "channel-selection-identity-before-dom",
+      17,
+      "source-selection-identity-before-dom",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    const selection = {
+      ...selectionChangedWithRevision("node-selection-identity-doc-5", 3),
+      documentEpoch: 5,
+    };
+
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    const route = correlations.routeForInspect("inspect-1");
+    expect(route).toEqual(expect.objectContaining({
+      channel: "channel-selection-identity-before-dom",
+      tabId: 17,
+      windowId: 10,
+    }));
+
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, selection),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+
+    expect(recordCorrelation).toHaveBeenCalledOnce();
+    expect(correlations.routeForInspect("inspect-1")).toEqual(route);
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selection,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
+      expect.objectContaining({
+        inspectMessageId: "inspect-1",
+        selectionRevision: 3,
+      }),
+    ]);
+    expect(harness.coordinator.published).toHaveLength(1);
+  });
+
+  it("publishes only embedded C when refresh completes before its late DOM event", async () => {
+    const contentSessionId = "content-refresh-embedded-c-before-dom";
+    const selectionA = {
+      ...selectionChangedWithRevision("node-refresh-embedded-a", 1),
+      documentEpoch: 4,
+    };
+    const selectionB = {
+      ...selectionChangedWithRevision("node-refresh-embedded-b", 2),
+      documentEpoch: 4,
+    };
+    const selectionC = {
+      ...selectionChangedWithRevision("node-refresh-embedded-c", 3),
+      documentEpoch: 4,
+    };
+    const republishRequests: Array<Record<string, unknown>> = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string"
+        ) return undefined;
+        republishRequests.push(message);
+        const result = await harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selectionC,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        return (result as { readonly ok?: boolean } | undefined)?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-embedded-c-before-dom",
+      17,
+      "source-refresh-embedded-c-before-dom",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionA,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    const publicationsBefore = harness.coordinator.published.length;
+
+    const refresh = pageRefresh(16);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionB,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selectionC,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 4,
+        stylesRevision: 2,
+        stylesheetRevision: 1,
+        pseudoStateRevision: 0,
+        pseudoStates: [],
+      },
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+
+    expect(republishRequests[0]).toEqual(expect.objectContaining({
+      nodeRef: selectionC.nodeRef,
+      selectionRevision: selectionC.selectionRevision,
+    }));
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+      selectionC,
+    ]);
+    expect(messagesOfType(panel, "pin-op.inspect.started").at(-1))
+      .toEqual(expect.objectContaining({ selectionRevision: 3 }));
+    expect(harness.coordinator.published)
+      .toHaveLength(publicationsBefore + 1);
+
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, selectionC),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([
+      selectionA,
+      selectionC,
+    ]);
+    expect(republishRequests).toHaveLength(1);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+    expect(harness.coordinator.published)
+      .toHaveLength(publicationsBefore + 1);
+  });
+
+  it("dedupes refresh renewal for one invalidation tuple and retries after drift", async () => {
+    const contentSessionId = "content-refresh-invalidation-dedupe";
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const republishResults: unknown[] = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string" ||
+          typeof message.selectionRevision !== "number"
+        ) return undefined;
+        republishRequests.push(message);
+        const result = await harness.router.routeMessage({
+          ...selectedMessage(
+            contentSessionId,
+            rulesInspectPayload(),
+            message.selectionRevision,
+          ),
+          republishToken: message.republishToken,
+        }, contentSender(tabId, 10));
+        republishResults.push(result);
+        return result?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-invalidation-dedupe",
+      17,
+      "source-refresh-invalidation-dedupe",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    const selection = {
+      ...selectionChangedWithRevision("node-refresh-invalidation", 7),
+      documentEpoch: 4,
+    };
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, selection),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+      contentSender(17, 10),
+    );
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh = pageRefresh(6);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    const firstInvalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 4,
+      stylesRevision: 2,
+      stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: firstInvalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+    expect(republishResults).toEqual([{ ok: true }]);
+
+    const renewal = {
+      type: "styles.inspectPublicationRenewed" as const,
+      documentEpoch: 4,
+      nodeRef: "node-refresh-invalidation",
+      selectionRevision: 7,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+    expect(republishRequests).toHaveLength(1);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+
+    const newerInvalidation = {
+      ...firstInvalidation,
+      stylesRevision: 3,
+      stylesheetRevision: 2,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: newerInvalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 2)
+    );
+    expect(republishResults).toEqual([{ ok: true }, { ok: true }]);
+  });
+
+  it("retries one buffered renewal after the first refresh token hits state failure", async () => {
+    const contentSessionId = "content-refresh-token-state-failure";
+    const selection = {
+      ...selectionChangedWithRevision("node-refresh-token-state-failure", 7),
+      documentEpoch: 4,
+    };
+    const firstTokenState = deferred<TabRefreshState>();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const tokenRoutes: Array<Promise<unknown>> = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string"
+        ) return undefined;
+        republishRequests.push(message);
+        const route = harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selection,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        tokenRoutes.push(route);
+        return (await route as { readonly ok?: boolean } | undefined)?.ok ===
+          true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-token-state-failure",
+      17,
+      "source-refresh-token-state-failure",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh = pageRefresh(9);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 4,
+      stylesRevision: 2,
+      stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+
+    const stateCallsBeforeToken = harness.tabRefresh.stateCalls.length;
+    harness.tabRefresh.stateBehavior = async () =>
+      await firstTokenState.promise;
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(harness.tabRefresh.stateCalls)
+        .toHaveLength(stateCallsBeforeToken + 1)
+    );
+    const renewal = {
+      type: "styles.inspectPublicationRenewed" as const,
+      documentEpoch: 4,
+      nodeRef: selection.nodeRef,
+      selectionRevision: selection.selectionRevision,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(republishRequests).toHaveLength(1);
+
+    harness.tabRefresh.stateBehavior = async (tabId, windowId) => ({
+      ...defaultTabState(tabId, windowId),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    firstTokenState.reject(new Error("background state unavailable"));
+    await expect(tokenRoutes[0]).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(2));
+    await expect(tokenRoutes[1]).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await flushMicrotasks();
+
+    expect(republishRequests).toHaveLength(2);
+    expect(harness.coordinator.published).toHaveLength(2);
+    expect(messagesOfType(panel, "pin-op.inspect.started").at(-1))
+      .toEqual(expect.objectContaining({ selectionRevision: 7 }));
+  });
+
+  it("does not commit a refresh marker after tokened inspect transport error", async () => {
+    const contentSessionId = "content-refresh-token-transport-error";
+    const selection = {
+      ...selectionChangedWithRevision("node-refresh-token-transport-error", 7),
+      documentEpoch: 4,
+    };
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const republishResults: unknown[] = [];
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      sendTabMessage: async (tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (
+          message.type !== "pin-op.inspect.republish" ||
+          typeof message.republishToken !== "string"
+        ) return undefined;
+        republishRequests.push(message);
+        const result = await harness.router.routeMessage(
+          selectedMessageWithIdentity(
+            contentSessionId,
+            selection,
+            rulesInspectPayload(),
+            message.republishToken,
+          ),
+          contentSender(tabId, 10),
+        );
+        republishResults.push(result);
+        return (result as { readonly ok?: boolean } | undefined)?.ok === true;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-token-transport-error",
+      17,
+      "source-refresh-token-transport-error",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(
+        contentSessionId,
+        selection,
+        rulesInspectPayload(),
+      ),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    const refresh = pageRefresh(10);
+    harness.pageRefreshes.emit(10, refresh);
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: refresh.refreshGeneration,
+      mode: refresh.mode,
+    });
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 4,
+      stylesRevision: 2,
+      stylesheetRevision: 1,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+
+    harness.coordinator.publishOutcome = "transport-error";
+    completion?.(tabRefreshCompletion(17, 10, refresh, true));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 1)
+    );
+    expect(messagesOfType(panel, "pin-op.ideState").at(-1)).toEqual(
+      expect.objectContaining({ status: "ide-disconnected" }),
+    );
+
+    harness.coordinator.publishOutcome = "sent";
+    const renewal = {
+      type: "styles.inspectPublicationRenewed" as const,
+      documentEpoch: 4,
+      nodeRef: selection.nodeRef,
+      selectionRevision: selection.selectionRevision,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: renewal,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(messagesOfType(panel, "pin-op.inspect.started"))
+        .toHaveLength(startedBefore + 2)
+    );
+
+    expect(republishResults).toEqual([{ ok: true }, { ok: true }]);
+    expect(harness.coordinator.published.map(({ inspectMessageId }) =>
+      inspectMessageId
+    )).toEqual(["inspect-1", "inspect-2", "inspect-3"]);
+  });
+
+  it("releases a failed exact-tab refresh gate without republishing", async () => {
+    const contentSessionId = "content-refresh-failed-exact";
+    let completion: ((value: TabRefreshCompletion) => void) | undefined;
+    const republishRequests: unknown[] = [];
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (message.type === "pin-op.inspect.republish") {
+          republishRequests.push(message);
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-failed-exact",
+      17,
+      "source-refresh-failed-exact",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(domEventMessage(contentSessionId, {
+      ...selectionChangedWithRevision("node-refresh-failed", 1),
+      documentEpoch: 4,
+    }), contentSender(17, 10));
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      _message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      completion = onTabCompleted;
+      return true;
+    };
+
+    harness.pageRefreshes.emit(10, pageRefresh(2));
+    await vi.waitFor(() => expect(completion).toBeTypeOf("function"));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 2,
+      mode: "styles",
+    });
+    completion?.(tabRefreshCompletion(17, 10, pageRefresh(2), false));
+    await flushMicrotasks();
+
+    expect(republishRequests).toEqual([]);
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+  });
+
+  it("does not let a stale tab completion release a newer refresh gate", async () => {
+    const contentSessionId = "content-refresh-stale-completion";
+    const completions = new Map<
+      number,
+      (completion: TabRefreshCompletion) => void
+    >();
+    const republishRequests: unknown[] = [];
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (message.type === "pin-op.inspect.republish") {
+          republishRequests.push(message);
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-stale-completion",
+      17,
+      "source-refresh-stale-completion",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(domEventMessage(contentSessionId, {
+      ...selectionChangedWithRevision("node-refresh-stale", 1),
+      documentEpoch: 4,
+    }), contentSender(17, 10));
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    harness.tabRefresh.setState({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    const startedBefore = messagesOfType(
+      panel,
+      "pin-op.inspect.started",
+    ).length;
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      if (onTabCompleted) {
+        completions.set(message.refreshGeneration, onTabCompleted);
+      }
+      return true;
+    };
+
+    harness.pageRefreshes.emit(10, pageRefresh(3));
+    await vi.waitFor(() => expect(completions.has(3)).toBe(true));
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 3,
+      mode: "styles",
+    });
+    harness.pageRefreshes.emit(10, pageRefresh(4));
+    await vi.waitFor(() => expect(completions.has(4)).toBe(true));
+
+    completions.get(3)?.(tabRefreshCompletion(17, 10, pageRefresh(3), true));
+    await flushMicrotasks();
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    expect(republishRequests).toEqual([]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore);
+
+    await harness.router.beforeControlledTabTransition(17, {
+      type: "pin-op.refresh.execute",
+      refreshGeneration: 4,
+      mode: "styles",
+    });
+    completions.get(4)?.(tabRefreshCompletion(17, 10, pageRefresh(4), false));
+    await flushMicrotasks();
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 1),
+      contentSender(17, 10),
+    );
+    expect(republishRequests).toEqual([]);
+    expect(messagesOfType(panel, "pin-op.inspect.started"))
+      .toHaveLength(startedBefore + 1);
+  });
+
+  it("publishes exactly one fresh correlated generation after page refresh completes", async () => {
+    const correlations = new InspectCorrelationStore();
+    const finishRefresh = deferred<boolean>();
+    let harness!: ReturnType<typeof createHarness>;
+    let republishCount = 0;
+    const contentSessionId = "content-refresh-fresh-generation";
+    harness = createHarness({
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          await harness.router.routeMessage({
+            type: "pin-op.styles.event",
+            contentSessionId,
+            event: {
+              type: "styles.invalidated",
+              documentEpoch: 4,
+              stylesRevision: 2,
+              stylesheetRevision: 1,
+              pseudoStateRevision: 0,
+              pseudoStates: [],
+            },
+          }, contentSender(17, 10));
+          return true;
+        }
+        if (message.type === "pin-op.inspect.republish") {
+          republishCount += 1;
+          await harness.router.routeMessage({
+            ...selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+            republishToken: message.republishToken,
+          }, contentSender(17, 10));
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-fresh-generation",
+      17,
+      "source-refresh-fresh-generation",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, {
+        ...selectionChangedWithRevision("node-refresh", 7),
+        documentEpoch: 4,
+      }),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+      contentSender(17, 10),
+    );
+    harness.rulesSources.emit(trustedIdePeer(), rulesSourcesMessage("inspect-1", 1));
+    harness.tabRefresh.setState({
+      tabId: 17,
+      windowId: 10,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    });
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      await harness.router.beforeControlledTabTransition(17, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: message.refreshGeneration,
+        mode: message.mode,
+      });
+      const accepted = await finishRefresh.promise;
+      onTabCompleted?.(tabRefreshCompletion(17, 10, message, accepted));
+      return accepted;
+    };
+
+    harness.pageRefreshes.emit(10, pageRefresh(1));
+    await vi.waitFor(() => {
+      expect(messagesOfType(panel, "styles.invalidated")).toHaveLength(1);
+    });
+    expect(correlations.routeForInspect("inspect-1")).toBeUndefined();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-refresh",
+        selectionRevision: 7,
+      },
+    }, contentSender(17, 10))).resolves.toBeUndefined();
+    expect(republishCount).toBe(0);
+
+    finishRefresh.resolve(true);
+    await vi.waitFor(() => expect(republishCount).toBe(1));
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
+      {
+        type: "pin-op.inspect.started",
+        inspectMessageId: "inspect-1",
+        selectionRevision: 7,
+        expectedRuleRefs: ["rule-a"],
+      },
+      {
+        type: "pin-op.inspect.started",
+        inspectMessageId: "inspect-2",
+        selectionRevision: 7,
+        expectedRuleRefs: ["rule-a"],
+      },
+    ]);
+    harness.rulesSources.emit(trustedIdePeer(), rulesSourcesMessage("inspect-1", 2));
+    harness.rulesSources.emit(trustedIdePeer(), rulesSourcesMessage("inspect-2", 1));
+    expect(messagesOfType(panel, "rules.sources")).toEqual([
+      rulesSourcesMessage("inspect-1", 1),
+      rulesSourcesMessage("inspect-2", 1),
+    ]);
+  });
+
+  it("rejects a delayed pre-refresh republish and accepts only the post-refresh token", async () => {
+    const finishRefresh = deferred<boolean>();
+    const republishRequests: Array<Record<string, unknown>> = [];
+    const contentSessionId = "content-refresh-republish-token";
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") return true;
+        if (message.type === "pin-op.inspect.republish") {
+          republishRequests.push(message);
+          return true;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-refresh-republish-token",
+      17,
+      "source-refresh-republish-token",
+    );
+    await harness.attachContentSession(17, contentSessionId);
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, {
+        ...selectionChangedWithRevision("node-token", 7),
+        documentEpoch: 4,
+      }),
+      contentSender(17, 10),
+    );
+    await harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+      contentSender(17, 10),
+    );
+    harness.tabRefresh.setState({
+      tabId: 17,
+      windowId: 10,
+      autoRefreshEnabled: true,
+      ideHighlightEnabled: true,
+      participant: true,
+      lastAcceptedGeneration: 0,
+    });
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 4,
+        nodeRef: "node-token",
+        selectionRevision: 7,
+      },
+    }, contentSender(17, 10));
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(1));
+
+    harness.tabRefresh.acceptPageRefreshBehavior = async (
+      _windowId,
+      message,
+      onAccepted,
+      onTabCompleted,
+    ) => {
+      if (await onAccepted?.() === false) return false;
+      await harness.router.beforeControlledTabTransition(17, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: message.refreshGeneration,
+        mode: message.mode,
+      });
+      const accepted = await finishRefresh.promise;
+      onTabCompleted?.(tabRefreshCompletion(17, 10, message, accepted));
+      return accepted;
+    };
+    harness.pageRefreshes.emit(10, pageRefresh(1));
+    await vi.waitFor(() => {
+      expect(harness.inspectCalls).toContainEqual([
+        "tab",
+        17,
+        {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId,
+        },
+      ]);
+    });
+    finishRefresh.resolve(true);
+    await vi.waitFor(() => expect(republishRequests).toHaveLength(2));
+
+    const staleToken = republishRequests[0]?.republishToken;
+    const currentToken = republishRequests[1]?.republishToken;
+    expect(staleToken).toEqual(expect.any(String));
+    expect(currentToken).toEqual(expect.any(String));
+    expect(currentToken).not.toBe(staleToken);
+
+    await harness.router.routeMessage({
+      ...selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+      republishToken: staleToken,
+    }, contentSender(17, 10));
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    await expect(harness.router.routeMessage({
+      ...selectedMessage(contentSessionId, rulesInspectPayload(), 8),
+      republishToken: currentToken,
+    }, contentSender(17, 10))).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    await expect(harness.router.routeMessage(
+      selectedMessage(contentSessionId, rulesInspectPayload(), 6),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toHaveLength(1);
+
+    await harness.router.routeMessage({
+      ...selectedMessage(contentSessionId, rulesInspectPayload(), 7),
+      republishToken: currentToken,
+    }, contentSender(17, 10));
+    expect(messagesOfType(panel, "pin-op.inspect.started")).toEqual([
+      expect.objectContaining({ inspectMessageId: "inspect-1" }),
+      expect.objectContaining({ inspectMessageId: "inspect-2" }),
+    ]);
   });
 
   it("keeps a fresh Rules correlation for stale or replayed page refreshes", async () => {
@@ -5225,6 +7781,61 @@ describe("BackgroundRouter", () => {
 
     expect(disposeWindow).not.toHaveBeenCalled();
     expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+  });
+
+  it("does not release a peer cleanup gate for a rejected page refresh", async () => {
+    const cleanupAck = deferred<unknown>();
+    let republishCount = 0;
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) => {
+        if (!isRecord(message)) return undefined;
+        if (message.type === "pin-op.inspect.clearPseudoStates") {
+          return await cleanupAck.promise;
+        }
+        if (message.type === "pin-op.inspect.republish") {
+          republishCount += 1;
+          return true;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-rejected-refresh-peer-cleanup",
+      17,
+      "source-rejected-refresh-peer-cleanup",
+    );
+    await establishSelectionAuthority(harness);
+    harness.tabRefresh.acceptPageRefreshBehavior = async () => false;
+
+    harness.peerStates.emit(10, peerState(false, 3));
+    await vi.waitFor(() => {
+      expect(harness.inspectCalls).toContainEqual([
+        "tab",
+        17,
+        {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId: DEFAULT_CONTENT_SESSION_ID,
+        },
+      ]);
+    });
+    harness.pageRefreshes.emit(10, pageRefresh(1));
+    await flushMicrotasks();
+
+    await harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: DEFAULT_CONTENT_SESSION_ID,
+      event: {
+        type: "styles.inspectPublicationRenewed",
+        documentEpoch: 1,
+        nodeRef: "node-1",
+        selectionRevision: 1,
+      },
+    }, contentSender(17, 10));
+    await flushMicrotasks();
+
+    expect(republishCount).toBe(0);
+    cleanupAck.resolve(true);
+    await flushMicrotasks();
   });
 
   it("cancels every in-flight inspect in a window after a newer refresh is accepted", async () => {
@@ -5246,10 +7857,23 @@ describe("BackgroundRouter", () => {
       tabId === 17 ? firstState.promise : secondState.promise;
     harness.tabRefresh.acceptPageRefreshBehavior = async (
       _windowId,
-      _message,
+      message,
       onAccepted,
+      onTabCompleted,
     ) => {
-      onAccepted?.();
+      if (await onAccepted?.() === false) return false;
+      await harness.router.beforeControlledTabTransition(17, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: message.refreshGeneration,
+        mode: message.mode,
+      });
+      await harness.router.beforeControlledTabTransition(18, {
+        type: "pin-op.refresh.execute",
+        refreshGeneration: message.refreshGeneration,
+        mode: message.mode,
+      });
+      onTabCompleted?.(tabRefreshCompletion(17, 10, message, true));
+      onTabCompleted?.(tabRefreshCompletion(18, 10, message, true));
       return true;
     };
     const stateCallsBefore = harness.tabRefresh.stateCalls.length;
@@ -5268,17 +7892,28 @@ describe("BackgroundRouter", () => {
 
     harness.pageRefreshes.emit(10, pageRefresh(2));
     await vi.waitFor(() =>
+      expect(harness.tabRefresh.stateCalls).toHaveLength(stateCallsBefore + 4)
+    );
+    firstState.resolve({
+      ...defaultTabState(17, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    secondState.resolve({
+      ...defaultTabState(18, 10),
+      autoRefreshEnabled: true,
+      participant: true,
+    });
+    await vi.waitFor(() =>
       expect(harness.tabRefresh.acceptedRefreshCalls).toHaveLength(1)
     );
-    firstState.resolve(defaultTabState(17, 10));
-    secondState.resolve(defaultTabState(18, 10));
 
     await expect(firstPublication).resolves.toBeUndefined();
     await expect(secondPublication).resolves.toBeUndefined();
     expect(harness.coordinator.published).toEqual([]);
   });
 
-  it("revokes at refresh admission before coordinator completion", async () => {
+  it("gates an in-flight tab at refresh admission without window-wide revocation", async () => {
     const correlations = new InspectCorrelationStore();
     const harness = createHarness({
       inspectCorrelationStore: correlations,
@@ -5289,6 +7924,7 @@ describe("BackgroundRouter", () => {
     });
     await harness.registerAndConnect("channel-1", 17, "source-17");
     const route = await establishRulesAuthority(harness, correlations);
+    const publicationsBeforeAdmission = harness.coordinator.published.length;
     await harness.registerAndConnect("channel-2", 18, "source-18");
     await harness.attachContentSession(18, "content-refresh-pending");
     const pendingState = deferred<TabRefreshState>();
@@ -5298,12 +7934,17 @@ describe("BackgroundRouter", () => {
     const finishRefresh = deferred<boolean>();
     harness.tabRefresh.acceptPageRefreshBehavior = async (
       _windowId,
-      _message,
+      message,
       onAccepted,
+      onTabCompleted,
     ) => {
-      onAccepted?.();
+      const admission = onAccepted?.();
       admissionObserved.resolve();
-      return await finishRefresh.promise;
+      if (await admission === false) return false;
+      const accepted = await finishRefresh.promise;
+      onTabCompleted?.(tabRefreshCompletion(17, 10, message, accepted));
+      onTabCompleted?.(tabRefreshCompletion(18, 10, message, accepted));
+      return accepted;
     };
     const disposeWindow = vi.spyOn(correlations, "disposeWindow");
     const pendingPublication = harness.router.routeMessage(
@@ -5322,14 +7963,20 @@ describe("BackgroundRouter", () => {
     await admissionObserved.promise;
 
     try {
-      expect(disposeWindow).toHaveBeenCalledWith(10);
-      expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
-      pendingState.resolve(defaultTabState(18, 10));
+      expect(disposeWindow).not.toHaveBeenCalled();
+      expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+      pendingState.resolve({
+        ...defaultTabState(18, 10),
+        autoRefreshEnabled: true,
+        participant: true,
+      });
       await expect(pendingPublication).resolves.toBeUndefined();
+      expect(harness.coordinator.published)
+        .toHaveLength(publicationsBeforeAdmission);
       expect(harness.tabRefresh.acceptedRefreshCalls).toEqual([]);
     } finally {
       pendingState.resolve(defaultTabState(18, 10));
-      finishRefresh.resolve(true);
+      finishRefresh.resolve(false);
       await flushMicrotasks();
     }
   });
@@ -5346,7 +7993,9 @@ describe("BackgroundRouter", () => {
       peerProtocolVersion: 5,
     });
 
-    expect(disposeWindow).toHaveBeenCalledWith(10);
+    expect(disposeWindow).not.toHaveBeenCalled();
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    await vi.waitFor(() => expect(disposeWindow).toHaveBeenCalledWith(10));
     expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
   });
 
@@ -6959,7 +9608,7 @@ describe("BackgroundRouter", () => {
             },
         panelSender("channel-1"),
       );
-      await flushMicrotasks();
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
 
       tabs.set(17, 20);
       await expect(
@@ -7400,19 +10049,192 @@ describe("BackgroundRouter", () => {
     },
   );
 
+  it("releases browser-local cleanup after same-state unlink postflight", async () => {
+    const contentSessionId = "content-session-local-same-state-unlink";
+    const harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "pin-op.inspect.clearPseudoStates"
+          ? true
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-local-same-state-unlink",
+      17,
+      "source-local-same-state-unlink",
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17, contentSessionId);
+    const initialSelection = selectionChangedWithRevision("node-before-unlink", 1);
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, initialSelection),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+
+    await expect(harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-local-same-state-unlink",
+    }, panelSender("channel-local-same-state-unlink"))).resolves.toEqual({
+      ok: true,
+    });
+    expect(harness.coordinator.unlinks).toEqual([10]);
+    expect(harness.inspectCalls).toContainEqual([
+      "tab",
+      17,
+      {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId,
+      },
+    ]);
+
+    const nextSelection = selectionChangedWithRevision("node-after-unlink", 2);
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+
+    expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+      nextSelection,
+    );
+    expect(harness.coordinator.published.at(-1)).toMatchObject({
+      windowId: 10,
+      sourceId: "source-local-same-state-unlink",
+    });
+  });
+
+  it("holds browser-local cleanup until a failed unlink command settles", async () => {
+    const contentSessionId = "content-session-local-failed-unlink";
+    const unlinkStarted = deferred<void>();
+    const unlinkCompletion = deferred<void>();
+    const harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+      unlinkWindow: async () => {
+        unlinkStarted.resolve();
+        await unlinkCompletion.promise;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-local-failed-unlink",
+      17,
+      "source-local-failed-unlink",
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17, contentSessionId);
+    const initialSelection = selectionChangedWithRevision("node-before-failure", 1);
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, initialSelection),
+      contentSender(17, 10),
+    );
+
+    const unlink = harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-local-failed-unlink",
+    }, panelSender("channel-local-failed-unlink"));
+    await unlinkStarted.promise;
+
+    const nextSelection = selectionChangedWithRevision("node-after-failure", 2);
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+      initialSelection,
+    );
+
+    unlinkCompletion.reject(new Error("unlink failed"));
+    await expect(unlink).resolves.toEqual({ ok: false, error: "error" });
+    expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+      nextSelection,
+    );
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps a later independent unlink transition gated", async () => {
+    const contentSessionId = "content-session-independent-unlink";
+    const unlinkStarted = deferred<void>();
+    const unlinkCompletion = deferred<void>();
+    let harness!: ReturnType<typeof createHarness>;
+    harness = createHarness({
+      browserLocalInspection: true,
+      initialPanelState: "notLinked",
+      unlinkWindow: async (windowId) => {
+        await harness.router.beforeControlledWindowTransition({
+          kind: "unlink",
+          windowId,
+        });
+        unlinkStarted.resolve();
+        await unlinkCompletion.promise;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-independent-unlink",
+      17,
+      "source-independent-unlink",
+    );
+    await harness.inspectCoordinator.whenIdle(17);
+    await harness.attachContentSession(17, contentSessionId);
+    const initialSelection = selectionChangedWithRevision(
+      "node-before-independent-unlink",
+      1,
+    );
+    await harness.router.routeMessage(
+      domEventMessage(contentSessionId, initialSelection),
+      contentSender(17, 10),
+    );
+
+    const unlink = harness.router.routeMessage({
+      type: "pin-op.unlinkWindow",
+      channel: "channel-independent-unlink",
+    }, panelSender("channel-independent-unlink"));
+    await unlinkStarted.promise;
+    await expect(harness.router.beforeControlledWindowTransition({
+      kind: "unlink",
+      windowId: 10,
+    })).resolves.toBe(true);
+
+    unlinkCompletion.resolve();
+    await expect(unlink).resolves.toEqual({ ok: true });
+    const nextSelection = selectionChangedWithRevision(
+      "node-after-independent-unlink",
+      2,
+    );
+    await expect(harness.router.routeMessage(
+      domEventMessage(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+      initialSelection,
+    );
+
+    harness.coordinator.registrations[0]?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+      nextSelection,
+    );
+    await expect(harness.router.routeMessage(
+      selectedMessageWithIdentity(contentSessionId, nextSelection),
+      contentSender(17, 10),
+    )).resolves.toEqual({ ok: true });
+  });
+
   it.each(["offline", "notLinked"] as const)(
     "fails closed before publishing browser-local %s when pseudo cleanup is rejected",
     async (state) => {
-      const disposeAck = deferred<unknown>();
       const harness = createHarness({
         browserLocalInspection: true,
         initialPanelState: "linked",
         sendTabMessage: async (_tabId, message) => {
           if (!isRecord(message)) return undefined;
           if (message.type === "pin-op.inspect.clearPseudoStates") return false;
-          if (message.type === "pin-op.inspect.disposeSession") {
-            return await disposeAck.promise;
-          }
           return undefined;
         },
       });
@@ -7440,17 +10262,50 @@ describe("BackgroundRouter", () => {
           contentSessionId: `content-session-local-rejected-${state}`,
         },
       ]);
-      expect(windowStates(panel).at(-1)).not.toBe(state);
-      expect(contentLease.disconnected).toBe(false);
-
-      disposeAck.resolve(true);
-      await flushMicrotasks();
-      await harness.inspectCoordinator.whenIdle(17);
-      await flushMicrotasks();
-
       expect(contentLease.disconnected).toBe(true);
+      expect(messagesOfType(panel, "pin-op.inspect.invalidated")).toContainEqual({
+        type: "pin-op.inspect.invalidated",
+        reason: "documentDisconnected",
+      });
       expect(windowStates(panel).at(-1)).toBe(state);
       expect(injectionCount(harness.inspectCalls)).toBe(0);
+    },
+  );
+
+  it.each(["reconnecting", "rateLimited", "error"] as const)(
+    "retires the exact content lease when %s cleanup is rejected",
+    async (state) => {
+      const harness = createHarness({
+        browserLocalInspection: true,
+        initialPanelState: "linked",
+        sendTabMessage: async (_tabId, message) =>
+          isRecord(message) &&
+            message.type === "pin-op.inspect.clearPseudoStates"
+            ? false
+            : undefined,
+      });
+      const panel = await harness.registerAndConnect(
+        `channel-local-fail-close-${state}`,
+        17,
+        `source-local-fail-close-${state}`,
+      );
+      await harness.inspectCoordinator.whenIdle(17);
+      const leaseA = await harness.attachContentSession(
+        17,
+        `content-session-fail-close-${state}-a`,
+      );
+      const registration = harness.coordinator.registrations[0];
+
+      registration?.onStateChanged?.(state);
+      await flushMicrotasks();
+
+      expect(leaseA.disconnected).toBe(true);
+      expect(windowStates(panel).at(-1)).toBe(state);
+      const leaseB = await harness.attachContentSession(
+        17,
+        `content-session-fail-close-${state}-b`,
+      );
+      expect(leaseB.disconnected).toBe(false);
     },
   );
 
@@ -7546,16 +10401,29 @@ describe("BackgroundRouter", () => {
     const registration = harness.coordinator.registrations[0];
 
     registration?.onStateChanged?.("incompatible");
-    await flushMicrotasks();
-
-    expect(harness.inspectCalls).toContainEqual([
+    const disposal = [
       "tab",
       17,
       {
         type: "pin-op.inspect.disposeSession",
         contentSessionId: "content-session-cleanup-ack",
       },
-    ]);
+    ] as const;
+    await vi.waitFor(() => {
+      expect(harness.inspectCalls).toContainEqual(disposal);
+    });
+    const clearIndex = harness.inspectCalls.findIndex((call) =>
+      Array.isArray(call) &&
+      isRecord(call[2]) &&
+      call[2].type === "pin-op.inspect.clearPseudoStates"
+    );
+    const disposalIndex = harness.inspectCalls.findIndex((call) =>
+      Array.isArray(call) &&
+      isRecord(call[2]) &&
+      call[2].type === "pin-op.inspect.disposeSession"
+    );
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(disposalIndex).toBeGreaterThan(clearIndex);
     expect(contentLease.disconnected).toBe(false);
 
     disposeAck.resolve(true);
@@ -8040,6 +10908,1002 @@ describe("BackgroundRouter", () => {
     ]);
   });
 
+  it("bounds panel-close lease cleanup queued behind a hung Inspect request", async () => {
+    vi.useFakeTimers();
+    const enable = deferred<void>();
+    try {
+      const contentSessionId = "content-session-bounded-panel-close";
+      const harness = createHarness({
+        cleanupAckTimeoutMs: 25,
+        sendTabMessage: async (_tabId, message) => {
+          if (isRecord(message) && message.type === "enableInspectMode") {
+            await enable.promise;
+          }
+          return undefined;
+        },
+      });
+      const panel = await harness.registerAndConnect(
+        "channel-bounded-panel-close",
+        17,
+        "source-bounded-panel-close",
+      );
+      const contentLease = await harness.attachContentSession(
+        17,
+        contentSessionId,
+      );
+      const release = harness.inspectCoordinator.release.bind(
+        harness.inspectCoordinator,
+      );
+      let cleanupBeganBeforeAuthorityDeletion = false;
+      vi.spyOn(harness.inspectCoordinator, "release").mockImplementation(
+        (owner, tabId) => {
+          cleanupBeganBeforeAuthorityDeletion = harness.coordinator
+            .activeSources()
+            .includes("source-bounded-panel-close");
+          return release(owner, tabId);
+        },
+      );
+
+      panel.emitMessage({
+        type: "pin-op.inspect.setEnabled",
+        requestId: "bounded-panel-close-enable",
+        enabled: true,
+      });
+      await flushMicrotasks();
+      panel.disconnect();
+
+      expect(cleanupBeganBeforeAuthorityDeletion).toBe(true);
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-bounded-panel-close",
+      ]);
+      expect(contentLease.disconnected).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(contentLease.disconnected).toBe(true);
+      expect(harness.coordinator.activeSources()).toEqual([]);
+      enable.resolve();
+      await harness.inspectCoordinator.whenIdle(17);
+      await flushMicrotasks();
+      expect(harness.inspectCalls).not.toContainEqual([
+        "tab",
+        17,
+        {
+          type: "pin-op.inspect.disposeSession",
+          contentSessionId,
+        },
+      ]);
+    } finally {
+      enable.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts only the retiring lease invalidation before finalizing panel close", async () => {
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-retiring-cleanup",
+    );
+    const route = await establishRulesAuthority(harness, correlations);
+
+    panel.disconnect();
+    await disposeStarted.promise;
+
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules", rulesInspectPayload(), 2),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      pseudoStateRevision: 1,
+      pseudoStates: ["hover"] as const,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: {
+        ...invalidation,
+        stylesRevision: 2,
+        pseudoStateRevision: 2,
+        pseudoStates: [],
+      },
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+
+    disposeAck.resolve(true);
+    await harness.inspectCoordinator.whenIdle(17);
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelCloseCalls).toContainEqual([17, 10]);
+    });
+    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: { ...invalidation, stylesRevision: 3 },
+    }, contentSender(17, 10))).resolves.toBeUndefined();
+  });
+
+  it("keeps moved-tab Rules authority until normal detach cleanup is acknowledged", async () => {
+    const tabs = new Map([[17, 10]]);
+    const events = createRouterSubscriptionHarness();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      subscriptions: events.subscriptions,
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-normal-detach-retirement",
+    );
+    const retiringRoute = await establishRulesAuthority(harness, correlations);
+
+    events.detach(17, 10);
+    await disposeStarted.promise;
+    tabs.set(17, 20);
+    events.attach(17, 20);
+    await flushMicrotasks();
+
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+    expect(harness.tabRefresh.detachedTabs).toEqual([]);
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-normal-detach-retirement",
+    ]);
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 1,
+        stylesRevision: 1,
+        stylesheetRevision: 0,
+        pseudoStateRevision: 1,
+        pseudoStates: [] as const,
+      },
+    }, contentSender(17, 20))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+
+    disposeAck.resolve(true);
+    await vi.waitFor(() => {
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 20]);
+    });
+
+    expect(harness.tabRefresh.detachedTabs).toEqual([[17, 10]]);
+    expect(harness.contentRefresh.revokedTabs).toEqual([17]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+    await harness.attachContentSession(17, "content-rules-moved");
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules-moved", rulesInspectPayload(), 1),
+      contentSender(17, 20),
+    )).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.published.at(-1)).toMatchObject({
+      windowId: 20,
+      sourceId: "source-normal-detach-retirement",
+    });
+  });
+
+  it("keeps only the latest repeated tab move behind one retirement", async () => {
+    const tabs = new Map([[17, 10]]);
+    const events = createRouterSubscriptionHarness();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      subscriptions: events.subscriptions,
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-repeated-move-retirement",
+    );
+    const retiringRoute = await establishRulesAuthority(harness, correlations);
+
+    events.detach(17, 10);
+    await disposeStarted.promise;
+    tabs.set(17, 20);
+    events.attach(17, 20);
+    events.detach(17, 20);
+    tabs.set(17, 30);
+    events.attach(17, 30);
+    await flushMicrotasks();
+
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(harness.tabRefresh.detachedTabs).toEqual([]);
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+
+    disposeAck.resolve(true);
+    await vi.waitFor(() => {
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 30]);
+    });
+
+    expect(harness.contentRefresh.revokedTabs).toEqual([17]);
+    expect(harness.tabRefresh.detachedTabs).toEqual([
+      [17, 10],
+      [17, 20],
+    ]);
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+  });
+
+  it("recovers the latest moved window when its post-retirement lookup fails", async () => {
+    const events = createRouterSubscriptionHarness();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    let currentWindowId = 10;
+    let failNextMovedLookup = false;
+    const harness = createHarness({
+      subscriptions: events.subscriptions,
+      inspectCorrelationStore: correlations,
+      getTab: async (tabId) => {
+        if (failNextMovedLookup) {
+          failNextMovedLookup = false;
+          throw new Error("transient moved-tab lookup failure");
+        }
+        return { id: tabId, windowId: currentWindowId };
+      },
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-move-lookup-recovery",
+    );
+    await establishRulesAuthority(harness, correlations);
+
+    events.detach(17, 10);
+    await disposeStarted.promise;
+    currentWindowId = 20;
+    events.attach(17, 20);
+    failNextMovedLookup = true;
+    disposeAck.resolve(true);
+
+    await vi.waitFor(() => {
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 20]);
+    });
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-move-lookup-recovery",
+    ]);
+    expect(harness.reportedErrors).toEqual([]);
+  });
+
+  it("downgrades a preserved move retirement when its panel closes", async () => {
+    const tabs = new Map([[17, 10]]);
+    const events = createRouterSubscriptionHarness();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      subscriptions: events.subscriptions,
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-closed-move-retirement",
+    );
+    const retiringRoute = await establishRulesAuthority(harness, correlations);
+
+    events.detach(17, 10);
+    await disposeStarted.promise;
+    tabs.set(17, 20);
+    events.attach(17, 20);
+    panel.disconnect();
+    await flushMicrotasks();
+
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-closed-move-retirement",
+    ]);
+
+    disposeAck.resolve(true);
+    await vi.waitFor(() => {
+      expect(harness.tabRefresh.panelCloseCalls).toEqual([[17, 10]]);
+    });
+
+    expect(harness.contentRefresh.revokedTabs).toEqual([17]);
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+    expect(harness.coordinator.activeSources()).toEqual([]);
+  });
+
+  it("keeps Rules authority until a quiet binding move cleanup is acknowledged", async () => {
+    const tabs = new Map([[17, 10]]);
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-quiet-move-retirement",
+    );
+    const retiringRoute = await establishRulesAuthority(harness, correlations);
+    tabs.set(17, 20);
+
+    panel.emitMessage({
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    });
+    await disposeStarted.promise;
+    await flushMicrotasks();
+
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+    expect(harness.coordinator.rulesOpens).toEqual([]);
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 1,
+        stylesRevision: 1,
+        stylesheetRevision: 0,
+        pseudoStateRevision: 1,
+        pseudoStates: [] as const,
+      },
+    }, contentSender(17, 20))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+
+    disposeAck.resolve(true);
+    await vi.waitFor(() => {
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 20]);
+    });
+
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+    expect(harness.coordinator.rulesOpens).toEqual([]);
+    expect(harness.contentRefresh.revokedTabs).toEqual([]);
+    expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+    await harness.attachContentSession(17, "content-rules-quiet-moved");
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules-quiet-moved", rulesInspectPayload(), 1),
+      contentSender(17, 20),
+    )).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.published.at(-1)).toMatchObject({
+      windowId: 20,
+      sourceId: "source-quiet-move-retirement",
+    });
+  });
+
+  it("joins a controlled tab refresh to an existing retiring panel cleanup", async () => {
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const disposeTab = vi.spyOn(correlations, "disposeTab");
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-retiring-tab-refresh",
+    );
+    const route = await establishRulesAuthority(harness, correlations);
+
+    panel.disconnect();
+    await disposeStarted.promise;
+    const transition = harness.router.beforeControlledTabTransition(17);
+    let transitionSettled = false;
+    void transition.finally(() => {
+      transitionSettled = true;
+    });
+    await flushMicrotasks();
+
+    expect(transitionSettled).toBe(false);
+    expect(disposeTab).not.toHaveBeenCalled();
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      pseudoStateRevision: 1,
+      pseudoStates: [] as const,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(transitionSettled).toBe(false);
+    expect(disposeTab).not.toHaveBeenCalled();
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+
+    disposeAck.resolve(true);
+    await expect(transition).resolves.toBe(true);
+
+    expect(transitionSettled).toBe(true);
+    expect(disposeTab).toHaveBeenCalledTimes(1);
+    expect(disposeTab).toHaveBeenCalledWith(17);
+    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+  });
+
+  it.each(["peer disconnect", "protocol mismatch"] as const)(
+    "joins a %s window transition to an existing retiring panel cleanup",
+    async (transitionKind) => {
+      const correlations = new InspectCorrelationStore();
+      const disposeStarted = deferred<void>();
+      const disposeAck = deferred<unknown>();
+      const disposeWindow = vi.spyOn(correlations, "disposeWindow");
+      const harness = createHarness({
+        inspectCorrelationStore: correlations,
+        sendTabMessage: async (_tabId, message) => {
+          if (
+            isRecord(message) &&
+            message.type === "pin-op.inspect.disposeSession"
+          ) {
+            disposeStarted.resolve();
+            return await disposeAck.promise;
+          }
+          return undefined;
+        },
+      });
+      const panel = await harness.registerAndConnect(
+        "channel-1",
+        17,
+        `source-retiring-${transitionKind.replaceAll(" ", "-")}`,
+      );
+      const route = await establishRulesAuthority(harness, correlations);
+
+      panel.disconnect();
+      await disposeStarted.promise;
+      if (transitionKind === "peer disconnect") {
+        harness.peerStates.emit(10, peerState(false, 2));
+      } else {
+        harness.protocolMismatches.emit(10, {
+          browserProtocolVersion: PROTOCOL_VERSION,
+          peerProtocolVersion: 5,
+        });
+      }
+      await flushMicrotasks();
+
+      expect(disposeWindow).not.toHaveBeenCalled();
+      expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+      if (transitionKind === "protocol mismatch") {
+        expect(harness.contentRefresh.revokedWindows).toEqual([]);
+        expect(harness.tabRefresh.clearedPendingWindows).toEqual([]);
+      }
+      const invalidation = {
+        type: "styles.invalidated" as const,
+        documentEpoch: 1,
+        stylesRevision: 1,
+        stylesheetRevision: 0,
+        pseudoStateRevision: 1,
+        pseudoStates: [] as const,
+      };
+      await expect(harness.router.routeMessage({
+        type: "pin-op.styles.event",
+        contentSessionId: "content-rules",
+        event: invalidation,
+      }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+      expect(disposeWindow).not.toHaveBeenCalled();
+      expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+
+      disposeAck.resolve(true);
+      await vi.waitFor(() => {
+        expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+      });
+
+      expect(disposeWindow).toHaveBeenCalledWith(10);
+      if (transitionKind === "protocol mismatch") {
+        expect(harness.contentRefresh.revokedWindows).toEqual([10]);
+        expect(harness.tabRefresh.clearedPendingWindows).toEqual([10]);
+      }
+    },
+  );
+
+  it("carries retiring cleanup across a same-channel reconnect and tab move", async () => {
+    const tabs = new Map([[17, 10]]);
+    const events = createRouterSubscriptionHarness();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      tabs,
+      subscriptions: events.subscriptions,
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    const retiringPanel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-retiring-move",
+    );
+    const retiringRoute = await establishRulesAuthority(harness, correlations);
+    expect(harness.coordinator.published).toHaveLength(1);
+
+    retiringPanel.disconnect();
+    await disposeStarted.promise;
+    const replacementPanel = harness.panelPort("channel-1");
+    harness.router.connectPort(replacementPanel);
+
+    events.detach(17, 10);
+    tabs.set(17, 20);
+    events.attach(17, 20);
+    await flushMicrotasks();
+
+    expect(harness.coordinator.registrations).toHaveLength(1);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-retiring-move",
+    ]);
+    expect(replacementPanel.sent).toEqual([]);
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules", rulesInspectPayload(), 2),
+      contentSender(17, 20),
+    )).resolves.toBeUndefined();
+    expect(harness.coordinator.published).toHaveLength(1);
+
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      pseudoStateRevision: 1,
+      pseudoStates: [] as const,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: invalidation,
+    }, contentSender(17, 20))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+    expect(messagesOfType(replacementPanel, "styles.invalidated")).toEqual([]);
+    expect(harness.coordinator.registrations).toHaveLength(1);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-retiring-move",
+    ]);
+
+    disposeAck.resolve(true);
+    await harness.inspectCoordinator.whenIdle(17);
+    await vi.waitFor(() => {
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-retiring-move",
+      ]);
+    });
+    await flushMicrotasks();
+    expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+    expect(harness.coordinator.registrations.at(-1)).toMatchObject({
+      windowId: 20,
+      tabId: 17,
+      sourceId: "source-retiring-move",
+    });
+
+    await harness.attachContentSession(17, "content-rules-replacement");
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules-replacement", rulesInspectPayload(), 1),
+      contentSender(17, 20),
+    )).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.published.map(({ inspectMessageId }) =>
+      inspectMessageId
+    )).toEqual(["inspect-1", "inspect-2"]);
+    expect(correlations.acceptRulesSources(
+      rulesSourcesMessage("inspect-2", 1),
+      trustedIdePeer({ windowId: 20 }),
+    )).toBe("channel-1");
+    const replacementRoute = {
+      channel: "channel-1",
+      tabId: 17,
+      windowId: 20,
+      inspectMessageId: "inspect-2",
+      rulesGeneration: 1,
+      openAuthorityId: "open-rule-a",
+    } as const;
+    expect(correlations.authorizeRulesOpen(replacementRoute)).toBeDefined();
+
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: { ...invalidation, stylesRevision: 2 },
+    }, contentSender(17, 20))).resolves.toBeUndefined();
+    expect(correlations.authorizeRulesOpen(replacementRoute)).toBeDefined();
+    expect(harness.coordinator.published.at(-1)).toMatchObject({
+      windowId: 20,
+      inspectMessageId: "inspect-2",
+      sourceId: "source-retiring-move",
+    });
+  });
+
+  it("keeps one retiring owner when its inactive same-channel reconnect closes", async () => {
+    vi.useFakeTimers();
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    try {
+      const harness = createHarness({
+        cleanupAckTimeoutMs: 25,
+        inspectCorrelationStore: correlations,
+        sendTabMessage: async (_tabId, message) => {
+          if (
+            isRecord(message) &&
+            message.type === "pin-op.inspect.disposeSession"
+          ) {
+            disposeStarted.resolve();
+            return await disposeAck.promise;
+          }
+          return undefined;
+        },
+      });
+      const retiringPanel = await harness.registerAndConnect(
+        "channel-1",
+        17,
+        "source-retiring-reconnect-close",
+      );
+      const retiringRoute = await establishRulesAuthority(harness, correlations);
+
+      retiringPanel.disconnect();
+      await disposeStarted.promise;
+      const waitingPanel = harness.panelPort("channel-1");
+      harness.router.connectPort(waitingPanel);
+      await flushMicrotasks();
+      expect(harness.coordinator.registrations).toHaveLength(1);
+      expect(harness.coordinator.activeSources()).toEqual([
+        "source-retiring-reconnect-close",
+      ]);
+      expect(waitingPanel.sent).toEqual([]);
+
+      waitingPanel.disconnect();
+      await vi.advanceTimersByTimeAsync(24);
+
+      expect(correlations.authorizeRulesOpen(retiringRoute)).toBeDefined();
+      expect(harness.tabRefresh.panelCloseCalls).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await flushMicrotasks();
+
+      expect(correlations.authorizeRulesOpen(retiringRoute)).toBeUndefined();
+      expect(harness.tabRefresh.panelCloseCalls).toEqual([[17, 10]]);
+      expect(harness.coordinator.activeSources()).toEqual([]);
+    } finally {
+      disposeAck.resolve(true);
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps only retiring invalidation ingress alive until router disposal settles", async () => {
+    const correlations = new InspectCorrelationStore();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
+    const harness = createHarness({
+      inspectCorrelationStore: correlations,
+      sendTabMessage: async (_tabId, message) => {
+        if (
+          isRecord(message) &&
+          message.type === "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      },
+    });
+    await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-router-disposal",
+    );
+    const route = await establishRulesAuthority(harness, correlations);
+
+    const firstDisposal = harness.router.dispose();
+    const repeatedDisposal = harness.router.dispose();
+
+    expect(firstDisposal).toBeInstanceOf(Promise);
+    expect(repeatedDisposal).toBe(firstDisposal);
+    await disposeStarted.promise;
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+    await expect(harness.router.routeMessage(
+      selectedMessage("content-rules", rulesInspectPayload(), 2),
+      contentSender(17, 10),
+    )).resolves.toBeUndefined();
+    const invalidation = {
+      type: "styles.invalidated" as const,
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      pseudoStateRevision: 1,
+      pseudoStates: [] as const,
+    };
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: invalidation,
+    }, contentSender(17, 10))).resolves.toEqual({ ok: true });
+    expect(correlations.authorizeRulesOpen(route)).toBeDefined();
+
+    let settled = false;
+    void firstDisposal.then(() => {
+      settled = true;
+    });
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    disposeAck.resolve(true);
+    await firstDisposal;
+    expect(settled).toBe(true);
+    expect(correlations.authorizeRulesOpen(route)).toBeUndefined();
+    await expect(harness.router.routeMessage({
+      type: "pin-op.styles.event",
+      contentSessionId: "content-rules",
+      event: { ...invalidation, stylesRevision: 2 },
+    }, contentSender(17, 10))).resolves.toBeUndefined();
+  });
+
+  it("bounds router disposal while a DOM request and cleanup acknowledgement are pending", async () => {
+    vi.useFakeTimers();
+    const query = deferred<unknown>();
+    const disposeAck = deferred<unknown>();
+    try {
+      const contentSessionId = "content-session-bounded-router-dispose";
+      const harness = createHarness({
+        cleanupAckTimeoutMs: 25,
+        sendTabMessage: async (_tabId, message) => {
+          if (isRecord(message) && message.type === "dom.getRoot") {
+            return await query.promise;
+          }
+          if (
+            isRecord(message) &&
+            message.type === "pin-op.inspect.disposeSession"
+          ) {
+            return await disposeAck.promise;
+          }
+          return undefined;
+        },
+      });
+      const panel = await harness.registerAndConnect(
+        "channel-bounded-router-dispose",
+        17,
+        "source-bounded-router-dispose",
+      );
+      const contentLease = await harness.attachContentSession(
+        17,
+        contentSessionId,
+      );
+      const release = harness.inspectCoordinator.release.bind(
+        harness.inspectCoordinator,
+      );
+      let cleanupBeganBeforeAuthorityDeletion = false;
+      vi.spyOn(harness.inspectCoordinator, "release").mockImplementation(
+        (owner, tabId) => {
+          cleanupBeganBeforeAuthorityDeletion = harness.coordinator
+            .activeSources()
+            .includes("source-bounded-router-dispose");
+          return release(owner, tabId);
+        },
+      );
+      panel.emitMessage({ type: "dom.getRoot", requestId: "pending-root" });
+      await flushMicrotasks();
+
+      harness.router.dispose();
+      await flushMicrotasks();
+
+      expect(cleanupBeganBeforeAuthorityDeletion).toBe(true);
+      expect(contentLease.disconnected).toBe(false);
+      expect(harness.inspectCalls).toContainEqual([
+        "tab",
+        17,
+        {
+          type: "pin-op.inspect.disposeSession",
+          contentSessionId,
+        },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(contentLease.disconnected).toBe(true);
+      query.resolve(domRoot("pending-root"));
+      disposeAck.resolve(true);
+      await flushMicrotasks();
+      expect(harness.inspectCalls.filter((call) =>
+        Array.isArray(call) &&
+        isRecord(call[2]) &&
+        call[2].type === "pin-op.inspect.disposeSession"
+      )).toHaveLength(1);
+    } finally {
+      query.resolve(domRoot("pending-root"));
+      disposeAck.resolve(true);
+      vi.useRealTimers();
+    }
+  });
+
+  it("reactivates a detached tab after the cleanup deadline without a late dispose", async () => {
+    vi.useFakeTimers();
+    const enable = deferred<void>();
+    let cleanupBeganBeforeAuthorityDeletion = false;
+    let oldLeaseDisconnectedAfterDeadline = false;
+    let injectionsAfterDeadline = 0;
+    let disposeSessionCallsAfterUnblock = 0;
+    try {
+      const tabs = new Map([[17, 10]]);
+      const events = createRouterSubscriptionHarness();
+      const contentSessionId = "content-session-bounded-tab-move";
+      const harness = createHarness({
+        tabs,
+        subscriptions: events.subscriptions,
+        cleanupAckTimeoutMs: 25,
+        sendTabMessage: async (_tabId, message) => {
+          if (isRecord(message) && message.type === "enableInspectMode") {
+            await enable.promise;
+          }
+          return undefined;
+        },
+      });
+      const panel = await harness.registerAndConnect(
+        "channel-bounded-tab-move",
+        17,
+        "source-bounded-tab-move",
+      );
+      const contentLease = await harness.attachContentSession(
+        17,
+        contentSessionId,
+      );
+      const release = harness.inspectCoordinator.release.bind(
+        harness.inspectCoordinator,
+      );
+      vi.spyOn(harness.inspectCoordinator, "release").mockImplementation(
+        (owner, tabId) => {
+          cleanupBeganBeforeAuthorityDeletion = harness.coordinator
+            .activeSources()
+            .includes("source-bounded-tab-move");
+          return release(owner, tabId);
+        },
+      );
+      panel.emitMessage({
+        type: "pin-op.inspect.setEnabled",
+        requestId: "bounded-tab-move-enable",
+        enabled: true,
+      });
+      await flushMicrotasks();
+
+      events.detach(17, 10);
+      tabs.set(17, 20);
+      events.attach(17, 20);
+      await vi.advanceTimersByTimeAsync(25);
+      await flushMicrotasks();
+
+      oldLeaseDisconnectedAfterDeadline = contentLease.disconnected;
+      injectionsAfterDeadline = injectionCount(harness.inspectCalls);
+      enable.resolve();
+      await harness.inspectCoordinator.whenIdle(17);
+      await flushMicrotasks();
+      disposeSessionCallsAfterUnblock = harness.inspectCalls.filter((call) =>
+        Array.isArray(call) &&
+        isRecord(call[2]) &&
+        call[2].type === "pin-op.inspect.disposeSession"
+      ).length;
+    } finally {
+      enable.resolve();
+      vi.useRealTimers();
+    }
+
+    expect(cleanupBeganBeforeAuthorityDeletion).toBe(true);
+    expect(oldLeaseDisconnectedAfterDeadline).toBe(true);
+    expect(injectionsAfterDeadline).toBe(2);
+    expect(disposeSessionCallsAfterUnblock).toBe(0);
+  });
+
   it("retains closed-panel refresh settings on detach without rebinding on attach", async () => {
     const tabs = new Map([[17, 10]]);
     const events = createRouterSubscriptionHarness();
@@ -8387,9 +12251,9 @@ describe("BackgroundRouter", () => {
     await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
 
-    harness.router.dispose();
-    harness.router.dispose();
-    await harness.inspectCoordinator.whenIdle(17);
+    const disposal = harness.router.dispose();
+    expect(harness.router.dispose()).toBe(disposal);
+    await disposal;
 
     expect(removedListeners).toEqual([
       "message",
@@ -8445,6 +12309,7 @@ interface HarnessOptions {
   readonly inspectCorrelationStore?: InspectCorrelationStore;
   readonly initialPanelState?: BrowserWindowConnectionState;
   readonly initialProtocolMismatch?: BrowserProtocolMismatch;
+  readonly cleanupAckTimeoutMs?: number;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -8507,6 +12372,8 @@ function createHarness(options: HarnessOptions = {}) {
         ? true
         : undefined;
     },
+  }, {
+    cleanupAckTimeoutMs: options.cleanupAckTimeoutMs,
   });
   const harness = {
     coordinator,
@@ -8946,7 +12813,8 @@ class FakeTabRefreshCoordinator {
   public acceptPageRefreshBehavior?: (
     windowId: number,
     message: PageRefreshMessage,
-    onAccepted?: () => void,
+    onAccepted?: () => boolean | void | Promise<boolean | void>,
+    onTabCompleted?: (completion: TabRefreshCompletion) => void,
   ) => Promise<boolean>;
   public readonly refreshParticipants: Array<[number, number, boolean]> = [];
   private readonly states = new Map<number, TabRefreshState>();
@@ -9080,17 +12948,23 @@ class FakeTabRefreshCoordinator {
   public async acceptPageRefresh(
     windowId: number,
     message: PageRefreshMessage,
-    onAccepted?: () => void,
+    onAccepted?: () => boolean | void | Promise<boolean | void>,
+    onTabCompleted?: (completion: TabRefreshCompletion) => void,
   ): Promise<boolean> {
     this.refreshCalls.push([windowId, message]);
     const accepted = this.acceptPageRefreshBehavior
-      ? await this.acceptPageRefreshBehavior(windowId, message, onAccepted)
+      ? await this.acceptPageRefreshBehavior(
+          windowId,
+          message,
+          onAccepted,
+          onTabCompleted,
+        )
       : true;
     if (!accepted) {
       return false;
     }
     if (!this.acceptPageRefreshBehavior) {
-      onAccepted?.();
+      if (await onAccepted?.() === false) return false;
     }
     const participants = [...this.states.values()].filter((state) =>
       state.windowId === windowId &&
@@ -9105,6 +12979,15 @@ class FakeTabRefreshCoordinator {
           participant.tabId,
           message,
         ]);
+        if (!this.acceptPageRefreshBehavior) {
+          onTabCompleted?.(Object.freeze({
+            tabId: participant.tabId,
+            windowId,
+            refreshGeneration: message.refreshGeneration,
+            mode: message.mode,
+            accepted: true,
+          }));
+        }
       }
     }
     return true;
@@ -9346,6 +13229,64 @@ function pageRefresh(refreshGeneration: number): PageRefreshMessage {
   };
 }
 
+function tabRefreshCompletion(
+  tabId: number,
+  windowId: number,
+  message: PageRefreshMessage,
+  accepted: boolean,
+): TabRefreshCompletion {
+  return Object.freeze({
+    tabId,
+    windowId,
+    refreshGeneration: message.refreshGeneration,
+    mode: message.mode,
+    accepted,
+  });
+}
+
+async function completeAcceptedTabRefresh(
+  harness: LifecycleHarness,
+  mode: PageRefreshMessage["mode"],
+): Promise<void> {
+  const completed = deferred<boolean>();
+  const refresh = { ...pageRefresh(1), mode };
+  harness.tabRefresh.setState({
+    ...defaultTabState(17, 10),
+    autoRefreshEnabled: true,
+    participant: true,
+  });
+  harness.tabRefresh.acceptPageRefreshBehavior = async (
+    _windowId,
+    message,
+    onAccepted,
+    onTabCompleted,
+  ) => {
+    try {
+      if (await onAccepted?.() === false) {
+        completed.resolve(false);
+        return false;
+      }
+      const acknowledged = await harness.router.beforeControlledTabTransition(
+        17,
+        {
+          type: "pin-op.refresh.execute",
+          refreshGeneration: message.refreshGeneration,
+          mode: message.mode,
+        },
+      );
+      onTabCompleted?.(tabRefreshCompletion(17, 10, message, acknowledged));
+      completed.resolve(acknowledged);
+      return acknowledged;
+    } catch (error) {
+      completed.reject(error);
+      throw error;
+    }
+  };
+
+  harness.pageRefreshes.emit(10, refresh);
+  await expect(completed.promise).resolves.toBe(true);
+}
+
 function selectedMessage(
   contentSessionId: string,
   payload: InspectPayload = inspectPayload(),
@@ -9356,6 +13297,25 @@ function selectedMessage(
     contentSessionId,
     selectionRevision,
     payload,
+  };
+}
+
+function selectedMessageWithIdentity(
+  contentSessionId: string,
+  selection: ReturnType<typeof selectionChangedWithRevision>,
+  payload: InspectPayload = inspectPayload(),
+  republishToken?: string,
+) {
+  return {
+    ...selectedMessage(
+      contentSessionId,
+      payload,
+      selection.selectionRevision,
+    ),
+    documentEpoch: selection.documentEpoch,
+    nodeRef: selection.nodeRef,
+    ancestorPath: selection.ancestorPath,
+    ...(republishToken ? { republishToken } : {}),
   };
 }
 
@@ -9371,6 +13331,7 @@ function inspectRepublishRequest(
     documentEpoch,
     nodeRef,
     selectionRevision,
+    republishToken: expect.any(String),
   };
 }
 
@@ -9621,6 +13582,22 @@ function messagesOfType(port: FakePort, type: string): unknown[] {
   return port.sent.filter(
     (message) => isRecord(message) && message.type === type,
   );
+}
+
+function inspectTabMessagesOfType(
+  harness: LifecycleHarness,
+  type: string,
+): Array<readonly [number, Record<string, unknown>]> {
+  return harness.inspectCalls.flatMap((call) => {
+    if (
+      !Array.isArray(call) ||
+      call[0] !== "tab" ||
+      typeof call[1] !== "number" ||
+      !isRecord(call[2]) ||
+      call[2].type !== type
+    ) return [];
+    return [[call[1], call[2]] as const];
+  });
 }
 
 function resolution(

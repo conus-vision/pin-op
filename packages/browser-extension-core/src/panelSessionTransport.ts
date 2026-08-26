@@ -219,7 +219,7 @@ export class PanelSessionTransport {
         const result = await this.options.sendTabMessage(binding.tabId, {
           ...request,
         });
-        return this.channels.get(channel) === binding && result !== false;
+        return this.channels.get(channel) === binding && result === true;
       } catch {
         return false;
       } finally {
@@ -332,7 +332,8 @@ function sameRepublishRequest(
   return left.contentSessionId === right.contentSessionId &&
     left.documentEpoch === right.documentEpoch &&
     left.nodeRef === right.nodeRef &&
-    left.selectionRevision === right.selectionRevision;
+    left.selectionRevision === right.selectionRevision &&
+    left.republishToken === right.republishToken;
 }
 
 function parsePublishedMessage(

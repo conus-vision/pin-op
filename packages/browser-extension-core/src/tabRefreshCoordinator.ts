@@ -16,6 +16,14 @@ export interface TabRefreshSettings {
   readonly ideHighlightEnabled: boolean;
 }
 
+export interface TabRefreshCompletion {
+  readonly tabId: number;
+  readonly windowId: number;
+  readonly refreshGeneration: number;
+  readonly mode: PageRefreshMode;
+  readonly accepted: boolean;
+}
+
 export interface TabRefreshCoordinatorOptions {
   readonly store: TabRefreshStateStore;
   readonly getActiveTabId: (windowId: number) => Promise<number | undefined>;
@@ -28,6 +36,9 @@ export interface TabRefreshCoordinatorOptions {
     tabId: number,
     participant: boolean,
   ) => void;
+  readonly beforeControlledTransition?: (
+    tabId: number,
+  ) => boolean | void | Promise<boolean | void>;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -38,17 +49,35 @@ interface WindowWatermark {
   readonly mode: WindowWatermarkMode;
 }
 
+interface TabRefreshOperation {
+  readonly windowId: number;
+  readonly revision: number;
+  readonly pending: PendingTabRefresh;
+  readonly onTabCompleted:
+    | ((completion: TabRefreshCompletion) => void)
+    | undefined;
+  phase: "pending" | "dispatching";
+  completed: boolean;
+}
+
+interface RefreshAdmissionCommit {
+  readonly tabId: number;
+  readonly before: TabRefreshState;
+  readonly after: TabRefreshState;
+}
+
 export class TabRefreshCoordinator {
   private readonly store: TabRefreshStateStore;
   private readonly getActiveTabId: TabRefreshCoordinatorOptions["getActiveTabId"];
   private readonly dispatchRefresh: TabRefreshCoordinatorOptions["dispatchRefresh"];
   private readonly setRefreshParticipant: TabRefreshCoordinatorOptions["setRefreshParticipant"];
+  private readonly beforeControlledTransition: TabRefreshCoordinatorOptions["beforeControlledTransition"];
   private readonly onError: TabRefreshCoordinatorOptions["onError"];
   private readonly watermarks = new Map<number, WindowWatermark>();
   private readonly lifecycleRevisions = new Map<number, number>();
   private readonly panelWindows = new Map<number, number>();
   private readonly participantWindows = new Map<number, number>();
-  private readonly pendingRefreshes = new Map<number, PendingTabRefresh>();
+  private readonly pendingRefreshes = new Map<number, TabRefreshOperation>();
   private readonly windowRemovals = new Map<number, Promise<void>>();
   // WebExtension tab ids are not reused within one browser runtime. Keeping all
   // terminal ids for that runtime prevents a late callback from reopening one.
@@ -62,6 +91,7 @@ export class TabRefreshCoordinator {
     this.getActiveTabId = options.getActiveTabId;
     this.dispatchRefresh = options.dispatchRefresh;
     this.setRefreshParticipant = options.setRefreshParticipant;
+    this.beforeControlledTransition = options.beforeControlledTransition;
     this.onError = options.onError;
   }
 
@@ -82,8 +112,10 @@ export class TabRefreshCoordinator {
     }
 
     const previousWindowId = this.currentPanelWindow(tabId);
+    if (previousWindowId !== undefined) {
+      this.cancelTabRefresh(tabId);
+    }
     if (previousWindowId !== undefined && previousWindowId !== windowId) {
-      this.pendingRefreshes.delete(tabId);
       this.clearPanelWindow(tabId, previousWindowId);
       this.revokeIndexedParticipant(tabId, previousWindowId);
     }
@@ -123,7 +155,7 @@ export class TabRefreshCoordinator {
     } catch (error) {
       if (this.isCurrentLifecycle(tabId, revision)) {
         this.clearPanelWindow(tabId, windowId);
-        this.pendingRefreshes.delete(tabId);
+        this.cancelTabRefresh(tabId);
         this.revokeIndexedParticipant(tabId, windowId);
         this.retireLifecycle(tabId, revision);
       }
@@ -154,7 +186,7 @@ export class TabRefreshCoordinator {
 
     const revision = this.advanceLifecycle(tabId);
     this.clearPanelWindow(tabId, currentWindowId);
-    this.pendingRefreshes.delete(tabId);
+    this.cancelTabRefresh(tabId);
     const revoked = this.revokeIndexedParticipant(tabId, currentWindowId);
     if (revoked === undefined) {
       this.setParticipant(currentWindowId, tabId, false);
@@ -200,7 +232,7 @@ export class TabRefreshCoordinator {
     createDefaultTabRefreshState(tabId, windowId);
     const revision = this.lifecycleRevision(tabId);
     if (!settings.autoRefreshEnabled) {
-      this.pendingRefreshes.delete(tabId);
+      this.cancelTabRefresh(tabId);
       this.revokeIndexedParticipant(tabId, windowId);
     }
 
@@ -247,7 +279,8 @@ export class TabRefreshCoordinator {
   public async acceptPageRefresh(
     windowId: number,
     message: PageRefreshMessage,
-    onAccepted?: () => void,
+    onAccepted?: () => boolean | void | Promise<boolean | void>,
+    onTabCompleted?: (completion: TabRefreshCompletion) => void,
   ): Promise<boolean> {
     const parsed = PageRefreshMessageSchema.safeParse(message);
     if (!parsed.success || !isBrowserId(windowId)) {
@@ -265,8 +298,12 @@ export class TabRefreshCoordinator {
       if (!isNewerRefresh(incoming, current)) {
         return false;
       }
+      const admitted = await onAccepted?.();
+      if (admitted === false) {
+        return false;
+      }
+      const previousWatermark = this.watermarks.get(windowId);
       this.watermarks.set(windowId, incoming);
-      onAccepted?.();
 
       let activeTabId: number | undefined;
       try {
@@ -275,36 +312,102 @@ export class TabRefreshCoordinator {
         this.report(error);
       }
 
-      for (const snapshot of windowStates) {
-        const revision = this.lifecycleRevision(snapshot.tabId);
-        const updated = await this.store.updateTab(snapshot.tabId, (state) =>
-          state?.windowId === windowId &&
-            this.isCurrentLifecycle(snapshot.tabId, revision)
-            ? durableSnapshot({
+      const commits: RefreshAdmissionCommit[] = [];
+      const stages: Array<{
+        readonly tabId: number;
+        readonly revision: number;
+        readonly updated: TabRefreshState | undefined;
+      }> = [];
+      try {
+        for (const snapshot of windowStates) {
+          const revision = this.lifecycleRevision(snapshot.tabId);
+          let commit: RefreshAdmissionCommit | undefined;
+          let updated: TabRefreshState | undefined;
+          try {
+            updated = await this.store.updateTab(snapshot.tabId, (state) => {
+              if (
+                state?.windowId !== windowId ||
+                !this.isCurrentLifecycle(snapshot.tabId, revision)
+              ) {
+                return state;
+              }
+              const after = durableSnapshot({
                 ...state,
                 participant: false,
                 lastAcceptedGeneration: incoming.generation,
                 lastAcceptedMode: incoming.mode,
-              })
-            : state);
+              });
+              commit = { tabId: snapshot.tabId, before: state, after };
+              return after;
+            });
+          } catch (error) {
+            if (commit) commits.push(commit);
+            throw error;
+          }
+          if (commit) commits.push(commit);
+          stages.push({ tabId: snapshot.tabId, revision, updated });
+        }
+      } catch (error) {
+        const rolledBack = await this.rollbackRefreshAdmission(commits);
         if (
-          !updated ||
-          !this.isCurrentPanelLifecycle(snapshot.tabId, windowId, revision) ||
-          this.participantWindows.get(snapshot.tabId) !== windowId ||
-          !updated.autoRefreshEnabled
+          rolledBack &&
+          this.watermarks.get(windowId) === incoming
         ) {
-          this.pendingRefreshes.delete(snapshot.tabId);
+          if (previousWatermark) {
+            this.watermarks.set(windowId, previousWatermark);
+          } else {
+            this.watermarks.delete(windowId);
+          }
+        }
+        throw error;
+      }
+      let activeOperation:
+        | { readonly tabId: number; readonly operation: TabRefreshOperation }
+        | undefined;
+      for (const stage of stages) {
+        if (
+          !stage.updated ||
+          !this.isCurrentPanelLifecycle(
+            stage.tabId,
+            windowId,
+            stage.revision,
+          ) ||
+          this.participantWindows.get(stage.tabId) !== windowId ||
+          !stage.updated.autoRefreshEnabled
+        ) {
+          this.cancelTabRefresh(stage.tabId);
           continue;
         }
         const pending = Object.freeze({
           generation: incoming.generation,
           mode: incoming.mode,
         });
-        this.pendingRefreshes.set(snapshot.tabId, pending);
-        if (activeTabId === snapshot.tabId) {
-          this.pendingRefreshes.delete(snapshot.tabId);
-          await this.dispatch(snapshot.tabId, pending);
+        this.cancelTabRefresh(stage.tabId);
+        if (
+          !this.isCurrentPanelLifecycle(
+            stage.tabId,
+            windowId,
+            stage.revision,
+          ) ||
+          this.participantWindows.get(stage.tabId) !== windowId
+        ) {
+          continue;
         }
+        const operation: TabRefreshOperation = {
+          windowId,
+          revision: stage.revision,
+          pending,
+          onTabCompleted,
+          phase: "pending",
+          completed: false,
+        };
+        this.pendingRefreshes.set(stage.tabId, operation);
+        if (activeTabId === stage.tabId) {
+          activeOperation = { tabId: stage.tabId, operation };
+        }
+      }
+      if (activeOperation) {
+        await this.dispatch(activeOperation.tabId, activeOperation.operation);
       }
       return true;
     });
@@ -351,15 +454,14 @@ export class TabRefreshCoordinator {
         this.panelWindows.get(tabId) !== windowId ||
         this.participantWindows.get(tabId) !== windowId
       ) {
-        this.pendingRefreshes.delete(tabId);
+        this.cancelTabRefresh(tabId);
         return;
       }
-      const pending = this.pendingRefreshes.get(tabId);
-      if (!pending) {
+      const operation = this.pendingRefreshes.get(tabId);
+      if (!operation || operation.phase !== "pending") {
         return;
       }
-      this.pendingRefreshes.delete(tabId);
-      await this.dispatch(tabId, pending);
+      await this.dispatch(tabId, operation);
     });
   }
 
@@ -368,7 +470,7 @@ export class TabRefreshCoordinator {
     this.markTerminalTab(tabId);
     const revision = this.advanceLifecycle(tabId);
     this.clearPanelWindow(tabId);
-    this.pendingRefreshes.delete(tabId);
+    this.cancelTabRefresh(tabId);
     this.revokeIndexedParticipant(tabId);
     try {
       await this.store.removeTab(tabId);
@@ -387,7 +489,7 @@ export class TabRefreshCoordinator {
     const revision = ownsOldWindow ? this.advanceLifecycle(tabId) : undefined;
     if (ownsOldWindow) {
       this.clearPanelWindow(tabId, windowId);
-      this.pendingRefreshes.delete(tabId);
+      this.cancelTabRefresh(tabId);
       const revoked = this.revokeIndexedParticipant(tabId, windowId);
       if (revoked === undefined) {
         this.setParticipant(windowId, tabId, false);
@@ -542,7 +644,7 @@ export class TabRefreshCoordinator {
       }
       const hadPanel = this.panelWindows.get(tabId) === windowId;
       this.clearPanelWindow(tabId, windowId);
-      this.pendingRefreshes.delete(tabId);
+      this.cancelTabRefresh(tabId);
       const revoked = this.revokeIndexedParticipant(tabId, windowId);
       if (hadPanel && revoked === undefined) {
         this.setParticipant(windowId, tabId, false);
@@ -596,7 +698,10 @@ export class TabRefreshCoordinator {
     const participant = base.autoRefreshEnabled &&
       this.panelWindows.get(tabId) === windowId &&
       this.participantWindows.get(tabId) === windowId;
-    const pending = participant ? this.pendingRefreshes.get(tabId) : undefined;
+    const operation = participant ? this.pendingRefreshes.get(tabId) : undefined;
+    const pending = operation?.phase === "pending"
+      ? operation.pending
+      : undefined;
     return stateSnapshot({
       tabId,
       windowId,
@@ -612,12 +717,9 @@ export class TabRefreshCoordinator {
   }
 
   private clearRuntimePendingForWindow(windowId: number): void {
-    for (const tabId of this.pendingRefreshes.keys()) {
-      if (
-        this.panelWindows.get(tabId) === windowId ||
-        this.participantWindows.get(tabId) === windowId
-      ) {
-        this.pendingRefreshes.delete(tabId);
+    for (const [tabId, operation] of [...this.pendingRefreshes]) {
+      if (operation.windowId === windowId) {
+        this.completeTabRefresh(tabId, operation, false);
       }
     }
   }
@@ -665,14 +767,114 @@ export class TabRefreshCoordinator {
 
   private async dispatch(
     tabId: number,
-    pending: PendingTabRefresh,
+    operation: TabRefreshOperation,
   ): Promise<void> {
+    if (!this.isCurrentRefreshOperation(tabId, operation)) {
+      this.completeTabRefresh(tabId, operation, false);
+      return;
+    }
+    operation.phase = "dispatching";
+    await this.prepareControlledTransition(tabId);
+    if (!this.isCurrentRefreshOperation(tabId, operation)) {
+      this.completeTabRefresh(tabId, operation, false);
+      return;
+    }
     try {
       await this.dispatchRefresh(tabId, {
         type: "pin-op.refresh.execute",
-        refreshGeneration: pending.generation,
-        mode: pending.mode,
+        refreshGeneration: operation.pending.generation,
+        mode: operation.pending.mode,
       });
+    } catch (error) {
+      this.report(error);
+      this.completeTabRefresh(tabId, operation, false);
+      return;
+    }
+    this.completeTabRefresh(
+      tabId,
+      operation,
+      this.isCurrentRefreshOperation(tabId, operation),
+    );
+  }
+
+  private isCurrentRefreshOperation(
+    tabId: number,
+    operation: TabRefreshOperation,
+  ): boolean {
+    return !operation.completed &&
+      this.pendingRefreshes.get(tabId) === operation &&
+      this.isCurrentPanelLifecycle(
+        tabId,
+        operation.windowId,
+        operation.revision,
+      ) &&
+      this.participantWindows.get(tabId) === operation.windowId;
+  }
+
+  private cancelTabRefresh(tabId: number): void {
+    const operation = this.pendingRefreshes.get(tabId);
+    if (operation) this.completeTabRefresh(tabId, operation, false);
+  }
+
+  private completeTabRefresh(
+    tabId: number,
+    operation: TabRefreshOperation,
+    accepted: boolean,
+  ): void {
+    if (operation.completed) return;
+    operation.completed = true;
+    if (this.pendingRefreshes.get(tabId) === operation) {
+      this.pendingRefreshes.delete(tabId);
+    }
+    const callback = operation.onTabCompleted;
+    if (!callback) return;
+    const completion: TabRefreshCompletion = Object.freeze({
+      tabId,
+      windowId: operation.windowId,
+      refreshGeneration: operation.pending.generation,
+      mode: operation.pending.mode,
+      accepted,
+    });
+    try {
+      callback(completion);
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  private async rollbackRefreshAdmission(
+    commits: readonly RefreshAdmissionCommit[],
+  ): Promise<boolean> {
+    let rolledBack = true;
+    for (const commit of [...commits].reverse()) {
+      let restored = false;
+      try {
+        await this.store.updateTab(commit.tabId, (current) => {
+          if (sameDurableState(current, commit.before)) {
+            restored = true;
+            return undefined;
+          }
+          if (!sameDurableState(current, commit.after)) return undefined;
+          restored = true;
+          return commit.before;
+        });
+      } catch (error) {
+        this.report(error);
+        rolledBack = false;
+      }
+      if (!restored) rolledBack = false;
+    }
+    return rolledBack;
+  }
+
+  private async prepareControlledTransition(tabId: number): Promise<void> {
+    const callback = this.beforeControlledTransition;
+    if (!callback) return;
+    try {
+      const acknowledged = await callback(tabId);
+      if (acknowledged === false) {
+        this.report(new Error("Refresh cleanup was not acknowledged"));
+      }
     } catch (error) {
       this.report(error);
     }
@@ -770,6 +972,18 @@ function durableSnapshot(state: TabRefreshState): TabRefreshState {
       ? { lastAcceptedMode: state.lastAcceptedMode }
       : {}),
   });
+}
+
+function sameDurableState(
+  value: TabRefreshState | undefined,
+  expected: TabRefreshState,
+): boolean {
+  return value?.tabId === expected.tabId &&
+    value.windowId === expected.windowId &&
+    value.autoRefreshEnabled === expected.autoRefreshEnabled &&
+    value.ideHighlightEnabled === expected.ideHighlightEnabled &&
+    value.lastAcceptedGeneration === expected.lastAcceptedGeneration &&
+    value.lastAcceptedMode === expected.lastAcceptedMode;
 }
 
 function stateSnapshot(state: TabRefreshState): TabRefreshState {

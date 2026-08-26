@@ -31,6 +31,7 @@ import {
   createTransportTrustedIdePeerContext,
   type TrustedIdePeerContext,
 } from "../src/trustedIdePeerContext.js";
+import type { RefreshExecutionCommand } from "../src/refreshRuntimeProtocol.js";
 
 describe("startBackgroundRuntime", () => {
   it("wires authenticated resolutions into the live correlated panel route", async () => {
@@ -48,6 +49,8 @@ describe("startBackgroundRuntime", () => {
     const pageRefreshDispose = vi.fn();
     const protocolMismatchDispose = vi.fn();
     const coordinatorDispose = vi.fn();
+    const disposeStarted = deferred<void>();
+    const disposeAck = deferred<unknown>();
     let resolutionListener:
       | ((
         context: TrustedIdePeerContext,
@@ -124,7 +127,18 @@ describe("startBackgroundRuntime", () => {
       expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
       storage: memoryStorage(),
       executeScript: vi.fn(async () => []),
-      sendTabMessage: vi.fn(async () => undefined),
+      sendTabMessage: vi.fn(async (_tabId: number, message: unknown) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type ===
+            "pin-op.inspect.disposeSession"
+        ) {
+          disposeStarted.resolve();
+          return await disposeAck.promise;
+        }
+        return undefined;
+      }),
       getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
       subscribeRuntimeMessages: messages.subscribe,
       subscribeRuntimePorts: ports.subscribe,
@@ -261,8 +275,27 @@ describe("startBackgroundRuntime", () => {
       },
     );
 
-    runtime.dispose();
-    runtime.dispose();
+    const firstDisposal = runtime.dispose();
+    const repeatedDisposal = runtime.dispose();
+
+    expect(firstDisposal).toBeInstanceOf(Promise);
+    expect(repeatedDisposal).toBe(firstDisposal);
+    await disposeStarted.promise;
+    expect(coordinatorDispose).not.toHaveBeenCalled();
+    await expect(messages.emit({
+      type: "pin-op.styles.event",
+      contentSessionId,
+      event: {
+        type: "styles.invalidated",
+        documentEpoch: 1,
+        stylesRevision: 1,
+        stylesheetRevision: 0,
+        pseudoStateRevision: 1,
+        pseudoStates: [],
+      },
+    }, contentSender(tabId, 7))).resolves.toEqual({ ok: true });
+    disposeAck.resolve(true);
+    await firstDisposal;
 
     expect(resolutionDispose).toHaveBeenCalledOnce();
     expect(stateDispose).toHaveBeenCalledOnce();
@@ -405,6 +438,7 @@ describe("startBackgroundRuntime", () => {
       7,
       refresh,
       expect.any(Function),
+      expect.any(Function),
     );
     expect(tabRefresh.clearWindowPending).toHaveBeenCalledWith(7);
     expect(tabRefresh.activateTab).toHaveBeenCalledWith(11, 7);
@@ -422,7 +456,7 @@ describe("startBackgroundRuntime", () => {
       frameId: 0,
       tab: { id: 11, windowId: 7 },
     });
-    runtime.dispose();
+    await runtime.dispose();
     expect(contentRefresh.dispose).toHaveBeenCalledOnce();
   });
 
@@ -616,8 +650,9 @@ describe("startBackgroundRuntime", () => {
     );
     expect(getTab).toHaveBeenCalledWith(91);
 
-    runtime.dispose();
-    runtime.dispose();
+    const disposal = runtime.dispose();
+    expect(runtime.dispose()).toBe(disposal);
+    await disposal;
     expect(messages.remove).toHaveBeenCalledOnce();
     expect(ports.remove).toHaveBeenCalledOnce();
     expect(windows.remove).toHaveBeenCalledOnce();
@@ -665,6 +700,561 @@ describe("startBackgroundRuntime", () => {
       files: ["dist/contentScript.js"],
     });
     runtime.dispose();
+  });
+
+  it("forwards the exact refresh command through a custom content refresh factory", async () => {
+    const storage = memoryStorage();
+    await storage.set({
+      [TAB_REFRESH_STATE_STORAGE_KEY]: [tabState(11, 7)],
+    });
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const pageRefreshes = subscriptionEventHarness<
+      (windowId: number, message: PageRefreshMessage) => void
+    >();
+    const forwardedTransitions: Array<[
+      number,
+      RefreshExecutionCommand,
+      boolean,
+    ]> = [];
+    const cleanupRequests: Array<[number, unknown]> = [];
+    const reported: unknown[] = [];
+    let panelRegistration: PanelRegistration | undefined;
+    const coordinator = {
+      linkWindow: vi.fn(async () => undefined),
+      unlinkWindow: vi.fn(async () => undefined),
+      registerPanel: vi.fn((registration: PanelRegistration) => {
+        panelRegistration = registration;
+        return { dispose: vi.fn() };
+      }),
+      publishInspect: vi.fn(() => "sent" as const),
+      publishSourceNavigation: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishRulesOpen: vi.fn(() => "sent" as const),
+      publishPresentationSettings: vi.fn(() => "sent" as const),
+      setRefreshParticipant: vi.fn(),
+      removeWindow: vi.fn(async () => undefined),
+      state: vi.fn(() => "notLinked" as const),
+      onStateChanged: vi.fn(() => ({ dispose: vi.fn() })),
+      onResolution: vi.fn(() => ({ dispose: vi.fn() })),
+      onPeerState: vi.fn(() => ({ dispose: vi.fn() })),
+      onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
+      onRulesSources: vi.fn(() => ({ dispose: vi.fn() })),
+      onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
+      onPageRefresh: pageRefreshes.subscribe,
+      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
+      dispose: vi.fn(),
+    };
+    const sendTabMessage = vi.fn(async (tabId: number, message: unknown) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.clearPseudoStates"
+      ) {
+        cleanupRequests.push([tabId, message]);
+        return true;
+      }
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.disposeSession"
+      ) {
+        return true;
+      }
+      return undefined;
+    });
+    const runtime = startBackgroundRuntime({
+      browserLocalInspection: true,
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/inspector-panel.html",
+      storage,
+      executeScript: vi.fn(async () => []),
+      sendTabMessage,
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      getActiveTabId: vi.fn(async () => 11),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      createWindowConnectionCoordinator: () => coordinator,
+      createContentRefreshCoordinator: (_snapshotStorage, beforeTransition) => ({
+        dispatch: vi.fn(async (
+          tabId: number,
+          command: RefreshExecutionCommand,
+        ) => {
+          const acknowledged = await beforeTransition(tabId, command);
+          forwardedTransitions.push([tabId, command, acknowledged]);
+        }),
+        routeMessage: vi.fn(async () => undefined),
+        observeTabUpdate: vi.fn(),
+        tabUpdated: vi.fn(async () => undefined),
+        setTabParticipation: vi.fn(),
+        setWindowEligibility: vi.fn(),
+        revokeTab: vi.fn(),
+        revokeWindow: vi.fn(),
+        removeTab: vi.fn(async () => undefined),
+        detachTab: vi.fn(async () => undefined),
+        dispose: vi.fn(),
+      }),
+      onError: (error) => reported.push(error),
+    });
+    const channel = "channel-custom-refresh-cleanup";
+    const contentSessionId = "content-custom-refresh-cleanup";
+
+    try {
+      await messages.emit(
+        registerMessage(channel, 11, "firefox-custom-refresh-cleanup"),
+        devtoolsSender(),
+      );
+      ports.emit(new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        {
+          url:
+            `moz-extension://pin-op/dist/inspector-panel.html?channel=${channel}`,
+        },
+      ));
+      panelRegistration?.onStateChanged?.("notLinked");
+      await flushAsync();
+      const contentLease = new TestRuntimePort(
+        createInspectContentLeasePortName(contentSessionId),
+        contentSender(11, 7),
+      );
+      ports.emit(contentLease);
+      await flushAsync();
+      expect(contentLease.disconnected).toBe(false);
+      sendTabMessage.mockClear();
+
+      const refresh = pageRefresh(3);
+      pageRefreshes.emit(7, refresh);
+
+      await vi.waitFor(() => {
+        expect(forwardedTransitions).toEqual([[11, {
+          type: "pin-op.refresh.execute",
+          refreshGeneration: refresh.refreshGeneration,
+          mode: refresh.mode,
+        }, true]]);
+      });
+      await flushAsync();
+      expect(cleanupRequests).toEqual([[11, {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId,
+      }]]);
+      expect(reported).not.toContainEqual(expect.objectContaining({
+        message: "Accepted tab refresh completed without controlled inspect cleanup",
+      }));
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it("awaits one lease-bound pseudo cleanup before the default unlink completes", async () => {
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const cleanupAck = deferred<unknown>();
+    const cleanupRequests: Array<[number, unknown]> = [];
+    const sendTabMessage = vi.fn(async (tabId: number, message: unknown) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.clearPseudoStates"
+      ) {
+        cleanupRequests.push([tabId, message]);
+        return await cleanupAck.promise;
+      }
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.disposeSession"
+      ) {
+        return true;
+      }
+      return undefined;
+    });
+    const runtime = startBackgroundRuntime({
+      browserLocalInspection: true,
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/inspector-panel.html",
+      storage: memoryStorage(),
+      executeScript: vi.fn(async () => []),
+      sendTabMessage,
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+    });
+    const channel = "channel-default-unlink-cleanup";
+    const contentSessionId = "content-default-unlink-cleanup";
+    let unlink: Promise<unknown> | undefined;
+
+    try {
+      await messages.emit(
+        registerMessage(channel, 11, "firefox-default-unlink-cleanup"),
+        devtoolsSender(),
+      );
+      const panel = new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        {
+          url:
+            `moz-extension://pin-op/dist/inspector-panel.html?channel=${channel}`,
+        },
+      );
+      ports.emit(panel);
+      await flushAsync();
+      const contentLease = new TestRuntimePort(
+        createInspectContentLeasePortName(contentSessionId),
+        contentSender(11, 7),
+      );
+      ports.emit(contentLease);
+      await flushAsync();
+      expect(contentLease.disconnected).toBe(false);
+      sendTabMessage.mockClear();
+
+      let settled = false;
+      unlink = Promise.resolve(messages.emit({
+        type: "pin-op.unlinkWindow",
+        channel,
+      }, panel.sender));
+      void unlink.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await flushAsync();
+
+      expect(cleanupRequests).toEqual([[11, {
+        type: "pin-op.inspect.clearPseudoStates",
+        contentSessionId,
+      }]]);
+      expect(settled).toBe(false);
+
+      cleanupAck.resolve(true);
+      await expect(unlink).resolves.toEqual({ ok: true });
+      await flushAsync();
+      expect(cleanupRequests).toHaveLength(1);
+
+      const selection = selectionChanged("node-after-default-unlink", 1);
+      const selectionResult = await messages.emit({
+        type: "pin-op.dom.event",
+        contentSessionId,
+        event: selection,
+      }, contentSender(11, 7));
+      const inspectResult = await messages.emit(
+        selectedMessage(contentSessionId),
+        contentSender(11, 7),
+      );
+
+      expect([selectionResult, inspectResult]).toEqual([
+        { ok: true },
+        { ok: true },
+      ]);
+      expect(messagesOfType(panel, "dom.selectionChanged").at(-1)).toEqual(
+        selection,
+      );
+    } finally {
+      cleanupAck.resolve(true);
+      await unlink?.catch(() => undefined);
+      runtime.dispose();
+    }
+  });
+
+  it("attempts one lease-bound cleanup before an abrupt default tab navigation", async () => {
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const updatedTabs = eventHarness();
+    const reported: unknown[] = [];
+    const cleanupRequests: Array<[number, unknown]> = [];
+    const sendTabMessage = vi.fn(async (tabId: number, message: unknown) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.clearPseudoStates"
+      ) {
+        cleanupRequests.push([tabId, message]);
+        return false;
+      }
+      return undefined;
+    });
+    const runtime = startBackgroundRuntime({
+      browserLocalInspection: true,
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/inspector-panel.html",
+      storage: memoryStorage(),
+      executeScript: vi.fn(async () => []),
+      sendTabMessage,
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      subscribeTabUpdated: updatedTabs.subscribe,
+      onError: (error) => reported.push(error),
+    });
+    const channel = "channel-default-abrupt-navigation";
+    const contentSessionId = "content-default-abrupt-navigation";
+
+    try {
+      await messages.emit(
+        registerMessage(channel, 11, "firefox-default-abrupt-navigation"),
+        devtoolsSender(),
+      );
+      ports.emit(new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        {
+          url:
+            `moz-extension://pin-op/dist/inspector-panel.html?channel=${channel}`,
+        },
+      ));
+      await flushAsync();
+      const contentLease = new TestRuntimePort(
+        createInspectContentLeasePortName(contentSessionId),
+        contentSender(11, 7),
+      );
+      ports.emit(contentLease);
+      await flushAsync();
+      sendTabMessage.mockClear();
+
+      updatedTabs.emit(11, {
+        status: "loading",
+        url: "https://example.test/after-navigation",
+        windowId: 7,
+      });
+
+      await vi.waitFor(() => {
+        expect(cleanupRequests).toEqual([[11, {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId,
+        }]]);
+        expect(contentLease.disconnected).toBe(true);
+      });
+      expect(reported.length).toBeGreaterThan(0);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it("fences stale Rules and waits for one lease-bound cleanup before the default page refresh", async () => {
+    const storage = memoryStorage();
+    await storage.set({
+      [TAB_REFRESH_STATE_STORAGE_KEY]: [tabState(11, 7)],
+    });
+    const messages = eventHarness();
+    const ports = eventHarness();
+    const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
+    const connectionStates = subscriptionEventHarness<
+      (windowId: number, state: BrowserWindowConnectionState) => void
+    >();
+    const peerStates = subscriptionEventHarness<
+      (windowId: number, message: PeerStateMessage) => void
+    >();
+    const pageRefreshes = subscriptionEventHarness<
+      (windowId: number, message: PageRefreshMessage) => void
+    >();
+    const resolutions = subscriptionEventHarness<
+      (context: TrustedIdePeerContext, message: ResolutionMessage) => void
+    >();
+    const rulesPublications = subscriptionEventHarness<
+      (context: TrustedIdePeerContext, message: RulesSourcesMessage) => void
+    >();
+    let panelRegistration: PanelRegistration | undefined;
+    let inspectMessageId: string | undefined;
+    const publishRulesOpen = vi.fn(() => "sent" as const);
+    const coordinator = {
+      linkWindow: vi.fn(async () => undefined),
+      unlinkWindow: vi.fn(async () => undefined),
+      registerPanel: vi.fn((registration: PanelRegistration) => {
+        panelRegistration = registration;
+        return { dispose: vi.fn() };
+      }),
+      publishInspect: vi.fn((
+        _windowId: number,
+        nextInspectMessageId: string,
+      ) => {
+        inspectMessageId = nextInspectMessageId;
+        return "sent" as const;
+      }),
+      publishSourceNavigation: vi.fn(() => "sent" as const),
+      publishSourceOpen: vi.fn(() => "sent" as const),
+      publishRulesOpen,
+      publishPresentationSettings: vi.fn(() => "sent" as const),
+      setRefreshParticipant: vi.fn(),
+      removeWindow: vi.fn(async () => undefined),
+      state: vi.fn(() => "linked" as const),
+      onStateChanged: connectionStates.subscribe,
+      onResolution: resolutions.subscribe,
+      onPeerState: peerStates.subscribe,
+      onSourceMatches: vi.fn(() => ({ dispose: vi.fn() })),
+      onRulesSources: rulesPublications.subscribe,
+      onSourceNavigationState: vi.fn(() => ({ dispose: vi.fn() })),
+      onPageRefresh: pageRefreshes.subscribe,
+      onProtocolMismatch: vi.fn(() => ({ dispose: vi.fn() })),
+      dispose: vi.fn(),
+    };
+    const cleanupAck = deferred<unknown>();
+    const cleanupRequests: Array<[number, unknown]> = [];
+    const sendTabMessage = vi.fn(async (tabId: number, message: unknown) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.clearPseudoStates"
+      ) {
+        cleanupRequests.push([tabId, message]);
+        return await cleanupAck.promise;
+      }
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type ===
+          "pin-op.inspect.disposeSession"
+      ) {
+        return true;
+      }
+      return undefined;
+    });
+    const sendTopFrameMessage = vi.fn(async (_tabId, message: unknown) => ({
+      ...(message as object),
+      type: "pin-op.refresh.content.result",
+      accepted: true,
+      stylesheet: { attempted: 1, updated: 1, failed: 0 },
+    }));
+    const runtime = startBackgroundRuntime({
+      expectedDevtoolsUrl: "moz-extension://pin-op/dist/devtools.html",
+      expectedPanelUrl: "moz-extension://pin-op/dist/panel.html",
+      storage,
+      executeScript: vi.fn(async () => []),
+      sendTabMessage,
+      sendTopFrameMessage,
+      reloadTab: vi.fn(async () => undefined),
+      getTab: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 })),
+      getActiveTabId: vi.fn(async () => 11),
+      subscribeRuntimeMessages: messages.subscribe,
+      subscribeRuntimePorts: ports.subscribe,
+      subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
+      createWindowConnectionCoordinator: () => coordinator,
+    });
+    const channel = "channel-default-refresh-cleanup";
+    const contentSessionId = "content-default-refresh-cleanup";
+    const pageUrl = "https://example.test/runtime-refresh";
+
+    try {
+      connectionStates.emit(7, "linked");
+      peerStates.emit(7, peerState(true, 1));
+      await messages.emit(
+        registerMessage(channel, 11, "firefox-default-refresh-cleanup"),
+        devtoolsSender(),
+      );
+      const panel = new TestRuntimePort(
+        createDevtoolsPanelPortName(channel),
+        panelSender(channel),
+      );
+      ports.emit(panel);
+      panelRegistration?.onStateChanged?.("linked");
+      await flushAsync();
+      const contentLease = new TestRuntimePort(
+        createInspectContentLeasePortName(contentSessionId),
+        contentSender(11, 7),
+      );
+      ports.emit(contentLease);
+      await flushAsync();
+      expect(contentLease.disconnected).toBe(false);
+      const topSender = {
+        url: pageUrl,
+        frameId: 0,
+        tab: { id: 11, windowId: 7 },
+      } satisfies BackgroundMessageSender;
+      await messages.emit({
+        type: "pin-op.refresh.content.bootstrap",
+        pageUrl,
+        contentRuntimeId: "refresh-runtime-default-cleanup",
+      }, topSender);
+      await messages.emit({
+        type: "pin-op.refresh.content.ready",
+        tabId: 11,
+        frameId: 0,
+        pageUrl,
+        contentRuntimeId: "refresh-runtime-default-cleanup",
+      }, topSender);
+      await messages.emit(
+        selectedMessage(contentSessionId, rulesInspectPayload()),
+        contentSender(11, 7),
+      );
+      expect(inspectMessageId).toEqual(expect.any(String));
+      if (!inspectMessageId) {
+        throw new Error("Expected a correlated inspect publication");
+      }
+      const trusted = createTransportTrustedIdePeerContext(
+        7,
+        "session-a",
+        "vscode-a",
+      );
+      const currentRules = rulesSources(inspectMessageId, 1);
+      rulesPublications.emit(trusted, currentRules);
+      panel.onMessage.emit({
+        type: "pin-op.rules.open",
+        inspectMessageId,
+        rulesGeneration: 1,
+        openAuthorityId: "authority-1",
+      });
+      await flushAsync();
+      expect(publishRulesOpen).toHaveBeenCalledOnce();
+      cleanupRequests.length = 0;
+      sendTopFrameMessage.mockClear();
+
+      pageRefreshes.emit(7, pageRefresh(1));
+      await vi.waitFor(() => {
+        expect(cleanupRequests).toEqual([[11, {
+          type: "pin-op.inspect.clearPseudoStates",
+          contentSessionId,
+        }]]);
+      });
+
+      rulesPublications.emit(trusted, rulesSources(inspectMessageId, 2));
+      resolutions.emit(trusted, resolution(inspectMessageId, 1));
+      panel.onMessage.emit({
+        type: "pin-op.rules.open",
+        inspectMessageId,
+        rulesGeneration: 1,
+        openAuthorityId: "authority-1",
+      });
+      await flushAsync();
+      expect(messagesOfType(panel, "rules.sources")).toEqual([currentRules]);
+      expect(messagesOfType(panel, "resolution")).toEqual([]);
+      expect(publishRulesOpen).toHaveBeenCalledOnce();
+      expect(sendTopFrameMessage).not.toHaveBeenCalled();
+
+      cleanupAck.resolve(true);
+      await vi.waitFor(() => expect(sendTopFrameMessage).toHaveBeenCalledOnce());
+      expect(cleanupRequests).toHaveLength(1);
+    } finally {
+      cleanupAck.resolve(true);
+      await flushAsync();
+      runtime.dispose();
+    }
   });
 
   it("removes only the closed browser window session record", async () => {
@@ -794,6 +1384,35 @@ function selectedMessage(
   };
 }
 
+function selectionChanged(nodeRef: string, selectionRevision: number) {
+  const node = {
+    nodeRef,
+    kind: "element" as const,
+    nodeType: 1,
+    nodeName: "DIV",
+    attributes: [],
+    childCount: 0,
+    relationship: "dom" as const,
+    selectable: true,
+    label: nodeRef,
+    expandable: false,
+    branchRevision: 0,
+    locator: {
+      version: 1 as const,
+      targetKind: "element" as const,
+      boundaries: [],
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    },
+  };
+  return {
+    type: "dom.selectionChanged" as const,
+    documentEpoch: 1,
+    selectionRevision,
+    nodeRef,
+    ancestorPath: [node],
+  };
+}
+
 function rulesInspectPayload(): InspectPayload {
   return {
     ...inspectPayload(),
@@ -878,6 +1497,16 @@ function memoryStorage() {
       values.delete(key);
     },
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function validStoredLink(): Record<string, unknown> {

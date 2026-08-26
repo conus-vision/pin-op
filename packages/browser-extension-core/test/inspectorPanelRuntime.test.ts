@@ -11,6 +11,8 @@ import {
 } from "../src/inspectorPanelRuntime.js";
 import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";
+import { MatchedStylesModel } from "../src/matchedStylesModel.js";
+import { RulesSourcesController } from "../src/rulesSourcesController.js";
 import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/support/fakeDocument.js";
 
 describe("startInspectorPanelRuntime", () => {
@@ -37,6 +39,33 @@ describe("startInspectorPanelRuntime", () => {
       unsupportedRuleCount: 2,
       approximateRuleCount: 1,
     });
+  });
+
+  it("invalidates matched styles before revoking Rules on controlled lifecycle events", async () => {
+    const invalidateMatched = vi.spyOn(MatchedStylesModel.prototype, "invalidate");
+    const invalidateRules = vi.spyOn(RulesSourcesController.prototype, "invalidate");
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    invalidateMatched.mockClear();
+    invalidateRules.mockClear();
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 1,
+      stylesRevision: 1,
+      stylesheetRevision: 0,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    expect(invalidateMatched).toHaveBeenCalledOnce();
+    expect(invalidateRules).toHaveBeenCalledOnce();
+    expect(invalidateMatched.mock.invocationCallOrder[0]).toBeLessThan(
+      invalidateRules.mock.invocationCallOrder[0] as number,
+    );
+
+    runtime.dispose();
   });
 
   it("owns an IDE-independent matched-style model and resets it on inspect invalidation", async () => {
@@ -1961,6 +1990,204 @@ describe("startInspectorPanelRuntime", () => {
     await runtime.closed;
     expect(port.disconnectCalls).toBe(1);
     expect(harness.unload).toBeUndefined();
+  });
+
+  it("fences local preview authority before DOM recovery and requires fresh generation one", async () => {
+    const bindRules = vi.spyOn(
+      ElementsInspectorView.prototype,
+      "bindRulesDataSource",
+    );
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    const binding = bindRules.mock.calls.at(-1) as unknown[] | undefined;
+    const pseudo = binding?.[2] as PseudoStateDataSource | undefined;
+    if (!pseudo) throw new Error("Missing pseudo-state data source binding");
+
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const initialRoot = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: initialRoot.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-before-recovery",
+      selectionRevision: 4,
+      expectedRuleRefs: ["rule-before-recovery"],
+    });
+    port.emitMessage(selection("selected-before-recovery", 6, 4));
+    await flushAsync();
+    const initialMatched = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    const initialResponse = stylesMatched(initialMatched, 9, 2);
+    port.emitMessage({
+      ...initialResponse,
+      styles: {
+        ...initialResponse.styles,
+        rules: [matchedRule("rule-before-recovery", ".before-recovery")],
+      },
+    });
+    port.emitMessage(rulesSources(
+      "inspect-before-recovery",
+      1,
+      "rule-before-recovery",
+    ));
+    await flushAsync();
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("ready");
+    expect(runtime.rulesSourcesController.status()).toBe("ready");
+    runtime.rulesSourcesController.open("rule-before-recovery");
+    const rulesOpenCountBeforeRecovery = port.sent.filter((message) =>
+      isType(message, "pin-op.rules.open")
+    ).length;
+    expect(rulesOpenCountBeforeRecovery).toBe(1);
+
+    const staleLoad = runtime.matchedStylesModel.refresh();
+    await waitForMessageCount(port.sent, "styles.getMatched", 2);
+    const staleMatched = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialMatched;
+    const order: string[] = [];
+    let recording = true;
+    const removePseudo = pseudo.subscribe(() => {
+      const snapshot = pseudo.snapshot();
+      if (
+        recording &&
+        snapshot.state === "unavailable" &&
+        snapshot.reason === "recovery"
+      ) {
+        order.push("pseudo");
+      }
+    });
+    const removeMatched = runtime.matchedStylesModel.subscribe((snapshot) => {
+      if (recording && snapshot.state === "idle") order.push("matched");
+    });
+    const removeRules = runtime.rulesSourcesController.subscribe(() => {
+      if (recording && runtime.rulesSourcesController.status() === "stale") {
+        order.push("rules");
+      }
+    });
+    const postMessage = port.postMessage.bind(port);
+    vi.spyOn(port, "postMessage").mockImplementation((message) => {
+      if (isType(message, "dom.getRoot")) order.push("root");
+      postMessage(message);
+    });
+
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    await flushAsync();
+
+    const rootIndex = order.indexOf("root");
+    expect(rootIndex).toBeGreaterThan(-1);
+    expect.soft(order.slice(0, rootIndex)).toEqual([
+      "pseudo",
+      "matched",
+      "rules",
+    ]);
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    expect(runtime.rulesSourcesController.status()).toBe("stale");
+    expect(pseudo.snapshot()).toMatchObject({
+      state: "unavailable",
+      reason: "recovery",
+    });
+    expect([...harness.sent, ...port.sent].filter((message) => (
+      isType(message, "pin-op.inspect.clearPseudoStates")
+    ))).toEqual([]);
+
+    port.emitMessage(stylesMatched(staleMatched, 10, 2));
+    port.emitMessage(rulesSources(
+      "inspect-before-recovery",
+      2,
+      "rule-before-recovery",
+    ));
+    await staleLoad;
+    await flushAsync();
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    expect(runtime.rulesSourcesController.status()).toBe("stale");
+    runtime.rulesSourcesController.open("rule-before-recovery");
+    expect(port.sent.filter((message) =>
+      isType(message, "pin-op.rules.open")
+    )).toHaveLength(rulesOpenCountBeforeRecovery);
+
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    await flushAsync();
+    expect(runtime.matchedStylesModel.snapshot().state).toBe("idle");
+    expect(runtime.rulesSourcesController.status()).toBe("stale");
+    expect(pseudo.snapshot()).toMatchObject({
+      state: "unavailable",
+      reason: "recovery",
+    });
+    expect([...harness.sent, ...port.sent].filter((message) => (
+      isType(message, "pin-op.inspect.clearPseudoStates")
+    ))).toEqual([]);
+
+    recording = false;
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-after-recovery",
+      selectionRevision: 5,
+      expectedRuleRefs: ["rule-after-recovery"],
+    });
+    port.emitMessage(selection("selected-after-recovery", 7, 5));
+    await waitForMessageCount(port.sent, "styles.getMatched", 3);
+    const freshMatched = lastMessage(port.sent, "styles.getMatched") as
+      typeof initialMatched;
+    const freshResponse = stylesMatched(freshMatched, 1, 1);
+    port.emitMessage({
+      ...freshResponse,
+      styles: {
+        ...freshResponse.styles,
+        rules: [matchedRule("rule-after-recovery", ".after-recovery")],
+      },
+    });
+    port.emitMessage(rulesSources(
+      "inspect-after-recovery",
+      1,
+      "rule-after-recovery",
+    ));
+    await flushAsync();
+
+    expect(runtime.matchedStylesModel.snapshot()).toMatchObject({
+      state: "ready",
+      key: {
+        documentEpoch: 7,
+        nodeRef: "selected-after-recovery",
+        selectionRevision: 5,
+      },
+    });
+    expect(runtime.rulesSourcesController.status()).toBe("ready");
+    expect(runtime.rulesSourcesController.originFor("rule-after-recovery"))
+      .toMatchObject({ label: "card.scss", startLine: 41 });
+    expect(runtime.rulesSourcesController.originFor("rule-before-recovery"))
+      .toBeUndefined();
+    runtime.rulesSourcesController.open("rule-after-recovery");
+    expect(port.sent.filter((message) =>
+      isType(message, "pin-op.rules.open")
+    )).toHaveLength(rulesOpenCountBeforeRecovery + 1);
+
+    removeRules();
+    removeMatched();
+    removePseudo();
+    runtime.dispose();
   });
 
   it("does not initialize icons or ports after a synchronous unload subscription", async () => {

@@ -24,12 +24,14 @@ export interface DomTreeRecoveryCoordinatorOptions {
   readonly controller: DomTreeController;
   readonly transport: DomTreeRecoveryTransport;
   readonly createRequestId?: () => string;
+  readonly beforeControlledTransition?: () => boolean | Promise<boolean>;
 }
 
 export class DomTreeRecoveryCoordinator {
   private readonly controller: DomTreeController;
   private readonly transport: DomTreeRecoveryTransport;
   private readonly createRequestId: () => string;
+  private readonly beforeControlledTransition: () => boolean | Promise<boolean>;
   private recoveryToken: object | undefined;
   private contentSessionGeneration = 0;
   private requestSequence = 0;
@@ -41,6 +43,8 @@ export class DomTreeRecoveryCoordinator {
     this.createRequestId = options.createRequestId ?? (() => (
       `dom-recovery-${++this.requestSequence}`
     ));
+    this.beforeControlledTransition = options.beforeControlledTransition ??
+      (() => true);
   }
 
   public async begin(): Promise<void> {
@@ -50,6 +54,28 @@ export class DomTreeRecoveryCoordinator {
     const token = {};
     this.recoveryToken = token;
     const contentSessionGeneration = ++this.contentSessionGeneration;
+
+    let cleanupAcknowledged: boolean;
+    try {
+      const cleanup = this.beforeControlledTransition();
+      cleanupAcknowledged = typeof cleanup === "boolean"
+        ? cleanup
+        : await cleanup;
+    } catch (error) {
+      if (!this.isCurrent(token, contentSessionGeneration)) {
+        return;
+      }
+      this.invalidateAttempt();
+      throw error;
+    }
+    if (!this.isCurrent(token, contentSessionGeneration)) {
+      return;
+    }
+    if (!cleanupAcknowledged) {
+      this.invalidateAttempt();
+      throw new Error("DOM recovery controlled cleanup was not acknowledged");
+    }
+
     const snapshot = this.controller.beginRecovery();
     if (!this.isActiveRecovery(token, contentSessionGeneration)) {
       return;

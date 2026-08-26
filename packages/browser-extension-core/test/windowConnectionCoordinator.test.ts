@@ -738,6 +738,7 @@ describe("WindowConnectionCoordinator", () => {
       browserProtocolVersion: PROTOCOL_VERSION,
       peerProtocolVersion: 5,
     });
+    await harness.flush();
 
     expect(refreshes).toEqual([[10, pageRefresh(1)]]);
     expect(mismatches).toEqual([
@@ -1112,6 +1113,356 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.timers.pendingCount()).toBe(0);
     expect(harness.timers.delays).toEqual([]);
     expect(replacement.linkCalls).toEqual(["08"]);
+  });
+
+  it("awaits controlled cleanup before replacing a linked authority", async () => {
+    const storage = new MemorySessionStorage();
+    const cleanup = deferred<boolean>();
+    const transitions: ControlledWindowTransition[] = [];
+    const harness = coordinatorHarness(storage, {
+      beforeControlledTransition: (transition) => {
+        transitions.push(transition);
+        return cleanup.promise;
+      },
+    });
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-controlled-relink",
+    });
+    const original = await harness.link(10, "4873507");
+    await harness.authenticate(original, windowLink());
+    const context = trustedIdePeer();
+    const open = {
+      inspectMessageId: "inspect-current",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-current",
+    } as const;
+    original.emitRulesSources(context, rulesSources("inspect-current", 1));
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+    expect(transitions).toEqual([]);
+    const removalsBeforeRelink = storage.removals.length;
+
+    const relinking = harness.coordinator.linkWindow(
+      10,
+      "4873608",
+      browserSource("window-10-replacement"),
+    );
+    await Promise.resolve();
+
+    expect(transitions).toEqual([{ kind: "relink", windowId: 10 }]);
+    expect(original.unlinkCalls).toBe(0);
+    expect(storage.removals).toHaveLength(removalsBeforeRelink);
+    expect(harness.coordinator.state(10)).toBe("linked");
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+
+    cleanup.resolve(true);
+    await relinking;
+
+    expect(original.unlinkCalls).toBe(1);
+    expect(storage.removals).toHaveLength(removalsBeforeRelink + 1);
+    expect(harness.coordinator.state(10)).toBe("linking");
+    expect(harness.coordinator.publishRulesOpen(context, open))
+      .toBe("not-connected");
+    expect(original.rulesOpenCalls).toEqual([open, open]);
+    expect(harness.createdClients[1]?.linkCalls).toEqual(["08"]);
+  });
+
+  it("reconnects after a stale relink preparation loses its registration", async () => {
+    const cleanup = deferred<boolean>();
+    const harness = coordinatorHarness(new MemorySessionStorage(), {
+      beforeControlledTransition: (transition) => {
+        expect(transition).toEqual({ kind: "relink", windowId: 10 });
+        return cleanup.promise;
+      },
+    });
+    const originalRegistration = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-stale-relink-original",
+    });
+    const original = await harness.link(10, "4873507");
+    await harness.authenticate(original, windowLink());
+
+    const staleRelink = harness.coordinator.linkWindow(
+      10,
+      "4873608",
+      browserSource("window-10-stale-relink"),
+    );
+    await Promise.resolve();
+    originalRegistration.dispose();
+    cleanup.resolve(true);
+    await staleRelink;
+
+    const replacementRegistration = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 102,
+      sourceId: "panel-stale-relink-replacement",
+    });
+    const replacement = harness.createdClients[1];
+    if (!replacement) throw new Error("Expected a replacement window client");
+    replacement.emitState("connected");
+    replacement.emitState("disconnected");
+
+    expect(harness.coordinator.state(10)).toBe("reconnecting");
+    expect(harness.timers.pendingCount()).toBe(1);
+    expect(harness.timers.delays.at(-1)).toBe(1_000);
+    replacementRegistration.dispose();
+  });
+
+  it("awaits controlled cleanup before applying protocol mismatch side effects", async () => {
+    const cleanup = deferred<boolean>();
+    const transitions: ControlledWindowTransition[] = [];
+    const states: BrowserWindowConnectionState[] = [];
+    const mismatches: Array<[number, BrowserProtocolMismatch]> = [];
+    const harness = coordinatorHarness(new MemorySessionStorage(), {
+      beforeControlledTransition: (transition) => {
+        transitions.push(transition);
+        return cleanup.promise;
+      },
+    });
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-controlled-protocol-mismatch",
+      onStateChanged: (state) => states.push(state),
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const context = trustedIdePeer();
+    const open = {
+      inspectMessageId: "inspect-current",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-current",
+    } as const;
+    const details = {
+      browserProtocolVersion: PROTOCOL_VERSION,
+      peerProtocolVersion: 5,
+    } as const;
+    client.emitRulesSources(context, rulesSources("inspect-current", 1));
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+    harness.coordinator.onProtocolMismatch((windowId, mismatch) =>
+      mismatches.push([windowId, mismatch]),
+    );
+    states.length = 0;
+
+    client.emitState("incompatible");
+    client.emitProtocolMismatch(details);
+    await Promise.resolve();
+
+    expect(transitions).toEqual([
+      { kind: "protocolMismatch", windowId: 10 },
+    ]);
+    expect(harness.coordinator.state(10)).toBe("linked");
+    expect(states).toEqual([]);
+    expect(mismatches).toEqual([]);
+    expect(client.disconnectCalls).toBe(0);
+    expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+
+    cleanup.resolve(true);
+    await harness.flush();
+
+    expect(harness.coordinator.state(10)).toBe("incompatible");
+    expect(states).toEqual(["incompatible"]);
+    expect(mismatches).toEqual([[10, details]]);
+    expect(harness.coordinator.publishRulesOpen(context, open))
+      .toBe("not-connected");
+    expect(client.rulesOpenCalls).toEqual([open, open]);
+  });
+
+  it("awaits controlled cleanup before unlink side effects", async () => {
+    const storage = new MemorySessionStorage();
+    const cleanup = deferred<boolean>();
+    const transitions: ControlledWindowTransition[] = [];
+    const errors: unknown[] = [];
+    const harness = coordinatorHarness(storage, {
+      beforeControlledTransition: async (transition) => {
+        transitions.push(transition);
+        return await cleanup.promise;
+      },
+      onError: (error) => errors.push(error),
+    });
+    const states: string[] = [];
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-controlled-unlink",
+      onStateChanged: (state) => states.push(state),
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    const removalsBeforeUnlink = storage.removals.length;
+    states.length = 0;
+
+    const unlinking = harness.coordinator.unlinkWindow(10);
+    await Promise.resolve();
+
+    expect(transitions).toEqual([{ kind: "unlink", windowId: 10 }]);
+    expect(client.unlinkCalls).toBe(0);
+    expect(storage.removals).toHaveLength(removalsBeforeUnlink);
+    expect(states).toEqual([]);
+    expect(harness.coordinator.state(10)).toBe("linked");
+
+    cleanup.resolve(true);
+    await unlinking;
+
+    expect(client.unlinkCalls).toBe(1);
+    expect(storage.removals).toHaveLength(removalsBeforeUnlink + 1);
+    expect(states).toEqual(["notLinked"]);
+    expect(harness.coordinator.state(10)).toBe("notLinked");
+    expect(errors).toEqual([]);
+  });
+
+  it.each(["unlink", "remove"] as const)(
+    "keeps trusted Rules open authority until %s cleanup completes",
+    async (operation) => {
+      const cleanup = deferred<boolean>();
+      const transitions: ControlledWindowTransition[] = [];
+      const harness = coordinatorHarness(new MemorySessionStorage(), {
+        beforeControlledTransition: (transition) => {
+          transitions.push(transition);
+          return cleanup.promise;
+        },
+      });
+      harness.coordinator.registerPanel({
+        windowId: 10,
+        tabId: 101,
+        sourceId: `panel-controlled-${operation}`,
+      });
+      const client = await harness.link(10, "4873507");
+      await harness.authenticate(client, windowLink());
+      const context = trustedIdePeer();
+      const open = {
+        inspectMessageId: "inspect-current",
+        rulesGeneration: 1,
+        openAuthorityId: "authority-current",
+      } as const;
+      client.emitRulesSources(context, rulesSources("inspect-current", 1));
+      expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+
+      const transitioning = operation === "unlink"
+        ? harness.coordinator.unlinkWindow(10)
+        : harness.coordinator.removeWindow(10);
+      await Promise.resolve();
+
+      expect(transitions).toEqual([{ kind: operation, windowId: 10 }]);
+      expect(harness.coordinator.publishRulesOpen(context, open)).toBe("sent");
+      expect(client.rulesOpenCalls).toEqual([open, open]);
+
+      cleanup.resolve(true);
+      await transitioning;
+
+      expect(harness.coordinator.publishRulesOpen(context, open))
+        .toBe("not-connected");
+      expect(client.rulesOpenCalls).toEqual([open, open]);
+    },
+  );
+
+  it("does not let late unlink cleanup revoke a replacement connection", async () => {
+    const cleanup = deferred<boolean>();
+    let cleanupCalls = 0;
+    const harness = coordinatorHarness(new MemorySessionStorage(), {
+      beforeControlledTransition: (transition) => {
+        if (transition.kind === "relink") {
+          expect(transition).toEqual({ kind: "relink", windowId: 10 });
+          return true;
+        }
+        expect(transition).toEqual({ kind: "unlink", windowId: 10 });
+        cleanupCalls += 1;
+        return cleanup.promise;
+      },
+    });
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-unlink-replacement",
+    });
+    const original = await harness.link(10, "4873507");
+    await harness.authenticate(original, windowLink());
+
+    const unlinking = harness.coordinator.unlinkWindow(10);
+    await Promise.resolve();
+    const relinking = harness.coordinator.linkWindow(
+      10,
+      "4873608",
+      browserSource("window-10-replacement"),
+    );
+    await relinking;
+    const replacement = harness.createdClients[1];
+    if (!replacement) throw new Error("Expected a replacement window client");
+    const replacementLink = windowLink({
+      port: 48_736,
+      sessionId: "replacement-session",
+      bridgeInstanceId: INSTANCE_B,
+      authToken: AUTH_TOKEN_B,
+      displayLinkCode: "48736 08",
+    });
+    replacement.emitCredentials(credentialsFor(replacementLink));
+    replacement.emitState("connected");
+    await harness.flush();
+    expect(harness.coordinator.state(10)).toBe("linked");
+
+    cleanup.resolve(true);
+    await unlinking;
+    await harness.flush();
+
+    expect(cleanupCalls).toBe(1);
+    expect(replacement.unlinkCalls).toBe(0);
+    expect(harness.coordinator.state(10)).toBe("linked");
+    await expect(harness.store.load(10)).resolves.toEqual(replacementLink);
+  });
+
+  it.each(["rejected", "unacknowledged"] as const)(
+    "reports %s controlled cleanup and still completes unlink",
+    async (outcome) => {
+      const errors: unknown[] = [];
+      const harness = coordinatorHarness(new MemorySessionStorage(), {
+        beforeControlledTransition: () => outcome === "rejected"
+          ? Promise.reject(new Error("content context disappeared"))
+          : false,
+        onError: (error) => errors.push(error),
+      });
+      harness.coordinator.registerPanel({
+        windowId: 10,
+        tabId: 101,
+        sourceId: `panel-cleanup-${outcome}`,
+      });
+      const client = await harness.link(10, "4873507");
+      await harness.authenticate(client, windowLink());
+
+      await expect(harness.coordinator.unlinkWindow(10)).resolves.toBeUndefined();
+
+      expect(errors).toHaveLength(1);
+      expect(client.unlinkCalls).toBe(1);
+      expect(harness.coordinator.state(10)).toBe("notLinked");
+      await expect(harness.store.load(10)).resolves.toBeUndefined();
+    },
+  );
+
+  it("starts controlled cleanup best-effort without blocking synchronous dispose", async () => {
+    const cleanup = deferred<boolean>();
+    const transitions: ControlledWindowTransition[] = [];
+    const harness = coordinatorHarness(new MemorySessionStorage(), {
+      beforeControlledTransition: (transition) => {
+        transitions.push(transition);
+        return cleanup.promise;
+      },
+    });
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-controlled-dispose",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+
+    expect(() => harness.coordinator.dispose()).not.toThrow();
+
+    expect(transitions).toEqual([{ kind: "dispose", windowId: 10 }]);
+    expect(client.disconnectCalls).toBe(1);
+    expect(harness.coordinator.state(10)).toBe("notLinked");
+    cleanup.resolve(true);
+    await cleanup.promise;
   });
 
   it("revokes and deletes links on unlink and browser-window removal", async () => {
@@ -2564,7 +2915,10 @@ class RejectableAuthRemovalStorage extends MemorySessionStorage {
   }
 }
 
-function coordinatorHarness(storage: SessionStorage = new MemorySessionStorage()) {
+function coordinatorHarness(
+  storage: SessionStorage = new MemorySessionStorage(),
+  transitionOptions: ControlledWindowTransitionOptions = {},
+) {
   const createdClients: FakeWindowClient[] = [];
   const store = new BrowserWindowLinkStore(storage);
   const timers = manualTimers();
@@ -2577,7 +2931,8 @@ function coordinatorHarness(storage: SessionStorage = new MemorySessionStorage()
     },
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
-  });
+    ...transitionOptions,
+  } as WindowConnectionOptionsWithTransitionHook);
 
   return {
     coordinator,
@@ -2722,6 +3077,27 @@ function manualTimers() {
     },
   };
 }
+
+interface ControlledWindowTransition {
+  readonly kind:
+    | "relink"
+    | "unlink"
+    | "remove"
+    | "dispose"
+    | "protocolMismatch";
+  readonly windowId: number;
+}
+
+interface ControlledWindowTransitionOptions {
+  readonly beforeControlledTransition?: (
+    transition: ControlledWindowTransition,
+  ) => boolean | Promise<boolean>;
+  readonly onError?: (error: unknown) => void;
+}
+
+type WindowConnectionOptionsWithTransitionHook =
+  ConstructorParameters<typeof WindowConnectionCoordinator>[0] &
+    ControlledWindowTransitionOptions;
 
 function receiverSensitiveHostTimers() {
   let nextId = 0;
