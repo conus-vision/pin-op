@@ -710,7 +710,7 @@ export function validateBrowserArchive(archive, filename, browser) {
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
-    panelVariant: "legacy",
+    panelVariant: "inspector",
     platform: browser,
   });
 }
@@ -878,14 +878,20 @@ export function assertBrowserInspectorParity(chromeArchive, firefoxArchive) {
   if (!chromeArchive || !firefoxArchive) {
     throw new Error("Chrome and Firefox archives are required for Inspector parity");
   }
-  const chromeCss = chromeArchive.files.get("dist/devtools-elements.css");
-  const firefoxCss = firefoxArchive.files.get("dist/devtools-elements.css");
-  if (
-    !Buffer.isBuffer(chromeCss) ||
-    !Buffer.isBuffer(firefoxCss) ||
-    !chromeCss.equals(firefoxCss)
-  ) {
-    throw new Error("Chrome and Firefox devtools-elements.css must be byte-identical");
+  for (const path of [
+    "dist/devtools-elements.css",
+    "dist/inspector-panel.html",
+    "dist/inspectorPanel.js",
+  ]) {
+    const chromeBytes = chromeArchive.files.get(path);
+    const firefoxBytes = firefoxArchive.files.get(path);
+    if (
+      !Buffer.isBuffer(chromeBytes) ||
+      !Buffer.isBuffer(firefoxBytes) ||
+      !chromeBytes.equals(firefoxBytes)
+    ) {
+      throw new Error(`Chrome and Firefox ${path} must be byte-identical`);
+    }
   }
   const chromeNotices = chromeArchive.files.get("THIRD_PARTY_NOTICES");
   const firefoxNotices = firefoxArchive.files.get("THIRD_PARTY_NOTICES");

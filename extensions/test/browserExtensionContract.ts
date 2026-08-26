@@ -63,8 +63,26 @@ export interface BrowserPackageContractOptions {
   readonly expectedInspectorAssets: readonly string[];
   readonly expectedInspectorBundleMarkers: readonly string[];
   readonly expectedChromiumCssScope: ".pin-op-elements-inspector";
+  readonly expectedChromiumSelectors: readonly string[];
+  readonly expectedChromiumUiSha256: Readonly<Record<string, string>>;
   readonly expectedNoticePackages: readonly string[];
 }
+
+export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
+  "dist/inspector-panel.html":
+    "ee68e81109954105ba91301b50b962be4ce0309a37d0a9eda64dc3a6af850ba7",
+  "dist/devtools-elements.css":
+    "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+});
+
+export const SHARED_CHROMIUM_UI_SELECTORS = Object.freeze([
+  ".pin-op-elements-inspector .pin-op-elements-inspector__tree-row",
+  ".pin-op-elements-inspector .styles-pane",
+  ".pin-op-elements-inspector .styles-section",
+  ".pin-op-elements-inspector .pseudo-state-button",
+  ".pin-op-elements-inspector .pseudo-state-menu",
+  ".pin-op-elements-inspector .pseudo-state-choice",
+]);
 
 export function createBrowserAdapterHarness() {
   const event = () => ({
@@ -219,9 +237,9 @@ export function describeBrowserAdapterContract(
         `${contract.extensionOrigin}/dist/devtools.html`,
       );
       expect(options.expectedPanelUrl).toBe(
-        `${contract.extensionOrigin}/dist/panel.html`,
+        `${contract.extensionOrigin}/dist/inspector-panel.html`,
       );
-      expect(options.browserLocalInspection).toBe(false);
+      expect(options.browserLocalInspection).toBe(true);
 
       const storage = options.storage as Record<string, unknown>;
       await callAsync(storage.get, "window-link.17");
@@ -556,14 +574,14 @@ export function describeBrowserAdapterContract(
       ]);
       expect(options.inspectedTabId).toBe(91);
       expect(options.sourcePrefix).toBe(contract.sourcePrefix);
-      expect(options.panelPage).toBe("/dist/panel.html");
+      expect(options.panelPage).toBe("/dist/inspector-panel.html");
       expect(call(options.createId)).toBe("test-runtime-id");
 
       const panel = (await callAsync(
         options.createPanel,
         "Pin-op",
         "/dist/pin-op.svg",
-        "/dist/panel.html?channel=test",
+        "/dist/inspector-panel.html?channel=test",
       )) as Record<string, unknown>;
       const shownListener = vi.fn();
       call(panel.addShownListener, shownListener);
@@ -593,8 +611,8 @@ export function describeBrowserAdapterContract(
       expectSanitizedLog(consoleError, "DevTools", secret, harness);
     });
 
-    it("uses one fixed Inspector page for DevTools registration and background sender authority", async () => {
-      vi.stubGlobal("__PIN_OP_PANEL_PAGE__", "/dist/inspector-panel.html");
+    it("uses the explicit legacy rollback page for registration and sender authority", async () => {
+      vi.stubGlobal("__PIN_OP_PANEL_PAGE__", "/dist/panel.html");
 
       await contract.importBackground();
       await contract.importDevtools();
@@ -602,10 +620,10 @@ export function describeBrowserAdapterContract(
       const background = calledOptions(harness.starts.background);
       const devtools = calledOptions(harness.starts.devtools);
       expect(background.expectedPanelUrl).toBe(
-        `${contract.extensionOrigin}/dist/inspector-panel.html`,
+        `${contract.extensionOrigin}/dist/panel.html`,
       );
-      expect(background.browserLocalInspection).toBe(true);
-      expect(devtools.panelPage).toBe("/dist/inspector-panel.html");
+      expect(background.browserLocalInspection).toBe(false);
+      expect(devtools.panelPage).toBe("/dist/panel.html");
     });
 
     it("starts the separate Inspector entry through the shared runtime only", async () => {
@@ -751,34 +769,25 @@ export function describeBrowserPackageContract(
 ): void {
   describe(`${contract.platformName} emitted package contract`, () => {
     let packaged: PackagedExtension;
-    let inspectorPackaged: PackagedExtension;
+    let legacyPackaged: PackagedExtension;
 
     beforeAll(() => {
-      const inheritedPanelVariant = process.env.PIN_OP_PANEL_VARIANT;
-      const inheritedPanelVariantWasSet = Object.hasOwn(
-        process.env,
-        "PIN_OP_PANEL_VARIANT",
-      );
-      try {
-        process.env.PIN_OP_PANEL_VARIANT = "inspector";
-        packaged = buildPackagedExtension(contract);
-        process.env.PIN_OP_PANEL_VARIANT = "legacy";
-        inspectorPackaged = buildPackagedExtension(contract, "inspector");
-      } finally {
-        if (inheritedPanelVariantWasSet) {
-          process.env.PIN_OP_PANEL_VARIANT = inheritedPanelVariant;
-        } else {
-          delete process.env.PIN_OP_PANEL_VARIANT;
-        }
-      }
+      packaged = buildPackagedExtension(contract);
+      legacyPackaged = buildPackagedExtension(contract, "legacy");
     }, 60_000);
 
     afterAll(() => {
       packaged?.dispose();
-      inspectorPackaged?.dispose();
+      legacyPackaged?.dispose();
     });
 
-    it.each(["", "attacker", "Inspector"])(
+    it.each([
+      "",
+      "attacker",
+      "Inspector",
+      "https://attacker.invalid/panel.html",
+      "/dist/attacker.html",
+    ])(
       "rejects panel variant %j before mutating build output",
       (panelVariant) => {
         const workspaceRoot = resolve(
@@ -942,6 +951,26 @@ export function describeBrowserPackageContract(
       }
     });
 
+    it("emits the pinned shared Chromium-derived UI bytes and selectors", () => {
+      const actualHashes = Object.fromEntries(
+        Object.keys(contract.expectedChromiumUiSha256).map((path) => [
+          path,
+          createHash("sha256").update(packagedBytes(packaged, path)).digest("hex"),
+        ]),
+      );
+      const selectors = new Set<string>();
+      postcss
+        .parse(packagedText(packaged, "dist/devtools-elements.css"))
+        .walkRules((rule) => {
+          for (const selector of rule.selectors) selectors.add(selector.trim());
+        });
+
+      expect(actualHashes).toEqual(contract.expectedChromiumUiSha256);
+      expect([...selectors]).toEqual(
+        expect.arrayContaining([...contract.expectedChromiumSelectors]),
+      );
+    });
+
     it("passes the common runtime contract with the real emitted bundles", () => {
       expect(() => assertBrowserPackageRuntimeContract(
         { files: new Map(packaged.files) },
@@ -949,12 +978,12 @@ export function describeBrowserPackageContract(
           artifactLabel: `${contract.platformName} real emitted package`,
           metadataLabel: `${contract.platformName} real emitted metadata`,
           platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
-          panelVariant: "legacy",
+          panelVariant: "inspector",
         },
       )).not.toThrow();
     });
 
-    it("keeps the ordinary build on the legacy panel and provenance", () => {
+    it("keeps the ordinary build on the shared Inspector panel and provenance", () => {
       const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
       const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
         (entry) => entry.browser === browser,
@@ -965,54 +994,55 @@ export function describeBrowserPackageContract(
         sha256: createHash("sha256").update(packagedBytes(packaged, path)).digest("hex"),
       }));
 
-      expect(actual).toEqual(expected.map(({ browser, path, sha256 }) => ({
+      expect(actual).toEqual(expected.map(({ browser, path, inspectorSha256 }) => ({
         browser,
         path,
-        sha256,
+        sha256: inspectorSha256,
       })));
-      expect(compiledPanelPage(packaged)).toBe("/dist/panel.html");
+      expect(compiledPanelPage(packaged)).toBe("/dist/inspector-panel.html");
     });
 
-    it("builds and validates the inspector package with reviewed provenance", () => {
+    it("builds and validates the explicit legacy rollback package", () => {
       const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
       const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
         (entry) => entry.browser === browser,
       );
 
       expect(() => assertBrowserPackageRuntimeContract(
-        { files: new Map(inspectorPackaged.files) },
+        { files: new Map(legacyPackaged.files) },
         {
-          artifactLabel: `${contract.platformName} real emitted inspector package`,
-          metadataLabel: `${contract.platformName} real emitted inspector metadata`,
-          platform: browser,
-          panelVariant: "legacy",
-        },
-      )).toThrow(/legacy panel|expected \/dist\/panel\.html/i);
-      expect(() => assertBrowserPackageRuntimeContract(
-        { files: new Map(inspectorPackaged.files) },
-        {
-          artifactLabel: `${contract.platformName} real emitted inspector package`,
-          metadataLabel: `${contract.platformName} real emitted inspector metadata`,
+          artifactLabel: `${contract.platformName} real emitted rollback package`,
+          metadataLabel: `${contract.platformName} real emitted rollback metadata`,
           platform: browser,
           panelVariant: "inspector",
         },
+      )).toThrow(/inspector panel|expected \/dist\/inspector-panel\.html/i);
+      expect(() => assertBrowserPackageRuntimeContract(
+        { files: new Map(legacyPackaged.files) },
+        {
+          artifactLabel: `${contract.platformName} real emitted rollback package`,
+          metadataLabel: `${contract.platformName} real emitted rollback metadata`,
+          platform: browser,
+          panelVariant: "legacy",
+        },
       )).not.toThrow();
-      expect(compiledPanelPage(inspectorPackaged)).toBe(
-        "/dist/inspector-panel.html",
-      );
+      expect(compiledPanelPage(legacyPackaged)).toBe("/dist/panel.html");
       expect(expected.map(({ path }) => ({
         browser,
         path,
         sha256: createHash("sha256")
-          .update(packagedBytes(inspectorPackaged, path))
+          .update(packagedBytes(legacyPackaged, path))
           .digest("hex"),
-      }))).toEqual(expected.map(({ path, inspectorSha256 }) => ({
+      }))).toEqual(expected.map(({ path, sha256 }) => ({
         browser,
         path,
-        sha256: inspectorSha256,
+        sha256,
       })));
-      expect(inspectorPackaged.checkoutAfter).toEqual(
-        inspectorPackaged.checkoutBefore,
+      for (const path of ["dist/inspector-panel.html", "dist/panel.html"]) {
+        expect(legacyPackaged.files.has(path), path).toBe(true);
+      }
+      expect(legacyPackaged.checkoutAfter).toEqual(
+        legacyPackaged.checkoutBefore,
       );
     });
 
@@ -1052,7 +1082,7 @@ export function describeBrowserPackageContract(
             artifactLabel: `${contract.platformName} altered emitted package`,
             metadataLabel: `${contract.platformName} altered emitted metadata`,
             platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
-            panelVariant: "legacy",
+            panelVariant: "inspector",
           },
         )).toThrow(/dynamic code evaluation/i);
       }
@@ -1139,6 +1169,28 @@ export function describeBrowserPackageContract(
           expect(match[1], `${path}: ${match[0]}`).toMatch(/^\.\/[A-Za-z0-9._/-]+$/);
         }
       }
+    });
+
+    it("keeps browser product branding out of user-facing panel UI strings", () => {
+      for (const candidate of [packaged, legacyPackaged]) {
+        for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+          expect(packagedText(candidate, path), path).not.toMatch(
+            /\b(?:Chrome|Chromium|Google)\b/,
+          );
+        }
+        for (const path of ["dist/inspectorPanel.js", "dist/panel.js"]) {
+          expect(userFacingBrowserBranding(
+            packagedText(candidate, path),
+          ), path).toEqual([]);
+        }
+      }
+      expect(userFacingBrowserBranding([
+        'const extensionOrigin = "chrome-extension://pin-op";',
+        'const internalProduct = "@pin-op/chrome";',
+        'const browserApi = "chrome.runtime";',
+        'const productLabel = "Chrome";',
+        'const derivedLabel = "Chromium-derived";',
+      ].join("\n"))).toEqual(["Chrome", "Chromium-derived"]);
     });
 
     it("keeps Chromium-derived CSS scoped and upstream snapshots out of production", () => {
@@ -1263,35 +1315,37 @@ export function describeBrowserPackageContract(
     });
 
     it("contains the exact approved manifest permissions and CSP", () => {
-      const manifest = JSON.parse(
-        packagedText(packaged, "manifest.json"),
-      ) as PackagedManifest;
+      for (const candidate of [packaged, legacyPackaged]) {
+        const manifest = JSON.parse(
+          packagedText(candidate, "manifest.json"),
+        ) as PackagedManifest;
 
-      expect(manifest.permissions).toEqual([
-        "activeTab",
-        "clipboardRead",
-        "scripting",
-        "storage",
-        "tabs",
-      ]);
-      expect(manifest.permissions).not.toEqual(
-        expect.arrayContaining([
-          "webNavigation",
-          "debugger",
-          "nativeMessaging",
-          "unlimitedStorage",
-        ]),
-      );
-      expect(manifest.host_permissions).toEqual([
-        "http://localhost/*",
-        "http://127.0.0.1/*",
-        "<all_urls>",
-      ]);
-      expect(manifest).not.toHaveProperty("optional_permissions");
-      expect(manifest).not.toHaveProperty("optional_host_permissions");
-      expect(manifest.content_security_policy.extension_pages).toBe(
-        "script-src 'self'; object-src 'none'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*",
-      );
+        expect(manifest.permissions).toEqual([
+          "activeTab",
+          "clipboardRead",
+          "scripting",
+          "storage",
+          "tabs",
+        ]);
+        expect(manifest.permissions).not.toEqual(
+          expect.arrayContaining([
+            "webNavigation",
+            "debugger",
+            "nativeMessaging",
+            "unlimitedStorage",
+          ]),
+        );
+        expect(manifest.host_permissions).toEqual([
+          "http://localhost/*",
+          "http://127.0.0.1/*",
+          "<all_urls>",
+        ]);
+        expect(manifest).not.toHaveProperty("optional_permissions");
+        expect(manifest).not.toHaveProperty("optional_host_permissions");
+        expect(manifest.content_security_policy.extension_pages).toBe(
+          "script-src 'self'; object-src 'none'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*",
+        );
+      }
     });
 
     it("keeps packaged product transport HTTP-free and loopback WebSocket-only", () => {
@@ -1376,6 +1430,30 @@ const PACKAGED_HTTP_URL_ALLOWLIST = new Set([
   "http://localhost/",
   "https://pin-op.invalid/",
 ]);
+
+function userFacingBrowserBranding(source: string): readonly string[] {
+  const sourceFile = ts.createSourceFile(
+    "packaged-panel-branding-scan.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node)) {
+      const reviewedText = node.text
+        .replace(/\bchrome-extension:\/\/[^\s"'`\\<>]+/gi, "")
+        .replace(/\b(?:@pin-op\/|pin-op-)chrome\b/gi, "");
+      if (/\b(?:Chrome|Chromium|Google)\b/.test(reviewedText)) {
+        found.add(node.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found];
+}
 
 function disallowedPackagedHttpUrls(source: string): readonly string[] {
   const sourceFile = ts.createSourceFile(
@@ -1653,7 +1731,7 @@ interface PackagedManifest {
 
 function buildPackagedExtension(
   contract: BrowserPackageContractOptions,
-  panelVariant: "default" | "inspector" = "default",
+  panelVariant: "default" | "legacy" = "default",
 ): PackagedExtension {
   const extensionRoot = fileURLToPath(contract.extensionRoot);
   const workspaceRoot = resolve(
@@ -1676,8 +1754,8 @@ function buildPackagedExtension(
     );
     const buildEnvironment = { ...process.env };
     delete buildEnvironment.PIN_OP_PANEL_VARIANT;
-    if (panelVariant === "inspector") {
-      buildEnvironment.PIN_OP_PANEL_VARIANT = "inspector";
+    if (panelVariant === "legacy") {
+      buildEnvironment.PIN_OP_PANEL_VARIANT = "legacy";
     }
     execFileSync(process.execPath, [join(buildRoot, "esbuild.mjs")], {
       cwd: buildRoot,

@@ -66,7 +66,7 @@ export async function registerDevtoolsPanel(
     panel = await options.createPanel(
       "Pin-op",
       "/dist/pin-op.svg",
-      `${options.panelPage ?? "/dist/panel.html"}?channel=${encodeURIComponent(options.channelId)}`,
+      `${options.panelPage ?? "/dist/inspector-panel.html"}?channel=${encodeURIComponent(options.channelId)}`,
     );
     panel.addShownListener(onShown);
   } catch (error) {

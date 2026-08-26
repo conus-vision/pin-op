@@ -38,7 +38,7 @@ startDevtoolsRuntime({
 function compiledPanelPage(): DevtoolsPanelPage {
   const value = typeof __PIN_OP_PANEL_PAGE__ === "string"
     ? __PIN_OP_PANEL_PAGE__
-    : "/dist/panel.html";
+    : "/dist/inspector-panel.html";
   if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") {
     return value;
   }

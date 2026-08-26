@@ -47,12 +47,27 @@ const panelBundle = [
 const inspectorPanelBundle = [
   'const inspectorWorkspace = "inspector-workspace";',
   'const matchedStylesRequest = "styles.getMatched";',
+  'const setPseudoStatesRequest = "styles.setPseudoStates";',
+  'const pseudoStatesResponse = "styles.pseudoStates";',
+  'const pseudoStateRevision = "pseudoStateRevision";',
+  'const previewLabelPrefix = "Preview :";',
+  'const pseudoStateAttribute = "data-pseudo-state";',
+  'const boundedPseudoStates = ["hover","focus"];',
   'const rulesReadOnlyState = "aria-readonly";',
   'const rulesRenderer = "Rules";',
   'const rulesSourcesPublication = "rules.sources";',
   'const rulesOpenIntent = "pin-op.rules.open";',
   'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
   "",
+].join("\n");
+const contentScriptBundle = [
+  'const selectionMarker = "data-pin-op-preview-selected-";',
+  'const hoverMarker = "data-pin-op-preview-hover-";',
+  'const focusMarker = "data-pin-op-preview-focus-";',
+  'const runtimeStyleMarker = "data-pin-op-runtime-";',
+  'const runtimeArtifactNodeExclusion = "isRuntimeArtifactNode";',
+  'const runtimeArtifactAttributeExclusion = "isRuntimeArtifactAttributeName";',
+  'const runtimeArtifactMutationExclusion = "isRuntimeArtifactAttributeMutation";',
 ].join("\n");
 const backgroundBundle = [
   'const rulesSourcesCapability = "rules-sources";',
@@ -74,6 +89,9 @@ function compiledPanelRuntime(panelPage) {
     "",
   ].join("\n");
 }
+const LEGACY_PANEL_PAGE = "/dist/panel.html";
+const INSPECTOR_PANEL_PAGE = "/dist/inspector-panel.html";
+const acceptedBrowserPanelPages = new Map();
 const upstreamManifest = JSON.parse(
   readFileSync(
     resolve(repositoryRoot, "third_party/chromium-devtools-frontend/UPSTREAM.json"),
@@ -90,16 +108,16 @@ const upstreamRootLicense = readFileSync(
 // Retaining those helpers after dependency/build changes requires a security
 // review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "868d40a59950bc2fbb529f84810c100693d7a32af22f9e3ee730222494be5835", inspectorSha256: "0f7b7256943f5cf63733fb0b36dfb8897e27067ed36bc271abc8643b3ab618e1" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" },
-  { browser: "firefox", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "387dd88fb6ac0abf80144e87005c2762fe30be7e2ed8210c4ff3f36239229e1f", inspectorSha256: "a8e8ae8008c7487e342cb582acd4c2bbe70ce6c17c37e0adde1d20c537038dd7" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" },
+  { browser: "chrome", path: "dist/background.js", sha256: "a7c368b05a02921f27ea7f829791de5593f761b3f6adf5af8cc36d9a3a16f269", inspectorSha256: "ca9e73853aa06786c56c50746f139f0b887a5e3393a75c4572b4cffafe0012cf" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5", inspectorSha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "386e56a5cb443273c9173632fb4a5ffe814e2d58f1e6e82fa829b9cd6cbaa5fa", inspectorSha256: "69297d2c91eda0cca10f8188f900f8eaa258889869bbc21a17dcc75ad945f2fd" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7", inspectorSha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250", inspectorSha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250" },
+  { browser: "firefox", path: "dist/background.js", sha256: "a7c368b05a02921f27ea7f829791de5593f761b3f6adf5af8cc36d9a3a16f269", inspectorSha256: "ca9e73853aa06786c56c50746f139f0b887a5e3393a75c4572b4cffafe0012cf" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5", inspectorSha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "050ca48f70cb9e077281ebe905e2a8a83efa439fdbd76de2fa4804814df73d80", inspectorSha256: "ef72b605db289e7b0eb630259b28cd1b0cc421c5af99a127ff956e89934a0955" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7", inspectorSha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250", inspectorSha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -110,6 +128,26 @@ test("browser runtime contract pins reviewed constructor-clone provenance per br
 });
 
 const requiredMarkers = [
+  {
+    label: "Inspector workspace",
+    path: "dist/inspector-panel.html",
+    marker: 'id="inspector-workspace"',
+  },
+  {
+    label: "Inspector mount",
+    path: "dist/inspector-panel.html",
+    marker: 'id="inspector-elements-mount"',
+  },
+  {
+    label: "pseudo-state button selector",
+    path: "dist/devtools-elements.css",
+    marker: ".pseudo-state-button",
+  },
+  {
+    label: "pseudo-state menu selector",
+    path: "dist/devtools-elements.css",
+    marker: ".pseudo-state-menu",
+  },
   {
     label: "toolbar",
     path: "dist/panel.html",
@@ -232,6 +270,36 @@ const requiredMarkers = [
     marker: "rules.sources",
   },
   {
+    label: "pseudo-state request",
+    path: "dist/inspectorPanel.js",
+    marker: "styles.setPseudoStates",
+  },
+  {
+    label: "pseudo-state response",
+    path: "dist/inspectorPanel.js",
+    marker: "styles.pseudoStates",
+  },
+  {
+    label: "pseudo-state revision",
+    path: "dist/inspectorPanel.js",
+    marker: "pseudoStateRevision",
+  },
+  {
+    label: "pseudo-state label prefix",
+    path: "dist/inspectorPanel.js",
+    marker: "Preview :",
+  },
+  {
+    label: "pseudo-state control attribute",
+    path: "dist/inspectorPanel.js",
+    marker: "data-pseudo-state",
+  },
+  {
+    label: "bounded pseudo-state list",
+    path: "dist/inspectorPanel.js",
+    marker: '["hover","focus"]',
+  },
+  {
     label: "Rules source open intent",
     path: "dist/inspectorPanel.js",
     marker: "pin-op.rules.open",
@@ -340,13 +408,28 @@ const requiredMarkers = [
     path: "dist/background.js",
     marker,
   })),
+  ...[
+    ["selection preview marker", "data-pin-op-preview-selected-"],
+    ["hover preview marker", "data-pin-op-preview-hover-"],
+    ["focus preview marker", "data-pin-op-preview-focus-"],
+    ["runtime style marker", "data-pin-op-runtime-"],
+    ["runtime artifact node exclusion", "isRuntimeArtifactNode"],
+    ["runtime artifact attribute exclusion", "isRuntimeArtifactAttributeName"],
+    ["runtime artifact mutation exclusion", "isRuntimeArtifactAttributeMutation"],
+  ].map(([label, marker]) => ({
+    label,
+    path: "dist/contentScript.js",
+    marker,
+  })),
 ];
 
-test("browser artifact inventory includes the complete Inspector asset set", () => {
+test("browser artifact inventory includes the Inspector default and legacy rollback", () => {
   for (const path of [
     "dist/inspector-panel.html",
     "dist/inspectorPanel.js",
     "dist/devtools-elements.css",
+    "dist/panel.html",
+    "dist/panel.js",
   ]) {
     assert.ok(BROWSER_ARCHIVE_FILES.includes(path), path);
   }
@@ -367,6 +450,26 @@ test("browser artifact verifier requires byte-identical derived assets and notic
   );
 
   firefox.files.set("dist/devtools-elements.css", Buffer.from(elementsCss));
+  firefox.files.set(
+    "dist/inspector-panel.html",
+    Buffer.from(`${inspectorPanelHtml}\n<!-- drift -->\n`),
+  );
+  assert.throws(
+    () => artifactVerifier.assertBrowserInspectorParity(chrome, firefox),
+    /inspector-panel\.html.*byte-identical/i,
+  );
+
+  firefox.files.set("dist/inspector-panel.html", Buffer.from(inspectorPanelHtml));
+  firefox.files.set(
+    "dist/inspectorPanel.js",
+    Buffer.from(`${inspectorPanelBundle}\n// drift\n`),
+  );
+  assert.throws(
+    () => artifactVerifier.assertBrowserInspectorParity(chrome, firefox),
+    /inspectorPanel\.js.*byte-identical/i,
+  );
+
+  firefox.files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));
   firefox.files.set(
     "THIRD_PARTY_NOTICES",
     Buffer.from(`${firefox.files.get("THIRD_PARTY_NOTICES")}\nnotice drift\n`),
@@ -389,10 +492,10 @@ test("top-level artifact verification invokes cross-browser Inspector parity", (
 });
 
 for (const browser of ["firefox", "chrome"]) {
-  test(`common ${browser} artifact verifier accepts protocol v7 and the current panel`, () => {
+  test(`common ${browser} artifact verifier accepts protocol v7 and the Inspector default`, () => {
     assert.doesNotThrow(() =>
       validateBrowserArchive(
-        browserArchive(browser),
+        browserArchive(browser, INSPECTOR_PANEL_PAGE),
         `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
@@ -835,20 +938,10 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
-  test(`common ${browser} release verifier rejects an Inspector entrypoint`, () => {
-    const archive = browserArchive(browser);
-    for (const path of ["dist/background.js", "dist/devtools.js"]) {
-      const source = archive.files.get(path).toString("utf8");
-      archive.files.set(
-        path,
-        Buffer.from(
-          source.replace(
-            compiledPanelRuntime("/dist/panel.html"),
-            compiledPanelRuntime("/dist/inspector-panel.html"),
-          ),
-        ),
-      );
-    }
+  test(`common ${browser} release verifier keeps legacy only as a rollback entrypoint`, () => {
+    const archive = browserArchive(browser, LEGACY_PANEL_PAGE);
+    assert.ok(archive.files.has("dist/panel.html"));
+    assert.ok(archive.files.has("dist/panel.js"));
 
     assert.throws(
       () => validateBrowserArchive(
@@ -856,7 +949,7 @@ for (const browser of ["firefox", "chrome"]) {
         `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
-      /legacy panel|expected \/dist\/panel\.html/i,
+      /Inspector panel|expected \/dist\/inspector-panel\.html/i,
     );
   });
 
@@ -1743,7 +1836,7 @@ test("common Firefox artifact verifier requires exact Gecko settings", () => {
   }
 });
 
-function browserArchive(browser) {
+function browserArchive(browser, panelPage = currentBrowserPanelPage(browser)) {
   const files = new Map(
     BROWSER_ARCHIVE_FILES.map((path) => [path, Buffer.from(`fixture ${path}`)]),
   );
@@ -1769,10 +1862,10 @@ function browserArchive(browser) {
       path,
       Buffer.from(
         path === "dist/background.js"
-          ? `${backgroundBundle}\n${compiledPanelRuntime("/dist/panel.html")}`
+          ? `${backgroundBundle}\n${compiledPanelRuntime(panelPage)}`
           : path === "dist/devtools.js"
-            ? compiledPanelRuntime("/dist/panel.html")
-            : `// fixture ${path}\n`,
+            ? compiledPanelRuntime(panelPage)
+            : contentScriptBundle,
       ),
     );
   }
@@ -1794,6 +1887,29 @@ function browserArchive(browser) {
     );
   }
   return { files, paths: [...BROWSER_ARCHIVE_FILES] };
+}
+
+function currentBrowserPanelPage(browser) {
+  const accepted = acceptedBrowserPanelPages.get(browser);
+  if (accepted) return accepted;
+  const failures = [];
+  for (const panelPage of [INSPECTOR_PANEL_PAGE, LEGACY_PANEL_PAGE]) {
+    try {
+      validateBrowserArchive(
+        browserArchive(browser, panelPage),
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      );
+      acceptedBrowserPanelPages.set(browser, panelPage);
+      return panelPage;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    `No ${browser} panel fixture satisfies the current runtime contract`,
+  );
 }
 
 function chromiumNoticeFixture() {

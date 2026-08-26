@@ -5,6 +5,29 @@ import {
 } from "../src/devtoolsRuntime.js";
 
 describe("registerDevtoolsPanel", () => {
+  it("registers the Chromium-derived Inspector panel by default", async () => {
+    const created: string[] = [];
+    const registration = await registerDevtoolsPanel({
+      inspectedTabId: 42,
+      channelId: "channel-1",
+      sourceId: "firefox-source-1",
+      async createPanel(_title, _icon, page) {
+        created.push(page);
+        return {
+          addShownListener() {},
+          removeShownListener() {},
+        };
+      },
+      addRuntimeMessageListener: () => () => {},
+      async sendRuntimeMessage() {},
+    });
+
+    expect(created).toEqual([
+      "/dist/inspector-panel.html?channel=channel-1",
+    ]);
+    registration.dispose();
+  });
+
   it("registers a trusted source and re-announces it for panel recovery", async () => {
     let onShown: (() => void) | undefined;
     let runtimeListener: ((message: unknown) => void) | undefined;
@@ -35,7 +58,7 @@ describe("registerDevtoolsPanel", () => {
       {
         title: "Pin-op",
         icon: "/dist/pin-op.svg",
-        page: "/dist/panel.html?channel=channel-1",
+        page: "/dist/inspector-panel.html?channel=channel-1",
       },
     ]);
     expect(sent).toEqual([
@@ -98,13 +121,13 @@ describe("registerDevtoolsPanel", () => {
     expect(removed).toEqual(["runtime"]);
   });
 
-  it("registers only the explicitly selected Inspector panel page", async () => {
+  it("registers only the explicitly selected legacy rollback page", async () => {
     const created: string[] = [];
     const registration = await registerDevtoolsPanel({
       inspectedTabId: 42,
       channelId: "channel-1",
       sourceId: "firefox-source-1",
-      panelPage: "/dist/inspector-panel.html",
+      panelPage: "/dist/panel.html",
       async createPanel(_title, _icon, page) {
         created.push(page);
         return {
@@ -117,7 +140,7 @@ describe("registerDevtoolsPanel", () => {
     });
 
     expect(created).toEqual([
-      "/dist/inspector-panel.html?channel=channel-1",
+      "/dist/panel.html?channel=channel-1",
     ]);
     registration.dispose();
   });

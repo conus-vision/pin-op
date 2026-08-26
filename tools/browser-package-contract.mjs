@@ -64,6 +64,25 @@ const PANEL_BUNDLE_MARKERS = Object.freeze([
 const INSPECTOR_BUNDLE_MARKERS = Object.freeze([
   ["read-only Rules", "aria-readonly"],
   ["Rules renderer", "Rules"],
+  ["pseudo-state request", "styles.setPseudoStates"],
+  ["pseudo-state response", "styles.pseudoStates"],
+  ["pseudo-state revision", "pseudoStateRevision"],
+  ["pseudo-state label prefix", "Preview :"],
+  ["pseudo-state control attribute", "data-pseudo-state"],
+  ["bounded pseudo-state list", '["hover","focus"]'],
+]);
+const INSPECTOR_CSS_MARKERS = Object.freeze([
+  ["pseudo-state button selector", ".pseudo-state-button"],
+  ["pseudo-state menu selector", ".pseudo-state-menu"],
+]);
+const CONTENT_SCRIPT_BUNDLE_MARKERS = Object.freeze([
+  ["selection preview marker", "data-pin-op-preview-selected-"],
+  ["hover preview marker", "data-pin-op-preview-hover-"],
+  ["focus preview marker", "data-pin-op-preview-focus-"],
+  ["runtime style marker", "data-pin-op-runtime-"],
+  ["runtime artifact node exclusion", "isRuntimeArtifactNode"],
+  ["runtime artifact attribute exclusion", "isRuntimeArtifactAttributeName"],
+  ["runtime artifact mutation exclusion", "isRuntimeArtifactAttributeMutation"],
 ]);
 const RULES_SOURCE_PROPERTY_MARKERS = Object.freeze([
   ["Rules inspect correlation", "inspectMessageId"],
@@ -163,16 +182,16 @@ const MAX_STATIC_STRING_LENGTH = 256;
 // outputs, hashing the raw archived bytes. Any retained helper requires
 // deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" }),
-  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" }),
-  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "868d40a59950bc2fbb529f84810c100693d7a32af22f9e3ee730222494be5835", inspectorSha256: "0f7b7256943f5cf63733fb0b36dfb8897e27067ed36bc271abc8643b3ab618e1" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" }),
-  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "84bddb3618a0074ed2f13d6d4b493161d5e5d712d1df56811ae4b1b84ebc0a5c", inspectorSha256: "e8c67ad20fc50ce64cb0d9630321b2e74be53a90cb7d7a2d399a3cc234be0d2d" }),
-  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119", inspectorSha256: "08b99852b08a2aa5a281dc1251bd9b22682645ae26e33113177cd3efb2d01119" }),
-  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "387dd88fb6ac0abf80144e87005c2762fe30be7e2ed8210c4ff3f36239229e1f", inspectorSha256: "a8e8ae8008c7487e342cb582acd4c2bbe70ce6c17c37e0adde1d20c537038dd7" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97", inspectorSha256: "f7a06914d842f4b4fa7e0c93739bc6c46a01830e04e9b1f0bb3eaadb3d3f2d97" }),
-  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357", inspectorSha256: "da9a96b71781b7ff9bce8de403deb6320419b705a83e64cc5bfe1b0a17c11357" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "a7c368b05a02921f27ea7f829791de5593f761b3f6adf5af8cc36d9a3a16f269", inspectorSha256: "ca9e73853aa06786c56c50746f139f0b887a5e3393a75c4572b4cffafe0012cf" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5", inspectorSha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "386e56a5cb443273c9173632fb4a5ffe814e2d58f1e6e82fa829b9cd6cbaa5fa", inspectorSha256: "69297d2c91eda0cca10f8188f900f8eaa258889869bbc21a17dcc75ad945f2fd" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7", inspectorSha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7" }),
+  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250", inspectorSha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "a7c368b05a02921f27ea7f829791de5593f761b3f6adf5af8cc36d9a3a16f269", inspectorSha256: "ca9e73853aa06786c56c50746f139f0b887a5e3393a75c4572b4cffafe0012cf" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5", inspectorSha256: "cb0e14eec7d18a5d69ec6a9294dd6e023bc8271ea3a8190cb335e54139495fa5" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "050ca48f70cb9e077281ebe905e2a8a83efa439fdbd76de2fa4804814df73d80", inspectorSha256: "ef72b605db289e7b0eb630259b28cd1b0cc421c5af99a127ff956e89934a0955" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7", inspectorSha256: "153fca521d58b76cc193612a8a297321c56be12084a6d884b323d34c46db15d7" }),
+  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250", inspectorSha256: "2fc4af250c79e1e32970cfdc23cacaa07eb40007f2e13d3a11f60563be415250" }),
 ]);
 
 export function assertRulesSourceJavaScriptContract(
@@ -291,6 +310,18 @@ export function assertBrowserPackageRuntimeContract(
     "panel",
   );
   assertScopedChromiumCss(archive, artifactLabel);
+  assertTextMarkers(
+    archive,
+    artifactLabel,
+    "dist/devtools-elements.css",
+    INSPECTOR_CSS_MARKERS,
+  );
+  assertTextMarkers(
+    archive,
+    artifactLabel,
+    "dist/inspectorPanel.js",
+    [["Inspector runtime", "inspector-workspace"], ...INSPECTOR_BUNDLE_MARKERS],
+  );
   assertNoLocalPathsInRuntimeAssets(archive, artifactLabel);
   assertBrowserBundlesAreStatic(
     archive,
@@ -321,12 +352,6 @@ export function assertBrowserPackageRuntimeContract(
       ["Inspector bundle", 'src="./inspectorPanel.js"'],
     ],
   );
-  assertTextMarkers(
-    archive,
-    artifactLabel,
-    "dist/inspectorPanel.js",
-    [["Inspector runtime", "inspector-workspace"], ...INSPECTOR_BUNDLE_MARKERS],
-  );
   assertRulesSourceJavaScriptContract(
     archive.files.get("dist/inspectorPanel.js").toString("utf8"),
     `${artifactLabel} dist/inspectorPanel.js`,
@@ -355,6 +380,12 @@ export function assertBrowserPackageRuntimeContract(
     artifactLabel,
     "dist/panel.js",
     PANEL_BUNDLE_MARKERS,
+  );
+  assertTextMarkers(
+    archive,
+    artifactLabel,
+    "dist/contentScript.js",
+    CONTENT_SCRIPT_BUNDLE_MARKERS,
   );
   parseRuntimeMetadata(archive.files.get("dist/runtime-metadata.json"), {
     expectedProtocolVersion: 7,

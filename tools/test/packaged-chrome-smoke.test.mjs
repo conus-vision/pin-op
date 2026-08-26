@@ -67,10 +67,26 @@ const panelBundleFixture = [
 const inspectorPanelBundleFixture = [
   'const inspectorWorkspace = "inspector-workspace";',
   'const matchedStylesRequest = "styles.getMatched";',
+  'const setPseudoStatesRequest = "styles.setPseudoStates";',
+  'const pseudoStatesResponse = "styles.pseudoStates";',
+  'const pseudoStateRevision = "pseudoStateRevision";',
+  'const pseudoStates = "pseudoStates";',
+  'const previewLabelPrefix = "Preview :";',
+  'const pseudoStateAttribute = "data-pseudo-state";',
+  'const boundedPseudoStates = ["hover","focus"];',
   'const readOnlyRules = "aria-readonly Rules";',
   'const rulesSourcesPublication = "rules.sources";',
   'const rulesOpenIntent = "pin-op.rules.open";',
   'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
+].join("\n");
+const contentScriptBundleFixture = [
+  'const selectionMarker = "data-pin-op-preview-selected-";',
+  'const hoverMarker = "data-pin-op-preview-hover-";',
+  'const focusMarker = "data-pin-op-preview-focus-";',
+  'const runtimeStyleMarker = "data-pin-op-runtime-";',
+  'const runtimeArtifactNodeExclusion = "isRuntimeArtifactNode";',
+  'const runtimeArtifactAttributeExclusion = "isRuntimeArtifactAttributeName";',
+  'const runtimeArtifactMutationExclusion = "isRuntimeArtifactAttributeMutation";',
 ].join("\n");
 const backgroundBundleFixture = [
   'const rulesSourcesCapability = "rules-sources";',
@@ -92,7 +108,14 @@ function compiledPanelRuntime(panelPage) {
   ].join("\n");
 }
 
-function createArchive(paths = CHROME_ARCHIVE_FILES) {
+const LEGACY_PANEL_PAGE = "/dist/panel.html";
+const INSPECTOR_PANEL_PAGE = "/dist/inspector-panel.html";
+let acceptedPackagedPanelPage;
+
+function createArchive(
+  paths = CHROME_ARCHIVE_FILES,
+  panelPage = currentPackagedPanelPage(),
+) {
   const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
   files.set(
     "manifest.json",
@@ -114,22 +137,40 @@ function createArchive(paths = CHROME_ARCHIVE_FILES) {
   files.set(
     "dist/background.js",
     Buffer.from(
-      `${backgroundBundleFixture}\n${compiledPanelRuntime("/dist/panel.html")}`,
+      `${backgroundBundleFixture}\n${compiledPanelRuntime(panelPage)}`,
     ),
   );
   files.set(
     "dist/contentScript.js",
-    Buffer.from("const packagedContentRuntime = true;\n"),
+    Buffer.from(contentScriptBundleFixture),
   );
   files.set(
     "dist/devtools.js",
-    Buffer.from(compiledPanelRuntime("/dist/panel.html")),
+    Buffer.from(compiledPanelRuntime(panelPage)),
   );
   files.set(
     "dist/runtime-metadata.json",
     Buffer.from('{"schemaVersion":1,"protocolVersion":7}\n'),
   );
   return { files, paths: [...paths] };
+}
+
+function currentPackagedPanelPage() {
+  if (acceptedPackagedPanelPage) return acceptedPackagedPanelPage;
+  const failures = [];
+  for (const panelPage of [INSPECTOR_PANEL_PAGE, LEGACY_PANEL_PAGE]) {
+    try {
+      validatePackagedChromeArchive(createArchive(CHROME_ARCHIVE_FILES, panelPage));
+      acceptedPackagedPanelPage = panelPage;
+      return panelPage;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    "No packaged Chrome panel fixture satisfies the current runtime contract",
+  );
 }
 
 test("accepts only the exact validated Chrome runtime archive", () => {
@@ -175,6 +216,8 @@ test("rejects malformed or extended packaged runtime metadata", () => {
 
 test("requires packaged inspector assets and semantic static markers", () => {
   const cases = [
+    ["dist/inspector-panel.html", 'id="inspector-workspace"', /Inspector workspace/i],
+    ["dist/inspector-panel.html", 'id="inspector-elements-mount"', /Inspector mount/i],
     ["dist/panel.html", 'class="panel-toolbar"', /toolbar/i],
     ["dist/panel.html", 'id="inspect-mode"', /picker/i],
     ["dist/panel.html", "Auto Refresh", /Auto Refresh/i],
@@ -254,6 +297,20 @@ test("requires packaged inspector assets and semantic static markers", () => {
       "styles.getMatched",
       /matched styles request/i,
     ],
+    [
+      "dist/inspectorPanel.js",
+      "styles.setPseudoStates",
+      /pseudo-state request/i,
+    ],
+    [
+      "dist/inspectorPanel.js",
+      "styles.pseudoStates",
+      /pseudo-state response/i,
+    ],
+    ["dist/inspectorPanel.js", "pseudoStateRevision", /pseudo-state revision/i],
+    ["dist/inspectorPanel.js", "Preview :", /pseudo-state label prefix/i],
+    ["dist/inspectorPanel.js", "data-pseudo-state", /pseudo-state control attribute/i],
+    ["dist/inspectorPanel.js", '["hover","focus"]', /bounded pseudo-state list/i],
     [
       "dist/inspectorPanel.js",
       "aria-readonly",
@@ -378,6 +435,43 @@ test("requires packaged inspector assets and semantic static markers", () => {
       ".pin-op-elements-inspector",
       /scoped Chromium CSS/i,
     ],
+    ["dist/devtools-elements.css", ".pseudo-state-button", /pseudo-state button/i],
+    ["dist/devtools-elements.css", ".pseudo-state-menu", /pseudo-state menu/i],
+    [
+      "dist/contentScript.js",
+      "data-pin-op-preview-selected-",
+      /selection preview marker/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "data-pin-op-preview-hover-",
+      /hover preview marker/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "data-pin-op-preview-focus-",
+      /focus preview marker/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "data-pin-op-runtime-",
+      /runtime style marker/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "isRuntimeArtifactNode",
+      /runtime artifact node exclusion/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "isRuntimeArtifactAttributeName",
+      /runtime artifact attribute exclusion/i,
+    ],
+    [
+      "dist/contentScript.js",
+      "isRuntimeArtifactAttributeMutation",
+      /runtime artifact mutation exclusion/i,
+    ],
   ];
 
   for (const [path, marker, expectedError] of cases) {
@@ -478,15 +572,39 @@ test("rejects Rules open aliases and acknowledgements", () => {
   }
 });
 
-test("packaged Chrome smoke reports package-only v7 Rules evidence", () => {
+test("packaged Chrome smoke reports bounded package and fixture evidence", () => {
   assert.match(
     packagedChromeSmokeSource,
     /PACKAGED_CHROME_PROTOCOL_V7_RULES_SOURCES_OK/,
   );
   assert.match(packagedChromeSmokeSource, /Target\.createTarget/);
   assert.match(packagedChromeSmokeSource, /fixture page target/i);
+  assert.match(packagedChromeSmokeSource, /Page\.reload/);
+  assert.match(packagedChromeSmokeSource, /PACKAGED_CHROME_PSEUDO_FIXTURE_OK/);
   assert.doesNotMatch(packagedChromeSmokeSource, /RULES_OPEN_(?:ACK|OK)/);
   assert.doesNotMatch(packagedChromeSmokeSource, /DevTools panel.*(?:click|open)/i);
+});
+
+test("fixture runtime expression derives pseudo and artifact evidence from page state", () => {
+  const startMarker = "const FIXTURE_RUNTIME_EXPRESSION = String.raw`";
+  const start = packagedChromeSmokeSource.indexOf(startMarker);
+  const end = packagedChromeSmokeSource.indexOf("`;", start + startMarker.length);
+  assert.ok(start >= 0 && end > start, "fixture runtime expression must be static");
+  const expression = packagedChromeSmokeSource.slice(
+    start + startMarker.length,
+    end,
+  );
+
+  assert.match(expression, /pseudoSelectorFixtureReady/);
+  assert.match(expression, /\.card:hover/);
+  assert.match(expression, /\.shadow-action:hover/);
+  assert.match(expression, /\.shadow-action:focus/);
+  assert.doesNotMatch(expression, /pseudoSelectorFixtureReady\s*:\s*true/);
+
+  assert.match(expression, /runtimeArtifactCount/);
+  assert.match(expression, /data-pin-op-preview-/);
+  assert.match(expression, /data-pin-op-runtime-/);
+  assert.doesNotMatch(expression, /runtimeArtifactCount\s*:\s*0/);
 });
 
 test("requires exactly one packaged toolbar", () => {
@@ -563,23 +681,22 @@ test("rejects inline style blocks that hide the link code", () => {
   );
 });
 
-test("rejects an Inspector entrypoint in the ordinary Chrome package", () => {
-  const archive = createArchive();
-  for (const path of ["dist/background.js", "dist/devtools.js"]) {
-    const source = archive.files.get(path).toString("utf8");
-    archive.files.set(
-      path,
-      Buffer.from(
-        source.replace(
-          compiledPanelRuntime("/dist/panel.html"),
-          compiledPanelRuntime("/dist/inspector-panel.html"),
-        ),
-      ),
-    );
-  }
+test("accepts the Inspector entrypoint as the packaged Chrome default", () => {
+  assert.equal(
+    validatePackagedChromeArchive(
+      createArchive(CHROME_ARCHIVE_FILES, INSPECTOR_PANEL_PAGE),
+    ).name,
+    "Pin-op",
+  );
+});
+
+test("keeps the legacy page packaged only as a non-default rollback", () => {
+  const archive = createArchive(CHROME_ARCHIVE_FILES, LEGACY_PANEL_PAGE);
+  assert.ok(archive.files.has("dist/panel.html"));
+  assert.ok(archive.files.has("dist/panel.js"));
   assert.throws(
     () => validatePackagedChromeArchive(archive),
-    /legacy panel|expected \/dist\/panel\.html/i,
+    /Inspector panel|expected \/dist\/inspector-panel\.html/i,
   );
 });
 
@@ -602,18 +719,27 @@ test("accepts the packaged toolbar class token with additional classes", () => {
 test("verifies fixture CSSOM access and multiline geometry through CDP", async () => {
   const calls = [];
   let runtimeEvaluations = 0;
+  let reloads = 0;
+  let postReloadEvaluations = 0;
   const cdp = {
     async send(method, params, sessionId) {
       calls.push([method, params, sessionId]);
       if (method === "Target.createTarget") return { targetId: "fixture-page" };
       if (method === "Target.attachToTarget") return { sessionId: "fixture-session" };
       if (method === "Page.navigate") return { frameId: "fixture-frame" };
+      if (method === "Page.reload") {
+        reloads += 1;
+        return {};
+      }
       if (method === "Runtime.evaluate") {
         runtimeEvaluations += 1;
+        if (reloads > 0) postReloadEvaluations += 1;
+        const documentLoadEpoch = postReloadEvaluations >= 2 ? 202 : 101;
         return {
           result: {
             value: {
               ready: true,
+              documentLoadEpoch,
               locationHref: runtimeEvaluations === 1
                 ? "about:blank"
                 : "http://127.0.0.1:4173/",
@@ -632,6 +758,8 @@ test("verifies fixture CSSOM access and multiline geometry through CDP", async (
               sharedConstructedSheetCount: 2,
               applicabilityFixtureReady: true,
               cssomMutationFixtureReady: true,
+              pseudoSelectorFixtureReady: true,
+              runtimeArtifactCount: 0,
             },
           },
         };
@@ -652,13 +780,81 @@ test("verifies fixture CSSOM access and multiline geometry through CDP", async (
   assert.equal(result.sharedConstructedSheetCount, 2);
   assert.equal(result.applicabilityFixtureReady, true);
   assert.equal(result.cssomMutationFixtureReady, true);
+  assert.equal(result.pseudoSelectorFixtureReady, true);
+  assert.equal(result.runtimeArtifactCountBeforeReload, 0);
+  assert.equal(result.runtimeArtifactCountAfterReload, 0);
+  assert.equal(result.documentLoadEpoch, 202);
   assert.equal(result.locationHref, "http://127.0.0.1:4173/");
-  assert.equal(runtimeEvaluations, 2);
+  assert.equal(runtimeEvaluations, 4);
+  assert.equal(postReloadEvaluations, 2);
+  assert.equal(reloads, 1);
   assert.ok(calls.some(([method]) => method === "Page.navigate"));
   assert.deepEqual(calls.at(-1)?.slice(0, 2), [
     "Target.closeTarget",
     { targetId: "fixture-page" },
   ]);
+});
+
+test("rejects runtime artifacts that persist after the fixture reload", async () => {
+  let runtimeEvaluations = 0;
+  let reloaded = false;
+  let postReloadEvaluations = 0;
+  let closed = false;
+  const cdp = {
+    async send(method) {
+      if (method === "Target.createTarget") return { targetId: "fixture-page" };
+      if (method === "Target.attachToTarget") return { sessionId: "fixture-session" };
+      if (method === "Page.navigate") return { frameId: "fixture-frame" };
+      if (method === "Page.reload") {
+        reloaded = true;
+        return {};
+      }
+      if (method === "Runtime.evaluate") {
+        runtimeEvaluations += 1;
+        if (reloaded) postReloadEvaluations += 1;
+        const isNewDocument = postReloadEvaluations >= 2;
+        return {
+          result: {
+            value: {
+              ready: true,
+              documentLoadEpoch: isNewDocument ? 202 : 101,
+              locationHref: runtimeEvaluations === 1
+                ? "about:blank"
+                : "http://127.0.0.1:4173/",
+              vendor: { found: true, readable: true, ruleCount: 1 },
+              inaccessible: {
+                found: true,
+                readable: false,
+                errorName: "SecurityError",
+              },
+              vendorCrossOrigin: "anonymous",
+              inaccessibleHasCrossOrigin: false,
+              multilineRectCount: 2,
+              pathMiss: { property: "outline-style", value: "dashed" },
+              documentAdoptedRule: true,
+              shadowAdoptedRule: true,
+              sharedConstructedSheetCount: 2,
+              applicabilityFixtureReady: true,
+              cssomMutationFixtureReady: true,
+              pseudoSelectorFixtureReady: true,
+              runtimeArtifactCount: isNewDocument ? 1 : 0,
+            },
+          },
+        };
+      }
+      if (method === "Target.closeTarget") {
+        closed = true;
+        return { success: true };
+      }
+      return {};
+    },
+  };
+
+  await assert.rejects(
+    verifyFixturePageInChrome(cdp, "http://127.0.0.1:4173/"),
+    /runtime artifacts.*after reload/i,
+  );
+  assert.equal(closed, true);
 });
 
 test("rejects fixture CSSOM access or single-line geometry and closes the target", async () => {
@@ -682,6 +878,8 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
     [{ sharedConstructedSheetCount: 1 }, /shared constructed sheet expected in 2 roots/i],
     [{ applicabilityFixtureReady: false }, /selector applicability controls/i],
     [{ cssomMutationFixtureReady: false }, /CSSOM mutation controls/i],
+    [{ pseudoSelectorFixtureReady: false }, /pseudo-state selector fixture/i],
+    [{ runtimeArtifactCount: 1 }, /runtime artifacts.*before reload/i],
   ]) {
     let closed = false;
     const cdp = {
@@ -694,6 +892,7 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
             result: {
               value: {
                 ready: true,
+                documentLoadEpoch: 101,
                 locationHref: "http://127.0.0.1:4173/",
                 vendor: { found: true, readable: true, ruleCount: 1 },
                 inaccessible: {
@@ -710,6 +909,8 @@ test("rejects fixture CSSOM access or single-line geometry and closes the target
                 sharedConstructedSheetCount: 2,
                 applicabilityFixtureReady: true,
                 cssomMutationFixtureReady: true,
+                pseudoSelectorFixtureReady: true,
+                runtimeArtifactCount: 0,
                 ...overrides,
               },
             },

@@ -47,7 +47,12 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
   };
   const findStyleRule = (rules, selector) => {
     for (const rule of Array.from(rules)) {
-      if (rule.selectorText === selector) return rule;
+      if (
+        typeof rule.selectorText === "string" &&
+        rule.selectorText.split(",").some((part) => part.trim() === selector)
+      ) {
+        return rule;
+      }
       try {
         if (rule.cssRules) {
           const nested = findStyleRule(rule.cssRules, selector);
@@ -97,6 +102,32 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
       return false;
     }
   };
+  const shadowStyleSheets = Array.from(
+    shadowRoot?.querySelectorAll("style") ?? [],
+    (style) => style.sheet,
+  ).filter(Boolean);
+  const pseudoSelectorFixtureReady = Boolean(
+    Array.from(document.styleSheets)
+      .some((sheet) => hasRule(sheet, ".card:hover")) &&
+    shadowStyleSheets
+      .some((sheet) => hasRule(sheet, ".shadow-action:hover")) &&
+    shadowStyleSheets
+      .some((sheet) => hasRule(sheet, ".shadow-action:focus"))
+  );
+  const isRuntimeArtifactName = (name) =>
+    name.startsWith("data-pin-op-preview-") ||
+    name.startsWith("data-pin-op-runtime-");
+  const countRuntimeArtifacts = (root) => {
+    let count = 0;
+    for (const element of root.querySelectorAll("*")) {
+      count += Array.from(element.attributes)
+        .filter((attribute) => isRuntimeArtifactName(attribute.name)).length;
+      if (element.shadowRoot) {
+        count += countRuntimeArtifacts(element.shadowRoot);
+      }
+    }
+    return count;
+  };
 
   return {
     ready: true,
@@ -131,6 +162,9 @@ const FIXTURE_RUNTIME_EXPRESSION = String.raw`(() => {
       typeof fixture.mutateConstructedSheet === "function" &&
       typeof fixture.replaceConstructedSheet === "function"
     ),
+    pseudoSelectorFixtureReady,
+    runtimeArtifactCount: countRuntimeArtifacts(document),
+    documentLoadEpoch: performance.timeOrigin,
   };
 })()`;
 
@@ -179,7 +213,7 @@ export function validatePackagedChromeArchive(archive) {
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: "Packaged Chrome",
     metadataLabel: "Packaged Chrome runtime metadata",
-    panelVariant: "legacy",
+    panelVariant: "inspector",
     platform: "chrome",
   });
   return manifest;
@@ -338,40 +372,67 @@ export async function verifyFixturePageInChrome(
       throw new Error(`Chrome could not navigate to the fixture: ${navigation.errorText}`);
     }
 
-    const deadline = Date.now() + timeoutMs;
-    let lastResult;
-    while (Date.now() < deadline) {
-      const evaluation = await cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: FIXTURE_RUNTIME_EXPRESSION,
-          returnByValue: true,
-        },
-        sessionId,
-      );
-      if (evaluation.exceptionDetails) {
-        throw new Error(
-          `Chrome fixture evaluation failed: ${evaluation.exceptionDetails.text ?? "unknown exception"}`,
+    const waitForFixtureDocument = async (previousDocumentLoadEpoch) => {
+      const deadline = Date.now() + timeoutMs;
+      let lastResult;
+      while (Date.now() < deadline) {
+        const evaluation = await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: FIXTURE_RUNTIME_EXPRESSION,
+            returnByValue: true,
+          },
+          sessionId,
         );
+        if (evaluation.exceptionDetails) {
+          throw new Error(
+            `Chrome fixture evaluation failed: ${evaluation.exceptionDetails.text ?? "unknown exception"}`,
+          );
+        }
+        lastResult = evaluation.result?.value;
+        const isExpectedDocument =
+          previousDocumentLoadEpoch === undefined ||
+          !Object.is(
+            lastResult?.documentLoadEpoch,
+            previousDocumentLoadEpoch,
+          );
+        if (
+          lastResult?.ready === true &&
+          lastResult.locationHref === parsedPageUrl.href &&
+          isExpectedDocument
+        ) {
+          return lastResult;
+        }
+        await delay(pollIntervalMs);
       }
-      lastResult = evaluation.result?.value;
-      if (
-        lastResult?.ready === true &&
-        lastResult.locationHref === parsedPageUrl.href
-      ) {
-        return assertFixtureRuntimeResult(lastResult);
-      }
-      await delay(pollIntervalMs);
-    }
-    throw new Error(
-      `Timed out waiting for the fixture page; last result: ${JSON.stringify(lastResult)}`,
+      const phase = previousDocumentLoadEpoch === undefined
+        ? "fixture page"
+        : "reloaded fixture document";
+      throw new Error(
+        `Timed out waiting for the ${phase}; last result: ${JSON.stringify(lastResult)}`,
+      );
+    };
+
+    const beforeReload = assertFixtureRuntimeResult(
+      await waitForFixtureDocument(),
+      "before reload",
     );
+    await cdp.send("Page.reload", {}, sessionId);
+    const afterReload = assertFixtureRuntimeResult(
+      await waitForFixtureDocument(beforeReload.documentLoadEpoch),
+      "after reload",
+    );
+    return {
+      ...afterReload,
+      runtimeArtifactCountBeforeReload: beforeReload.runtimeArtifactCount,
+      runtimeArtifactCountAfterReload: afterReload.runtimeArtifactCount,
+    };
   } finally {
     await cdp.send("Target.closeTarget", { targetId });
   }
 }
 
-function assertFixtureRuntimeResult(result) {
+function assertFixtureRuntimeResult(result, runtimeArtifactPhase) {
   if (result.vendorCrossOrigin !== "anonymous") {
     throw new Error("Fixture vendor stylesheet link must use crossorigin=anonymous");
   }
@@ -427,6 +488,26 @@ function assertFixtureRuntimeResult(result) {
   }
   if (result.cssomMutationFixtureReady !== true) {
     throw new Error("Fixture CSSOM mutation controls are unavailable");
+  }
+  if (result.pseudoSelectorFixtureReady !== true) {
+    throw new Error("Fixture pseudo-state selector fixture is unavailable");
+  }
+  if (
+    !Number.isFinite(result.documentLoadEpoch) ||
+    result.documentLoadEpoch < 0
+  ) {
+    throw new Error("Fixture document load epoch is unavailable");
+  }
+  if (
+    !Number.isInteger(result.runtimeArtifactCount) ||
+    result.runtimeArtifactCount < 0
+  ) {
+    throw new Error("Fixture runtime artifact count is invalid");
+  }
+  if (result.runtimeArtifactCount !== 0) {
+    throw new Error(
+      `Fixture runtime artifacts must be absent ${runtimeArtifactPhase}, found ${String(result.runtimeArtifactCount)}`,
+    );
   }
   return result;
 }
@@ -524,6 +605,9 @@ export async function smokePackagedChrome(artifactArgument) {
         );
         console.log(
           `PACKAGED_CHROME_FIXTURE_OK vendor=${fixtureResult.vendor.ruleCount} inaccessible=${fixtureResult.inaccessible.errorName} rects=${fixtureResult.multilineRectCount}`,
+        );
+        console.log(
+          `PACKAGED_CHROME_PSEUDO_FIXTURE_OK selectors=3 runtimeArtifactsBefore=${fixtureResult.runtimeArtifactCountBeforeReload} runtimeArtifactsAfter=${fixtureResult.runtimeArtifactCountAfterReload} reloadEpochChanged=true`,
         );
         console.log(
           "PACKAGED_CHROME_PROTOCOL_V7_RULES_SOURCES_OK package-contract-only",

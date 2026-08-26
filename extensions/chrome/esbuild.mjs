@@ -27,9 +27,9 @@ if (
 ) {
   throw new Error("PIN_OP_PANEL_VARIANT must be legacy or inspector");
 }
-const panelPage = panelVariant === "inspector"
-  ? "/dist/inspector-panel.html"
-  : "/dist/panel.html";
+const panelPage = panelVariant === "legacy"
+  ? "/dist/panel.html"
+  : "/dist/inspector-panel.html";
 
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
