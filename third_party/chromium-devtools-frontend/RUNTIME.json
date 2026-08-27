@@ -135,5 +135,5 @@
       "front_end/third_party/lit/LICENSE": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
     }
   },
-  "notes": "The npm tarball contains the official Chromium DevTools TypeScript and CSS sources. The direct entrypoint builds are provenance and compatibility gates; the packaged Pin-op runtime must use a reviewed adapter entry, a smaller attested closure, a size ceiling, and complete generated notices before it can ship."
+  "notes": "The npm tarball contains the official Chromium DevTools TypeScript and CSS sources. The direct entrypoint builds are provenance and compatibility gates; the packaged Pin-op runtime must use a reviewed adapter entry, a smaller attested closure, a size ceiling, canonical UTF-8/LF metadata bytes, and complete generated notices before it can ship."
 }

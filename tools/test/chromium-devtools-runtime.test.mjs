@@ -335,6 +335,26 @@ test("read-only Elements overlay hash inputs preserve LF across Git checkouts", 
   );
 });
 
+test("Chromium runtime metadata preserves LF across Git checkouts", async () => {
+  const attributes = await readFile(path.join(repositoryRoot, ".gitattributes"), "utf8");
+  for (const file of ["RUNTIME.json", "UPSTREAM.json"]) {
+    assert.match(
+      attributes,
+      new RegExp(
+        `^third_party/chromium-devtools-frontend/${file.replace(".", "\\.")} text eol=lf$`,
+        "m",
+      ),
+    );
+    const bytes = await readFile(path.join(
+      repositoryRoot,
+      "third_party",
+      "chromium-devtools-frontend",
+      file,
+    ));
+    assert.equal(bytes.includes(13), false, `${file} must use canonical LF bytes`);
+  }
+});
+
 test("DOM overlay routes only the reviewed shared SDK edges through the canonical facade", async () => {
   const overlayRoot = path.join(
     repositoryRoot,

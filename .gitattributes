@@ -5,3 +5,5 @@ extensions/firefox/LICENSE text eol=lf
 extensions/firefox/THIRD_PARTY_NOTICES text eol=lf
 third_party/chromium-devtools-frontend/patches/** text eol=lf
 third_party/chromium-devtools-frontend/styles-overlay/** text eol=lf
+third_party/chromium-devtools-frontend/RUNTIME.json text eol=lf
+third_party/chromium-devtools-frontend/UPSTREAM.json text eol=lf
