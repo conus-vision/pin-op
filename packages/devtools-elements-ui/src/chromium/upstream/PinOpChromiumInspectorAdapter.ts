@@ -2,7 +2,7 @@ import type {
   CreateElementsInspectorView,
   CreateElementsTreeRenderer,
 } from "../../contracts.js";
-import { ElementsInspectorView } from "../../elementsInspectorView.js";
+import { ElementsInspectorShell } from "../../elementsInspectorShell.js";
 import {
   createPinOpElementsTreeAdapter,
   type ChromiumElementsRuntime,
@@ -41,7 +41,7 @@ export function createPinOpChromiumInspectorViewFactory(
     onError,
   });
 
-  return (document, mount, treeDataSource) => new ElementsInspectorView(
+  return (document, mount, treeDataSource) => new ElementsInspectorShell(
     document,
     mount,
     treeDataSource,
