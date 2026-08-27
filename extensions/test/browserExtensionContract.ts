@@ -1119,9 +1119,19 @@ export function describeBrowserPackageContract(
       expect(build).toContain("../../tools/browser-elements-runtime.mjs");
       expect(build).toContain("buildBrowserInspectorModules");
       expect(build).toContain("mergeBrowserBundleMetafiles");
+      expect(build).toContain("assertVerifiedNativeInspectorBuild");
       expect(build).toContain("assertNoChromiumUpstreamInputs");
       expect(build).toMatch(
         /assertNoChromiumUpstreamInputs\(\s*browserBundleResult\.metafile/,
+      );
+      expect(build).toMatch(
+        /assertNoChromiumUpstreamInputs\(\s*inspectorPanelResult\.metafile/,
+      );
+      expect(build).not.toMatch(
+        /assertNoChromiumUpstreamInputs\(\s*elementsRuntimeResult\.metafile/,
+      );
+      expect(build).toMatch(
+        /assertVerifiedNativeInspectorBuild\(\s*inspectorBuild/,
       );
 
       const manifest = JSON.parse(
@@ -1177,6 +1187,10 @@ export function describeBrowserPackageContract(
           metafile: unknown,
           label?: string,
         ) => void;
+        readonly assertVerifiedNativeInspectorBuild?: (
+          build: unknown,
+          label?: string,
+        ) => void;
       };
       expect(helper.BROWSER_PANEL_ASSET_PATHS).toEqual([
         "panel.html",
@@ -1191,6 +1205,7 @@ export function describeBrowserPackageContract(
         "icons/pin-op-128.png",
       ]);
       expect(typeof helper.assertNoChromiumUpstreamInputs).toBe("function");
+      expect(typeof helper.assertVerifiedNativeInspectorBuild).toBe("function");
       expect(() => helper.assertNoChromiumUpstreamInputs?.({
         inputs: {
           "src/panel.ts": {},
@@ -1210,7 +1225,7 @@ export function describeBrowserPackageContract(
             },
           }, contract.platformName),
           resolvedInput,
-        ).toThrow(/upstream snapshot input/i);
+        ).toThrow(/native Chromium runtime input/i);
       }
     });
 
@@ -1491,6 +1506,58 @@ export function describeBrowserPackageContract(
         "https://attacker.example.test/rules.css",
       ]);
     });
+  });
+
+  describe(`${contract.platformName} staged build isolation`, () => {
+    it("does not fall back to a live workspace package when a staged file is missing", () => {
+      const workspaceRoot = resolve(
+        fileURLToPath(new URL("../../", import.meta.url)),
+      );
+      const extensionRoot = fileURLToPath(contract.extensionRoot);
+      const temporaryBase = process.platform === "win32"
+        ? dirname(workspaceRoot)
+        : tmpdir();
+      const temporaryDirectory = mkdtempSync(
+        join(temporaryBase, `.pin-op-staged-${contract.platformName.toLowerCase()}-`),
+      );
+      try {
+        const buildRoot = stageBrowserExtensionProject(
+          workspaceRoot,
+          extensionRoot,
+          temporaryDirectory,
+        );
+        const missingRelativePath = join(
+          "packages",
+          "browser-extension-core",
+          "dist",
+          "index.js",
+        );
+        expect(existsSync(join(workspaceRoot, missingRelativePath))).toBe(true);
+        rmSync(join(temporaryDirectory, "project", missingRelativePath));
+
+        let failure: unknown;
+        try {
+          execFileSync(process.execPath, [join(buildRoot, "esbuild.mjs")], {
+            cwd: buildRoot,
+            env: {...process.env},
+            stdio: "pipe",
+            timeout: 30_000,
+          });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeDefined();
+        const diagnostics = failure && typeof failure === "object" &&
+          "stderr" in failure && Buffer.isBuffer(failure.stderr)
+          ? failure.stderr.toString("utf8")
+          : String(failure);
+        expect(diagnostics).toMatch(
+          /Could not resolve ["']@pin-op\/browser-extension-core["']/i,
+        );
+      } finally {
+        rmSync(temporaryDirectory, {recursive: true, force: true});
+      }
+    }, 30_000);
   });
 }
 
@@ -2158,6 +2225,7 @@ function stageBrowserExtensionProject(
     });
   }
   copyWorkspacePath(workspaceRoot, stagedWorkspace, "LICENSE");
+  copyWorkspacePath(workspaceRoot, stagedWorkspace, "pnpm-lock.yaml");
   copyWorkspacePath(workspaceRoot, stagedWorkspace, "tsconfig.base.json");
   copyWorkspacePath(
     workspaceRoot,
@@ -2173,6 +2241,13 @@ function stageBrowserExtensionProject(
     stagedWorkspace,
     join("tools", "browser-elements-runtime.mjs"),
   );
+  for (const path of [
+    join("tools", "browser-chromium-inspector-entry.ts"),
+    join("tools", "chromium-devtools-runtime.mjs"),
+    join("tools", "chromium-devtools-styles-runtime.mjs"),
+  ]) {
+    copyWorkspacePath(workspaceRoot, stagedWorkspace, path);
+  }
   copyWorkspacePath(
     workspaceRoot,
     stagedWorkspace,
@@ -2183,31 +2258,102 @@ function stageBrowserExtensionProject(
     stagedWorkspace,
     join("third_party", "chromium-devtools-frontend", "UPSTREAM.json"),
   );
+  for (const path of [
+    join("third_party", "chromium-devtools-frontend", "RUNTIME.json"),
+    join(
+      "third_party",
+      "chromium-devtools-frontend",
+      "patches",
+      "1.0.1681091",
+    ),
+    join(
+      "third_party",
+      "chromium-devtools-frontend",
+      "styles-overlay",
+      "1.0.1681091",
+    ),
+  ]) {
+    copyWorkspacePath(workspaceRoot, stagedWorkspace, path);
+  }
   copyWorkspacePath(
     workspaceRoot,
     stagedWorkspace,
     join("third_party", "chromium-devtools-frontend", "LICENSE"),
   );
-  copyWorkspacePath(
-    workspaceRoot,
-    stagedWorkspace,
-    join("packages", "browser-extension-core", "assets"),
-  );
-  copyWorkspacePath(
-    workspaceRoot,
-    stagedWorkspace,
-    join("packages", "devtools-elements-ui", "assets"),
-  );
-  symlinkSync(
+  const stagedPackageNames = [
+    "protocol",
+    "browser-extension-core",
+    "devtools-elements-ui",
+  ];
+  for (const packageName of stagedPackageNames) {
+    const packageRoot = join("packages", packageName);
+    copyWorkspacePath(
+      workspaceRoot,
+      stagedWorkspace,
+      join(packageRoot, "package.json"),
+    );
+    copyWorkspacePath(
+      workspaceRoot,
+      stagedWorkspace,
+      join(packageRoot, "dist"),
+    );
+    const assetsPath = join(packageRoot, "assets");
+    if (existsSync(join(workspaceRoot, assetsPath))) {
+      copyWorkspacePath(workspaceRoot, stagedWorkspace, assetsPath);
+    }
+  }
+
+  const stagedNodeModules = join(stagedWorkspace, "node_modules");
+  mkdirSync(stagedNodeModules, {recursive: true});
+  const npmDependencyRoots = [
     join(workspaceRoot, "node_modules"),
-    join(temporaryDirectory, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
-  symlinkSync(
     join(extensionRoot, "node_modules"),
-    join(stagedExtensionRoot, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
+    join(workspaceRoot, "packages", "protocol", "node_modules"),
+    join(workspaceRoot, "packages", "browser-extension-core", "node_modules"),
+    join(workspaceRoot, "packages", "devtools-elements-ui", "node_modules"),
+  ];
+  for (const dependency of [
+    "chrome-devtools-frontend",
+    "esbuild",
+    "lucide",
+    "postcss",
+    "postcss-selector-parser",
+    "postcss-value-parser",
+    "typescript",
+    "webextension-polyfill",
+    "zod",
+  ]) {
+    const source = npmDependencyRoots
+      .map(root => join(root, dependency))
+      .find(candidate => existsSync(candidate));
+    if (!source) {
+      throw new Error(`Cannot stage npm dependency ${dependency}`);
+    }
+    symlinkSync(
+      source,
+      join(stagedNodeModules, dependency),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  }
+
+  const stagedExtensionScope = join(
+    stagedExtensionRoot,
+    "node_modules",
+    "@pin-op",
   );
+  const stagedRootScope = join(stagedNodeModules, "@pin-op");
+  mkdirSync(stagedExtensionScope, {recursive: true});
+  mkdirSync(stagedRootScope, {recursive: true});
+  for (const packageName of stagedPackageNames) {
+    const source = join(stagedWorkspace, "packages", packageName);
+    for (const scopeRoot of [stagedExtensionScope, stagedRootScope]) {
+      symlinkSync(
+        source,
+        join(scopeRoot, packageName),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    }
+  }
 
   return stagedExtensionRoot;
 }

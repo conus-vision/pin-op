@@ -10,6 +10,7 @@ import {
 } from "../../tools/browser-bundle-notices.mjs";
 import {
   assertNoChromiumUpstreamInputs,
+  assertVerifiedNativeInspectorBuild,
   copyBrowserPanelAssets,
 } from "../../tools/browser-panel-assets.mjs";
 import {
@@ -57,8 +58,8 @@ const browserBundleResult = await build({
     __PIN_OP_PANEL_PAGE__: JSON.stringify(panelPage),
   },
 });
-const { inspectorPanelResult, elementsRuntimeResult } =
-  await buildBrowserInspectorModules({ extensionRoot, outdir });
+const inspectorBuild = await buildBrowserInspectorModules({ extensionRoot, outdir });
+const { inspectorPanelResult, elementsRuntimeResult } = inspectorBuild;
 assertNoChromiumUpstreamInputs(
   browserBundleResult.metafile,
   "Firefox browser bundle",
@@ -67,9 +68,9 @@ assertNoChromiumUpstreamInputs(
   inspectorPanelResult.metafile,
   "Firefox Inspector bootstrap",
 );
-assertNoChromiumUpstreamInputs(
-  elementsRuntimeResult.metafile,
-  "Firefox Elements runtime fallback",
+assertVerifiedNativeInspectorBuild(
+  inspectorBuild,
+  "Firefox native Chromium Inspector runtime",
 );
 const combinedMetafile = mergeBrowserBundleMetafiles(
   browserBundleResult.metafile,
