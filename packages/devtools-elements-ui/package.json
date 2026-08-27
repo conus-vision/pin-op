@@ -13,6 +13,10 @@
     "./upstream-runtime": {
       "types": "./dist/upstreamRuntime.d.ts",
       "import": "./dist/upstreamRuntime.js"
+    },
+    "./chromium-adapter": {
+      "types": "./dist/chromium/upstream/PinOpChromiumInspectorAdapter.d.ts",
+      "import": "./dist/chromium/upstream/PinOpChromiumInspectorAdapter.js"
     }
   },
   "scripts": {
