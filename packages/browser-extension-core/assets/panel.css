@@ -270,6 +270,13 @@ input[type="text"] {
   overflow: hidden;
 }
 
+#inspector-elements-mount {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .workspace-tabs {
   display: none;
   min-width: 0;

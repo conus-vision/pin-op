@@ -232,6 +232,12 @@ describe("DevTools panel assets", () => {
     expect(css).toMatch(/\.panel-branding\s*\{[^}]*line-height:\s*16px;/s);
   });
 
+  it("constrains the Inspector mount so Rules owns its vertical scroll", () => {
+    expect(css).toMatch(
+      /#inspector-elements-mount\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+    );
+  });
+
   it("keeps the workspace in the flexible shell row when the protocol banner is hidden", () => {
     expect(css).toMatch(
       /\.panel-layout\s*\{[^}]*grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"footer";/s,
