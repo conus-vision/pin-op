@@ -117,6 +117,7 @@ export function createBrowserAdapterHarness() {
       inspectorPanel: vi.fn(() => ({ dispose: vi.fn() })),
     },
     sanitize: vi.fn((_error: unknown) => "sanitized error"),
+    createElementsInspectorView: vi.fn(),
     runtimeMessage,
     runtimeConnect,
     windowRemoved,
@@ -634,6 +635,7 @@ export function describeBrowserAdapterContract(
       const options = calledOptions(harness.starts.inspectorPanel);
       expectOptionKeys(options, [
         "connectRuntimePort",
+        "createElementsInspectorView",
         "document",
         "locationSearch",
         "onError",
@@ -641,6 +643,9 @@ export function describeBrowserAdapterContract(
         "sendRuntimeMessage",
         "subscribeUnload",
       ]);
+      expect(options.createElementsInspectorView).toBe(
+        harness.createElementsInspectorView,
+      );
 
       const matchedStylesModel = readFileSync(
         new URL(
@@ -1899,6 +1904,7 @@ function openingTag(panel: string, id: string): string {
 }
 
 const SHARED_RUNTIME_MODULE = "@pin-op/browser-extension-core";
+const ELEMENTS_RUNTIME_MODULE = "@pin-op/devtools-elements-ui/upstream-runtime";
 const PLATFORM_API_MODULE = "webextension-polyfill";
 const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "BackgroundMessageSender",
@@ -1951,6 +1957,14 @@ function adapterImportBoundaryViolations(
           );
         }
       }
+      continue;
+    }
+    if (
+      fileName === "inspectorPanel.ts" &&
+      edge.moduleName === ELEMENTS_RUNTIME_MODULE &&
+      edge.importedNames.length === 1 &&
+      edge.importedNames[0] === "createElementsInspectorView"
+    ) {
       continue;
     }
     violations.push(`${fileName} imports disallowed module ${edge.moduleName}`);

@@ -1,4 +1,5 @@
 import browser from "webextension-polyfill";
+import { createElementsInspectorView } from "@pin-op/devtools-elements-ui/upstream-runtime";
 import {
   sanitizeErrorMessage,
   startInspectorPanelRuntime,
@@ -8,6 +9,7 @@ import {
 startInspectorPanelRuntime({
   locationSearch: location.search,
   document,
+  createElementsInspectorView,
   connectRuntimePort: (name) =>
     browser.runtime.connect({ name }) as unknown as PanelInspectPort,
   sendRuntimeMessage: (message) => browser.runtime.sendMessage(message),

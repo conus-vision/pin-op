@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./upstream-runtime": {
+      "types": "./dist/upstreamRuntime.d.ts",
+      "import": "./dist/upstreamRuntime.js"
     }
   },
   "scripts": {

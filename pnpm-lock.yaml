@@ -50,6 +50,9 @@ importers:
       '@pin-op/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
+      '@pin-op/devtools-elements-ui':
+        specifier: workspace:*
+        version: link:../../packages/devtools-elements-ui
       '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -72,6 +75,9 @@ importers:
       '@pin-op/browser-extension-core':
         specifier: workspace:*
         version: link:../../packages/browser-extension-core
+      '@pin-op/devtools-elements-ui':
+        specifier: workspace:*
+        version: link:../../packages/devtools-elements-ui
       '@pin-op/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

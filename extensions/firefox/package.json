@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@pin-op/browser-extension-core": "workspace:*",
+    "@pin-op/devtools-elements-ui": "workspace:*",
     "@pin-op/protocol": "workspace:*",
     "webextension-polyfill": "^0.12.0"
   },

@@ -2320,6 +2320,9 @@ function createHarness(): {
       return startInspectorPanelRuntime({
         locationSearch: "?channel=inspector-channel",
         document: document.document,
+        createElementsInspectorView:
+          overrides.createElementsInspectorView ?? ((ownerDocument, mount, source) =>
+            new ElementsInspectorView(ownerDocument, mount, source)),
         connectRuntimePort(name) {
           const port = new TestRuntimePort(name);
           ports.push(port);

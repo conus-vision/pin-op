@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as elementsUi from "../dist/index.js";
+import * as upstreamRuntime from "../dist/upstreamRuntime.js";
 import { ElementsInspectorView } from "@pin-op/devtools-elements-ui";
 
 assert.deepEqual(Object.keys(elementsUi).sort(), ["ElementsInspectorView"]);
 assert.equal(elementsUi.ElementsInspectorView, ElementsInspectorView);
 assert.equal(typeof ElementsInspectorView, "function");
+assert.deepEqual(Object.keys(upstreamRuntime), ["createElementsInspectorView"]);
+assert.equal(typeof upstreamRuntime.createElementsInspectorView, "function");
 
 const declarations = await readFile(
   new URL("../dist/index.d.ts", import.meta.url),
@@ -14,6 +17,8 @@ const declarations = await readFile(
 
 const expectedExports = [
   "DeclarationState",
+  "CreateElementsInspectorView",
+  "ElementsInspectorHost",
   "ElementsInspectorView",
   "GeneratedRuleSourceSnapshot",
   "InheritedRulesSnapshot",

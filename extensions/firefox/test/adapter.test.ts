@@ -9,6 +9,9 @@ const harness = await vi.hoisted(async () => {
 });
 
 vi.mock("webextension-polyfill", () => ({ default: harness.browser }));
+vi.mock("@pin-op/devtools-elements-ui/upstream-runtime", () => ({
+  createElementsInspectorView: harness.createElementsInspectorView,
+}));
 vi.mock("@pin-op/browser-extension-core", () => ({
   startBackgroundRuntime: harness.starts.background,
   startContentScriptRuntime: harness.starts.contentScript,

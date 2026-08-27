@@ -1,5 +1,6 @@
 import {
-  ElementsInspectorView,
+  type CreateElementsInspectorView,
+  type ElementsInspectorHost,
   type TreeDataSource,
 } from "@pin-op/devtools-elements-ui";
 import type {
@@ -40,13 +41,14 @@ export class InspectorPanelView implements PanelView {
   private readonly resolutionStatus: InspectorPanelElement;
   private readonly operationalFooter: InspectorPanelElement;
   private readonly panelError: InspectorPanelElement;
-  private elementsView: ElementsInspectorView | undefined;
+  private elementsView: ElementsInspectorHost | undefined;
   private removeStylesRefreshBinding: (() => void) | undefined;
   private disposed = false;
 
   public constructor(
     private readonly document: InspectorPanelDocument,
     private readonly onError: (error: unknown) => void,
+    private readonly createElementsInspectorView: CreateElementsInspectorView,
   ) {
     this.toolbarFeatures = required(document, "toolbar-features");
     this.linkControls = required(document, "link-controls");
@@ -94,14 +96,18 @@ export class InspectorPanelView implements PanelView {
     return this.requiredElementsView().sidebarExtensionMount;
   }
 
-  public mountTree(source: TreeDataSource): ElementsInspectorView {
+  public mountTree(source: TreeDataSource): ElementsInspectorHost {
     if (this.disposed) {
       throw new Error("Inspector panel view is disposed");
     }
     if (this.elementsView) {
       throw new Error("Elements Inspector is already mounted");
     }
-    const view = new ElementsInspectorView(this.document, this.mount, source);
+    const view = this.createElementsInspectorView(
+      this.document,
+      this.mount,
+      source,
+    );
     this.elementsView = view;
     return view;
   }
@@ -285,7 +291,7 @@ export class InspectorPanelView implements PanelView {
     view?.dispose();
   }
 
-  private requiredElementsView(): ElementsInspectorView {
+  private requiredElementsView(): ElementsInspectorHost {
     if (!this.elementsView || this.disposed) {
       throw new Error("Elements Inspector is not mounted");
     }

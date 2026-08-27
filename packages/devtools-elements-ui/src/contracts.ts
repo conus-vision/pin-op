@@ -231,3 +231,22 @@ export interface SourceLinkDelegate {
   originFor(ruleRef: string): RuleOriginDecoration | undefined;
   openRuleOrigin(ruleRef: string): void;
 }
+
+export interface ElementsInspectorHost {
+  readonly element: HTMLElement;
+  readonly domRoot: HTMLElement;
+  readonly rulesRoot: HTMLElement;
+  readonly sidebarExtensionMount: HTMLElement;
+  bindRulesDataSource(
+    dataSource: RulesDataSource,
+    sourceLinkDelegate?: SourceLinkDelegate,
+    pseudoStateDataSource?: PseudoStateDataSource,
+  ): void;
+  dispose(): void;
+}
+
+export type CreateElementsInspectorView = (
+  document: Document,
+  mount: HTMLElement,
+  treeDataSource: TreeDataSource,
+) => ElementsInspectorHost;

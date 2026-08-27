@@ -1,6 +1,8 @@
 export { ElementsInspectorView } from "./elementsInspectorView.js";
 export type {
   DeclarationState,
+  CreateElementsInspectorView,
+  ElementsInspectorHost,
   GeneratedRuleSourceSnapshot,
   InheritedRulesSnapshot,
   InspectorAttributeSnapshot,

@@ -1,4 +1,10 @@
-import type { TreeDataSource, TreePresentationSnapshot } from "@pin-op/devtools-elements-ui";
+import {
+  ElementsInspectorView,
+  type CreateElementsInspectorView,
+  type ElementsInspectorHost,
+  type TreeDataSource,
+  type TreePresentationSnapshot,
+} from "@pin-op/devtools-elements-ui";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { InspectorPanelView } from "../src/inspectorPanelView.js";
@@ -56,6 +62,13 @@ describe("InspectorPanelView", () => {
 
     harness.view.mountTree(backend);
 
+    expect(harness.createElementsInspectorView).toHaveBeenCalledOnce();
+    expect(harness.createElementsInspectorView).toHaveBeenCalledWith(
+      harness.document.document,
+      harness.element("inspector-elements-mount"),
+      backend,
+    );
+
     expect(harness.view.domRoot.getAttribute("data-pane")).toBe("dom");
     expect(harness.view.rulesRoot.getAttribute("data-pane")).toBe("rules");
     expect(harness.view.sidebarExtensionMount.hidden).toBe(true);
@@ -68,6 +81,37 @@ describe("InspectorPanelView", () => {
     harness.view.dispose();
     expect(harness.element("inspector-elements-mount").children).toHaveLength(0);
     expect(backend.listenerCount()).toBe(0);
+  });
+
+  it("owns any conforming Elements host and disposes it exactly once", () => {
+    const dispose = vi.fn();
+    let host: ElementsInspectorHost | undefined;
+    const createHost = vi.fn<CreateElementsInspectorView>((document) => {
+      const element = document.createElement("section");
+      const domRoot = document.createElement("div");
+      const rulesRoot = document.createElement("aside");
+      const sidebarExtensionMount = document.createElement("div");
+      host = {
+        element,
+        domRoot,
+        rulesRoot,
+        sidebarExtensionMount,
+        bindRulesDataSource: vi.fn(),
+        dispose,
+      };
+      return host;
+    });
+    const harness = createHarness(() => {}, createHost);
+
+    expect(harness.view.mountTree(new StaticTreeDataSource({ rows: [] }))).toBe(host);
+    expect(harness.view.domRoot).toBe(host?.domRoot);
+    expect(harness.view.rulesRoot).toBe(host?.rulesRoot);
+
+    harness.view.dispose();
+    harness.view.dispose();
+
+    expect(createHost).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it("keeps browser-local inspection visible beside usable IDE onboarding while unlinked", () => {
@@ -142,9 +186,13 @@ const INSPECTOR_IDS = [
   "panel-error",
 ] as const;
 
-function createHarness(onError: (error: unknown) => void = () => {}): {
+function createHarness(
+  onError: (error: unknown) => void = () => {},
+  factory?: CreateElementsInspectorView,
+): {
   readonly document: FakeDocument;
   readonly view: InspectorPanelView;
+  readonly createElementsInspectorView: CreateElementsInspectorView;
   element(id: (typeof INSPECTOR_IDS)[number]): MutableFakeElement;
 } {
   const document = new FakeDocument();
@@ -159,13 +207,22 @@ function createHarness(onError: (error: unknown) => void = () => {}): {
     document.body.append(element);
     elements.set(id, element);
   }
+  const createElementsInspectorView = vi.fn<CreateElementsInspectorView>(
+    factory ?? ((ownerDocument, mount, source) => new ElementsInspectorView(
+      ownerDocument,
+      mount,
+      source,
+    )),
+  );
   const view = new InspectorPanelView(
     document.document,
     onError,
+    createElementsInspectorView,
   );
   return {
     document,
     view,
+    createElementsInspectorView,
     element(id) {
       const element = elements.get(id);
       if (!element) throw new Error(`Missing #${id}`);

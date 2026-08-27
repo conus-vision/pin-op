@@ -1,4 +1,5 @@
 import type {
+  CreateElementsInspectorView,
   MatchedDeclarationSnapshot,
   MatchedRuleSnapshot,
   MatchedStylesSnapshot,
@@ -53,6 +54,7 @@ export interface InspectorPanelRuntimeOptions extends Omit<
   "createResizeObserver" | "document" | "layoutStorage"
 > {
   readonly document: InspectorPanelDocument & DomTreeDocument;
+  readonly createElementsInspectorView: CreateElementsInspectorView;
 }
 
 export interface InspectorPanelRuntime {
@@ -77,6 +79,7 @@ export function startInspectorPanelRuntime(
       runtimeOptions,
       reportError,
       presentationState,
+      options.createElementsInspectorView,
     ),
   );
   const matchedStylesModel = presentationState.matchedStylesModel;
@@ -102,10 +105,12 @@ function createInspectorPresentation(
     matchedStylesModel?: MatchedStylesModel;
     rulesSourcesController?: RulesSourcesController;
   },
+  createElementsInspectorView: CreateElementsInspectorView,
 ): PanelRuntimePresentation {
   const view = new InspectorPanelView(
     options.document as InspectorPanelDocument,
     reportError,
+    createElementsInspectorView,
   );
   return {
     view,
