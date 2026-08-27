@@ -1,0 +1,556 @@
+import '../../../patches/1.0.1681091/facades/core-styles.js';
+
+import {CSSMatchedStyles, PropertyState} from '#chromium/core/sdk/CSSMatchedStyles.js';
+import {cssMetadata} from '#chromium/core/sdk/CSSMetadata.js';
+import {StylesSidebarPane} from '#chromium/panels/elements/StylesSidebarPane.js';
+
+type DeclarationState =
+  'winning-known-author'|'overridden-known-author'|'inactive'|'unknown';
+
+interface DeclarationSnapshot {
+  readonly declarationRef: string;
+  readonly name: string;
+  readonly value: string;
+  readonly important: boolean;
+  readonly state: DeclarationState;
+}
+
+interface ContextSnapshot {
+  readonly kind: 'media'|'supports'|'layer'|'scope'|'container'|'starting-style'|'unknown';
+  readonly text: string;
+}
+
+interface GeneratedSourceSnapshot {
+  readonly label: string;
+  readonly lineNumber?: number;
+  readonly columnNumber?: number;
+}
+
+interface RuleSnapshot {
+  readonly ruleRef: string;
+  readonly selectorText: string;
+  readonly matchingSelectorIndices: readonly number[];
+  readonly declarations: readonly DeclarationSnapshot[];
+  readonly contexts: readonly ContextSnapshot[];
+  readonly generatedSource?: GeneratedSourceSnapshot;
+}
+
+interface InheritedSnapshot {
+  readonly ancestorIndex: number;
+  readonly displayLabel: string;
+  readonly inlineStyle?: RuleSnapshot;
+  readonly matchedRules: readonly RuleSnapshot[];
+}
+
+interface MatchedStylesSnapshot {
+  readonly nodeRef: string;
+  readonly inlineStyle?: RuleSnapshot;
+  readonly matchedRules: readonly RuleSnapshot[];
+  readonly inherited: readonly InheritedSnapshot[];
+}
+
+interface OriginDecoration {
+  readonly label: string;
+  readonly languageId: 'css'|'scss';
+  readonly startLine: number;
+  readonly startColumn: number;
+  readonly clickable: boolean;
+  readonly state?: 'pending'|'stale'|'incompatible';
+}
+
+interface PaneOptions {
+  readonly document: Document;
+  readonly mount: HTMLElement;
+  readonly resolveOrigin: (ruleRef: string) => OriginDecoration|undefined;
+  readonly openOrigin: (ruleRef: string) => void;
+  readonly onError: (error: unknown) => void;
+}
+
+interface RenderedModel {
+  readonly matchedStyles: CSSMatchedStyles;
+  readonly cssModel: object;
+  readonly node: object;
+  readonly ruleRefByStyle: ReadonlyMap<object, string>;
+  readonly ruleByRef: ReadonlyMap<string, RuleSnapshot>;
+}
+
+interface MutableComputedStyleModel {
+  node: object|null;
+  cssModel(): object|null;
+  setModel(node: object|null, cssModel: object|null): void;
+  addEventListener(): void;
+  removeEventListener(): void;
+}
+
+interface PinOpStylesSidebarPane extends StylesSidebarPane {
+  pinOpPresentMatchedStyles(matchedStyles: CSSMatchedStyles, signal: AbortSignal): Promise<void>;
+  pinOpClearReadOnlyStyles(): void;
+  pinOpDisposeReadOnlyStyles(): void;
+}
+
+export function createChromiumReadOnlyStylesRuntime() {
+  return Object.freeze({
+    createPane(options: PaneOptions): ChromiumReadOnlyStylesPane {
+      return new ChromiumReadOnlyStylesPane(options);
+    },
+  });
+}
+
+class ChromiumReadOnlyStylesPane {
+  readonly element: HTMLElement;
+  readonly #mount: HTMLElement;
+  readonly #previousMountStyle: Readonly<Record<'display'|'height'|'minHeight'|'overflow', string>>;
+  readonly #pane: PinOpStylesSidebarPane;
+  readonly #computedStyleModel: MutableComputedStyleModel;
+  readonly #options: PaneOptions;
+  #rendered: RenderedModel|undefined;
+  #renderController: AbortController|undefined;
+  #originController: AbortController|undefined;
+  #revision = 0;
+  #disposed = false;
+
+  constructor(options: PaneOptions) {
+    if (options.document !== document) {
+      throw new Error('Chromium Styles runtime requires its owning browser document');
+    }
+    this.#options = options;
+    this.#mount = options.mount;
+    this.#previousMountStyle = Object.freeze({
+      display: options.mount.style.display,
+      height: options.mount.style.height,
+      minHeight: options.mount.style.minHeight,
+      overflow: options.mount.style.overflow,
+    });
+    options.mount.style.display = 'flex';
+    options.mount.style.height = '100%';
+    options.mount.style.minHeight = '0';
+    options.mount.style.overflow = 'hidden';
+    this.#computedStyleModel = createComputedStyleModel();
+    this.#pane = new StylesSidebarPane(this.#computedStyleModel as never) as PinOpStylesSidebarPane;
+    this.#pane.markAsRoot();
+    this.#pane.show(options.mount);
+    this.element = this.#pane.element;
+    this.element.setAttribute('data-part', 'chromium-read-only-styles-pane');
+    this.element.style.minHeight = '0';
+    this.element.style.minWidth = '0';
+    this.element.style.height = '100%';
+    this.element.style.maxHeight = '100%';
+    this.element.style.flex = '1 1 auto';
+    this.element.style.overflow = 'auto';
+  }
+
+  render(snapshot: MatchedStylesSnapshot): Promise<void> {
+    if (this.#disposed) return Promise.resolve();
+    const revision = ++this.#revision;
+    this.#renderController?.abort();
+    this.#originController?.abort();
+    this.#originController = undefined;
+    const controller = new AbortController();
+    this.#renderController = controller;
+    return this.#present(snapshot, revision, controller);
+  }
+
+  refreshOrigins(): void {
+    if (this.#disposed || !this.#rendered) return;
+    this.#decorateOrigins(this.#rendered);
+  }
+
+  clear(): void {
+    if (this.#disposed) return;
+    this.#revision += 1;
+    this.#renderController?.abort();
+    this.#renderController = undefined;
+    this.#originController?.abort();
+    this.#originController = undefined;
+    this.#rendered = undefined;
+    this.#computedStyleModel.setModel(null, null);
+    this.#pane.pinOpClearReadOnlyStyles();
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#revision += 1;
+    this.#renderController?.abort();
+    this.#renderController = undefined;
+    this.#originController?.abort();
+    this.#originController = undefined;
+    this.#rendered = undefined;
+    this.#computedStyleModel.setModel(null, null);
+    this.#pane.pinOpDisposeReadOnlyStyles();
+    this.#pane.detach();
+    this.element.remove();
+    this.#mount.style.display = this.#previousMountStyle.display;
+    this.#mount.style.height = this.#previousMountStyle.height;
+    this.#mount.style.minHeight = this.#previousMountStyle.minHeight;
+    this.#mount.style.overflow = this.#previousMountStyle.overflow;
+  }
+
+  async #present(
+      snapshot: MatchedStylesSnapshot, revision: number, controller: AbortController): Promise<void> {
+    try {
+      const rendered = await createRenderedModel(snapshot);
+      controller.signal.throwIfAborted();
+      if (this.#disposed || revision !== this.#revision) return;
+      this.#computedStyleModel.setModel(rendered.node, rendered.cssModel);
+      await this.#pane.pinOpPresentMatchedStyles(rendered.matchedStyles, controller.signal);
+      controller.signal.throwIfAborted();
+      if (this.#disposed || revision !== this.#revision) return;
+      this.#rendered = rendered;
+      this.#decorateOrigins(rendered);
+    } catch (error) {
+      if (this.#disposed || revision !== this.#revision || controller.signal.aborted) return;
+      this.#rendered = undefined;
+      this.#computedStyleModel.setModel(null, null);
+      this.#pane.pinOpClearReadOnlyStyles();
+      this.#report(error);
+      throw error;
+    } finally {
+      if (this.#renderController === controller) this.#renderController = undefined;
+    }
+  }
+
+  #decorateOrigins(rendered: RenderedModel): void {
+    this.#originController?.abort();
+    const originController = new AbortController();
+    this.#originController = originController;
+    for (const subtitle of this.#pane.contentElement.querySelectorAll<HTMLElement>('.styles-section-subtitle')) {
+      const sectionElement = subtitle.closest('.styles-section');
+      const section = sectionElement ? this.#pane.sectionByElement.get(sectionElement) : undefined;
+      const style = section?.style();
+      const ruleRef = style ? rendered.ruleRefByStyle.get(style) : undefined;
+      const rule = ruleRef ? rendered.ruleByRef.get(ruleRef) : undefined;
+      if (!ruleRef || !rule) {
+        subtitle.replaceChildren();
+        continue;
+      }
+      const resolved = this.#options.resolveOrigin(ruleRef);
+      const origin = resolved ?? generatedOrigin(rule.generatedSource);
+      if (!origin) {
+        subtitle.replaceChildren();
+        continue;
+      }
+      const label = origin.startLine === undefined ? origin.label : `${origin.label}:${origin.startLine}`;
+      if (origin.clickable && origin.state === undefined) {
+        const button = this.#options.document.createElement('button');
+        button.type = 'button';
+        button.className = 'devtools-link pin-op-rule-origin';
+        const icon = this.#options.document.createElement('devtools-icon') as HTMLElement&{name: string};
+        icon.name = 'open-externally';
+        icon.className = 'pin-op-rule-origin-icon';
+        button.append(label, icon);
+        button.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.#options.openOrigin(ruleRef);
+        }, {signal: originController.signal});
+        subtitle.replaceChildren(button);
+      } else {
+        subtitle.replaceChildren(this.#options.document.createTextNode(label));
+      }
+    }
+  }
+
+  #report(error: unknown): void {
+    try {
+      this.#options.onError(error);
+    } catch {
+      // Diagnostics are observational and never gain renderer authority.
+    }
+  }
+}
+
+async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<RenderedModel> {
+  const cssModel = createReadOnlyCSSModel();
+  const node = createNodeChain(snapshot, cssModel);
+  const orderedRules = orderedRuleSnapshots(snapshot);
+  const identityByRule = new Map(orderedRules.map((rule, index) =>
+    [rule, `pin-op-rule:${index}`] as const));
+  const ruleByIdentity = new Map([...identityByRule].map(([rule, identity]) => [identity, rule] as const));
+  const matchedPayload = [...snapshot.matchedRules].reverse().map(rule =>
+    ruleMatchPayload(rule, identityByRule.get(rule) as string));
+  const inheritedPayload = snapshot.inherited.map(inherited => ({
+    ...(inherited.inlineStyle ? {
+      inlineStyle: stylePayload(inherited.inlineStyle, identityByRule.get(inherited.inlineStyle) as string),
+    } : {}),
+    matchedCSSRules: [...inherited.matchedRules].reverse().map(rule =>
+      ruleMatchPayload(rule, identityByRule.get(rule) as string)),
+  }));
+  const matchedStyles = await CSSMatchedStyles.create({
+    cssModel: cssModel as never,
+    node: node as never,
+    activePositionFallbackIndex: -1,
+    inlinePayload: snapshot.inlineStyle ?
+      stylePayload(snapshot.inlineStyle, identityByRule.get(snapshot.inlineStyle) as string) :
+      snapshot.matchedRules.length === 0 ? emptyInlineStylePayload() : null,
+    attributesPayload: null,
+    matchedPayload,
+    pseudoPayload: [],
+    inheritedPayload,
+    inheritedPseudoPayload: [],
+    animationsPayload: [],
+    parentLayoutNodeId: undefined,
+    positionTryRules: [],
+    propertyRules: [],
+    cssPropertyRegistrations: [],
+    atRules: [],
+    animationStylesPayload: [],
+    transitionsStylePayload: null,
+    inheritedAnimatedPayload: snapshot.inherited.map(() => ({})),
+    functionRules: [],
+  });
+  const ruleRefByStyle = new Map<object, string>();
+  const propertyStates = new WeakMap<object, PropertyState|null>();
+  for (const style of matchedStyles.nodeStyles()) {
+    const identity = style.cssText;
+    const rule = identity ? ruleByIdentity.get(identity) : undefined;
+    style.cssText = undefined;
+    if (!rule) continue;
+    ruleRefByStyle.set(style, rule.ruleRef);
+    const properties = style.leadingProperties();
+    for (let index = 0; index < properties.length; index++) {
+      const property = properties[index];
+      const declaration = rule.declarations[index];
+      if (!declaration) continue;
+      const state = chromiumPropertyState(declaration.state);
+      propertyStates.set(property, state);
+      if (declaration.state === 'inactive') property.setActive(false);
+    }
+  }
+  Object.defineProperty(matchedStyles, 'propertyState', {
+    configurable: true,
+    value: (property: object): PropertyState|null => propertyStates.get(property) ?? null,
+  });
+  return Object.freeze({
+    matchedStyles,
+    cssModel,
+    node,
+    ruleRefByStyle,
+    ruleByRef: new Map(orderedRules.map(rule => [rule.ruleRef, rule])),
+  });
+}
+
+function orderedRuleSnapshots(snapshot: MatchedStylesSnapshot): RuleSnapshot[] {
+  const rules: RuleSnapshot[] = [];
+  if (snapshot.inlineStyle) rules.push(snapshot.inlineStyle);
+  rules.push(...snapshot.matchedRules);
+  for (const inherited of snapshot.inherited) {
+    if (inherited.inlineStyle) rules.push(inherited.inlineStyle);
+    rules.push(...inherited.matchedRules);
+  }
+  return rules;
+}
+
+function chromiumPropertyState(state: DeclarationState): PropertyState|null {
+  if (state === 'winning-known-author') return PropertyState.ACTIVE;
+  if (state === 'overridden-known-author') return PropertyState.OVERLOADED;
+  return null;
+}
+
+function stylePayload(rule: RuleSnapshot, identity: string) {
+  return {
+    cssText: identity,
+    cssProperties: rule.declarations.map(declaration => ({
+      name: declaration.name,
+      value: declaration.value,
+      important: declaration.important,
+      parsedOk: true,
+      implicit: false,
+      disabled: false,
+      text: `${declaration.name}: ${declaration.value}${declaration.important ? ' !important' : ''};`,
+      longhandProperties: readOnlyLonghandProperties(declaration),
+    })),
+    shorthandEntries: [],
+  };
+}
+
+function emptyInlineStylePayload() {
+  return {
+    cssText: undefined,
+    cssProperties: [],
+    shorthandEntries: [],
+  };
+}
+
+function readOnlyLonghandProperties(declaration: DeclarationSnapshot) {
+  const longhandNames = cssMetadata().getLonghands(declaration.name.toLowerCase());
+  if (!longhandNames?.length) return [];
+  // CSSOM expansion happens on a detached element. It neither touches the
+  // inspected page nor grants a CSSModel writer, while matching each host
+  // browser's serialization for the pinned Chromium longhand inventory.
+  const scratchStyle = document.createElement('span').style;
+  scratchStyle.setProperty(declaration.name, declaration.value, declaration.important ? 'important' : '');
+  return longhandNames.map(longhandName => ({
+    name: longhandName,
+    value: scratchStyle.getPropertyValue(longhandName),
+    important: declaration.important,
+    parsedOk: true,
+    implicit: true,
+    disabled: false,
+    text: `${longhandName}: ${scratchStyle.getPropertyValue(longhandName)}${declaration.important ? ' !important' : ''};`,
+  })).filter(property => property.value !== '');
+}
+
+function ruleMatchPayload(rule: RuleSnapshot, identity: string) {
+  const selectors = splitSelectorList(rule.selectorText);
+  return {
+    rule: {
+      selectorList: {
+        text: rule.selectorText,
+        selectors: selectors.map(text => ({text})),
+      },
+      origin: 'regular',
+      style: stylePayload(rule, identity),
+      ...contextPayload(rule.contexts),
+    },
+    matchingSelectors: rule.matchingSelectorIndices.filter(index => index < selectors.length),
+  };
+}
+
+function contextPayload(contexts: readonly ContextSnapshot[]) {
+  const media = [];
+  const supports = [];
+  const layers = [];
+  const scopes = [];
+  const containerQueries = [];
+  const startingStyles = [];
+  const ruleTypes = [];
+  // The neutral contract is outer-to-inner; CDP and the pinned pane consume
+  // ancestor rule evidence from the innermost rule going outwards.
+  for (const context of [...contexts].reverse()) {
+    if (context.kind === 'media') {
+      media.push({text: context.text, source: 'mediaRule'});
+      ruleTypes.push('MediaRule');
+    } else if (context.kind === 'supports') {
+      supports.push({text: context.text, active: true});
+      ruleTypes.push('SupportsRule');
+    } else if (context.kind === 'layer') {
+      layers.push({text: context.text});
+      ruleTypes.push('LayerRule');
+    } else if (context.kind === 'scope') {
+      scopes.push({text: context.text});
+      ruleTypes.push('ScopeRule');
+    } else if (context.kind === 'container') {
+      containerQueries.push({text: context.text});
+      ruleTypes.push('ContainerRule');
+    } else if (context.kind === 'starting-style') {
+      startingStyles.push({});
+      ruleTypes.push('StartingStyleRule');
+    }
+  }
+  return {media, supports, layers, scopes, containerQueries, startingStyles, ruleTypes};
+}
+
+function splitSelectorList(selectorText: string): string[] {
+  const selectors = [];
+  let start = 0;
+  let quote = '';
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < selectorText.length; index++) {
+    const character = selectorText[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(' || character === '[') depth++;
+    else if (character === ')' || character === ']') depth = Math.max(0, depth - 1);
+    else if (character === ',' && depth === 0) {
+      selectors.push(selectorText.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  selectors.push(selectorText.slice(start).trim());
+  return selectors.filter(Boolean);
+}
+
+function createReadOnlyCSSModel() {
+  const target = Object.freeze({model: () => null});
+  const domModel = Object.freeze({
+    getContainerForNode(
+        _nodeId: number, _containerName?: string, _physicalAxes?: string, _logicalAxes?: string,
+        _queriesScrollState?: boolean, _queriesAnchored?: boolean): Promise<undefined> {
+      return Promise.resolve(undefined);
+    },
+  });
+  return Object.freeze({
+    async getEnvironmentVariables(): Promise<Record<string, string>> { return {}; },
+    styleSheetHeaderForId(): null { return null; },
+    sourceMapManager(): {sourceMapForClient(): null} { return {sourceMapForClient: () => null}; },
+    domModel(): object { return domModel; },
+    target(): object { return target; },
+  });
+}
+
+function createComputedStyleModel(): MutableComputedStyleModel {
+  let cssModel: object|null = null;
+  return {
+    node: null,
+    addEventListener(): void {},
+    removeEventListener(): void {},
+    cssModel(): object|null { return cssModel; },
+    setModel(node: object|null, nextCSSModel: object|null): void {
+      this.node = node;
+      cssModel = nextCSSModel;
+    },
+  };
+}
+
+function createNodeChain(snapshot: MatchedStylesSnapshot, cssModel: object) {
+  const refs = [snapshot.nodeRef, ...snapshot.inherited.map(item => `inherited:${item.ancestorIndex}`)];
+  const inheritedLabels = [undefined, ...snapshot.inherited.map(item => item.displayLabel)];
+  const nodes = refs.map((ref, index) => ({
+    id: index + 1,
+    parentNode: null as unknown,
+    ownerDocument: null as unknown,
+    nodeType: () => 1,
+    backendNodeId: () => index + 1,
+    nodeNameInCorrectCase: () => index === 0 ? 'div' : 'body',
+    hasAssignedSlot: () => false,
+    pseudoType: () => null,
+    getAttribute: () => null,
+    pinOpInheritedLabel: inheritedLabels[index],
+    domModel: () => ({cssModel: () => cssModel}),
+    toString: () => ref,
+  }));
+  for (let index = 0; index < nodes.length - 1; index++) {
+    nodes[index].parentNode = nodes[index + 1];
+  }
+  const ownerDocument = {id: 1};
+  for (const node of nodes) node.ownerDocument = ownerDocument;
+  return nodes[0];
+}
+
+function generatedOrigin(source: GeneratedSourceSnapshot|undefined): {
+  readonly label: string;
+  readonly languageId: 'css';
+  readonly startLine?: number;
+  readonly startColumn?: number;
+  readonly clickable: false;
+}|undefined {
+  if (!source) return undefined;
+  return {
+    label: safeSourceLabel(source.label),
+    languageId: 'css',
+    ...(source.lineNumber === undefined ? {} : {startLine: source.lineNumber}),
+    ...(source.columnNumber === undefined ? {} : {startColumn: source.columnNumber}),
+    clickable: false,
+  };
+}
+
+function safeSourceLabel(label: string): string {
+  const segments = label.split(/[\\/]/);
+  return segments.at(-1) || label;
+}

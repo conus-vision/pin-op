@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "chrome-devtools-frontend",
+    "version": "1.0.1681091",
+    "gitHead": "23cccaa78f7458a5aad99c1af98dc1856d2494a3",
+    "integrity": "sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==",
+    "license": "BSD-3-Clause"
+  },
+  "entryPoint": "entrypoints/read-only-styles.ts",
+  "productionExports": [
+    "chromiumReadOnlyStylesRuntime"
+  ],
+  "browserTargets": [
+    "chrome116",
+    "firefox142"
+  ],
+  "maxUnminifiedBytes": 2097152,
+  "overlayFiles": {
+    "entrypoints/read-only-styles.ts": "fe5cea561ba23f3c70a3b607c70d92ec46ab5c954669eec9651517e17f96f64b",
+    "facades/buttons.ts": "6480f0ea2893420e0424192917e02e659ae8eab337bab83276e9753c90f46f8d",
+    "facades/common.ts": "b40c45c746ff74037a83c4b7e843a051cfc657e59b9316a9d01009fd1fea0501",
+    "facades/components.ts": "be7b58d8bbc390f7e1615a141d4eef69ef7148b6928fb2485e60232ea2c7bec2",
+    "facades/css-query.ts": "7ddd825076d3a3e5dfb9c850dde3aebe8d3a12f3c3f1e4be78686c42d8ab291f",
+    "facades/dom-model.ts": "400c00be27980098ff0f488ad8399076fe138855b09c11ce6ebdbaeb62cba8be",
+    "facades/elements-components.ts": "e86b9b25f3e2525ba8cebcc87a872498ef023b0f28c1bd267dc0f24a2726e095",
+    "facades/host.ts": "649cfc3e27b476ff20b0618b708c0045661b2751cfa4ae47361e6cc2cd5ede0e",
+    "facades/inline-editor.ts": "6f8a8ec2d78900b7ed0eeef5c90d0617ee7c88d6953b8331ea39bdb3da9aad29",
+    "facades/kit.ts": "e4b27055254310855f5bb3f0889414c072ac45c17a417f7675f6e0b65a26e65b",
+    "facades/platform.ts": "fcb7a941472ebce0ea5ca26098c4537e99f719a0ea025e73b3480d74122bcec5",
+    "facades/protocol.ts": "9875210b4292f14b23eb18b704423d995e0bad69dad0d51810093ef22b083782",
+    "facades/sdk.ts": "ff99ae7cb0696833542eb4a7b51a03355fb93bf1c07a0101dabf579b35e5aeaf",
+    "facades/styles-dependencies.ts": "7491c700a419866384ac46b0dec70475f70e73cb502d545f0cad4efe321df86e",
+    "facades/text-utils.ts": "92e71f7a93cdbd459f7a9a3e9d8752ee1cfbe778de8fe18b0177eb48507d225a",
+    "facades/ui-utils.ts": "f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6",
+    "facades/ui.ts": "1d7942654fa557f75c10721181125a6d3a84dd1fd0928d2bd9347806bf3d0cd7",
+    "facades/visual-logging.ts": "974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96",
+    "runtime/read-only-styles-runtime.ts": "84fc06fa1664edc441cc5f4f88acfea213d86cb70ad74e3567064eefd646edd6"
+  },
+  "upstreamFiles": {
+    "front_end/core/sdk/CSSProperty.ts": "6c699445cd13b6f841cc740b15fe1e01360c5afb4c87a3a68f1dd89b76f22047",
+    "front_end/core/sdk/CSSStyleDeclaration.ts": "8c35c9ab6b4ae00f172d67546047efdacfb0d59173b3420dae066f4b00583454",
+    "front_end/panels/elements/StylePropertiesSection.ts": "bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be",
+    "front_end/panels/elements/StylePropertyTreeElement.ts": "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
+    "front_end/panels/elements/StylesSidebarPane.ts": "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28"
+  },
+  "reviewedInputCount": 106,
+  "reviewedPackageClosure": {
+    "fileCount": 74,
+    "sha256": "380ed2fc7f37f612b8311f22c122d27a00460215890d07789162a3a201eee2f2"
+  },
+  "reviewedStylesOverlayClosure": {
+    "fileCount": 18,
+    "sha256": "d5fa939d0e29a00ee2d23acd42904d264639b5d0b0c0e22170311a88ff2c5084"
+  },
+  "reviewedBaseOverlayClosure": {
+    "fileCount": 13,
+    "sha256": "d025e964dbbe85f5630763f9c55aa2e921e90e27ac662922f593c708ef8d1f79"
+  },
+  "reviewedGeneratedInputs": [
+    "chromium-styles-images:front_end/Images/Images.js"
+  ],
+  "requiredImageFiles": {
+    "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
+    "front_end/Images/src/open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",
+    "front_end/Images/src/triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
+    "front_end/Images/src/triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85"
+  },
+  "requiredLicenseFiles": {
+    "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
+    "front_end/third_party/codemirror.next/LICENSE": "aa8f65819a471c1a25fb3c0816c5a75e45f009b7899d292ee3cc70d9dbdd8f7e",
+    "front_end/third_party/lit/LICENSE": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
+  }
+}
