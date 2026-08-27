@@ -11,6 +11,7 @@ describeBrowserPackageContract({
   expectedInspectorAssets: [
     "dist/inspector-panel.html",
     "dist/inspectorPanel.js",
+    "dist/chromiumElementsRuntime.js",
     "dist/devtools-elements.css",
   ],
   expectedInspectorBundleMarkers: [

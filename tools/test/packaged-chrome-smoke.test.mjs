@@ -65,6 +65,7 @@ const panelBundleFixture = [
   'const resolveLocatorType = "dom.resolveLocator";',
 ].join("\n");
 const inspectorPanelBundleFixture = [
+  'import { createElementsInspectorView } from "./chromiumElementsRuntime.js";',
   'const inspectorWorkspace = "inspector-workspace";',
   'const matchedStylesRequest = "styles.getMatched";',
   'const setPseudoStatesRequest = "styles.setPseudoStates";',
@@ -78,6 +79,13 @@ const inspectorPanelBundleFixture = [
   'const rulesSourcesPublication = "rules.sources";',
   'const rulesOpenIntent = "pin-op.rules.open";',
   'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
+].join("\n");
+const chromiumElementsRuntimeBundleFixture = [
+  'const readOnlyRules = "aria-readonly Rules";',
+  'const previewLabelPrefix = "Preview :";',
+  'const pseudoStateAttribute = "data-pseudo-state";',
+  'const createFactory = () => readOnlyRules + previewLabelPrefix + pseudoStateAttribute;',
+  'export { createFactory as createElementsInspectorView };',
 ].join("\n");
 const contentScriptBundleFixture = [
   'const selectionMarker = "data-pin-op-preview-selected-";',
@@ -134,6 +142,10 @@ function createArchive(
   files.set("dist/devtools-elements.css", Buffer.from(elementsCssFixture));
   files.set("dist/panel.js", Buffer.from(panelBundleFixture));
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundleFixture));
+  files.set(
+    "dist/chromiumElementsRuntime.js",
+    Buffer.from(chromiumElementsRuntimeBundleFixture),
+  );
   files.set(
     "dist/background.js",
     Buffer.from(
@@ -308,11 +320,15 @@ test("requires packaged inspector assets and semantic static markers", () => {
       /pseudo-state response/i,
     ],
     ["dist/inspectorPanel.js", "pseudoStateRevision", /pseudo-state revision/i],
-    ["dist/inspectorPanel.js", "Preview :", /pseudo-state label prefix/i],
-    ["dist/inspectorPanel.js", "data-pseudo-state", /pseudo-state control attribute/i],
+    ["dist/chromiumElementsRuntime.js", "Preview :", /pseudo-state label prefix/i],
+    [
+      "dist/chromiumElementsRuntime.js",
+      "data-pseudo-state",
+      /pseudo-state control attribute/i,
+    ],
     ["dist/inspectorPanel.js", '["hover","focus"]', /bounded pseudo-state list/i],
     [
-      "dist/inspectorPanel.js",
+      "dist/chromiumElementsRuntime.js",
       "aria-readonly",
       /read-only Rules/i,
     ],
@@ -507,6 +523,7 @@ test("rejects literal local paths in packaged runtime bundles", () => {
     "dist/devtools.js",
     "dist/panel.js",
     "dist/inspectorPanel.js",
+    "dist/chromiumElementsRuntime.js",
   ]) {
     for (const [literal, expectedError] of cases) {
       const archive = createArchive();

@@ -61,7 +61,10 @@ describe("DevTools panel assets", () => {
       .toBe("Elements inspector mount");
     expect(inspector('link[href="./panel.css"]')).toHaveLength(1);
     expect(inspector('link[href="./devtools-elements.css"]')).toHaveLength(1);
-    expect(inspector('script[src="./inspectorPanel.js"]')).toHaveLength(1);
+    const inspectorBootstrap = inspector('script[src="./inspectorPanel.js"]');
+    expect(inspectorBootstrap).toHaveLength(1);
+    expect(inspectorBootstrap.attr("type")).toBe("module");
+    expect(inspector('script[type="module"]')).toHaveLength(1);
     expect(inspector("#refresh-styles").attr("aria-label")).toBe("Refresh styles");
     expect(inspector("#refresh-styles").attr("title")).toBe("Refresh styles");
     expect(inspector("#refresh-styles").is(":disabled")).toBe(true);

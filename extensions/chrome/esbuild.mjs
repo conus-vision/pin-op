@@ -13,6 +13,10 @@ import {
   copyBrowserPanelAssets,
 } from "../../tools/browser-panel-assets.mjs";
 import {
+  buildBrowserInspectorModules,
+  mergeBrowserBundleMetafiles,
+} from "../../tools/browser-elements-runtime.mjs";
+import {
   RUNTIME_METADATA_FILENAME,
   serializeRuntimeMetadata,
 } from "../../tools/runtime-metadata.mjs";
@@ -33,12 +37,11 @@ const panelPage = panelVariant === "legacy"
 
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
-const result = await build({
+const browserBundleResult = await build({
   absWorkingDir: extensionRoot,
   entryPoints: {
     devtools: "src/devtools.ts",
     panel: "src/panel.ts",
-    inspectorPanel: "src/inspectorPanel.ts",
     background: "src/background.ts",
     contentScript: "src/contentScript.ts",
   },
@@ -54,7 +57,25 @@ const result = await build({
     __PIN_OP_PANEL_PAGE__: JSON.stringify(panelPage),
   },
 });
-assertNoChromiumUpstreamInputs(result.metafile, "Chrome browser bundle");
+const { inspectorPanelResult, elementsRuntimeResult } =
+  await buildBrowserInspectorModules({ extensionRoot, outdir });
+assertNoChromiumUpstreamInputs(
+  browserBundleResult.metafile,
+  "Chrome browser bundle",
+);
+assertNoChromiumUpstreamInputs(
+  inspectorPanelResult.metafile,
+  "Chrome Inspector bootstrap",
+);
+assertNoChromiumUpstreamInputs(
+  elementsRuntimeResult.metafile,
+  "Chrome Elements runtime fallback",
+);
+const combinedMetafile = mergeBrowserBundleMetafiles(
+  browserBundleResult.metafile,
+  inspectorPanelResult.metafile,
+  elementsRuntimeResult.metafile,
+);
 
 await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
 await copyBrowserPanelAssets(extensionRoot);
@@ -66,5 +87,5 @@ await writeFile(
 );
 
 await writeBrowserProjectLicense(extensionRoot);
-await writeBrowserBundleNotices(result.metafile, extensionRoot);
+await writeBrowserBundleNotices(combinedMetafile, extensionRoot);
 await normalizeBrowserPackageTimestamps(extensionRoot);

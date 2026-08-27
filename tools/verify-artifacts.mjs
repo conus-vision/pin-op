@@ -47,6 +47,7 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "THIRD_PARTY_NOTICES",
   "manifest.json",
   "dist/background.js",
+  "dist/chromiumElementsRuntime.js",
   "dist/contentScript.js",
   "dist/devtools.html",
   "dist/devtools.js",
@@ -213,6 +214,7 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "packages/devtools-elements-ui/src/elementsInspectorView.ts",
   "packages/devtools-elements-ui/src/index.ts",
   "packages/devtools-elements-ui/src/pseudoStateController.ts",
+  "packages/devtools-elements-ui/src/upstreamRuntime.ts",
   "packages/devtools-elements-ui/test/elementsInspectorView.test.ts",
   "packages/devtools-elements-ui/test/elementsTreeOutline.test.ts",
   "packages/devtools-elements-ui/test/fixtures/elementsSession.ts",
@@ -237,6 +239,7 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "packages/browser-extension-core/assets/icons/pin-op-128.png",
   "tools/archive-firefox-source.mjs",
   "tools/browser-bundle-notices.mjs",
+  "tools/browser-elements-runtime.mjs",
   "tools/browser-package-contract.mjs",
   "tools/browser-panel-assets.mjs",
   "tools/chromium-vendor-paths.mjs",
@@ -908,6 +911,7 @@ export function assertBrowserInspectorParity(chromeArchive, firefoxArchive) {
     "dist/devtools-elements.css",
     "dist/inspector-panel.html",
     "dist/inspectorPanel.js",
+    "dist/chromiumElementsRuntime.js",
   ]) {
     const chromeBytes = chromeArchive.files.get(path);
     const firefoxBytes = firefoxArchive.files.get(path);

@@ -45,6 +45,7 @@ const panelBundle = [
   "",
 ].join("\n");
 const inspectorPanelBundle = [
+  'import { createElementsInspectorView } from "./chromiumElementsRuntime.js";',
   'const inspectorWorkspace = "inspector-workspace";',
   'const matchedStylesRequest = "styles.getMatched";',
   'const setPseudoStatesRequest = "styles.setPseudoStates";',
@@ -58,6 +59,14 @@ const inspectorPanelBundle = [
   'const rulesSourcesPublication = "rules.sources";',
   'const rulesOpenIntent = "pin-op.rules.open";',
   'const rulesSourcePublicationShape = {inspectMessageId:"inspect-1",rulesGeneration:1,openAuthorityId:"authority-1",ruleRef:{},sources:[{document:{label:"style.scss",languageId:"scss"},startLine:1,startColumn:1,confidence:"exact"}],unresolvedRuleCount:0,metadata:{}};',
+  "",
+].join("\n");
+const chromiumElementsRuntimeBundle = [
+  'const readOnlyRules = "aria-readonly Rules";',
+  'const previewLabelPrefix = "Preview :";',
+  'const pseudoStateAttribute = "data-pseudo-state";',
+  'const createFactory = () => readOnlyRules + previewLabelPrefix + pseudoStateAttribute;',
+  'export { createFactory as createElementsInspectorView };',
   "",
 ].join("\n");
 const contentScriptBundle = [
@@ -108,16 +117,18 @@ const upstreamRootLicense = readFileSync(
 // Retaining those helpers after dependency/build changes requires a security
 // review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "a494d0a6346adafb7e0f18d01bc796ef47f7408434bcc8df900a89f4b05787e9", inspectorSha256: "0917877a2d941dc9d96f35c667066785370ee3f4816cf36b4a2a403ef88e4c96" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "3f87fcf55bb851ecca36ee593efdbe5bcfee115ed1c4163a4615ceba80eef82b", inspectorSha256: "3f87fcf55bb851ecca36ee593efdbe5bcfee115ed1c4163a4615ceba80eef82b" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "3a4a037522a40dd9bb0328e8ec9106faf61f405e8464ccc2810a3cbc5d5f86aa", inspectorSha256: "cd3cdd25b2784e7414df5e354465322663416b7ca211717316db725669c917bc" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "31f8c6bfd8b503c8351fd9c640ba87844dc2f7142967cf26075e1c8b18f9e44a", inspectorSha256: "31f8c6bfd8b503c8351fd9c640ba87844dc2f7142967cf26075e1c8b18f9e44a" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "b3b72d3bc49b047e39f7f23c6318441b0c84c5b99da03e7edfe999983cc77b6c", inspectorSha256: "b3b72d3bc49b047e39f7f23c6318441b0c84c5b99da03e7edfe999983cc77b6c" },
-  { browser: "firefox", path: "dist/background.js", sha256: "a494d0a6346adafb7e0f18d01bc796ef47f7408434bcc8df900a89f4b05787e9", inspectorSha256: "0917877a2d941dc9d96f35c667066785370ee3f4816cf36b4a2a403ef88e4c96" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "3f87fcf55bb851ecca36ee593efdbe5bcfee115ed1c4163a4615ceba80eef82b", inspectorSha256: "3f87fcf55bb851ecca36ee593efdbe5bcfee115ed1c4163a4615ceba80eef82b" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "4640a9412ffdd49ee2c18ef6c02d0ff7b8b2851da5cc977628339ffbcbce55a3", inspectorSha256: "a4639e366dc8d35ec34aa81a96d03e4235afd499c45ac331e5ff1d20e8f910d4" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "31f8c6bfd8b503c8351fd9c640ba87844dc2f7142967cf26075e1c8b18f9e44a", inspectorSha256: "31f8c6bfd8b503c8351fd9c640ba87844dc2f7142967cf26075e1c8b18f9e44a" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "b3b72d3bc49b047e39f7f23c6318441b0c84c5b99da03e7edfe999983cc77b6c", inspectorSha256: "b3b72d3bc49b047e39f7f23c6318441b0c84c5b99da03e7edfe999983cc77b6c" },
+  { browser: "chrome", path: "dist/background.js", sha256: "2ae7801671687c947b392f55cb4deca404fb3a7f646697920bb11ab42db8ce2a", inspectorSha256: "eace567157034a639c9387da9524e6cfa1798ac12e61d14afa97ffecc5f4c0b7" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552", inspectorSha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "c022e24e03c82c549b55c31ee6d1207f9d065175ba5a9fe38d81a2dec2034255", inspectorSha256: "9abd79ec7aa1b53860524ed5f94f69d4bb1753351e95bd8bc29a78a43f1f0ea2" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac", inspectorSha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac" },
+  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be", inspectorSha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8", inspectorSha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8" },
+  { browser: "firefox", path: "dist/background.js", sha256: "2ae7801671687c947b392f55cb4deca404fb3a7f646697920bb11ab42db8ce2a", inspectorSha256: "eace567157034a639c9387da9524e6cfa1798ac12e61d14afa97ffecc5f4c0b7" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552", inspectorSha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "01c45de811fbb135d0682932947fece3dcf96c09dcc9d679723f369f33c0bc1d", inspectorSha256: "5a9ad8489bbf3fb5e8d9e1c4668a43b9bc48fc39d61457f0326ab6d0043584ee" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac", inspectorSha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac" },
+  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be", inspectorSha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8", inspectorSha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -286,12 +297,12 @@ const requiredMarkers = [
   },
   {
     label: "pseudo-state label prefix",
-    path: "dist/inspectorPanel.js",
+    path: "dist/chromiumElementsRuntime.js",
     marker: "Preview :",
   },
   {
     label: "pseudo-state control attribute",
-    path: "dist/inspectorPanel.js",
+    path: "dist/chromiumElementsRuntime.js",
     marker: "data-pseudo-state",
   },
   {
@@ -427,6 +438,7 @@ test("browser artifact inventory includes the Inspector default and legacy rollb
   for (const path of [
     "dist/inspector-panel.html",
     "dist/inspectorPanel.js",
+    "dist/chromiumElementsRuntime.js",
     "dist/devtools-elements.css",
     "dist/panel.html",
     "dist/panel.js",
@@ -470,6 +482,19 @@ test("browser artifact verifier requires byte-identical derived assets and notic
   );
 
   firefox.files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));
+  firefox.files.set(
+    "dist/chromiumElementsRuntime.js",
+    Buffer.from(`${chromiumElementsRuntimeBundle}\n// drift\n`),
+  );
+  assert.throws(
+    () => artifactVerifier.assertBrowserInspectorParity(chrome, firefox),
+    /chromiumElementsRuntime\.js.*byte-identical/i,
+  );
+
+  firefox.files.set(
+    "dist/chromiumElementsRuntime.js",
+    Buffer.from(chromiumElementsRuntimeBundle),
+  );
   firefox.files.set(
     "THIRD_PARTY_NOTICES",
     Buffer.from(`${firefox.files.get("THIRD_PARTY_NOTICES")}\nnotice drift\n`),
@@ -524,6 +549,7 @@ for (const browser of ["firefox", "chrome"]) {
   for (const path of [
     "dist/inspector-panel.html",
     "dist/inspectorPanel.js",
+    "dist/chromiumElementsRuntime.js",
     "dist/devtools-elements.css",
   ]) {
     test(`common ${browser} artifact verifier requires ${path}`, () => {
@@ -660,6 +686,82 @@ for (const browser of ["firefox", "chrome"]) {
     }
   });
 
+  test(`common ${browser} artifact verifier requires the Inspector module graph`, () => {
+    const classicArchive = browserArchive(browser);
+    const inspectorHtml = classicArchive.files
+      .get("dist/inspector-panel.html")
+      .toString("utf8");
+    classicArchive.files.set(
+      "dist/inspector-panel.html",
+      Buffer.from(inspectorHtml.replace(' type="module"', "")),
+    );
+    assert.throws(
+      () => validateBrowserArchive(
+        classicArchive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /unexpected module scripts/i,
+    );
+
+    const bareImportArchive = browserArchive(browser);
+    const inspectorBundle = bareImportArchive.files
+      .get("dist/inspectorPanel.js")
+      .toString("utf8");
+    bareImportArchive.files.set(
+      "dist/inspectorPanel.js",
+      Buffer.from(inspectorBundle.replace(
+        "./chromiumElementsRuntime.js",
+        "@pin-op/devtools-elements-ui/upstream-runtime",
+      )),
+    );
+    assert.throws(
+      () => validateBrowserArchive(
+        bareImportArchive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /must statically import exactly \.\/chromiumElementsRuntime\.js/i,
+    );
+
+    const unbundledRuntimeArchive = browserArchive(browser);
+    const elementsRuntime = unbundledRuntimeArchive.files
+      .get("dist/chromiumElementsRuntime.js")
+      .toString("utf8");
+    unbundledRuntimeArchive.files.set(
+      "dist/chromiumElementsRuntime.js",
+      Buffer.from(`import "./transitive.js";\n${elementsRuntime}`),
+    );
+    assert.throws(
+      () => validateBrowserArchive(
+        unbundledRuntimeArchive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /must be a bundled ESM module/i,
+    );
+
+    const reexportedRuntimeArchive = browserArchive(browser);
+    const reexportedElementsRuntime = reexportedRuntimeArchive.files
+      .get("dist/chromiumElementsRuntime.js")
+      .toString("utf8");
+    reexportedRuntimeArchive.files.set(
+      "dist/chromiumElementsRuntime.js",
+      Buffer.from(
+        'export { createElementsInspectorView } from "./transitive.js";\n' +
+          reexportedElementsRuntime,
+      ),
+    );
+    assert.throws(
+      () => validateBrowserArchive(
+        reexportedRuntimeArchive,
+        `pin-op-${browser}-0.3.0.zip`,
+        browser,
+      ),
+      /must be a bundled ESM module/i,
+    );
+  });
+
   test(`common ${browser} artifact verifier rejects indirect Inspector UI resources`, () => {
     for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
       for (const resource of [
@@ -783,6 +885,7 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/devtools.js",
       "dist/panel.js",
       "dist/inspectorPanel.js",
+      "dist/chromiumElementsRuntime.js",
     ]) {
       for (const marker of [
         'eval("attack")',
@@ -988,6 +1091,7 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/devtools.js",
       "dist/panel.js",
       "dist/inspectorPanel.js",
+      "dist/chromiumElementsRuntime.js",
     ]) {
       const archive = browserArchive(browser);
       const bundle = archive.files.get(path).toString("utf8");
@@ -1012,6 +1116,7 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/devtools.js",
       "dist/panel.js",
       "dist/inspectorPanel.js",
+      "dist/chromiumElementsRuntime.js",
     ]) {
       for (const marker of [
         'const dynamicCodeDocumentation = "eval(\\"text only\\") and new Function";\n' +
@@ -1871,6 +1976,10 @@ function browserArchive(browser, panelPage = currentBrowserPanelPage(browser)) {
   }
   files.set("dist/panel.js", Buffer.from(panelBundle));
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));
+  files.set(
+    "dist/chromiumElementsRuntime.js",
+    Buffer.from(chromiumElementsRuntimeBundle),
+  );
   files.set(
     "dist/runtime-metadata.json",
     Buffer.from('{"schemaVersion":1,"protocolVersion":7}\n'),

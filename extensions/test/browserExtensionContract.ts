@@ -70,7 +70,7 @@ export interface BrowserPackageContractOptions {
 
 export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
   "dist/inspector-panel.html":
-    "ee68e81109954105ba91301b50b962be4ce0309a37d0a9eda64dc3a6af850ba7",
+    "611b9234ef75d4d09427b8643d1f010b2260ca46899117959040f78e688bbfbf",
   "dist/devtools-elements.css":
     "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
 });
@@ -836,19 +836,35 @@ export function describeBrowserPackageContract(
       const elementsCss = packagedText(packaged, "dist/devtools-elements.css");
       const panelBundle = packagedText(packaged, "dist/panel.js");
       const inspectorPanelBundle = packagedText(packaged, "dist/inspectorPanel.js");
+      const elementsRuntimeBundle = packagedText(
+        packaged,
+        "dist/chromiumElementsRuntime.js",
+      );
 
       expect(panel).toBe(sharedAsset("panel.html"));
       expect(inspectorPanel).toBe(sharedAsset("inspector-panel.html"));
       expect(elementsCss).toBe(sharedElementsAsset("devtools-elements.css"));
-      expect(inspectorPanel).toContain('./inspectorPanel.js');
+      expect(inspectorPanel).toMatch(
+        /<script\b(?=[^>]*\btype="module")(?=[^>]*\bsrc="\.\/inspectorPanel\.js")[^>]*><\/script>/,
+      );
       expect(
         [...inspectorPanel.matchAll(
           /<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/g,
         )].map((match) => match[1]),
       ).toEqual(["./panel.css", "./devtools-elements.css"]);
       expect(inspectorPanelBundle).toContain("inspector-workspace");
+      expect(inspectorPanelBundle).toMatch(
+        /\bfrom["']\.\/chromiumElementsRuntime\.js["']/,
+      );
+      expect(inspectorPanelBundle).not.toContain(
+        "@pin-op/devtools-elements-ui/upstream-runtime",
+      );
+      expect(inspectorPanelBundle).not.toMatch(/\bimport\s*\(/);
+      expect(elementsRuntimeBundle).toContain("createElementsInspectorView");
+      const inspectorModuleGraph =
+        `${inspectorPanelBundle}\n${elementsRuntimeBundle}`;
       for (const marker of contract.expectedInspectorBundleMarkers) {
-        expect(inspectorPanelBundle, marker).toContain(marker);
+        expect(inspectorModuleGraph, marker).toContain(marker);
       }
       for (const marker of ["rules.sources", "pin-op.rules.open"]) {
         expect(inspectorPanelBundle, marker).toContain(marker);
@@ -1100,8 +1116,13 @@ export function describeBrowserPackageContract(
       );
       expect(build).toContain("../../tools/browser-panel-assets.mjs");
       expect(build).toContain("copyBrowserPanelAssets");
+      expect(build).toContain("../../tools/browser-elements-runtime.mjs");
+      expect(build).toContain("buildBrowserInspectorModules");
+      expect(build).toContain("mergeBrowserBundleMetafiles");
       expect(build).toContain("assertNoChromiumUpstreamInputs");
-      expect(build).toContain("assertNoChromiumUpstreamInputs(result.metafile");
+      expect(build).toMatch(
+        /assertNoChromiumUpstreamInputs\(\s*browserBundleResult\.metafile/,
+      );
 
       const manifest = JSON.parse(
         readFileSync(new URL("package.json", contract.extensionRoot), "utf8"),
@@ -1111,6 +1132,37 @@ export function describeBrowserPackageContract(
           "pnpm --filter @pin-op/devtools-elements-ui build && " +
           "pnpm --filter @pin-op/browser-extension-core build",
       );
+    });
+
+    it("defines one shared static ESM Elements runtime build boundary", async () => {
+      const helperUrl = new URL(
+        "../../tools/browser-elements-runtime.mjs",
+        import.meta.url,
+      );
+      expect(existsSync(fileURLToPath(helperUrl))).toBe(true);
+      const helper = await import(helperUrl.href) as {
+        readonly CHROMIUM_ELEMENTS_RUNTIME_FILENAME?: string;
+        readonly CHROMIUM_ELEMENTS_RUNTIME_IMPORT?: string;
+        readonly ELEMENTS_RUNTIME_PACKAGE_IMPORT?: string;
+        readonly BROWSER_INSPECTOR_TARGETS?: readonly string[];
+        readonly buildBrowserInspectorModules?: unknown;
+        readonly mergeBrowserBundleMetafiles?: unknown;
+      };
+      expect(helper.CHROMIUM_ELEMENTS_RUNTIME_FILENAME).toBe(
+        "chromiumElementsRuntime.js",
+      );
+      expect(helper.CHROMIUM_ELEMENTS_RUNTIME_IMPORT).toBe(
+        "./chromiumElementsRuntime.js",
+      );
+      expect(helper.ELEMENTS_RUNTIME_PACKAGE_IMPORT).toBe(
+        "@pin-op/devtools-elements-ui/upstream-runtime",
+      );
+      expect(helper.BROWSER_INSPECTOR_TARGETS).toEqual([
+        "chrome116",
+        "firefox142",
+      ]);
+      expect(typeof helper.buildBrowserInspectorModules).toBe("function");
+      expect(typeof helper.mergeBrowserBundleMetafiles).toBe("function");
     });
 
     it("declares the shared browser panel assets in deterministic copy order", async () => {
@@ -1174,6 +1226,9 @@ export function describeBrowserPackageContract(
           expect(match[1], `${path}: ${match[0]}`).toMatch(/^\.\/[A-Za-z0-9._/-]+$/);
         }
       }
+      expect(packagedText(packaged, "dist/inspector-panel.html")).toMatch(
+        /<script\b(?=[^>]*\btype="module")(?=[^>]*\bsrc="\.\/inspectorPanel\.js")[^>]*><\/script>/,
+      );
     });
 
     it("keeps browser product branding out of user-facing panel UI strings", () => {
@@ -1183,7 +1238,11 @@ export function describeBrowserPackageContract(
             /\b(?:Chrome|Chromium|Google)\b/,
           );
         }
-        for (const path of ["dist/inspectorPanel.js", "dist/panel.js"]) {
+        for (const path of [
+          "dist/inspectorPanel.js",
+          "dist/chromiumElementsRuntime.js",
+          "dist/panel.js",
+        ]) {
           expect(userFacingBrowserBranding(
             packagedText(candidate, path),
           ), path).toEqual([]);
@@ -1227,7 +1286,11 @@ export function describeBrowserPackageContract(
         "chromium-devtools-frontend/upstream",
       );
 
-      for (const path of ["dist/panel.js", "dist/inspectorPanel.js"]) {
+      for (const path of [
+        "dist/panel.js",
+        "dist/inspectorPanel.js",
+        "dist/chromiumElementsRuntime.js",
+      ]) {
         expect(packagedText(packaged, path), path).not.toMatch(/\beval\s*\(/);
       }
     });
@@ -1360,6 +1423,7 @@ export function describeBrowserPackageContract(
         "dist/devtools.js",
         "dist/panel.js",
         "dist/inspectorPanel.js",
+        "dist/chromiumElementsRuntime.js",
       ]
         .map((path) => packagedText(packaged, path))
         .join("\n");
@@ -2104,6 +2168,11 @@ function stageBrowserExtensionProject(
   if (existsSync(join(workspaceRoot, panelAssetsHelper))) {
     copyWorkspacePath(workspaceRoot, stagedWorkspace, panelAssetsHelper);
   }
+  copyWorkspacePath(
+    workspaceRoot,
+    stagedWorkspace,
+    join("tools", "browser-elements-runtime.mjs"),
+  );
   copyWorkspacePath(
     workspaceRoot,
     stagedWorkspace,
