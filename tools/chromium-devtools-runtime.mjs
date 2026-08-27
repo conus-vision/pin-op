@@ -3,6 +3,7 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { build } from "esbuild";
+import ts from "typescript";
 
 export const CHROMIUM_DEVTOOLS_PIN = Object.freeze({
   packageName: "chrome-devtools-frontend",
@@ -43,12 +44,22 @@ const REVIEWED_IMAGE_HASHES = Object.freeze({
   "checker.svg": "72737a4aab8c143dfc925213d109699a3c951feff3aceb62fc95da9eefe5f0a3",
   "cross-circle-filled.svg": "5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3",
   "empty.svg": "c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6",
+  "errorWave.svg": "fd5dc2adee295375b0e96df8c7adf96be0ee6169155306f636786ae633f9f640",
   "goto-filled.svg": "d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf",
   "refresh.svg": "35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b",
   "triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
   "triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85",
   "triangle-up.svg": "90fb77f6cab8df35681d1db88e078fa8aaac4a9336f17fc6f2aabbc86efc2af5",
   "warning-filled.svg": "4445b327116ab32f274898a876c7bb8e0813d97dfe2eae05adf8ee9b5ac43cb0",
+});
+
+export const CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME = Object.freeze({
+  schemaVersion: 1,
+  packageVersion: CHROMIUM_DEVTOOLS_PIN.version,
+  overlayRoot: `third_party/chromium-devtools-frontend/patches/${CHROMIUM_DEVTOOLS_PIN.version}`,
+  maxUnminifiedBytes: 1024 * 1024,
+  browserTargets: Object.freeze(["chrome116", "firefox142"]),
+  manifestSha256: "626fd2608f55ffc5a5f13c35c850019ca1df8dfd30505d97a4060b4c2258d53c",
 });
 
 function sha256(bytes) {
@@ -71,6 +82,340 @@ async function resolvePackageRoot(repositoryRoot) {
     CHROMIUM_DEVTOOLS_PIN.packageName,
   );
   return await realpath(packageLink);
+}
+
+function normalizeRelativePath(value) {
+  return value.replaceAll(path.sep, "/");
+}
+
+async function listFiles(root) {
+  const files = [];
+  async function visit(directory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolute);
+      } else if (entry.isFile()) {
+        files.push(absolute);
+      }
+    }
+  }
+  await visit(root);
+  return files;
+}
+
+function assertHashInventory(actual, reviewed, description) {
+  const actualKeys = Object.keys(actual).sort();
+  const reviewedKeys = Object.keys(reviewed).sort();
+  if (
+    actualKeys.length !== reviewedKeys.length ||
+    actualKeys.some((value, index) => value !== reviewedKeys[index])
+  ) {
+    throw new Error(`${description} inventory mismatch`);
+  }
+  for (const relativePath of actualKeys) {
+    if (actual[relativePath] !== reviewed[relativePath]) {
+      throw new Error(`${description} hash mismatch for ${relativePath}: ${actual[relativePath]}`);
+    }
+  }
+}
+
+function sourceMemberName(node) {
+  if (!(
+    ts.isMethodDeclaration(node) ||
+    ts.isPropertyDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isMethodSignature(node) ||
+    ts.isPropertySignature(node) ||
+    ts.isPropertyAssignment(node) ||
+    ts.isShorthandPropertyAssignment(node) ||
+    ts.isParameter(node) ||
+    ts.isImportSpecifier(node)
+  )) {
+    return null;
+  }
+  const name = node?.name;
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
+export function applyChromiumReadOnlySourceTransform(source, transform, relativePath) {
+  const removedMembers = new Set(transform?.removeMembers ?? []);
+  if (removedMembers.size === 0) {
+    throw new Error(`Chromium read-only source transform removes no members: ${relativePath}`);
+  }
+  const sourceFile = ts.createSourceFile(
+    relativePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const removedDeclarations = new Set();
+  const containsRemovedThisMember = node => {
+    let found = false;
+    const visit = current => {
+      if (found) return;
+      if (ts.isPropertyAccessExpression(current) &&
+          current.expression.kind === ts.SyntaxKind.ThisKeyword &&
+          removedMembers.has(current.name.text)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(current, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const transformer = context => {
+    let classDepth = 0;
+    const isRemovedThisAccess = node => ts.isPropertyAccessExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ThisKeyword && removedMembers.has(node.name.text);
+    const isRemovedThisCall = node => ts.isCallExpression(node) && (
+      isRemovedThisAccess(node.expression) ||
+      (ts.isPropertyAccessExpression(node.expression) &&
+       ["bind", "call", "apply"].includes(node.expression.name.text) &&
+       isRemovedThisAccess(node.expression.expression))
+    );
+    const visit = node => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+        classDepth++;
+        const updated = ts.visitEachChild(node, visit, context);
+        classDepth--;
+        return updated;
+      }
+      const memberName = sourceMemberName(node);
+      if (classDepth > 0 && ts.isParameter(node) && memberName && removedMembers.has(memberName)) {
+        removedDeclarations.add(memberName);
+        return ts.factory.updateParameterDeclaration(
+          node, node.modifiers, node.dotDotDotToken,
+          ts.factory.createIdentifier("__pinOpReadOnlyParameter"),
+          node.questionToken, node.type, node.initializer,
+        );
+      }
+      if (classDepth > 0 && memberName && removedMembers.has(memberName) && !ts.isParameter(node) &&
+          !ts.isImportSpecifier(node) && !ts.isPropertyAssignment(node) && !ts.isShorthandPropertyAssignment(node)) {
+        removedDeclarations.add(memberName);
+        return undefined;
+      }
+      // Remove only exact wiring statements. Never rewrite a property merely
+      // because it has the same spelling: classList.remove and lifecycle
+      // remove() calls are part of the upstream rendering behaviour.
+      if (classDepth > 0 && ts.isExpressionStatement(node) && (
+        (ts.isBinaryExpression(node.expression) && isRemovedThisAccess(node.expression.left)) ||
+        isRemovedThisCall(node.expression) ||
+        (ts.isCallExpression(node.expression) && node.expression.arguments.some(isRemovedThisCall))
+      )) {
+        return undefined;
+      }
+      if (classDepth > 0 && ts.isIfStatement(node) && (
+        containsRemovedThisMember(node.expression) || /\.moveTo\s*\(/.test(node.getText(sourceFile))
+      )) return undefined;
+      if (classDepth > 0 && ts.isPropertyAssignment(node) && containsRemovedThisMember(node.initializer)) {
+        return ts.factory.updatePropertyAssignment(
+          node, node.name,
+          ts.factory.createArrowFunction(undefined, undefined, [], undefined, undefined, ts.factory.createBlock([])),
+        );
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return root => ts.visitNode(root, visit);
+  };
+  const transformed = ts.transform(sourceFile, [transformer]);
+  try {
+    const missingDeclarations = [...removedMembers].filter(name => !removedDeclarations.has(name));
+    if (missingDeclarations.length > 0) {
+      throw new Error(
+        `Chromium read-only source transform did not match ${relativePath}: ${missingDeclarations.join(", ")}`,
+      );
+    }
+    const printed = ts.createPrinter({newLine: ts.NewLineKind.LineFeed}).printFile(transformed.transformed[0]);
+    const printedSource = ts.createSourceFile(
+      relativePath,
+      printed,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const retainedDeclarations = new Set();
+    let inspectClassDepth = 0;
+    const inspect = node => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+        inspectClassDepth++;
+        ts.forEachChild(node, inspect);
+        inspectClassDepth--;
+        return;
+      }
+      const name = sourceMemberName(node);
+      if (inspectClassDepth > 0 && name && removedMembers.has(name) && !ts.isParameter(node) && !ts.isImportSpecifier(node) &&
+          !ts.isPropertyAssignment(node) && !ts.isShorthandPropertyAssignment(node)) {
+        retainedDeclarations.add(name);
+      }
+      ts.forEachChild(node, inspect);
+    };
+    inspect(printedSource);
+    if (retainedDeclarations.size > 0) {
+      throw new Error(
+        `Chromium read-only source transform retained declarations in ${relativePath}: ${[...retainedDeclarations].sort().join(", ")}`,
+      );
+    }
+    return printed;
+  } finally {
+    transformed.dispose();
+  }
+}
+
+export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
+  const physicalRepositoryRoot = await realpath(repositoryRoot);
+  const verifiedPackage = await verifyChromiumDevToolsPackage(physicalRepositoryRoot);
+  const overlayRoot = assertWithin(
+    physicalRepositoryRoot,
+    path.resolve(physicalRepositoryRoot, ...CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.overlayRoot.split("/")),
+    "Chromium read-only overlay",
+  );
+  const manifestPath = path.join(overlayRoot, "manifest.json");
+  const manifestBytes = await readFile(manifestPath);
+  if (sha256(manifestBytes) !== CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.manifestSha256) {
+    throw new Error("Chromium read-only overlay manifest hash mismatch");
+  }
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  if (
+    manifest.schemaVersion !== CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.schemaVersion ||
+    manifest.package?.name !== CHROMIUM_DEVTOOLS_PIN.packageName ||
+    manifest.package?.version !== CHROMIUM_DEVTOOLS_PIN.version ||
+    manifest.package?.gitHead !== CHROMIUM_DEVTOOLS_PIN.gitHead ||
+    manifest.maxUnminifiedBytes !== CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.maxUnminifiedBytes ||
+    !Array.isArray(manifest.browserTargets) ||
+    manifest.browserTargets.length !== CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets.length ||
+    manifest.browserTargets.some(
+      (target, index) => target !== CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets[index]
+    )
+  ) {
+    throw new Error("Chromium read-only overlay manifest does not match the pinned runtime");
+  }
+  if (
+    typeof manifest.entryPoint !== "string" ||
+    !/^entrypoints\/[A-Za-z0-9_./-]+\.ts$/.test(manifest.entryPoint)
+  ) {
+    throw new Error("Chromium read-only overlay has an invalid entry point");
+  }
+
+  const overlayFiles = {};
+  for (const absolute of await listFiles(overlayRoot)) {
+    const relative = normalizeRelativePath(path.relative(overlayRoot, absolute));
+    if (relative !== "manifest.json") {
+      overlayFiles[relative] = sha256(await readFile(absolute));
+    }
+  }
+  assertHashInventory(overlayFiles, manifest.overlayFiles, "Chromium read-only overlay file");
+
+  const upstreamFiles = {};
+  for (const relativePath of Object.keys(manifest.upstreamFiles ?? {})) {
+    if (!/^front_end\/[A-Za-z0-9_./-]+\.ts$/.test(relativePath)) {
+      throw new Error(`Invalid Chromium read-only upstream path: ${relativePath}`);
+    }
+    const absolute = assertWithin(
+      verifiedPackage.packageRoot,
+      path.resolve(verifiedPackage.packageRoot, ...relativePath.split("/")),
+      "Chromium read-only upstream file",
+    );
+    upstreamFiles[relativePath] = sha256(await readFile(absolute));
+  }
+  assertHashInventory(upstreamFiles, manifest.upstreamFiles, "Chromium read-only upstream file");
+
+  const sourceTransforms = new Map();
+  for (const [relativePath, transform] of Object.entries(manifest.sourceTransforms ?? {})) {
+    if (upstreamFiles[relativePath] === undefined) {
+      throw new Error(`Chromium read-only source transform is not hash-pinned: ${relativePath}`);
+    }
+    if (
+      transform?.sourceSha256 !== upstreamFiles[relativePath] ||
+      typeof transform?.transformedSha256 !== "string" ||
+      !Array.isArray(transform?.removeMembers) ||
+      transform.removeMembers.length === 0 ||
+      new Set(transform.removeMembers).size !== transform.removeMembers.length ||
+      transform.removeMembers.some(name => !/^#?[A-Za-z_$][A-Za-z0-9_$]*$/.test(name))
+    ) {
+      throw new Error(`Chromium read-only source transform is invalid: ${relativePath}`);
+    }
+    const absolutePath = path.resolve(verifiedPackage.packageRoot, ...relativePath.split("/"));
+    const transformedSource = applyChromiumReadOnlySourceTransform(
+      await readFile(absolutePath, "utf8"),
+      transform,
+      relativePath,
+    );
+    const transformedSha256 = sha256(transformedSource);
+    if (transformedSha256 !== transform.transformedSha256) {
+      throw new Error(
+        `Chromium read-only transformed source hash mismatch for ${relativePath}: ${transformedSha256}`,
+      );
+    }
+    sourceTransforms.set(relativePath, Object.freeze({...transform, absolutePath, transformedSource}));
+  }
+  if (sourceTransforms.size !== 3) {
+    throw new Error("Chromium read-only overlay must transform exactly the reviewed DOM tree sources");
+  }
+
+  if (!Array.isArray(manifest.resolutions) || manifest.resolutions.length === 0) {
+    throw new Error("Chromium read-only overlay must declare exact resolutions");
+  }
+  const resolutions = new Map();
+  for (const resolution of manifest.resolutions) {
+    if (
+      !/^front_end\/[A-Za-z0-9_./-]+\.ts$/.test(resolution?.importer ?? "") ||
+      !/^\.\.?\/[A-Za-z0-9_./-]+\.js$/.test(resolution?.specifier ?? "") ||
+      !/^facades\/[A-Za-z0-9_./-]+\.ts$/.test(resolution?.facade ?? "")
+    ) {
+      throw new Error("Chromium read-only overlay resolution must name an exact importer, specifier, and facade");
+    }
+    const key = `${resolution.importer}\0${resolution.specifier}`;
+    if (resolutions.has(key)) {
+      throw new Error(`Duplicate Chromium read-only overlay resolution: ${resolution.importer} ${resolution.specifier}`);
+    }
+    if (upstreamFiles[resolution.importer] === undefined) {
+      throw new Error(`Chromium read-only overlay importer is not hash-pinned: ${resolution.importer}`);
+    }
+    const importer = assertWithin(
+      verifiedPackage.packageRoot,
+      path.resolve(verifiedPackage.packageRoot, ...resolution.importer.split("/")),
+      "Chromium read-only overlay importer",
+    );
+    const source = await readFile(importer, "utf8");
+    if (!source.includes(`'${resolution.specifier}'`) && !source.includes(`"${resolution.specifier}"`)) {
+      throw new Error(`Chromium read-only overlay specifier is absent from ${resolution.importer}: ${resolution.specifier}`);
+    }
+    const facade = assertWithin(
+      overlayRoot,
+      path.resolve(overlayRoot, ...resolution.facade.split("/")),
+      "Chromium read-only facade",
+    );
+    if (overlayFiles[resolution.facade] === undefined) {
+      throw new Error(`Chromium read-only facade is not reviewed: ${resolution.facade}`);
+    }
+    resolutions.set(key, facade);
+  }
+
+  const entryPoint = assertWithin(
+    overlayRoot,
+    path.resolve(overlayRoot, ...manifest.entryPoint.split("/")),
+    "Chromium read-only entry point",
+  );
+  return Object.freeze({
+    overlayRoot,
+    entryPoint,
+    manifest: Object.freeze(manifest),
+    resolutions,
+    sourceTransforms,
+    overlayFiles: Object.freeze(overlayFiles),
+    upstreamFiles: Object.freeze(upstreamFiles),
+    packageRoot: verifiedPackage.packageRoot,
+  });
 }
 
 export async function verifyChromiumDevToolsPackage(repositoryRoot) {
@@ -249,6 +594,70 @@ function createChromiumBrowserRuntimePlugin(packageRoot) {
   };
 }
 
+function createChromiumReadOnlyOverlayPlugin(overlay) {
+  const frontEndRoot = path.join(overlay.packageRoot, "front_end");
+  return {
+    name: "chromium-devtools-read-only-elements-overlay",
+    setup(buildContext) {
+      buildContext.onResolve({ filter: /^#chromium\// }, args => {
+        const importer = path.resolve(args.importer);
+        assertWithin(overlay.overlayRoot, importer, "Chromium read-only #chromium importer");
+        const relative = args.path.slice("#chromium/".length);
+        if (!/^[A-Za-z0-9_./-]+\.js$/.test(relative)) {
+          throw new Error(`Invalid Chromium read-only package import: ${args.path}`);
+        }
+        if (relative.endsWith(".css.js")) {
+          const cssRelative = relative.slice(0, -3);
+          return {
+            path: assertWithin(
+              frontEndRoot,
+              path.resolve(frontEndRoot, ...cssRelative.split("/")),
+              "Chromium read-only CSS import",
+            ),
+            namespace: "chromium-css-module",
+          };
+        }
+        const sourceRelative = `${relative.slice(0, -3)}.ts`;
+        return {
+          path: assertWithin(
+            frontEndRoot,
+            path.resolve(frontEndRoot, ...sourceRelative.split("/")),
+            "Chromium read-only package import",
+          ),
+        };
+      });
+      buildContext.onResolve({ filter: /.*/ }, args => {
+        if (!args.importer) return undefined;
+        const importer = path.resolve(args.importer);
+        const relativeImporter = normalizeRelativePath(path.relative(overlay.packageRoot, importer));
+        if (relativeImporter.startsWith("../") || path.isAbsolute(relativeImporter)) return undefined;
+        const facade = overlay.resolutions.get(`${relativeImporter}\0${args.path}`);
+        return facade ? { path: facade } : undefined;
+      });
+    },
+  };
+}
+
+function createChromiumReadOnlySourceTransformPlugin(overlay) {
+  const transformsByPath = new Map(
+    [...overlay.sourceTransforms.values()].map(transform => [path.resolve(transform.absolutePath), transform]),
+  );
+  return {
+    name: "chromium-devtools-read-only-source-transforms",
+    setup(buildContext) {
+      buildContext.onLoad({filter: /\.ts$/}, async args => {
+        const transform = transformsByPath.get(path.resolve(args.path));
+        if (!transform) return undefined;
+        return {
+          contents: transform.transformedSource,
+          loader: "ts",
+          resolveDir: path.dirname(args.path),
+        };
+      });
+    },
+  };
+}
+
 async function attestChromiumInputs(repositoryRoot, packageRoot, metafile) {
   const inputHashes = new Map();
   for (const input of Object.keys(metafile.inputs)) {
@@ -262,11 +671,15 @@ async function attestChromiumInputs(repositoryRoot, packageRoot, metafile) {
     }
 
     const physicalInputPath = await realpath(inputPath);
-    const relativePath = assertWithin(
-      packageRoot,
-      physicalInputPath,
-      "Chromium DevTools bundle input",
-    ).slice(packageRoot.length + 1).replaceAll(path.sep, "/");
+    const relativeToPackage = path.relative(packageRoot, physicalInputPath);
+    if (
+      relativeToPackage.startsWith(`..${path.sep}`) ||
+      relativeToPackage === ".." ||
+      path.isAbsolute(relativeToPackage)
+    ) {
+      continue;
+    }
+    const relativePath = normalizeRelativePath(relativeToPackage);
     if (!inputHashes.has(relativePath)) {
       inputHashes.set(relativePath, sha256(await readFile(physicalInputPath)));
     }
@@ -278,6 +691,209 @@ async function attestChromiumInputs(repositoryRoot, packageRoot, metafile) {
   return Object.freeze({
     fileCount: rows.length,
     sha256: sha256(`${rows.join("\n")}\n`),
+  });
+}
+
+function relativePathWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    return null;
+  }
+  return normalizeRelativePath(relative);
+}
+
+async function classifyChromiumReadOnlyMetafileInputs({
+  repositoryRoot,
+  packageRoot,
+  overlayRoot,
+  metafile,
+}) {
+  if (!metafile?.inputs || typeof metafile.inputs !== "object") {
+    throw new Error("Chromium read-only build has no metafile input inventory");
+  }
+  const packageInputs = [];
+  const overlayInputs = [];
+  const generatedInputs = [];
+  const exactGeneratedInputs = new Set([
+    "chromium-generated:english-only-locales",
+    `chromium-generated-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
+  ]);
+  for (const input of Object.keys(metafile.inputs)) {
+    if (input.startsWith("chromium-css-module:")) {
+      const absolutePath = await realpath(input.slice("chromium-css-module:".length));
+      const relativePath = relativePathWithin(packageRoot, absolutePath);
+      if (!relativePath) {
+        throw new Error(`Chromium CSS input is outside the pinned package: ${input}`);
+      }
+      packageInputs.push({input, absolutePath, relativePath});
+      continue;
+    }
+    if (input.startsWith("chromium-")) {
+      if (!exactGeneratedInputs.has(input)) {
+        throw new Error(`Unreviewed Chromium generated namespace input: ${input}`);
+      }
+      generatedInputs.push(input);
+      continue;
+    }
+
+    const absolutePath = await realpath(path.resolve(repositoryRoot, input));
+    const packageRelativePath = relativePathWithin(packageRoot, absolutePath);
+    if (packageRelativePath) {
+      packageInputs.push({input, absolutePath, relativePath: packageRelativePath});
+      continue;
+    }
+    const overlayRelativePath = relativePathWithin(overlayRoot, absolutePath);
+    if (overlayRelativePath) {
+      overlayInputs.push({input, absolutePath, relativePath: overlayRelativePath});
+      continue;
+    }
+    throw new Error(`Chromium read-only input is outside the pinned package and overlay: ${input}`);
+  }
+  return Object.freeze({
+    packageInputs: Object.freeze(packageInputs),
+    overlayInputs: Object.freeze(overlayInputs),
+    generatedInputs: Object.freeze(generatedInputs),
+  });
+}
+
+export async function verifyChromiumReadOnlyMetafileInputs({repositoryRoot, metafile}) {
+  const physicalRepositoryRoot = await realpath(repositoryRoot);
+  const overlay = await verifyChromiumReadOnlyElementsOverlay(physicalRepositoryRoot);
+  return await classifyChromiumReadOnlyMetafileInputs({
+    repositoryRoot: physicalRepositoryRoot,
+    packageRoot: overlay.packageRoot,
+    overlayRoot: overlay.overlayRoot,
+    metafile,
+  });
+}
+
+async function attestClassifiedInputs(inputs) {
+  const inputHashes = new Map();
+  for (const input of inputs) {
+    if (!inputHashes.has(input.relativePath)) {
+      inputHashes.set(input.relativePath, sha256(await readFile(input.absolutePath)));
+    }
+  }
+  const rows = [...inputHashes]
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([relativePath, hash]) => `${relativePath}\0${hash}`);
+  return Object.freeze({fileCount: rows.length, sha256: sha256(`${rows.join("\n")}\n`)});
+}
+
+async function requiredChromiumLicenseFiles(packageRoot, packageInputs) {
+  const thirdPartyRoots = new Set();
+  for (const input of packageInputs) {
+    const match = /^front_end\/third_party\/([^/]+)\//.exec(input.relativePath);
+    if (match) thirdPartyRoots.add(`front_end/third_party/${match[1]}`);
+  }
+
+  const licensePaths = new Set(["LICENSE"]);
+  for (const relativeRoot of [...thirdPartyRoots].sort()) {
+    const absoluteRoot = path.resolve(packageRoot, ...relativeRoot.split("/"));
+    let foundLicense = false;
+    for (const absolute of await listFiles(absoluteRoot)) {
+      if (/^(?:license|licence|copying)(?:[._-].*)?$/i.test(path.basename(absolute))) {
+        foundLicense = true;
+        licensePaths.add(normalizeRelativePath(path.relative(packageRoot, absolute)));
+      }
+    }
+    if (!foundLicense) {
+      throw new Error(`Chromium third-party input has no discoverable license: ${relativeRoot}`);
+    }
+  }
+  return Object.freeze(await Promise.all([...licensePaths].sort().map(async relativePath => Object.freeze({
+    path: relativePath,
+    sha256: sha256(await readFile(path.resolve(packageRoot, ...relativePath.split("/")))),
+  }))));
+}
+
+function assertAttestation(actual, expected, description) {
+  if (
+    actual.fileCount !== expected?.fileCount || actual.sha256 !== expected?.sha256
+  ) {
+    throw new Error(
+      `${description} mismatch: ${actual.fileCount} files, ${actual.sha256}`,
+    );
+  }
+}
+
+export async function bundleChromiumReadOnlyElementsRuntime({
+  repositoryRoot,
+  write = false,
+  outfile,
+}) {
+  const physicalRepositoryRoot = await realpath(repositoryRoot);
+  const overlay = await verifyChromiumReadOnlyElementsOverlay(physicalRepositoryRoot);
+  const result = await build({
+    absWorkingDir: physicalRepositoryRoot,
+    entryPoints: [overlay.entryPoint],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets,
+    treeShaking: true,
+    minify: false,
+    sourcemap: false,
+    metafile: true,
+    write,
+    outfile: outfile ?? path.join(physicalRepositoryRoot, "chromium-read-only-elements-runtime.js"),
+    logLevel: "silent",
+    plugins: [
+      createChromiumReadOnlyOverlayPlugin(overlay),
+      createChromiumReadOnlySourceTransformPlugin(overlay),
+      createChromiumBrowserRuntimePlugin(overlay.packageRoot),
+      createChromiumCssModulePlugin(overlay.packageRoot),
+      createChromiumGeneratedModulePlugin(overlay.packageRoot),
+    ],
+  });
+  const classifiedInputs = await classifyChromiumReadOnlyMetafileInputs({
+    repositoryRoot: physicalRepositoryRoot,
+    packageRoot: overlay.packageRoot,
+    overlayRoot: overlay.overlayRoot,
+    metafile: result.metafile,
+  });
+  const chromiumInputAttestation = await attestClassifiedInputs(classifiedInputs.packageInputs);
+  const overlayAttestation = await attestClassifiedInputs(classifiedInputs.overlayInputs);
+  assertAttestation(
+    chromiumInputAttestation,
+    overlay.manifest.reviewedInputClosure,
+    "Chromium read-only input closure",
+  );
+  assertAttestation(
+    overlayAttestation,
+    overlay.manifest.reviewedOverlayClosure,
+    "Chromium read-only overlay closure",
+  );
+  const requiredLicenseFiles = await requiredChromiumLicenseFiles(
+    overlay.packageRoot,
+    classifiedInputs.packageInputs,
+  );
+  assertHashInventory(
+    Object.fromEntries(requiredLicenseFiles.map(file => [file.path, file.sha256])),
+    overlay.manifest.requiredLicenseFiles,
+    "Chromium read-only license",
+  );
+  const outputBytes =
+    result.outputFiles?.find(file => file.path.endsWith(".js"))?.contents.byteLength ??
+    Object.entries(result.metafile.outputs).find(([output]) => output.endsWith(".js"))?.[1].bytes;
+  if (outputBytes === undefined) {
+    throw new Error("Chromium read-only runtime build did not produce JavaScript");
+  }
+  if (outputBytes > overlay.manifest.maxUnminifiedBytes) {
+    throw new Error(
+      `Chromium read-only runtime exceeds ${overlay.manifest.maxUnminifiedBytes} bytes: ${outputBytes}`,
+    );
+  }
+  return Object.assign(result, {
+    chromiumInputAttestation,
+    overlayAttestation,
+    requiredLicenseFiles,
+    unminifiedBytes: outputBytes,
   });
 }
 

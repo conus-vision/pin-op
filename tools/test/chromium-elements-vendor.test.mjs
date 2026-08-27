@@ -814,4 +814,11 @@ test("the patch policy and refresh runbook retain stable commands and anchors", 
 test("Git attributes preserve exact LF bytes for the hashed vendor inputs", async () => {
   const attributes = await readFile(path.join(VENDOR_ROOT, ".gitattributes"), "utf8");
   assert.equal(attributes, "LICENSE text eol=lf\nupstream/** text eol=lf\n");
+
+  const repositoryAttributes = await readFile(path.join(REPO_ROOT, ".gitattributes"), "utf8");
+  const rules = repositoryAttributes.split(/\r?\n/u);
+  assert.ok(
+    rules.includes("third_party/chromium-devtools-frontend/patches/** text eol=lf"),
+    "the byte-hashed production overlay must retain LF outside the exact vendor contract",
+  );
 });
