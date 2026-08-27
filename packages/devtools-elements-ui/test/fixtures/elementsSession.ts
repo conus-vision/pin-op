@@ -226,7 +226,8 @@ const rules: RulesPresentationSnapshot = deepFreeze({
     ],
     inherited: [
       {
-        nodeRef: "html",
+        ancestorIndex: 1,
+        displayLabel: "html#root.app-shell",
         matchedRules: [
           {
             ruleRef: "rule:base:2",

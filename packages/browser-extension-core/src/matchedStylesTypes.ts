@@ -57,6 +57,7 @@ export interface MatchedRule {
 
 export interface InheritedMatchedRules {
   readonly ancestorIndex: number;
+  /** Bounded display-only tag/id/class label retained under the wire field name. */
   readonly elementName: string;
   readonly rules: readonly MatchedRule[];
 }

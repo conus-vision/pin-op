@@ -54,6 +54,11 @@ describe("matched styles contract", () => {
       lineNumber: 17,
       columnNumber: 5,
     });
+    expect(inherited).toMatchObject({
+      ancestorIndex: 1,
+      displayLabel: "html#root.app-shell",
+    });
+    expect(Object.keys(inherited)).not.toContain("nodeRef");
     expect(Object.keys(generatedSource)).not.toEqual(
       expect.arrayContaining(["url", "uri", "path", "range", "openAuthorityId"]),
     );

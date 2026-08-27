@@ -37,6 +37,24 @@ describe("PinOpStylesSidebarAdapter", () => {
     expect(harness.dataSource.listenerCount()).toBe(0);
   });
 
+  it("passes inherited ancestor identity and its display label through unchanged", () => {
+    const harness = createHarness();
+    const inherited = Object.freeze({
+      ancestorIndex: 2,
+      displayLabel: "main#app.shell",
+      matchedRules: Object.freeze([]),
+    });
+    const snapshot = Object.freeze({
+      ...styles("rule:inherited-contract", 1),
+      inherited: Object.freeze([inherited]),
+    });
+
+    harness.host.render(snapshot);
+
+    expect(harness.pane.rendered[0]!.inherited[0]).toBe(inherited);
+    expect(harness.pane.rendered[0]!.inherited[0]).not.toHaveProperty("nodeRef");
+  });
+
   it("refreshes origins after clear only following a new full render", () => {
     const harness = createHarness();
     const snapshot = styles("rule:one", 1);

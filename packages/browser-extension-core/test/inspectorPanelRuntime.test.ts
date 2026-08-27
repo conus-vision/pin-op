@@ -42,6 +42,32 @@ describe("startInspectorPanelRuntime", () => {
     });
   });
 
+  it("projects inherited display labels separately from stable ancestor indices", () => {
+    const request = {
+      requestId: "projection-inherited-label",
+      documentEpoch: 4,
+      nodeRef: "node-projection",
+      selectionRevision: 7,
+    };
+    const source = {
+      ...stylesMatched(request, 9, 3).styles,
+      inherited: [{
+        ancestorIndex: 3,
+        elementName: "main#app.shell",
+        rules: [],
+      }],
+    };
+
+    const inherited = projectMatchedStylesSnapshot(source).inherited[0];
+
+    expect(inherited).toEqual({
+      ancestorIndex: 3,
+      displayLabel: "main#app.shell",
+      matchedRules: [],
+    });
+    expect(inherited).not.toHaveProperty("nodeRef");
+  });
+
   it("invalidates matched styles before revoking Rules on controlled lifecycle events", async () => {
     const invalidateMatched = vi.spyOn(MatchedStylesModel.prototype, "invalidate");
     const invalidateRules = vi.spyOn(RulesSourcesController.prototype, "invalidate");

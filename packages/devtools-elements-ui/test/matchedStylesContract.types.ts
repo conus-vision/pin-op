@@ -43,7 +43,8 @@ const rule: MatchedRuleSnapshot = {
   generatedSource,
 };
 const inheritedRule: InheritedRulesSnapshot = {
-  nodeRef: "html",
+  ancestorIndex: 1,
+  displayLabel: "html#root.app-shell",
   matchedRules: [rule],
 };
 const diagnostic: RulesDiagnosticSnapshot = {
@@ -171,8 +172,12 @@ rule.declarations = [declaration];
 rule.contexts = [context];
 // @ts-expect-error A rule's generated source object is immutable snapshot data.
 rule.generatedSource = generatedSource;
-// @ts-expect-error Inherited node references are immutable snapshot data.
-inheritedRule.nodeRef = "body";
+// @ts-expect-error Inherited ancestor indices are immutable snapshot data.
+inheritedRule.ancestorIndex = 2;
+// @ts-expect-error Inherited display labels are immutable snapshot data.
+inheritedRule.displayLabel = "body";
+// @ts-expect-error Opaque DOM node references do not cross this display contract.
+inheritedRule.nodeRef;
 // @ts-expect-error Inherited inline-style objects are immutable snapshot data.
 inheritedRule.inlineStyle = rule;
 // @ts-expect-error An inherited group's matched-rule array property is immutable.

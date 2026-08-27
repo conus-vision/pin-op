@@ -130,7 +130,10 @@ export interface MatchedRuleSnapshot {
 }
 
 export interface InheritedRulesSnapshot {
-  readonly nodeRef: string;
+  /** One-based composed-ancestor identity within this matched-styles snapshot. */
+  readonly ancestorIndex: number;
+  /** Bounded display-only tag/id/class label; never an opaque node reference. */
+  readonly displayLabel: string;
   readonly inlineStyle?: MatchedRuleSnapshot;
   readonly matchedRules: readonly MatchedRuleSnapshot[];
 }

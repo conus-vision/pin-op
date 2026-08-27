@@ -38,6 +38,13 @@ import {
 } from "./pseudoStateSelector.js";
 
 export const MATCHED_STYLES_MAX_ANCESTORS = 32;
+const INHERITED_LABEL_MAX_CLASSES = 4;
+// Keep this at or below stylesProtocol's legacy `elementName` wire bound.
+const INHERITED_LABEL_MAX_LENGTH = 256;
+const INHERITED_LABEL_MAX_TOKEN_LENGTH = 64;
+const INHERITED_LABEL_ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz";
+const INHERITED_LABEL_STRING_CHAR_CODE_AT = String.prototype.charCodeAt;
+const INHERITED_LABEL_STRING_SLICE = String.prototype.slice;
 
 export interface MatchedStylesCollectionAuthority {
   readonly documentEpoch: number;
@@ -168,7 +175,7 @@ export class MatchedStylesCollector {
       if (inheritedRules.length > 0) {
         ancestors.push({
           ancestorIndex,
-          elementName: safeElementName(ancestor),
+          elementName: safeElementDisplayLabel(ancestor),
           rules: inheritedRules,
         });
       }
@@ -1006,12 +1013,89 @@ function pageUrlFor(element: Element): string {
   }
 }
 
-function safeElementName(element: Element): string {
+function safeElementDisplayLabel(element: Element): string {
+  let tagName = "element";
   try {
-    return truncate(element.tagName.toLowerCase(), INSPECT_LIMITS.selectorLength);
+    const rawTagName = (element as unknown as { readonly tagName?: unknown }).tagName;
+    tagName = inheritedDisplayToken(rawTagName, true) || "element";
   } catch {
-    return "element";
+    // Keep the non-page-controlled fallback.
   }
+  let label = tagName;
+  try {
+    const rawId = (element as unknown as { readonly id?: unknown }).id;
+    const id = inheritedDisplayToken(rawId);
+    if (id) label = appendInheritedLabelSegment(label, `#${id}`);
+  } catch {
+    // An unreadable id cannot suppress the safe tag label.
+  }
+  let classList: ArrayLike<unknown>;
+  try {
+    classList = element.classList as unknown as ArrayLike<unknown>;
+  } catch {
+    return label;
+  }
+  let classCount = 0;
+  try {
+    const length = classList.length;
+    if (Number.isSafeInteger(length) && length > 0) {
+      classCount = Math.min(length, INHERITED_LABEL_MAX_CLASSES);
+    }
+  } catch {
+    return label;
+  }
+  const seen = new Set<string>();
+  for (let index = 0; index < classCount; index += 1) {
+    try {
+      const className = inheritedDisplayToken(classList[index]);
+      if (!className || seen.has(className)) continue;
+      seen.add(className);
+      label = appendInheritedLabelSegment(label, `.${className}`);
+    } catch {
+      // Skip individual unreadable page-controlled class entries.
+    }
+  }
+  return truncate(label, INHERITED_LABEL_MAX_LENGTH);
+}
+
+function inheritedDisplayToken(value: unknown, lowercaseAscii = false): string {
+  if (typeof value !== "string") return "";
+  const bounded: string = Reflect.apply(
+    INHERITED_LABEL_STRING_SLICE,
+    value,
+    [0, INHERITED_LABEL_MAX_TOKEN_LENGTH],
+  );
+  let token = "";
+  for (let index = 0; index < bounded.length; index += 1) {
+    const rawCode = Reflect.apply(
+      INHERITED_LABEL_STRING_CHAR_CODE_AT,
+      bounded,
+      [index],
+    );
+    const shouldLowercaseAscii =
+      lowercaseAscii && rawCode >= 65 && rawCode <= 90;
+    const code = shouldLowercaseAscii
+      ? rawCode + 32
+      : rawCode;
+    const safe =
+      (code >= 48 && code <= 57) ||
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      code === 45 ||
+      code === 95;
+    token += safe
+      ? (shouldLowercaseAscii
+        ? INHERITED_LABEL_ASCII_LOWERCASE[rawCode - 65]!
+        : bounded[index]!)
+      : "_";
+  }
+  return token;
+}
+
+function appendInheritedLabelSegment(label: string, segment: string): string {
+  return label.length + segment.length <= INHERITED_LABEL_MAX_LENGTH
+    ? label + segment
+    : label;
 }
 
 function validAuthority(authority: MatchedStylesCollectionAuthority): boolean {

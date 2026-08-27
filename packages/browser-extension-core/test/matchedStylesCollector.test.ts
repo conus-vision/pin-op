@@ -235,6 +235,188 @@ describe("MatchedStylesCollector", () => {
     expect(result.diagnostics).toContain("ancestor-limit");
   });
 
+  it("emits a bounded, sanitized inherited display label without reading page text or paths", () => {
+    const scope = documentScope();
+    const ancestor = element(scope, {
+      matches: new Set([".ancestor"]),
+      tagName: "SECTION",
+      id: 'hero/card<script>',
+      classNames: [
+        "layout.main",
+        "theme-dark",
+        "theme-dark",
+        "x".repeat(200),
+        "never-read",
+      ],
+    });
+    Object.defineProperties(ancestor, {
+      baseURI: {
+        get: () => {
+          throw new Error("ancestor URL must not be read");
+        },
+      },
+      innerText: {
+        get: () => {
+          throw new Error("ancestor text must not be read");
+        },
+      },
+      textContent: {
+        get: () => {
+          throw new Error("ancestor text must not be read");
+        },
+      },
+    });
+    const selected = element(scope, {
+      matches: new Set([".selected"]),
+      parent: ancestor,
+    });
+
+    const result = collector(
+      selected,
+      stylesheetAuthority(scope, [stylesheet(null, [
+        styleRule(".ancestor", { color: "red" }),
+      ])]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited[0]).toMatchObject({
+      ancestorIndex: 1,
+      elementName: `section#hero_card_script_.layout_main.theme-dark.${"x".repeat(64)}`,
+    });
+    expect(result.inherited[0]!.elementName.length).toBeLessThanOrEqual(256);
+    expect(result.inherited[0]!.elementName).not.toMatch(/[\\/<>]/);
+    expect(result.inherited[0]!.elementName).not.toContain("never-read");
+  });
+
+  it("keeps the complete inherited display label inside the legacy wire bound", () => {
+    const scope = documentScope();
+    const ancestor = element(scope, {
+      matches: new Set([".ancestor"]),
+      tagName: "T".repeat(200),
+      id: "i".repeat(200),
+      classNames: [
+        "a".repeat(200),
+        "b".repeat(200),
+        "c".repeat(200),
+        "d".repeat(200),
+      ],
+    });
+    const result = collector(
+      element(scope, { matches: new Set([".selected"]), parent: ancestor }),
+      stylesheetAuthority(scope, [stylesheet(null, [
+        styleRule(".ancestor", { color: "red" }),
+      ])]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited[0]!.elementName).toBe(
+      `${"t".repeat(64)}#${"i".repeat(64)}.${"a".repeat(64)}`,
+    );
+    expect(result.inherited[0]!.elementName.length).toBeLessThanOrEqual(256);
+  });
+
+  it("never invokes page-provided normalizers and bounds class-list property reads", () => {
+    const scope = documentScope();
+    const ancestor = element(scope, {
+      matches: new Set([".ancestor"]),
+    });
+    let tagReads = 0;
+    let tagNormalizerCalls = 0;
+    let idNormalizerCalls = 0;
+    let classListReads = 0;
+    const classIndexReads: string[] = [];
+    const hostileTag = {
+      toLowerCase: () => {
+        tagNormalizerCalls += 1;
+        return "page-controlled";
+      },
+    };
+    const hostileId = {
+      replace: () => {
+        idNormalizerCalls += 1;
+        return "page-controlled";
+      },
+    };
+    const hostileClass = {
+      toLowerCase: () => {
+        tagNormalizerCalls += 1;
+        return "page-controlled";
+      },
+    };
+    const classList = new Proxy(Object.create(null) as Record<PropertyKey, unknown>, {
+      get: (_target, property) => {
+        if (property === "length") return 6;
+        if (typeof property !== "string" || !/^\d+$/.test(property)) {
+          throw new Error(`unexpected class-list read: ${String(property)}`);
+        }
+        classIndexReads.push(property);
+        if (property === "0") return hostileClass;
+        if (property === "1") return "safe/class";
+        if (property === "2") throw new Error("unreadable class entry");
+        if (property === "3") return "last";
+        throw new Error("class scan exceeded its bound");
+      },
+    });
+    Object.defineProperties(ancestor, {
+      tagName: {
+        get: () => {
+          tagReads += 1;
+          return hostileTag;
+        },
+      },
+      id: { get: () => hostileId },
+      classList: {
+        get: () => {
+          classListReads += 1;
+          return classList;
+        },
+      },
+      baseURI: { get: () => { throw new Error("URL must not be read"); } },
+      innerText: { get: () => { throw new Error("text must not be read"); } },
+      textContent: { get: () => { throw new Error("text must not be read"); } },
+    });
+
+    const result = collector(
+      element(scope, { matches: new Set([".selected"]), parent: ancestor }),
+      stylesheetAuthority(scope, [stylesheet(null, [
+        styleRule(".ancestor", { color: "red" }),
+      ])]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited[0]!.elementName).toBe("element.safe_class.last");
+    expect(tagReads).toBe(1);
+    expect(tagNormalizerCalls).toBe(0);
+    expect(idNormalizerCalls).toBe(0);
+    expect(classListReads).toBe(1);
+    expect(classIndexReads).toEqual(["0", "1", "2", "3"]);
+  });
+
+  it("bounds multi-megabyte primitive tag, id, and class strings before normalization", () => {
+    const scope = documentScope();
+    const hugeTag = `${"Å".repeat(1_100_000)}/private/tag`;
+    const hugeId = `${"😀".repeat(550_000)}C:\\private\\id`;
+    const hugeClass = `${"Ж".repeat(1_100_000)}https://example.test/private`;
+    const ancestor = element(scope, {
+      matches: new Set([".ancestor"]),
+      tagName: hugeTag,
+      id: hugeId,
+      classNames: [hugeClass],
+    });
+
+    const result = collector(
+      element(scope, { matches: new Set([".selected"]), parent: ancestor }),
+      stylesheetAuthority(scope, [stylesheet(null, [
+        styleRule(".ancestor", { color: "red" }),
+      ])]),
+    ).collect(AUTHORITY)!;
+
+    expect(result.inherited[0]!.elementName).toBe(
+      `${"_".repeat(64)}#${"_".repeat(64)}.${"_".repeat(64)}`,
+    );
+    expect(result.inherited[0]!.elementName.length).toBe(194);
+    expect(result.inherited[0]!.elementName).not.toMatch(
+      /private|example|https|[\\/]/,
+    );
+  });
+
   it("identifies the actual DOM parent within the composed ancestor authority", () => {
     const scope = documentScope();
     const lightDomParent = element(scope, {
@@ -1146,6 +1328,8 @@ function element(
     inline?: StyleDeclarationSource;
     parent?: ReturnType<typeof element> | null;
     tagName?: string;
+    id?: string;
+    classNames?: readonly string[];
     assignedSlot?: ReturnType<typeof element> | null;
     shadowRoot?: ReturnType<typeof shadowScope> | null;
   },
@@ -1153,6 +1337,8 @@ function element(
   return {
     root,
     tagName: options.tagName ?? "ARTICLE",
+    id: options.id ?? "",
+    classList: options.classNames ?? [],
     parentElement: options.parent ?? null,
     assignedSlot: options.assignedSlot ?? null,
     shadowRoot: options.shadowRoot ?? null,

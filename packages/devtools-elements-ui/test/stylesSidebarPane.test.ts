@@ -148,6 +148,8 @@ describe("Chromium-derived read-only Rules renderer", () => {
     );
     expect(inheritedGroup.tagName).toBe("SECTION");
     expect(inheritedGroup.getAttribute("role")).toBe("group");
+    expect(inheritedGroup.getAttribute("data-inherited-ancestor-index")).toBe("1");
+    expect(inheritedGroup.getAttribute("data-inherited-group")).toBeNull();
 
     const headingId = required(inheritedGroup.getAttribute("aria-labelledby"));
     const heading = required(
@@ -160,6 +162,7 @@ describe("Chromium-derived read-only Rules renderer", () => {
         heading.getAttribute("aria-level") !== null
       ),
     ).toBe(true);
+    expect(heading.textContent).toBe("Inherited from html#root.app-shell");
   });
 
   it("keeps empty Rules status content outside list ownership", () => {
@@ -576,7 +579,8 @@ function richMatchedStyles(): MatchedStylesSnapshot {
     ],
     inherited: [
       {
-        nodeRef: "html",
+        ancestorIndex: 1,
+        displayLabel: "html#root.app-shell",
         matchedRules: [
           {
             ruleRef: "rule:html",

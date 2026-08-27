@@ -153,7 +153,7 @@ export class StylesSidebarPane {
       const headingId = allocateInheritedHeadingId(this.document);
       const groupHeading = createRulesElement(this.document, "div", {
         className: "sidebar-separator inherited-separator",
-        text: `Inherited from ${inherited.nodeRef}`,
+        text: `Inherited from ${inherited.displayLabel}`,
         attributes: {
           "aria-level": "3",
           "data-part": "inherited-group-heading",
@@ -169,7 +169,7 @@ export class StylesSidebarPane {
           groupRuleChildren,
           inherited.inlineStyle,
           "inherited",
-          inherited.nodeRef,
+          inherited.displayLabel,
         ));
       }
       for (const rule of inherited.matchedRules) {
@@ -178,12 +178,12 @@ export class StylesSidebarPane {
           groupRuleChildren,
           rule,
           "inherited",
-          inherited.nodeRef,
+          inherited.displayLabel,
         ));
       }
       if (groupSections.length === 0) continue;
       const groupRulesList = this.createRuleList(
-        `Style rules inherited from ${inherited.nodeRef}`,
+        `Style rules inherited from ${inherited.displayLabel}`,
         "inherited",
       );
       groupRulesList.append(...groupRuleChildren);
@@ -191,7 +191,7 @@ export class StylesSidebarPane {
         className: "inherited-styles-group",
         attributes: {
           "aria-labelledby": headingId,
-          "data-inherited-group": inherited.nodeRef,
+          "data-inherited-ancestor-index": String(inherited.ancestorIndex),
           "data-part": "inherited-group",
           role: "group",
         },

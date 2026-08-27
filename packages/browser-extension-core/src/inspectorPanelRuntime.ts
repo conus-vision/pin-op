@@ -917,7 +917,8 @@ export function projectMatchedStylesSnapshot(
     ...(source.inline ? { inlineStyle: projectMatchedRule(source.inline) } : {}),
     matchedRules: Object.freeze(source.rules.map(projectMatchedRule)),
     inherited: Object.freeze(source.inherited.map((group) => Object.freeze({
-      nodeRef: group.elementName,
+      ancestorIndex: group.ancestorIndex,
+      displayLabel: group.elementName,
       matchedRules: Object.freeze(group.rules.map(projectMatchedRule)),
     }))),
     inaccessibleStylesheetCount: source.inaccessibleStylesheetCount,
