@@ -100,6 +100,24 @@ test("positive native gate rejects malformed attestations", () => {
   }
 });
 
+test("positive native gate pins the sole pruned owner capability", () => {
+  for (const mutate of [
+    build => { build.runtimeVerification.prunedOwnerCapabilityInputKeys = []; },
+    build => { build.runtimeVerification.prunedOwnerCapabilityInputKeys[0] = "foreign.ts"; },
+    build => { build.runtimeVerification.prunedOwnerCapabilityAttestation.fileCount = 2; },
+    build => { build.runtimeVerification.prunedOwnerCapabilityAttestation.sha256 = "b".repeat(64); },
+    build => { build.runtimeVerification.prunedOwnerCapabilityAttestation.reason = "unknown"; },
+    build => { build.runtimeVerification.reviewedOwnerInputKeys.pop(); },
+  ]) {
+    const build = validNativeBuild();
+    mutate(build);
+    assert.throws(
+      () => assertVerifiedNativeInspectorBuild(build),
+      /pruned owner|reviewed owner union/i,
+    );
+  }
+});
+
 test("positive native gate requires two exact outputs and one closed runtime module", () => {
   for (const [pattern, mutate] of [
     [/exactly Inspector bootstrap and native runtime outputs/i, build => {
@@ -132,6 +150,8 @@ test("positive native gate requires two exact outputs and one closed runtime mod
 });
 
 function validNativeBuild() {
+  const prunedIssue =
+    "third_party/chromium-devtools-frontend/patches/1.0.1681091/facades/issues.ts";
   const runtimeInputs = Object.fromEntries(
     ["dom.ts", "entry.ts", "shared.ts", "styles.ts"].map(path => [path, {}]),
   );
@@ -181,8 +201,15 @@ function validNativeBuild() {
       minifiedBytes: runtimeOutput.bytes,
       verifiedInputKeys: Object.keys(runtimeInputs),
       localInputKeys: ["entry.ts"],
+      reviewedOwnerInputKeys: ["dom.ts", prunedIssue, "shared.ts", "styles.ts"],
+      prunedOwnerCapabilityInputKeys: [prunedIssue],
+      prunedOwnerCapabilityAttestation: {
+        fileCount: 1,
+        sha256: "1a547b642f0a385145dcb553623881863d5496536d8d62bddae3a2952145bb30",
+        reason: "Pin-op does not expose Chromium Issues capability",
+      },
       elements: {
-        verifiedInputKeys: ["dom.ts", "shared.ts"],
+        verifiedInputKeys: ["dom.ts", prunedIssue, "shared.ts"],
         chromiumInputAttestation: attestation(),
         overlayAttestation: attestation(),
         requiredLicenseFiles: [license("LICENSE")],

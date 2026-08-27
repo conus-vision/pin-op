@@ -153,7 +153,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130"
+          "localSha256": "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec"
         }
       ]
     },
@@ -170,7 +170,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130"
+          "localSha256": "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec"
         }
       ]
     },
@@ -187,7 +187,7 @@
         {
           "path": "packages/devtools-elements-ui/assets/devtools-elements.css",
           "changeRecord": "PIN_OP_CHANGES.md#scoped-styles",
-          "localSha256": "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130"
+          "localSha256": "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec"
         }
       ]
     }

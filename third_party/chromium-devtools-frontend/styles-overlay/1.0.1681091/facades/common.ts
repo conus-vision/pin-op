@@ -9,7 +9,7 @@ class ReadOnlySetting<T> extends ObjectWrapper.ObjectWrapper<{change: T}> {
   #value: T;
   constructor(value: T) { super(); this.#value = value; }
   get(): T { return this.#value; }
-  set(_value: T): void { throw new Error('Chromium Styles settings are read-only'); }
+  set(_value: T): void { throw new Error('Native Styles settings are read-only'); }
   addChangeListener(_listener: (event: unknown) => void, _thisObject?: object): void {}
   removeChangeListener(_listener: (event: unknown) => void, _thisObject?: object): void {}
 }

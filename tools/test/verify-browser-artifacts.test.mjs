@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import * as browserPackageContract from "../browser-package-contract.mjs";
 import * as artifactVerifier from "../verify-artifacts.mjs";
+import {
+  loadChromiumNativeRuntimeNoticeInputs,
+  renderChromiumDerivedNoticeSection,
+  renderChromiumNativeRuntimeNoticeSection,
+} from "../browser-bundle-notices.mjs";
 
 const {
   BROWSER_ARCHIVE_FILES,
@@ -107,8 +113,35 @@ const upstreamManifest = JSON.parse(
     "utf8",
   ),
 );
-const upstreamRootLicense = readFileSync(
+const upstreamRootLicenseBytes = readFileSync(
   resolve(repositoryRoot, "third_party/chromium-devtools-frontend/LICENSE"),
+  "utf8",
+);
+const upstreamRootLicense = upstreamRootLicenseBytes
+  .replaceAll("\r\n", "\n")
+  .trim();
+const chromiumDerivedNoticeSection = renderChromiumDerivedNoticeSection(
+  upstreamManifest,
+  upstreamRootLicenseBytes,
+);
+const chromiumNativeRuntimeNoticeSection = renderChromiumNativeRuntimeNoticeSection(
+  await loadChromiumNativeRuntimeNoticeInputs(repositoryRoot),
+);
+const nativeRuntimeBytes = readFileSync(
+  resolve(repositoryRoot, "third_party/chromium-devtools-frontend/RUNTIME.json"),
+);
+const nativeRuntime = JSON.parse(nativeRuntimeBytes.toString("utf8"));
+const nativeStylesManifestPath =
+  `third_party/chromium-devtools-frontend/styles-overlay/${nativeRuntime.package.version}/manifest.json`;
+const nativeStylesManifestBytes = readFileSync(
+  resolve(repositoryRoot, nativeStylesManifestPath),
+);
+const nativeStylesManifest = JSON.parse(nativeStylesManifestBytes.toString("utf8"));
+const nativeCodeMirrorLicense = readFileSync(
+  resolve(
+    repositoryRoot,
+    "node_modules/chrome-devtools-frontend/front_end/third_party/codemirror.next/LICENSE",
+  ),
   "utf8",
 ).replaceAll("\r\n", "\n").trim();
 
@@ -117,18 +150,18 @@ const upstreamRootLicense = readFileSync(
 // Retaining those helpers after dependency/build changes requires a security
 // review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "2ae7801671687c947b392f55cb4deca404fb3a7f646697920bb11ab42db8ce2a", inspectorSha256: "eace567157034a639c9387da9524e6cfa1798ac12e61d14afa97ffecc5f4c0b7" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552", inspectorSha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "c022e24e03c82c549b55c31ee6d1207f9d065175ba5a9fe38d81a2dec2034255", inspectorSha256: "9abd79ec7aa1b53860524ed5f94f69d4bb1753351e95bd8bc29a78a43f1f0ea2" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac", inspectorSha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac" },
-  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be", inspectorSha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8", inspectorSha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8" },
-  { browser: "firefox", path: "dist/background.js", sha256: "2ae7801671687c947b392f55cb4deca404fb3a7f646697920bb11ab42db8ce2a", inspectorSha256: "eace567157034a639c9387da9524e6cfa1798ac12e61d14afa97ffecc5f4c0b7" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552", inspectorSha256: "90a75cd62d97e60366ea8a0ce82528713f08ae8c20ae21b6bf82500b1a791552" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "01c45de811fbb135d0682932947fece3dcf96c09dcc9d679723f369f33c0bc1d", inspectorSha256: "5a9ad8489bbf3fb5e8d9e1c4668a43b9bc48fc39d61457f0326ab6d0043584ee" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac", inspectorSha256: "8ab6eca6627af42a5c770b607555f07573f64b936459826f3ce367614f8868ac" },
-  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be", inspectorSha256: "8d4a82a3b6d50ef76fbceca3deacea2b08b6c6b1bc0b0eb48dc4a33c83a573be" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8", inspectorSha256: "cc000503f3692eb2952e954d03eef5c4b233018dd1f805d5a4cc2604e41f00f8" },
+  { browser: "chrome", path: "dist/background.js", sha256: "51d5726e9c07ba2b0d43e461876470e30bb3edbd76e79d13dd6b26967b0a959b", inspectorSha256: "418cc29318cf323edc5827b5b7dbfdc00898add0f81b76846fe69af59a4c9551" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "88f98da93c272282d2a025f603441d5f2a97bbd92821ad944ab08264ea6bca47", inspectorSha256: "b27daa5bc3e1033c88a4cfc734cd647d24e8d0fdacac5cdc80fab11686fadc07" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "ec4ce2834741b1d1ba68a8b6c2c3446eb5f3b26bf70ea54d42a2bc6d80fd9f8b", inspectorSha256: "ec4ce2834741b1d1ba68a8b6c2c3446eb5f3b26bf70ea54d42a2bc6d80fd9f8b" },
+  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "af14f70d2a6ebd0c7c465836448fd5c780149c7874f14187ef5eeec60e686a17", inspectorSha256: "af14f70d2a6ebd0c7c465836448fd5c780149c7874f14187ef5eeec60e686a17" },
+  { browser: "chrome", path: "dist/panel.js", sha256: "b61c6f4660ef3df0e93286bad8de19960c12f0f7d277353d5b5db464fde29483", inspectorSha256: "b61c6f4660ef3df0e93286bad8de19960c12f0f7d277353d5b5db464fde29483" },
+  { browser: "firefox", path: "dist/background.js", sha256: "f4cb9afbcf76e95d1a86849d112fedec178346827a300320474dce36da6e40ce", inspectorSha256: "188ab7b04531cd878fb457b800d5a93362108f22c838b3580136c1b340c82b96" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "9ccd3f59c92b024c4400e0c2c230e19262caed0855b292e448edd9d3707a6b58", inspectorSha256: "bd70c7203c3aa689dbea242a3f9bbafd898b38d962cc8db8cd69e083b8e5c86d" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "ec4ce2834741b1d1ba68a8b6c2c3446eb5f3b26bf70ea54d42a2bc6d80fd9f8b", inspectorSha256: "ec4ce2834741b1d1ba68a8b6c2c3446eb5f3b26bf70ea54d42a2bc6d80fd9f8b" },
+  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "af14f70d2a6ebd0c7c465836448fd5c780149c7874f14187ef5eeec60e686a17", inspectorSha256: "af14f70d2a6ebd0c7c465836448fd5c780149c7874f14187ef5eeec60e686a17" },
+  { browser: "firefox", path: "dist/panel.js", sha256: "b61c6f4660ef3df0e93286bad8de19960c12f0f7d277353d5b5db464fde29483", inspectorSha256: "b61c6f4660ef3df0e93286bad8de19960c12f0f7d277353d5b5db464fde29483" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -1124,6 +1157,7 @@ for (const browser of ["firefox", "chrome"]) {
         'function harmless(eval) { return eval + 1; } harmless(1);',
         'const harmlessFunction = () => 1; const Function = harmlessFunction; Function();',
         'const harmlessGlobal = { eval: () => 1 }; harmlessGlobal.eval();',
+        'const callable = () => 1; void (callable instanceof Function);',
         'const inertConstructor = ({ value: 1 }).constructor; void inertConstructor;',
         'const inertObject = { constructor: 1 }; void inertObject.constructor;',
         'const inertCapabilityName = "eval"; void inertCapabilityName;',
@@ -1198,6 +1232,11 @@ for (const browser of ["firefox", "chrome"]) {
       `Pinned revision: ${upstreamManifest.revision}`,
       upstreamRootLicense,
       "Copyright (C) 2009 Joseph Pecoraro",
+      `NPM package: chrome-devtools-frontend@${nativeRuntime.package.version}`,
+      `Package gitHead: ${nativeRuntime.package.gitHead}`,
+      `Rules overlay manifest SHA-256: ${sha256(nativeStylesManifestBytes)}`,
+      `- ${nativeStylesManifest.entryPoint} ${nativeStylesManifest.overlayFiles[nativeStylesManifest.entryPoint]}`,
+      nativeCodeMirrorLicense,
     ]) {
       const archive = browserArchive(browser);
       archive.files.set("THIRD_PARTY_NOTICES", Buffer.from(complete));
@@ -1423,7 +1462,7 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/devtools.js",
       Buffer.from(
         `${archive.files.get("dist/devtools.js").toString("utf8")}\n` +
-          'const safe = ["file:", "C:", "./card.scss", "/dist/panel.html", ' +
+          'const safe = ["file:", "file:///", "C:", "./card.scss", "/dist/panel.html", ' +
           '"/assets/card.css", "https://example.test/home/card.css"];\n' +
           'const cssEscape = /(^|\\\\+)?(\\\\[A-F0-9]{1,6})\\x20/;\n',
       ),
@@ -1948,7 +1987,7 @@ function browserArchive(browser, panelPage = currentBrowserPanelPage(browser)) {
   files.set("LICENSE", readFileSync(resolve(repositoryRoot, "LICENSE")));
   files.set(
     "THIRD_PARTY_NOTICES",
-    readFileSync(resolve(repositoryRoot, `extensions/${browser}/THIRD_PARTY_NOTICES`)),
+    Buffer.from(chromiumNoticeFixture()),
   );
   files.set(
     "manifest.json",
@@ -2022,33 +2061,18 @@ function currentBrowserPanelPage(browser) {
 }
 
 function chromiumNoticeFixture() {
-  const notices = new Map();
-  for (const file of upstreamManifest.files) {
-    for (const notice of file.embeddedNotices) {
-      notices.set(notice.sha256, notice.text.replaceAll("\r\n", "\n").trim());
-    }
-  }
   return [
     "# Third-Party Notices",
     "",
-    "## Chromium DevTools Frontend (derived view code)",
-    `Pinned revision: ${upstreamManifest.revision}`,
-    "License file: third_party/chromium-devtools-frontend/LICENSE",
+    chromiumDerivedNoticeSection,
     "",
-    upstreamRootLicense,
+    chromiumNativeRuntimeNoticeSection,
     "",
-    "## Chromium DevTools Frontend embedded source notices",
-    "",
-    ...[...notices].sort(([left], [right]) =>
-      left < right ? -1 : left > right ? 1 : 0,
-    )
-      .flatMap(([sha256, notice]) => [
-        `### Embedded notice ${sha256}`,
-        "",
-        notice,
-        "",
-      ]),
   ].join("\n");
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function escapeRegex(value) {

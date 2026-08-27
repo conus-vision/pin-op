@@ -245,7 +245,7 @@ function updateButtonPresentation(entry: LoadMoreEntry): void {
 
 function validateLoadMoreAuthorities(parents: readonly LoadMoreAuthority[]): void {
   if (!Array.isArray(parents)) {
-    throw new TypeError('Chromium load-more update requires an array');
+    throw new TypeError('Native load-more update requires an array');
   }
   const seenParents = new Set<DOMNode>();
   const seenServiceRows = new Set<string>();
@@ -267,10 +267,10 @@ function validateLoadMoreAuthorities(parents: readonly LoadMoreAuthority[]): voi
       authority.remainingChildCount !==
         Math.max(0, authority.totalChildCount - authority.loadedChildCount)
     ) {
-      throw new TypeError('Invalid Chromium load-more authority');
+      throw new TypeError('Invalid native load-more authority');
     }
     if (seenParents.has(authority.parent) || seenServiceRows.has(authority.serviceRowRef)) {
-      throw new TypeError('Duplicate Chromium load-more authority');
+      throw new TypeError('Duplicate native load-more authority');
     }
     seenParents.add(authority.parent);
     seenServiceRows.add(authority.serviceRowRef);

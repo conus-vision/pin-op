@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,51 @@ import * as artifactVerifier from "../verify-artifacts.mjs";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const upstreamManifestPath =
   "third_party/chromium-devtools-frontend/UPSTREAM.json";
+const nativeRuntimeManifestPath =
+  "third_party/chromium-devtools-frontend/RUNTIME.json";
+const nativeRuntimeManifest = JSON.parse(
+  readFileSync(resolve(repositoryRoot, nativeRuntimeManifestPath), "utf8"),
+);
+const nativeRuntimeVersion = nativeRuntimeManifest.package.version;
+const domOverlayRoot =
+  `third_party/chromium-devtools-frontend/patches/${nativeRuntimeVersion}`;
+const stylesOverlayRoot =
+  `third_party/chromium-devtools-frontend/styles-overlay/${nativeRuntimeVersion}`;
+const domOverlayManifestPath = `${domOverlayRoot}/manifest.json`;
+const stylesOverlayManifestPath = `${stylesOverlayRoot}/manifest.json`;
+const domOverlayManifest = JSON.parse(
+  readFileSync(resolve(repositoryRoot, domOverlayManifestPath), "utf8"),
+);
+const stylesOverlayManifestBytes = readFileSync(
+  resolve(repositoryRoot, stylesOverlayManifestPath),
+);
+const stylesOverlayManifest = JSON.parse(stylesOverlayManifestBytes.toString("utf8"));
+const EXPECTED_NATIVE_RUNTIME_SOURCE_PATHS = Object.freeze([
+  nativeRuntimeManifestPath,
+  domOverlayManifestPath,
+  ...Object.keys(domOverlayManifest.overlayFiles).map((path) => `${domOverlayRoot}/${path}`),
+  stylesOverlayManifestPath,
+  ...Object.keys(stylesOverlayManifest.overlayFiles).map(
+    (path) => `${stylesOverlayRoot}/${path}`,
+  ),
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpChromiumInspectorAdapter.ts",
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpElementsTreeAdapter.ts",
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpStylesSidebarAdapter.ts",
+  "packages/devtools-elements-ui/src/elementsInspectorShell.ts",
+  "tools/browser-chromium-inspector-entry.ts",
+  "tools/chromium-devtools-runtime.mjs",
+  "tools/chromium-devtools-styles-runtime.mjs",
+  "tools/smoke-chromium-read-only-elements.mjs",
+  "tools/smoke-chromium-read-only-inspector.mjs",
+  "tools/smoke-chromium-read-only-styles.mjs",
+  "tools/test/browser-bundle-notices.test.mjs",
+  "tools/test/browser-elements-runtime.test.mjs",
+  "tools/test/browser-panel-assets.test.mjs",
+  "tools/test/chromium-devtools-runtime.test.mjs",
+  "tools/test/chromium-styles-runtime.test.mjs",
+  "tools/test/native-inspector-ux-gates.test.mjs",
+  "tools/test/verify-browser-artifacts.test.mjs",
+].sort(compareAscii));
 const EXPECTED_CHROMIUM_PIN = Object.freeze({
   repository: "https://github.com/ChromeDevTools/devtools-frontend.git",
   revision: "a092f2943b68ef9aa7c1d2c2a8b7e71aa4087280",
@@ -108,7 +154,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
       localSha256:
-        "e0a03b7003f3acc1a0a76dc225e6920fdfc15e86ff04202e55cfad9b98c872ae",
+        "43c30720702c295746c948b7eddf384e86eb36e6ef4a2cb82c1f39969fe3083e",
     }],
   },
   {
@@ -118,7 +164,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
   {
@@ -128,7 +174,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
   {
@@ -138,7 +184,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
 ]);
@@ -172,6 +218,7 @@ const EXPECTED_FIXED_SOURCE_PATHS = Object.freeze([
   "third_party/chromium-devtools-frontend/LICENSE",
   "third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md",
   "third_party/chromium-devtools-frontend/README.pin-op.md",
+  ...EXPECTED_NATIVE_RUNTIME_SOURCE_PATHS,
   "third_party/chromium-devtools-frontend/UPSTREAM.json",
   "packages/devtools-elements-ui/.gitattributes",
   "packages/devtools-elements-ui/assets/devtools-elements.css",
@@ -231,6 +278,26 @@ const EXPECTED_FIXED_SOURCE_PATHS = Object.freeze([
   "extensions/firefox/tsconfig.json",
   ...EXPECTED_ROLLOUT_SOURCE_PATHS,
 ]);
+
+test("source archive links the exact Rules overlay into native RUNTIME metadata", () => {
+  const expectedLinkage = {
+    overlayRoot: stylesOverlayRoot,
+    manifestSha256: sha256(stylesOverlayManifestBytes),
+    entryPoint: stylesOverlayManifest.entryPoint,
+    packageInputClosure: stylesOverlayManifest.reviewedPackageClosure,
+    overlayInputClosure: stylesOverlayManifest.reviewedStylesOverlayClosure,
+    requiredLicenseFiles: stylesOverlayManifest.requiredLicenseFiles,
+  };
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.keys(expectedLinkage).map((key) => [
+        key,
+        nativeRuntimeManifest.readOnlyStylesRuntime[key],
+      ]),
+    ),
+    expectedLinkage,
+  );
+});
 
 test("source archive scopes Git safe.directory to the current repository", () => {
   const repositoryRoot = resolve("fixtures", "pin-op");
@@ -302,6 +369,134 @@ test("source archive requires every Chromium Inspector reproduction input", () =
       ),
       new RegExp(escapeRegex(missingPath), "i"),
       missingPath,
+    );
+  }
+});
+
+test("source archive rejects native runtime linkage and overlay byte drift", () => {
+  for (const [label, mutate, expected] of [
+    [
+      "Rules linkage",
+      (files) => {
+        const runtime = JSON.parse(
+          files.get(nativeRuntimeManifestPath).toString("utf8"),
+        );
+        runtime.readOnlyStylesRuntime.manifestSha256 = "f".repeat(64);
+        files.set(nativeRuntimeManifestPath, Buffer.from(JSON.stringify(runtime)));
+      },
+      /Rules runtime manifest linkage/i,
+    ],
+    [
+      "DOM overlay bytes",
+      (files) => {
+        const [path] = Object.keys(domOverlayManifest.overlayFiles);
+        files.set(`${domOverlayRoot}/${path}`, Buffer.from("tampered DOM overlay"));
+      },
+      /native runtime input.*invalid sha256/i,
+    ],
+    [
+      "unexpected Rules overlay path",
+      (files) => {
+        files.set(`${stylesOverlayRoot}/facades/injected.ts`, Buffer.from("injected"));
+      },
+      /unexpected Chromium native overlay path inventory/i,
+    ],
+  ]) {
+    const files = chromiumInspectorSourceFixture();
+    mutate(files);
+    assert.throws(
+      () => artifactVerifier.assertFirefoxSourceReproductionInputs(
+        files,
+        "fixture source archive",
+      ),
+      expected,
+      label,
+    );
+  }
+});
+
+test("source archive pins the native Chromium dependency through package and lock metadata", () => {
+  const packageName = nativeRuntimeManifest.package.packageName;
+  const version = nativeRuntimeManifest.package.version;
+  const integrity = nativeRuntimeManifest.package.integrity;
+  for (const [label, mutate, expected] of [
+    [
+      "root dependency version",
+      (files) => {
+        const manifest = JSON.parse(files.get("package.json").toString("utf8"));
+        manifest.devDependencies[packageName] = "1.0.0";
+        files.set("package.json", Buffer.from(JSON.stringify(manifest)));
+      },
+      /native Chromium package pin|root dependency/i,
+    ],
+    [
+      "lock importer version",
+      (files) => {
+        const lockfile = files.get("pnpm-lock.yaml").toString("utf8");
+        files.set(
+          "pnpm-lock.yaml",
+          Buffer.from(lockfile.replace(
+            `specifier: ${version}\n        version: ${version}`,
+            `specifier: 1.0.0\n        version: 1.0.0`,
+          )),
+        );
+      },
+      /native Chromium lockfile pin/i,
+    ],
+    [
+      "lock package integrity",
+      (files) => {
+        const lockfile = files.get("pnpm-lock.yaml").toString("utf8");
+        files.set(
+          "pnpm-lock.yaml",
+          Buffer.from(lockfile.replace(integrity, `sha512-${"A".repeat(88)}`)),
+        );
+      },
+      /native Chromium lockfile integrity/i,
+    ],
+    [
+      "runtime package version",
+      (files) => {
+        const runtime = JSON.parse(
+          files.get(nativeRuntimeManifestPath).toString("utf8"),
+        );
+        runtime.package.version = "1.0.0";
+        files.set(nativeRuntimeManifestPath, Buffer.from(JSON.stringify(runtime)));
+      },
+      /native RUNTIME\.json metadata/i,
+    ],
+    [
+      "runtime package gitHead",
+      (files) => {
+        const runtime = JSON.parse(
+          files.get(nativeRuntimeManifestPath).toString("utf8"),
+        );
+        runtime.package.gitHead = "f".repeat(40);
+        files.set(nativeRuntimeManifestPath, Buffer.from(JSON.stringify(runtime)));
+      },
+      /native RUNTIME\.json metadata/i,
+    ],
+    [
+      "runtime package integrity",
+      (files) => {
+        const runtime = JSON.parse(
+          files.get(nativeRuntimeManifestPath).toString("utf8"),
+        );
+        runtime.package.integrity = `sha512-${"A".repeat(88)}`;
+        files.set(nativeRuntimeManifestPath, Buffer.from(JSON.stringify(runtime)));
+      },
+      /native RUNTIME\.json metadata/i,
+    ],
+  ]) {
+    const files = chromiumInspectorSourceFixture();
+    mutate(files);
+    assert.throws(
+      () => artifactVerifier.assertFirefoxSourceReproductionInputs(
+        files,
+        "fixture source archive",
+      ),
+      expected,
+      label,
     );
   }
 });
@@ -487,8 +682,15 @@ function chromiumInspectorSourceFixture() {
       ),
     ],
   ]);
+  const nativeRuntimePaths = new Set(EXPECTED_NATIVE_RUNTIME_SOURCE_PATHS);
   for (const path of EXPECTED_FIXED_SOURCE_PATHS) {
-    if (!files.has(path)) files.set(path, Buffer.from(`fixture ${path}`));
+    if (files.has(path)) continue;
+    files.set(
+      path,
+      nativeRuntimePaths.has(path) || path === "package.json" || path === "pnpm-lock.yaml"
+        ? readFileSync(resolve(repositoryRoot, path))
+        : Buffer.from(`fixture ${path}`),
+    );
   }
   for (const file of manifest.files) {
     const upstreamPath =
@@ -501,6 +703,10 @@ function chromiumInspectorSourceFixture() {
     }
   }
   return files;
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function escapeRegex(value) {

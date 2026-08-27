@@ -59,7 +59,7 @@ const browserBundleResult = await build({
   },
 });
 const inspectorBuild = await buildBrowserInspectorModules({ extensionRoot, outdir });
-const { inspectorPanelResult, elementsRuntimeResult } = inspectorBuild;
+const { inspectorPanelResult } = inspectorBuild;
 assertNoChromiumUpstreamInputs(
   browserBundleResult.metafile,
   "Firefox browser bundle",
@@ -74,8 +74,7 @@ assertVerifiedNativeInspectorBuild(
 );
 const combinedMetafile = mergeBrowserBundleMetafiles(
   browserBundleResult.metafile,
-  inspectorPanelResult.metafile,
-  elementsRuntimeResult.metafile,
+  inspectorBuild.inspectorRuntimeResult.metafile,
 );
 
 await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
@@ -88,5 +87,13 @@ await writeFile(
 );
 
 await writeBrowserProjectLicense(extensionRoot);
-await writeBrowserBundleNotices(combinedMetafile, extensionRoot);
+await writeBrowserBundleNotices(combinedMetafile, extensionRoot, {
+  metafileSources: [
+    { metafile: browserBundleResult.metafile, absWorkingDir: extensionRoot },
+    {
+      metafile: inspectorBuild.inspectorRuntimeResult.metafile,
+      absWorkingDir: resolve(extensionRoot, "../.."),
+    },
+  ],
+});
 await normalizeBrowserPackageTimestamps(extensionRoot);

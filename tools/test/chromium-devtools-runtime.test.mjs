@@ -14,10 +14,49 @@ import {
   bundleChromiumReadOnlyElementsRuntime,
   createChromiumReadOnlySourceTransformPlugin,
   prepareChromiumReadOnlyElementsBuild,
+  sanitizeChromiumSharedCss,
   verifyChromiumDevToolsPackage,
   verifyChromiumReadOnlyElementsOverlay,
   verifyChromiumReadOnlyMetafileInputs,
 } from "../chromium-devtools-runtime.mjs";
+
+test("shared Chromium CSS drops comments, branding-only fonts, and unused AI tokens", () => {
+  const design = sanitizeChromiumSharedCss(
+    [
+      "/* Chrome docs https://attacker.invalid/docs */",
+      ":root {",
+      "  --body-font: 'Google Sans Text', 'Google Sans', system-ui, sans-serif;",
+      "  --kept-color: CanvasText;",
+      "}",
+      "",
+    ].join("\n"),
+    "front_end/design_system_tokens.css",
+    { enforceReviewedTransformCounts: false },
+  );
+  assert.doesNotMatch(design, /Chrome|Google|https?:\/\//);
+  assert.match(design, /--body-font:\s*system-ui, sans-serif/);
+  assert.match(design, /--kept-color:\s*CanvasText/);
+
+  const application = sanitizeChromiumSharedCss(
+    [
+      ":root {",
+      "  --app-color-ai-assistance-input-divider: red;",
+      "  --app-color-google-ai-blue: blue;",
+      "  --app-color-google-ai-green: green;",
+      "  --app-gradient-google-ai: linear-gradient(blue, green);",
+      "  --kept-color: CanvasText;",
+      "}",
+      ".theme-with-dark-background {",
+      "  --app-color-ai-assistance-input-divider: white;",
+      "}",
+      "",
+    ].join("\n"),
+    "front_end/application_tokens.css",
+    { enforceReviewedTransformCounts: false },
+  );
+  assert.doesNotMatch(application, /\b(?:AI|Google)\b|google-ai|ai-assistance/i);
+  assert.match(application, /--kept-color:\s*CanvasText/);
+});
 
 test("rejects unverified read-only source transform authority", () => {
   assert.throws(
@@ -99,10 +138,10 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
   assert.deepEqual(runtimeManifest.package, CHROMIUM_DEVTOOLS_PIN);
   assert.deepEqual(runtimeManifest.readOnlyElementsRuntime, {
     overlayRoot: "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    manifestSha256: "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
+    manifestSha256: "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
     entryPoint: "entrypoints/read-only-elements.ts",
     exactImporterSpecifierResolutions: true,
-    unminifiedBytes: 1_088_757,
+    unminifiedBytes: 1_079_088,
     maxUnminifiedBytes: 1_310_720,
     browserTargets: ["chrome116", "firefox142"],
     upstreamInputClosure: {
@@ -111,7 +150,7 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
     },
     overlayInputClosure: {
       fileCount: 37,
-      sha256: "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207",
+      sha256: "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23",
     },
     sharedInputInventory: [
       "chromium-shared-css:front_end/application_tokens.css",
@@ -124,7 +163,7 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
     ],
     sharedPayloadAttestation: {
       fileCount: 7,
-      sha256: "daf9e91a6ffbbad1b4c7dff033af074ceaa93da96fe3ac9c509940e4e934c1ec",
+      sha256: "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5",
     },
     requiredLicenseFiles: {
       LICENSE: "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
@@ -189,7 +228,7 @@ test("esbuild compiles the real upstream Elements tree and generated CSS modules
   assert.match(output, /ElementsTreeOutline\s*=\s*class/);
   assert.match(output, /elements-tree-outline/);
   assert.match(output, /style\.textContent = cssText/);
-  assert.match(output, /var elementsTreeOutline_default = ['"]\/\*/);
+  assert.match(output, /var elementsTreeOutline_default = ['"]\.editing \{/);
   assert.doesNotMatch(output, /node:worker_threads/);
 });
 
@@ -230,7 +269,7 @@ test("esbuild compiles the real upstream Rules pane", async () => {
   assert.ok(javascript);
   const output = new TextDecoder().decode(javascript.contents);
   assert.match(output, /StylesSidebarPane\s*=\s*class/);
-  assert.match(output, /var stylesSidebarPane_default = (?:['"]\/\*|`\/\*\*)/);
+  assert.match(output, /var stylesSidebarPane_default = ['"]\.styles-section \{/);
   assert.doesNotMatch(output, /node:worker_threads/);
   assert.doesNotMatch(
     output,
@@ -249,7 +288,7 @@ test("read-only Elements overlay is versioned and resolves only exact reviewed i
   assert.deepEqual(CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets, ["chrome116", "firefox142"]);
   assert.equal(
     CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.manifestSha256,
-    "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
+    "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
   );
 
   const overlay = await verifyChromiumReadOnlyElementsOverlay(repositoryRoot);
@@ -447,7 +486,10 @@ test("canonical Chromium shared plugins expose frozen namespaces and payload att
   });
   assert.equal(registered.namespace, shared.namespaces.css);
   const emitted = await cssLoader.callback({path: registered.path});
-  const css = await readFile(registered.path, "utf8");
+  const css = sanitizeChromiumSharedCss(
+    await readFile(registered.path, "utf8"),
+    "front_end/application_tokens.css",
+  );
   assert.equal(emitted.contents, `export default ${JSON.stringify(css)};\n`);
   const emittedVerification = shared.verifyInputs([
     `${shared.namespaces.css}:${registered.path}`,
@@ -619,14 +661,14 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
     assert.ok(!output.includes(removed), `read-only output retained ${removed}`);
   }
 
-  assert.equal(result.unminifiedBytes, 1_088_757);
+  assert.equal(result.unminifiedBytes, 1_079_088);
   assert.deepEqual(result.chromiumInputAttestation, {
     fileCount: 46,
     sha256: "53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a",
   });
   assert.deepEqual(result.overlayAttestation, {
     fileCount: 37,
-    sha256: "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207",
+    sha256: "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23",
   });
   assert.deepEqual(result.requiredLicenseFiles, [
     {

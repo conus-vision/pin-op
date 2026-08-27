@@ -35,6 +35,14 @@ export class ElementsInspectorShell {
     this.selectSidebarTab("source");
   };
 
+  private readonly navigateFromRulesTab = (event: KeyboardEvent): void => {
+    this.navigateSidebarTabs("rules", event);
+  };
+
+  private readonly navigateFromSourceTab = (event: KeyboardEvent): void => {
+    this.navigateSidebarTabs("source", event);
+  };
+
   public constructor(
     private readonly document: Document,
     mount: HTMLElement,
@@ -82,6 +90,7 @@ export class ElementsInspectorShell {
       className: "pin-op-elements-inspector__tabs",
       attributes: {
         "aria-label": "Element details",
+        "aria-orientation": "horizontal",
         role: "tablist",
       },
     });
@@ -93,6 +102,7 @@ export class ElementsInspectorShell {
         "aria-selected": "true",
         id: ariaIds.rulesTab,
         role: "tab",
+        tabindex: "0",
         type: "button",
       },
     });
@@ -110,6 +120,8 @@ export class ElementsInspectorShell {
     });
     this.rulesTab.addEventListener("click", this.showRules);
     this.sourceTab.addEventListener("click", this.showSource);
+    this.rulesTab.addEventListener("keydown", this.navigateFromRulesTab);
+    this.sourceTab.addEventListener("keydown", this.navigateFromSourceTab);
     tabList.append(this.rulesTab, this.sourceTab);
 
     this.rulesRoot = this.createElement("section", {
@@ -228,6 +240,8 @@ export class ElementsInspectorShell {
     this.disposed = true;
     this.rulesTab.removeEventListener("click", this.showRules);
     this.sourceTab.removeEventListener("click", this.showSource);
+    this.rulesTab.removeEventListener("keydown", this.navigateFromRulesTab);
+    this.sourceTab.removeEventListener("keydown", this.navigateFromSourceTab);
     let disposeError: unknown;
     const unsubscribeRules = this.unsubscribeRules;
     this.unsubscribeRules = undefined;
@@ -367,6 +381,27 @@ export class ElementsInspectorShell {
       "aria-hidden",
       String(rulesSelected),
     );
+  }
+
+  private navigateSidebarTabs(
+    current: "rules" | "source",
+    event: KeyboardEvent,
+  ): void {
+    if (this.disposed) return;
+    let next: "rules" | "source" | undefined;
+    if (event.key === "Home") {
+      next = "rules";
+    } else if (event.key === "End") {
+      next = "source";
+    } else if (event.key === "ArrowRight") {
+      next = current === "rules" ? "source" : "rules";
+    } else if (event.key === "ArrowLeft") {
+      next = current === "rules" ? "source" : "rules";
+    }
+    if (!next) return;
+    event.preventDefault();
+    this.selectSidebarTab(next);
+    (next === "rules" ? this.rulesTab : this.sourceTab).focus();
   }
 
   private createElement(

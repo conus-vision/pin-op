@@ -168,9 +168,40 @@ export function assertVerifiedNativeInspectorBuild(
   if (elementsInputs.length === 0 || stylesInputs.length === 0 || localInputs.length === 0) {
     throw new Error(`${label} exact union has an empty input owner`);
   }
+  const reviewedOwnerInputs = denseUniqueStrings(
+    verification.reviewedOwnerInputKeys,
+    `${label} reviewed owner inputs`,
+  );
+  assertExactStringSet(
+    [...new Set([...elementsInputs, ...stylesInputs])].sort(),
+    reviewedOwnerInputs,
+    `${label} reviewed owner union`,
+  );
+  const prunedInputs = denseUniqueStrings(
+    verification.prunedOwnerCapabilityInputKeys,
+    `${label} pruned owner capabilities`,
+  );
+  if (prunedInputs.length !== 1 ||
+      prunedInputs[0] !==
+        "third_party/chromium-devtools-frontend/patches/1.0.1681091/facades/issues.ts" ||
+      !reviewedOwnerInputs.includes(prunedInputs[0]) || runtimeInputs.includes(prunedInputs[0])) {
+    throw new Error(`${label} has an invalid pruned owner capability inventory`);
+  }
+  const prunedAttestation = exactObject(
+    verification.prunedOwnerCapabilityAttestation,
+    `${label} pruned owner capability attestation`,
+  );
+  if (
+    Object.keys(prunedAttestation).sort().join(",") !== "fileCount,reason,sha256" ||
+    prunedAttestation.fileCount !== 1 ||
+    prunedAttestation.sha256 !==
+      "1a547b642f0a385145dcb553623881863d5496536d8d62bddae3a2952145bb30" ||
+    prunedAttestation.reason !== "Pin-op does not expose Chromium Issues capability"
+  ) {
+    throw new Error(`${label} has an invalid pruned owner capability attestation`);
+  }
   const ownedInputs = [...new Set([
-    ...elementsInputs,
-    ...stylesInputs,
+    ...reviewedOwnerInputs.filter(input => !prunedInputs.includes(input)),
     ...localInputs,
   ])].sort();
   assertExactStringSet(ownedInputs, runtimeInputs, `${label} exact union of input owners`);

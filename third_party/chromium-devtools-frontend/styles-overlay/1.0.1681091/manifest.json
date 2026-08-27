@@ -19,7 +19,7 @@
   "overlayFiles": {
     "entrypoints/read-only-styles.ts": "fe5cea561ba23f3c70a3b607c70d92ec46ab5c954669eec9651517e17f96f64b",
     "facades/buttons.ts": "6480f0ea2893420e0424192917e02e659ae8eab337bab83276e9753c90f46f8d",
-    "facades/common.ts": "b40c45c746ff74037a83c4b7e843a051cfc657e59b9316a9d01009fd1fea0501",
+    "facades/common.ts": "6365fc256425e0417f6c2b5276470baf2d58b5ce8274cbbeeba827c3591f81f6",
     "facades/components.ts": "be7b58d8bbc390f7e1615a141d4eef69ef7148b6928fb2485e60232ea2c7bec2",
     "facades/css-query.ts": "7ddd825076d3a3e5dfb9c850dde3aebe8d3a12f3c3f1e4be78686c42d8ab291f",
     "facades/dom-model.ts": "400c00be27980098ff0f488ad8399076fe138855b09c11ce6ebdbaeb62cba8be",
@@ -35,7 +35,7 @@
     "facades/ui-utils.ts": "f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6",
     "facades/ui.ts": "1d7942654fa557f75c10721181125a6d3a84dd1fd0928d2bd9347806bf3d0cd7",
     "facades/visual-logging.ts": "974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96",
-    "runtime/read-only-styles-runtime.ts": "84fc06fa1664edc441cc5f4f88acfea213d86cb70ad74e3567064eefd646edd6"
+    "runtime/read-only-styles-runtime.ts": "4acdd14df0117d7d0b8d1e2bdfa07b921e9c546fc61d02b1ff713d0fe864268b"
   },
   "upstreamFiles": {
     "front_end/core/sdk/CSSProperty.ts": "6c699445cd13b6f841cc740b15fe1e01360c5afb4c87a3a68f1dd89b76f22047",
@@ -51,7 +51,7 @@
   },
   "reviewedStylesOverlayClosure": {
     "fileCount": 18,
-    "sha256": "d5fa939d0e29a00ee2d23acd42904d264639b5d0b0c0e22170311a88ff2c5084"
+    "sha256": "16d72ee24720a7e0dad986970ffdf29b889d3186e90e3297064d8360db3b3a64"
   },
   "reviewedBaseOverlayClosure": {
     "fileCount": 16,
@@ -73,7 +73,7 @@
   ],
   "reviewedSharedPayloadAttestation": {
     "fileCount": 9,
-    "sha256": "5a25743d6a63391a27d3b6b72f55235acd1fc69900b6996047a80b96308d1df1"
+    "sha256": "7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8"
   },
   "requiredImageFiles": {
     "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",

@@ -2,7 +2,7 @@
 
 Pin-op includes the following bundled third-party software.
 Bundled package sections are generated from the inputs in esbuild's bundle metadata.
-Chromium-derived sections are generated from the pinned UPSTREAM.json manifest, root license, and embedded source notices.
+Chromium-derived sections are generated from the pinned UPSTREAM.json and RUNTIME.json manifests, the reviewed DOM and Rules overlay manifests, exact input inventories, and required license bytes.
 
 ## cssesc@3.0.0
 Declared license: MIT
@@ -740,3 +740,259 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Copyright 2014 The Chromium Authors
 Use of this source code is governed by a BSD-style license that can be
 found in the LICENSE file.
+
+## Chromium DevTools Frontend (native read-only runtime)
+NPM package: chrome-devtools-frontend@1.0.1681091
+Package gitHead: 23cccaa78f7458a5aad99c1af98dc1856d2494a3
+Package integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==
+Package repository: https://github.com/ChromeDevTools/devtools-frontend.git
+Runtime metadata: third_party/chromium-devtools-frontend/RUNTIME.json
+Runtime metadata SHA-256: 6df00cee57956fcbeffa8bd5333d9e108b91957f189df419bd40b0e1bf67e3c9
+
+DOM overlay manifest: third_party/chromium-devtools-frontend/patches/1.0.1681091/manifest.json
+DOM overlay manifest SHA-256: 2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a
+
+### DOM npm closure
+File count: 46
+SHA-256: 53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a
+
+### DOM overlay closure
+File count: 37
+SHA-256: 485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23
+
+### DOM shared payload
+File count: 7
+SHA-256: e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5
+
+### DOM shared input inventory
+- chromium-shared-css:front_end/application_tokens.css
+- chromium-shared-css:front_end/design_system_tokens.css
+- chromium-shared-css:front_end/panels/elements/components/elementsTreeExpandButton.css
+- chromium-shared-css:front_end/panels/elements/elementsTreeOutline.css
+- chromium-shared-css:front_end/ui/components/buttons/textButton.css
+- chromium-shared-css:front_end/ui/legacy/inspectorCommon.css
+- chromium-shared-css:front_end/ui/legacy/treeoutline.css
+
+### DOM npm input inventory
+- front_end/core/common/Color.ts d317a3943d77e604e7eb4de2d99716c27785b2db4e81311f7b97d6f27e908def
+- front_end/core/common/ColorConverter.ts d678abb8c14a6c808a15f01010e87d5a70db3dfd67c790492befee8404e702b5
+- front_end/core/common/ParsedURL.ts 211df17811a7cbac8d72cdc09e97c95b1685e42409aee2dc6a89cd3acbcf553c
+- front_end/core/sdk/CSSMetadata.ts 62d03b4bb9fa83d4e261deaf17fb613beea788398bf8136f876b6b17aee267c2
+- front_end/core/sdk/DOMModel.ts 4a42a78842a353b11c506a8a05135fe4430a846da68c05e9e29f4856066f743d
+- front_end/generated/SupportedCSSProperties.ts 8da8aeaf06636fec7e0ac73ae0dfd53cf8430e769e093b15fdda3a3a3f72bc5f
+- front_end/models/geometry/GeometryImpl.ts b837b3821778dc6c3e8a83d7a02c7b4964b9e794e011a58a63b361be8382a7ec
+- front_end/panels/elements/DOMPath.ts 9cd3eaf2fe03f1adee285bb60de432d775673d9d4a87be004f601d4c75591a65
+- front_end/panels/elements/ElementsTreeElement.ts 40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b
+- front_end/panels/elements/ElementsTreeOutline.ts 36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d
+- front_end/panels/elements/ShortcutTreeElement.ts 42eaf9d4a12814cd19560fa07c89b8ed8020a34b9f4f274b7d2bdfe09731c38a
+- front_end/panels/elements/TopLayerContainer.ts 3fb6b3f959854667c271b3960623dbdee5ac43cc736c916282ecd25f70486d9d
+- front_end/panels/elements/components/ElementsTreeExpandButton.ts 15566fbe450a71df1d2544c7746a249090403e208668983299f6fc0d118d73ba
+- front_end/ui/dom_extension/DOMExtension.ts 2bdd78d0ff488ee8fa91f83ac9bebb80a7ab798a37d51f3930719bbf7eb94c69
+- front_end/ui/legacy/Treeoutline.ts c1f8fbac9bfc493c1219bcf9c2e831a496129fe91a902a3041bddd55c6c2eb9e
+- front_end/ui/legacy/Widget.ts 5fb4b2a37541b6fdd33fdd5d812953743be12a36d4b3dd2cc0ca24fdd290d862
+- front_end/ui/lit/i18n-template.ts aa4bf43aba2a625d7fb197f0ded8e06d5b6b041d82788f5e4e7490287061f91d
+- front_end/ui/lit/strip-whitespace.ts dbb08578c112a6d66ec3d822880e14a355689442172446adbc52585fc80e8be4
+
+### DOM image input inventory
+- front_end/Images/src/arrow-collapse.svg 560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e
+- front_end/Images/src/arrow-drop-down-dark.svg f11634d22b8d833af0960dc52e628c56cba1029e6fbcc84b3b3b990438e83039
+- front_end/Images/src/arrow-drop-down-light.svg e2825adc9df196ec67e8dd7b6c37494b7b0b03d9eed42b195a0b9c7576582ce7
+- front_end/Images/src/arrow-drop-down.svg 3e445565421d0793a77d0cd3a49cb72276a9d40f57654a7d7445c68b4c8f18e6
+- front_end/Images/src/checker.svg 72737a4aab8c143dfc925213d109699a3c951feff3aceb62fc95da9eefe5f0a3
+- front_end/Images/src/cross-circle-filled.svg 5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3
+- front_end/Images/src/empty.svg c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6
+- front_end/Images/src/errorWave.svg fd5dc2adee295375b0e96df8c7adf96be0ee6169155306f636786ae633f9f640
+- front_end/Images/src/filter.svg fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a
+- front_end/Images/src/goto-filled.svg d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf
+- front_end/Images/src/open-externally.svg 5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d
+- front_end/Images/src/refresh.svg 35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b
+- front_end/Images/src/triangle-down.svg 849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b
+- front_end/Images/src/triangle-right.svg be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85
+- front_end/Images/src/triangle-up.svg 90fb77f6cab8df35681d1db88e078fa8aaac4a9336f17fc6f2aabbc86efc2af5
+- front_end/Images/src/warning-filled.svg 4445b327116ab32f274898a876c7bb8e0813d97dfe2eae05adf8ee9b5ac43cb0
+
+### DOM overlay input inventory
+- entrypoints/read-only-elements-smoke.ts 5b59f3352b9234c42c2c8dec0fefcb015aa470b5a95ae8593a56e288b948d53d
+- entrypoints/read-only-elements.ts 124c201bcd01f202359232985aa1b0594a8371ff08f152397b6eaa4336baf29f
+- facades/adopted-style-sheets.ts 4a09adec6cdc6be238db2003d5137dd9790fe11972c104f027a9d66789c0ed63
+- facades/ai.ts 7168e8ce07646dc84308c17bb7abfb008a3bd6cdcc28219cb73c3b327293f9bf
+- facades/aria.ts d5f2faa3836a9a1879b9004d398b7f2fa272af4289ad4a6b1657f47f75912197
+- facades/badges.ts 6ff3fd0beb692c6ae329ea12d26c5bd361d68911df247c7e66fd0306f5157e3c
+- facades/bindings.ts 1150c3c861a6f121ea116a7bb82b2ccd8bf1beea7fe56ee39c0f8cee225651a0
+- facades/code-highlighter.ts fb34644cc291dc4f6715e5030369e3dead3b5402962a2342adc52f78c996fe8a
+- facades/codemirror.ts 5ed52ff63b4fb4a60d32168578764320afd064c41c3708524a0003a37d6304b5
+- facades/common.ts 9cffa8d774639d92e02a04590a3e47dbd1938e7bd7f3cc84a7e0770cf413edae
+- facades/component-elements.ts c462374012346aa7c8bae2511660ecdd384c0a1b9245c786b93b8ab3a8723f4e
+- facades/components.ts 36ccb1d976bf31318155658ee944d09b63b123703617bce23f09e61a30366f6f
+- facades/context-menu.ts 03a56d8206c85be38dee7ab10b2ea16c75f42a8d23441c04642c5b209b79e67e
+- facades/core-styles.ts fe1ffad70ebd4a4f3c537f5db36e5926226aa5a72eadfd3badb1ef69d265007f
+- facades/css-metadata-common.ts cf9fc4a9e13519da9ee05e616c67b5cbfbcef7d41714117bac580a24b6b2f482
+- facades/css-metadata-protocol.ts c6576a2c3d51f193dd7ff2f6805be30d64becd85a2c863baaca2ff034d457dd7
+- facades/elements-components.ts 9e5a16f88d4ffd1694a5916567b7ce0a2301d4f21a3caa447569b55eb9f4f0ad
+- facades/elements-model.ts 5146e9a9ce9d71d3560ada60305b68f1fc626ed3a81b19e07b79c64e221af917
+- facades/elements-panel.ts 03485c26e4b4a650def348c756d2a5587c4410789401414bf1a71613caa83e77
+- facades/highlighting.ts bc57cf863d48da5f216e1729d0b26f611d8491b88d3e5e4cb6d79c001115f525
+- facades/host.ts c3f7adc4255e1a98432155103b58c71fa1635d14af29219979bbde76d0ae35c1
+- facades/i18n.ts 5edc7257906e74a1a5ff5dee92fc8086753c7b30f701ce68ce37eca755447592
+- facades/image-preview.ts 73c156952d285148aaf52ff18cad062703ce875ca5f554b6ba7a70f6dfea3e8f
+- facades/inplace-editor.ts 03dba787d3204425e55cd4f34cc4a0586003975911e34b22190449c7be0741c6
+- facades/issue-counter.ts b1db0d3f8883b29818c699aabc795c57df1217809c8cd162d1eb00acb9943302
+- facades/issues-manager.ts 6d17f02abf7ce68f20ddfc5fb312bf27db0411a0abc296d5c567f6c73baa3e98
+- facades/issues.ts 87a278e4e1266e15f085e6ae6e7fdc651782a32e70f66a8fabf256f7eb53cf85
+- facades/keyboard-shortcut.ts 005c622f51cf378566bf24d88f10184bd3a4f6138b5787986684f86dc3c9cabe
+- facades/marker-decorator.ts 6215fa16b7a8cee5aeb1cd0c27d6c76317baec16923953a1c9d7e6f82ec95e84
+- facades/media.ts 3295fe3730dce31003a23966fd4d7465e3984e661c2dfdf914de3082a9eac663
+- facades/panels-common.ts 8c9d1ec5a5bd1217aec5c8d5a52799d0ee63250a00d7c3f8e14832c6dada2706
+- facades/platform.ts 07ac0a4996433716ef17138c793f97e73abafb91e8df6a9dc564063920b195ae
+- facades/root.ts b2b2dadaf17b12e8554e5282f01152e40c687704e4a99e9c292a23f0a6f5eec9
+- facades/sdk-model-dependencies.ts 298df0bab3fac0ed66d163cfbcb7791c4c554115024449f9b380ec33ba90c2a7
+- facades/sdk.ts d95f536149eb5a47c9b8ed87babd3de36cb7e9c8a4bbcb66107f3ecd074e2805
+- facades/shared-sdk.ts 8401ed38b0112b09ca8a0f1b3383ac4892a8f0891c93d58c80c38dfb0cd33379
+- facades/text-editor.ts ed515789f006f5de0a23ad4acabbca6960176e7340b0df7b93f4edd7a6402b04
+- facades/text-utils.ts 38d20dc807581d0780cbaf785e7c8dfdd799625a6def2ca255af3b6a7b5cfdd6
+- facades/tooltip.ts 46ca285642cf4aa876381c2815a7fff6ccfe117cd1c23486851adf5f866010cb
+- facades/ui-utils.ts 56849cf4d71cec635e07925f827b78f2c5e819f3ff899d19e1a2d2a7096be608
+- facades/ui.ts 936b7c66dd1a393c0c147bbca2bdab692ba4bf740e137076c83448d21e7d637d
+- facades/visual-logging.ts 5253547476731860058d7bc68e8503b826510a1083b680d7f74b279083218397
+- facades/workspace.ts 2c065afce750829aecff5a80bf3cef3f875e2df760dd496fb706d9b6b7b712ea
+- runtime/read-only-elements-runtime.ts 6436090417de6dbbe15f70882e83303f0d3e0b0591eed9bd508574edb3837945
+
+### DOM required license inventory
+- LICENSE ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e
+- front_end/third_party/lit/LICENSE 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
+
+Rules overlay manifest: third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/manifest.json
+Rules overlay manifest SHA-256: 86c18a9b7b0a6bd2292fe78e40392bac61e08407f5370e55d946c353213c59bf
+
+### Rules npm closure
+File count: 61
+SHA-256: 737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6
+
+### Rules overlay closure
+File count: 18
+SHA-256: 16d72ee24720a7e0dad986970ffdf29b889d3186e90e3297064d8360db3b3a64
+
+### Rules base overlay closure
+File count: 16
+SHA-256: bf231d9aeede31066f40db90dc8b49bba00a336848aab71f18f9f8850d45bf63
+
+### Rules shared payload
+File count: 9
+SHA-256: 7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8
+
+### Rules shared input inventory
+- chromium-shared-css:front_end/application_tokens.css
+- chromium-shared-css:front_end/design_system_tokens.css
+- chromium-shared-css:front_end/panels/elements/stylePropertiesTreeOutline.css
+- chromium-shared-css:front_end/panels/elements/stylesSidebarPane.css
+- chromium-shared-css:front_end/ui/components/buttons/textButton.css
+- chromium-shared-css:front_end/ui/legacy/components/inline_editor/colorSwatch.css
+- chromium-shared-css:front_end/ui/legacy/inspectorCommon.css
+- chromium-shared-css:front_end/ui/legacy/treeoutline.css
+- chromium-shared-images:front_end/Images/Images.js
+
+### Rules npm input inventory
+- front_end/core/sdk/CSSProperty.ts 6c699445cd13b6f841cc740b15fe1e01360c5afb4c87a3a68f1dd89b76f22047
+- front_end/core/sdk/CSSStyleDeclaration.ts 8c35c9ab6b4ae00f172d67546047efdacfb0d59173b3420dae066f4b00583454
+- front_end/panels/elements/StylePropertiesSection.ts bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be
+- front_end/panels/elements/StylePropertyTreeElement.ts 427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d
+- front_end/panels/elements/StylesSidebarPane.ts 575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28
+
+### Rules image input inventory
+- front_end/Images/src/filter.svg fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a
+- front_end/Images/src/open-externally.svg 5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d
+- front_end/Images/src/triangle-down.svg 849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b
+- front_end/Images/src/triangle-right.svg be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85
+
+### Rules overlay input inventory
+- entrypoints/read-only-styles.ts fe5cea561ba23f3c70a3b607c70d92ec46ab5c954669eec9651517e17f96f64b
+- facades/buttons.ts 6480f0ea2893420e0424192917e02e659ae8eab337bab83276e9753c90f46f8d
+- facades/common.ts 6365fc256425e0417f6c2b5276470baf2d58b5ce8274cbbeeba827c3591f81f6
+- facades/components.ts be7b58d8bbc390f7e1615a141d4eef69ef7148b6928fb2485e60232ea2c7bec2
+- facades/css-query.ts 7ddd825076d3a3e5dfb9c850dde3aebe8d3a12f3c3f1e4be78686c42d8ab291f
+- facades/dom-model.ts 400c00be27980098ff0f488ad8399076fe138855b09c11ce6ebdbaeb62cba8be
+- facades/elements-components.ts e86b9b25f3e2525ba8cebcc87a872498ef023b0f28c1bd267dc0f24a2726e095
+- facades/host.ts 649cfc3e27b476ff20b0618b708c0045661b2751cfa4ae47361e6cc2cd5ede0e
+- facades/inline-editor.ts 6f8a8ec2d78900b7ed0eeef5c90d0617ee7c88d6953b8331ea39bdb3da9aad29
+- facades/kit.ts e4b27055254310855f5bb3f0889414c072ac45c17a417f7675f6e0b65a26e65b
+- facades/platform.ts fcb7a941472ebce0ea5ca26098c4537e99f719a0ea025e73b3480d74122bcec5
+- facades/protocol.ts 9875210b4292f14b23eb18b704423d995e0bad69dad0d51810093ef22b083782
+- facades/sdk.ts ff99ae7cb0696833542eb4a7b51a03355fb93bf1c07a0101dabf579b35e5aeaf
+- facades/styles-dependencies.ts 7491c700a419866384ac46b0dec70475f70e73cb502d545f0cad4efe321df86e
+- facades/text-utils.ts 92e71f7a93cdbd459f7a9a3e9d8752ee1cfbe778de8fe18b0177eb48507d225a
+- facades/ui-utils.ts f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6
+- facades/ui.ts 1d7942654fa557f75c10721181125a6d3a84dd1fd0928d2bd9347806bf3d0cd7
+- facades/visual-logging.ts 974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96
+- runtime/read-only-styles-runtime.ts 4acdd14df0117d7d0b8d1e2bdfa07b921e9c546fc61d02b1ff713d0fe864268b
+
+### Rules required license inventory
+- LICENSE ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e
+- front_end/third_party/codemirror.next/LICENSE aa8f65819a471c1a25fb3c0816c5a75e45f009b7899d292ee3cc70d9dbdd8f7e
+- front_end/third_party/lit/LICENSE 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
+
+
+### Reviewed generated module inventory
+- Rules:chromium-shared-images:front_end/Images/Images.js
+- runtime:front_end/**/*.css.js
+- runtime:front_end/Images/Images.js
+- runtime:front_end/core/i18n/locales.js
+
+The Chromium root BSD license text appears once in the derived view section above.
+The remaining native runtime license texts follow, deduplicated by SHA-256.
+
+### Native runtime license 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
+Used by: DOM:front_end/third_party/lit/LICENSE, Rules:front_end/third_party/lit/LICENSE
+
+BSD 3-Clause License
+
+Copyright (c) 2017 Google LLC. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+### Native runtime license aa8f65819a471c1a25fb3c0816c5a75e45f009b7899d292ee3cc70d9dbdd8f7e
+Used by: Rules:front_end/third_party/codemirror.next/LICENSE
+
+MIT License
+
+Copyright (C) 2018-2021 by Marijn Haverbeke <marijnh@gmail.com> and others
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

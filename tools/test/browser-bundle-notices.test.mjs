@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  filesystemPathFromMetafileInput,
+  loadChromiumNativeRuntimeNoticeInputs,
   renderChromiumDerivedNoticeSection,
+  renderChromiumNativeRuntimeNoticeSection,
   writeBrowserBundleNotices,
 } from "../browser-bundle-notices.mjs";
 
@@ -54,10 +66,23 @@ test("browser notices deterministically include every Chromium-derived license i
       await readFile(resolve(upstreamRoot, "LICENSE"), "utf8"),
     );
     await writeFixtureRepository(fixtureRoot, manifest, rootLicense);
+    const nativeInputs = await writeNativeRuntimeFixture(fixtureRoot);
+    const namespacedChromiumInput =
+      `chromium-read-only:${resolve(
+        fixtureRoot,
+        "node_modules/chrome-devtools-frontend/front_end/panels/elements/ElementsTreeOutline.ts",
+      ).replaceAll("\\", "/")}`;
+    const generatedChromiumInput =
+      `chromium-shared-images:${resolve(
+        fixtureRoot,
+        "node_modules/chrome-devtools-frontend/front_end/Images/Images.js",
+      ).replaceAll("\\", "/")}`;
 
     const metafile = {
       inputs: {
         "../../node_modules/example-package/index.js": { bytes: 1, imports: [] },
+        [namespacedChromiumInput]: { bytes: 1, imports: [] },
+        [generatedChromiumInput]: { bytes: 1, imports: [] },
         "(disabled):../../node_modules/.pnpm/postcss@8.5.16/node_modules/postcss/lib/terminal-highlight": {
           bytes: 0,
           imports: [],
@@ -84,11 +109,16 @@ test("browser notices deterministically include every Chromium-derived license i
       /Bundled package sections are generated from the inputs in esbuild's bundle metadata\./,
     );
     assert.match(chromeNotices, /## example-package@1\.0\.0/);
+    assert.doesNotMatch(
+      chromeNotices,
+      /^## chrome-devtools-frontend@/m,
+      "the dedicated Chromium sections must be the sole Chromium attribution owner",
+    );
     assert.equal(countOccurrences(chromeNotices, "Example dependency license"), 1);
     assert.doesNotMatch(chromeNotices, /^## postcss@8\.5\.16$/m);
     assert.match(
       chromeNotices,
-      /Chromium-derived sections are generated from the pinned UPSTREAM\.json manifest, root license, and embedded source notices\./,
+      /Chromium-derived sections are generated from the pinned UPSTREAM\.json and RUNTIME\.json manifests, the reviewed DOM and Rules overlay manifests, exact input inventories, and required license bytes\./,
     );
     assert.doesNotMatch(
       chromeNotices,
@@ -97,6 +127,26 @@ test("browser notices deterministically include every Chromium-derived license i
     assert.match(
       chromeNotices,
       /## Chromium DevTools Frontend \(derived view code\)/,
+    );
+    assert.match(
+      chromeNotices,
+      /## Chromium DevTools Frontend \(native read-only runtime\)/,
+    );
+    assert.match(
+      chromeNotices,
+      new RegExp(`NPM package: ${nativeInputs.packageManifest.name}@${nativeInputs.packageManifest.version}`),
+    );
+    assert.match(
+      chromeNotices,
+      new RegExp(`Runtime metadata SHA-256: ${sha256(nativeInputs.runtimeBytes)}`),
+    );
+    assert.match(
+      chromeNotices,
+      new RegExp(`DOM overlay manifest SHA-256: ${sha256(nativeInputs.domManifestBytes)}`),
+    );
+    assert.match(
+      chromeNotices,
+      new RegExp(`Rules overlay manifest SHA-256: ${sha256(nativeInputs.stylesManifestBytes)}`),
     );
     assert.match(
       chromeNotices,
@@ -137,6 +187,335 @@ test("browser notices deterministically include every Chromium-derived license i
     );
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("browser notices parse verified Windows and POSIX namespaced filesystem inputs", () => {
+  assert.deepEqual(
+    filesystemPathFromMetafileInput("F:/repo/node_modules/pkg/index.js"),
+    { path: "F:/repo/node_modules/pkg/index.js", namespaced: false },
+  );
+  assert.deepEqual(
+    filesystemPathFromMetafileInput("chromium-css:F:/repo/node_modules/pkg/index.js"),
+    { path: "F:/repo/node_modules/pkg/index.js", namespaced: true },
+  );
+  assert.deepEqual(
+    filesystemPathFromMetafileInput("chromium-css:/repo/node_modules/pkg/index.js"),
+    { path: "/repo/node_modules/pkg/index.js", namespaced: true },
+  );
+  assert.throws(
+    () => filesystemPathFromMetafileInput("chromium-css:relative/node_modules/pkg/index.js"),
+    /no absolute filesystem path/i,
+  );
+});
+
+test("browser notices resolve physical packages only through exact verified metafile origins", async () => {
+  const fixtureRoot = await mkdtemp(resolve(tmpdir(), "pin-op-notice-origins-"));
+  try {
+    const stagedRepository = resolve(fixtureRoot, "project");
+    const extensionRoot = resolve(stagedRepository, "extensions/chrome");
+    const physicalPackageRoot = resolve(
+      fixtureRoot,
+      "physical/node_modules/example-package",
+    );
+    const upstreamManifest = JSON.parse(
+      await readFile(resolve(upstreamRoot, "UPSTREAM.json"), "utf8"),
+    );
+    const rootLicense = normalizeText(
+      await readFile(resolve(upstreamRoot, "LICENSE"), "utf8"),
+    );
+    await writeFixtureRepository(stagedRepository, upstreamManifest, rootLicense);
+    await writeNativeRuntimeFixture(stagedRepository);
+    await writeExamplePackage(physicalPackageRoot);
+
+    const input = relative(
+      stagedRepository,
+      resolve(physicalPackageRoot, "index.js"),
+    ).replaceAll("\\", "/");
+    const sourceMetafile = {
+      inputs: {
+        [input]: { bytes: 1, imports: [] },
+      },
+      outputs: {
+        "dist/runtime.js": {
+          bytes: 1,
+          inputs: { [input]: { bytesInOutput: 1 } },
+          imports: [],
+          exports: [],
+        },
+      },
+    };
+    const combinedMetafile = structuredClone(sourceMetafile);
+    const verifiedSources = [{
+      metafile: sourceMetafile,
+      absWorkingDir: stagedRepository,
+    }];
+
+    await writeBrowserBundleNotices(
+      combinedMetafile,
+      extensionRoot,
+      { metafileSources: verifiedSources },
+    );
+    assert.match(
+      await readFile(resolve(extensionRoot, "THIRD_PARTY_NOTICES"), "utf8"),
+      /## example-package@1\.0\.0/,
+    );
+
+    await assert.rejects(
+      writeBrowserBundleNotices(combinedMetafile, extensionRoot),
+      /outside.*verified metafile origin/i,
+    );
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        combinedMetafile,
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: sourceMetafile,
+            absWorkingDir: resolve(fixtureRoot, "physical"),
+          }],
+        },
+      ),
+      /unapproved metafile origin/i,
+    );
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        combinedMetafile,
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: { inputs: {}, outputs: {} },
+            absWorkingDir: stagedRepository,
+          }],
+        },
+      ),
+      /has no verified metafile origin/i,
+    );
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        combinedMetafile,
+        extensionRoot,
+        {
+          metafileSources: [
+            ...verifiedSources,
+            { metafile: sourceMetafile, absWorkingDir: extensionRoot },
+          ],
+        },
+      ),
+      /ambiguous metafile origin/i,
+    );
+
+    const missingInput =
+      `chromium-shared-images:${resolve(
+        stagedRepository,
+        "node_modules/chrome-devtools-frontend/front_end/Images/Missing.js",
+      ).replaceAll("\\", "/")}`;
+    const missingMetafile = metafileForInput(missingInput);
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        structuredClone(missingMetafile),
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: missingMetafile,
+            absWorkingDir: stagedRepository,
+          }],
+        },
+      ),
+      /physical file.*missing\.js/i,
+    );
+
+    const externalChromiumRoot = resolve(
+      fixtureRoot,
+      "physical/node_modules/chrome-devtools-frontend",
+    );
+    await mkdir(externalChromiumRoot, { recursive: true });
+    for (const path of ["package.json", "LICENSE"]) {
+      await copyFile(
+        resolve(stagedRepository, "node_modules/chrome-devtools-frontend", path),
+        resolve(externalChromiumRoot, path),
+      );
+    }
+    await writeFile(resolve(externalChromiumRoot, "index.js"), "export {};\n", "utf8");
+    const externalChromiumInput = relative(
+      stagedRepository,
+      resolve(externalChromiumRoot, "index.js"),
+    ).replaceAll("\\", "/");
+    const externalChromiumMetafile = metafileForInput(externalChromiumInput);
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        structuredClone(externalChromiumMetafile),
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: externalChromiumMetafile,
+            absWorkingDir: stagedRepository,
+          }],
+        },
+      ),
+      /Chromium package input.*pinned physical package root/i,
+    );
+    const untrustedGeneratedInput =
+      `chromium-shared-images:${resolve(
+        externalChromiumRoot,
+        "front_end/Images/Images.js",
+      ).replaceAll("\\", "/")}`;
+    const untrustedGeneratedMetafile = metafileForInput(untrustedGeneratedInput);
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        structuredClone(untrustedGeneratedMetafile),
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: untrustedGeneratedMetafile,
+            absWorkingDir: stagedRepository,
+          }],
+        },
+      ),
+      /virtual Chromium input.*pinned physical package root/i,
+    );
+
+    const escapedDirectory = resolve(fixtureRoot, "escaped-package-input");
+    await mkdir(escapedDirectory, { recursive: true });
+    await writeFile(resolve(escapedDirectory, "index.js"), "export {};\n", "utf8");
+    const linkedDirectory = resolve(physicalPackageRoot, "linked");
+    await symlink(
+      escapedDirectory,
+      linkedDirectory,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const linkedInput = relative(
+      stagedRepository,
+      resolve(linkedDirectory, "index.js"),
+    ).replaceAll("\\", "/");
+    const linkedMetafile = metafileForInput(linkedInput);
+    await assert.rejects(
+      writeBrowserBundleNotices(
+        structuredClone(linkedMetafile),
+        extensionRoot,
+        {
+          metafileSources: [{
+            metafile: linkedMetafile,
+            absWorkingDir: stagedRepository,
+          }],
+        },
+      ),
+      /escapes its physical package root/i,
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+function metafileForInput(input) {
+  return {
+    inputs: {
+      [input]: { bytes: 1, imports: [] },
+    },
+    outputs: {
+      "dist/runtime.js": {
+        bytes: 1,
+        inputs: { [input]: { bytesInOutput: 1 } },
+        imports: [],
+        exports: [],
+      },
+    },
+  };
+}
+
+test("native Chromium notice attests the exact runtime manifests, inputs, and licenses", async () => {
+  const inputs = await loadChromiumNativeRuntimeNoticeInputs(repositoryRoot);
+  const section = renderChromiumNativeRuntimeNoticeSection(inputs);
+
+  assert.match(section, /## Chromium DevTools Frontend \(native read-only runtime\)/);
+  assert.match(section, new RegExp(`Package gitHead: ${inputs.runtimeManifest.package.gitHead}`));
+  assert.match(section, new RegExp(`Package integrity: ${escapeRegex(inputs.runtimeManifest.package.integrity)}`));
+  for (const [owner, manifest] of [
+    ["DOM", inputs.domManifest],
+    ["Rules", inputs.stylesManifest],
+  ]) {
+    for (const [path, digest] of Object.entries(manifest.upstreamFiles)) {
+      assert.match(section, new RegExp(`- ${escapeRegex(path)} ${digest}`), `${owner} ${path}`);
+    }
+    for (const [path, digest] of Object.entries(manifest.overlayFiles)) {
+      assert.match(section, new RegExp(`- ${escapeRegex(path)} ${digest}`), `${owner} ${path}`);
+    }
+    for (const [path, digest] of Object.entries(manifest.requiredImageFiles ?? {})) {
+      assert.match(
+        section,
+        new RegExp(`- ${escapeRegex(path)} ${digest}`),
+        `${owner} image ${path}`,
+      );
+    }
+    for (const [path, digest] of Object.entries(manifest.requiredLicenseFiles)) {
+      assert.match(
+        section,
+        new RegExp(`- ${escapeRegex(path)} ${digest}`),
+        `${owner} license ${path}`,
+      );
+    }
+  }
+  for (const [digest, text] of inputs.licenseTexts) {
+    if (digest === inputs.runtimeManifest.license.sha256) continue;
+    assert.match(section, new RegExp(`### Native runtime license ${digest}`));
+    assert.equal(countOccurrences(section, normalizeText(text)), 1, digest);
+  }
+});
+
+test("native Chromium notice rejects runtime, manifest, input, and license drift", async () => {
+  const inputs = await loadChromiumNativeRuntimeNoticeInputs(repositoryRoot);
+  const baseline = inputs;
+  const mutations = [
+    ["runtime metadata", (candidate) => {
+      candidate.runtimeBytes = Buffer.from(
+        candidate.runtimeBytes.toString("utf8").replace(
+          '"packageName": "chrome-devtools-frontend"',
+          '"packageName": "tampered-devtools-frontend"',
+        ),
+      );
+    }],
+    ["missing Rules runtime linkage", (candidate) => {
+      delete candidate.runtimeManifest.readOnlyStylesRuntime;
+      candidate.runtimeBytes = Buffer.from(
+        `${JSON.stringify(candidate.runtimeManifest, null, 2)}\n`,
+      );
+    }],
+    ["DOM overlay manifest", (candidate) => {
+      candidate.domManifestBytes = Buffer.from(`${candidate.domManifestBytes}\n`);
+    }],
+    ["Rules overlay manifest", (candidate) => {
+      candidate.stylesManifestBytes = Buffer.from(`${candidate.stylesManifestBytes}\n`);
+    }],
+    ["DOM upstream input", (candidate) => {
+      const [path] = Object.keys(candidate.domManifest.upstreamFiles);
+      candidate.packageFiles = new Map(candidate.packageFiles);
+      candidate.packageFiles.set(path, Buffer.from("tampered DOM input"));
+    }],
+    ["Rules overlay input", (candidate) => {
+      const [path] = Object.keys(candidate.stylesManifest.overlayFiles);
+      candidate.stylesOverlayFiles = new Map(candidate.stylesOverlayFiles);
+      candidate.stylesOverlayFiles.set(path, Buffer.from("tampered Rules input"));
+    }],
+    ["license", (candidate) => {
+      const [path] = Object.keys(candidate.stylesManifest.requiredLicenseFiles);
+      candidate.packageFiles = new Map(candidate.packageFiles);
+      candidate.packageFiles.set(path, Buffer.from("tampered license"));
+    }],
+  ];
+
+  for (const [label, mutate] of mutations) {
+    const candidate = {
+      ...baseline,
+      runtimeManifest: structuredClone(baseline.runtimeManifest),
+      domManifest: structuredClone(baseline.domManifest),
+      stylesManifest: structuredClone(baseline.stylesManifest),
+    };
+    mutate(candidate);
+    assert.throws(
+      () => renderChromiumNativeRuntimeNoticeSection(candidate),
+      /(?:sha-?256|hash|digest|metadata|manifest|input|license)/i,
+      label,
+    );
   }
 });
 
@@ -225,20 +604,10 @@ async function writeFixtureRepository(root, manifest, rootLicense) {
   for (const browser of ["chrome", "firefox"]) {
     await mkdir(resolve(root, `extensions/${browser}`), { recursive: true });
   }
-  await mkdir(resolve(root, "node_modules/example-package"), { recursive: true });
+  await writeExamplePackage(resolve(root, "node_modules/example-package"));
   await mkdir(resolve(root, "third_party/chromium-devtools-frontend"), {
     recursive: true,
   });
-  await writeFile(
-    resolve(root, "node_modules/example-package/package.json"),
-    JSON.stringify({ name: "example-package", version: "1.0.0", license: "MIT" }),
-    "utf8",
-  );
-  await writeFile(
-    resolve(root, "node_modules/example-package/LICENSE"),
-    "Example dependency license\n",
-    "utf8",
-  );
   await writeFile(
     resolve(root, "third_party/chromium-devtools-frontend/UPSTREAM.json"),
     JSON.stringify(manifest),
@@ -251,12 +620,104 @@ async function writeFixtureRepository(root, manifest, rootLicense) {
   );
 }
 
+async function writeExamplePackage(root) {
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    resolve(root, "package.json"),
+    JSON.stringify({ name: "example-package", version: "1.0.0", license: "MIT" }),
+    "utf8",
+  );
+  await writeFile(resolve(root, "LICENSE"), "Example dependency license\n", "utf8");
+  await writeFile(resolve(root, "index.js"), "export {};\n", "utf8");
+}
+
+async function writeNativeRuntimeFixture(root) {
+  const sourceRoot = upstreamRoot;
+  const runtimeBytes = await readFile(resolve(sourceRoot, "RUNTIME.json"));
+  const runtimeManifest = JSON.parse(runtimeBytes.toString("utf8"));
+  const version = runtimeManifest.package.version;
+  const domOverlayRoot = `third_party/chromium-devtools-frontend/patches/${version}`;
+  const stylesOverlayRoot = `third_party/chromium-devtools-frontend/styles-overlay/${version}`;
+  const domManifestBytes = await readFile(resolve(repositoryRoot, domOverlayRoot, "manifest.json"));
+  const stylesManifestBytes = await readFile(
+    resolve(repositoryRoot, stylesOverlayRoot, "manifest.json"),
+  );
+  const domManifest = JSON.parse(domManifestBytes.toString("utf8"));
+  const stylesManifest = JSON.parse(stylesManifestBytes.toString("utf8"));
+  const runtimeFixture = structuredClone(runtimeManifest);
+  const fixtureRuntimeBytes = runtimeBytes;
+  await copyBytes(runtimeBytes, resolve(root, sourceRootRelative("RUNTIME.json")));
+  await copyBytes(domManifestBytes, resolve(root, domOverlayRoot, "manifest.json"));
+  await copyBytes(stylesManifestBytes, resolve(root, stylesOverlayRoot, "manifest.json"));
+
+  for (const [overlayRoot, manifest] of [
+    [domOverlayRoot, domManifest],
+    [stylesOverlayRoot, stylesManifest],
+  ]) {
+    for (const path of Object.keys(manifest.overlayFiles)) {
+      await copyRepositoryFile(`${overlayRoot}/${path}`, root);
+    }
+  }
+  const packagePaths = new Set(["package.json"]);
+  for (const manifest of [domManifest, stylesManifest]) {
+    for (const key of ["upstreamFiles", "requiredImageFiles", "requiredLicenseFiles"]) {
+      for (const path of Object.keys(manifest[key] ?? {})) packagePaths.add(path);
+    }
+  }
+  for (const path of Object.keys(runtimeFixture.reviewedEntrypoints ?? {})) {
+    packagePaths.add(path);
+  }
+  for (const path of Object.keys(runtimeFixture.reviewedImages ?? {})) {
+    packagePaths.add(`front_end/Images/src/${path}`);
+  }
+  for (const path of packagePaths) {
+    const source = resolve(repositoryRoot, "node_modules/chrome-devtools-frontend", path);
+    const target = resolve(root, "node_modules/chrome-devtools-frontend", path);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(source, target);
+  }
+  return {
+    runtimeBytes: fixtureRuntimeBytes,
+    runtimeManifest: runtimeFixture,
+    domManifestBytes,
+    stylesManifestBytes,
+    domManifest,
+    stylesManifest,
+    packageManifest: JSON.parse(
+      await readFile(resolve(root, "node_modules/chrome-devtools-frontend/package.json"), "utf8"),
+    ),
+  };
+}
+
+async function copyRepositoryFile(path, targetRoot) {
+  const target = resolve(targetRoot, path);
+  await mkdir(dirname(target), { recursive: true });
+  await copyFile(resolve(repositoryRoot, path), target);
+}
+
+async function copyBytes(bytes, target) {
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, bytes);
+}
+
+function sourceRootRelative(path) {
+  return `third_party/chromium-devtools-frontend/${path}`;
+}
+
 function countOccurrences(text, needle) {
   return text.split(needle).length - 1;
 }
 
 function normalizeText(text) {
-  return text.replaceAll("\r\n", "\n").trim();
+  return text.toString("utf8").replaceAll("\r\n", "\n").trim();
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function compareAscii(left, right) {

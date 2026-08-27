@@ -108,7 +108,7 @@
     "facades/ui.ts": "936b7c66dd1a393c0c147bbca2bdab692ba4bf740e137076c83448d21e7d637d",
     "facades/visual-logging.ts": "5253547476731860058d7bc68e8503b826510a1083b680d7f74b279083218397",
     "facades/workspace.ts": "2c065afce750829aecff5a80bf3cef3f875e2df760dd496fb706d9b6b7b712ea",
-    "runtime/read-only-elements-runtime.ts": "ad466505312c60584e99ee51e9986278f728acc231120d10421ad3afbf6ad6f9"
+    "runtime/read-only-elements-runtime.ts": "6436090417de6dbbe15f70882e83303f0d3e0b0591eed9bd508574edb3837945"
   },
   "reviewedInputClosure": {
     "fileCount": 46,
@@ -116,7 +116,7 @@
   },
   "reviewedOverlayClosure": {
     "fileCount": 37,
-    "sha256": "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207"
+    "sha256": "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23"
   },
   "reviewedSharedInputInventory": [
     "chromium-shared-css:front_end/application_tokens.css",
@@ -129,7 +129,7 @@
   ],
   "reviewedSharedPayloadAttestation": {
     "fileCount": 7,
-    "sha256": "daf9e91a6ffbbad1b4c7dff033af074ceaa93da96fe3ac9c509940e4e934c1ec"
+    "sha256": "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5"
   },
   "requiredImageFiles": {
     "front_end/Images/src/arrow-collapse.svg": "560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e",

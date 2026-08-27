@@ -51,10 +51,10 @@
   },
   "readOnlyElementsRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    "manifestSha256": "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
+    "manifestSha256": "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
     "entryPoint": "entrypoints/read-only-elements.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 1088757,
+    "unminifiedBytes": 1079088,
     "maxUnminifiedBytes": 1310720,
     "browserTargets": ["chrome116", "firefox142"],
     "upstreamInputClosure": {
@@ -63,7 +63,7 @@
     },
     "overlayInputClosure": {
       "fileCount": 37,
-      "sha256": "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207"
+      "sha256": "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23"
     },
     "sharedInputInventory": [
       "chromium-shared-css:front_end/application_tokens.css",
@@ -76,7 +76,7 @@
     ],
     "sharedPayloadAttestation": {
       "fileCount": 7,
-      "sha256": "daf9e91a6ffbbad1b4c7dff033af074ceaa93da96fe3ac9c509940e4e934c1ec"
+      "sha256": "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5"
     },
     "requiredLicenseFiles": {
       "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
@@ -85,10 +85,10 @@
   },
   "readOnlyStylesRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
-    "manifestSha256": "e011d235e93065be7cbff3e7070655999f4b380885da4b1cd4a004529ba67813",
+    "manifestSha256": "86c18a9b7b0a6bd2292fe78e40392bac61e08407f5370e55d946c353213c59bf",
     "entryPoint": "entrypoints/read-only-styles.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 1992338,
+    "unminifiedBytes": 1983274,
     "maxUnminifiedBytes": 2097152,
     "browserTargets": ["chrome116", "firefox142"],
     "productionExports": ["chromiumReadOnlyStylesRuntime"],
@@ -99,7 +99,7 @@
     },
     "overlayInputClosure": {
       "fileCount": 18,
-      "sha256": "d5fa939d0e29a00ee2d23acd42904d264639b5d0b0c0e22170311a88ff2c5084"
+      "sha256": "16d72ee24720a7e0dad986970ffdf29b889d3186e90e3297064d8360db3b3a64"
     },
     "baseOverlayInputClosure": {
       "fileCount": 16,
@@ -121,7 +121,7 @@
     ],
     "sharedPayloadAttestation": {
       "fileCount": 9,
-      "sha256": "5a25743d6a63391a27d3b6b72f55235acd1fc69900b6996047a80b96308d1df1"
+      "sha256": "7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8"
     },
     "requiredImageFiles": {
       "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",

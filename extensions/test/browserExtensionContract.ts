@@ -72,7 +72,7 @@ export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
   "dist/inspector-panel.html":
     "611b9234ef75d4d09427b8643d1f010b2260ca46899117959040f78e688bbfbf",
   "dist/devtools-elements.css":
-    "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+    "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
 });
 
 export const SHARED_CHROMIUM_UI_SELECTORS = Object.freeze([
@@ -1306,8 +1306,14 @@ export function describeBrowserPackageContract(
         "dist/inspectorPanel.js",
         "dist/chromiumElementsRuntime.js",
       ]) {
-        expect(packagedText(packaged, path), path).not.toMatch(/\beval\s*\(/);
+        expect(directGlobalEvalInvocations(packagedText(packaged, path)), path).toEqual([]);
       }
+      expect(directGlobalEvalInvocations("eval('code'); (eval)('more');")).toEqual([
+        "eval",
+      ]);
+      expect(directGlobalEvalInvocations(
+        "class Transfer { eval(value) { return value; } } new Transfer().eval('color');",
+      )).toEqual([]);
     });
 
     it("emits exact structured protocol metadata without live marker logic", () => {
@@ -1566,6 +1572,31 @@ const PACKAGED_HTTP_URL_ALLOWLIST = new Set([
   "http://localhost/",
   "https://pin-op.invalid/",
 ]);
+
+function directGlobalEvalInvocations(source: string): readonly string[] {
+  const sourceFile = ts.createSourceFile(
+    "packaged-direct-eval-scan.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      let expression = node.expression;
+      while (ts.isParenthesizedExpression(expression)) {
+        expression = expression.expression;
+      }
+      if (ts.isIdentifier(expression) && expression.text === "eval") {
+        found.add(expression.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found];
+}
 
 function userFacingBrowserBranding(source: string): readonly string[] {
   const sourceFile = ts.createSourceFile(

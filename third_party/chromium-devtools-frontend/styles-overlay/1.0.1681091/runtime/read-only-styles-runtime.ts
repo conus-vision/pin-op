@@ -99,7 +99,9 @@ export function createChromiumReadOnlyStylesRuntime() {
 class ChromiumReadOnlyStylesPane {
   readonly element: HTMLElement;
   readonly #mount: HTMLElement;
-  readonly #previousMountStyle: Readonly<Record<'display'|'height'|'minHeight'|'overflow', string>>;
+  readonly #previousMountStyle: Readonly<
+    Record<'display'|'flexDirection'|'height'|'minHeight'|'overflow', string>
+  >;
   readonly #pane: PinOpStylesSidebarPane;
   readonly #computedStyleModel: MutableComputedStyleModel;
   readonly #options: PaneOptions;
@@ -111,17 +113,19 @@ class ChromiumReadOnlyStylesPane {
 
   constructor(options: PaneOptions) {
     if (options.document !== document) {
-      throw new Error('Chromium Styles runtime requires its owning browser document');
+      throw new Error('Native Styles runtime requires its owning browser document');
     }
     this.#options = options;
     this.#mount = options.mount;
     this.#previousMountStyle = Object.freeze({
       display: options.mount.style.display,
+      flexDirection: options.mount.style.flexDirection,
       height: options.mount.style.height,
       minHeight: options.mount.style.minHeight,
       overflow: options.mount.style.overflow,
     });
     options.mount.style.display = 'flex';
+    options.mount.style.flexDirection = 'column';
     options.mount.style.height = '100%';
     options.mount.style.minHeight = '0';
     options.mount.style.overflow = 'hidden';
@@ -181,6 +185,7 @@ class ChromiumReadOnlyStylesPane {
     this.#pane.detach();
     this.element.remove();
     this.#mount.style.display = this.#previousMountStyle.display;
+    this.#mount.style.flexDirection = this.#previousMountStyle.flexDirection;
     this.#mount.style.height = this.#previousMountStyle.height;
     this.#mount.style.minHeight = this.#previousMountStyle.minHeight;
     this.#mount.style.overflow = this.#previousMountStyle.overflow;
@@ -235,6 +240,12 @@ class ChromiumReadOnlyStylesPane {
         const button = this.#options.document.createElement('button');
         button.type = 'button';
         button.className = 'devtools-link pin-op-rule-origin';
+        button.style.display = 'inline-block';
+        button.style.inlineSize = '100px';
+        button.style.maxInlineSize = '100%';
+        button.style.overflow = 'hidden';
+        button.style.textOverflow = 'ellipsis';
+        button.style.whiteSpace = 'nowrap';
         const icon = this.#options.document.createElement('devtools-icon') as HTMLElement&{name: string};
         icon.name = 'open-externally';
         icon.className = 'pin-op-rule-origin-icon';

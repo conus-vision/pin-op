@@ -96,7 +96,7 @@ function createHost(
       !isDirectChild(paneElement, mount)
     ) {
       throw new Error(
-        "Chromium read-only Styles pane must be a new direct child of its mount",
+        "Native read-only Styles pane must be a new direct child of its mount",
       );
     }
     if (pseudoStateDataSource) {
@@ -123,7 +123,7 @@ function createHost(
     attempt(failures, () => pane?.dispose());
     attempt(failures, () => restoreChildren(mount, originalNodes));
     originBoundary.dispose();
-    throwFailures(failures, "Chromium Styles renderer initialization failed");
+    throwFailures(failures, "Native Styles renderer initialization failed");
   }
 }
 
@@ -212,7 +212,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
           return;
         }
       } else if (presentation.kind === "clear") {
-        this.clearPane("Chromium Styles pane could not be cleared");
+        this.clearPane("Native Styles pane could not be cleared");
       } else {
         this.recoverFromPresentationFailure(presentation, presentation.error);
       }
@@ -329,7 +329,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
       attempt(failures, () => removeNode(node));
     }
     if (failures.length > 0) {
-      throwFailures(failures, "Chromium Styles renderer teardown failed");
+      throwFailures(failures, "Native Styles renderer teardown failed");
     }
   }
 
@@ -358,7 +358,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
     if (!this.disposed) attempt(failures, () => this.restoreStableChildren());
     this.originBoundary.reportFailures(
       failures,
-      "Chromium Styles presentation failed",
+      "Native Styles presentation failed",
     );
   }
 
@@ -619,7 +619,7 @@ function assertPane(
     typeof pane.clear !== "function" ||
     typeof pane.dispose !== "function"
   ) {
-    throw new TypeError("Chromium read-only Styles runtime returned an invalid pane");
+    throw new TypeError("Native read-only Styles runtime returned an invalid pane");
   }
 }
 
@@ -678,7 +678,7 @@ function adoptCompletion(completion: Promise<void>): Promise<void> {
     try {
       const then = completion.then;
       if (typeof then !== "function") {
-        throw new TypeError("Chromium Styles completion is not thenable");
+        throw new TypeError("Native Styles completion is not thenable");
       }
       Reflect.apply(then, completion, [() => resolve(), reject]);
     } catch (error) {

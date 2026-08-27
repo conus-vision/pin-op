@@ -152,6 +152,20 @@ test("preserves native show-all classes for large read-only sections", async () 
   assert.match(facadeSource, /addEventListener\(['"]click['"],\s*handler\)/);
 });
 
+test("stacks Rules status with the native pane and restores mount direction", async () => {
+  const runtimeSource = await readFile(new URL(
+    "../../third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/runtime/read-only-styles-runtime.ts",
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(runtimeSource, /flexDirection: options\.mount\.style\.flexDirection/);
+  assert.match(runtimeSource, /options\.mount\.style\.flexDirection = ['"]column['"]/);
+  assert.match(
+    runtimeSource,
+    /this\.#mount\.style\.flexDirection = this\.#previousMountStyle\.flexDirection/,
+  );
+});
+
 test("renders every reviewed nested CSS context without model authority", async () => {
   const [componentsSource, protocolSource, sdkSource, runtimeSource] = await Promise.all([
     readFile(new URL(
@@ -230,6 +244,9 @@ test("bootstraps pinned tokens and visible read-only icons", async () => {
   }
   assert.match(uiSource, /pin-op-filter-icon/);
   assert.match(runtimeSource, /pin-op-rule-origin-icon/);
+  assert.match(runtimeSource, /button\.style\.inlineSize = ['"]100px['"]/);
+  assert.match(runtimeSource, /button\.style\.maxInlineSize = ['"]100%['"]/);
+  assert.match(runtimeSource, /button\.style\.textOverflow = ['"]ellipsis['"]/);
 });
 
 test("keeps empty transitions focus-safe and renders inherited labels", async () => {

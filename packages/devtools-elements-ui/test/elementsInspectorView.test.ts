@@ -455,6 +455,7 @@ describe("ElementsInspectorView", () => {
     const sidebar = required(root.querySelector('[data-pane="sidebar"]'));
     const rulesPanel = required(root.querySelector('[data-pane="rules"]'));
     const tabs = root.querySelectorAll('[role="tab"]');
+    const tabList = required(root.querySelector('[role="tablist"]'));
     const extensionMount = required(root.querySelector('[data-part="sidebar-extension"]'));
 
     expect(root.children[0]).toBe(domPane);
@@ -463,9 +464,12 @@ describe("ElementsInspectorView", () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Rules", "Source"]);
     expect(tabs[0]?.tagName).toBe("BUTTON");
     expect(tabs[0]?.getAttribute("type")).toBe("button");
+    expect(tabList.getAttribute("aria-orientation")).toBe("horizontal");
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[0]?.getAttribute("tabindex")).toBe("0");
     expect(tabs[0]?.getAttribute("aria-controls")).toBe(rulesPanel.id);
     expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
+    expect(tabs[1]?.getAttribute("tabindex")).toBe("-1");
     expect(tabs[1]?.getAttribute("aria-controls")).toBe(extensionMount.id);
     expect(rulesPanel.getAttribute("role")).toBe("tabpanel");
     expect(extensionMount.getAttribute("role")).toBe("tabpanel");
@@ -485,6 +489,45 @@ describe("ElementsInspectorView", () => {
     expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
     expect(rulesPanel.hidden).toBe(false);
     expect(extensionMount.hidden).toBe(true);
+  });
+
+  it("implements a horizontal roving tablist with native keyboard focus", () => {
+    const harness = createHarness();
+    const root = required(harness.mount.querySelector(".pin-op-elements-inspector"));
+    const rules = required(root.querySelectorAll('[role="tab"]')[0]) as unknown as FakeElement;
+    const source = required(root.querySelectorAll('[role="tab"]')[1]) as unknown as FakeElement;
+
+    rules.focus();
+    const right = rules.dispatch("keydown", { key: "ArrowRight" });
+    expect(right.defaultPrevented).toBe(true);
+    expect(harness.document.activeElement()).toBe(source);
+    expect(rules.getAttribute("aria-selected")).toBe("false");
+    expect(rules.getAttribute("tabindex")).toBe("-1");
+    expect(source.getAttribute("aria-selected")).toBe("true");
+    expect(source.getAttribute("tabindex")).toBe("0");
+
+    const wrappedRight = source.dispatch("keydown", { key: "ArrowRight" });
+    expect(wrappedRight.defaultPrevented).toBe(true);
+    expect(harness.document.activeElement()).toBe(rules);
+
+    const wrappedLeft = rules.dispatch("keydown", { key: "ArrowLeft" });
+    expect(wrappedLeft.defaultPrevented).toBe(true);
+    expect(harness.document.activeElement()).toBe(source);
+
+    const home = source.dispatch("keydown", { key: "Home" });
+    expect(home.defaultPrevented).toBe(true);
+    expect(harness.document.activeElement()).toBe(rules);
+
+    const end = rules.dispatch("keydown", { key: "End" });
+    expect(end.defaultPrevented).toBe(true);
+    expect(harness.document.activeElement()).toBe(source);
+
+    const ignored = source.dispatch("keydown", { key: "ArrowDown" });
+    expect(ignored.defaultPrevented).toBe(false);
+    expect(harness.document.activeElement()).toBe(source);
+
+    harness.view.dispose();
+    expect(harness.document.totalListeners()).toBe(0);
   });
 
   it("keeps every ARIA ID reference unique to its inspector instance", () => {
@@ -770,6 +813,49 @@ describe("ElementsInspectorView", () => {
     );
     expect(css).toMatch(
       /\.pin-op-elements-inspector button\.rule-origin:focus-visible\s*\{[^}]*outline:\s*2px solid Highlight;/s,
+    );
+  });
+
+  it("styles only the selected sidebar tab with the DevTools active indicator", () => {
+    const css = readFileSync(
+      path.join(packageRoot, "assets", "devtools-elements.css"),
+      "utf8",
+    );
+
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__tab\s*\{[^}]*border-block-end:\s*2px solid transparent;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__tab\[aria-selected="true"\]\s*\{[^}]*border-block-end-color:\s*Highlight;[^}]*color:\s*Highlight;/s,
+    );
+  });
+
+  it("keeps the native Rules pane full-width beside the overlaid :hov control", () => {
+    const css = readFileSync(
+      path.join(packageRoot, "assets", "devtools-elements.css"),
+      "utf8",
+    );
+
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__rules\s*\{[^}]*position:\s*relative;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pseudo-state-controls\s*\{[^}]*position:\s*absolute;[^}]*inset-inline-end:\s*4px;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.styles-pane\s*\{[^}]*inline-size:\s*100%;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \[data-part="chromium-read-only-styles-pane"\]::\-webkit-scrollbar\s*\{[^}]*width:\s*2px;[^}]*height:\s*2px;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \[data-part="chromium-read-only-styles-pane"\]\s*\{[^}]*scrollbar-width:\s*thin;/s,
+    );
+    expect(css).not.toMatch(
+      /\.pin-op-elements-inspector \.pseudo-state-controls\s*\{[^}]*display:\s*contents;/s,
+    );
+    expect(css).toMatch(
+      /\.pseudo-state-description\[role="status"\],[\s\S]*?\.pseudo-state-description\[role="alert"\]\s*\{[^}]*clip-path:\s*none;[^}]*white-space:\s*normal;/s,
     );
   });
 

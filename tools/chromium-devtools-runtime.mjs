@@ -3,6 +3,7 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { build } from "esbuild";
+import postcss from "postcss";
 import ts from "typescript";
 
 export const CHROMIUM_DEVTOOLS_PIN = Object.freeze({
@@ -61,7 +62,7 @@ export const CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME = Object.freeze({
   overlayRoot: `third_party/chromium-devtools-frontend/patches/${CHROMIUM_DEVTOOLS_PIN.version}`,
   maxUnminifiedBytes: 1280 * 1024,
   browserTargets: Object.freeze(["chrome116", "firefox142"]),
-  manifestSha256: "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
+  manifestSha256: "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
 });
 
 function sha256(bytes) {
@@ -663,7 +664,13 @@ function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCss
           if (!resolvedCssInputs.has(physicalCssPath)) {
             throw new Error(`Unregistered Chromium shared CSS load: ${args.path}`);
           }
-          const css = await readFile(physicalCssPath, "utf8");
+          const relativeCssPath = normalizeRelativePath(
+            path.relative(packageRoot, physicalCssPath),
+          );
+          const css = sanitizeChromiumSharedCss(
+            await readFile(physicalCssPath, "utf8"),
+            relativeCssPath,
+          );
           const contents = `export default ${JSON.stringify(css)};\n`;
           loadedCssPayloads.set(physicalCssPath, contents);
           return {
@@ -675,6 +682,75 @@ function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCss
       );
     },
   };
+}
+
+const UNUSED_APPLICATION_TOKEN_COUNTS = Object.freeze({
+  "--app-color-ai-assistance-input-divider": 2,
+  "--app-color-google-ai-blue": 1,
+  "--app-color-google-ai-green": 1,
+  "--app-gradient-google-ai": 1,
+});
+
+/**
+ * Keeps the actual pinned DevTools token values used by Elements while
+ * removing non-rendering comments, unavailable product fonts, and the exact
+ * AI-only application tokens that have no consumer in Pin-op's runtime graph.
+ */
+export function sanitizeChromiumSharedCss(
+  css,
+  relativeCssPath,
+  { enforceReviewedTransformCounts = true } = {},
+) {
+  if (typeof css !== "string" ||
+      typeof relativeCssPath !== "string" ||
+      !relativeCssPath.startsWith("front_end/") ||
+      !relativeCssPath.endsWith(".css") ||
+      typeof enforceReviewedTransformCounts !== "boolean") {
+    throw new TypeError("Chromium shared CSS sanitizer received invalid input");
+  }
+  const root = postcss.parse(css, {from: relativeCssPath});
+  root.walkComments(comment => comment.remove());
+
+  if (relativeCssPath === "front_end/application_tokens.css") {
+    const removed = new Map(
+      Object.keys(UNUSED_APPLICATION_TOKEN_COUNTS).map(name => [name, 0]),
+    );
+    root.walkDecls(declaration => {
+      if (!removed.has(declaration.prop)) return;
+      removed.set(declaration.prop, removed.get(declaration.prop) + 1);
+      declaration.remove();
+    });
+    if (enforceReviewedTransformCounts) {
+      for (const [name, expected] of Object.entries(UNUSED_APPLICATION_TOKEN_COUNTS)) {
+        if (removed.get(name) !== expected) {
+          throw new Error(
+            `Chromium shared CSS reviewed AI token count changed: ${name}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (relativeCssPath === "front_end/design_system_tokens.css") {
+    let replacedProductFonts = 0;
+    root.walkDecls(declaration => {
+      const next = declaration.value.replace(
+        /'Google Sans Text',\s*'Google Sans',\s*/g,
+        () => {
+          replacedProductFonts += 1;
+          return "";
+        },
+      );
+      declaration.value = next;
+    });
+    if (enforceReviewedTransformCounts && replacedProductFonts !== 1) {
+      throw new Error(
+        "Chromium shared CSS reviewed product-font count changed",
+      );
+    }
+  }
+
+  return root.toString();
 }
 
 async function createChromiumImagesPayload(packageRoot) {

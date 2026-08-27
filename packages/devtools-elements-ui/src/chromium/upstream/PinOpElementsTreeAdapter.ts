@@ -321,7 +321,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
-          "Pin-op Chromium Elements mount and teardown failed",
+          "Pin-op native Elements mount and teardown failed",
         );
       }
       throw error;
@@ -412,7 +412,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       this.sourceMutationDepthByGeneration.clear();
       const DocumentConstructor = DOMDocument ?? this.model.documentConstructor();
       if (!DocumentConstructor) {
-        throw new Error("Chromium DOMDocument constructor is not registered");
+        throw new Error("Native DOMDocument constructor is not registered");
       }
       this.model.setDocumentConstructor(DocumentConstructor);
       const previousDocumentRevision = this.model.documentRevision();
@@ -514,11 +514,11 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     requestingNode: ChromiumDOMNode,
   ): Promise<ChromiumDOMAgentResponse> {
     if (this.disposed) {
-      return failedAgentResponse("Pin-op Chromium DOM model is disposed");
+      return failedAgentResponse("Pin-op native DOM model is disposed");
     }
     const nodeRef = this.model.nodeRefForId(nodeId);
     if (!nodeRef) {
-      return failedAgentResponse(`Unknown Chromium DOM node id: ${nodeId}`);
+      return failedAgentResponse(`Unknown native DOM node id: ${nodeId}`);
     }
     let response = successfulAgentResponse;
     let reportedError: unknown;
@@ -527,9 +527,9 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     try {
       await this.treeDataSource.expand(nodeRef);
       if (this.disposed) {
-        response = failedAgentResponse("Pin-op Chromium DOM model is disposed");
+        response = failedAgentResponse("Pin-op native DOM model is disposed");
       } else if (this.model.nodeForRef(nodeRef) !== requestingNode) {
-        response = failedAgentResponse("Pin-op Chromium DOM node authority changed");
+        response = failedAgentResponse("Pin-op native DOM node authority changed");
       } else {
         const snapshot = this.treeDataSource.snapshot();
         if (!this.model.hydrateDOMChildren(
@@ -537,7 +537,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
           nodeRef,
           snapshot,
         )) {
-          response = failedAgentResponse("Pin-op Chromium DOM node authority changed");
+          response = failedAgentResponse("Pin-op native DOM node authority changed");
         } else {
           this.updateLoadMoreBridge(snapshot);
         }
@@ -546,7 +546,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       reportedError = error;
       if (!this.disposed) this.report(error);
       response = failedAgentResponse(
-        this.disposed ? "Pin-op Chromium DOM model is disposed" : describeError(error),
+        this.disposed ? "Pin-op native DOM model is disposed" : describeError(error),
       );
     } finally {
       if (this.finishSourceMutation(documentGeneration)) {
@@ -556,7 +556,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
           if (!this.disposed && error !== reportedError) this.report(error);
           if (!response.getError()) {
             response = failedAgentResponse(
-              this.disposed ? "Pin-op Chromium DOM model is disposed" : describeError(error),
+              this.disposed ? "Pin-op native DOM model is disposed" : describeError(error),
             );
           }
         }
@@ -874,7 +874,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
       },
     ): Promise<ChromiumDOMAgentResponse> => {
       if (this.disposed) {
-        return failedAgentResponse("Pin-op Chromium DOM model is disposed");
+        return failedAgentResponse("Pin-op native DOM model is disposed");
       }
       if (request.depth !== undefined || request.pierce !== undefined) {
         return failedAgentResponse(
@@ -883,7 +883,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
       }
       const requestingNode = this.nodesById.get(request.nodeId);
       if (!requestingNode) {
-        return failedAgentResponse(`Unknown Chromium DOM node id: ${request.nodeId}`);
+        return failedAgentResponse(`Unknown native DOM node id: ${request.nodeId}`);
       }
       return this.requestChildren(request.nodeId, requestingNode);
     };
@@ -898,7 +898,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
         if (typeof property === "string" && property.startsWith("invoke_")) {
           return async (): Promise<ChromiumDOMAgentResponse> =>
             failedAgentResponse(
-              `Pin-op Chromium DOM agent is read-only; ${property} is forbidden`,
+              `Pin-op native DOM agent is read-only; ${property} is forbidden`,
             );
         }
         return Reflect.get(target, property, receiver);
@@ -1133,7 +1133,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
     documentURL: string,
   ): ChromiumDOMNode {
     if (!this.DOMDocument) {
-      throw new Error("Chromium DOMDocument constructor is not registered");
+      throw new Error("Native DOMDocument constructor is not registered");
     }
     const graph = new SnapshotGraph(snapshot);
     const nextDocumentIdentity = graph.documentIdentity();
@@ -1401,7 +1401,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
     const existing = this.nodeIdsByRef.get(nodeRef);
     if (existing !== undefined) return existing;
     if (!Number.isSafeInteger(this.nextNodeId)) {
-      throw new Error("Pin-op Chromium DOM node id space is exhausted");
+      throw new Error("Pin-op native DOM node id space is exhausted");
     }
     const nodeId = this.nextNodeId;
     this.nextNodeId += 1;
@@ -1643,7 +1643,7 @@ function describeError(error: unknown): string {
 function throwCleanupFailures(failures: readonly unknown[]): void {
   if (failures.length === 0) return;
   if (failures.length === 1) throw failures[0];
-  throw new AggregateError(failures, "Pin-op Chromium Elements teardown failed");
+  throw new AggregateError(failures, "Pin-op native Elements teardown failed");
 }
 
 function onceCleanup(

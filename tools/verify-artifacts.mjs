@@ -4,14 +4,18 @@ import { readFileSync, statSync } from "node:fs";
 import { builtinModules, createRequire } from "node:module";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import { parse as parseYaml } from "yaml";
 import { createHeadArchiveBuffer } from "./archive-firefox-source.mjs";
 import {
   CHROMIUM_EMBEDDED_NOTICE_DIGESTS,
   CHROMIUM_UPSTREAM_PATHS,
+  loadChromiumNativeRuntimeNoticeInputs,
   PINNED_CHROMIUM_REVISION,
   renderChromiumDerivedNoticeSection,
+  renderChromiumNativeRuntimeNoticeSection,
 } from "./browser-bundle-notices.mjs";
 import {
   assertBrowserPackageRuntimeContract,
@@ -34,6 +38,13 @@ import {
 } from "./release-policy.mjs";
 
 const VERSION = "0.3.0";
+const CHROMIUM_NATIVE_PACKAGE_PIN = Object.freeze({
+  packageName: "chrome-devtools-frontend",
+  version: "1.0.1681091",
+  gitHead: "23cccaa78f7458a5aad99c1af98dc1856d2494a3",
+  integrity:
+    "sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==",
+});
 const PRODUCT_DESCRIPTION =
   "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.";
 const EXPECTED_ARTIFACTS = new Map([
@@ -105,6 +116,11 @@ const chromiumDerivedNoticeSection = renderChromiumDerivedNoticeSection(
   chromiumUpstreamManifest,
   chromiumRootLicense,
 );
+const localNativeNoticeInputs = await loadChromiumNativeRuntimeNoticeInputs(
+  repositoryRoot,
+);
+const chromiumNativeRuntimeNoticeSection =
+  renderChromiumNativeRuntimeNoticeSection(localNativeNoticeInputs);
 const vscodeReadme = await readFile(
   resolve(repositoryRoot, "extensions/vscode/README.md"),
 );
@@ -206,11 +222,16 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "third_party/chromium-devtools-frontend/LICENSE",
   "third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md",
   "third_party/chromium-devtools-frontend/README.pin-op.md",
+  "third_party/chromium-devtools-frontend/RUNTIME.json",
   "third_party/chromium-devtools-frontend/UPSTREAM.json",
   "packages/devtools-elements-ui/.gitattributes",
   "packages/devtools-elements-ui/assets/devtools-elements.css",
   "packages/devtools-elements-ui/package.json",
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpChromiumInspectorAdapter.ts",
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpElementsTreeAdapter.ts",
+  "packages/devtools-elements-ui/src/chromium/upstream/PinOpStylesSidebarAdapter.ts",
   "packages/devtools-elements-ui/src/contracts.ts",
+  "packages/devtools-elements-ui/src/elementsInspectorShell.ts",
   "packages/devtools-elements-ui/src/elementsInspectorView.ts",
   "packages/devtools-elements-ui/src/index.ts",
   "packages/devtools-elements-ui/src/pseudoStateController.ts",
@@ -239,10 +260,23 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "packages/browser-extension-core/assets/icons/pin-op-128.png",
   "tools/archive-firefox-source.mjs",
   "tools/browser-bundle-notices.mjs",
+  "tools/browser-chromium-inspector-entry.ts",
   "tools/browser-elements-runtime.mjs",
   "tools/browser-package-contract.mjs",
   "tools/browser-panel-assets.mjs",
   "tools/chromium-vendor-paths.mjs",
+  "tools/chromium-devtools-runtime.mjs",
+  "tools/chromium-devtools-styles-runtime.mjs",
+  "tools/smoke-chromium-read-only-elements.mjs",
+  "tools/smoke-chromium-read-only-inspector.mjs",
+  "tools/smoke-chromium-read-only-styles.mjs",
+  "tools/test/browser-bundle-notices.test.mjs",
+  "tools/test/browser-elements-runtime.test.mjs",
+  "tools/test/browser-panel-assets.test.mjs",
+  "tools/test/chromium-devtools-runtime.test.mjs",
+  "tools/test/chromium-styles-runtime.test.mjs",
+  "tools/test/native-inspector-ux-gates.test.mjs",
+  "tools/test/verify-browser-artifacts.test.mjs",
   "tools/update-chromium-derivations.mjs",
   "tools/vendor-chromium-elements.mjs",
   "tools/verify-artifacts.mjs",
@@ -289,7 +323,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
       changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "e0a03b7003f3acc1a0a76dc225e6920fdfc15e86ff04202e55cfad9b98c872ae",
+      localSha256: "43c30720702c295746c948b7eddf384e86eb36e6ef4a2cb82c1f39969fe3083e",
     }],
   },
   {
@@ -334,7 +368,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+      localSha256: "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
   {
@@ -343,7 +377,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+      localSha256: "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
   {
@@ -352,7 +386,7 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "7df2510470d1efae4ba405d6afe3b992cf972bcae6e462cb67a3f7b5d6ed7130",
+      localSha256: "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
     }],
   },
 ]);
@@ -884,7 +918,10 @@ function assertChromiumDerivedNotices(archive, filename) {
     throw new Error(`${filename} is missing THIRD_PARTY_NOTICES`);
   }
   const notices = bytes.toString("utf8").replaceAll("\r\n", "\n");
-  if (countOccurrences(notices, chromiumDerivedNoticeSection) !== 1) {
+  if (
+    countOccurrences(notices, chromiumDerivedNoticeSection) !== 1 ||
+    countOccurrences(notices, chromiumNativeRuntimeNoticeSection) !== 1
+  ) {
     throw new Error(`${filename} has incomplete Chromium-derived notices`);
   }
   const distinctEmbeddedNotices = new Map();
@@ -1346,12 +1383,28 @@ function hasExactStringEntries(actual, expected) {
   );
 }
 
-export function requiredFirefoxSourceReproductionPaths(manifest) {
+export function requiredFirefoxSourceReproductionPaths(
+  manifest,
+  nativeRuntime = localNativeNoticeInputs.runtimeManifest,
+  domManifest = localNativeNoticeInputs.domManifest,
+  stylesManifest = localNativeNoticeInputs.stylesManifest,
+) {
   if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.files)) {
     throw new Error("Invalid Chromium upstream source inventory");
   }
   assertPinnedChromiumSourceInventory(manifest, "Chromium upstream source inventory");
   const paths = new Set(FIREFOX_INSPECTOR_SOURCE_INPUTS);
+  for (const [overlayRoot, overlayManifest] of nativeOverlaySources(
+    nativeRuntime,
+    domManifest,
+    stylesManifest,
+    "Chromium native source inventory",
+  )) {
+    paths.add(`${overlayRoot}/manifest.json`);
+    for (const path of Object.keys(overlayManifest.overlayFiles)) {
+      paths.add(`${overlayRoot}/${path}`);
+    }
+  }
   for (const file of manifest.files) {
     paths.add(
       `third_party/chromium-devtools-frontend/upstream/${file.upstreamPath}`,
@@ -1383,7 +1436,13 @@ export function assertFirefoxSourceReproductionInputs(files, label) {
     throw new Error(`${label} has invalid Chromium upstream source inventory`);
   }
   assertPinnedChromiumSourceInventory(manifest, label);
-  for (const path of requiredFirefoxSourceReproductionPaths(manifest)) {
+  const nativeSources = assertFirefoxNativeRuntimeSources(files, label);
+  for (const path of requiredFirefoxSourceReproductionPaths(
+    manifest,
+    nativeSources.runtime,
+    nativeSources.domManifest,
+    nativeSources.stylesManifest,
+  )) {
     requireSourceInput(files, label, path);
   }
 
@@ -1445,6 +1504,250 @@ export function assertFirefoxSourceReproductionInputs(files, label) {
       `${label} has invalid Chromium notice metadata: ${error.message}`,
     );
   }
+}
+
+function assertFirefoxNativeRuntimeSources(files, label) {
+  const runtimePath = "third_party/chromium-devtools-frontend/RUNTIME.json";
+  requireSourceInput(files, label, runtimePath);
+  const runtime = parseSourceJson(files, runtimePath, label);
+  const version = runtime?.package?.version;
+  if (
+    runtime?.schemaVersion !== 1 ||
+    runtime?.package?.packageName !== CHROMIUM_NATIVE_PACKAGE_PIN.packageName ||
+    typeof version !== "string" ||
+    version !== CHROMIUM_NATIVE_PACKAGE_PIN.version ||
+    runtime.package.gitHead !== CHROMIUM_NATIVE_PACKAGE_PIN.gitHead ||
+    runtime.package.integrity !== CHROMIUM_NATIVE_PACKAGE_PIN.integrity ||
+    runtime?.repository !==
+      "https://github.com/ChromeDevTools/devtools-frontend.git" ||
+    runtime?.license?.spdx !== "BSD-3-Clause" ||
+    runtime.license.path !== "LICENSE" ||
+    runtime.license.sha256 !== chromiumUpstreamManifest.licenseSha256
+  ) {
+    throw new Error(`${label} has invalid Chromium native RUNTIME.json metadata`);
+  }
+  assertFirefoxNativeDependencyPin(files, label, runtime);
+  const domRoot = `third_party/chromium-devtools-frontend/patches/${version}`;
+  const stylesRoot =
+    `third_party/chromium-devtools-frontend/styles-overlay/${version}`;
+  const domManifestPath = `${domRoot}/manifest.json`;
+  const stylesManifestPath = `${stylesRoot}/manifest.json`;
+  requireSourceInput(files, label, domManifestPath);
+  requireSourceInput(files, label, stylesManifestPath);
+  const domManifest = parseSourceJson(files, domManifestPath, label);
+  const stylesManifest = parseSourceJson(files, stylesManifestPath, label);
+  assertNativeOverlayPackageMetadata(runtime, domManifest, stylesManifest, label);
+  assertNativeRuntimeDescriptorLinkage(
+    runtime.readOnlyElementsRuntime,
+    {
+      overlayRoot: domRoot,
+      manifestSha256: sha256Bytes(files.get(domManifestPath)),
+      entryPoint: domManifest.entryPoint,
+      upstreamInputClosure: domManifest.reviewedInputClosure,
+      overlayInputClosure: domManifest.reviewedOverlayClosure,
+      requiredLicenseFiles: domManifest.requiredLicenseFiles,
+    },
+    label,
+    "DOM",
+  );
+  assertNativeRuntimeDescriptorLinkage(
+    runtime.readOnlyStylesRuntime,
+    {
+      overlayRoot: stylesRoot,
+      manifestSha256: sha256Bytes(files.get(stylesManifestPath)),
+      entryPoint: stylesManifest.entryPoint,
+      packageInputClosure: stylesManifest.reviewedPackageClosure,
+      overlayInputClosure: stylesManifest.reviewedStylesOverlayClosure,
+      requiredLicenseFiles: stylesManifest.requiredLicenseFiles,
+    },
+    label,
+    "Rules",
+  );
+  for (const [overlayRoot, manifest] of nativeOverlaySources(
+    runtime,
+    domManifest,
+    stylesManifest,
+    label,
+  )) {
+    const declaredPaths = Object.keys(manifest.overlayFiles).sort(compareAscii);
+    for (const path of declaredPaths) {
+      const archivePath = `${overlayRoot}/${path}`;
+      requireSourceInput(files, label, archivePath);
+      if (sha256Bytes(files.get(archivePath)) !== manifest.overlayFiles[path]) {
+        throw new Error(`${label} native runtime input ${archivePath} has invalid sha256 bytes`);
+      }
+    }
+    const actualPaths = [...files]
+      .filter(([path, bytes]) =>
+        Buffer.isBuffer(bytes) &&
+        path.startsWith(`${overlayRoot}/`) &&
+        path !== `${overlayRoot}/manifest.json`
+      )
+      .map(([path]) => path.slice(overlayRoot.length + 1))
+      .sort(compareAscii);
+    if (!sameStringArray(actualPaths, declaredPaths)) {
+      throw new Error(`${label} has unexpected Chromium native overlay path inventory`);
+    }
+  }
+  return { runtime, domManifest, stylesManifest };
+}
+
+function assertFirefoxNativeDependencyPin(files, label, runtime) {
+  const packagePath = "package.json";
+  const lockfilePath = "pnpm-lock.yaml";
+  requireSourceInput(files, label, packagePath);
+  requireSourceInput(files, label, lockfilePath);
+  const rootManifest = parseSourceJson(files, packagePath, label);
+  if (
+    rootManifest?.devDependencies?.[CHROMIUM_NATIVE_PACKAGE_PIN.packageName] !==
+      CHROMIUM_NATIVE_PACKAGE_PIN.version
+  ) {
+    throw new Error(`${label} has invalid native Chromium root dependency package pin`);
+  }
+
+  let lockfile;
+  try {
+    lockfile = parseYaml(files.get(lockfilePath).toString("utf8"));
+  } catch (error) {
+    throw new Error(`${label} has invalid ${lockfilePath}: ${error.message}`);
+  }
+  const packageKey =
+    `${CHROMIUM_NATIVE_PACKAGE_PIN.packageName}@${CHROMIUM_NATIVE_PACKAGE_PIN.version}`;
+  const importer = lockfile?.importers?.["."]?.devDependencies?.[
+    CHROMIUM_NATIVE_PACKAGE_PIN.packageName
+  ];
+  const nativePackageKeys = Object.keys(lockfile?.packages ?? {})
+    .filter((key) => key.startsWith(`${CHROMIUM_NATIVE_PACKAGE_PIN.packageName}@`))
+    .sort(compareAscii);
+  const nativeSnapshotKeys = Object.keys(lockfile?.snapshots ?? {})
+    .filter((key) => key.startsWith(`${CHROMIUM_NATIVE_PACKAGE_PIN.packageName}@`))
+    .sort(compareAscii);
+  if (
+    lockfile?.lockfileVersion !== "9.0" ||
+    importer?.specifier !== CHROMIUM_NATIVE_PACKAGE_PIN.version ||
+    importer?.version !== CHROMIUM_NATIVE_PACKAGE_PIN.version ||
+    !sameStringArray(nativePackageKeys, [packageKey]) ||
+    !sameStringArray(nativeSnapshotKeys, [packageKey])
+  ) {
+    throw new Error(`${label} has invalid native Chromium lockfile pin`);
+  }
+  if (
+    lockfile.packages[packageKey]?.resolution?.integrity !==
+      CHROMIUM_NATIVE_PACKAGE_PIN.integrity ||
+    runtime.package.integrity !== CHROMIUM_NATIVE_PACKAGE_PIN.integrity
+  ) {
+    throw new Error(`${label} has invalid native Chromium lockfile integrity`);
+  }
+}
+
+function parseSourceJson(files, path, label) {
+  try {
+    return JSON.parse(files.get(path).toString("utf8"));
+  } catch (error) {
+    throw new Error(`${label} has invalid ${path}: ${error.message}`);
+  }
+}
+
+function nativeOverlaySources(runtime, domManifest, stylesManifest, label) {
+  const version = runtime?.package?.version;
+  const domRoot = `third_party/chromium-devtools-frontend/patches/${version}`;
+  const stylesRoot =
+    `third_party/chromium-devtools-frontend/styles-overlay/${version}`;
+  if (
+    runtime?.readOnlyElementsRuntime?.overlayRoot !== domRoot ||
+    runtime?.readOnlyStylesRuntime?.overlayRoot !== stylesRoot
+  ) {
+    throw new Error(`${label} has invalid Chromium native overlay roots`);
+  }
+  for (const [owner, manifest] of [
+    ["DOM", domManifest],
+    ["Rules", stylesManifest],
+  ]) {
+    for (const key of [
+      "overlayFiles",
+      "upstreamFiles",
+      "requiredImageFiles",
+      "requiredLicenseFiles",
+    ]) {
+      const inventory = manifest?.[key];
+      if (
+        !inventory ||
+        typeof inventory !== "object" ||
+        Array.isArray(inventory) ||
+        Object.keys(inventory).length === 0
+      ) {
+        throw new Error(`${label} has invalid Chromium ${owner} ${key} inventory`);
+      }
+      for (const [path, digest] of Object.entries(inventory)) {
+        if (!isApprovedNativeRelativePath(path) || !/^[0-9a-f]{64}$/.test(digest)) {
+          throw new Error(`${label} has invalid Chromium ${owner} ${key} metadata`);
+        }
+      }
+    }
+    if (
+      !isApprovedNativeRelativePath(manifest.entryPoint) ||
+      !Object.hasOwn(manifest.overlayFiles, manifest.entryPoint)
+    ) {
+      throw new Error(`${label} has invalid Chromium ${owner} entrypoint metadata`);
+    }
+  }
+  return [
+    [domRoot, domManifest],
+    [stylesRoot, stylesManifest],
+  ];
+}
+
+function assertNativeOverlayPackageMetadata(runtime, domManifest, stylesManifest, label) {
+  for (const [owner, manifest] of [
+    ["DOM", domManifest],
+    ["Rules", stylesManifest],
+  ]) {
+    if (
+      manifest?.schemaVersion !== 1 ||
+      manifest?.package?.name !== runtime.package.packageName ||
+      manifest.package.version !== runtime.package.version ||
+      manifest.package.gitHead !== runtime.package.gitHead
+    ) {
+      throw new Error(`${label} has invalid Chromium ${owner} package metadata`);
+    }
+  }
+  if (
+    stylesManifest.package.integrity !== runtime.package.integrity ||
+    stylesManifest.package.license !== runtime.license.spdx
+  ) {
+    throw new Error(`${label} has invalid Chromium Rules integrity/license metadata`);
+  }
+}
+
+function assertNativeRuntimeDescriptorLinkage(
+  actual,
+  expected,
+  label,
+  owner,
+) {
+  if (
+    !actual ||
+    typeof actual !== "object" ||
+    Array.isArray(actual) ||
+    Object.entries(expected).some(
+      ([key, value]) => !isDeepStrictEqual(actual[key], value),
+    )
+  ) {
+    throw new Error(
+      `${label} has invalid Chromium ${owner} runtime manifest linkage`,
+    );
+  }
+}
+
+function isApprovedNativeRelativePath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    !/[\u0000-\u001f\u007f]/.test(path) &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    path.split("/").every((segment) => segment && segment !== "." && segment !== "..")
+  );
 }
 
 function assertPinnedChromiumSourceInventory(manifest, label) {
