@@ -62,6 +62,25 @@ export interface TreeDataSource {
   hover(nodeRef?: string): void;
 }
 
+/**
+ * Owns every resource installed by a tree renderer factory. The inspector
+ * calls dispose at most once, including when later constructor work fails.
+ */
+export interface ElementsTreeRendererHost {
+  dispose(): void;
+}
+
+/**
+ * Mounts a tree renderer into the supplied inspector-owned DOM pane.
+ * Implementations own the mounted content and must be failure-atomic if they
+ * throw before returning a host.
+ */
+export type CreateElementsTreeRenderer = (
+  document: Document,
+  mount: HTMLElement,
+  treeDataSource: TreeDataSource,
+) => ElementsTreeRendererHost;
+
 export type DeclarationState =
   | "winning-known-author"
   | "overridden-known-author"

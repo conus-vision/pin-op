@@ -1,6 +1,8 @@
 import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
 import { StylesSidebarPane } from "./chromium/rules/StylesSidebarPane.js";
 import type {
+  CreateElementsTreeRenderer,
+  ElementsTreeRendererHost,
   PseudoStateDataSource,
   RulesDataSource,
   RulesPresentationSnapshot,
@@ -17,7 +19,7 @@ export class ElementsInspectorView {
   public readonly sidebarExtensionMount: HTMLElement;
   private readonly rulesTab: HTMLElement;
   private readonly sourceTab: HTMLElement;
-  private readonly treeOutline: ElementsTreeOutline;
+  private treeRendererHost: ElementsTreeRendererHost | undefined;
   private rulesDataSource: RulesDataSource | undefined;
   private rulesPane: StylesSidebarPane | undefined;
   private unsubscribeRules: (() => void) | undefined;
@@ -39,6 +41,7 @@ export class ElementsInspectorView {
     rulesDataSource?: RulesDataSource,
     sourceLinkDelegate?: SourceLinkDelegate,
     pseudoStateDataSource?: PseudoStateDataSource,
+    createTreeRenderer: CreateElementsTreeRenderer = createLocalTreeRenderer,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -131,12 +134,12 @@ export class ElementsInspectorView {
     sidebar.append(tabList, this.rulesRoot, this.sidebarExtensionMount);
     this.element.append(this.domRoot, sidebar);
 
-    this.treeOutline = new ElementsTreeOutline(
-      document,
-      this.domRoot,
-      treeDataSource,
-    );
     try {
+      this.treeRendererHost = createTreeRenderer(
+        document,
+        this.domRoot,
+        treeDataSource,
+      );
       if (rulesDataSource) {
         this.bindRulesDataSource(
           rulesDataSource,
@@ -211,8 +214,10 @@ export class ElementsInspectorView {
     } catch (error) {
       disposeError = error;
     }
+    const treeRendererHost = this.treeRendererHost;
+    this.treeRendererHost = undefined;
     try {
-      this.treeOutline.dispose();
+      treeRendererHost?.dispose();
     } catch (error) {
       disposeError ??= error;
     }
@@ -351,6 +356,12 @@ export class ElementsInspectorView {
     return element;
   }
 }
+
+const createLocalTreeRenderer: CreateElementsTreeRenderer = (
+  document,
+  mount,
+  treeDataSource,
+) => new ElementsTreeOutline(document, mount, treeDataSource);
 
 const EMPTY_RULES_SNAPSHOT: RulesPresentationSnapshot = Object.freeze({
   state: "empty",

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import type {
+  CreateElementsTreeRenderer,
   RulesDataSource,
   RulesPresentationSnapshot,
   TreePresentationSnapshot,
@@ -16,6 +17,91 @@ import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("ElementsInspectorView", () => {
+  it("delegates the DOM mount to an injected tree renderer and owns its host", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const backend = new FakeElementsBackend(elementsSession.tree);
+    const rendererElement = document.createElement("div") as unknown as FakeElement;
+    rendererElement.setAttribute("data-part", "injected-tree-renderer");
+    const calls: Parameters<CreateElementsTreeRenderer>[] = [];
+    let disposeCalls = 0;
+    const createTreeRenderer: CreateElementsTreeRenderer = (...args) => {
+      calls.push(args);
+      (args[1] as unknown as FakeElement).append(rendererElement);
+      return {
+        dispose(): void {
+          disposeCalls += 1;
+          rendererElement.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      createTreeRenderer,
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual([document.document, view.domRoot, backend]);
+    expect(view.domRoot.querySelector('[data-part="injected-tree-renderer"]')).toBe(
+      rendererElement,
+    );
+    expect(view.domRoot.querySelector('[data-part="dom-rows"]')).toBeNull();
+    expect(disposeCalls).toBe(0);
+
+    view.dispose();
+    view.dispose();
+
+    expect(disposeCalls).toBe(1);
+    expect(rendererElement.parentElement).toBeUndefined();
+    expect(mount.children).toHaveLength(0);
+  });
+
+  it("rolls back an injected tree renderer when later construction fails", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const backend = new FakeElementsBackend(elementsSession.tree);
+    const rendererElement = document.createElement("div") as unknown as FakeElement;
+    const snapshotError = new Error("initial Rules snapshot failed");
+    const rules = new ThrowingSnapshotRulesDataSource(snapshotError);
+    let disposeCalls = 0;
+    const createTreeRenderer: CreateElementsTreeRenderer = (
+      _document,
+      rendererMount,
+    ) => {
+      (rendererMount as unknown as FakeElement).append(rendererElement);
+      return {
+        dispose(): void {
+          disposeCalls += 1;
+          rendererElement.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+
+    expect(() => new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      backend,
+      rules,
+      undefined,
+      undefined,
+      createTreeRenderer,
+    )).toThrow(snapshotError);
+
+    expect(disposeCalls).toBe(1);
+    expect(rendererElement.parentElement).toBeUndefined();
+    expect(rules.listenerCount()).toBe(0);
+    expect(document.totalListeners()).toBe(0);
+    expect(mount.children).toHaveLength(0);
+  });
+
   it("mounts DOM on the left and switches between Rules and Source", () => {
     const harness = createHarness();
     const root = required(harness.mount.querySelector(".pin-op-elements-inspector"));
@@ -514,6 +600,27 @@ class StaticRulesDataSource implements RulesDataSource {
   public publish(snapshot: RulesPresentationSnapshot): void {
     this.current = snapshot;
     for (const listener of [...this.listeners]) listener();
+  }
+}
+
+class ThrowingSnapshotRulesDataSource implements RulesDataSource {
+  private readonly listeners = new Set<() => void>();
+
+  public constructor(private readonly snapshotError: Error) {}
+
+  public snapshot(): RulesPresentationSnapshot {
+    throw this.snapshotError;
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  public filter(_query: string): void {}
+
+  public listenerCount(): number {
+    return this.listeners.size;
   }
 }
 
