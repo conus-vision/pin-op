@@ -59,7 +59,7 @@ export const CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME = Object.freeze({
   overlayRoot: `third_party/chromium-devtools-frontend/patches/${CHROMIUM_DEVTOOLS_PIN.version}`,
   maxUnminifiedBytes: 1024 * 1024,
   browserTargets: Object.freeze(["chrome116", "firefox142"]),
-  manifestSha256: "626fd2608f55ffc5a5f13c35c850019ca1df8dfd30505d97a4060b4c2258d53c",
+  manifestSha256: "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
 });
 
 function sha256(bytes) {
@@ -305,6 +305,13 @@ export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
   ) {
     throw new Error("Chromium read-only overlay has an invalid entry point");
   }
+  if (
+    typeof manifest.testOnlyEntryPoint !== "string" ||
+    !/^entrypoints\/[A-Za-z0-9_./-]+\.ts$/.test(manifest.testOnlyEntryPoint) ||
+    manifest.testOnlyEntryPoint === manifest.entryPoint
+  ) {
+    throw new Error("Chromium read-only overlay has an invalid test-only entry point");
+  }
 
   const overlayFiles = {};
   for (const absolute of await listFiles(overlayRoot)) {
@@ -314,6 +321,9 @@ export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
     }
   }
   assertHashInventory(overlayFiles, manifest.overlayFiles, "Chromium read-only overlay file");
+  if (overlayFiles[manifest.testOnlyEntryPoint] === undefined) {
+    throw new Error("Chromium read-only test-only entry point is not reviewed");
+  }
 
   const upstreamFiles = {};
   for (const relativePath of Object.keys(manifest.upstreamFiles ?? {})) {
@@ -469,12 +479,13 @@ export async function verifyChromiumDevToolsPackage(repositoryRoot) {
   });
 }
 
-function createChromiumCssModulePlugin(packageRoot) {
+function createChromiumCssModulePlugin(packageRoot, allowImporter = () => true) {
   const frontEndRoot = path.join(packageRoot, "front_end");
   return {
     name: "chromium-devtools-css-module",
     setup(buildContext) {
       buildContext.onResolve({ filter: /\.css\.js$/ }, async args => {
+        if (!allowImporter(path.resolve(args.importer))) return undefined;
         const cssPath = path.resolve(args.resolveDir, args.path.slice(0, -3));
         const physicalCssPath = await realpath(cssPath);
         assertWithin(frontEndRoot, physicalCssPath, "Chromium CSS module");
@@ -495,12 +506,13 @@ function createChromiumCssModulePlugin(packageRoot) {
   };
 }
 
-function createChromiumGeneratedModulePlugin(packageRoot) {
+function createChromiumGeneratedModulePlugin(packageRoot, allowImporter = () => true) {
   const frontEndRoot = path.join(packageRoot, "front_end");
   return {
     name: "chromium-devtools-generated-modules",
     setup(buildContext) {
       buildContext.onResolve({ filter: /^\.\/locales\.js$/ }, args => {
+        if (!allowImporter(path.resolve(args.importer))) return undefined;
         const importer = path.resolve(args.importer);
         const expectedImporter = path.join(frontEndRoot, "core", "i18n", "i18nImpl.ts");
         if (importer !== expectedImporter) {
@@ -509,10 +521,12 @@ function createChromiumGeneratedModulePlugin(packageRoot) {
         return { path: "english-only-locales", namespace: "chromium-generated" };
       });
       buildContext.onResolve({ filter: /\.skill\.js$/ }, args => {
+        if (!allowImporter(path.resolve(args.importer))) return undefined;
         assertWithin(frontEndRoot, path.resolve(args.resolveDir), "Chromium generated skill importer");
         return { path: args.path, namespace: "chromium-generated-skill" };
       });
       buildContext.onResolve({ filter: /Images\/Images\.js$/ }, args => {
+        if (!allowImporter(path.resolve(args.importer))) return undefined;
         const generatedPath = path.resolve(args.resolveDir, args.path);
         const expectedPath = path.join(frontEndRoot, "Images", "Images.js");
         if (generatedPath !== expectedPath) {
@@ -601,7 +615,9 @@ function createChromiumReadOnlyOverlayPlugin(overlay) {
     setup(buildContext) {
       buildContext.onResolve({ filter: /^#chromium\// }, args => {
         const importer = path.resolve(args.importer);
-        assertWithin(overlay.overlayRoot, importer, "Chromium read-only #chromium importer");
+        if (!relativePathWithin(overlay.overlayRoot, importer)) {
+          return undefined;
+        }
         const relative = args.path.slice("#chromium/".length);
         if (!/^[A-Za-z0-9_./-]+\.js$/.test(relative)) {
           throw new Error(`Invalid Chromium read-only package import: ${args.path}`);
@@ -722,10 +738,14 @@ async function classifyChromiumReadOnlyMetafileInputs({
   const exactGeneratedInputs = new Set([
     "chromium-generated:english-only-locales",
     `chromium-generated-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
+    "chromium-styles-generated:locales",
+    `chromium-styles-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
   ]);
   for (const input of Object.keys(metafile.inputs)) {
-    if (input.startsWith("chromium-css-module:")) {
-      const absolutePath = await realpath(input.slice("chromium-css-module:".length));
+    const cssNamespace = input.startsWith("chromium-css-module:") ? "chromium-css-module:" :
+      input.startsWith("chromium-styles-css:") ? "chromium-styles-css:" : undefined;
+    if (cssNamespace) {
+      const absolutePath = await realpath(input.slice(cssNamespace.length));
       const relativePath = relativePathWithin(packageRoot, absolutePath);
       if (!relativePath) {
         throw new Error(`Chromium CSS input is outside the pinned package: ${input}`);
@@ -822,20 +842,176 @@ function assertAttestation(actual, expected, description) {
   }
 }
 
+function normalizedMetafileInput(value) {
+  return value.replaceAll("\\", "/");
+}
+
+function reachableMetafileInputs({repositoryRoot, entryPoint, metafile}) {
+  if (!metafile?.inputs || typeof metafile.inputs !== "object") {
+    throw new Error("Chromium read-only build has no metafile input inventory");
+  }
+  const inputs = Object.keys(metafile.inputs);
+  const byNormalizedPath = new Map();
+  for (const input of inputs) {
+    const normalized = normalizedMetafileInput(input);
+    if (byNormalizedPath.has(normalized)) {
+      throw new Error(`Ambiguous Chromium read-only metafile input: ${normalized}`);
+    }
+    byNormalizedPath.set(normalized, input);
+  }
+  const relativeEntryPoint = normalizedMetafileInput(path.relative(repositoryRoot, entryPoint));
+  const absoluteEntryPoint = normalizedMetafileInput(path.resolve(entryPoint));
+  const entryInput = byNormalizedPath.get(relativeEntryPoint) ??
+    byNormalizedPath.get(absoluteEntryPoint) ??
+    inputs.find(input => {
+      if (input.startsWith("chromium-")) return false;
+      return normalizedMetafileInput(path.resolve(repositoryRoot, input)) === absoluteEntryPoint;
+    });
+  if (!entryInput) {
+    throw new Error("Chromium read-only production entry is absent from the metafile");
+  }
+
+  const reachable = new Set();
+  const pending = [entryInput];
+  while (pending.length > 0) {
+    const input = pending.pop();
+    if (reachable.has(input)) continue;
+    reachable.add(input);
+    for (const imported of metafile.inputs[input]?.imports ?? []) {
+      if (imported.external) continue;
+      const resolved = byNormalizedPath.get(normalizedMetafileInput(imported.path));
+      if (!resolved) {
+        throw new Error(
+          `Chromium read-only metafile import is not an input: ${input} -> ${imported.path}`,
+        );
+      }
+      pending.push(resolved);
+    }
+  }
+  return Object.freeze({entryInput, inputs: Object.freeze([...reachable])});
+}
+
+function outputForReachableEntry(metafile, reachable) {
+  const matches = Object.entries(metafile.outputs ?? {}).filter(([, output]) =>
+    output.inputs && Object.hasOwn(output.inputs, reachable.entryInput));
+  if (matches.length !== 1) {
+    throw new Error(
+      `Chromium read-only production entry must contribute to exactly one output; found ${matches.length}`,
+    );
+  }
+  return matches[0];
+}
+
+export async function prepareChromiumReadOnlyElementsBuild(repositoryRoot) {
+  const physicalRepositoryRoot = await realpath(repositoryRoot);
+  const overlay = await verifyChromiumReadOnlyElementsOverlay(physicalRepositoryRoot);
+  const reviewedPackageImporters = new Set(
+    Object.keys(overlay.upstreamFiles).map(relativePath =>
+      path.resolve(overlay.packageRoot, ...relativePath.split("/"))),
+  );
+  const allowImporter = importer =>
+    reviewedPackageImporters.has(path.resolve(importer)) ||
+    Boolean(relativePathWithin(overlay.overlayRoot, path.resolve(importer)));
+  const plugins = Object.freeze([
+    createChromiumReadOnlyOverlayPlugin(overlay),
+    createChromiumReadOnlySourceTransformPlugin(overlay),
+    createChromiumBrowserRuntimePlugin(overlay.packageRoot),
+    createChromiumCssModulePlugin(overlay.packageRoot, allowImporter),
+    createChromiumGeneratedModulePlugin(overlay.packageRoot, allowImporter),
+  ].map(plugin => Object.freeze(plugin)));
+
+  const verifyBuild = async result => {
+    const reachable = reachableMetafileInputs({
+      repositoryRoot: physicalRepositoryRoot,
+      entryPoint: overlay.entryPoint,
+      metafile: result?.metafile,
+    });
+    const reachableMetafile = {
+      inputs: Object.fromEntries(
+        reachable.inputs.map(input => [input, result.metafile.inputs[input]]),
+      ),
+    };
+    const classifiedInputs = await classifyChromiumReadOnlyMetafileInputs({
+      repositoryRoot: physicalRepositoryRoot,
+      packageRoot: overlay.packageRoot,
+      overlayRoot: overlay.overlayRoot,
+      metafile: reachableMetafile,
+    });
+    const chromiumInputAttestation = await attestClassifiedInputs(classifiedInputs.packageInputs);
+    const overlayAttestation = await attestClassifiedInputs(classifiedInputs.overlayInputs);
+    assertAttestation(
+      chromiumInputAttestation,
+      overlay.manifest.reviewedInputClosure,
+      "Chromium read-only input closure",
+    );
+    assertAttestation(
+      overlayAttestation,
+      overlay.manifest.reviewedOverlayClosure,
+      "Chromium read-only overlay closure",
+    );
+    const requiredLicenseFiles = await requiredChromiumLicenseFiles(
+      overlay.packageRoot,
+      classifiedInputs.packageInputs,
+    );
+    assertHashInventory(
+      Object.fromEntries(requiredLicenseFiles.map(file => [file.path, file.sha256])),
+      overlay.manifest.requiredLicenseFiles,
+      "Chromium read-only license",
+    );
+
+    const [, output] = outputForReachableEntry(result.metafile, reachable);
+    const standalone = typeof output.entryPoint === "string" &&
+      normalizedMetafileInput(path.resolve(physicalRepositoryRoot, output.entryPoint)) ===
+        normalizedMetafileInput(path.resolve(overlay.entryPoint));
+    if (standalone && (
+      !Array.isArray(output.exports) || output.exports.length !== 1 ||
+      output.exports[0] !== "chromiumElementsRuntime"
+    )) {
+      throw new Error("Chromium read-only production entry must export only chromiumElementsRuntime");
+    }
+    const outputBytes = standalone ? output.bytes : reachable.inputs.reduce(
+      (total, input) => total + (output.inputs?.[input]?.bytesInOutput ?? 0),
+      0,
+    );
+    if (!Number.isSafeInteger(outputBytes)) {
+      throw new Error("Chromium read-only runtime build did not produce JavaScript");
+    }
+    if (outputBytes > overlay.manifest.maxUnminifiedBytes) {
+      throw new Error(
+        `Chromium read-only runtime exceeds ${overlay.manifest.maxUnminifiedBytes} bytes: ${outputBytes}`,
+      );
+    }
+    return Object.freeze({
+      chromiumInputAttestation,
+      overlayAttestation,
+      requiredLicenseFiles,
+      unminifiedBytes: outputBytes,
+      verifiedInputKeys: Object.freeze([...reachable.inputs].sort()),
+    });
+  };
+
+  return Object.freeze({
+    entryPoint: overlay.entryPoint,
+    plugins,
+    browserTargets: CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets,
+    verifyBuild,
+  });
+}
+
 export async function bundleChromiumReadOnlyElementsRuntime({
   repositoryRoot,
   write = false,
   outfile,
 }) {
   const physicalRepositoryRoot = await realpath(repositoryRoot);
-  const overlay = await verifyChromiumReadOnlyElementsOverlay(physicalRepositoryRoot);
+  const prepared = await prepareChromiumReadOnlyElementsBuild(physicalRepositoryRoot);
   const result = await build({
     absWorkingDir: physicalRepositoryRoot,
-    entryPoints: [overlay.entryPoint],
+    entryPoints: [prepared.entryPoint],
     bundle: true,
     format: "esm",
     platform: "browser",
-    target: CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets,
+    target: prepared.browserTargets,
     treeShaking: true,
     minify: false,
     sourcemap: false,
@@ -843,58 +1019,9 @@ export async function bundleChromiumReadOnlyElementsRuntime({
     write,
     outfile: outfile ?? path.join(physicalRepositoryRoot, "chromium-read-only-elements-runtime.js"),
     logLevel: "silent",
-    plugins: [
-      createChromiumReadOnlyOverlayPlugin(overlay),
-      createChromiumReadOnlySourceTransformPlugin(overlay),
-      createChromiumBrowserRuntimePlugin(overlay.packageRoot),
-      createChromiumCssModulePlugin(overlay.packageRoot),
-      createChromiumGeneratedModulePlugin(overlay.packageRoot),
-    ],
+    plugins: prepared.plugins,
   });
-  const classifiedInputs = await classifyChromiumReadOnlyMetafileInputs({
-    repositoryRoot: physicalRepositoryRoot,
-    packageRoot: overlay.packageRoot,
-    overlayRoot: overlay.overlayRoot,
-    metafile: result.metafile,
-  });
-  const chromiumInputAttestation = await attestClassifiedInputs(classifiedInputs.packageInputs);
-  const overlayAttestation = await attestClassifiedInputs(classifiedInputs.overlayInputs);
-  assertAttestation(
-    chromiumInputAttestation,
-    overlay.manifest.reviewedInputClosure,
-    "Chromium read-only input closure",
-  );
-  assertAttestation(
-    overlayAttestation,
-    overlay.manifest.reviewedOverlayClosure,
-    "Chromium read-only overlay closure",
-  );
-  const requiredLicenseFiles = await requiredChromiumLicenseFiles(
-    overlay.packageRoot,
-    classifiedInputs.packageInputs,
-  );
-  assertHashInventory(
-    Object.fromEntries(requiredLicenseFiles.map(file => [file.path, file.sha256])),
-    overlay.manifest.requiredLicenseFiles,
-    "Chromium read-only license",
-  );
-  const outputBytes =
-    result.outputFiles?.find(file => file.path.endsWith(".js"))?.contents.byteLength ??
-    Object.entries(result.metafile.outputs).find(([output]) => output.endsWith(".js"))?.[1].bytes;
-  if (outputBytes === undefined) {
-    throw new Error("Chromium read-only runtime build did not produce JavaScript");
-  }
-  if (outputBytes > overlay.manifest.maxUnminifiedBytes) {
-    throw new Error(
-      `Chromium read-only runtime exceeds ${overlay.manifest.maxUnminifiedBytes} bytes: ${outputBytes}`,
-    );
-  }
-  return Object.assign(result, {
-    chromiumInputAttestation,
-    overlayAttestation,
-    requiredLicenseFiles,
-    unminifiedBytes: outputBytes,
-  });
+  return Object.assign(result, await prepared.verifyBuild(result));
 }
 
 export async function bundleChromiumDevToolsModule({

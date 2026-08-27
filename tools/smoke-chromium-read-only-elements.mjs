@@ -306,14 +306,34 @@ const FORBIDDEN_WRITER_SURFACE = ${JSON.stringify(FORBIDDEN_WRITER_SURFACE)};
 const installForbiddenWriterTraps = ${installForbiddenWriterTraps.toString()};
 const assertForbiddenHandlerRegression = ${assertForbiddenHandlerRegression.toString()};
 
-const rows = [
+let rows = [
   row('doctype', undefined, 0, 10, 'html', 0, false, false),
   row('html', undefined, 0, 1, 'HTML', 1, true, false),
   row('body', 'html', 1, 1, 'BODY', 1, true, true),
-  row('main', 'body', 2, 1, 'MAIN', 1, true, false),
+  row('main', 'body', 2, 1, 'MAIN', 2, true, false),
   row('section', 'main', 3, 1, 'SECTION', 0, false, false),
+  loadMoreRow('main', 3, 'load-more:main:v1', true),
 ];
-const calls = {selected: [], focused: [], hovered: []};
+const pendingRows = [
+  row('doctype', undefined, 0, 10, 'html', 0, false, false),
+  row('html', undefined, 0, 1, 'HTML', 1, true, false),
+  row('body', 'html', 1, 1, 'BODY', 1, true, true),
+  row('main', 'body', 2, 1, 'MAIN', 2, true, false),
+  row('section', 'main', 3, 1, 'SECTION', 0, false, false),
+  loadMoreRow('main', 3, 'load-more:main:v2', true),
+];
+const completeRows = [
+  row('doctype', undefined, 0, 10, 'html', 0, false, false),
+  row('html', undefined, 0, 1, 'HTML', 1, true, false),
+  row('body', 'html', 1, 1, 'BODY', 1, true, true),
+  row('main', 'body', 2, 1, 'MAIN', 2, true, false),
+  row('section', 'main', 3, 1, 'SECTION', 0, false, false),
+  row('article', 'main', 3, 1, 'ARTICLE', 0, false, false),
+];
+const calls = {selected: [], focused: [], hovered: [], loadMore: []};
+let sourceListener;
+let settleLoadMore;
+const loadMoreGate = new Promise(resolve => { settleLoadMore = resolve; });
 let forbiddenPathErrors = 0;
 let writerCalls = 0;
 addEventListener('error', event => { forbiddenPathErrors += 1; event.preventDefault(); });
@@ -327,26 +347,39 @@ const report = result => {
 };
 const source = {
   snapshot: () => ({rows}),
-  subscribe: () => () => {},
+  subscribe: listener => {
+    sourceListener = listener;
+    return () => { if (sourceListener === listener) sourceListener = undefined; };
+  },
   expand: async () => {},
   collapse: () => {},
-  loadMore: async () => {},
+  loadMore: async ref => {
+    calls.loadMore.push(ref);
+    await loadMoreGate;
+    rows = completeRows;
+  },
   select: async ref => { calls.selected.push(ref); },
   focus: ref => { calls.focused.push(ref); },
   hover: ref => { calls.hovered.push(ref); },
 };
-const runtime = {
-  DOMDocument: Chromium.DOMDocument,
-  ElementsTreeOutline: Chromium.ElementsTreeOutline,
-  selectedNodeChangedEvent: Chromium.ElementsTreeOutline.Events.SelectedNodeChanged,
-  elementCollapsedEvent: Chromium.TreeOutlineEvents.ElementCollapsed,
-  installLoadMoreBridge: () => ({update() {}, dispose() {}}),
-};
+const productionRuntime = Chromium.chromiumElementsRuntime;
+let capturedOutline;
+class CapturingElementsTreeOutline extends productionRuntime.ElementsTreeOutline {
+  constructor(...args) {
+    super(...args);
+    capturedOutline = this;
+  }
+}
+const runtime = Object.freeze({...productionRuntime, ElementsTreeOutline: CapturingElementsTreeOutline});
 Promise.resolve().then(async () => {
   const mount = document.querySelector('#mount');
   const host = createPinOpElementsTreeAdapter(runtime, mount, source, {documentURL: 'https://pin-op.invalid/'});
   const shadow = host.element.shadowRoot;
-  await waitFor(() => shadow?.querySelectorAll('[role="treeitem"]').length >= 5, 'tree rows');
+  await waitFor(() => shadow?.querySelectorAll('[role="treeitem"]').length >= 6, 'tree rows');
+  await waitFor(() => shadow?.querySelector('[data-pin-op-load-more-ref="load-more:main:v1"]'), 'load-more row');
+  const firstLoadMoreButton = shadow.querySelector('[data-pin-op-load-more-ref="load-more:main:v1"]');
+  const initialLoadMoreFocused = shadow.activeElement === firstLoadMoreButton;
+  const initialLoadMoreHeight = getComputedStyle(firstLoadMoreButton).height;
   const tags = [...shadow.querySelectorAll('.webkit-html-tag-name')].map(node => node.textContent?.trim()).filter(Boolean);
   const selectedElement = shadow.querySelector('.selected');
   const selected = selectedElement?.textContent?.trim() ?? '';
@@ -381,11 +414,15 @@ Promise.resolve().then(async () => {
   const selectedBefore = selectedTreeItem;
   const treeTextBefore = treeRootBefore?.textContent;
   const rowCountBefore = shadow.querySelectorAll('[role="treeitem"]').length;
+  const selectedNode = capturedOutline.selectedDOMNode();
+  const actualTreeElement = capturedOutline.findTreeElement(selectedNode);
+  const actualTreeElementPrototype = Object.getPrototypeOf(actualTreeElement);
   const actualPrototypes = [
-    Chromium.DOMNode.prototype,
-    Chromium.ElementsTreeOutline.prototype,
-    Chromium.ElementsTreeElement.prototype,
-    Chromium.ElementsTreeWidget.prototype,
+    productionRuntime.DOMDocument.prototype,
+    productionRuntime.ElementsTreeOutline.prototype,
+    Object.getPrototypeOf(selectedNode),
+    actualTreeElementPrototype,
+    Object.getPrototypeOf(actualTreeElement.widget),
   ];
   const presentSurface = FORBIDDEN_WRITER_SURFACE.filter(name =>
     actualPrototypes.some(prototype => Object.hasOwn(prototype, name)));
@@ -393,7 +430,7 @@ Promise.resolve().then(async () => {
   const regressionErrorsBefore = forbiddenPathErrors;
   const regressionWriterCallsBefore = writerCalls;
   const regressionTraps = installForbiddenWriterTraps(
-    [Chromium.ElementsTreeElement.prototype],
+    [actualTreeElementPrototype],
     ['ondblclick', 'ondelete'],
     name => { regressionCalls.push(name); writerCalls += 1; },
   );
@@ -402,7 +439,7 @@ Promise.resolve().then(async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
   regressionTraps.restore();
   const regressionDescriptorsRestored = ['ondblclick', 'ondelete'].every(name =>
-    !Object.hasOwn(Chromium.ElementsTreeElement.prototype, name));
+    !Object.hasOwn(actualTreeElementPrototype, name));
   const regression = {
     preProbeErrors: regressionErrorsBefore,
     preProbeWriterCalls: regressionWriterCallsBefore,
@@ -434,23 +471,87 @@ Promise.resolve().then(async () => {
   const treeTextUnchanged = treeTextBefore === treeRootBefore?.textContent;
   const rowCountUnchanged = rowCountBefore === shadow.querySelectorAll('[role="treeitem"]').length;
   traps.restore();
-  const focusProbe = document.createElement('section');
-  document.body.append(focusProbe);
-  const focusProbeRoot = Chromium.createShadowRootWithCoreStyles(focusProbe, {delegatesFocus: true});
-  const focusProbeButton = document.createElement('button');
-  focusProbeButton.textContent = 'Focus probe';
-  focusProbeRoot.append(focusProbeButton);
-  focusProbe.focus();
-  let buttonClicks = 0;
-  const button = Chromium.createTextButton('Probe button', () => { buttonClicks += 1; });
-  shadow.append(button);
-  button.click();
+  const mainNode = selectedNode.children()[0];
+  const manualAuthority = Object.freeze({
+    parent: mainNode,
+    serviceRowRef: 'load-more:manual',
+    focused: true,
+    hasMore: true,
+    loadedChildCount: 1,
+    totalChildCount: 2,
+    remainingChildCount: 1,
+  });
+  let manualCalls = 0;
+  const manualBridge = productionRuntime.installLoadMoreBridge(
+    capturedOutline,
+    async () => { manualCalls += 1; },
+  );
+  let invalidAuthoritiesRejected = 0;
+  for (const invalid of [
+    [{...manualAuthority, focused: 'yes'}],
+    [{...manualAuthority, loadedChildCount: 2, totalChildCount: 1}],
+    [{...manualAuthority, remainingChildCount: 0}],
+    [{...manualAuthority, totalChildCount: 3, remainingChildCount: 2}],
+    [manualAuthority, manualAuthority],
+  ]) {
+    try {
+      manualBridge.update(invalid);
+    } catch {
+      invalidAuthoritiesRejected += 1;
+    }
+  }
+  manualBridge.update([manualAuthority]);
+  manualBridge.update([manualAuthority]);
+  const manualButtons = shadow.querySelectorAll('[data-pin-op-load-more-ref="load-more:manual"]');
+  const manualButton = manualButtons[0];
+  const manualFocused = shadow.activeElement === manualButton;
+  manualBridge.update([{...manualAuthority, focused: false}]);
+  const manualFocusReleased = shadow.activeElement !== manualButton;
+  manualBridge.dispose();
+  manualBridge.dispose();
+  manualButton.click();
+  manualBridge.update([manualAuthority]);
+  await Promise.resolve();
+  const manualContract = {
+    invalidAuthoritiesRejected,
+    idempotentRows: manualButtons.length,
+    focused: manualFocused,
+    focusReleased: manualFocusReleased,
+    detached: !manualButton.isConnected && manualButton.disabled,
+    staleCalls: manualCalls,
+    disposedRows: shadow.querySelectorAll('[data-pin-op-load-more-ref="load-more:manual"]').length,
+  };
+  firstLoadMoreButton.click();
+  firstLoadMoreButton.click();
+  firstLoadMoreButton.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, composed: true}));
+  firstLoadMoreButton.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', bubbles: true, composed: true}));
+  await Promise.resolve();
+  const firstLoadMoreFenced = firstLoadMoreButton.disabled &&
+    firstLoadMoreButton.getAttribute('aria-busy') === 'true' && calls.loadMore.length === 1;
+  rows = pendingRows;
+  sourceListener?.();
+  await waitFor(() => shadow.querySelector('[data-pin-op-load-more-ref="load-more:main:v2"]'), 'replacement load-more row');
+  const replacementLoadMoreButton = shadow.querySelector('[data-pin-op-load-more-ref="load-more:main:v2"]');
+  const staleLoadMoreDetached = !firstLoadMoreButton.isConnected && firstLoadMoreButton.disabled;
+  firstLoadMoreButton.click();
+  replacementLoadMoreButton.click();
+  replacementLoadMoreButton.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, composed: true}));
+  await Promise.resolve();
+  const replacementLoadMoreFenced = replacementLoadMoreButton.disabled && calls.loadMore.length === 1;
+  settleLoadMore();
+  await waitFor(() => !shadow.querySelector('[data-pin-op-service-row="load-more"]'), 'load-more completion');
+  await waitFor(() => [...shadow.querySelectorAll('.webkit-html-tag-name')]
+    .some(node => node.textContent?.trim() === 'article'), 'loaded child');
+  const staleReplacementDetached = !replacementLoadMoreButton.isConnected && replacementLoadMoreButton.disabled;
+  replacementLoadMoreButton.click();
+  await Promise.resolve();
   const css = [...shadow.querySelectorAll('style')].map(style => style.textContent).join('\\n');
   const tokenStyle = document.querySelector('#pin-op-chromium-design-system-tokens')?.textContent ?? '';
   const tokenValue = getComputedStyle(document.documentElement).getPropertyValue('--sys-color-on-surface').trim();
-  const buttonStyle = getComputedStyle(button);
   const value = {
-    constructors: [Chromium.DOMDocument.name, Chromium.ElementsTreeOutline.name],
+    exports: Object.keys(Chromium),
+    runtimeFrozen: Object.isFrozen(productionRuntime),
+    constructors: [productionRuntime.DOMDocument.name, productionRuntime.ElementsTreeOutline.name],
     tags,
     selected,
     treeItems: shadow.querySelectorAll('[role="treeitem"]').length,
@@ -458,7 +559,6 @@ Promise.resolve().then(async () => {
     hasInspectorCommonCss: css.includes('interpolate-size: allow-keywords'),
     hasTextButtonCss: css.includes('.text-button:not(:disabled, .primary-button):focus-visible'),
     hasDesignTokens: tokenStyle.includes('--sys-color-on-surface:') && tokenValue.length > 0,
-    delegatesFocus: focusProbeRoot.delegatesFocus,
     focusShell: treeFocusShell,
     hoverClass: selectedTreeItem?.classList.contains('hovered') ?? false,
     forbiddenPaths: {
@@ -474,20 +574,43 @@ Promise.resolve().then(async () => {
       treeTextUnchanged,
       rowCountUnchanged,
     },
-    button: {clicks: buttonClicks, className: button.className, height: buttonStyle.height},
+    loadMore: {
+      manualContract,
+      initialFocused: initialLoadMoreFocused,
+      firstFenced: firstLoadMoreFenced,
+      replacementFenced: replacementLoadMoreFenced,
+      staleDetached: staleLoadMoreDetached,
+      replacementDetached: staleReplacementDetached,
+      calls: calls.loadMore,
+      focusCalls: calls.focused.filter(ref => ref.startsWith('load-more:')),
+      className: firstLoadMoreButton.className,
+      height: initialLoadMoreHeight,
+      remainingRows: shadow.querySelectorAll('[data-pin-op-service-row="load-more"]').length,
+    },
   };
   host.dispose();
   if (
     !tags.includes('section') || !selected.includes('body') || !value.hasUpstreamCss ||
     !value.hasInspectorCommonCss || !value.hasTextButtonCss || !value.hasDesignTokens ||
-    !value.delegatesFocus || !value.focusShell || !value.hoverClass ||
+    JSON.stringify(value.exports) !== JSON.stringify(['chromiumElementsRuntime']) ||
+    !value.runtimeFrozen || !value.focusShell || !value.hoverClass ||
     value.forbiddenPaths.errors !== 0 || value.forbiddenPaths.writerCalls !== 0 ||
     !value.forbiddenPaths.writerSurfaceAbsent || !value.forbiddenPaths.treeRootPresent ||
     !value.forbiddenPaths.treeIdentityUnchanged ||
     !value.forbiddenPaths.selectedIdentityUnchanged || !value.forbiddenPaths.selectedTextUnchanged ||
     !value.forbiddenPaths.treeTextUnchanged ||
     !value.forbiddenPaths.rowCountUnchanged ||
-    value.button.clicks !== 1 || value.button.className !== 'text-button' || value.button.height !== '24px' ||
+    value.loadMore.manualContract.invalidAuthoritiesRejected !== 5 ||
+    value.loadMore.manualContract.idempotentRows !== 1 || !value.loadMore.manualContract.focused ||
+    !value.loadMore.manualContract.focusReleased ||
+    !value.loadMore.manualContract.detached || value.loadMore.manualContract.staleCalls !== 0 ||
+    value.loadMore.manualContract.disposedRows !== 0 || !value.loadMore.initialFocused ||
+    !value.loadMore.firstFenced || !value.loadMore.replacementFenced ||
+    !value.loadMore.staleDetached || !value.loadMore.replacementDetached ||
+    JSON.stringify(value.loadMore.calls) !== JSON.stringify(['main']) ||
+    JSON.stringify(value.loadMore.focusCalls) !== JSON.stringify(['load-more:main:v1']) ||
+    !value.loadMore.className.includes('pin-op-elements-load-more') ||
+    value.loadMore.height !== '24px' || value.loadMore.remainingRows !== 0 ||
     mount.childElementCount !== 0
   ) {
     throw new Error(
@@ -516,6 +639,12 @@ function row(nodeRef, parentRef, depth, nodeType, nodeName, childCount, expanded
       expandable: childCount > 0,
       branchRevision: expanded ? 1 : 0,
     },
+  };
+}
+function loadMoreRow(parentRef, depth, nodeRef, focused) {
+  return {
+    type: 'load-more', nodeRef, parentRef, depth, expanded: false,
+    expandable: false, selected: false, focused, hovered: false,
   };
 }
 function legacyDeleteEvent() {

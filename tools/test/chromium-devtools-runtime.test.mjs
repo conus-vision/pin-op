@@ -9,6 +9,7 @@ import {
   CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME,
   bundleChromiumDevToolsModule,
   bundleChromiumReadOnlyElementsRuntime,
+  prepareChromiumReadOnlyElementsBuild,
   verifyChromiumDevToolsPackage,
   verifyChromiumReadOnlyElementsOverlay,
   verifyChromiumReadOnlyMetafileInputs,
@@ -87,10 +88,10 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
   assert.deepEqual(runtimeManifest.package, CHROMIUM_DEVTOOLS_PIN);
   assert.deepEqual(runtimeManifest.readOnlyElementsRuntime, {
     overlayRoot: "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    manifestSha256: "626fd2608f55ffc5a5f13c35c850019ca1df8dfd30505d97a4060b4c2258d53c",
+    manifestSha256: "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
     entryPoint: "entrypoints/read-only-elements.ts",
     exactImporterSpecifierResolutions: true,
-    unminifiedBytes: 767_974,
+    unminifiedBytes: 776_393,
     maxUnminifiedBytes: 1_048_576,
     browserTargets: ["chrome116", "firefox142"],
     upstreamInputClosure: {
@@ -98,8 +99,8 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
       sha256: "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b",
     },
     overlayInputClosure: {
-      fileCount: 36,
-      sha256: "9c3cb8bb26b1446e33fcf6952a8eaeb68a422e4ea74fd1d1d67e61f3e3b6c4a3",
+      fileCount: 37,
+      sha256: "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5",
     },
     requiredLicenseFiles: {
       LICENSE: "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
@@ -224,13 +225,15 @@ test("read-only Elements overlay is versioned and resolves only exact reviewed i
   assert.deepEqual(CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets, ["chrome116", "firefox142"]);
   assert.equal(
     CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.manifestSha256,
-    "626fd2608f55ffc5a5f13c35c850019ca1df8dfd30505d97a4060b4c2258d53c",
+    "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
   );
 
   const overlay = await verifyChromiumReadOnlyElementsOverlay(repositoryRoot);
   assert.equal(overlay.manifest.package.version, CHROMIUM_DEVTOOLS_PIN.version);
+  assert.equal(overlay.manifest.entryPoint, "entrypoints/read-only-elements.ts");
+  assert.equal(overlay.manifest.testOnlyEntryPoint, "entrypoints/read-only-elements-smoke.ts");
   assert.equal(Object.keys(overlay.manifest.upstreamFiles).length, 14);
-  assert.equal(Object.keys(overlay.manifest.overlayFiles).length, 39);
+  assert.equal(Object.keys(overlay.manifest.overlayFiles).length, 41);
   assert.deepEqual(Object.keys(overlay.manifest.sourceTransforms).sort(), [
     "front_end/core/sdk/DOMModel.ts",
     "front_end/panels/elements/ElementsTreeElement.ts",
@@ -309,6 +312,9 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
 
   const javascript = result.outputFiles.find(file => file.path.endsWith(".js"));
   assert.ok(javascript);
+  const javascriptMetadata = Object.entries(result.metafile.outputs)
+    .find(([output]) => output.endsWith(".js"))?.[1];
+  assert.deepEqual(javascriptMetadata?.exports, ["chromiumElementsRuntime"]);
   assert.ok(javascript.contents.byteLength <= CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.maxUnminifiedBytes);
   const output = new TextDecoder().decode(javascript.contents);
   assert.match(output, /ElementsTreeOutline\s*=\s*class/);
@@ -318,6 +324,8 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
   assert.match(output, /--sys-color-cdt-base-container:/);
   assert.match(output, /\.text-button:not\(:disabled, \.primary-button\):focus-visible/);
   assert.match(output, /interpolate-size: allow-keywords/);
+  assert.match(output, /pin-op-elements-load-more/);
+  assert.match(output, /data-pin-op-load-more-ref/);
   assert.doesNotMatch(output, /StylesSidebarPane\s*=\s*class/);
   for (const removed of [
     "invoke_copyTo",
@@ -340,14 +348,14 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
     assert.ok(!output.includes(removed), `read-only output retained ${removed}`);
   }
 
-  assert.equal(result.unminifiedBytes, 767_974);
+  assert.equal(result.unminifiedBytes, 776_393);
   assert.deepEqual(result.chromiumInputAttestation, {
     fileCount: 42,
     sha256: "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b",
   });
   assert.deepEqual(result.overlayAttestation, {
-    fileCount: 36,
-    sha256: "9c3cb8bb26b1446e33fcf6952a8eaeb68a422e4ea74fd1d1d67e61f3e3b6c4a3",
+    fileCount: 37,
+    sha256: "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5",
   });
   assert.deepEqual(result.requiredLicenseFiles, [
     {
@@ -359,6 +367,56 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
       sha256: "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1",
     },
   ]);
+});
+
+test("read-only Elements build preparation is reusable by a one-pass browser build", async () => {
+  const prepared = await prepareChromiumReadOnlyElementsBuild(repositoryRoot);
+  assert.equal(Object.isFrozen(prepared), true);
+  assert.equal(
+    prepared.entryPoint.replaceAll("\\", "/").endsWith(
+      "/third_party/chromium-devtools-frontend/patches/1.0.1681091/entrypoints/read-only-elements.ts",
+    ),
+    true,
+  );
+  assert.deepEqual(prepared.browserTargets, ["chrome116", "firefox142"]);
+  assert.equal(Object.isFrozen(prepared.browserTargets), true);
+  assert.equal(Object.isFrozen(prepared.plugins), true);
+  assert.ok(prepared.plugins.length >= 5);
+  assert.ok(prepared.plugins.every(plugin => Object.isFrozen(plugin)));
+  assert.equal(typeof prepared.verifyBuild, "function");
+
+  const result = await bundleChromiumReadOnlyElementsRuntime({
+    repositoryRoot,
+    write: false,
+  });
+  const verification = await prepared.verifyBuild(result);
+  assert.deepEqual(verification.chromiumInputAttestation, result.chromiumInputAttestation);
+  assert.deepEqual(verification.overlayAttestation, result.overlayAttestation);
+  assert.deepEqual(verification.requiredLicenseFiles, result.requiredLicenseFiles);
+  assert.equal(verification.unminifiedBytes, result.unminifiedBytes);
+  assert.equal(Object.isFrozen(verification.verifiedInputKeys), true);
+  assert.ok(verification.verifiedInputKeys.some(input =>
+    input.replaceAll("\\", "/").endsWith("/entrypoints/read-only-elements.ts")));
+
+  const unreachableInput = "tools/test/chromium-devtools-runtime.test.mjs";
+  const withUnreachableInput = structuredClone(result);
+  withUnreachableInput.metafile.inputs[unreachableInput] = {bytes: 1, imports: []};
+  await assert.doesNotReject(prepared.verifyBuild(withUnreachableInput));
+
+  const withReachableInput = structuredClone(result);
+  const entryInput = Object.keys(withReachableInput.metafile.inputs).find(input =>
+    input.replaceAll("\\", "/").endsWith("/entrypoints/read-only-elements.ts"));
+  assert.ok(entryInput);
+  withReachableInput.metafile.inputs[entryInput].imports.push({
+    path: unreachableInput,
+    kind: "import-statement",
+    original: "#unreviewed",
+  });
+  withReachableInput.metafile.inputs[unreachableInput] = {bytes: 1, imports: []};
+  await assert.rejects(
+    prepared.verifyBuild(withReachableInput),
+    /outside the pinned package and overlay/i,
+  );
 });
 
 test("read-only provenance rejects disguised namespaces and repository-local external inputs", async () => {

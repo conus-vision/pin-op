@@ -6,6 +6,7 @@
     "gitHead": "23cccaa78f7458a5aad99c1af98dc1856d2494a3"
   },
   "entryPoint": "entrypoints/read-only-elements.ts",
+  "testOnlyEntryPoint": "entrypoints/read-only-elements-smoke.ts",
   "maxUnminifiedBytes": 1048576,
   "browserTargets": ["chrome116", "firefox142"],
   "upstreamFiles": {
@@ -60,7 +61,8 @@
     }
   },
   "overlayFiles": {
-    "entrypoints/read-only-elements.ts": "80a13869c53056f00e51e6814e12fdf61968c00b78f832e22ad8dd8cfa23e886",
+    "entrypoints/read-only-elements-smoke.ts": "5b59f3352b9234c42c2c8dec0fefcb015aa470b5a95ae8593a56e288b948d53d",
+    "entrypoints/read-only-elements.ts": "124c201bcd01f202359232985aa1b0594a8371ff08f152397b6eaa4336baf29f",
     "facades/adopted-style-sheets.ts": "4a09adec6cdc6be238db2003d5137dd9790fe11972c104f027a9d66789c0ed63",
     "facades/ai.ts": "7168e8ce07646dc84308c17bb7abfb008a3bd6cdcc28219cb73c3b327293f9bf",
     "facades/aria.ts": "d5f2faa3836a9a1879b9004d398b7f2fa272af4289ad4a6b1657f47f75912197",
@@ -98,15 +100,16 @@
     "facades/ui-utils.ts": "56849cf4d71cec635e07925f827b78f2c5e819f3ff899d19e1a2d2a7096be608",
     "facades/ui.ts": "936b7c66dd1a393c0c147bbca2bdab692ba4bf740e137076c83448d21e7d637d",
     "facades/visual-logging.ts": "5253547476731860058d7bc68e8503b826510a1083b680d7f74b279083218397",
-    "facades/workspace.ts": "2c065afce750829aecff5a80bf3cef3f875e2df760dd496fb706d9b6b7b712ea"
+    "facades/workspace.ts": "2c065afce750829aecff5a80bf3cef3f875e2df760dd496fb706d9b6b7b712ea",
+    "runtime/read-only-elements-runtime.ts": "ad466505312c60584e99ee51e9986278f728acc231120d10421ad3afbf6ad6f9"
   },
   "reviewedInputClosure": {
     "fileCount": 42,
     "sha256": "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b"
   },
   "reviewedOverlayClosure": {
-    "fileCount": 36,
-    "sha256": "9c3cb8bb26b1446e33fcf6952a8eaeb68a422e4ea74fd1d1d67e61f3e3b6c4a3"
+    "fileCount": 37,
+    "sha256": "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5"
   },
   "requiredLicenseFiles": {
     "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",

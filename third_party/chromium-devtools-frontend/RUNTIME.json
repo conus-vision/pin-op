@@ -50,10 +50,10 @@
   },
   "readOnlyElementsRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    "manifestSha256": "626fd2608f55ffc5a5f13c35c850019ca1df8dfd30505d97a4060b4c2258d53c",
+    "manifestSha256": "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
     "entryPoint": "entrypoints/read-only-elements.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 767974,
+    "unminifiedBytes": 776393,
     "maxUnminifiedBytes": 1048576,
     "browserTargets": ["chrome116", "firefox142"],
     "upstreamInputClosure": {
@@ -61,8 +61,8 @@
       "sha256": "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b"
     },
     "overlayInputClosure": {
-      "fileCount": 36,
-      "sha256": "9c3cb8bb26b1446e33fcf6952a8eaeb68a422e4ea74fd1d1d67e61f3e3b6c4a3"
+      "fileCount": 37,
+      "sha256": "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5"
     },
     "requiredLicenseFiles": {
       "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
