@@ -34,22 +34,26 @@ are routed through that channel to the inspected tab, never through the product
 WebSocket.
 
 The default panel in Chrome and Firefox is one shared Chromium-derived,
-read-only Inspector UI. It reuses a small BSD-licensed view derivation from a
-pinned Chromium DevTools Elements revision. It is presentation code only:
-Pin-op does not embed Chromium's `ElementsPanel`, Chrome DevTools Protocol
-backend, SDK models, target discovery, host integration, or browser branding.
-`DomTreeProvider`, `DomTreeController`, page inspection, overlay, selection,
-refresh, pseudo preview, and bridge routing remain Pin-op-owned. The checked-in
-[upstream manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
-[BSD license](../third_party/chromium-devtools-frontend/LICENSE), and
-[derivation record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
-are provenance and reproduction inputs; the upstream snapshot is never
-imported by production code.
+byte-identical, read-only Inspector UI built from a native Chromium DevTools
+frontend runtime. It compiles the pinned npm package's actual
+`DOMModel`, `ElementsTreeOutline`, `StylesSidebarPane`,
+`StylePropertiesSection`, `StylePropertyTreeElement`, property renderer, tree
+widgets, design tokens, icons, and scoped CSS. Hash-pinned overlays remove
+editing, context-menu, AI, telemetry, network, and DevTools-host paths and
+provide only the narrow browser-neutral facades those reviewed modules need.
+Pin-op does not embed Chromium's `ElementsPanel`, connect a Chrome DevTools
+Protocol backend, discover targets, or ship browser branding.
+`DomTreeProvider`, page inspection, overlay, selection, refresh, source
+authority, pseudo preview, and bridge routing remain Pin-op-owned.
 
-The default Inspector sidebar contains read-only Rules and has no visible Source
-tab. Existing Source remains active-document-only in the packaged, non-default
-legacy rollback panel for its one published rollback release. Remounting Source
-beside Rules and adding first-party PHP/template providers are future scope.
+The checked-in [native runtime manifest](../third_party/chromium-devtools-frontend/RUNTIME.json),
+DOM and Rules overlay manifests, [BSD license](../third_party/chromium-devtools-frontend/LICENSE),
+[reference-source manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
+and [derivation record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
+are exact provenance and reproduction inputs. The default Inspector exposes the
+native DOM and Rules views plus Pin-op's Source tab. Exact current Rules origins
+show the SCSS/source label and one-based line and can send an opaque open intent
+to VS Code; unresolved generated CSS origins stay non-clickable.
 
 The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,
@@ -67,7 +71,8 @@ non-default legacy `panel.js` rollback path. The legacy page is retained for
 exactly one published rollback release and is selected only by an explicit
 local `PIN_OP_PANEL_VARIANT=legacy` rollback build. Release verification
 requires byte-identical derived CSS and Chromium notice inventory across
-browsers.
+browsers. It also requires the native runtime JavaScript itself to be
+byte-identical.
 
 ### Inspected-Page Runtime
 

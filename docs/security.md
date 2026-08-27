@@ -168,23 +168,34 @@ approximated.
 ## Chromium-Derived View Boundary
 
 Firefox and Chrome ship one shared Chromium-derived, read-only Inspector UI by
-default. Pin-op uses a small BSD-licensed derivation of Chromium DevTools DOM
-Tree and Rules view code, not Chromium's native Inspector backend. Production
-bundles cannot import the checked-in upstream snapshot and contain no CDP/SDK
-model, DevTools host, target discovery, remote code, or browser branding. The
-[pinned upstream manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
+default. The packaged view directly compiles reviewed modules from the pinned
+`chrome-devtools-frontend` npm package, including the real DOM model/tree and
+Rules sidebar/property renderers, but not Chromium's Inspector backend. Exact
+importer/specifier resolutions and hash-pinned transforms route those modules
+through read-only facades and remove mutation, context-menu, AI, telemetry,
+network, and DevTools-host paths. Production bundles contain no CDP connection,
+target discovery, remote code, or browser branding.
+
+The [native runtime manifest](../third_party/chromium-devtools-frontend/RUNTIME.json),
+DOM patch manifest, Rules overlay manifest,
+[reference-source manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
 [BSD license](../third_party/chromium-devtools-frontend/LICENSE), and
 [Pin-op patch record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES.md)
-are source-provenance and reproduction inputs available in the repository and
-Firefox source submission.
+are exact source-provenance and reproduction inputs in the repository and
+Firefox source submission. Release verification recomputes every declared npm
+input, overlay, image, manifest, and required-license digest. The Firefox
+source gate independently pins the native package identity and binds its
+version and integrity to the root dependency and sole matching pnpm importer,
+package, and snapshot records.
 
 The shared derived stylesheet is required to scope every selector below
 `.pin-op-elements-inspector`. Browser package verification rejects unscoped
 selectors, CSS resource loads, remote UI resources, inline script/style/event
 handlers, `eval`, `Function` construction, remote dynamic loading, upstream
 snapshot paths, changed permissions or host permissions, optional permissions,
-and any CSP drift. Both browser packages must carry the same complete Chromium
-root and embedded Apple/Pecoraro notice inventory.
+and any CSP drift. Both browser packages must carry byte-identical native
+runtime bytes and the same complete Chromium root, embedded Apple/Pecoraro,
+Lit, and CodeMirror notice inventory.
 
 ## Read-Only Rules And CSSOM Boundary
 
