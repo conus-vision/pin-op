@@ -17,6 +17,12 @@ importers:
       cheerio:
         specifier: 1.2.0
         version: 1.2.0
+      chrome-devtools-frontend:
+        specifier: 1.0.1681091
+        version: 1.0.1681091
+      esbuild:
+        specifier: 0.21.5
+        version: 0.21.5
       postcss:
         specifier: 8.5.16
         version: 8.5.16
@@ -1113,6 +1119,9 @@ packages:
 
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
+
+  chrome-devtools-frontend@1.0.1681091:
+    resolution: {integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==}
 
   chrome-launcher@1.2.0:
     resolution: {integrity: sha512-JbuGuBNss258bvGil7FT4HKdC3SC2K7UAEUqiPy3ACS3Yxo3hAW6bvFpCu2HsIJLgTqxgEX6BkujvzZfLpUD0Q==}
@@ -3844,6 +3853,8 @@ snapshots:
 
   chownr@1.1.4:
     optional: true
+
+  chrome-devtools-frontend@1.0.1681091: {}
 
   chrome-launcher@1.2.0:
     dependencies:

@@ -38,6 +38,8 @@
     "@types/node": "^20.14.0",
     "adm-zip": "0.5.16",
     "cheerio": "1.2.0",
+    "chrome-devtools-frontend": "1.0.1681091",
+    "esbuild": "0.21.5",
     "postcss": "8.5.16",
     "postcss-selector-parser": "7.1.0",
     "postcss-value-parser": "4.2.0",

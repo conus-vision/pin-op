@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "packageName": "chrome-devtools-frontend",
+    "version": "1.0.1681091",
+    "gitHead": "23cccaa78f7458a5aad99c1af98dc1856d2494a3",
+    "integrity": "sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ=="
+  },
+  "repository": "https://github.com/ChromeDevTools/devtools-frontend.git",
+  "license": {
+    "spdx": "BSD-3-Clause",
+    "path": "LICENSE",
+    "sha256": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e"
+  },
+  "reviewedEntrypoints": {
+    "front_end/panels/elements/ElementsTreeOutline.ts": "36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d",
+    "front_end/panels/elements/StylesSidebarPane.ts": "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28"
+  },
+  "reviewedInputClosures": {
+    "front_end/panels/elements/ElementsTreeOutline.ts": {
+      "fileCount": 1021,
+      "sha256": "84023be2c6e729cc646f50776644bf88500f1a576605b7744818954fda3fc860"
+    },
+    "front_end/panels/elements/StylesSidebarPane.ts": {
+      "fileCount": 1021,
+      "sha256": "84023be2c6e729cc646f50776644bf88500f1a576605b7744818954fda3fc860"
+    }
+  },
+  "generatedModules": [
+    "front_end/Images/Images.js",
+    "front_end/core/i18n/locales.js",
+    "front_end/**/*.css.js",
+    "front_end/models/ai_assistance/skills/*.skill.js"
+  ],
+  "reviewedImages": {
+    "arrow-collapse.svg": "560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e",
+    "arrow-drop-down-dark.svg": "f11634d22b8d833af0960dc52e628c56cba1029e6fbcc84b3b3b990438e83039",
+    "arrow-drop-down-light.svg": "e2825adc9df196ec67e8dd7b6c37494b7b0b03d9eed42b195a0b9c7576582ce7",
+    "arrow-drop-down.svg": "3e445565421d0793a77d0cd3a49cb72276a9d40f57654a7d7445c68b4c8f18e6",
+    "checker.svg": "72737a4aab8c143dfc925213d109699a3c951feff3aceb62fc95da9eefe5f0a3",
+    "cross-circle-filled.svg": "5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3",
+    "empty.svg": "c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6",
+    "goto-filled.svg": "d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf",
+    "refresh.svg": "35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b",
+    "triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
+    "triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85",
+    "triangle-up.svg": "90fb77f6cab8df35681d1db88e078fa8aaac4a9336f17fc6f2aabbc86efc2af5",
+    "warning-filled.svg": "4445b327116ab32f274898a876c7bb8e0813d97dfe2eae05adf8ee9b5ac43cb0"
+  },
+  "notes": "The npm tarball contains the official Chromium DevTools TypeScript and CSS sources. The direct entrypoint builds are provenance and compatibility gates; the packaged Pin-op runtime must use a reviewed adapter entry, a smaller attested closure, a size ceiling, and complete generated notices before it can ship."
+}
