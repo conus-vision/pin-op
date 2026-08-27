@@ -1,0 +1,136 @@
+import type { MatchedStylesSnapshot, RuleOriginDecoration } from
+  "../../src/contracts.js";
+import type {
+  ChromiumReadOnlyStylesPane,
+  ChromiumReadOnlyStylesPaneOptions,
+  ChromiumReadOnlyStylesRuntime,
+} from "../../src/chromium/upstream/PinOpStylesSidebarAdapter.js";
+
+export class FakeChromiumReadOnlyStylesRuntime implements
+  ChromiumReadOnlyStylesRuntime {
+  public createdPane: FakeChromiumReadOnlyStylesPane | undefined;
+  public createCount = 0;
+  public createError: unknown;
+  public leakBeforeCreateError = false;
+  public leavePaneDetached = false;
+  public paneRenderError: unknown;
+  public paneRefreshError: unknown;
+  public paneClearError: unknown;
+  public paneDisposeError: unknown;
+  public paneCallDepth = 0;
+  public maxPaneCallDepth = 0;
+  public readonly paneCalls: string[] = [];
+  public onPaneRender: ((snapshot: MatchedStylesSnapshot) => void) | undefined;
+  public onPaneClear: (() => void) | undefined;
+
+  public createPane(
+    options: ChromiumReadOnlyStylesPaneOptions,
+  ): ChromiumReadOnlyStylesPane {
+    this.createCount += 1;
+    if (this.leakBeforeCreateError) {
+      options.mount.append(options.document.createElement("aside"));
+    }
+    if (this.createError !== undefined) throw this.createError;
+    const pane = new FakeChromiumReadOnlyStylesPane(this, options);
+    this.createdPane = pane;
+    if (!this.leavePaneDetached) options.mount.append(pane.element);
+    return pane;
+  }
+
+  public enterPaneCall(call: string): void {
+    this.paneCallDepth += 1;
+    this.maxPaneCallDepth = Math.max(
+      this.maxPaneCallDepth,
+      this.paneCallDepth,
+    );
+    this.paneCalls.push(call);
+  }
+
+  public exitPaneCall(): void {
+    this.paneCallDepth -= 1;
+  }
+}
+
+export class FakeChromiumReadOnlyStylesPane implements
+  ChromiumReadOnlyStylesPane {
+  public readonly element: HTMLElement;
+  public readonly rendered: MatchedStylesSnapshot[] = [];
+  public refreshCount = 0;
+  public clearCount = 0;
+  public disposeCount = 0;
+
+  public constructor(
+    private readonly runtime: FakeChromiumReadOnlyStylesRuntime,
+    private readonly options: ChromiumReadOnlyStylesPaneOptions,
+  ) {
+    this.element = options.document.createElement("div");
+    this.element.setAttribute("data-part", "chromium-read-only-styles-pane");
+  }
+
+  public render(snapshot: MatchedStylesSnapshot): void {
+    this.runtime.enterPaneCall(`render:${snapshot.matchedRules[0]?.ruleRef ?? "inline"}`);
+    try {
+      this.rendered.push(snapshot);
+      const renderError = this.runtime.paneRenderError;
+      const onRender = this.runtime.onPaneRender;
+      this.runtime.onPaneRender = undefined;
+      onRender?.(snapshot);
+      if (renderError !== undefined) throw renderError;
+    } finally {
+      this.runtime.exitPaneCall();
+    }
+  }
+
+  public refreshOrigins(): void {
+    this.runtime.enterPaneCall("refresh");
+    try {
+      this.refreshCount += 1;
+      if (this.runtime.paneRefreshError !== undefined) {
+        throw this.runtime.paneRefreshError;
+      }
+    } finally {
+      this.runtime.exitPaneCall();
+    }
+  }
+
+  public clear(): void {
+    this.runtime.enterPaneCall("clear");
+    try {
+      this.clearCount += 1;
+      const onClear = this.runtime.onPaneClear;
+      this.runtime.onPaneClear = undefined;
+      onClear?.();
+      if (this.runtime.paneClearError !== undefined) {
+        throw this.runtime.paneClearError;
+      }
+      this.element.replaceChildren();
+    } finally {
+      this.runtime.exitPaneCall();
+    }
+  }
+
+  public dispose(): void {
+    this.runtime.enterPaneCall("dispose");
+    try {
+      this.disposeCount += 1;
+      if (this.runtime.paneDisposeError !== undefined) {
+        throw this.runtime.paneDisposeError;
+      }
+      this.element.remove();
+    } finally {
+      this.runtime.exitPaneCall();
+    }
+  }
+
+  public resolveOrigin(ruleRef: unknown): RuleOriginDecoration | undefined {
+    return this.options.resolveOrigin(ruleRef as string);
+  }
+
+  public openOrigin(ruleRef: unknown): void {
+    this.options.openOrigin(ruleRef as string);
+  }
+
+  public report(error: unknown): void {
+    this.options.onError(error);
+  }
+}
