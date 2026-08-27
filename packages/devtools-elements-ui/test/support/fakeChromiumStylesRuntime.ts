@@ -15,6 +15,8 @@ export class FakeChromiumReadOnlyStylesRuntime implements
   public leavePaneDetached = false;
   public paneRenderError: unknown;
   public paneRefreshError: unknown;
+  public paneRenderCompletion: PromiseLike<void> | undefined;
+  public paneRefreshCompletion: PromiseLike<void> | undefined;
   public paneClearError: unknown;
   public paneDisposeError: unknown;
   public paneCallDepth = 0;
@@ -67,7 +69,7 @@ export class FakeChromiumReadOnlyStylesPane implements
     this.element.setAttribute("data-part", "chromium-read-only-styles-pane");
   }
 
-  public render(snapshot: MatchedStylesSnapshot): void {
+  public render(snapshot: MatchedStylesSnapshot): void | Promise<void> {
     this.runtime.enterPaneCall(`render:${snapshot.matchedRules[0]?.ruleRef ?? "inline"}`);
     try {
       this.rendered.push(snapshot);
@@ -76,18 +78,24 @@ export class FakeChromiumReadOnlyStylesPane implements
       this.runtime.onPaneRender = undefined;
       onRender?.(snapshot);
       if (renderError !== undefined) throw renderError;
+      const completion = this.runtime.paneRenderCompletion;
+      this.runtime.paneRenderCompletion = undefined;
+      return completion as Promise<void> | undefined;
     } finally {
       this.runtime.exitPaneCall();
     }
   }
 
-  public refreshOrigins(): void {
+  public refreshOrigins(): void | Promise<void> {
     this.runtime.enterPaneCall("refresh");
     try {
       this.refreshCount += 1;
       if (this.runtime.paneRefreshError !== undefined) {
         throw this.runtime.paneRefreshError;
       }
+      const completion = this.runtime.paneRefreshCompletion;
+      this.runtime.paneRefreshCompletion = undefined;
+      return completion as Promise<void> | undefined;
     } finally {
       this.runtime.exitPaneCall();
     }

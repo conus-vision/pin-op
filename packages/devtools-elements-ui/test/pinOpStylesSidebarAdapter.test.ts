@@ -394,6 +394,367 @@ describe("PinOpStylesSidebarAdapter", () => {
     expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
   });
 
+  it("serializes async rendering, coalesces pending requests, and commits only the current completion", async () => {
+    const harness = createHarness();
+    const pending = deferred();
+    const first = styles("rule:first", 1);
+    const skipped = styles("rule:skipped", 2);
+    const latest = styles("rule:latest", 3);
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(first);
+    harness.host.render(skipped);
+    harness.host.render(latest);
+
+    expect(harness.pane.rendered).toEqual([first]);
+    expect(harness.pane.refreshCount).toBe(0);
+
+    pending.resolve();
+    await flushPromises();
+
+    expect(harness.pane.rendered).toEqual([first, latest]);
+    expect(harness.pane.refreshCount).toBe(0);
+    harness.host.render(latest);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
+  it("fully rerenders the same snapshot requested during an older async render", async () => {
+    const harness = createHarness();
+    const pending = deferred();
+    const snapshot = styles("rule:one", 1);
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(snapshot);
+    harness.host.render(snapshot);
+
+    expect(harness.pane.rendered).toEqual([snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+
+    pending.resolve();
+    await flushPromises();
+
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+    harness.host.render(snapshot);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
+  it("contains async render rejection and retries the exact snapshot with a full render", async () => {
+    const renderError = new Error("async native render failed");
+    const harness = createHarness({
+      onError: () => {
+        throw new Error("observer is not authority");
+      },
+    });
+    const pending = deferred();
+    const snapshot = styles("rule:one", 1);
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(snapshot);
+    pending.reject(renderError);
+    await flushPromises();
+
+    expect(harness.pane.clearCount).toBe(1);
+    expect(harness.errors).toEqual([renderError]);
+
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("treats an undefined async rejection reason as failure", async () => {
+    const harness = createHarness();
+    const pending = deferred();
+    const snapshot = styles("rule:one", 1);
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(snapshot);
+    pending.reject(undefined);
+    await flushPromises();
+
+    expect(harness.pane.clearCount).toBe(1);
+    expect(harness.errors).toEqual([undefined]);
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("contains a native Promise whose own constructor is hostile", async () => {
+    const harness = createHarness();
+    const snapshot = styles("rule:one", 1);
+    const constructorError = new Error("hostile promise constructor");
+    const completion = Promise.resolve();
+    let constructorReads = 0;
+    Object.defineProperty(completion, "constructor", {
+      configurable: true,
+      get: () => {
+        constructorReads += 1;
+        throw constructorError;
+      },
+    });
+    harness.runtime.paneRenderCompletion = completion;
+
+    expect(() => harness.host.render(snapshot)).not.toThrow();
+    await flushPromises();
+
+    expect(constructorReads).toBe(1);
+    expect(harness.errors).toEqual([constructorError]);
+    expect(harness.pane.clearCount).toBe(1);
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("contains a native Promise with a hostile own then accessor", async () => {
+    const harness = createHarness();
+    const snapshot = styles("rule:one", 1);
+    const thenError = new Error("hostile promise then");
+    const completion = Promise.resolve();
+    let thenReads = 0;
+    Object.defineProperty(completion, "then", {
+      configurable: true,
+      get: () => {
+        thenReads += 1;
+        throw thenError;
+      },
+    });
+    harness.runtime.paneRenderCompletion = completion;
+
+    expect(() => harness.host.render(snapshot)).not.toThrow();
+    await flushPromises();
+
+    expect(thenReads).toBe(1);
+    expect(harness.errors).toEqual([thenError]);
+    expect(harness.pane.clearCount).toBe(1);
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("contains rejection from a non-Promise thenable and permits full retry", async () => {
+    const harness = createHarness();
+    const snapshot = styles("rule:one", 1);
+    const renderError = new Error("structural thenable rejected");
+    harness.runtime.paneRenderCompletion = {
+      then: (_resolve, reject) => reject(renderError),
+    };
+
+    expect(() => harness.host.render(snapshot)).not.toThrow();
+    await flushPromises();
+
+    expect(harness.errors).toEqual([renderError]);
+    expect(harness.pane.clearCount).toBe(1);
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("ignores self-thenable fulfillment instead of recursively assimilating it", async () => {
+    const harness = createHarness();
+    const snapshot = styles("rule:one", 1);
+    const recursiveError = new Error("self thenable was assimilated");
+    let thenCalls = 0;
+    const completion = {
+      then: (
+        resolve: (value?: unknown) => void,
+        reject: (error: unknown) => void,
+      ): void => {
+        thenCalls += 1;
+        if (thenCalls === 1) resolve(completion);
+        else reject(recursiveError);
+      },
+    };
+    harness.runtime.paneRenderCompletion = completion as unknown as
+      PromiseLike<void>;
+
+    expect(() => harness.host.render(snapshot)).not.toThrow();
+    await flushPromises();
+
+    expect(thenCalls).toBe(1);
+    expect(harness.errors).toEqual([]);
+    expect(harness.pane.clearCount).toBe(0);
+    harness.host.render(snapshot);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
+  it("ignores a foreign thenable passed as the void fulfillment value", async () => {
+    const harness = createHarness();
+    const snapshot = styles("rule:one", 1);
+    let foreignThenCalls = 0;
+    const foreignCompletion = {
+      then: (): void => {
+        foreignThenCalls += 1;
+        throw new Error("foreign thenable gained authority");
+      },
+    };
+    harness.runtime.paneRenderCompletion = {
+      then: resolve => resolve(foreignCompletion as unknown as void),
+    };
+
+    expect(() => harness.host.render(snapshot)).not.toThrow();
+    await flushPromises();
+
+    expect(foreignThenCalls).toBe(0);
+    expect(harness.errors).toEqual([]);
+    expect(harness.pane.clearCount).toBe(0);
+    harness.host.render(snapshot);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
+  it("ignores late foreign fulfillment after disposal without unhandled work", async () => {
+    const harness = createHarness();
+    let fulfillLater: ((value?: unknown) => void) | undefined;
+    let foreignThenCalls = 0;
+    const foreignCompletion = {
+      then: (): void => {
+        foreignThenCalls += 1;
+        throw new Error("late foreign thenable gained authority");
+      },
+    };
+    harness.runtime.paneRenderCompletion = {
+      then: resolve => {
+        fulfillLater = resolve as (value?: unknown) => void;
+      },
+    };
+
+    harness.host.render(styles("rule:one", 1));
+    harness.host.dispose();
+    fulfillLater?.(foreignCompletion);
+    await flushPromises();
+
+    expect(foreignThenCalls).toBe(0);
+    expect(harness.errors).toEqual([]);
+    expect(harness.pane.disposeCount).toBe(1);
+    expect(harness.mount.children).toEqual([harness.sentinel]);
+  });
+
+  it("fences late rejection from a non-Promise thenable after disposal", async () => {
+    const harness = createHarness();
+    let rejectLater: ((error: unknown) => void) | undefined;
+    harness.runtime.paneRenderCompletion = {
+      then: (_resolve, reject) => {
+        rejectLater = reject;
+      },
+    };
+
+    expect(() => harness.host.render(styles("rule:one", 1))).not.toThrow();
+    harness.host.dispose();
+    await Promise.resolve();
+    expect(rejectLater).toBeTypeOf("function");
+
+    rejectLater?.(new Error("late structural rejection"));
+    await flushPromises();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.pane.disposeCount).toBe(1);
+    expect(harness.mount.children).toEqual([harness.sentinel]);
+  });
+
+  it("keeps newer source authority and presentation after a stale async failure", async () => {
+    const source = new FakeSourceLinkDelegate({
+      label: "latest.scss", languageId: "scss", startLine: 8, startColumn: 2,
+      confidence: "sourcemap", clickable: true,
+    });
+    const harness = createHarness({ source });
+    const pending = deferred();
+    const stale = styles("rule:stale", 1);
+    const latest = styles("rule:latest", 2);
+    const staleError = new Error("stale async failure");
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(stale);
+    harness.host.render(latest);
+
+    expect(harness.pane.resolveOrigin("rule:stale")).toBeUndefined();
+    expect(harness.pane.resolveOrigin("rule:latest")?.label).toBe("latest.scss");
+    pending.reject(staleError);
+    await flushPromises();
+
+    expect(harness.pane.rendered).toEqual([stale, latest]);
+    expect(harness.pane.clearCount).toBe(0);
+    expect(harness.errors).toEqual([staleError]);
+    expect(harness.pane.resolveOrigin("rule:latest")?.label).toBe("latest.scss");
+    harness.host.render(latest);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
+  it("lets clear supersede an async completion without reviving the old snapshot", async () => {
+    const harness = createHarness();
+    const pending = deferred();
+    const snapshot = styles("rule:one", 1);
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(snapshot);
+    harness.host.clear();
+    pending.resolve();
+    await flushPromises();
+
+    expect(harness.pane.clearCount).toBe(1);
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(0);
+  });
+
+  it("disposes immediately during async rendering and fences late rejection", async () => {
+    const pseudo = new FakePseudoStateDataSource();
+    const harness = createHarness({ pseudo });
+    const pending = deferred();
+    harness.runtime.paneRenderCompletion = pending.promise;
+
+    harness.host.render(styles("rule:one", 1));
+    expect(pseudo.listenerCount()).toBe(1);
+    harness.host.dispose();
+
+    expect(harness.pane.disposeCount).toBe(1);
+    expect(pseudo.listenerCount()).toBe(0);
+    expect(harness.mount.children).toEqual([harness.sentinel]);
+
+    pending.reject(new Error("late render rejection"));
+    await flushPromises();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.pane.disposeCount).toBe(1);
+    expect(() => harness.host.dispose()).not.toThrow();
+  });
+
+  it("finishes disposal requested reentrantly by an async failure observer", async () => {
+    let disposeHost = (): void => {};
+    const harness = createHarness({ onError: () => disposeHost() });
+    const pending = deferred();
+    const renderError = new Error("async render failed before disposal");
+    harness.runtime.paneRenderCompletion = pending.promise;
+    disposeHost = () => harness.host.dispose();
+
+    harness.host.render(styles("rule:one", 1));
+    pending.reject(renderError);
+    await flushPromises();
+
+    expect(harness.errors).toEqual([renderError]);
+    expect(harness.pane.disposeCount).toBe(1);
+    expect(harness.mount.children).toEqual([harness.sentinel]);
+    expect(() => harness.host.dispose()).not.toThrow();
+  });
+
+  it("recovers from an async origin refresh failure with a later full render", async () => {
+    const harness = createHarness();
+    const pending = deferred();
+    const snapshot = styles("rule:one", 1);
+    const refreshError = new Error("async refresh failed");
+    harness.host.render(snapshot);
+    harness.runtime.paneRefreshCompletion = pending.promise;
+
+    harness.host.render(snapshot);
+    pending.reject(refreshError);
+    await flushPromises();
+
+    expect(harness.errors).toEqual([refreshError]);
+    expect(harness.pane.clearCount).toBe(1);
+
+    harness.host.render(snapshot);
+    expect(harness.pane.rendered).toEqual([snapshot, snapshot]);
+    expect(harness.pane.refreshCount).toBe(1);
+  });
+
   it("does not let a stale outer render clear a newer reentrant snapshot", () => {
     const harness = createHarness();
     const first = styles("rule:first", 1);
@@ -655,6 +1016,7 @@ describe("PinOpStylesSidebarAdapter", () => {
 function createHarness(options: {
   readonly source?: SourceLinkDelegate;
   readonly pseudo?: PseudoStateDataSource;
+  readonly onError?: (error: unknown) => void;
 } = {}) {
   const runtime = new FakeChromiumReadOnlyStylesRuntime();
   const document = new FakeDocument();
@@ -665,7 +1027,10 @@ function createHarness(options: {
   mount.append(sentinel);
   document.body.append(mount);
   const host = createPinOpStylesRulesRenderer(runtime, {
-    onError: error => errors.push(error),
+    onError: error => {
+      errors.push(error);
+      options.onError?.(error);
+    },
   })(
     document.document,
     mount as unknown as HTMLElement,
@@ -796,4 +1161,23 @@ function reentrantStyles(
 function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined) throw new Error("Missing test value");
   return value;
+}
+
+function deferred(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return {promise, resolve, reject};
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }

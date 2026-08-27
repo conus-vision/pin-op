@@ -29,8 +29,8 @@ export interface ChromiumReadOnlyStylesPaneOptions {
 
 export interface ChromiumReadOnlyStylesPane {
   readonly element: HTMLElement;
-  render(snapshot: MatchedStylesSnapshot): void;
-  refreshOrigins(): void;
+  render(snapshot: MatchedStylesSnapshot): void | Promise<void>;
+  refreshOrigins(): void | Promise<void>;
   clear(): void;
   dispose(): void;
 }
@@ -132,6 +132,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
   private pendingPresentation: PendingPresentation | undefined;
   private presentationRequestRevision = 0;
   private presenting = false;
+  private awaitingAsyncPresentation = false;
   private disposed = false;
   private disposeCompleted = false;
 
@@ -160,6 +161,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
         kind: "failure",
         authorityRevision,
         error,
+        requestRevision,
       };
       this.drainPresentation();
       return;
@@ -169,6 +171,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
     this.pendingPresentation = {
       kind: "render",
       authorityRevision,
+      requestRevision,
       snapshot,
     };
     this.drainPresentation();
@@ -176,9 +179,9 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
 
   public clear(): void {
     if (this.disposed) return;
-    this.presentationRequestRevision += 1;
+    const requestRevision = ++this.presentationRequestRevision;
     this.originBoundary.clearRuleRefs();
-    this.pendingPresentation = { kind: "clear" };
+    this.pendingPresentation = { kind: "clear", requestRevision };
     this.drainPresentation();
   }
 
@@ -189,52 +192,120 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
     this.pendingPresentation = undefined;
     this.lastSnapshot = undefined;
     this.originBoundary.dispose();
-    if (this.presenting) return;
+    if (this.presenting && !this.awaitingAsyncPresentation) return;
     this.finishDispose();
   }
 
   private drainPresentation(): void {
     if (this.presenting || this.disposed) return;
-    this.presenting = true;
-    try {
-      while (!this.disposed) {
-        const presentation = this.pendingPresentation;
-        if (!presentation) break;
-        this.pendingPresentation = undefined;
-        if (presentation.kind === "render") {
-          this.presentSnapshot(presentation);
-        } else if (presentation.kind === "clear") {
-          this.clearPane("Chromium Styles pane could not be cleared");
-        } else {
-          this.recoverFromPresentationFailure(
-            presentation.authorityRevision,
-            presentation.error,
-          );
+    while (!this.disposed) {
+      const presentation = this.pendingPresentation;
+      if (!presentation) return;
+      this.pendingPresentation = undefined;
+      this.presenting = true;
+      if (presentation.kind === "render") {
+        const completion = this.startSnapshotPresentation(presentation);
+        if (completion) {
+          this.awaitingAsyncPresentation = true;
+          this.observeAsyncPresentation(presentation, completion);
+          if (this.disposed && !this.disposeCompleted) this.finishDispose();
+          return;
         }
+      } else if (presentation.kind === "clear") {
+        this.clearPane("Chromium Styles pane could not be cleared");
+      } else {
+        this.recoverFromPresentationFailure(presentation, presentation.error);
       }
-    } finally {
       this.presenting = false;
-      if (this.disposed && !this.disposeCompleted) this.finishDispose();
+      if (this.disposed && !this.disposeCompleted) {
+        this.finishDispose();
+        return;
+      }
     }
   }
 
-  private presentSnapshot(
+  private startSnapshotPresentation(
+    presentation: Extract<PendingPresentation, { readonly kind: "render" }>,
+  ): Promise<void> | undefined {
+    const refreshOnly = presentation.snapshot === this.lastSnapshot;
+    let completion: void | Promise<void>;
+    try {
+      completion = refreshOnly
+        ? this.pane.refreshOrigins()
+        : this.pane.render(presentation.snapshot);
+    } catch (error) {
+      this.recoverFromPresentationFailure(presentation, error);
+      return undefined;
+    }
+    if (completion !== undefined) return adoptCompletion(completion);
+    this.completeSnapshotPresentation(presentation);
+    return undefined;
+  }
+
+  private observeAsyncPresentation(
+    presentation: Extract<PendingPresentation, { readonly kind: "render" }>,
+    completion: Promise<void>,
+  ): void {
+    void completion.then(
+      () => this.settleAsyncPresentation(presentation, { kind: "success" }),
+      error => this.settleAsyncPresentation(
+        presentation,
+        { kind: "failure", error },
+      ),
+    ).catch(error => {
+      // A native callback may be arbitrarily hostile. Keep its exception out
+      // of the host event loop and leave diagnostics observational.
+      try {
+        this.awaitingAsyncPresentation = false;
+        this.presenting = false;
+        this.lastSnapshot = undefined;
+        this.originBoundary.report(error);
+      } catch {
+        // The boundary itself is deliberately non-throwing; this is a final
+        // containment guard for structural runtimes outside our type system.
+      }
+    });
+  }
+
+  private settleAsyncPresentation(
+    presentation: Extract<PendingPresentation, { readonly kind: "render" }>,
+    outcome: AsyncPresentationOutcome,
+  ): void {
+    this.awaitingAsyncPresentation = false;
+    try {
+      if (outcome.kind === "success") {
+        this.completeSnapshotPresentation(presentation);
+      } else {
+        this.recoverFromPresentationFailure(presentation, outcome.error);
+      }
+    } finally {
+      this.presenting = false;
+    }
+    if (this.disposed && !this.disposeCompleted) {
+      this.finishDispose();
+      return;
+    }
+    this.drainPresentation();
+  }
+
+  private completeSnapshotPresentation(
     presentation: Extract<PendingPresentation, { readonly kind: "render" }>,
   ): void {
-    const refreshOnly = presentation.snapshot === this.lastSnapshot;
-    try {
-      if (refreshOnly) this.pane.refreshOrigins();
-      else this.pane.render(presentation.snapshot);
-      if (this.disposed) return;
-      this.restoreStableChildren();
-      if (this.disposed) return;
-      this.lastSnapshot = presentation.snapshot;
-    } catch (error) {
-      this.recoverFromPresentationFailure(
-        presentation.authorityRevision,
-        error,
-      );
+    if (!this.isCurrentPresentation(presentation)) {
+      if (!this.disposed) this.lastSnapshot = undefined;
+      return;
     }
+    try {
+      this.restoreStableChildren();
+    } catch (error) {
+      this.recoverFromPresentationFailure(presentation, error);
+      return;
+    }
+    if (!this.isCurrentPresentation(presentation)) {
+      if (!this.disposed) this.lastSnapshot = undefined;
+      return;
+    }
+    this.lastSnapshot = presentation.snapshot;
   }
 
   private clearPane(message: string): void {
@@ -263,11 +334,14 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
   }
 
   private recoverFromPresentationFailure(
-    authorityRevision: number,
+    presentation: Extract<
+      PendingPresentation,
+      { readonly kind: "render" | "failure" }
+    >,
     presentationError: unknown,
   ): void {
     if (this.disposed) return;
-    if (!this.originBoundary.isCurrentRevision(authorityRevision)) {
+    if (!this.isCurrentPresentation(presentation)) {
       // The newer request has not touched the serialized pane yet. Force it
       // through a full render because the failed older call may be partial.
       this.lastSnapshot = undefined;
@@ -275,7 +349,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
       return;
     }
     this.lastSnapshot = undefined;
-    this.originBoundary.clearRuleRefsIfCurrent(authorityRevision);
+    this.originBoundary.clearRuleRefsIfCurrent(presentation.authorityRevision);
     const failures: unknown[] = [presentationError];
     attempt(failures, () => this.pane.clear());
     if (failures.length > 1 && !this.disposed) {
@@ -286,6 +360,17 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
       failures,
       "Chromium Styles presentation failed",
     );
+  }
+
+  private isCurrentPresentation(
+    presentation: Extract<
+      PendingPresentation,
+      { readonly kind: "render" | "failure" }
+    >,
+  ): boolean {
+    return !this.disposed &&
+      presentation.requestRevision === this.presentationRequestRevision &&
+      this.originBoundary.isCurrentRevision(presentation.authorityRevision);
   }
 
   private restoreStableChildren(): void {
@@ -312,16 +397,23 @@ type PendingPresentation =
   | {
     readonly kind: "render";
     readonly authorityRevision: number;
+    readonly requestRevision: number;
     readonly snapshot: MatchedStylesSnapshot;
   }
   | {
     readonly kind: "clear";
+    readonly requestRevision: number;
   }
   | {
     readonly kind: "failure";
     readonly authorityRevision: number;
     readonly error: unknown;
+    readonly requestRevision: number;
   };
+
+type AsyncPresentationOutcome =
+  | { readonly kind: "success" }
+  | { readonly kind: "failure"; readonly error: unknown };
 
 class RuleOriginBoundary {
   private ruleRefs: ReadonlySet<string> = EMPTY_RULE_REFS;
@@ -579,6 +671,20 @@ function throwFailures(failures: readonly unknown[], message: string): never {
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function adoptCompletion(completion: Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    try {
+      const then = completion.then;
+      if (typeof then !== "function") {
+        throw new TypeError("Chromium Styles completion is not thenable");
+      }
+      Reflect.apply(then, completion, [() => resolve(), reject]);
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 const EMPTY_RULE_REFS: ReadonlySet<string> = Object.freeze(new Set<string>());
