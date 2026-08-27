@@ -16,10 +16,12 @@ const declarations = await readFile(
 );
 
 const expectedExports = [
+  "CreateElementsRulesRenderer",
   "CreateElementsTreeRenderer",
   "DeclarationState",
   "CreateElementsInspectorView",
   "ElementsInspectorHost",
+  "ElementsRulesRendererHost",
   "ElementsInspectorView",
   "ElementsTreeRendererHost",
   "GeneratedRuleSourceSnapshot",

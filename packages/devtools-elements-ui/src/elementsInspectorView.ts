@@ -1,7 +1,9 @@
 import { ElementsTreeOutline } from "./chromium/dom/ElementsTreeOutline.js";
 import { StylesSidebarPane } from "./chromium/rules/StylesSidebarPane.js";
 import type {
+  CreateElementsRulesRenderer,
   CreateElementsTreeRenderer,
+  ElementsRulesRendererHost,
   ElementsTreeRendererHost,
   PseudoStateDataSource,
   RulesDataSource,
@@ -21,7 +23,7 @@ export class ElementsInspectorView {
   private readonly sourceTab: HTMLElement;
   private treeRendererHost: ElementsTreeRendererHost | undefined;
   private rulesDataSource: RulesDataSource | undefined;
-  private rulesPane: StylesSidebarPane | undefined;
+  private rulesPane: ElementsRulesRendererHost | undefined;
   private unsubscribeRules: (() => void) | undefined;
   private rulesRenderRevision = 0;
   private disposed = false;
@@ -42,6 +44,8 @@ export class ElementsInspectorView {
     sourceLinkDelegate?: SourceLinkDelegate,
     pseudoStateDataSource?: PseudoStateDataSource,
     createTreeRenderer: CreateElementsTreeRenderer = createLocalTreeRenderer,
+    private readonly createRulesRenderer: CreateElementsRulesRenderer =
+      createLocalRulesRenderer,
   ) {
     const ariaIds = allocateAriaIds(document);
     this.element = this.createElement("section", {
@@ -169,7 +173,7 @@ export class ElementsInspectorView {
     if (this.rulesDataSource || this.rulesPane || this.unsubscribeRules) {
       throw new Error("Rules data source is already bound");
     }
-    const rulesPane = new StylesSidebarPane(
+    const rulesPane = this.createRulesRenderer(
       this.document,
       dataSource,
       sourceLinkDelegate,
@@ -362,6 +366,18 @@ const createLocalTreeRenderer: CreateElementsTreeRenderer = (
   mount,
   treeDataSource,
 ) => new ElementsTreeOutline(document, mount, treeDataSource);
+
+const createLocalRulesRenderer: CreateElementsRulesRenderer = (
+  document,
+  dataSource,
+  sourceLinkDelegate,
+  pseudoStateDataSource,
+) => new StylesSidebarPane(
+  document,
+  dataSource,
+  sourceLinkDelegate,
+  pseudoStateDataSource,
+);
 
 const EMPTY_RULES_SNAPSHOT: RulesPresentationSnapshot = Object.freeze({
   state: "empty",

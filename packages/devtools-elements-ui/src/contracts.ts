@@ -191,6 +191,25 @@ export interface RulesDataSource {
   filter(query: string): void;
 }
 
+/**
+ * Owns the concrete Rules presentation mounted by the inspector. Implementors
+ * may use Chromium DevTools widgets, but receive only Pin-op's read-only
+ * presentation snapshots and delegates.
+ */
+export interface ElementsRulesRendererHost {
+  readonly element: HTMLElement;
+  render(snapshot: MatchedStylesSnapshot): void;
+  clear(): void;
+  dispose(): void;
+}
+
+export type CreateElementsRulesRenderer = (
+  document: Document,
+  dataSource: RulesDataSource,
+  sourceLinkDelegate?: SourceLinkDelegate,
+  pseudoStateDataSource?: PseudoStateDataSource,
+) => ElementsRulesRendererHost;
+
 export type PseudoState = "hover" | "focus";
 
 export type PseudoStatePresentationState =

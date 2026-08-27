@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import type {
+  CreateElementsRulesRenderer,
   CreateElementsTreeRenderer,
   RulesDataSource,
   RulesPresentationSnapshot,
@@ -17,6 +18,59 @@ import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("ElementsInspectorView", () => {
+  it("delegates Rules rendering to an injected renderer and owns its host", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const backend = new FakeElementsBackend(elementsSession.tree);
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    const rendererElement = document.createElement("div") as unknown as FakeElement;
+    rendererElement.setAttribute("data-part", "injected-rules-renderer");
+    const calls: Parameters<CreateElementsRulesRenderer>[] = [];
+    const rendered: unknown[] = [];
+    let disposeCalls = 0;
+    const createRulesRenderer: CreateElementsRulesRenderer = (...args) => {
+      calls.push(args);
+      return {
+        element: rendererElement as unknown as HTMLElement,
+        render(snapshot): void {
+          rendered.push(snapshot);
+        },
+        clear(): void {},
+        dispose(): void {
+          disposeCalls += 1;
+          rendererElement.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      backend,
+      rules,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual([document.document, rules, undefined, undefined]);
+    expect(rendered).toEqual([elementsSession.rules.matchedStyles]);
+    expect(view.rulesRoot.querySelector('[data-part="injected-rules-renderer"]')).toBe(
+      rendererElement,
+    );
+    expect(view.rulesRoot.querySelector('[data-part="styles-sidebar"]')).toBeNull();
+
+    view.dispose();
+    view.dispose();
+
+    expect(disposeCalls).toBe(1);
+    expect(rendererElement.parentElement).toBeUndefined();
+    expect(rules.listenerCount()).toBe(0);
+  });
+
   it("delegates the DOM mount to an injected tree renderer and owns its host", () => {
     const document = new FakeDocument();
     const mount = document.createElement("main") as unknown as FakeElement;
@@ -600,6 +654,10 @@ class StaticRulesDataSource implements RulesDataSource {
   public publish(snapshot: RulesPresentationSnapshot): void {
     this.current = snapshot;
     for (const listener of [...this.listeners]) listener();
+  }
+
+  public listenerCount(): number {
+    return this.listeners.size;
   }
 }
 
