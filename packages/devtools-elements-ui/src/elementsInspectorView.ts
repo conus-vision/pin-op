@@ -24,6 +24,7 @@ export class ElementsInspectorView {
   private treeRendererHost: ElementsTreeRendererHost | undefined;
   private rulesDataSource: RulesDataSource | undefined;
   private rulesPane: ElementsRulesRendererHost | undefined;
+  private rulesMessage: HTMLElement | undefined;
   private unsubscribeRules: (() => void) | undefined;
   private rulesRenderRevision = 0;
   private disposed = false;
@@ -173,12 +174,21 @@ export class ElementsInspectorView {
     if (this.rulesDataSource || this.rulesPane || this.unsubscribeRules) {
       throw new Error("Rules data source is already bound");
     }
-    const rulesPane = this.createRulesRenderer(
-      this.document,
-      dataSource,
-      sourceLinkDelegate,
-      pseudoStateDataSource,
-    );
+    const rulesMessage = this.createRulesMessage();
+    this.rulesRoot.append(rulesMessage);
+    let rulesPane: ElementsRulesRendererHost;
+    try {
+      rulesPane = this.createRulesRenderer(
+        this.document,
+        this.rulesRoot,
+        dataSource,
+        sourceLinkDelegate,
+        pseudoStateDataSource,
+      );
+    } catch (error) {
+      this.rulesRoot.replaceChildren();
+      throw error;
+    }
     let unsubscribe: (() => void) | undefined;
     try {
       let notificationsEnabled = false;
@@ -187,19 +197,31 @@ export class ElementsInspectorView {
       });
       this.rulesDataSource = dataSource;
       this.rulesPane = rulesPane;
+      this.rulesMessage = rulesMessage;
       this.unsubscribeRules = unsubscribe;
       notificationsEnabled = true;
       this.renderRules();
     } catch (error) {
+      const failures: unknown[] = [error];
       try {
         unsubscribe?.();
-      } catch {
-        // Preserve the binding failure.
+      } catch (cleanupError) {
+        failures.push(cleanupError);
       }
-      rulesPane.dispose();
+      try {
+        rulesPane.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+      this.rulesRoot.replaceChildren();
       this.rulesDataSource = undefined;
       this.rulesPane = undefined;
+      this.rulesMessage = undefined;
       this.unsubscribeRules = undefined;
+      this.renderRules();
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Rules binding and teardown failed");
+      }
       throw error;
     }
   }
@@ -227,6 +249,7 @@ export class ElementsInspectorView {
     }
     const rulesPane = this.rulesPane;
     this.rulesPane = undefined;
+    this.rulesMessage = undefined;
     try {
       rulesPane?.dispose();
     } catch (error) {
@@ -250,33 +273,27 @@ export class ElementsInspectorView {
     );
     this.renderRulesProbe(snapshot);
     const rulesPane = this.rulesPane;
-    if (!rulesPane) {
-      this.rulesRoot.replaceChildren();
-      return;
-    }
+    if (!rulesPane) return;
 
-    const children: HTMLElement[] = [];
-
+    let messageText: string | undefined;
+    let messageRole: "alert" | "status" = "status";
     if (snapshot.state === "loading") {
       rulesPane.clear();
-      children.push(this.createRulesMessage("Loading styles", "status"));
+      messageText = "Loading styles";
     } else if (snapshot.state === "partial") {
-      children.push(this.createRulesMessage(
-        "Some styles could not be inspected",
-        "status",
-      ));
       rulesPane.render(snapshot.matchedStyles);
+      messageText = "Some styles could not be inspected";
     } else if (snapshot.state === "ready") {
       rulesPane.render(snapshot.matchedStyles);
     } else if (snapshot.state === "error") {
       rulesPane.clear();
-      children.push(this.createRulesMessage(snapshot.message, "alert"));
+      messageText = snapshot.message;
+      messageRole = "alert";
     } else {
       rulesPane.clear();
     }
     if (this.disposed || revision !== this.rulesRenderRevision) return;
-    children.push(rulesPane.element);
-    this.rulesRoot.replaceChildren(...children);
+    this.updateRulesMessage(messageText, messageRole);
   }
 
   private renderRulesProbe(snapshot: RulesPresentationSnapshot): void {
@@ -313,18 +330,30 @@ export class ElementsInspectorView {
     if (ruleRef) this.rulesRoot.setAttribute("data-probe-rule-ref", ruleRef);
   }
 
-  private createRulesMessage(
-    text: string,
-    role: "alert" | "status",
-  ): HTMLElement {
-    return this.createElement("p", {
+  private createRulesMessage(): HTMLElement {
+    const message = this.createElement("p", {
       className: "pin-op-elements-inspector__rules-message",
-      text,
       attributes: {
         "data-part": "rules-message",
-        role,
       },
     });
+    message.hidden = true;
+    return message;
+  }
+
+  private updateRulesMessage(
+    text?: string,
+    role: "alert" | "status" = "status",
+  ): void {
+    const message = this.rulesMessage;
+    if (!message) return;
+    message.textContent = text ?? "";
+    message.hidden = text === undefined;
+    if (text === undefined) {
+      message.removeAttribute("role");
+    } else {
+      message.setAttribute("role", role);
+    }
   }
 
   private selectSidebarTab(tab: "rules" | "source"): void {
@@ -369,15 +398,38 @@ const createLocalTreeRenderer: CreateElementsTreeRenderer = (
 
 const createLocalRulesRenderer: CreateElementsRulesRenderer = (
   document,
+  mount,
   dataSource,
   sourceLinkDelegate,
   pseudoStateDataSource,
-) => new StylesSidebarPane(
-  document,
-  dataSource,
-  sourceLinkDelegate,
-  pseudoStateDataSource,
-);
+) => {
+  const pane = new StylesSidebarPane(
+    document,
+    dataSource,
+    sourceLinkDelegate,
+    pseudoStateDataSource,
+  );
+  try {
+    mount.append(pane.element);
+    return pane;
+  } catch (error) {
+    let cleanupError: unknown;
+    try {
+      pane.dispose();
+    } catch (caught) {
+      cleanupError = caught;
+    } finally {
+      pane.element.remove();
+    }
+    if (cleanupError !== undefined) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Rules mount and teardown failed",
+      );
+    }
+    throw error;
+  }
+};
 
 const EMPTY_RULES_SNAPSHOT: RulesPresentationSnapshot = Object.freeze({
   state: "empty",

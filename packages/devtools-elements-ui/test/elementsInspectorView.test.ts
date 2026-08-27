@@ -30,8 +30,8 @@ describe("ElementsInspectorView", () => {
     let disposeCalls = 0;
     const createRulesRenderer: CreateElementsRulesRenderer = (...args) => {
       calls.push(args);
+      (args[1] as unknown as FakeElement).append(rendererElement);
       return {
-        element: rendererElement as unknown as HTMLElement,
         render(snapshot): void {
           rendered.push(snapshot);
         },
@@ -56,7 +56,13 @@ describe("ElementsInspectorView", () => {
     );
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual([document.document, rules, undefined, undefined]);
+    expect(calls[0]).toEqual([
+      document.document,
+      view.rulesRoot,
+      rules,
+      undefined,
+      undefined,
+    ]);
     expect(rendered).toEqual([elementsSession.rules.matchedStyles]);
     expect(view.rulesRoot.querySelector('[data-part="injected-rules-renderer"]')).toBe(
       rendererElement,
@@ -69,6 +75,292 @@ describe("ElementsInspectorView", () => {
     expect(disposeCalls).toBe(1);
     expect(rendererElement.parentElement).toBeUndefined();
     expect(rules.listenerCount()).toBe(0);
+  });
+
+  it("keeps the injected Rules mount attached across presentation updates", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const backend = new FakeElementsBackend(elementsSession.tree);
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    const rendererElement = document.createElement("div") as unknown as FakeElement;
+    const parents: Array<FakeElement | undefined> = [];
+    const createRulesRenderer: CreateElementsRulesRenderer = (
+      _document,
+      rulesMount,
+    ) => {
+      (rulesMount as unknown as FakeElement).append(rendererElement);
+      return {
+        render(): void {
+          parents.push(rendererElement.parentElement);
+        },
+        clear(): void {
+          parents.push(rendererElement.parentElement);
+        },
+        dispose(): void {
+          rendererElement.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      backend,
+      rules,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+    const sourceTab = required(
+      view.element.querySelectorAll('[role="tab"]')[1],
+    ) as unknown as FakeElement;
+    const rulesTab = required(
+      view.element.querySelectorAll('[role="tab"]')[0],
+    ) as unknown as FakeElement;
+
+    rules.publish(Object.freeze({ state: "loading" }));
+    rules.publish(Object.freeze({ state: "partial", matchedStyles: elementsSession.rules.matchedStyles }));
+    sourceTab.dispatch("click");
+    rulesTab.dispatch("click");
+    rules.publish(elementsSession.rules);
+
+    expect(parents).toHaveLength(4);
+    expect(parents.every((parent) => parent === view.rulesRoot)).toBe(true);
+    expect(rendererElement.parentElement).toBe(view.rulesRoot);
+    expect(view.rulesRoot.querySelector('[data-part="rules-message"]')).not.toBeNull();
+
+    view.dispose();
+  });
+
+  it("keeps a newer reentrant Rules status after an older clear resumes", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    let publishReadyFromClear = false;
+    const createRulesRenderer: CreateElementsRulesRenderer = (
+      _document,
+      rulesMount,
+    ) => {
+      const element = document.createElement("div") as unknown as FakeElement;
+      (rulesMount as unknown as FakeElement).append(element);
+      return {
+        render(): void {},
+        clear(): void {
+          if (!publishReadyFromClear) return;
+          publishReadyFromClear = false;
+          rules.publish(elementsSession.rules);
+        },
+        dispose(): void {
+          element.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+      rules,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+    publishReadyFromClear = true;
+
+    rules.publish(Object.freeze({ state: "loading" }));
+
+    const message = required(
+      view.rulesRoot.querySelector('[data-part="rules-message"]'),
+    );
+    expect(message.hidden).toBe(true);
+    expect(message.textContent).toBe("");
+    expect(view.rulesRoot.getAttribute("data-state")).toBe("ready");
+
+    view.dispose();
+  });
+
+  it("fully rolls back a failed Rules bind even when renderer disposal throws", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const rules = new ThrowingSnapshotRulesDataSource(
+      new Error("initial Rules snapshot failed"),
+    );
+    const disposeError = new Error("Rules renderer dispose failed");
+    let factoryCalls = 0;
+    const createRulesRenderer: CreateElementsRulesRenderer = (
+      _document,
+      rulesMount,
+    ) => {
+      factoryCalls += 1;
+      const element = document.createElement("div") as unknown as FakeElement;
+      (rulesMount as unknown as FakeElement).append(element);
+      return {
+        render(): void {},
+        clear(): void {},
+        dispose(): void {
+          element.remove();
+          throw disposeError;
+        },
+      };
+    };
+    document.body.append(mount);
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let failure: unknown;
+      try {
+        view.bindRulesDataSource(rules);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([
+        rules.snapshotError,
+        disposeError,
+      ]);
+      expect(rules.listenerCount()).toBe(0);
+      expect(view.rulesRoot.children).toHaveLength(0);
+    }
+    expect(factoryCalls).toBe(2);
+
+    expect(() => view.dispose()).not.toThrow();
+  });
+
+  it("restores the empty Rules shell when initial renderer work throws", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    const renderError = new Error("initial Rules render failed");
+    const clearError = new Error("initial Rules clear failed");
+    let failure: Error = renderError;
+    const createRulesRenderer: CreateElementsRulesRenderer = (
+      _document,
+      rulesMount,
+    ) => {
+      const element = document.createElement("div") as unknown as FakeElement;
+      (rulesMount as unknown as FakeElement).append(element);
+      return {
+        render(): void {
+          if (failure === renderError) throw failure;
+        },
+        clear(): void {
+          if (failure === clearError) throw failure;
+        },
+        dispose(): void {
+          element.remove();
+        },
+      };
+    };
+    document.body.append(mount);
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+
+    expect(() => view.bindRulesDataSource(rules)).toThrow(renderError);
+    expectEmptyRulesShell(view);
+
+    rules.publish(Object.freeze({ state: "loading" }));
+    failure = clearError;
+    expect(() => view.bindRulesDataSource(rules)).toThrow(clearError);
+    expectEmptyRulesShell(view);
+
+    view.dispose();
+  });
+
+  it("removes renderer DOM when a mount-owning Rules factory throws", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const factoryError = new Error("Rules factory failed");
+    const leaked = document.createElement("div") as unknown as FakeElement;
+    const createRulesRenderer: CreateElementsRulesRenderer = (
+      _document,
+      rulesMount,
+    ) => {
+      (rulesMount as unknown as FakeElement).append(leaked);
+      throw factoryError;
+    };
+    document.body.append(mount);
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createRulesRenderer,
+    );
+
+    expect(() => view.bindRulesDataSource(
+      new StaticRulesDataSource(elementsSession.rules),
+    )).toThrow(factoryError);
+    expect(view.rulesRoot.children).toHaveLength(0);
+    expect(leaked.parentElement).toBeUndefined();
+
+    view.dispose();
+  });
+
+  it("preserves Rules mount and cleanup errors from the local fallback", () => {
+    const harness = createHarness();
+    const appendError = new Error("Rules mount append failed");
+    const pseudoDisposeError = new Error("pseudo unsubscribe failed");
+    const rulesRoot = harness.view.rulesRoot as unknown as FakeElement;
+    const append = rulesRoot.append.bind(rulesRoot);
+    let appendCalls = 0;
+    rulesRoot.append = (...nodes: FakeElement[]): void => {
+      appendCalls += 1;
+      if (appendCalls === 2) throw appendError;
+      append(...nodes);
+    };
+    const pseudo = new ThrowingUnsubscribePseudoStateDataSource(
+      {
+        state: "ready",
+        states: Object.freeze([]),
+        unsupportedRuleCount: 0,
+        inaccessibleStylesheetCount: 0,
+        approximateRuleCount: 0,
+      },
+      pseudoDisposeError,
+    );
+    let failure: unknown;
+
+    try {
+      harness.view.bindRulesDataSource(
+        new StaticRulesDataSource(elementsSession.rules),
+        undefined,
+        pseudo,
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      appendError,
+      pseudoDisposeError,
+    ]);
+    expect(rulesRoot.children).toHaveLength(0);
+    expect(pseudo.listenerCount()).toBe(0);
+
+    harness.view.dispose();
   });
 
   it("delegates the DOM mount to an injected tree renderer and owns its host", () => {
@@ -664,7 +956,7 @@ class StaticRulesDataSource implements RulesDataSource {
 class ThrowingSnapshotRulesDataSource implements RulesDataSource {
   private readonly listeners = new Set<() => void>();
 
-  public constructor(private readonly snapshotError: Error) {}
+  public constructor(public readonly snapshotError: Error) {}
 
   public snapshot(): RulesPresentationSnapshot {
     throw this.snapshotError;
@@ -711,6 +1003,23 @@ class MutablePseudoStateDataSource {
   }
 }
 
+class ThrowingUnsubscribePseudoStateDataSource extends MutablePseudoStateDataSource {
+  public constructor(
+    snapshot: PseudoSnapshot,
+    private readonly unsubscribeError: Error,
+  ) {
+    super(snapshot);
+  }
+
+  public override subscribe(listener: () => void): () => void {
+    const unsubscribe = super.subscribe(listener);
+    return () => {
+      unsubscribe();
+      throw this.unsubscribeError;
+    };
+  }
+}
+
 function expectOwnedIdReference(
   document: FakeDocument,
   root: FakeElement,
@@ -723,6 +1032,23 @@ function expectOwnedIdReference(
   expect(document.document.getElementById(id)).toBe(target);
   expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
   expect(root.contains(target)).toBe(true);
+}
+
+function expectEmptyRulesShell(view: ElementsInspectorView): void {
+  expect(view.rulesRoot.children).toHaveLength(0);
+  expect(view.rulesRoot.getAttribute("data-state")).toBe("empty");
+  expect(view.rulesRoot.getAttribute("aria-busy")).toBe("false");
+  for (const attribute of [
+    "data-document-epoch",
+    "data-selection-revision",
+    "data-styles-revision",
+    "data-stylesheet-revision",
+    "data-pseudo-state-revision",
+    "data-pseudo-states",
+    "data-probe-rule-ref",
+  ]) {
+    expect(view.rulesRoot.getAttribute(attribute)).toBeNull();
+  }
 }
 
 function required<T>(value: T | null | undefined): T {

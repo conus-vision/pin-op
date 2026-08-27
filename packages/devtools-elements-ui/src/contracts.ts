@@ -194,10 +194,12 @@ export interface RulesDataSource {
 /**
  * Owns the concrete Rules presentation mounted by the inspector. Implementors
  * may use Chromium DevTools widgets, but receive only Pin-op's read-only
- * presentation snapshots and delegates.
+ * presentation snapshots and delegates. The renderer must keep its primary
+ * pane as a stable direct child of the inspector-owned mount, preserve nodes
+ * already in that mount, remove everything it owns on dispose, and roll back
+ * every owned node and listener before throwing from its factory.
  */
 export interface ElementsRulesRendererHost {
-  readonly element: HTMLElement;
   render(snapshot: MatchedStylesSnapshot): void;
   clear(): void;
   dispose(): void;
@@ -205,6 +207,7 @@ export interface ElementsRulesRendererHost {
 
 export type CreateElementsRulesRenderer = (
   document: Document,
+  mount: HTMLElement,
   dataSource: RulesDataSource,
   sourceLinkDelegate?: SourceLinkDelegate,
   pseudoStateDataSource?: PseudoStateDataSource,
