@@ -16,7 +16,7 @@ import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("ElementsInspectorView", () => {
-  it("mounts DOM on the left and the sole visible Rules tab on the right", () => {
+  it("mounts DOM on the left and switches between Rules and Source", () => {
     const harness = createHarness();
     const root = required(harness.mount.querySelector(".pin-op-elements-inspector"));
     const domPane = required(root.querySelector('[data-pane="dom"]'));
@@ -28,16 +28,31 @@ describe("ElementsInspectorView", () => {
     expect(root.children[0]).toBe(domPane);
     expect(root.children[1]).toBe(sidebar);
     expect(domPane.querySelector('[data-part="pane-title"]')?.textContent).toBe("DOM");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Rules"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Rules", "Source"]);
     expect(tabs[0]?.tagName).toBe("BUTTON");
     expect(tabs[0]?.getAttribute("type")).toBe("button");
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]?.getAttribute("aria-controls")).toBe(rulesPanel.id);
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
+    expect(tabs[1]?.getAttribute("aria-controls")).toBe(extensionMount.id);
     expect(rulesPanel.getAttribute("role")).toBe("tabpanel");
+    expect(extensionMount.getAttribute("role")).toBe("tabpanel");
     expect(rulesPanel.children).toHaveLength(0);
     expect(extensionMount.hidden).toBe(true);
-    expect(extensionMount.getAttribute("aria-hidden")).toBe("true");
-    expect(tabs.some((tab) => tab.textContent === "Source")).toBe(false);
+
+    (tabs[1] as unknown as FakeElement).dispatch("click");
+
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("false");
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("true");
+    expect(rulesPanel.hidden).toBe(true);
+    expect(extensionMount.hidden).toBe(false);
+
+    (tabs[0] as unknown as FakeElement).dispatch("click");
+
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
+    expect(rulesPanel.hidden).toBe(false);
+    expect(extensionMount.hidden).toBe(true);
   });
 
   it("keeps every ARIA ID reference unique to its inspector instance", () => {
@@ -46,6 +61,8 @@ describe("ElementsInspectorView", () => {
       "pin-op-elements-dom-title",
       "pin-op-elements-rules-tab",
       "pin-op-elements-rules-panel",
+      "pin-op-elements-source-tab",
+      "pin-op-elements-source-panel",
     ];
     for (const id of occupiedIds) {
       const occupied = document.createElement("div") as unknown as FakeElement;
@@ -75,10 +92,14 @@ describe("ElementsInspectorView", () => {
       const domPane = required(root.querySelector('[data-pane="dom"]'));
       const domTitle = required(root.querySelector('[data-part="pane-title"]'));
       const rulesTab = required(root.querySelector('[role="tab"]'));
+      const sourceTab = required(root.querySelectorAll('[role="tab"]')[1]);
       const rulesPanel = required(root.querySelector('[data-pane="rules"]'));
+      const sourcePanel = required(root.querySelector('[data-part="sidebar-extension"]'));
       expectOwnedIdReference(document, root, domPane, "aria-labelledby", domTitle);
       expectOwnedIdReference(document, root, rulesTab, "aria-controls", rulesPanel);
       expectOwnedIdReference(document, root, rulesPanel, "aria-labelledby", rulesTab);
+      expectOwnedIdReference(document, root, sourceTab, "aria-controls", sourcePanel);
+      expectOwnedIdReference(document, root, sourcePanel, "aria-labelledby", sourceTab);
     }
     for (const id of occupiedIds) {
       expect(document.document.getElementById(id)?.getAttribute("data-existing")).toBe("true");
@@ -206,7 +227,7 @@ describe("ElementsInspectorView", () => {
     const root = required(harness.mount.querySelector(".pin-op-elements-inspector"));
 
     expect(root.textContent).not.toMatch(
-      /Link|Disconnect|Auto Refresh|IDE Highlight|Source/,
+      /Link|Disconnect|Auto Refresh|IDE Highlight/,
     );
     expect(root.querySelector("[contenteditable]")).toBeNull();
     expect(root.querySelector("input, textarea, select")).toBeNull();

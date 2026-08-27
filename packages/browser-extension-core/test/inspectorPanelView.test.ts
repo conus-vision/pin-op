@@ -17,7 +17,7 @@ const inspectorHtml = readFileSync(
 );
 
 describe("InspectorPanelView", () => {
-  it("implements the existing toolbar/status view contract without a Source surface", () => {
+  it("keeps presentation-owned tabs out of the static toolbar document", () => {
     const harness = createHarness();
     const actions: PanelActions = {
       onPaste: vi.fn(),
@@ -56,7 +56,7 @@ describe("InspectorPanelView", () => {
     expect(inspectorHtml).not.toContain("source-pane");
   });
 
-  it("mounts the neutral Elements view and exposes only DOM, Rules, and a hidden extension point", () => {
+  it("mounts the Elements view with DOM, Rules, and the initially hidden Source panel", () => {
     const harness = createHarness();
     const backend = new StaticTreeDataSource({ rows: [] });
 
@@ -73,8 +73,8 @@ describe("InspectorPanelView", () => {
     expect(harness.view.rulesRoot.getAttribute("data-pane")).toBe("rules");
     expect(harness.view.sidebarExtensionMount.hidden).toBe(true);
     expect(harness.view.sidebarExtensionMount.getAttribute("aria-hidden")).toBe("true");
-    expect(harness.element("inspector-elements-mount").textContent).toContain("DOMRules");
-    expect(harness.element("inspector-elements-mount").textContent).not.toContain("Source");
+    expect(harness.element("inspector-elements-mount").textContent)
+      .toContain("DOMRulesSource");
     expect(() => harness.view.mountTree(backend)).toThrow(/already mounted/i);
 
     harness.view.dispose();

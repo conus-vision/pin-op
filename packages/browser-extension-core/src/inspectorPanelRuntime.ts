@@ -48,6 +48,10 @@ import {
   RulesSourcesController,
   type RulesOriginState,
 } from "./rulesSourcesController.js";
+import {
+  SourcePaneView,
+  type SourcePaneDocument,
+} from "./sourcePaneView.js";
 
 export interface InspectorPanelRuntimeOptions extends Omit<
   PanelRuntimeOptions,
@@ -150,12 +154,20 @@ function createInspectorPresentation(
         rulesSourcesController,
       );
       let removeSettingsBindings: (() => void) | undefined;
+      let sourcePaneView: SourcePaneView | undefined;
       try {
-        view.mountTree(adapter).bindRulesDataSource(
+        const elementsHost = view.mountTree(adapter);
+        elementsHost.bindRulesDataSource(
           rulesAdapter,
           rulesAdapter,
           pseudoStateAdapter,
         );
+        sourcePaneView = new SourcePaneView({
+          document: options.document as unknown as SourcePaneDocument,
+          root: elementsHost.sidebarExtensionMount,
+          controller: context.sourcePaneController,
+          onError: reportError,
+        });
         view.bindStylesRefresh(matchedStylesModel);
         removeSettingsBindings = view.bindSettings(
           context.settingsController,
@@ -165,8 +177,12 @@ function createInspectorPresentation(
         pseudoStateAdapter.dispose();
         rulesSourcesController.dispose();
         matchedStylesModel.dispose();
+        sourcePaneView?.dispose();
         view.dispose();
         throw error;
+      }
+      if (!sourcePaneView) {
+        throw new Error("Source pane failed to initialize");
       }
       let disposed = false;
       const resetPreviewAuthority = (
@@ -185,7 +201,7 @@ function createInspectorPresentation(
         return true;
       };
       return {
-        sourcePaneView: NO_VISIBLE_SOURCE_PANE,
+        sourcePaneView,
         removeSettingsBindings,
         removeSourceNavigationBindings: noOp,
         removeLayoutBindings: noOp,
@@ -205,6 +221,7 @@ function createInspectorPresentation(
           pseudoStateAdapter.dispose();
           rulesSourcesController.dispose();
           matchedStylesModel.dispose();
+          sourcePaneView.dispose();
           view.dispose();
         },
       };
@@ -1101,9 +1118,5 @@ function isConnectedPeer(message: unknown): boolean {
     return false;
   }
 }
-
-const NO_VISIBLE_SOURCE_PANE = Object.freeze({
-  setState: noOp,
-});
 
 function noOp(): void {}

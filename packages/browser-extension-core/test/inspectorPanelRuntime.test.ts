@@ -13,6 +13,7 @@ import type { PanelInspectPort } from "../src/inspectPortProtocol.js";
 import { PanelDiagnostics } from "../src/panelDiagnostics.js";
 import { MatchedStylesModel } from "../src/matchedStylesModel.js";
 import { RulesSourcesController } from "../src/rulesSourcesController.js";
+import { SourcePaneController } from "../src/sourcePaneController.js";
 import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/support/fakeDocument.js";
 
 describe("startInspectorPanelRuntime", () => {
@@ -494,7 +495,7 @@ describe("startInspectorPanelRuntime", () => {
       ?.textContent).toContain(".selected-card");
     expect(harness.document.querySelector('[data-rule-ref="rule-card"]')
       ?.textContent).toContain("color: rebeccapurple !important;");
-    expect(harness.document.body.textContent).not.toContain("Source");
+    expect(harness.document.body.textContent).toContain("Source");
 
     runtime.dispose();
   });
@@ -911,7 +912,7 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
-  it("uses the shared panel ownership while mounting only the neutral Inspector shell", async () => {
+  it("uses the shared panel ownership while mounting the Inspector shell and Source tab", async () => {
     const harness = createHarness();
     const runtime = harness.start();
     await runtime.ready;
@@ -923,8 +924,9 @@ describe("startInspectorPanelRuntime", () => {
     expect(harness.document.querySelector('[data-part="inspector-workspace"]')).not.toBeNull();
     expect(harness.document.querySelector('[data-pane="dom"]')).not.toBeNull();
     expect(harness.document.querySelector('[data-pane="rules"]')).not.toBeNull();
-    expect(harness.document.body.textContent).not.toContain("Source");
-    expect(harness.document.document.getElementById("source-pane-root")).toBeNull();
+    expect(harness.document.body.textContent).toContain("Source");
+    expect(harness.document.querySelector('[data-part="sidebar-extension"]'))
+      .not.toBeNull();
     expect(harness.document.document.getElementById("dom-tree")).toBeNull();
 
     harness.element("link-code").value = "48735 07";
@@ -1108,6 +1110,117 @@ describe("startInspectorPanelRuntime", () => {
     expect(harness.element("ide-highlight-enabled").disabled).toBe(true);
     expect(harness.document.querySelector('[data-node-ref="blocked"]')).toBeNull();
     expect(harness.element("selected-element-summary").value).toBe("");
+    runtime.dispose();
+  });
+
+  it("renders current Source matches and opens the selected block through existing authority", async () => {
+    const acceptResolution = vi.spyOn(
+      SourcePaneController.prototype,
+      "acceptResolution",
+    );
+    const acceptMatches = vi.spyOn(
+      SourcePaneController.prototype,
+      "acceptMatches",
+    );
+    const errors: unknown[] = [];
+    const harness = createHarness();
+    const runtime = harness.start({ onError: (error) => errors.push(error) });
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 4,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 4, 1));
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-source",
+      selectionRevision: 1,
+      expectedRuleRefs: [],
+    });
+    await flushAsync();
+    port.emitMessage({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "resolution",
+      messageId: "resolution-source",
+      sessionId: "session-a",
+      source: { role: "ide", id: "vscode-a" },
+      inspectMessageId: "inspect-source",
+      resolutionGeneration: 1,
+      status: "matched",
+      selectedMatchCount: 1,
+      parentMatchCount: 0,
+      inaccessibleStylesheetCount: 0,
+      diagnosticCodes: [],
+      document: { label: "card.scss", languageId: "scss" },
+      metadata: {},
+    });
+    await flushAsync();
+    port.emitMessage({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "source.matches",
+      messageId: "source-matches",
+      sessionId: "session-a",
+      source: { role: "ide", id: "vscode-a" },
+      inspectMessageId: "inspect-source",
+      resolutionGeneration: 1,
+      document: { label: "card.scss", languageId: "scss" },
+      matches: [{
+        matchId: "match-source",
+        targetRole: "selected",
+        label: "card.scss:41",
+        kind: "rule",
+        relation: "selected",
+        confidence: "exact",
+        startLine: 41,
+        endLine: 43,
+        text: ".card {\n  color: red;\n}",
+        truncated: false,
+      }],
+      omittedMatchCount: 0,
+      metadata: {},
+    });
+    await flushAsync();
+
+    expect(acceptResolution.mock.results.at(-1)?.value).toBe(true);
+    expect(acceptMatches.mock.results.at(-1)?.value).toBe("published");
+    expect(errors).toEqual([]);
+
+    const sourceTab = harness.document.querySelectorAll('[role="tab"]')
+      .find((element) => element.textContent === "Source");
+    if (!sourceTab) throw new Error("Missing Source tab");
+    sourceTab.dispatch("click");
+    const sourcePane = harness.document.querySelector(
+      '[data-part="sidebar-extension"]',
+    );
+    expect(sourcePane?.hidden).toBe(false);
+    expect(sourcePane?.textContent).toContain("card.scss:41");
+
+    const openSource = harness.document.querySelector(
+      '[data-open-match-id="match-source"]',
+    );
+    if (!openSource || !sourcePane) throw new Error("Missing Source open button");
+    sourcePane.dispatch("click", { target: openSource });
+    expect(lastMessage(port.sent, "pin-op.source.open")).toEqual({
+      type: "pin-op.source.open",
+      inspectMessageId: "inspect-source",
+      resolutionGeneration: 1,
+      matchId: "match-source",
+    });
+
     runtime.dispose();
   });
 

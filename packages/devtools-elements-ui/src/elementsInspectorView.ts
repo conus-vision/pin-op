@@ -15,12 +15,22 @@ export class ElementsInspectorView {
   public readonly domRoot: HTMLElement;
   public readonly rulesRoot: HTMLElement;
   public readonly sidebarExtensionMount: HTMLElement;
+  private readonly rulesTab: HTMLElement;
+  private readonly sourceTab: HTMLElement;
   private readonly treeOutline: ElementsTreeOutline;
   private rulesDataSource: RulesDataSource | undefined;
   private rulesPane: StylesSidebarPane | undefined;
   private unsubscribeRules: (() => void) | undefined;
   private rulesRenderRevision = 0;
   private disposed = false;
+
+  private readonly showRules = (): void => {
+    this.selectSidebarTab("rules");
+  };
+
+  private readonly showSource = (): void => {
+    this.selectSidebarTab("source");
+  };
 
   public constructor(
     private readonly document: Document,
@@ -70,7 +80,7 @@ export class ElementsInspectorView {
         role: "tablist",
       },
     });
-    const rulesTab = this.createElement("button", {
+    this.rulesTab = this.createElement("button", {
       className: "pin-op-elements-inspector__tab",
       text: "Rules",
       attributes: {
@@ -81,7 +91,21 @@ export class ElementsInspectorView {
         type: "button",
       },
     });
-    tabList.append(rulesTab);
+    this.sourceTab = this.createElement("button", {
+      className: "pin-op-elements-inspector__tab",
+      text: "Source",
+      attributes: {
+        "aria-controls": ariaIds.sourcePanel,
+        "aria-selected": "false",
+        id: ariaIds.sourceTab,
+        role: "tab",
+        tabindex: "-1",
+        type: "button",
+      },
+    });
+    this.rulesTab.addEventListener("click", this.showRules);
+    this.sourceTab.addEventListener("click", this.showSource);
+    tabList.append(this.rulesTab, this.sourceTab);
 
     this.rulesRoot = this.createElement("section", {
       className: "pin-op-elements-inspector__rules",
@@ -97,7 +121,10 @@ export class ElementsInspectorView {
       className: "pin-op-elements-inspector__sidebar-extension",
       attributes: {
         "aria-hidden": "true",
+        "aria-labelledby": ariaIds.sourceTab,
         "data-part": "sidebar-extension",
+        id: ariaIds.sourcePanel,
+        role: "tabpanel",
       },
     });
     this.sidebarExtensionMount.hidden = true;
@@ -173,6 +200,8 @@ export class ElementsInspectorView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.rulesTab.removeEventListener("click", this.showRules);
+    this.sourceTab.removeEventListener("click", this.showSource);
     let disposeError: unknown;
     const unsubscribeRules = this.unsubscribeRules;
     this.unsubscribeRules = undefined;
@@ -289,6 +318,22 @@ export class ElementsInspectorView {
     });
   }
 
+  private selectSidebarTab(tab: "rules" | "source"): void {
+    if (this.disposed) return;
+    const rulesSelected = tab === "rules";
+    this.rulesTab.setAttribute("aria-selected", String(rulesSelected));
+    this.rulesTab.setAttribute("tabindex", rulesSelected ? "0" : "-1");
+    this.sourceTab.setAttribute("aria-selected", String(!rulesSelected));
+    this.sourceTab.setAttribute("tabindex", rulesSelected ? "-1" : "0");
+    this.rulesRoot.hidden = !rulesSelected;
+    this.rulesRoot.setAttribute("aria-hidden", String(!rulesSelected));
+    this.sidebarExtensionMount.hidden = rulesSelected;
+    this.sidebarExtensionMount.setAttribute(
+      "aria-hidden",
+      String(rulesSelected),
+    );
+  }
+
   private createElement(
     tagName: string,
     options: {
@@ -341,6 +386,8 @@ interface InspectorAriaIds {
   readonly domTitle: string;
   readonly rulesTab: string;
   readonly rulesPanel: string;
+  readonly sourceTab: string;
+  readonly sourcePanel: string;
 }
 
 function allocateAriaIds(document: Document): InspectorAriaIds {
@@ -351,6 +398,8 @@ function allocateAriaIds(document: Document): InspectorAriaIds {
       domTitle: `pin-op-elements-dom-title${suffix}`,
       rulesTab: `pin-op-elements-rules-tab${suffix}`,
       rulesPanel: `pin-op-elements-rules-panel${suffix}`,
+      sourceTab: `pin-op-elements-source-tab${suffix}`,
+      sourcePanel: `pin-op-elements-source-panel${suffix}`,
     };
     if (Object.values(ids).every((id) => document.getElementById(id) === null)) {
       nextAriaIdSequence.set(document, sequence + 1);

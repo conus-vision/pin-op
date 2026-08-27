@@ -212,6 +212,7 @@ export class FakeDocument {
     this.document = {
       body: this.body,
       createElement: (tagName: string) => this.createElement(tagName),
+      createTextNode: (data: string) => this.createTextNode(data),
       getElementById: (id: string) => (
         [this.body, ...this.body.descendants()].find((element) => element.id === id) ?? null
       ),
@@ -229,6 +230,13 @@ export class FakeDocument {
     const element = new FakeElement(this, normalizedTag.toUpperCase());
     this.elements.add(element);
     return element as unknown as HTMLElement;
+  }
+
+  public createTextNode(data: string): Text {
+    const node = new FakeElement(this, "#TEXT");
+    node.textContent = data;
+    this.elements.add(node);
+    return node as unknown as Text;
   }
 
   public querySelector(selector: string): FakeElement | null {
