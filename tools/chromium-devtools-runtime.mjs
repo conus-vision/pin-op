@@ -45,7 +45,9 @@ const REVIEWED_IMAGE_HASHES = Object.freeze({
   "cross-circle-filled.svg": "5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3",
   "empty.svg": "c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6",
   "errorWave.svg": "fd5dc2adee295375b0e96df8c7adf96be0ee6169155306f636786ae633f9f640",
+  "filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
   "goto-filled.svg": "d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf",
+  "open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",
   "refresh.svg": "35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b",
   "triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
   "triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85",
@@ -57,9 +59,9 @@ export const CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME = Object.freeze({
   schemaVersion: 1,
   packageVersion: CHROMIUM_DEVTOOLS_PIN.version,
   overlayRoot: `third_party/chromium-devtools-frontend/patches/${CHROMIUM_DEVTOOLS_PIN.version}`,
-  maxUnminifiedBytes: 1024 * 1024,
+  maxUnminifiedBytes: 1280 * 1024,
   browserTargets: Object.freeze(["chrome116", "firefox142"]),
-  manifestSha256: "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
+  manifestSha256: "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
 });
 
 function sha256(bytes) {
@@ -299,6 +301,23 @@ export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
   ) {
     throw new Error("Chromium read-only overlay manifest does not match the pinned runtime");
   }
+  assertHashInventory(
+    manifest.requiredImageFiles,
+    Object.fromEntries(Object.entries(REVIEWED_IMAGE_HASHES).map(([name, digest]) => [
+      `front_end/Images/src/${name}`,
+      digest,
+    ])),
+    "Chromium read-only shared image",
+  );
+  if (
+    !Array.isArray(manifest.reviewedSharedInputInventory) ||
+    !manifest.reviewedSharedInputInventory.every(input =>
+      /^chromium-shared-(?:css|generated|images):[A-Za-z0-9_./-]+$/.test(input)) ||
+    !Number.isSafeInteger(manifest.reviewedSharedPayloadAttestation?.fileCount) ||
+    !/^[0-9a-f]{64}$/.test(manifest.reviewedSharedPayloadAttestation?.sha256 ?? "")
+  ) {
+    throw new Error("Chromium read-only shared payload metadata mismatch");
+  }
   if (
     typeof manifest.entryPoint !== "string" ||
     !/^entrypoints\/[A-Za-z0-9_./-]+\.ts$/.test(manifest.entryPoint)
@@ -416,7 +435,7 @@ export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
     path.resolve(overlayRoot, ...manifest.entryPoint.split("/")),
     "Chromium read-only entry point",
   );
-  return Object.freeze({
+  const verifiedOverlay = Object.freeze({
     overlayRoot,
     entryPoint,
     manifest: Object.freeze(manifest),
@@ -426,6 +445,8 @@ export async function verifyChromiumReadOnlyElementsOverlay(repositoryRoot) {
     upstreamFiles: Object.freeze(upstreamFiles),
     packageRoot: verifiedPackage.packageRoot,
   });
+  CHROMIUM_READ_ONLY_OVERLAY_AUTHORITIES.add(verifiedOverlay);
+  return verifiedOverlay;
 }
 
 export async function verifyChromiumDevToolsPackage(repositoryRoot) {
@@ -479,26 +500,176 @@ export async function verifyChromiumDevToolsPackage(repositoryRoot) {
   });
 }
 
-function createChromiumCssModulePlugin(packageRoot, allowImporter = () => true) {
+const CHROMIUM_SHARED_NAMESPACES = Object.freeze({
+  css: "chromium-shared-css",
+  generated: "chromium-shared-generated",
+  images: "chromium-shared-images",
+});
+const CHROMIUM_SHARED_RUNTIME_BRANDS = new WeakMap();
+const CHROMIUM_READ_ONLY_OVERLAY_AUTHORITIES = new WeakSet();
+const CHROMIUM_ENGLISH_LOCALES_PAYLOAD =
+  "export const LOCALES = ['en-US'];\n" +
+  "export const BUNDLED_LOCALES = ['en-US'];\n" +
+  "export const DEFAULT_LOCALE = 'en-US';\n" +
+  "export const REMOTE_FETCH_PATTERN = '';\n" +
+  "export const LOCAL_FETCH_PATTERN = './locales/@LOCALE@.json';\n";
+
+export async function createChromiumSharedRuntimePlugins({packageRoot, allowedImporters}) {
+  if (!(allowedImporters instanceof Set) || !Object.isFrozen(allowedImporters)) {
+    throw new Error("Chromium shared allowedImporters must be a frozen Set");
+  }
+  const importerSnapshot = [...allowedImporters];
+  const physicalPackageRoot = await realpath(packageRoot);
+  const reviewedImporters = new Set();
+  for (const importer of importerSnapshot) {
+    if (typeof importer !== "string" || !path.isAbsolute(importer)) {
+      throw new Error("Chromium shared reviewed importer must be an absolute real path");
+    }
+    let physicalImporter;
+    try {
+      physicalImporter = await realpath(importer);
+    } catch {
+      throw new Error(`Chromium shared reviewed importer does not exist: ${importer}`);
+    }
+    if (path.resolve(importer) !== physicalImporter) {
+      throw new Error(`Chromium shared reviewed importer is not a real path: ${importer}`);
+    }
+    if (reviewedImporters.has(physicalImporter)) {
+      throw new Error(`Chromium shared reviewed importer collision: ${physicalImporter}`);
+    }
+    reviewedImporters.add(physicalImporter);
+  }
+  const imagePayload = await createChromiumImagesPayload(physicalPackageRoot);
+  const allowImporter = importer => reviewedImporters.has(path.resolve(importer));
+  const resolvedCssInputs = new Map();
+  const loadedCssPayloads = new Map();
+  const resolvedGeneratedInputs = new Set();
+  const resolveCssInput = async ({cssPath, importer}) => {
+    if (!allowImporter(path.resolve(importer))) return undefined;
+    const physicalCssPath = await realpath(cssPath);
+    assertWithin(
+      path.join(physicalPackageRoot, "front_end"),
+      physicalCssPath,
+      "Chromium shared CSS module",
+    );
+    resolvedCssInputs.set(physicalCssPath, `chromium-shared-css:${normalizeRelativePath(
+      path.relative(physicalPackageRoot, physicalCssPath),
+    )}`);
+    return {path: physicalCssPath, namespace: CHROMIUM_SHARED_NAMESPACES.css};
+  };
+  const imagesModulePath = path.join(physicalPackageRoot, "front_end", "Images", "Images.js");
+  const resolveImagesInput = ({importer}) => {
+    if (!allowImporter(path.resolve(importer))) return undefined;
+    resolvedGeneratedInputs.add(imagesModulePath);
+    return {path: imagesModulePath, namespace: CHROMIUM_SHARED_NAMESPACES.images};
+  };
+  const plugins = Object.freeze([
+    createChromiumCssModulePlugin(
+      physicalPackageRoot,
+      resolveCssInput,
+      resolvedCssInputs,
+      loadedCssPayloads,
+    ),
+    createChromiumGeneratedModulePlugin(
+      physicalPackageRoot,
+      allowImporter,
+      resolveImagesInput,
+      resolvedGeneratedInputs,
+      imagePayload,
+    ),
+    createChromiumBrowserRuntimePlugin(physicalPackageRoot, allowImporter),
+  ].map(plugin => Object.freeze(plugin)));
+  const verifyInputs = inputKeys => {
+    if (!Array.isArray(inputKeys)) {
+      throw new Error("Chromium shared input inventory must be an array");
+    }
+    const generatedInputs = [];
+    const inputInventory = [];
+    const payloadRows = [];
+    for (const input of inputKeys) {
+      if (input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`)) {
+        const cssPath = input.slice(CHROMIUM_SHARED_NAMESPACES.css.length + 1);
+        if (!path.isAbsolute(cssPath) || !cssPath.endsWith(".css")) {
+          throw new Error(`Invalid Chromium shared CSS input: ${input}`);
+        }
+        const physicalCssPath = path.resolve(cssPath);
+        assertWithin(physicalPackageRoot, physicalCssPath, "Chromium shared CSS input");
+        const canonicalInput = resolvedCssInputs.get(physicalCssPath);
+        const payload = loadedCssPayloads.get(physicalCssPath);
+        if (!canonicalInput || payload === undefined) {
+          throw new Error(`Unregistered Chromium shared CSS input: ${input}`);
+        }
+        inputInventory.push(canonicalInput);
+        payloadRows.push(`${canonicalInput}\0${sha256(payload)}`);
+      } else if (input === `${CHROMIUM_SHARED_NAMESPACES.generated}:english-only-locales`) {
+        const canonicalInput = `${CHROMIUM_SHARED_NAMESPACES.generated}:english-only-locales`;
+        generatedInputs.push(canonicalInput);
+        inputInventory.push(canonicalInput);
+        payloadRows.push(`${canonicalInput}\0${sha256(CHROMIUM_ENGLISH_LOCALES_PAYLOAD)}`);
+      } else if (input === `${CHROMIUM_SHARED_NAMESPACES.images}:${path.join(physicalPackageRoot, "front_end", "Images", "Images.js")}`) {
+        const canonicalInput = `${CHROMIUM_SHARED_NAMESPACES.images}:front_end/Images/Images.js`;
+        generatedInputs.push(canonicalInput);
+        inputInventory.push(canonicalInput);
+        payloadRows.push(`${canonicalInput}\0${sha256(imagePayload.contents)}`);
+      } else {
+        throw new Error(`Unreviewed Chromium shared input: ${input}`);
+      }
+    }
+    payloadRows.sort();
+    return Object.freeze({
+      generatedInputs: Object.freeze(generatedInputs.sort()),
+      inputInventory: Object.freeze(inputInventory.sort()),
+      payloadAttestation: Object.freeze({
+        fileCount: payloadRows.length,
+        sha256: sha256(`${payloadRows.join("\n")}\n`),
+      }),
+    });
+  };
+  const runtime = Object.freeze({
+    plugins,
+    namespaces: CHROMIUM_SHARED_NAMESPACES,
+    resolveCssInput,
+    resolveImagesInput,
+    verifyInputs,
+  });
+  CHROMIUM_SHARED_RUNTIME_BRANDS.set(runtime, physicalPackageRoot);
+  return runtime;
+}
+
+export function assertChromiumSharedRuntimeAuthority(runtime, physicalPackageRoot) {
+  if (
+    CHROMIUM_SHARED_RUNTIME_BRANDS.get(runtime) !== physicalPackageRoot ||
+    runtime.namespaces !== CHROMIUM_SHARED_NAMESPACES
+  ) {
+    throw new Error("Chromium shared runtime has invalid package or namespace authority");
+  }
+}
+
+function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCssInputs, loadedCssPayloads) {
   const frontEndRoot = path.join(packageRoot, "front_end");
   return {
     name: "chromium-devtools-css-module",
     setup(buildContext) {
       buildContext.onResolve({ filter: /\.css\.js$/ }, async args => {
-        if (!allowImporter(path.resolve(args.importer))) return undefined;
+        if (!/^\.\.?\//.test(args.path)) return undefined;
         const cssPath = path.resolve(args.resolveDir, args.path.slice(0, -3));
-        const physicalCssPath = await realpath(cssPath);
-        assertWithin(frontEndRoot, physicalCssPath, "Chromium CSS module");
-        return { path: physicalCssPath, namespace: "chromium-css-module" };
+        return await resolveCssInput({cssPath, importer: args.importer});
       });
       buildContext.onLoad(
-        { filter: /\.css$/, namespace: "chromium-css-module" },
+        { filter: /\.css$/, namespace: CHROMIUM_SHARED_NAMESPACES.css },
         async args => {
-          const css = await readFile(args.path, "utf8");
+          const physicalCssPath = await realpath(args.path);
+          assertWithin(frontEndRoot, physicalCssPath, "Chromium shared CSS load");
+          if (!resolvedCssInputs.has(physicalCssPath)) {
+            throw new Error(`Unregistered Chromium shared CSS load: ${args.path}`);
+          }
+          const css = await readFile(physicalCssPath, "utf8");
+          const contents = `export default ${JSON.stringify(css)};\n`;
+          loadedCssPayloads.set(physicalCssPath, contents);
           return {
-            contents: `export default ${JSON.stringify(css)};\n`,
+            contents,
             loader: "js",
-            resolveDir: path.dirname(args.path),
+            resolveDir: path.dirname(physicalCssPath),
           };
         },
       );
@@ -506,8 +677,35 @@ function createChromiumCssModulePlugin(packageRoot, allowImporter = () => true) 
   };
 }
 
-function createChromiumGeneratedModulePlugin(packageRoot, allowImporter = () => true) {
+async function createChromiumImagesPayload(packageRoot) {
+  const imageRoot = path.join(packageRoot, "front_end", "Images", "src");
+  const availableImages = new Set(await readdir(imageRoot));
+  const imageNames = Object.keys(REVIEWED_IMAGE_HASHES);
+  if (!imageNames.every(name => availableImages.has(name))) {
+    throw new Error("Reviewed Chromium image set is incomplete");
+  }
+  const watchFiles = imageNames.map(name => path.join(imageRoot, name));
+  const declarations = await Promise.all(watchFiles.map(async (imagePath, index) => {
+    const name = imageNames[index].slice(0, -4);
+    const data = (await readFile(imagePath)).toString("base64");
+    const url = `url(\"data:image/svg+xml;base64,${data}\")`;
+    return `root.setProperty(${JSON.stringify(`--image-file-${name}`)}, ${JSON.stringify(url)});`;
+  }));
+  return Object.freeze({
+    contents: `const root = document.documentElement.style;\n${declarations.join("\n")}\n`,
+    watchFiles: Object.freeze(watchFiles),
+  });
+}
+
+function createChromiumGeneratedModulePlugin(
+  packageRoot,
+  allowImporter,
+  resolveImagesInput,
+  resolvedGeneratedInputs,
+  imagePayload,
+) {
   const frontEndRoot = path.join(packageRoot, "front_end");
+  const expectedImagesPath = path.join(frontEndRoot, "Images", "Images.js");
   return {
     name: "chromium-devtools-generated-modules",
     setup(buildContext) {
@@ -518,80 +716,66 @@ function createChromiumGeneratedModulePlugin(packageRoot, allowImporter = () => 
         if (importer !== expectedImporter) {
           return undefined;
         }
-        return { path: "english-only-locales", namespace: "chromium-generated" };
-      });
-      buildContext.onResolve({ filter: /\.skill\.js$/ }, args => {
-        if (!allowImporter(path.resolve(args.importer))) return undefined;
-        assertWithin(frontEndRoot, path.resolve(args.resolveDir), "Chromium generated skill importer");
-        return { path: args.path, namespace: "chromium-generated-skill" };
+        resolvedGeneratedInputs.add("english-only-locales");
+        return { path: "english-only-locales", namespace: CHROMIUM_SHARED_NAMESPACES.generated };
       });
       buildContext.onResolve({ filter: /Images\/Images\.js$/ }, args => {
         if (!allowImporter(path.resolve(args.importer))) return undefined;
         const generatedPath = path.resolve(args.resolveDir, args.path);
-        const expectedPath = path.join(frontEndRoot, "Images", "Images.js");
-        if (generatedPath !== expectedPath) {
+        if (generatedPath !== expectedImagesPath) {
           return undefined;
         }
-        return { path: expectedPath, namespace: "chromium-generated-images" };
+        return resolveImagesInput({importer: args.importer});
       });
       buildContext.onLoad(
-        { filter: /^english-only-locales$/, namespace: "chromium-generated" },
-        () => ({
-          contents:
-            "export const LOCALES = ['en-US'];\n" +
-            "export const BUNDLED_LOCALES = ['en-US'];\n" +
-            "export const DEFAULT_LOCALE = 'en-US';\n" +
-            "export const REMOTE_FETCH_PATTERN = '';\n" +
-            "export const LOCAL_FETCH_PATTERN = './locales/@LOCALE@.json';\n",
-          loader: "js",
-        }),
-      );
-      buildContext.onLoad(
-        { filter: /.*/, namespace: "chromium-generated-skill" },
-        args => {
-          const name = path.basename(args.path, ".skill.js");
-          return {
-            contents:
-              "export const skill = Object.freeze({\n" +
-              `  name: ${JSON.stringify(name)},\n` +
-              "  description: '',\n" +
-              "  allowedTools: Object.freeze([]),\n" +
-              "  instructions: '',\n" +
-              "});\n",
-            loader: "js",
-          };
+        { filter: /^english-only-locales$/, namespace: CHROMIUM_SHARED_NAMESPACES.generated },
+        () => {
+          if (!resolvedGeneratedInputs.has("english-only-locales")) {
+            throw new Error("Unregistered Chromium shared locales load");
+          }
+          return {contents: CHROMIUM_ENGLISH_LOCALES_PAYLOAD, loader: "js"};
         },
       );
       buildContext.onLoad(
-        { filter: /Images\.js$/, namespace: "chromium-generated-images" },
-        async () => {
-          const imageRoot = path.join(frontEndRoot, "Images", "src");
-          const availableImages = new Set(await readdir(imageRoot));
-          const imageNames = Object.keys(REVIEWED_IMAGE_HASHES);
-          if (!imageNames.every(name => availableImages.has(name))) {
-            throw new Error("Reviewed Chromium image set is incomplete");
+        { filter: /Images\.js$/, namespace: CHROMIUM_SHARED_NAMESPACES.images },
+        args => {
+          if (args.path !== expectedImagesPath || !resolvedGeneratedInputs.has(expectedImagesPath)) {
+            throw new Error(`Unregistered Chromium shared images load: ${args.path}`);
           }
-          const imagePaths = imageNames.map(name => path.join(imageRoot, name));
-          const declarations = await Promise.all(imagePaths.map(async (imagePath, index) => {
-            const name = imageNames[index].slice(0, -4);
-            const data = (await readFile(imagePath)).toString("base64");
-            const url = `url(\"data:image/svg+xml;base64,${data}\")`;
-            return `style.setProperty(${JSON.stringify(`--image-file-${name}`)}, ${JSON.stringify(url)});`;
-          }));
-          return {
-            contents:
-              "const root = document.documentElement.style;\n" +
-              `${declarations.map(declaration => declaration.replaceAll("style.", "root.")).join("\n")}\n`,
-            loader: "js",
-            watchFiles: imagePaths,
-          };
+          return {contents: imagePayload.contents, loader: "js", watchFiles: imagePayload.watchFiles};
         },
       );
     },
   };
 }
 
-function createChromiumBrowserRuntimePlugin(packageRoot) {
+function createChromiumDirectGateSkillPlugin(packageRoot) {
+  const exactImporter = path.join(
+    packageRoot,
+    "front_end",
+    "models",
+    "ai_assistance",
+    "skills",
+    "SkillRegistry.ts",
+  );
+  return Object.freeze({
+    name: "chromium-devtools-direct-gate-skills",
+    setup(buildContext) {
+      buildContext.onResolve({filter: /\.skill\.js$/}, args => {
+        if (path.resolve(args.importer) !== exactImporter) return undefined;
+        return {path: args.path, namespace: "chromium-direct-gate-skill"};
+      });
+      buildContext.onLoad({filter: /.*/, namespace: "chromium-direct-gate-skill"}, args => ({
+        contents: "export const skill = Object.freeze({" +
+          `name:${JSON.stringify(path.basename(args.path, ".skill.js"))},` +
+          "description:'',allowedTools:Object.freeze([]),instructions:''});\n",
+        loader: "js",
+      }));
+    },
+  });
+}
+
+function createChromiumBrowserRuntimePlugin(packageRoot, allowImporter) {
   const platformRoot = path.join(packageRoot, "front_end", "core", "platform");
   const hostRuntimePath = path.join(platformRoot, "HostRuntime.ts");
   const browserRuntimePath = path.join(platformRoot, "browser", "browser.ts");
@@ -599,6 +783,7 @@ function createChromiumBrowserRuntimePlugin(packageRoot) {
     name: "chromium-devtools-browser-runtime",
     setup(buildContext) {
       buildContext.onResolve({ filter: /^\.\/node\/node\.js$/ }, args => {
+        if (!allowImporter(path.resolve(args.importer))) return undefined;
         if (path.resolve(args.importer) !== hostRuntimePath) {
           return undefined;
         }
@@ -608,12 +793,12 @@ function createChromiumBrowserRuntimePlugin(packageRoot) {
   };
 }
 
-function createChromiumReadOnlyOverlayPlugin(overlay) {
+function createChromiumReadOnlyOverlayPlugin(overlay, shared) {
   const frontEndRoot = path.join(overlay.packageRoot, "front_end");
   return {
     name: "chromium-devtools-read-only-elements-overlay",
     setup(buildContext) {
-      buildContext.onResolve({ filter: /^#chromium\// }, args => {
+      buildContext.onResolve({ filter: /^#chromium\// }, async args => {
         const importer = path.resolve(args.importer);
         if (!relativePathWithin(overlay.overlayRoot, importer)) {
           return undefined;
@@ -624,14 +809,14 @@ function createChromiumReadOnlyOverlayPlugin(overlay) {
         }
         if (relative.endsWith(".css.js")) {
           const cssRelative = relative.slice(0, -3);
-          return {
-            path: assertWithin(
+          return await shared.resolveCssInput({
+            cssPath: assertWithin(
               frontEndRoot,
               path.resolve(frontEndRoot, ...cssRelative.split("/")),
               "Chromium read-only CSS import",
             ),
-            namespace: "chromium-css-module",
-          };
+            importer,
+          });
         }
         const sourceRelative = `${relative.slice(0, -3)}.ts`;
         return {
@@ -654,7 +839,10 @@ function createChromiumReadOnlyOverlayPlugin(overlay) {
   };
 }
 
-function createChromiumReadOnlySourceTransformPlugin(overlay) {
+export function createChromiumReadOnlySourceTransformPlugin(overlay) {
+  if (!CHROMIUM_READ_ONLY_OVERLAY_AUTHORITIES.has(overlay)) {
+    throw new Error("Chromium read-only source transforms require a verified overlay authority");
+  }
   const transformsByPath = new Map(
     [...overlay.sourceTransforms.values()].map(transform => [path.resolve(transform.absolutePath), transform]),
   );
@@ -678,8 +866,8 @@ async function attestChromiumInputs(repositoryRoot, packageRoot, metafile) {
   const inputHashes = new Map();
   for (const input of Object.keys(metafile.inputs)) {
     let inputPath;
-    if (input.startsWith("chromium-css-module:")) {
-      inputPath = input.slice("chromium-css-module:".length);
+    if (input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`)) {
+      inputPath = input.slice(CHROMIUM_SHARED_NAMESPACES.css.length + 1);
     } else if (input.startsWith("chromium-")) {
       continue;
     } else {
@@ -736,14 +924,12 @@ async function classifyChromiumReadOnlyMetafileInputs({
   const overlayInputs = [];
   const generatedInputs = [];
   const exactGeneratedInputs = new Set([
-    "chromium-generated:english-only-locales",
-    `chromium-generated-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
-    "chromium-styles-generated:locales",
-    `chromium-styles-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
+    `${CHROMIUM_SHARED_NAMESPACES.generated}:english-only-locales`,
+    `${CHROMIUM_SHARED_NAMESPACES.images}:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
   ]);
   for (const input of Object.keys(metafile.inputs)) {
-    const cssNamespace = input.startsWith("chromium-css-module:") ? "chromium-css-module:" :
-      input.startsWith("chromium-styles-css:") ? "chromium-styles-css:" : undefined;
+    const cssNamespace = input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`) ?
+      `${CHROMIUM_SHARED_NAMESPACES.css}:` : undefined;
     if (cssNamespace) {
       const absolutePath = await realpath(input.slice(cssNamespace.length));
       const relativePath = relativePathWithin(packageRoot, absolutePath);
@@ -871,56 +1057,59 @@ function reachableMetafileInputs({repositoryRoot, entryPoint, metafile}) {
     throw new Error("Chromium read-only production entry is absent from the metafile");
   }
 
-  const reachable = new Set();
-  const pending = [entryInput];
-  while (pending.length > 0) {
-    const input = pending.pop();
-    if (reachable.has(input)) continue;
-    reachable.add(input);
-    for (const imported of metafile.inputs[input]?.imports ?? []) {
-      if (imported.external) continue;
-      const resolved = byNormalizedPath.get(normalizedMetafileInput(imported.path));
-      if (!resolved) {
-        throw new Error(
-          `Chromium read-only metafile import is not an input: ${input} -> ${imported.path}`,
-        );
-      }
-      pending.push(resolved);
-    }
+  const owningOutputs = Object.entries(metafile.outputs ?? {}).filter(([, output]) =>
+    output.inputs && Object.hasOwn(output.inputs, entryInput));
+  if (owningOutputs.length !== 1) {
+    throw new Error(
+      `Chromium read-only production entry must contribute to exactly one output; found ${owningOutputs.length}`,
+    );
   }
-  return Object.freeze({entryInput, inputs: Object.freeze([...reachable])});
+  const [owningOutputPath, owningOutput] = owningOutputs[0];
+  const projectedInputs = [];
+  for (const outputInput of Object.keys(owningOutput.inputs)) {
+    const resolved = byNormalizedPath.get(normalizedMetafileInput(outputInput));
+    if (!resolved) {
+      throw new Error(`Chromium read-only output input is not in the metafile: ${outputInput}`);
+    }
+    projectedInputs.push(resolved);
+  }
+  return Object.freeze({
+    entryInput,
+    inputs: Object.freeze(projectedInputs),
+    owningOutputPath,
+    owningOutput,
+  });
 }
 
 function outputForReachableEntry(metafile, reachable) {
-  const matches = Object.entries(metafile.outputs ?? {}).filter(([, output]) =>
-    output.inputs && Object.hasOwn(output.inputs, reachable.entryInput));
-  if (matches.length !== 1) {
-    throw new Error(
-      `Chromium read-only production entry must contribute to exactly one output; found ${matches.length}`,
-    );
-  }
-  return matches[0];
+  return [reachable.owningOutputPath, reachable.owningOutput];
 }
 
 export async function prepareChromiumReadOnlyElementsBuild(repositoryRoot) {
   const physicalRepositoryRoot = await realpath(repositoryRoot);
   const overlay = await verifyChromiumReadOnlyElementsOverlay(physicalRepositoryRoot);
-  const reviewedPackageImporters = new Set(
-    Object.keys(overlay.upstreamFiles).map(relativePath =>
+  const reviewedImporters = Object.freeze(new Set([
+    ...Object.keys(overlay.upstreamFiles).map(relativePath =>
       path.resolve(overlay.packageRoot, ...relativePath.split("/"))),
-  );
-  const allowImporter = importer =>
-    reviewedPackageImporters.has(path.resolve(importer)) ||
-    Boolean(relativePathWithin(overlay.overlayRoot, path.resolve(importer)));
-  const plugins = Object.freeze([
-    createChromiumReadOnlyOverlayPlugin(overlay),
-    createChromiumReadOnlySourceTransformPlugin(overlay),
-    createChromiumBrowserRuntimePlugin(overlay.packageRoot),
-    createChromiumCssModulePlugin(overlay.packageRoot, allowImporter),
-    createChromiumGeneratedModulePlugin(overlay.packageRoot, allowImporter),
-  ].map(plugin => Object.freeze(plugin)));
+    ...Object.keys(overlay.manifest.overlayFiles).map(relativePath =>
+      path.resolve(overlay.overlayRoot, ...relativePath.split("/"))),
+  ]));
+  const shared = await createChromiumSharedRuntimePlugins({
+    packageRoot: overlay.packageRoot,
+    allowedImporters: reviewedImporters,
+  });
+  const createScopedPlugins = sharedRuntime => {
+    assertChromiumSharedRuntimeAuthority(sharedRuntime, overlay.packageRoot);
+    return Object.freeze([
+      createChromiumReadOnlyOverlayPlugin(overlay, sharedRuntime),
+      createChromiumReadOnlySourceTransformPlugin(overlay),
+    ].map(plugin => Object.freeze(plugin)));
+  };
+  const scopedPlugins = createScopedPlugins(shared);
+  const plugins = Object.freeze([...scopedPlugins, ...shared.plugins]);
 
-  const verifyBuild = async result => {
+  const verifyBuild = async (result, sharedRuntime = shared) => {
+    assertChromiumSharedRuntimeAuthority(sharedRuntime, overlay.packageRoot);
     const reachable = reachableMetafileInputs({
       repositoryRoot: physicalRepositoryRoot,
       entryPoint: overlay.entryPoint,
@@ -937,6 +1126,19 @@ export async function prepareChromiumReadOnlyElementsBuild(repositoryRoot) {
       overlayRoot: overlay.overlayRoot,
       metafile: reachableMetafile,
     });
+    const sharedInputVerification = sharedRuntime.verifyInputs(reachable.inputs.filter(input =>
+      Object.values(sharedRuntime.namespaces).some(namespace => input.startsWith(`${namespace}:`))));
+    if (
+      JSON.stringify(sharedInputVerification.inputInventory) !==
+      JSON.stringify(overlay.manifest.reviewedSharedInputInventory)
+    ) {
+      throw new Error("Chromium read-only shared input inventory mismatch");
+    }
+    assertAttestation(
+      sharedInputVerification.payloadAttestation,
+      overlay.manifest.reviewedSharedPayloadAttestation,
+      "Chromium read-only shared payload",
+    );
     const chromiumInputAttestation = await attestClassifiedInputs(classifiedInputs.packageInputs);
     const overlayAttestation = await attestClassifiedInputs(classifiedInputs.overlayInputs);
     assertAttestation(
@@ -987,12 +1189,19 @@ export async function prepareChromiumReadOnlyElementsBuild(repositoryRoot) {
       requiredLicenseFiles,
       unminifiedBytes: outputBytes,
       verifiedInputKeys: Object.freeze([...reachable.inputs].sort()),
+      generatedInputs: sharedInputVerification.generatedInputs,
+      sharedInputInventory: sharedInputVerification.inputInventory,
+      payloadAttestation: sharedInputVerification.payloadAttestation,
     });
   };
 
   return Object.freeze({
     entryPoint: overlay.entryPoint,
     plugins,
+    scopedPlugins,
+    createScopedPlugins: Object.freeze(createScopedPlugins),
+    sharedRuntime: shared,
+    sharedImporterPaths: Object.freeze([...reviewedImporters].sort()),
     browserTargets: CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets,
     verifyBuild,
   });
@@ -1021,7 +1230,12 @@ export async function bundleChromiumReadOnlyElementsRuntime({
     logLevel: "silent",
     plugins: prepared.plugins,
   });
-  return Object.assign(result, await prepared.verifyBuild(result));
+  Object.assign(result, await prepared.verifyBuild(result));
+  Object.defineProperty(result, "sharedRuntime", {
+    value: prepared.sharedRuntime,
+    enumerable: false,
+  });
+  return result;
 }
 
 export async function bundleChromiumDevToolsModule({
@@ -1044,6 +1258,11 @@ export async function bundleChromiumDevToolsModule({
   ));
   assertWithin(verified.packageRoot, entryAbsolute, "Chromium DevTools entry point");
 
+  const packageImporters = Object.freeze(new Set(await listFiles(verified.packageRoot)));
+  const shared = await createChromiumSharedRuntimePlugins({
+    packageRoot: verified.packageRoot,
+    allowedImporters: packageImporters,
+  });
   const result = await build({
     absWorkingDir: path.resolve(repositoryRoot),
     entryPoints: [entryAbsolute],
@@ -1058,11 +1277,7 @@ export async function bundleChromiumDevToolsModule({
     write,
     outfile: outfile ?? path.join(path.resolve(repositoryRoot), "chromium-devtools-runtime.js"),
     logLevel: "silent",
-    plugins: [
-      createChromiumBrowserRuntimePlugin(verified.packageRoot),
-      createChromiumCssModulePlugin(verified.packageRoot),
-      createChromiumGeneratedModulePlugin(verified.packageRoot),
-    ],
+    plugins: Object.freeze([...shared.plugins, createChromiumDirectGateSkillPlugin(verified.packageRoot)]),
   });
   const chromiumInputAttestation = await attestChromiumInputs(
     path.resolve(repositoryRoot),

@@ -7,8 +7,12 @@ import ts from "typescript";
 
 import {
   applyChromiumReadOnlySourceTransform,
+  assertChromiumSharedRuntimeAuthority,
   CHROMIUM_DEVTOOLS_PIN,
+  createChromiumReadOnlySourceTransformPlugin,
+  createChromiumSharedRuntimePlugins,
   verifyChromiumDevToolsPackage,
+  verifyChromiumReadOnlyElementsOverlay,
 } from "./chromium-devtools-runtime.mjs";
 
 export const CHROMIUM_READ_ONLY_STYLES_RUNTIME = Object.freeze({
@@ -23,7 +27,7 @@ export const CHROMIUM_READ_ONLY_STYLES_RUNTIME = Object.freeze({
   overlayRoot:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
   manifestSha256:
-    "8266c185913f5f4d3bc77aaa67bd4946a36edfd166f3e060fafa5bd2185bf770",
+    "e011d235e93065be7cbff3e7070655999f4b380885da4b1cd4a004529ba67813",
   entryPoint:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/entrypoints/read-only-styles.ts",
 });
@@ -245,7 +249,12 @@ async function verifyChromiumReadOnlyStylesOverlay(repositoryRoot, packageRoot) 
   if (
     !Number.isSafeInteger(manifest.reviewedInputCount) || manifest.reviewedInputCount < 1 ||
     !Array.isArray(manifest.reviewedGeneratedInputs) ||
-    new Set(manifest.reviewedGeneratedInputs).size !== manifest.reviewedGeneratedInputs.length
+    new Set(manifest.reviewedGeneratedInputs).size !== manifest.reviewedGeneratedInputs.length ||
+    !Array.isArray(manifest.reviewedSharedInputInventory) ||
+    new Set(manifest.reviewedSharedInputInventory).size !== manifest.reviewedSharedInputInventory.length ||
+    !manifest.reviewedSharedPayloadAttestation ||
+    !Number.isSafeInteger(manifest.reviewedSharedPayloadAttestation.fileCount) ||
+    !/^[a-f0-9]{64}$/.test(manifest.reviewedSharedPayloadAttestation.sha256 ?? "")
   ) {
     throw new Error("Chromium Styles reviewed closure metadata is invalid");
   }
@@ -277,18 +286,12 @@ async function verifyChromiumReadOnlyStylesOverlay(repositoryRoot, packageRoot) 
   });
 }
 
-function chromiumPackagePlugin(packageRoot, allowedImporterRoots) {
+function chromiumPackagePlugin(packageRoot, allowedImporterRoots, sharedRuntime) {
   const frontEndRoot = path.join(packageRoot, "front_end");
-  const reviewedRelativeCSSImporters = new Set([
-    path.join(frontEndRoot, "panels", "elements", "StylePropertiesSection.ts"),
-    path.join(frontEndRoot, "panels", "elements", "StylesSidebarPane.ts"),
-    path.join(frontEndRoot, "ui", "legacy", "Treeoutline.ts"),
-    path.join(frontEndRoot, "ui", "legacy", "components", "inline_editor", "ColorSwatch.ts"),
-  ].map(value => path.resolve(value)));
   return {
     name: "pin-op-chromium-styles-package",
     setup(context) {
-      context.onResolve({filter: /^#chromium\//}, args => {
+      context.onResolve({filter: /^#chromium\//}, async args => {
         if (!args.importer || !allowedImporterRoots.some(root => relativePathWithin(root, path.resolve(args.importer)))) {
           return undefined;
         }
@@ -297,20 +300,15 @@ function chromiumPackagePlugin(packageRoot, allowedImporterRoots) {
           throw new Error(`Invalid Chromium Styles package import: ${args.path}`);
         }
         if (relative.endsWith(".css.js")) {
-          return {
-            path: assertWithin(
-              frontEndRoot,
-              path.resolve(frontEndRoot, relative.slice(0, -3)),
-              "Chromium Styles CSS import",
-            ),
-            namespace: "chromium-styles-css",
-          };
+          const cssPath = assertWithin(
+            frontEndRoot,
+            path.resolve(frontEndRoot, relative.slice(0, -3)),
+            "Chromium Styles CSS import",
+          );
+          return await sharedRuntime.resolveCssInput({cssPath, importer: args.importer});
         }
         if (relative === "Images/Images.js") {
-          return {
-            path: path.join(frontEndRoot, "Images", "Images.js"),
-            namespace: "chromium-styles-images",
-          };
+          return sharedRuntime.resolveImagesInput({importer: args.importer});
         }
         return {
           path: assertWithin(
@@ -320,16 +318,6 @@ function chromiumPackagePlugin(packageRoot, allowedImporterRoots) {
           ),
         };
       });
-      context.onResolve({filter: /\.css\.js$/}, args => {
-        if (!args.importer || !reviewedRelativeCSSImporters.has(path.resolve(args.importer))) return undefined;
-        const cssPath = path.resolve(args.resolveDir, args.path.slice(0, -3));
-        if (!relativePathWithin(frontEndRoot, cssPath)) return undefined;
-        return {path: cssPath, namespace: "chromium-styles-css"};
-      });
-      context.onLoad({filter: /\.css$/, namespace: "chromium-styles-css"}, async args => ({
-        contents: `export default ${JSON.stringify(await readFile(args.path, "utf8"))};\n`,
-        loader: "js",
-      }));
     },
   };
 }
@@ -420,8 +408,6 @@ const STYLE_RESOLUTIONS = Object.freeze([
   ["front_end/core/sdk/CSSRule.ts", "../../generated/protocol.js", "protocol.ts"],
   ["front_end/core/sdk/CSSRule.ts", "../platform/platform.js", "platform.ts"],
   ["front_end/core/sdk/CSSRule.ts", "../text_utils/text_utils.js", "text-utils.ts"],
-  ["front_end/core/sdk/CSSMetadata.ts", "../../generated/protocol.js", "protocol.ts"],
-  ["front_end/core/sdk/CSSMetadata.ts", "../common/common.js", "common.ts"],
   ["front_end/core/sdk/CSSContainerQuery.ts", "./CSSQuery.js", "css-query.ts"],
   ["front_end/core/sdk/CSSLayer.ts", "./CSSQuery.js", "css-query.ts"],
   ["front_end/core/sdk/CSSMedia.ts", "./CSSQuery.js", "css-query.ts"],
@@ -437,15 +423,10 @@ const STYLE_RESOLUTIONS = Object.freeze([
   ["front_end/core/sdk/CSSStartingStyle.ts", "../text_utils/text_utils.js", "text-utils.ts"],
   ["front_end/core/sdk/CSSSupports.ts", "../text_utils/text_utils.js", "text-utils.ts"],
 
-  // TreeOutline/Widget remain native; only their broad model barrel is narrowed.
-  ["front_end/ui/legacy/Treeoutline.ts", "../../core/sdk/sdk.js", "sdk.ts"],
-  ["front_end/models/geometry/GeometryImpl.ts", "../../core/sdk/sdk.js", "sdk.ts"],
-
   // The reviewed native parser/value renderer spine. Only broad barrels and
   // interactive dependencies are replaced; parsing and rendering stay upstream.
   ["front_end/core/sdk/CSSPropertyParser.ts", "../../core/platform/platform.js", "platform.ts"],
   ["front_end/core/sdk/CSSPropertyParserMatchers.ts", "../../core/common/common.js", "common.ts"],
-  ["front_end/core/common/Color.ts", "../platform/platform.js", "platform.ts"],
   ["front_end/panels/elements/PropertyRenderer.ts", "../../core/common/common.js", "common.ts"],
   ["front_end/panels/elements/PropertyRenderer.ts", "../../core/i18n/i18n.js", "@base/i18n.ts"],
   ["front_end/panels/elements/PropertyRenderer.ts", "../../core/sdk/sdk.js", "sdk.ts"],
@@ -458,32 +439,22 @@ const STYLE_RESOLUTIONS = Object.freeze([
   ["front_end/ui/legacy/components/inline_editor/ColorSwatch.ts", "../../../visual_logging/visual_logging.js", "visual-logging.ts"],
 ]);
 
-async function stylesResolutions(repositoryRoot, packageRoot) {
-  const stylesRoot = path.join(
-    repositoryRoot,
-    "third_party",
-    "chromium-devtools-frontend",
-    "styles-overlay",
-    CHROMIUM_READ_ONLY_STYLES_RUNTIME.packageVersion,
-  );
-  const baseRoot = path.join(
-    repositoryRoot,
-    "third_party",
-    "chromium-devtools-frontend",
-    "patches",
-    CHROMIUM_READ_ONLY_STYLES_RUNTIME.packageVersion,
-  );
-  const baseManifest = JSON.parse(await readFile(path.join(baseRoot, "manifest.json"), "utf8"));
-  const resolutions = new Map(baseManifest.resolutions.map(item => [
-    `${item.importer}\0${item.specifier}`,
-    path.join(baseRoot, ...item.facade.split("/")),
-  ]));
+function stylesResolutions({stylesRoot, baseOverlay, packageRoot}) {
+  const baseRoot = baseOverlay.overlayRoot;
+  if (
+    path.resolve(baseOverlay.packageRoot) !== path.resolve(packageRoot) ||
+    baseOverlay.manifest.package?.version !== CHROMIUM_READ_ONLY_STYLES_RUNTIME.packageVersion ||
+    baseOverlay.manifest.package?.gitHead !== CHROMIUM_READ_ONLY_STYLES_RUNTIME.gitHead
+  ) {
+    throw new Error("Chromium Styles base overlay diverges from the reviewed package pin");
+  }
+  const resolutions = new Map(baseOverlay.resolutions);
   for (const [importer, specifier, facade] of STYLE_RESOLUTIONS) {
     const facadeRoot = facade.startsWith("@base/") ? path.join(baseRoot, "facades") : path.join(stylesRoot, "facades");
     const facadeRelative = facade.replace(/^@base\//, "");
     resolutions.set(`${importer}\0${specifier}`, path.join(facadeRoot, ...facadeRelative.split("/")));
   }
-  return resolutions;
+  return Object.freeze(resolutions);
 }
 
 function exactStylesResolutionPlugin(packageRoot, resolutions) {
@@ -497,62 +468,6 @@ function exactStylesResolutionPlugin(packageRoot, resolutions) {
         if (relative.startsWith("../") || path.isAbsolute(relative)) return undefined;
         const facade = resolutions.get(`${relative}\0${args.path}`);
         return facade ? {path: facade} : undefined;
-      });
-    },
-  };
-}
-
-function generatedModulesPlugin(packageRoot) {
-  const frontEndRoot = path.join(packageRoot, "front_end");
-  return {
-    name: "pin-op-chromium-styles-generated",
-    setup(context) {
-      context.onResolve({filter: /^\.\/locales\.js$/}, args => {
-        if (path.resolve(args.importer) !== path.join(frontEndRoot, "core", "i18n", "i18nImpl.ts")) {
-          return undefined;
-        }
-        return {path: "locales", namespace: "chromium-styles-generated"};
-      });
-      context.onLoad({filter: /^locales$/, namespace: "chromium-styles-generated"}, () => ({
-        contents:
-          "export const LOCALES=['en-US']; export const BUNDLED_LOCALES=['en-US']; " +
-          "export const DEFAULT_LOCALE='en-US'; export const REMOTE_FETCH_PATTERN=''; " +
-          "export const LOCAL_FETCH_PATTERN='./locales/@LOCALE@.json';",
-        loader: "js",
-      }));
-      context.onResolve({filter: /Images\/Images\.js$/}, args => {
-        const expected = path.join(frontEndRoot, "Images", "Images.js");
-        return path.resolve(args.resolveDir, args.path) === expected ?
-          {path: expected, namespace: "chromium-styles-images"} : undefined;
-      });
-      context.onLoad({filter: /Images\.js$/, namespace: "chromium-styles-images"}, async () => {
-        const imageRoot = path.join(frontEndRoot, "Images", "src");
-        const declarations = [];
-        const watchFiles = [];
-        for (const [fileName, expectedHash] of Object.entries(REVIEWED_STYLE_IMAGE_HASHES)) {
-          const imagePath = path.join(imageRoot, fileName);
-          const bytes = await readFile(imagePath);
-          const actualHash = sha256(bytes);
-          if (actualHash !== expectedHash) {
-            throw new Error(`Pinned Chromium Styles image hash mismatch for ${fileName}: ${actualHash}`);
-          }
-          const name = fileName.slice(0, -4);
-          const url = `url(\"data:image/svg+xml;base64,${bytes.toString("base64")}\")`;
-          declarations.push(
-            `root.setProperty(${JSON.stringify(`--image-file-${name}`)}, ${JSON.stringify(url)});`,
-          );
-          watchFiles.push(imagePath);
-        }
-        return {
-          contents: `const root=document.documentElement.style;\n${declarations.join("\n")}\n`,
-          loader: "js",
-          watchFiles,
-        };
-      });
-      context.onResolve({filter: /^\.\/node\/node\.js$/}, args => {
-        const expected = path.join(frontEndRoot, "core", "platform", "HostRuntime.ts");
-        return path.resolve(args.importer) === expected ?
-          {path: path.join(frontEndRoot, "core", "platform", "browser", "browser.ts")} : undefined;
       });
     },
   };
@@ -969,22 +884,24 @@ function reachableStylesInputs({repositoryRoot, entryPoint, metafile}) {
       normalizePath(path.resolve(repositoryRoot, input)) === absoluteEntry);
   if (!entryInput) throw new Error("Chromium Styles production entry is absent from the metafile");
 
-  const reachable = new Set();
-  const pending = [entryInput];
-  while (pending.length > 0) {
-    const input = pending.pop();
-    if (reachable.has(input)) continue;
-    reachable.add(input);
-    for (const imported of metafile.inputs[input]?.imports ?? []) {
-      if (imported.external) continue;
-      const resolved = normalizedInputs.get(normalizePath(imported.path));
-      if (!resolved) {
-        throw new Error(`Chromium Styles metafile import is not an input: ${input} -> ${imported.path}`);
-      }
-      pending.push(resolved);
+  const owningOutputs = Object.entries(metafile.outputs ?? {}).filter(([, output]) =>
+    output.inputs && Object.hasOwn(output.inputs, entryInput));
+  if (owningOutputs.length !== 1) {
+    throw new Error(`Chromium Styles entry must contribute to exactly one output; found ${owningOutputs.length}`);
+  }
+  const [owningOutputPath, owningOutput] = owningOutputs[0];
+  const projectedInputs = Object.keys(owningOutput.inputs);
+  for (const input of projectedInputs) {
+    if (!normalizedInputs.has(normalizePath(input))) {
+      throw new Error(`Chromium Styles owning output input is absent from the metafile: ${input}`);
     }
   }
-  return Object.freeze({entryInput, inputs: Object.freeze([...reachable].sort())});
+  return Object.freeze({
+    entryInput,
+    inputs: Object.freeze(projectedInputs.sort()),
+    owningOutputPath,
+    owningOutput,
+  });
 }
 
 async function classifyStylesInputs({
@@ -993,36 +910,24 @@ async function classifyStylesInputs({
   stylesOverlayRoot,
   baseOverlayRoot,
   inputKeys,
+  sharedNamespaces,
 }) {
   const packageInputs = [];
   const stylesOverlayInputs = [];
   const baseOverlayInputs = [];
-  const generatedInputs = [];
+  const sharedInputs = [];
   for (const input of inputKeys) {
-    if (input.startsWith("chromium-styles-css:") || input.startsWith("chromium-css-module:")) {
-      const namespace = input.startsWith("chromium-styles-css:") ?
-        "chromium-styles-css:" : "chromium-css-module:";
+    if (input.startsWith(`${sharedNamespaces.css}:`)) {
+      sharedInputs.push(input);
+      const namespace = `${sharedNamespaces.css}:`;
       const absolutePath = await realpath(input.slice(namespace.length));
       const relativePath = relativePathWithin(packageRoot, absolutePath);
       if (!relativePath) throw new Error(`Chromium Styles CSS input is outside the pinned package: ${input}`);
       packageInputs.push(Object.freeze({input, absolutePath, relativePath}));
       continue;
     }
-    if (input.startsWith("chromium-styles-") || input.startsWith("chromium-generated")) {
-      const expectedImages = `chromium-styles-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`;
-      const expectedSharedImages =
-        `chromium-generated-images:${path.join(packageRoot, "front_end", "Images", "Images.js")}`;
-      if (
-        input !== "chromium-styles-generated:locales" &&
-        input !== "chromium-generated:english-only-locales" &&
-        input !== expectedImages && input !== expectedSharedImages &&
-        !/^chromium-styles-skill:[A-Za-z0-9_.\/-]+\.skill\.js$/.test(input) &&
-        !/^chromium-generated-skill:[A-Za-z0-9_.\/-]+\.skill\.js$/.test(input)
-      ) {
-        throw new Error(`Unreviewed Chromium Styles generated input: ${input}`);
-      }
-      generatedInputs.push(input === expectedImages ? "chromium-styles-images:front_end/Images/Images.js" :
-        input === expectedSharedImages ? "chromium-generated-images:front_end/Images/Images.js" : input);
+    if ([sharedNamespaces.generated, sharedNamespaces.images].some(namespace => input.startsWith(`${namespace}:`))) {
+      sharedInputs.push(input);
       continue;
     }
     const absolutePath = await realpath(path.resolve(repositoryRoot, input));
@@ -1047,7 +952,7 @@ async function classifyStylesInputs({
     packageInputs: Object.freeze(packageInputs),
     stylesOverlayInputs: Object.freeze(stylesOverlayInputs),
     baseOverlayInputs: Object.freeze(baseOverlayInputs),
-    generatedInputs: Object.freeze(generatedInputs.sort()),
+    sharedInputs: Object.freeze(sharedInputs.sort()),
   });
 }
 
@@ -1102,11 +1007,9 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
   const physicalRoot = await realpath(repositoryRoot);
   const packageRoot = await resolvePinnedPackage(physicalRoot);
   const overlay = await verifyChromiumReadOnlyStylesOverlay(physicalRoot, packageRoot);
+  const baseOverlay = await verifyChromiumReadOnlyElementsOverlay(physicalRoot);
   const stylesOverlayRoot = overlay.overlayRoot;
-  const baseOverlayRoot = await realpath(path.join(
-    physicalRoot, "third_party", "chromium-devtools-frontend", "patches",
-    CHROMIUM_READ_ONLY_STYLES_RUNTIME.packageVersion,
-  ));
+  const baseOverlayRoot = await realpath(baseOverlay.overlayRoot);
   const entryPoint = await realpath(path.join(
     physicalRoot,
     ...CHROMIUM_READ_ONLY_STYLES_RUNTIME.entryPoint.split("/"),
@@ -1114,17 +1017,38 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
   if (!relativePathWithin(stylesOverlayRoot, entryPoint)) {
     throw new Error("Chromium Styles entry is outside its reviewed overlay");
   }
-  const resolutions = await stylesResolutions(physicalRoot, packageRoot);
-  const plugins = Object.freeze([
-    chromiumPackagePlugin(packageRoot, Object.freeze([
-      stylesOverlayRoot,
-      path.join(baseOverlayRoot, "facades"),
-    ])),
-    exactStylesResolutionPlugin(packageRoot, resolutions),
-    readOnlyStylesSourceTransformPlugin(packageRoot),
-    generatedModulesPlugin(packageRoot),
-  ]);
-  const verifyBuild = async result => {
+  const resolutions = stylesResolutions({stylesRoot: stylesOverlayRoot, baseOverlay, packageRoot});
+  const reviewedImporters = Object.freeze(new Set([
+    ...Object.keys(overlay.manifest.overlayFiles).map(relativePath =>
+      path.resolve(stylesOverlayRoot, ...relativePath.split("/"))),
+    ...Object.keys(overlay.manifest.upstreamFiles).map(relativePath =>
+      path.resolve(packageRoot, ...relativePath.split("/"))),
+    ...[
+      "front_end/core/i18n/i18nImpl.ts",
+      "front_end/core/platform/HostRuntime.ts",
+      "front_end/ui/legacy/Treeoutline.ts",
+      "front_end/ui/legacy/components/inline_editor/ColorSwatch.ts",
+    ].map(relativePath => path.resolve(packageRoot, ...relativePath.split("/"))),
+    path.resolve(baseOverlayRoot, "facades", "core-styles.ts"),
+    path.resolve(baseOverlayRoot, "facades", "ui-utils.ts"),
+  ]));
+  const shared = await createChromiumSharedRuntimePlugins({packageRoot, allowedImporters: reviewedImporters});
+  const createScopedPlugins = sharedRuntime => {
+    assertChromiumSharedRuntimeAuthority(sharedRuntime, packageRoot);
+    return Object.freeze([
+      chromiumPackagePlugin(packageRoot, Object.freeze([
+        stylesOverlayRoot,
+        path.join(baseOverlayRoot, "facades"),
+      ]), sharedRuntime),
+      exactStylesResolutionPlugin(packageRoot, resolutions),
+      createChromiumReadOnlySourceTransformPlugin(baseOverlay),
+      readOnlyStylesSourceTransformPlugin(packageRoot),
+    ].map(plugin => Object.freeze(plugin)));
+  };
+  const scopedPlugins = createScopedPlugins(shared);
+  const plugins = Object.freeze([...scopedPlugins, ...shared.plugins]);
+  const verifyBuild = async (result, sharedRuntime = shared) => {
+    assertChromiumSharedRuntimeAuthority(sharedRuntime, packageRoot);
     const reachable = reachableStylesInputs({repositoryRoot: physicalRoot, entryPoint, metafile: result?.metafile});
     const classifiedInputs = await classifyStylesInputs({
       repositoryRoot: physicalRoot,
@@ -1132,7 +1056,20 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
       stylesOverlayRoot,
       baseOverlayRoot,
       inputKeys: reachable.inputs,
+      sharedNamespaces: sharedRuntime.namespaces,
     });
+    const sharedInputVerification = sharedRuntime.verifyInputs(classifiedInputs.sharedInputs);
+    if (
+      JSON.stringify(sharedInputVerification.inputInventory) !==
+      JSON.stringify(overlay.manifest.reviewedSharedInputInventory)
+    ) {
+      throw new Error("Chromium Styles shared input inventory mismatch");
+    }
+    assertAttestation(
+      sharedInputVerification.payloadAttestation,
+      overlay.manifest.reviewedSharedPayloadAttestation,
+      "Chromium Styles shared payload",
+    );
     const [, output] = stylesOutputForEntry(result.metafile, reachable.entryInput);
     const standalone = normalizePath(output.entryPoint ?? "") ===
       normalizePath(path.relative(physicalRoot, entryPoint));
@@ -1155,11 +1092,6 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
         `Chromium Styles runtime exceeds ${CHROMIUM_READ_ONLY_STYLES_RUNTIME.maxUnminifiedBytes} bytes: ${unminifiedBytes}`,
       );
     }
-    if (reachable.inputs.length !== overlay.manifest.reviewedInputCount) {
-      throw new Error(
-        `Chromium Styles input count mismatch: ${reachable.inputs.length}`,
-      );
-    }
     const packageInputAttestation = await attestInputs(classifiedInputs.packageInputs);
     const stylesOverlayAttestation = await attestInputs(classifiedInputs.stylesOverlayInputs);
     const baseOverlayAttestation = await attestInputs(classifiedInputs.baseOverlayInputs);
@@ -1178,10 +1110,18 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
       overlay.manifest.reviewedBaseOverlayClosure,
       "Chromium Styles base overlay closure",
     );
+    if (reachable.inputs.length !== overlay.manifest.reviewedInputCount) {
+      throw new Error(
+        `Chromium Styles input count mismatch: ${reachable.inputs.length}`,
+      );
+    }
+    const canonicalImageInput = `${sharedRuntime.namespaces.images}:${path.join(packageRoot, "front_end", "Images", "Images.js")}`;
+    const manifestGeneratedInputs = sharedInputVerification.generatedInputs.map(input =>
+      input === canonicalImageInput ? `${sharedRuntime.namespaces.images}:front_end/Images/Images.js` : input);
     const reviewedGeneratedInputs = [...overlay.manifest.reviewedGeneratedInputs].sort();
     if (
-      classifiedInputs.generatedInputs.length !== reviewedGeneratedInputs.length ||
-      classifiedInputs.generatedInputs.some((input, index) => input !== reviewedGeneratedInputs[index])
+      manifestGeneratedInputs.length !== reviewedGeneratedInputs.length ||
+      manifestGeneratedInputs.some((input, index) => input !== reviewedGeneratedInputs[index])
     ) {
       throw new Error("Chromium Styles generated input inventory mismatch");
     }
@@ -1202,6 +1142,9 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
       baseOverlayAttestation,
       requiredLicenseFiles,
       requiredImageFiles: overlay.requiredImageFiles,
+      generatedInputs: sharedInputVerification.generatedInputs,
+      sharedInputInventory: sharedInputVerification.inputInventory,
+      payloadAttestation: sharedInputVerification.payloadAttestation,
       unminifiedBytes,
     });
   };
@@ -1210,6 +1153,10 @@ export async function prepareChromiumReadOnlyStylesBuild(repositoryRoot) {
     packageRoot,
     entryPoint,
     plugins,
+    scopedPlugins,
+    createScopedPlugins: Object.freeze(createScopedPlugins),
+    sharedRuntime: shared,
+    sharedImporterPaths: Object.freeze([...reviewedImporters].sort()),
     browserTargets: CHROMIUM_READ_ONLY_STYLES_RUNTIME.browserTargets,
     verifyBuild,
   });

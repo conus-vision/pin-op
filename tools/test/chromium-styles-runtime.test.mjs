@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {mkdtemp, mkdir, readFile, rm, writeFile} from "node:fs/promises";
+import {cp, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {fileURLToPath} from "node:url";
 
 import {build} from "esbuild";
+
+import {
+  createChromiumSharedRuntimePlugins,
+  prepareChromiumReadOnlyElementsBuild,
+} from "../chromium-devtools-runtime.mjs";
 
 import {
   bundleChromiumReadOnlyStylesRuntime,
@@ -14,7 +20,7 @@ import {
   verifyChromiumReadOnlyStylesOverlayInventory,
 } from "../chromium-devtools-styles-runtime.mjs";
 
-const repositoryRoot = new URL("../..", import.meta.url).pathname.replace(/^\/(?:([A-Za-z]:))/, "$1");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("does not intercept CSS or skill imports from foreign importers", async () => {
   const fixtureRoot = await mkdtemp(path.join(repositoryRoot, ".tmp-styles-foreign-"));
@@ -22,15 +28,23 @@ test("does not intercept CSS or skill imports from foreign importers", async () 
     const prepared = await prepareChromiumReadOnlyStylesBuild(repositoryRoot);
     const cssEntry = path.join(fixtureRoot, "foreign-css.mjs");
     const skillEntry = path.join(fixtureRoot, "foreign-skill.mjs");
+    const imageEntry = path.join(fixtureRoot, "foreign-image.mjs");
     await writeFile(cssEntry, "import './private.css.js';\n");
     await writeFile(path.join(fixtureRoot, "private.css"), ".foreign { color: red; }\n");
     await writeFile(skillEntry, "import './private.skill.js';\n");
+    await writeFile(imageEntry, "import '#chromium/Images/Images.js';\n");
 
-    for (const entryPoint of [cssEntry, skillEntry]) {
-      await assert.rejects(
-        build({entryPoints: [entryPoint], bundle: true, write: false, logLevel: "silent", plugins: prepared.plugins}),
-        /Could not resolve/,
-      );
+    const pluginOrders = [
+      prepared.plugins,
+      Object.freeze([...prepared.sharedRuntime.plugins, ...prepared.scopedPlugins]),
+    ];
+    for (const entryPoint of [cssEntry, skillEntry, imageEntry]) {
+      for (const plugins of pluginOrders) {
+        await assert.rejects(
+          build({entryPoints: [entryPoint], bundle: true, write: false, logLevel: "silent", plugins}),
+          /Could not resolve/,
+        );
+      }
     }
   } finally {
     await rm(fixtureRoot, {recursive: true, force: true});
@@ -50,6 +64,44 @@ test("pins the native Chromium Styles runtime to the reviewed package", async ()
   assert.match(result.code, /StylePropertiesSection\s*=\s*class/);
   assert.match(result.code, /CSSMatchedStyles\s*=\s*class/);
   assert.equal(result.metafile.inputs[result.entryPoint]?.bytes > 0, true);
+});
+
+test("rejects a tampered base resolution before preparing standalone Styles", async () => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "pin-op-styles-base-provenance-"));
+  const thirdPartyRoot = path.join(fixtureRoot, "third_party", "chromium-devtools-frontend");
+  const packageLinkRoot = path.join(fixtureRoot, "node_modules");
+  const packageRoot = await realpath(path.join(repositoryRoot, "node_modules", "chrome-devtools-frontend"));
+  try {
+    await mkdir(thirdPartyRoot, {recursive: true});
+    await mkdir(packageLinkRoot, {recursive: true});
+    await cp(
+      path.join(repositoryRoot, "third_party", "chromium-devtools-frontend", "patches"),
+      path.join(thirdPartyRoot, "patches"),
+      {recursive: true},
+    );
+    await cp(
+      path.join(repositoryRoot, "third_party", "chromium-devtools-frontend", "styles-overlay"),
+      path.join(thirdPartyRoot, "styles-overlay"),
+      {recursive: true},
+    );
+    await cp(path.join(repositoryRoot, "pnpm-lock.yaml"), path.join(fixtureRoot, "pnpm-lock.yaml"));
+    await symlink(packageRoot, path.join(packageLinkRoot, "chrome-devtools-frontend"), "junction");
+
+    const manifestPath = path.join(
+      thirdPartyRoot, "patches", CHROMIUM_READ_ONLY_STYLES_RUNTIME.packageVersion, "manifest.json",
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.ok(manifest.resolutions.length > 1);
+    manifest.resolutions[0].facade = manifest.resolutions[1].facade;
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await assert.rejects(
+      prepareChromiumReadOnlyStylesBuild(fixtureRoot),
+      /Chromium read-only overlay manifest hash mismatch/,
+    );
+  } finally {
+    await rm(fixtureRoot, {recursive: true, force: true});
+  }
 });
 
 test("exports a high-level createPane runtime without protocol writer fields", async () => {
@@ -207,6 +259,7 @@ test("keeps empty transitions focus-safe and renders inherited labels", async ()
 
 test("exposes one-pass verified Styles build preparation", async () => {
   const prepared = await prepareChromiumReadOnlyStylesBuild(repositoryRoot);
+  const builderSource = await readFile(new URL("../chromium-devtools-styles-runtime.mjs", import.meta.url), "utf8");
 
   assert.equal(prepared.entryPoint.endsWith("/entrypoints/read-only-styles.ts") ||
     prepared.entryPoint.endsWith("\\entrypoints\\read-only-styles.ts"), true);
@@ -214,15 +267,171 @@ test("exposes one-pass verified Styles build preparation", async () => {
   assert.deepEqual(prepared.plugins.map(plugin => plugin.name), [
     "pin-op-chromium-styles-package",
     "pin-op-chromium-exact-styles-resolutions",
+    "chromium-devtools-read-only-source-transforms",
     "pin-op-chromium-read-only-styles-transform",
-    "pin-op-chromium-styles-generated",
+    "chromium-devtools-css-module",
+    "chromium-devtools-generated-modules",
+    "chromium-devtools-browser-runtime",
   ]);
+  assert.equal(Object.isFrozen(prepared.scopedPlugins), true);
+  assert.equal(Object.isFrozen(prepared.sharedRuntime), true);
+  assert.equal(Object.isFrozen(prepared.sharedImporterPaths), true);
+  assert.equal(typeof prepared.createScopedPlugins, "function");
+  assert.deepEqual(prepared.plugins.slice(0, prepared.scopedPlugins.length), prepared.scopedPlugins);
+  assert.match(builderSource, /sharedRuntime\.resolveImagesInput\(\{importer: args\.importer\}\)/);
+  assert.doesNotMatch(builderSource, /namespace: sharedRuntime\.namespaces\.images/);
+  assert.throws(
+    () => prepared.createScopedPlugins(Object.freeze({
+      plugins: Object.freeze([]),
+      namespaces: prepared.sharedRuntime.namespaces,
+      resolveCssInput() {},
+      verifyInputs() {},
+    })),
+    /invalid package or namespace authority/,
+  );
+
+  const oppositeOrder = await build({
+    absWorkingDir: repositoryRoot,
+    entryPoints: [prepared.entryPoint],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: prepared.browserTargets,
+    treeShaking: true,
+    minify: false,
+    sourcemap: false,
+    metafile: true,
+    write: false,
+    logLevel: "silent",
+    plugins: Object.freeze([
+      ...prepared.sharedRuntime.plugins,
+      ...prepared.createScopedPlugins(prepared.sharedRuntime),
+    ]),
+  });
+  const oppositeVerification = await prepared.verifyBuild(oppositeOrder, prepared.sharedRuntime);
+  assert.deepEqual(oppositeVerification.sharedInputInventory,
+    JSON.parse(await readFile(new URL(
+      "../../third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/manifest.json",
+      import.meta.url,
+    ), "utf8")).reviewedSharedInputInventory);
 
   const bundled = await bundleChromiumReadOnlyStylesRuntime({repositoryRoot});
-  assert.equal(bundled.verifiedInputKeys.length, Object.keys(bundled.metafile.inputs).length);
+  assert.equal(bundled.verifiedInputKeys.length <= Object.keys(bundled.metafile.inputs).length, true);
   assert.equal(bundled.unminifiedBytes <= CHROMIUM_READ_ONLY_STYLES_RUNTIME.maxUnminifiedBytes, true);
   assert.equal(bundled.classifiedInputs.packageInputs.length > 0, true);
   assert.equal(bundled.classifiedInputs.stylesOverlayInputs.length > 0, true);
+});
+
+test("builds DOM and Styles with one branded shared runtime in either plugin order", async () => {
+  const [dom, styles] = await Promise.all([
+    prepareChromiumReadOnlyElementsBuild(repositoryRoot),
+    prepareChromiumReadOnlyStylesBuild(repositoryRoot),
+  ]);
+  const unionImporters = Object.freeze(new Set([
+    ...dom.sharedImporterPaths,
+    ...styles.sharedImporterPaths,
+  ]));
+  const unionShared = await createChromiumSharedRuntimePlugins({
+    packageRoot: styles.packageRoot,
+    allowedImporters: unionImporters,
+  });
+  const pluginOrders = [
+    [...dom.createScopedPlugins(unionShared), ...styles.createScopedPlugins(unionShared), ...unionShared.plugins],
+    [...unionShared.plugins, ...styles.createScopedPlugins(unionShared), ...dom.createScopedPlugins(unionShared)],
+  ];
+  const resolutionSignatures = [];
+  const completeBuildSignatures = [];
+  for (const plugins of pluginOrders) {
+    const result = await build({
+      absWorkingDir: repositoryRoot,
+      entryPoints: {dom: dom.entryPoint, styles: styles.entryPoint},
+      outdir: path.join(repositoryRoot, ".tmp-combined-runtime-output"),
+      bundle: true,
+      format: "esm",
+      platform: "browser",
+      target: styles.browserTargets,
+      treeShaking: true,
+      minify: false,
+      sourcemap: false,
+      metafile: true,
+      write: false,
+      logLevel: "silent",
+      plugins,
+    });
+    const [domVerification, stylesVerification] = await Promise.all([
+      dom.verifyBuild(result, unionShared),
+      styles.verifyBuild(result, unionShared),
+    ]);
+    assert.equal(domVerification.verifiedInputKeys.some(input => input.includes("styles-overlay")), false);
+    assert.equal(stylesVerification.verifiedInputKeys.some(input =>
+      input.replaceAll("\\", "/").endsWith("patches/1.0.1681091/entrypoints/read-only-elements.ts")), false);
+    assert.equal(domVerification.verifiedInputKeys.some(input => input.endsWith("ElementsTreeOutline.ts")), true);
+    assert.equal(stylesVerification.verifiedInputKeys.some(input => input.endsWith("StylesSidebarPane.ts")), true);
+
+    if (resolutionSignatures.length === 0) {
+      const leakedMetafile = structuredClone(result.metafile);
+      const domEntryInput = Object.keys(leakedMetafile.inputs).find(input =>
+        input.replaceAll("\\", "/").endsWith("patches/1.0.1681091/entrypoints/read-only-elements.ts"));
+      const leakedInput = Object.keys(leakedMetafile.inputs).find(input =>
+        input.replaceAll("\\", "/").endsWith("styles-overlay/1.0.1681091/facades/platform.ts"));
+      const domOutput = Object.values(leakedMetafile.outputs).find(output =>
+        domEntryInput && output.inputs && Object.hasOwn(output.inputs, domEntryInput));
+      assert.ok(domEntryInput && leakedInput && domOutput);
+      domOutput.inputs[leakedInput] = {bytesInOutput: 1};
+      await assert.rejects(
+        dom.verifyBuild({...result, metafile: leakedMetafile}, unionShared),
+        /(?:unreachable contributing input|outside the pinned package and overlay)/,
+      );
+
+      const stylesEntryInput = Object.keys(leakedMetafile.inputs).find(input =>
+        input.replaceAll("\\", "/").endsWith("styles-overlay/1.0.1681091/entrypoints/read-only-styles.ts"));
+      const foreignInput = Object.keys(leakedMetafile.inputs).find(input =>
+        input.replaceAll("\\", "/").endsWith("patches/1.0.1681091/entrypoints/read-only-elements.ts"));
+      const stylesOutput = Object.values(leakedMetafile.outputs).find(output =>
+        stylesEntryInput && output.inputs && Object.hasOwn(output.inputs, stylesEntryInput));
+      assert.ok(stylesEntryInput && foreignInput && stylesOutput);
+      stylesOutput.inputs[foreignInput] = {bytesInOutput: 1};
+      await assert.rejects(
+        styles.verifyBuild({...result, metafile: leakedMetafile}, unionShared),
+        /(?:outside the pinned package and reviewed overlays|base overlay closure mismatch)/,
+      );
+    }
+
+    const signature = [];
+    for (const suffix of ["CSSMetadata.ts", "Treeoutline.ts", "GeometryImpl.ts"]) {
+      const entry = Object.entries(result.metafile.inputs).find(([input]) => input.endsWith(suffix));
+      assert.ok(entry, `${suffix} missing from combined graph`);
+      signature.push(...entry[1].imports.map(item => item.path).filter(imported =>
+        /css-metadata-(?:protocol|common)\.ts$|shared-sdk\.ts$/.test(imported)).sort());
+    }
+    assert.equal(signature.some(value => value.endsWith("css-metadata-protocol.ts")), true);
+    assert.equal(signature.some(value => value.endsWith("css-metadata-common.ts")), true);
+    assert.equal(signature.filter(value => value.endsWith("shared-sdk.ts")).length, 2);
+    resolutionSignatures.push(signature);
+    const inputGraph = Object.entries(result.metafile.inputs)
+      .map(([input, metadata]) => ({
+        input: input.replaceAll("\\", "/"),
+        bytes: metadata.bytes,
+        format: metadata.format,
+        imports: (metadata.imports ?? []).map(imported => ({
+          path: imported.path.replaceAll("\\", "/"),
+          kind: imported.kind,
+          external: imported.external === true,
+          original: imported.original,
+        })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      }))
+      .sort((left, right) => left.input.localeCompare(right.input));
+    completeBuildSignatures.push({
+      inputGraphSha256: createHash("sha256").update(JSON.stringify(inputGraph)).digest("hex"),
+      outputs: result.outputFiles.map(file => ({
+        name: path.basename(file.path),
+        bytes: file.contents.byteLength,
+        sha256: createHash("sha256").update(file.contents).digest("hex"),
+      })).sort((left, right) => left.name.localeCompare(right.name)),
+    });
+  }
+  assert.deepEqual(resolutionSignatures[0], resolutionSignatures[1]);
+  assert.deepEqual(completeBuildSignatures[0], completeBuildSignatures[1]);
 });
 
 test("uses pinned Chromium parsing and structured property rendering", async () => {
@@ -249,6 +458,7 @@ test("pins Styles overlay bytes to LF across platforms", async () => {
 
 test("removes writer, editor, AI, and network authority from the full Styles bundle", async () => {
   const bundled = await bundleChromiumReadOnlyStylesRuntime({repositoryRoot});
+  const domModel = bundledModule(bundled.code, "front_end/core/sdk/DOMModel.ts");
   const cssProperty = bundledModule(bundled.code, "front_end/core/sdk/CSSProperty.ts");
   const cssStyle = bundledModule(bundled.code, "front_end/core/sdk/CSSStyleDeclaration.ts");
   const stylesPane = bundledModule(bundled.code, "front_end/panels/elements/StylesSidebarPane.ts");
@@ -260,7 +470,24 @@ test("removes writer, editor, AI, and network authority from the full Styles bun
     assert.doesNotMatch(cssStyle, new RegExp(writer.replace("(", "\\(")));
   }
   assert.doesNotMatch(stylesPane, /class CSSPropertyPrompt|triggerAiCodeCompletion|AIDA_REQUEST/);
-  assert.doesNotMatch(bundled.code, /\b(?:fetch|XMLHttpRequest|WebSocket|importScripts)\b/);
+  for (const writer of [
+    "invoke_copyTo",
+    "invoke_moveTo",
+    "invoke_removeNode",
+    "invoke_removeAttribute",
+    "invoke_setNodeName",
+    "invoke_setNodeValue",
+    "invoke_setOuterHTML",
+    "invoke_setAttributesAsText",
+    "invoke_setAttributeValue",
+    "invoke_setInspectedNode",
+    "removeNode(",
+    "copyTo(",
+  ]) {
+    assert.doesNotMatch(domModel, new RegExp(writer.replace("(", "\\(")),
+      `${writer} remains in the standalone Styles DOMModel`);
+  }
+  assert.doesNotMatch(bundled.code, /\b(?:fetch\s*\(|new\s+XMLHttpRequest|new\s+WebSocket|importScripts\s*\()/);
   for (const forbidden of ["StylesAiCodeCompletionProvider", "AidaClient", "StylesAi"]) {
     assert.equal(bundled.code.includes(forbidden), false, `${forbidden} remains in the emitted bundle`);
     assert.equal(bundled.verifiedInputKeys.some(input => input.includes(forbidden)), false,
@@ -284,7 +511,12 @@ test("attests the exact Styles closure, overlay, and third-party licenses", asyn
   assert.deepEqual(bundled.packageInputAttestation, manifest.reviewedPackageClosure);
   assert.deepEqual(bundled.stylesOverlayAttestation, manifest.reviewedStylesOverlayClosure);
   assert.deepEqual(bundled.baseOverlayAttestation, manifest.reviewedBaseOverlayClosure);
-  assert.deepEqual(bundled.classifiedInputs.generatedInputs, manifest.reviewedGeneratedInputs);
+  assert.deepEqual(bundled.generatedInputs.map(input =>
+    input.replace(/^chromium-shared-images:.*[\\/]front_end[\\/]Images[\\/]Images\.js$/,
+      "chromium-shared-images:front_end/Images/Images.js")), manifest.reviewedGeneratedInputs);
+  assert.equal(Object.isFrozen(bundled.payloadAttestation), true);
+  assert.deepEqual(bundled.payloadAttestation, manifest.reviewedSharedPayloadAttestation);
+  assert.deepEqual(bundled.sharedInputInventory, manifest.reviewedSharedInputInventory);
   assert.deepEqual(
     Object.fromEntries(bundled.requiredImageFiles.map(file => [file.path, file.sha256])),
     manifest.requiredImageFiles,

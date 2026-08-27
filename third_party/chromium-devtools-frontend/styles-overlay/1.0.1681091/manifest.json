@@ -44,22 +44,37 @@
     "front_end/panels/elements/StylePropertyTreeElement.ts": "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
     "front_end/panels/elements/StylesSidebarPane.ts": "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28"
   },
-  "reviewedInputCount": 106,
+  "reviewedInputCount": 96,
   "reviewedPackageClosure": {
-    "fileCount": 74,
-    "sha256": "380ed2fc7f37f612b8311f22c122d27a00460215890d07789162a3a201eee2f2"
+    "fileCount": 61,
+    "sha256": "737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6"
   },
   "reviewedStylesOverlayClosure": {
     "fileCount": 18,
     "sha256": "d5fa939d0e29a00ee2d23acd42904d264639b5d0b0c0e22170311a88ff2c5084"
   },
   "reviewedBaseOverlayClosure": {
-    "fileCount": 13,
-    "sha256": "d025e964dbbe85f5630763f9c55aa2e921e90e27ac662922f593c708ef8d1f79"
+    "fileCount": 16,
+    "sha256": "bf231d9aeede31066f40db90dc8b49bba00a336848aab71f18f9f8850d45bf63"
   },
   "reviewedGeneratedInputs": [
-    "chromium-styles-images:front_end/Images/Images.js"
+    "chromium-shared-images:front_end/Images/Images.js"
   ],
+  "reviewedSharedInputInventory": [
+    "chromium-shared-css:front_end/application_tokens.css",
+    "chromium-shared-css:front_end/design_system_tokens.css",
+    "chromium-shared-css:front_end/panels/elements/stylePropertiesTreeOutline.css",
+    "chromium-shared-css:front_end/panels/elements/stylesSidebarPane.css",
+    "chromium-shared-css:front_end/ui/components/buttons/textButton.css",
+    "chromium-shared-css:front_end/ui/legacy/components/inline_editor/colorSwatch.css",
+    "chromium-shared-css:front_end/ui/legacy/inspectorCommon.css",
+    "chromium-shared-css:front_end/ui/legacy/treeoutline.css",
+    "chromium-shared-images:front_end/Images/Images.js"
+  ],
+  "reviewedSharedPayloadAttestation": {
+    "fileCount": 9,
+    "sha256": "5a25743d6a63391a27d3b6b72f55235acd1fc69900b6996047a80b96308d1df1"
+  },
   "requiredImageFiles": {
     "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
     "front_end/Images/src/open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",

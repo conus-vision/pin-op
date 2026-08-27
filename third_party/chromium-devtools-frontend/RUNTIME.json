@@ -29,8 +29,7 @@
   "generatedModules": [
     "front_end/Images/Images.js",
     "front_end/core/i18n/locales.js",
-    "front_end/**/*.css.js",
-    "front_end/models/ai_assistance/skills/*.skill.js"
+    "front_end/**/*.css.js"
   ],
   "reviewedImages": {
     "arrow-collapse.svg": "560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e",
@@ -41,7 +40,9 @@
     "cross-circle-filled.svg": "5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3",
     "empty.svg": "c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6",
     "errorWave.svg": "fd5dc2adee295375b0e96df8c7adf96be0ee6169155306f636786ae633f9f640",
+    "filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
     "goto-filled.svg": "d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf",
+    "open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",
     "refresh.svg": "35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b",
     "triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
     "triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85",
@@ -50,22 +51,87 @@
   },
   "readOnlyElementsRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    "manifestSha256": "4fefe0860f71d85d904c808749285e77174f78c6f0ae56d993acf08d80fa1fef",
+    "manifestSha256": "8917b21cc0165847f437b539b402401d92631fe492c1da0e1c5f2d8af42a17f9",
     "entryPoint": "entrypoints/read-only-elements.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 776393,
-    "maxUnminifiedBytes": 1048576,
+    "unminifiedBytes": 1088757,
+    "maxUnminifiedBytes": 1310720,
     "browserTargets": ["chrome116", "firefox142"],
     "upstreamInputClosure": {
-      "fileCount": 42,
-      "sha256": "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b"
+      "fileCount": 46,
+      "sha256": "53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a"
     },
     "overlayInputClosure": {
       "fileCount": 37,
-      "sha256": "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5"
+      "sha256": "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207"
+    },
+    "sharedInputInventory": [
+      "chromium-shared-css:front_end/application_tokens.css",
+      "chromium-shared-css:front_end/design_system_tokens.css",
+      "chromium-shared-css:front_end/panels/elements/components/elementsTreeExpandButton.css",
+      "chromium-shared-css:front_end/panels/elements/elementsTreeOutline.css",
+      "chromium-shared-css:front_end/ui/components/buttons/textButton.css",
+      "chromium-shared-css:front_end/ui/legacy/inspectorCommon.css",
+      "chromium-shared-css:front_end/ui/legacy/treeoutline.css"
+    ],
+    "sharedPayloadAttestation": {
+      "fileCount": 7,
+      "sha256": "daf9e91a6ffbbad1b4c7dff033af074ceaa93da96fe3ac9c509940e4e934c1ec"
     },
     "requiredLicenseFiles": {
       "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
+      "front_end/third_party/lit/LICENSE": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
+    }
+  },
+  "readOnlyStylesRuntime": {
+    "overlayRoot": "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
+    "manifestSha256": "e011d235e93065be7cbff3e7070655999f4b380885da4b1cd4a004529ba67813",
+    "entryPoint": "entrypoints/read-only-styles.ts",
+    "exactImporterSpecifierResolutions": true,
+    "unminifiedBytes": 1992338,
+    "maxUnminifiedBytes": 2097152,
+    "browserTargets": ["chrome116", "firefox142"],
+    "productionExports": ["chromiumReadOnlyStylesRuntime"],
+    "reviewedInputCount": 96,
+    "packageInputClosure": {
+      "fileCount": 61,
+      "sha256": "737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6"
+    },
+    "overlayInputClosure": {
+      "fileCount": 18,
+      "sha256": "d5fa939d0e29a00ee2d23acd42904d264639b5d0b0c0e22170311a88ff2c5084"
+    },
+    "baseOverlayInputClosure": {
+      "fileCount": 16,
+      "sha256": "bf231d9aeede31066f40db90dc8b49bba00a336848aab71f18f9f8850d45bf63"
+    },
+    "generatedInputs": [
+      "chromium-shared-images:front_end/Images/Images.js"
+    ],
+    "sharedInputInventory": [
+      "chromium-shared-css:front_end/application_tokens.css",
+      "chromium-shared-css:front_end/design_system_tokens.css",
+      "chromium-shared-css:front_end/panels/elements/stylePropertiesTreeOutline.css",
+      "chromium-shared-css:front_end/panels/elements/stylesSidebarPane.css",
+      "chromium-shared-css:front_end/ui/components/buttons/textButton.css",
+      "chromium-shared-css:front_end/ui/legacy/components/inline_editor/colorSwatch.css",
+      "chromium-shared-css:front_end/ui/legacy/inspectorCommon.css",
+      "chromium-shared-css:front_end/ui/legacy/treeoutline.css",
+      "chromium-shared-images:front_end/Images/Images.js"
+    ],
+    "sharedPayloadAttestation": {
+      "fileCount": 9,
+      "sha256": "5a25743d6a63391a27d3b6b72f55235acd1fc69900b6996047a80b96308d1df1"
+    },
+    "requiredImageFiles": {
+      "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
+      "front_end/Images/src/open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",
+      "front_end/Images/src/triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
+      "front_end/Images/src/triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85"
+    },
+    "requiredLicenseFiles": {
+      "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
+      "front_end/third_party/codemirror.next/LICENSE": "aa8f65819a471c1a25fb3c0816c5a75e45f009b7899d292ee3cc70d9dbdd8f7e",
       "front_end/third_party/lit/LICENSE": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
     }
   },

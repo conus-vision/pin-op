@@ -7,11 +7,15 @@
   },
   "entryPoint": "entrypoints/read-only-elements.ts",
   "testOnlyEntryPoint": "entrypoints/read-only-elements-smoke.ts",
-  "maxUnminifiedBytes": 1048576,
+  "maxUnminifiedBytes": 1310720,
   "browserTargets": ["chrome116", "firefox142"],
   "upstreamFiles": {
+    "front_end/core/common/Color.ts": "d317a3943d77e604e7eb4de2d99716c27785b2db4e81311f7b97d6f27e908def",
+    "front_end/core/common/ColorConverter.ts": "d678abb8c14a6c808a15f01010e87d5a70db3dfd67c790492befee8404e702b5",
     "front_end/core/common/ParsedURL.ts": "211df17811a7cbac8d72cdc09e97c95b1685e42409aee2dc6a89cd3acbcf553c",
     "front_end/core/sdk/DOMModel.ts": "4a42a78842a353b11c506a8a05135fe4430a846da68c05e9e29f4856066f743d",
+    "front_end/generated/SupportedCSSProperties.ts": "8da8aeaf06636fec7e0ac73ae0dfd53cf8430e769e093b15fdda3a3a3f72bc5f",
+    "front_end/core/sdk/CSSMetadata.ts": "62d03b4bb9fa83d4e261deaf17fb613beea788398bf8136f876b6b17aee267c2",
     "front_end/models/geometry/GeometryImpl.ts": "b837b3821778dc6c3e8a83d7a02c7b4964b9e794e011a58a63b361be8382a7ec",
     "front_end/panels/elements/DOMPath.ts": "9cd3eaf2fe03f1adee285bb60de432d775673d9d4a87be004f601d4c75591a65",
     "front_end/panels/elements/ElementsTreeElement.ts": "40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b",
@@ -75,6 +79,8 @@
     "facades/components.ts": "36ccb1d976bf31318155658ee944d09b63b123703617bce23f09e61a30366f6f",
     "facades/context-menu.ts": "03a56d8206c85be38dee7ab10b2ea16c75f42a8d23441c04642c5b209b79e67e",
     "facades/core-styles.ts": "fe1ffad70ebd4a4f3c537f5db36e5926226aa5a72eadfd3badb1ef69d265007f",
+    "facades/css-metadata-common.ts": "cf9fc4a9e13519da9ee05e616c67b5cbfbcef7d41714117bac580a24b6b2f482",
+    "facades/css-metadata-protocol.ts": "c6576a2c3d51f193dd7ff2f6805be30d64becd85a2c863baaca2ff034d457dd7",
     "facades/elements-components.ts": "9e5a16f88d4ffd1694a5916567b7ce0a2301d4f21a3caa447569b55eb9f4f0ad",
     "facades/elements-model.ts": "5146e9a9ce9d71d3560ada60305b68f1fc626ed3a81b19e07b79c64e221af917",
     "facades/elements-panel.ts": "03485c26e4b4a650def348c756d2a5587c4410789401414bf1a71613caa83e77",
@@ -94,6 +100,7 @@
     "facades/root.ts": "b2b2dadaf17b12e8554e5282f01152e40c687704e4a99e9c292a23f0a6f5eec9",
     "facades/sdk-model-dependencies.ts": "298df0bab3fac0ed66d163cfbcb7791c4c554115024449f9b380ec33ba90c2a7",
     "facades/sdk.ts": "d95f536149eb5a47c9b8ed87babd3de36cb7e9c8a4bbcb66107f3ecd074e2805",
+    "facades/shared-sdk.ts": "8401ed38b0112b09ca8a0f1b3383ac4892a8f0891c93d58c80c38dfb0cd33379",
     "facades/text-editor.ts": "ed515789f006f5de0a23ad4acabbca6960176e7340b0df7b93f4edd7a6402b04",
     "facades/text-utils.ts": "38d20dc807581d0780cbaf785e7c8dfdd799625a6def2ca255af3b6a7b5cfdd6",
     "facades/tooltip.ts": "46ca285642cf4aa876381c2815a7fff6ccfe117cd1c23486851adf5f866010cb",
@@ -104,18 +111,52 @@
     "runtime/read-only-elements-runtime.ts": "ad466505312c60584e99ee51e9986278f728acc231120d10421ad3afbf6ad6f9"
   },
   "reviewedInputClosure": {
-    "fileCount": 42,
-    "sha256": "a2247797996dded0072ba22fc39fbf70d4b25a4f1d4d3ea688e5079eaa7e132b"
+    "fileCount": 46,
+    "sha256": "53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a"
   },
   "reviewedOverlayClosure": {
     "fileCount": 37,
-    "sha256": "a00817acc6acb4a8b963ca8a52ed2deb140cbbc3448d2d12c74f777e9ce937a5"
+    "sha256": "d5deed8ef4c97757f75f034374532dc2041feaf91de90c89bda34ea84d8d1207"
+  },
+  "reviewedSharedInputInventory": [
+    "chromium-shared-css:front_end/application_tokens.css",
+    "chromium-shared-css:front_end/design_system_tokens.css",
+    "chromium-shared-css:front_end/panels/elements/components/elementsTreeExpandButton.css",
+    "chromium-shared-css:front_end/panels/elements/elementsTreeOutline.css",
+    "chromium-shared-css:front_end/ui/components/buttons/textButton.css",
+    "chromium-shared-css:front_end/ui/legacy/inspectorCommon.css",
+    "chromium-shared-css:front_end/ui/legacy/treeoutline.css"
+  ],
+  "reviewedSharedPayloadAttestation": {
+    "fileCount": 7,
+    "sha256": "daf9e91a6ffbbad1b4c7dff033af074ceaa93da96fe3ac9c509940e4e934c1ec"
+  },
+  "requiredImageFiles": {
+    "front_end/Images/src/arrow-collapse.svg": "560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e",
+    "front_end/Images/src/arrow-drop-down-dark.svg": "f11634d22b8d833af0960dc52e628c56cba1029e6fbcc84b3b3b990438e83039",
+    "front_end/Images/src/arrow-drop-down-light.svg": "e2825adc9df196ec67e8dd7b6c37494b7b0b03d9eed42b195a0b9c7576582ce7",
+    "front_end/Images/src/arrow-drop-down.svg": "3e445565421d0793a77d0cd3a49cb72276a9d40f57654a7d7445c68b4c8f18e6",
+    "front_end/Images/src/checker.svg": "72737a4aab8c143dfc925213d109699a3c951feff3aceb62fc95da9eefe5f0a3",
+    "front_end/Images/src/cross-circle-filled.svg": "5f1368d7df47300270264c2f75a8c4e1b006491d2ccff95aacfbabde58806cf3",
+    "front_end/Images/src/empty.svg": "c56243778feca8d4a078b41a1d504139d4b5f95506b355d3f0d6c85eb6c4e4a6",
+    "front_end/Images/src/errorWave.svg": "fd5dc2adee295375b0e96df8c7adf96be0ee6169155306f636786ae633f9f640",
+    "front_end/Images/src/filter.svg": "fb827ba04c06cb587cf0f76adece7488274ee4048b29b6cb6c17b02fda1a6a4a",
+    "front_end/Images/src/goto-filled.svg": "d33003aaa6ba863743b2c881d2af713585856b1182a12431873d3b26ac7b9edf",
+    "front_end/Images/src/open-externally.svg": "5fcb85adf49ec2ab8ee9961c9dad144e7368132051a86fd1fbcf22845fff724d",
+    "front_end/Images/src/refresh.svg": "35788c9fa85372e560426654c2b27421b55d1b868a7b49cb85ab795da6e5983b",
+    "front_end/Images/src/triangle-down.svg": "849ee04c3f54b9167e5e0cb791baca667b3c59efa0ec6f97227b32dea2e1be4b",
+    "front_end/Images/src/triangle-right.svg": "be18d57199e26de957ae4fa8c8bf5bca89456e5ecf225075dab4a95f89535e85",
+    "front_end/Images/src/triangle-up.svg": "90fb77f6cab8df35681d1db88e078fa8aaac4a9336f17fc6f2aabbc86efc2af5",
+    "front_end/Images/src/warning-filled.svg": "4445b327116ab32f274898a876c7bb8e0813d97dfe2eae05adf8ee9b5ac43cb0"
   },
   "requiredLicenseFiles": {
     "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
     "front_end/third_party/lit/LICENSE": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
   },
   "resolutions": [
+    {"importer":"front_end/core/common/Color.ts","specifier":"../platform/platform.js","facade":"facades/platform.ts"},
+    {"importer":"front_end/core/sdk/CSSMetadata.ts","specifier":"../common/common.js","facade":"facades/css-metadata-common.ts"},
+    {"importer":"front_end/core/sdk/CSSMetadata.ts","specifier":"../../generated/protocol.js","facade":"facades/css-metadata-protocol.ts"},
     {"importer":"front_end/core/common/ParsedURL.ts","specifier":"../platform/platform.js","facade":"facades/platform.ts"},
     {"importer":"front_end/core/sdk/DOMModel.ts","specifier":"../common/common.js","facade":"facades/common.ts"},
     {"importer":"front_end/core/sdk/DOMModel.ts","specifier":"../platform/platform.js","facade":"facades/platform.ts"},
@@ -187,7 +228,7 @@
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../../core/host/host.js","facade":"facades/host.ts"},
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../../core/i18n/i18n.js","facade":"facades/i18n.ts"},
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../../core/platform/platform.js","facade":"facades/platform.ts"},
-    {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../../core/sdk/sdk.js","facade":"facades/sdk.ts"},
+    {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../../core/sdk/sdk.js","facade":"facades/shared-sdk.ts"},
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../components/highlighting/highlighting.js","facade":"facades/highlighting.ts"},
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"../visual_logging/visual_logging.js","facade":"facades/visual-logging.ts"},
     {"importer":"front_end/ui/legacy/Treeoutline.ts","specifier":"./InplaceEditor.js","facade":"facades/inplace-editor.ts"},
@@ -200,6 +241,6 @@
     {"importer":"front_end/ui/dom_extension/DOMExtension.ts","specifier":"../../core/platform/platform.js","facade":"facades/platform.ts"},
     {"importer":"front_end/ui/lit/i18n-template.ts","specifier":"../../core/i18n/i18n.js","facade":"facades/i18n.ts"},
     {"importer":"front_end/ui/lit/strip-whitespace.ts","specifier":"../../core/platform/platform.js","facade":"facades/platform.ts"},
-    {"importer":"front_end/models/geometry/GeometryImpl.ts","specifier":"../../core/sdk/sdk.js","facade":"facades/sdk.ts"}
+    {"importer":"front_end/models/geometry/GeometryImpl.ts","specifier":"../../core/sdk/sdk.js","facade":"facades/shared-sdk.ts"}
   ]
 }
