@@ -71,6 +71,10 @@ export function assertNativeInspectorLayoutSnapshot(layout, label = "Inspector")
       `${label} viewport must be exactly 800x600: ${JSON.stringify(layout)}`,
     );
   }
+  if (!Number.isFinite(layout.scrollbarWidth) || layout.scrollbarWidth < 0 ||
+    layout.scrollbarWidth > 50) {
+    throw new Error(`${label} native scrollbar width is invalid`);
+  }
   for (const key of LAYOUT_RECT_KEYS) {
     assertFiniteRect(layout.rects?.[key], `${label} ${key}`);
   }
@@ -142,6 +146,9 @@ export function assertNativeInspectorLayoutSnapshot(layout, label = "Inspector")
     layout.toolbarSticky !== true ||
     layout.sourceOriginVisible !== true ||
     layout.sourceOriginClickable !== true ||
+    layout.pseudoFilterSeparated !== true ||
+    layout.themeSynced !== true ||
+    layout.domHeaderAbsent !== true ||
     layout.selectedIndicator?.rulesSelected !== true ||
     layout.selectedIndicator?.sourceSelected !== false ||
     layout.selectedIndicator?.rulesTabIndex !== 0 ||
@@ -169,7 +176,8 @@ export function assertNativeInspectorLayoutParity(
   for (const [key, coordinates] of Object.entries(PARITY_RECT_COORDINATES)) {
     for (const coordinate of coordinates) {
       const delta = Math.abs(
-        chromeLayout.rects[key][coordinate] - firefoxLayout.rects[key][coordinate],
+        normalizedLayoutCoordinate(chromeLayout, key, coordinate) -
+          normalizedLayoutCoordinate(firefoxLayout, key, coordinate),
       );
       if (delta > tolerancePx) {
         const reportedDelta = Math.round(delta * 1_000) / 1_000;
@@ -183,6 +191,14 @@ export function assertNativeInspectorLayoutParity(
   if (Math.abs(chromeLayout.domRatio - firefoxLayout.domRatio) > 0.0025) {
     throw new Error("Chrome/Firefox Inspector DOM/sidebar ratios differ");
   }
+}
+
+function normalizedLayoutCoordinate(layout, key, coordinate) {
+  const value = layout.rects[key][coordinate];
+  const scrollbarAnchored =
+    (key === "toolbar" && (coordinate === "right" || coordinate === "width")) ||
+    (key === "sourceOrigin" && (coordinate === "left" || coordinate === "right"));
+  return scrollbarAnchored ? value + layout.scrollbarWidth : value;
 }
 
 export function assertNativeInspectorPerformanceParity(chrome, firefox) {
@@ -294,12 +310,25 @@ function validateSmokeResult(result, label) {
     !bootstrap?.exactRulesOpen ||
     !bootstrap?.staleClickFenced ||
     !bootstrap?.invalidatedClickFenced ||
+    !bootstrap?.generatedOriginBeforeLink ||
+    !bootstrap?.exactAuthoredValues ||
+    !bootstrap?.normalRuleFont ||
+    !bootstrap?.shellContainment?.treeOwnsReveal ||
+    !bootstrap?.shellContainment?.outerScrollStable ||
+    !bootstrap?.shellContainment?.tabsVisible ||
+    !bootstrap?.shellContainment?.selectedRowVisible ||
+    !bootstrap?.shellContainment?.brandingFooterAbsent ||
+    !bootstrap?.shellContainment?.pseudoFilterSeparated ||
+    !bootstrap?.shellContainment?.themeSynced ||
+    !bootstrap?.shellContainment?.domHeaderAbsent ||
     !Number.isFinite(bootstrap.navigationToReadyMs) ||
     bootstrap.navigationToReadyMs < 0 ||
     bootstrap.navigationToReadyMs >
       NATIVE_INSPECTOR_PERFORMANCE_BUDGET_MS.navigationToReady
   ) {
-    throw new Error(`${label} packaged bootstrap gate failed`);
+    throw new Error(
+      `${label} packaged bootstrap gate failed: ${JSON.stringify(bootstrap)}`,
+    );
   }
   return result;
 }
@@ -643,7 +672,7 @@ function smokeHTML() {
     });
     addEventListener('error',event=>{const message=event.error instanceof Error?event.error.message+'\\n'+(event.error.stack||''):String(event.error||event.message);window.pinOpInspectorSmokeErrors.push(message);window.pinOpInspectorSmokeResult={ok:false,error:message}});
     addEventListener('unhandledrejection',event=>{const message=event.reason instanceof Error?event.reason.message+'\\n'+(event.reason.stack||''):String(event.reason);window.pinOpInspectorSmokeErrors.push(message);window.pinOpInspectorSmokeResult={ok:false,error:message}});
-  </script></head><body><main class="panel-layout inspector-panel-layout">
+  </script></head><body><main class="panel-layout">
     <section class="panel-workspace inspector-workspace">
       <div id="inspector-elements-mount"></div>
     </section>
@@ -682,9 +711,53 @@ function packagedSmokeHTML(inspectorHtml) {
     port.onMessage.emit({type:'dom.root',requestId:rootRequest.requestId,documentEpoch:1,node:domNode('root','HTML',true),prologue:[],epilogue:[]});
     await tick();
     port.onMessage.emit({type:'pin-op.inspect.started',inspectMessageId:'bootstrap-inspect',selectionRevision:1,expectedRuleRefs:['bootstrap-rule']});
-    port.onMessage.emit({type:'dom.selectionChanged',documentEpoch:1,selectionRevision:1,nodeRef:'selected',ancestorPath:[domNode('root','HTML',true),domNode('selected','DIV',false)]});
+    port.onMessage.emit({type:'dom.selectionChanged',documentEpoch:1,selectionRevision:1,nodeRef:'selected',ancestorPath:deepDomPath()});
     const stylesRequest=await waitFor(()=>message(port.sent,'styles.getMatched'),'styles.getMatched');
     port.onMessage.emit(stylesMatched(stylesRequest));
+    const generatedOrigin=await waitFor(()=>deepQueryAll(document,'.styles-section-subtitle').find(node=>node.textContent==='style.css:17'),'generated style.css:17 origin');
+    const generatedOriginBeforeLink=Boolean(generatedOrigin)&&!deepQueryAll(document,'.styles-section-subtitle').some(node=>node.textContent==='unresolved.css:1');
+    const exactAuthoredValues=['color: rebeccapurple','font-size: 1.25em','transition-timing-function: ease','width: var(--pin-op-size, 10px)']
+      .every(expected=>propertyRows().some(text=>text.includes(expected)));
+    const firstSection=deepQueryAll(document,'.styles-section')[0];
+    const normalRuleFont=firstSection?getComputedStyle(firstSection).fontStyle==='normal':false;
+    const pseudoButton=document.querySelector('[data-part="pseudo-state-button"]');
+    const filterControl=deepQueryAll(document,'.toolbar-input.toolbar-filter')[0];
+    const pseudoRect=pseudoButton?.getBoundingClientRect();
+    const filterRect=filterControl?.getBoundingClientRect();
+    await waitFor(()=>deepQueryAll(document,'.selected')[0],'native selected DOM row').catch(error=>{
+      const failedTreeHost=document.querySelector('[data-part="chromium-read-only-elements-tree"]');
+      const items=deepQueryAll(document,'[role="treeitem"]');
+      throw new Error(error.message+': '+JSON.stringify({
+        panelError:document.querySelector('#panel-error')?.textContent||'',
+        itemCount:items.length,
+        items:items.slice(0,12).map(item=>({text:item.textContent?.trim().slice(0,80),className:String(item.className||''),expanded:item.getAttribute('aria-expanded'),selected:item.getAttribute('aria-selected')})),
+        treeText:(failedTreeHost?.shadowRoot?.textContent||failedTreeHost?.textContent||'').slice(0,500),
+        domRequests:state.sent.filter(message=>String(message?.type||'').startsWith('dom.')).map(message=>({type:message.type,nodeRef:message.nodeRef,cursor:message.cursor})).slice(-20),
+        smokeErrors:window.pinOpInspectorSmokeErrors,
+      }));
+    });
+    await tick();
+    const treeHost=document.querySelector('[data-part="chromium-read-only-elements-tree"]');
+    const mount=document.querySelector('#inspector-elements-mount');
+    const workspace=document.querySelector('#inspector-workspace');
+    const inspector=document.querySelector('.pin-op-elements-inspector');
+    const tabs=document.querySelector('.pin-op-elements-inspector__tabs');
+    const selectedMarker=deepQueryAll(document,'.selected')[0];
+    const selectedRow=selectedMarker?.closest('[role="treeitem"]')||selectedMarker;
+    const workspaceRect=workspace?.getBoundingClientRect();
+    const tabsRect=tabs?.getBoundingClientRect();
+    const selectedRect=selectedRow?.getBoundingClientRect();
+    const treeRect=treeHost?.getBoundingClientRect();
+    const shellContainment={
+      treeOwnsReveal:Boolean(treeHost&&treeHost.scrollTop>0&&treeHost.scrollHeight>treeHost.clientHeight),
+      outerScrollStable:Boolean(mount&&workspace&&inspector&&mount.scrollTop===0&&workspace.scrollTop===0&&inspector.scrollTop===0&&document.scrollingElement?.scrollTop===0),
+      tabsVisible:Boolean(workspaceRect&&tabsRect&&tabsRect.top>=workspaceRect.top-1&&tabsRect.bottom<=workspaceRect.bottom+1),
+      selectedRowVisible:Boolean(treeRect&&selectedRect&&selectedRect.top>=treeRect.top-1&&selectedRect.bottom<=treeRect.bottom+1),
+      brandingFooterAbsent:!document.querySelector('.panel-branding'),
+      pseudoFilterSeparated:Boolean(pseudoRect&&filterRect&&(filterRect.right<=pseudoRect.left+1||pseudoRect.right<=filterRect.left+1||filterRect.bottom<=pseudoRect.top+1||pseudoRect.bottom<=filterRect.top+1)),
+      themeSynced:document.documentElement.classList.contains('theme-with-dark-background')===matchMedia('(prefers-color-scheme: dark)').matches,
+      domHeaderAbsent:!document.querySelector('[data-part="pane-title"]')&&Boolean(treeRect&&Math.abs(treeRect.top-inspector.getBoundingClientRect().top)<=1),
+    };
     port.onMessage.emit(rulesSources());
     const origin=await waitFor(()=>deepQueryAll(document,'.pin-op-rule-origin').find(node=>node.textContent==='theme.scss:73'),'theme.scss:73');
     const readyMs=performance.now()-started;
@@ -706,14 +779,17 @@ function packagedSmokeHTML(inspectorHtml) {
     report({type:'pin-op.packaged-bootstrap.result',ok:true,value:{
       exactModules:Boolean(document.querySelector('script[src="./inspectorPanel.js"]'))&&resources.includes('/inspectorPanel.js')&&resources.includes('/${CHROMIUM_ELEMENTS_RUNTIME_FILENAME}'),
       exactRulesOpen,staleClickFenced,invalidatedClickFenced,navigationToReadyMs:readyMs,open,
+      generatedOriginBeforeLink,exactAuthoredValues,normalRuleFont,shellContainment,
       lifecycle:['linked','compatibility','dom.root','inspect','styles','rules.sources'],
     }});
   }).catch(error=>report({type:'pin-op.packaged-bootstrap.result',ok:false,error:error instanceof Error?error.message+'\\n'+(error.stack||''):String(error)}));
-  function domNode(nodeRef,nodeName,expandable){return {nodeRef,kind:'element',nodeType:1,nodeName,attributes:[],childCount:expandable?1:0,relationship:'dom',selectable:true,expandable,branchRevision:1,label:nodeRef,locator:{version:1,targetKind:'element',boundaries:[],path:[{tagName:nodeName.toLowerCase(),siblingIndex:0}]}}}
-  function stylesMatched(request){return {type:'styles.matched',requestId:request.requestId,documentEpoch:request.documentEpoch,nodeRef:request.nodeRef,selectionRevision:request.selectionRevision,stylesRevision:1,stylesheetRevision:1,pseudoStateRevision:0,pseudoStates:[],styles:{documentEpoch:request.documentEpoch,nodeRef:request.nodeRef,selectionRevision:request.selectionRevision,stylesRevision:1,stylesheetRevision:1,pseudoStateRevision:0,pseudoStates:[],rules:[{ruleRef:'bootstrap-rule',selectorText:'.bootstrap',matchingSelectorIndices:[0],declarations:[{ruleRef:'bootstrap-rule',property:'color',value:'rebeccapurple',important:false,valueTruncated:false,state:'winning-known-author',reason:'highest-precedence-known-author-declaration'}],contexts:[],source:{sourceUrl:'https://example.test/style.css',startLine:17,startColumn:5,endLine:18,endColumn:2,rulePath:'0'}}],inherited:[],inaccessibleStylesheetCount:0,unsupportedRuleCount:0,approximateRuleCount:0,partial:false,diagnostics:[]}}}
+  function domNode(nodeRef,nodeName,expandable,index=0){return {nodeRef,kind:'element',nodeType:1,nodeName,attributes:index?[{name:'data-depth',value:String(index)}]:[],childCount:expandable?1:0,relationship:'dom',selectable:true,expandable,branchRevision:1,label:nodeRef,locator:{version:1,targetKind:'element',boundaries:[],path:[{tagName:nodeName.toLowerCase(),siblingIndex:index}]}}}
+  function deepDomPath(){const path=[domNode('root','HTML',true,0)];for(let index=1;index<=48;index+=1)path.push(domNode('deep-'+index,'DIV',true,index));path.push(domNode('selected','BUTTON',false,49));return path}
+  function stylesMatched(request){const declaration=(property,value)=>({ruleRef:'bootstrap-rule',property,value,important:false,valueTruncated:false,state:'winning-known-author',reason:'highest-precedence-known-author-declaration'});return {type:'styles.matched',requestId:request.requestId,documentEpoch:request.documentEpoch,nodeRef:request.nodeRef,selectionRevision:request.selectionRevision,stylesRevision:1,stylesheetRevision:1,pseudoStateRevision:0,pseudoStates:[],styles:{documentEpoch:request.documentEpoch,nodeRef:request.nodeRef,selectionRevision:request.selectionRevision,stylesRevision:1,stylesheetRevision:1,pseudoStateRevision:0,pseudoStates:[],rules:[{ruleRef:'bootstrap-rule',selectorText:'.bootstrap',matchingSelectorIndices:[0],declarations:[declaration('color','rebeccapurple'),declaration('font-size','1.25em'),declaration('transition-timing-function','ease'),declaration('width','var(--pin-op-size, 10px)')],contexts:[],source:{sourceUrl:'https://example.test/style.css',startLine:17,startColumn:5,endLine:18,endColumn:2,rulePath:'0'}}],inherited:[],inaccessibleStylesheetCount:0,unsupportedRuleCount:0,approximateRuleCount:0,partial:false,diagnostics:[]}}}
   function rulesSources(){return {protocolVersion:7,type:'rules.sources',messageId:'bootstrap-rules-sources',sessionId:'bootstrap-session',source:{role:'ide',id:'bootstrap-vscode'},inspectMessageId:'bootstrap-inspect',rulesGeneration:1,sources:[{ruleRef:'bootstrap-rule',openAuthorityId:'bootstrap-authority',document:{label:'theme.scss',languageId:'scss'},startLine:73,startColumn:5,confidence:'sourcemap'}],unresolvedRuleCount:0,metadata:{}}}
   function message(values,type){return [...values].reverse().find(value=>value?.type===type)}
   function deepQueryAll(root,selector){const found=[...root.querySelectorAll(selector)];const visit=node=>{if(node.shadowRoot){found.push(...node.shadowRoot.querySelectorAll(selector));for(const child of node.shadowRoot.querySelectorAll('*'))visit(child)}for(const child of node.children||[])visit(child)};visit(root);return [...new Set(found)]}
+  function propertyRows(){return deepQueryAll(document,'.webkit-css-property').map(name=>name.closest('li')?.textContent?.replace(/\\s+/g,' ').trim()||'')}
   async function waitFor(predicate,label){const deadline=performance.now()+10000;while(true){const value=predicate();if(value)return value;if(performance.now()>=deadline)throw new Error('Timed out waiting for '+label);await new Promise(resolve=>setTimeout(resolve,20))}}
   async function tick(){await Promise.resolve();await new Promise(resolve=>setTimeout(resolve,0))}
   </script>`;
@@ -783,8 +859,21 @@ const treeSource = writerTrapped({
     rows=[...baseRows,...allChildren];
     for (const listener of [...treeListeners]) listener();
   },
-  select: async ref => { treeCalls.select.push(ref); },
-  focus: ref => { treeCalls.focus.push(ref); },
+  select: async ref => {
+    treeCalls.select.push(ref);
+    await new Promise(resolve=>setTimeout(resolve,25));
+    rows=rows.map(row=>row.type==='node'
+      ? {...row,selected:row.nodeRef===ref,focused:row.nodeRef===ref}
+      : {...row,focused:false});
+    for (const listener of [...treeListeners]) listener();
+  },
+  focus: ref => {
+    treeCalls.focus.push(ref);
+    rows=rows.map(row=>row.type==='node'
+      ? {...row,focused:row.nodeRef===ref}
+      : {...row,focused:false});
+    for (const listener of [...treeListeners]) listener();
+  },
   hover: ref => { treeCalls.hover.push(ref); },
 });
 const declarations = Array.from({length:278}, (_, index) => ({
@@ -898,12 +987,19 @@ Promise.resolve().then(async () => {
   const rulesTab = [...view.element.querySelectorAll('[role="tab"]')].find(tab => tab.textContent==='Rules');
   const sourceTab = [...view.element.querySelectorAll('[role="tab"]')].find(tab => tab.textContent==='Source');
   const toolbar=deepQuery(view.rulesRoot,'.styles-sidebar-pane-toolbar-container');
+  const pseudoButton = view.rulesRoot.querySelector('[data-part="pseudo-state-button"]');
+  const filterPrompt=deepQuery(view.rulesRoot,'.toolbar-input-prompt.text-prompt');
+  const filterControl=deepQuery(view.rulesRoot,'.toolbar-input.toolbar-filter');
   const activeTabStyle=getComputedStyle(rulesTab);
   const inactiveTabStyle=getComputedStyle(sourceTab);
   const originRect=origin?.getBoundingClientRect();
   const rulesRect=view.rulesRoot.getBoundingClientRect();
+  const pseudoRect=pseudoButton?.getBoundingClientRect();
+  const filterRect=filterControl?.getBoundingClientRect();
+  const nativeTreeHost=view.domRoot.querySelector('[data-part="chromium-read-only-elements-tree"]');
   const layout={
     viewport:{width:innerWidth,height:innerHeight},
+    scrollbarWidth:Math.max(0,pane.offsetWidth-pane.clientWidth),
     rects:{
       root:rect(view.element),dom:rect(view.domRoot),sidebar:rect(sidebar),rules:rect(view.rulesRoot),
       tabs:rect(tabsRoot),toolbar:rect(toolbar),sourceOrigin:rect(origin),
@@ -917,6 +1013,9 @@ Promise.resolve().then(async () => {
     toolbarSticky:getComputedStyle(toolbar).position==='sticky',
     sourceOriginVisible:Boolean(originRect&&originRect.width>0&&originRect.height>0&&originRect.top>=rulesRect.top&&originRect.bottom<=rulesRect.bottom+1),
     sourceOriginClickable:origin?.tagName==='BUTTON'&&!origin.disabled&&getComputedStyle(origin).pointerEvents!=='none',
+    pseudoFilterSeparated:Boolean(pseudoRect&&filterRect&&(filterRect.right<=pseudoRect.left+1||pseudoRect.right<=filterRect.left+1||filterRect.bottom<=pseudoRect.top+1||pseudoRect.bottom<=filterRect.top+1)),
+    themeSynced:document.documentElement.classList.contains('theme-with-dark-background')===matchMedia('(prefers-color-scheme: dark)').matches,
+    domHeaderAbsent:!view.domRoot.querySelector('[data-part="pane-title"]')&&Boolean(nativeTreeHost&&Math.abs(nativeTreeHost.getBoundingClientRect().top-view.domRoot.getBoundingClientRect().top)<=1),
     selectedIndicator:{
       rulesSelected:rulesTab?.getAttribute('aria-selected')==='true',
       sourceSelected:sourceTab?.getAttribute('aria-selected')==='true',
@@ -938,6 +1037,29 @@ Promise.resolve().then(async () => {
   const loadMoreMs=performance.now()-loadStart;
   const lazyLoadMore=treeCalls.loadMore.join()==='main'&&!deepQuery(view.domRoot,'.pin-op-elements-load-more');
 
+  const sectionTag=deepQueryAll(view.domRoot,'.webkit-html-tag-name').find(node=>node.textContent?.trim().toLowerCase()==='section');
+  const sectionRow=sectionTag?.closest('[role="treeitem"]');
+  sectionRow?.scrollIntoView({block:'center'});
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const sectionRect=sectionRow?.getBoundingClientRect();
+  sectionRow?.dispatchEvent(new MouseEvent('mousedown',{
+    bubbles:true,composed:true,button:0,
+    clientX:sectionRect ? sectionRect.left+sectionRect.width/2 : 0,
+    clientY:sectionRect ? sectionRect.top+sectionRect.height/2 : 0,
+  }));
+  await waitFor(()=>treeCalls.select.at(-1)==='section-0','DOM pointer selection forwarded');
+  const optimisticPointerSelected=deepQuery(view.domRoot,'.selected')?.closest('[role="treeitem"]')||deepQuery(view.domRoot,'.selected');
+  const nativeSelectionHeldBeforeAck=Boolean(optimisticPointerSelected&&
+    deepQueryAll(optimisticPointerSelected,'.webkit-html-tag-name')
+      .some(node=>node.textContent?.trim().toLowerCase()==='section'));
+  await waitFor(()=>{
+    const selected=deepQuery(view.domRoot,'.selected')?.closest('[role="treeitem"]')||deepQuery(view.domRoot,'.selected');
+    return selected&&deepQueryAll(selected,'.webkit-html-tag-name').some(node=>node.textContent?.trim().toLowerCase()==='section');
+  },'DOM pointer selection rendered');
+  const pointerSelected=deepQuery(view.domRoot,'.selected')?.closest('[role="treeitem"]')||deepQuery(view.domRoot,'.selected');
+  const pointerSelectionRoundTrip=treeCalls.select.at(-1)==='section-0'&&
+    Boolean(pointerSelected&&deepQueryAll(pointerSelected,'.webkit-html-tag-name').some(node=>node.textContent?.trim().toLowerCase()==='section'));
+
   const selectedBefore=deepQuery(view.domRoot,'.selected')?.closest('[role="treeitem"]')||deepQuery(view.domRoot,'.selected');
   selectedBefore?.focus();
   const activeBefore=deepActiveElement(document);
@@ -946,7 +1068,6 @@ Promise.resolve().then(async () => {
   const domKeyboardMoved=deepActiveElement(document)!==activeBefore;
   const domSelectionForwarded=treeCalls.select.length>0;
 
-  const pseudoButton = view.rulesRoot.querySelector('[data-part="pseudo-state-button"]');
   pseudoButton?.click();
   const hoverChoice = view.rulesRoot.querySelector('[data-pseudo-state="hover"]');
   hoverChoice?.click();
@@ -990,6 +1111,9 @@ Promise.resolve().then(async () => {
   const scrollCandidates=[pane,deepQuery(view.element,'.pin-op-elements-inspector__rules'),view.rulesRoot].filter(Boolean);
   const scrollOwner=scrollCandidates.find(node=>node.scrollHeight>node.clientHeight);
   if (!scrollOwner) throw new Error('Native Rules scroll owner is missing: '+JSON.stringify(scrollCandidates.map(node=>({className:node.className,clientHeight:node.clientHeight,scrollHeight:node.scrollHeight,display:getComputedStyle(node).display,overflow:getComputedStyle(node).overflow}))));
+  const outerRulesNodes=[view.rulesRoot,deepQuery(view.element,'.pin-op-elements-inspector__rules'),view.element,document.scrollingElement]
+    .filter((node,index,values)=>node&&node!==pane&&values.indexOf(node)===index);
+  const outerScrollBefore=new Map(outerRulesNodes.map(node=>[node,{top:node.scrollTop,left:node.scrollLeft}]));
   const stickyToolbar=deepQuery(view.rulesRoot,'.styles-sidebar-pane-toolbar-container');
   const stickyBefore=stickyToolbar?.getBoundingClientRect().top;
   scrollOwner.scrollTop=scrollOwner.scrollHeight;
@@ -1000,18 +1124,23 @@ Promise.resolve().then(async () => {
   const lastRect=lastProperty?.getBoundingClientRect();
   const ownerRect=scrollOwner.getBoundingClientRect();
   const stickyAfter=stickyToolbar?.getBoundingClientRect().top;
+  const outerScrollStable=outerRulesNodes.every(node=>{
+    const before=outerScrollBefore.get(node);
+    return before&&Math.abs(node.scrollTop-before.top)<=1&&Math.abs(node.scrollLeft-before.left)<=1;
+  });
   const scrollContract={
     moved:scrollOwner.scrollTop>0,
+    nativeOwner:scrollOwner === pane,
+    outerScrollStable,
     lastVisible:Boolean(lastRect&&lastRect.top>=ownerRect.top&&lastRect.bottom<=ownerRect.bottom+1),
     sticky:getComputedStyle(stickyToolbar).position==='sticky'&&Math.abs(stickyBefore-stickyAfter)<=1,
   };
-  const filterInput=deepQuery(view.rulesRoot,'.toolbar-filter input');
   const noMatches=deepQuery(view.rulesRoot,'.gray-info-message');
-  filterInput.value='definitely-not-a-style';
-  filterInput.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+  filterPrompt.textContent='definitely-not-a-style';
+  filterPrompt.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
   await waitFor(()=>noMatches&&!noMatches.classList.contains('hidden'),'native no-matches state');
-  filterInput.value='';
-  filterInput.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+  filterPrompt.textContent='';
+  filterPrompt.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
   await waitFor(()=>noMatches?.classList.contains('hidden'),'native filter reset');
   const filterRoundTrip=noMatches?.classList.contains('hidden')===true;
 
@@ -1115,6 +1244,8 @@ Promise.resolve().then(async () => {
     loadingLayout,
     filterRoundTrip,
     lazyLoadMore,
+    nativeSelectionHeldBeforeAck,
+    pointerSelectionRoundTrip,
     domKeyboardMoved,
     domSelectionForwarded,
     staleRenderFenced,
@@ -1144,7 +1275,7 @@ Promise.resolve().then(async () => {
     value.opened.join()!=='rule:scss' || !value.generatedFallback || !value.nativeColorSwatch ||
     !Object.values(value.shorthandCoverage).every(Boolean) || !Object.values(value.scrollContract).every(Boolean) ||
     value.loadingLayout.direction!=='column' || !value.loadingLayout.stacked || !value.loadingLayout.slotStable ||
-    !value.filterRoundTrip || !value.lazyLoadMore || !value.domKeyboardMoved || !value.domSelectionForwarded || !value.staleRenderFenced ||
+    !value.filterRoundTrip || !value.lazyLoadMore || !value.nativeSelectionHeldBeforeAck || !value.pointerSelectionRoundTrip || !value.domKeyboardMoved || !value.domSelectionForwarded || !value.staleRenderFenced ||
     value.pseudoStates.join()!=='hover' || !value.sourceVisible || !value.tabKeyboard || !value.rulesRestored ||
     !value.treeIdentityStable || !value.selectedIdentityStable || !value.treeTextStable ||
     value.writerCalls!==0 || value.performance.navigationToReadyMs>performanceBudget.navigationToReady || value.performance.loadMoreMs>performanceBudget.loadMore ||

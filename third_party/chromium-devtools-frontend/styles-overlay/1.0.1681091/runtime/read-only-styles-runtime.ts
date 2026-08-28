@@ -239,7 +239,7 @@ class ChromiumReadOnlyStylesPane {
       if (origin.clickable && origin.state === undefined) {
         const button = this.#options.document.createElement('button');
         button.type = 'button';
-        button.className = 'devtools-link pin-op-rule-origin';
+        button.className = 'text-button link-style devtools-link pin-op-rule-origin';
         button.style.display = 'inline-block';
         button.style.inlineSize = '100px';
         button.style.maxInlineSize = '100%';

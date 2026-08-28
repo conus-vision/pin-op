@@ -14,6 +14,7 @@ const rowDefaults = {
 } as const;
 
 const tree: TreePresentationSnapshot = {
+  revealVersion: 0,
   rows: [
     nodeRow("doctype", 0, {
       kind: "document-type",
@@ -270,6 +271,7 @@ export const elementsSession: {
 
 export function withTextValue(value: string): TreePresentationSnapshot {
   return {
+    revealVersion: elementsSession.tree.revealVersion,
     rows: elementsSession.tree.rows.map((row) => (
       row.nodeRef === "intro-text" && row.node
         ? { ...row, node: { ...row.node, nodeValue: value } }

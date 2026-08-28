@@ -164,7 +164,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
+        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
     }],
   },
   {
@@ -174,7 +174,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
+        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
     }],
   },
   {
@@ -184,7 +184,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
+        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
     }],
   },
 ]);

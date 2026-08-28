@@ -11,6 +11,7 @@ import type {
 } from "./contracts.js";
 
 const nextAriaIdSequence = new WeakMap<Document, number>();
+const chromiumThemeBridges = new WeakMap<Document, ChromiumThemeBridgeState>();
 
 export class ElementsInspectorShell {
   public readonly element: HTMLElement;
@@ -24,8 +25,16 @@ export class ElementsInspectorShell {
   private rulesPane: ElementsRulesRendererHost | undefined;
   private rulesMessage: HTMLElement | undefined;
   private unsubscribeRules: (() => void) | undefined;
+  private themeMediaQuery: MediaQueryList | undefined;
+  private readonly themeOwner = Symbol("pin-op-chromium-theme-owner");
+  private ownsChromiumTheme = false;
   private rulesRenderRevision = 0;
   private disposed = false;
+
+  private readonly updateChromiumTheme = (event: MediaQueryListEvent): void => {
+    if (!this.ownsChromiumTheme) return;
+    updateChromiumThemeOwner(this.document, this.themeOwner, event.matches);
+  };
 
   private readonly showRules = (): void => {
     this.selectSidebarTab("rules");
@@ -65,19 +74,10 @@ export class ElementsInspectorShell {
     this.domRoot = this.createElement("section", {
       className: "pin-op-elements-inspector__dom-pane",
       attributes: {
-        "aria-labelledby": ariaIds.domTitle,
+        "aria-label": "DOM tree",
         "data-pane": "dom",
       },
     });
-    const domTitle = this.createElement("h2", {
-      className: "pin-op-elements-inspector__pane-title",
-      text: "DOM",
-      attributes: {
-        "data-part": "pane-title",
-        id: ariaIds.domTitle,
-      },
-    });
-    this.domRoot.append(domTitle);
 
     const sidebar = this.createElement("aside", {
       className: "pin-op-elements-inspector__sidebar",
@@ -149,6 +149,7 @@ export class ElementsInspectorShell {
     this.element.append(this.domRoot, sidebar);
 
     try {
+      this.bindColorScheme();
       this.treeRendererHost = createTreeRenderer(
         document,
         this.domRoot,
@@ -243,6 +244,21 @@ export class ElementsInspectorShell {
     this.rulesTab.removeEventListener("keydown", this.navigateFromRulesTab);
     this.sourceTab.removeEventListener("keydown", this.navigateFromSourceTab);
     let disposeError: unknown;
+    const themeMediaQuery = this.themeMediaQuery;
+    this.themeMediaQuery = undefined;
+    try {
+      themeMediaQuery?.removeEventListener("change", this.updateChromiumTheme);
+    } catch (error) {
+      disposeError = error;
+    }
+    if (this.ownsChromiumTheme) {
+      this.ownsChromiumTheme = false;
+      try {
+        releaseChromiumThemeOwner(this.document, this.themeOwner);
+      } catch (error) {
+        disposeError ??= error;
+      }
+    }
     const unsubscribeRules = this.unsubscribeRules;
     this.unsubscribeRules = undefined;
     this.rulesDataSource = undefined;
@@ -269,6 +285,23 @@ export class ElementsInspectorShell {
       this.element.remove();
     }
     if (disposeError !== undefined) throw disposeError;
+  }
+
+  private bindColorScheme(): void {
+    const defaultView = this.document.defaultView;
+    if (!defaultView) return;
+    const mediaQuery = defaultView.matchMedia("(prefers-color-scheme: dark)");
+    this.themeMediaQuery = mediaQuery;
+    this.ownsChromiumTheme = true;
+    updateChromiumThemeOwner(this.document, this.themeOwner, mediaQuery.matches);
+    try {
+      mediaQuery.addEventListener("change", this.updateChromiumTheme);
+    } catch (error) {
+      this.ownsChromiumTheme = false;
+      releaseChromiumThemeOwner(this.document, this.themeOwner);
+      this.themeMediaQuery = undefined;
+      throw error;
+    }
   }
 
   private renderRules(): void {
@@ -453,11 +486,60 @@ function primaryRuleRef(
 }
 
 interface InspectorAriaIds {
-  readonly domTitle: string;
   readonly rulesTab: string;
   readonly rulesPanel: string;
   readonly sourceTab: string;
   readonly sourcePanel: string;
+}
+
+interface ChromiumThemeBridgeState {
+  readonly initiallyDark: boolean;
+  readonly owners: Map<symbol, boolean>;
+}
+
+function updateChromiumThemeOwner(
+  document: Document,
+  owner: symbol,
+  dark: boolean,
+): void {
+  let bridge = chromiumThemeBridges.get(document);
+  if (!bridge) {
+    bridge = {
+      initiallyDark: document.documentElement.classList.contains(
+        "theme-with-dark-background",
+      ),
+      owners: new Map(),
+    };
+    chromiumThemeBridges.set(document, bridge);
+  }
+  bridge.owners.set(owner, dark);
+  synchronizeChromiumTheme(document, bridge);
+}
+
+function releaseChromiumThemeOwner(document: Document, owner: symbol): void {
+  const bridge = chromiumThemeBridges.get(document);
+  if (!bridge) return;
+  bridge.owners.delete(owner);
+  synchronizeChromiumTheme(document, bridge);
+  if (bridge.owners.size === 0) chromiumThemeBridges.delete(document);
+}
+
+function synchronizeChromiumTheme(
+  document: Document,
+  bridge: ChromiumThemeBridgeState,
+): void {
+  let dark = bridge.initiallyDark;
+  if (!dark) {
+    for (const ownedDark of bridge.owners.values()) {
+      if (!ownedDark) continue;
+      dark = true;
+      break;
+    }
+  }
+  document.documentElement.classList.toggle(
+    "theme-with-dark-background",
+    dark,
+  );
 }
 
 function allocateAriaIds(document: Document): InspectorAriaIds {
@@ -465,7 +547,6 @@ function allocateAriaIds(document: Document): InspectorAriaIds {
   while (true) {
     const suffix = sequence === 1 ? "" : `-${sequence}`;
     const ids = {
-      domTitle: `pin-op-elements-dom-title${suffix}`,
       rulesTab: `pin-op-elements-rules-tab${suffix}`,
       rulesPanel: `pin-op-elements-rules-panel${suffix}`,
       sourceTab: `pin-op-elements-source-tab${suffix}`,

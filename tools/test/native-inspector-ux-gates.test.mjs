@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -59,6 +60,19 @@ test("compares the complete toolbar and source-origin rectangles", () => {
   }
 });
 
+test("normalizes only the native platform scrollbar gutter", () => {
+  const chrome = validLayout();
+  const firefox = validLayout();
+  chrome.scrollbarWidth = 15;
+  firefox.scrollbarWidth = 0;
+  chrome.rects.toolbar.right -= 15;
+  chrome.rects.toolbar.width -= 15;
+  chrome.rects.sourceOrigin.left -= 15;
+  chrome.rects.sourceOrigin.right -= 15;
+
+  assert.doesNotThrow(() => assertNativeInspectorLayoutParity(chrome, firefox));
+});
+
 test("rejects semantic parity when the selected indicator disappears", () => {
   const firefox = validLayout();
   firefox.selectedIndicator.activeBorderVisible = false;
@@ -67,6 +81,18 @@ test("rejects semantic parity when the selected indicator disappears", () => {
     () => assertNativeInspectorLayoutParity(validLayout(), firefox),
     /layout semantics are incomplete/i,
   );
+});
+
+test("rejects visual regressions around the native Rules toolbar and Chromium theme", () => {
+  for (const field of ["pseudoFilterSeparated", "themeSynced", "domHeaderAbsent"]) {
+    const firefox = validLayout();
+    firefox[field] = false;
+
+    assert.throws(
+      () => assertNativeInspectorLayoutParity(validLayout(), firefox),
+      /layout semantics are incomplete/i,
+    );
+  }
 });
 
 test("pins operation budgets far below the former permissive smoke limits", () => {
@@ -132,9 +158,26 @@ test("rejects packaged bootstrap navigation above the absolute budget", () => {
   );
 });
 
+test("keeps real pointer selection and native Rules scroll in the browser gate", () => {
+  const source = readFileSync(new URL(
+    "../smoke-chromium-read-only-inspector.mjs",
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(source, /new MouseEvent\(['"]mousedown['"]/);
+  assert.match(source, /focus:\s*ref\s*=>\s*\{[\s\S]*treeListeners/);
+  assert.match(source, /select:\s*async ref\s*=>\s*\{[\s\S]*setTimeout\(resolve,25\)/);
+  assert.match(source, /nativeSelectionHeldBeforeAck/);
+  assert.match(source, /pointerSelectionRoundTrip/);
+  assert.match(source, /scrollOwner === pane/);
+  assert.match(source, /outerScrollStable/);
+  assert.match(source, /toolbar-input-prompt\.text-prompt/);
+});
+
 function validLayout() {
   return {
     viewport: { width: 800, height: 600 },
+    scrollbarWidth: 0,
     rects: {
       root: rect(0, 0, 800, 600),
       dom: rect(0, 0, 496, 600),
@@ -152,6 +195,9 @@ function validLayout() {
     toolbarSticky: true,
     sourceOriginVisible: true,
     sourceOriginClickable: true,
+    pseudoFilterSeparated: true,
+    themeSynced: true,
+    domHeaderAbsent: true,
     selectedIndicator: {
       rulesSelected: true,
       sourceSelected: false,

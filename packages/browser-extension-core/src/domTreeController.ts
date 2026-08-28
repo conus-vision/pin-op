@@ -598,7 +598,7 @@ export class DomTreeController {
       this.notify();
     }
     const branch = this.branchFor(state.view);
-    if (!branch.loaded && !branch.pending) {
+    if (!branch.loaded) {
       await this.fetchChildren(nodeRef, undefined);
     }
   }

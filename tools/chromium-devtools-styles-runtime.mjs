@@ -27,7 +27,7 @@ export const CHROMIUM_READ_ONLY_STYLES_RUNTIME = Object.freeze({
   overlayRoot:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
   manifestSha256:
-    "86c18a9b7b0a6bd2292fe78e40392bac61e08407f5370e55d946c353213c59bf",
+    "f23e083d705b9272530e218b40f77d706ac3ae520a2851573633478ebf07af85",
   entryPoint:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/entrypoints/read-only-styles.ts",
 });
@@ -558,6 +558,21 @@ function transformStylesSidebarSource(source, relativePath) {
     text.includes("addEventListener('copy'") ||
     text.includes("UI.ViewManager.ViewManager.instance().addEventListener") ||
     text.includes("isAiCodeCompletionStylesAvailable"));
+  const readOnlyPresentationAnchor = "    this.registerRequiredCSS(stylesSidebarPaneStyles);";
+  if (source.split(readOnlyPresentationAnchor).length !== 2) {
+    throw new Error(`Reviewed ${relativePath} read-only presentation anchor is missing or ambiguous`);
+  }
+  source = source.replace(readOnlyPresentationAnchor, `    this.registerRequiredCSS(
+        (stylesSidebarPaneStyles +
+         '\\n.styles-section.read-only { font-style: normal; }' +
+         '\\n.styles-sidebar-pane-toolbar-container { padding-inline-end: 52px; }' +
+         '\\n.text-prompt-root { display: flex; align-items: center; }' +
+         '\\n.text-prompt[data-placeholder]:empty::before { content: attr(data-placeholder); color: var(--sys-color-on-surface-subtle); }' +
+         '\\n.pin-op-toolbar-icon-button { align-items: center; align-self: center; background: transparent; border: 0; border-radius: 4px; box-sizing: border-box; color: var(--sys-color-on-surface-subtle); cursor: default; display: inline-flex; flex: none; height: 20px; justify-content: center; padding: 2px; width: 20px; }' +
+         '\\n.pin-op-toolbar-icon-button:hover { background-color: var(--sys-color-state-hover-on-subtle); }' +
+         '\\n.pin-op-toolbar-icon-button:focus-visible { outline: 2px solid var(--sys-color-state-focus-ring); outline-offset: -2px; }' +
+         '\\n.pin-op-toolbar-icon-button[aria-pressed="true"] { background-color: var(--sys-color-tonal-container); color: var(--sys-color-primary); }' +
+         '\\n.pin-op-toolbar-icon-button > svg { fill: currentcolor; height: 16px; pointer-events: none; width: 16px; }') as typeof stylesSidebarPaneStyles);`);
   source = rewriteMethodBody(source, relativePath, "StylesSidebarPane", "setActiveProperty", `{
         // Pin-op owns page highlighting; the embedded Styles pane has no overlay authority.
     }`);
@@ -681,14 +696,30 @@ function transformStylePropertiesSectionSource(source, relativePath) {
 
 function transformStylePropertyTreeSource(source, relativePath) {
   source = rewriteFunctionBody(source, relativePath, "getPropertyRenderers", `{
-    // Preserve Chromium's AST renderer and familiar visual previews while
-    // withholding editor/popover authority. A null tree element makes the
-    // native color swatch read-only by construction.
+    // Preserve every Chromium presentation renderer supported by the reviewed
+    // read-only facades. Editor-capable renderers receive no tree element.
+    // Exact raw fallback below covers the deliberately excluded set:
+    // VariableRenderer, VariableNameRenderer, ColorMixRenderer, URLRenderer,
+    // LinkableNameRenderer, ShadowRenderer, CSSWideKeywordRenderer,
+    // LightDarkColorRenderer, AnchorFunctionRenderer, PositionAnchorRenderer,
+    // MathFunctionRenderer, and AttributeRenderer.
     return [
         new ColorRenderer(stylesContainer, null),
-        new LinearGradientRenderer(),
+        new ContrastColorRenderer(stylesContainer, null),
+        new AngleRenderer(null),
+        new BezierRenderer(null),
         new StringRenderer(),
+        new GridTemplateRenderer(),
+        new LinearGradientRenderer(),
+        new FlexGridRenderer(stylesContainer, null),
+        new EnvFunctionRenderer(null, matchedStyles, computedStyles, computedStyleExtraFields),
+        new PositionTryRenderer(matchedStyles),
+        new LengthRenderer(stylesContainer, propertyName, null),
+        new CustomFunctionRenderer(
+            stylesContainer, matchedStyles, computedStyles, computedStyleExtraFields, propertyName, null),
+        new AutoBaseRenderer(computedStyles, computedStyleExtraFields),
         new BinOpRenderer(),
+        new RelativeColorChannelRenderer(null),
     ];
 }`);
   source = rewriteMethodBody(source, relativePath, "StylePropertyTreeElement", "#getLonghandProperties", `{
@@ -739,6 +770,9 @@ function transformStylePropertyTreeSource(source, relativePath) {
         this.nameElement = Renderer.renderNameElement(this.name);
         const matchedResult = this.property.parseValue(this.matchedStyles(), this.computedStyles);
         this.valueElement = Renderer.renderValueElement(this.property, matchedResult, renderers).valueElement;
+        if (this.valueElement.textContent !== this.property.value) {
+            this.valueElement = Renderer.renderValueElement(this.property, null, []).valueElement;
+        }
         if (!this.treeOutline) {
             return;
         }

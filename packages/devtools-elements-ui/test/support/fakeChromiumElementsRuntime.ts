@@ -14,12 +14,48 @@ type Listener = {
   readonly thisObject?: unknown;
 };
 
-type ElementListener = (event: { readonly type: string }) => void;
+type ElementEvent = {
+  readonly relatedTarget?: unknown;
+  readonly type: string;
+};
+
+type ElementListener = (event: ElementEvent) => void;
+
+class FakeClassList {
+  private readonly values = new Set<string>();
+
+  public add(...tokens: string[]): void {
+    for (const token of tokens) this.values.add(token);
+  }
+
+  public contains(token: string): boolean {
+    return this.values.has(token);
+  }
+}
 
 export class FakeChromiumElement {
+  public readonly children: FakeChromiumElement[] = [];
+  public readonly classList = new FakeClassList();
   public parent: FakeChromiumMount | undefined;
   public removed = false;
+  private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<ElementListener>>();
+
+  public contains(node: unknown): boolean {
+    return node === this || this.children.some((child) => child.contains(node));
+  }
+
+  public append(...children: FakeChromiumElement[]): void {
+    this.children.push(...children);
+  }
+
+  public getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  public setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
 
   public remove(): void {
     this.removed = true;
@@ -36,9 +72,9 @@ export class FakeChromiumElement {
     this.listeners.get(type)?.delete(listener);
   }
 
-  public dispatch(type: string): void {
+  public dispatch(type: string, event: Omit<ElementEvent, "type"> = {}): void {
     for (const listener of [...(this.listeners.get(type) ?? [])]) {
-      listener({ type });
+      listener({ ...event, type });
     }
   }
 }
@@ -283,6 +319,10 @@ implements ChromiumElementsTreeOutline {
   public disposeCount = 0;
   public rootSetCount = 0;
   public expandCallCount = 0;
+  public readonly selectDOMNodeCalls: Array<{
+    readonly focus: boolean;
+    readonly node: ChromiumDOMNode | null;
+  }> = [];
   private rootInternal: ChromiumDOMNode | null = null;
   private selectedInternal: ChromiumDOMNode | null = null;
   private readonly listeners = new Map<string, Listener[]>();
@@ -335,6 +375,7 @@ implements ChromiumElementsTreeOutline {
   }
 
   public selectDOMNode(node: ChromiumDOMNode | null, focus = false): void {
+    this.selectDOMNodeCalls.push({ node, focus });
     this.selectedInternal = node;
     this.emit("SelectedNodeChanged", { node, focus });
   }

@@ -39,9 +39,11 @@
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 38%);
+  grid-template-rows: minmax(0, 1fr);
   block-size: 100%;
   min-block-size: 0;
   min-inline-size: 0;
+  overflow: clip;
   color: CanvasText;
   background: Canvas;
   font: 12px/1.4 system-ui, sans-serif;
@@ -60,26 +62,26 @@
 .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane,
 .pin-op-elements-inspector .pin-op-elements-inspector__sidebar {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   min-block-size: 0;
   min-inline-size: 0;
+  overflow: clip;
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
+  grid-template-rows: minmax(0, 1fr);
   border-inline-end: 1px solid var(--pin-op-elements-border);
 }
 
-.pin-op-elements-inspector .pin-op-elements-inspector__pane-title,
+.pin-op-elements-inspector .pin-op-elements-inspector__sidebar {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .pin-op-elements-inspector .pin-op-elements-inspector__tabs {
   min-block-size: 28px;
   margin: 0;
   border-block-end: 1px solid var(--pin-op-elements-border);
   font: inherit;
   font-weight: 600;
-}
-
-.pin-op-elements-inspector .pin-op-elements-inspector__pane-title {
-  padding: 5px 8px;
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__tabs {
@@ -110,6 +112,7 @@
 
 .pin-op-elements-inspector .pin-op-elements-inspector__tree,
 .pin-op-elements-inspector .pin-op-elements-inspector__rules {
+  block-size: 100%;
   min-block-size: 0;
   min-inline-size: 0;
   overflow: auto;
@@ -304,15 +307,6 @@
   min-inline-size: 0;
   color: inherit;
   background: Canvas;
-}
-
-.pin-op-elements-inspector [data-part="chromium-read-only-styles-pane"]::-webkit-scrollbar {
-  width: 2px;
-  height: 2px;
-}
-
-.pin-op-elements-inspector [data-part="chromium-read-only-styles-pane"] {
-  scrollbar-width: thin;
 }
 
 .pin-op-elements-inspector .styles-sidebar-pane-toolbar-container {
@@ -691,7 +685,7 @@
   }
 }
 
-@media (max-width: 320px) {
+@media (max-width: 440px) {
   .pin-op-elements-inspector {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(160px, 1fr) minmax(120px, 45%);

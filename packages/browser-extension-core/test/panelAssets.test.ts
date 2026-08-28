@@ -45,9 +45,9 @@ describe("DevTools panel assets", () => {
       "ide-highlight-enabled",
       "protocol-mismatch",
       "protocol-mismatch-versions",
-      "link-onboarding",
       "inspector-workspace",
       "inspector-elements-mount",
+      "inspector-status",
       "operational-footer",
       "selected-element-summary",
       "resolution-status",
@@ -73,50 +73,47 @@ describe("DevTools panel assets", () => {
     expect(inspectorHtml).not.toContain("location.search");
   });
 
-  it("places compact Inspector onboarding in its own non-overlapping grid row", () => {
+  it("keeps the Inspector shell compact without onboarding or branding", () => {
     expect(inspector("main.panel-layout.inspector-panel-layout")).toHaveLength(1);
-    expect(inspector("#link-onboarding + #inspector-workspace")).toHaveLength(1);
+    expect(inspector("#link-onboarding, .link-onboarding")).toHaveLength(0);
+    expect(inspector("#panel-branding, footer")).toHaveLength(0);
+    expect(inspector("#inspector-workspace + #inspector-status.inspector-status"))
+      .toHaveLength(1);
+    expect(inspector("#inspector-status").attr("role")).toBe("group");
+    expect(inspector("#inspector-status").attr("aria-label"))
+      .toBe("Inspector status");
+    expect(inspector("#inspector-status > #operational-footer")).toHaveLength(1);
+    expect(inspector("#inspector-status > #panel-error")).toHaveLength(1);
 
     const layout = ruleDeclarations(
       /\.inspector-panel-layout\s*\{([^}]*)\}/s,
       "Inspector panel layout",
     );
     expect(layout).toMatch(
-      /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"onboarding"\s*"workspace"\s*"footer";/s,
+      /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"status";/s,
     );
     expect(layout).toMatch(
-      /grid-template-rows:\s*auto auto auto minmax\(0,\s*1fr\) auto;/,
+      /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) minmax\(0,\s*26px\);/,
     );
 
-    const onboarding = ruleDeclarations(
-      /\.inspector-panel-layout\s+\.link-onboarding\s*\{([^}]*)\}/s,
-      "Inspector onboarding",
+    const toolbar = ruleDeclarations(
+      /\.inspector-panel-layout\s+\.panel-toolbar\s*\{([^}]*)\}/s,
+      "Inspector toolbar",
     );
-    expect(onboarding).toMatch(/grid-area:\s*onboarding;/);
-    expect(onboarding).toMatch(/padding:\s*6px 10px;/);
-    expect(onboarding).not.toMatch(/position:\s*(?:absolute|fixed)/);
-    expect(onboarding).not.toMatch(/z-index\s*:/);
-    expect(css).toMatch(
-      /\.inspector-panel-layout\s+\.link-onboarding-content\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0,\s*1fr\);/s,
+    expect(toolbar).toMatch(/min-height:\s*32px;/);
+    expect(toolbar).toMatch(/padding:\s*2px 4px;/);
+
+    const status = ruleDeclarations(
+      /\.inspector-status\s*\{([^}]*)\}/s,
+      "Inspector status",
     );
-    expect(css).toMatch(
-      /@media\s*\(max-width:\s*420px\)\s*\{[\s\S]*?\.inspector-panel-layout\s+\.link-onboarding-content\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
-    );
+    expect(status).toMatch(/grid-area:\s*status;/);
+    expect(status).toMatch(/max-height:\s*26px;/);
+    expect(status).toMatch(/overflow:\s*hidden;/);
     expect(css).toMatch(
       /\.panel-workspace\s*\{[^}]*grid-area:\s*workspace;[^}]*min-height:\s*0;/s,
     );
     expect($("main.panel-layout.inspector-panel-layout")).toHaveLength(0);
-  });
-
-  it("explains that browser inspection works before IDE linking", () => {
-    const onboardingText = inspector("#link-onboarding").text()
-      .replace(/\s+/g, " ")
-      .trim();
-
-    expect(onboardingText).toContain("Browser inspection is ready");
-    expect(onboardingText).toContain("Select an element now");
-    expect(onboardingText).toContain("Link VS Code to enable IDE actions");
-    expect(onboardingText).not.toContain("After linking, select an element");
   });
 
   it("ships one compact toolbar with settings and unchanged connection controls", () => {
@@ -234,7 +231,7 @@ describe("DevTools panel assets", () => {
 
   it("constrains the Inspector mount so Rules owns its vertical scroll", () => {
     expect(css).toMatch(
-      /#inspector-elements-mount\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+      /#inspector-elements-mount\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*clip;/s,
     );
   });
 

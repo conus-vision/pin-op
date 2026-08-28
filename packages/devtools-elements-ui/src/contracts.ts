@@ -49,6 +49,10 @@ export interface TreeRowSnapshot {
 
 export interface TreePresentationSnapshot {
   readonly rows: readonly TreeRowSnapshot[];
+  /** Selected node that owns the current explicit scroll/reveal intent. */
+  readonly revealRef?: string;
+  /** Monotonic reveal intent version supplied by the browser-side controller. */
+  readonly revealVersion: number;
 }
 
 export interface TreeDataSource {

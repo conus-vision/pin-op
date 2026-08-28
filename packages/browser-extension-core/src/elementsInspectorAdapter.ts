@@ -12,6 +12,7 @@ export class ElementsInspectorAdapter implements TreeDataSource {
   public constructor(private readonly controller: DomTreeController) {}
 
   public snapshot(): TreePresentationSnapshot {
+    const controllerSnapshot = this.controller.snapshot();
     const sourceRows = this.controller.rows();
     if (sourceRows !== this.sourceRows) {
       this.sourceRows = sourceRows;
@@ -22,6 +23,10 @@ export class ElementsInspectorAdapter implements TreeDataSource {
     }
     return Object.freeze({
       rows: this.projectedRows,
+      ...(controllerSnapshot.revealRef === undefined
+        ? {}
+        : { revealRef: controllerSnapshot.revealRef }),
+      revealVersion: controllerSnapshot.revealVersion,
     });
   }
 

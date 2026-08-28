@@ -33,6 +33,10 @@ async function smokeReadOnlyStylesRuntime(browser) {
   const runtimePath = path.join(smokeRoot, "runtime.js");
   const appPath = path.join(smokeRoot, "app.js");
   const htmlPath = path.join(smokeRoot, "index.html");
+  const elementsCssPath = path.join(
+    repositoryRoot,
+    "packages/devtools-elements-ui/assets/devtools-elements.css",
+  );
   let chrome;
   let cdp;
   let server;
@@ -59,8 +63,10 @@ async function smokeReadOnlyStylesRuntime(browser) {
         return;
       }
       const file = request.url === "/runtime.js" ? runtimePath :
-        request.url === "/app.js" ? appPath : htmlPath;
-      response.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : "text/html");
+        request.url === "/app.js" ? appPath :
+          request.url === "/devtools-elements.css" ? elementsCssPath : htmlPath;
+      response.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" :
+        file.endsWith(".css") ? "text/css" : "text/html");
       response.end(await readFile(file));
     });
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -193,15 +199,17 @@ async function pollResult(cdp, sessionId) {
 }
 
 function smokeHTML() {
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html,body,#mount{height:100%;margin:0}
+  return `<!doctype html><html><head><meta charset="utf-8">
+  <link rel="stylesheet" href="./devtools-elements.css"><style>
+    html,body,.pin-op-elements-inspector,#mount{height:100%;margin:0}
+    #mount{grid-column:1/-1;grid-row:1/-1}
   </style><script>
     window.pinOpStylesSmokeErrors=[];
     const firefoxAutomation=new URLSearchParams(location.search).has('firefox');
     window.reportPinOpStylesSmoke=value=>{window.pinOpStylesSmokeResult=value;if(firefoxAutomation){fetch('/result',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)}).catch(()=>{})}};
     addEventListener('error',e=>{const m=String(e.error?.stack||e.error||e.message);window.pinOpStylesSmokeErrors.push(m);window.reportPinOpStylesSmoke({ok:false,error:m})});
     addEventListener('unhandledrejection',e=>{const m=String(e.reason?.stack||e.reason);window.pinOpStylesSmokeErrors.push(m);window.reportPinOpStylesSmoke({ok:false,error:m})});
-  </script></head><body><main id="mount"></main><script type="module" src="./app.js"></script></body></html>`;
+  </script></head><body><section class="pin-op-elements-inspector"><main id="mount" class="pin-op-elements-inspector__rules"></main></section><script type="module" src="./app.js"></script></body></html>`;
 }
 
 function smokeApplication() {
@@ -235,11 +243,22 @@ const declarations = Array.from({length: 220}, (_, index) => ({
   declarationRef: 'decl:' + index,
   name: index === 0 ? 'color' : index === 1 ? 'margin' : index === 2 ? 'border' :
     index === 3 ? 'background' : index === 4 ? 'font' : index === 5 ? 'flex' : index === 6 ? 'grid' :
+    index === 7 ? 'letter-spacing' : index === 8 ? 'outline-color' :
+    index === 9 ? 'transition-timing-function' : index === 10 ? 'transition-property' :
+    index === 11 ? 'width' : index === 12 ? 'caret-color' :
+    index === 13 ? 'animation-timing-function' : index === 14 ? 'list-style-image' :
+    index === 15 ? 'box-shadow' : index === 16 ? 'mask-image' :
     '--property-' + index,
   value: index === 0 ? 'rgb(255 0 0 / 75%)' : index === 1 ? '1px 2px 3px 4px' :
     index === 2 ? '2px solid rgb(0 128 0)' : index === 3 ? 'rgb(0 0 255)' :
     index === 4 ? 'italic 700 16px/1.5 Arial' : index === 5 ? '1 0 auto' :
-    index === 6 ? 'auto-flow / 100px' : String(index),
+    index === 6 ? 'auto-flow / 100px' : index === 7 ? '1.3em' : index === 8 ? 'currentcolor' :
+    index === 9 ? 'ease' : index === 10 ? 'color, text-shadow' : index === 11 ? '12.5px' :
+    index === 12 ? 'var(--brand-color, rebeccapurple)' :
+    index === 13 ? 'cubic-bezier(0.42, 0, 0.58, 1)' :
+    index === 14 ? 'url("images/card.png")' :
+    index === 15 ? '1px 2px 4px 0 rgb(0 0 0 / 35%)' :
+    index === 16 ? 'linear-gradient(45deg, red 0%, blue 100%)' : String(index),
   important: false,
   state: index === 0 ? 'winning-known-author' : index === 1 ? 'overridden-known-author' :
     index === 2 ? 'inactive' : index === 3 ? 'unknown' : 'winning-known-author',
@@ -297,7 +316,19 @@ const externalFocusRetained = document.activeElement === outsideFocus;
 
 await waitFor(() => deepQuery(pane.element, '.styles-section'), 'native Styles section');
 const section = deepQuery(pane.element, '.styles-section');
+const readOnlyPresentation = {
+  sectionClassRetained: section?.classList.contains('read-only') === true,
+  fontStyle: section ? getComputedStyle(section).fontStyle : undefined,
+};
 const origin = deepQuery(pane.element, '.pin-op-rule-origin');
+const originStyle = origin ? getComputedStyle(origin) : undefined;
+const originPresentation = {
+  chromiumLinkClasses: Boolean(origin?.classList.contains('text-button') &&
+    origin.classList.contains('link-style') && origin.classList.contains('devtools-link')),
+  noNativeButtonChrome: Boolean(originStyle && originStyle.borderTopStyle === 'none' &&
+    originStyle.paddingInlineStart === '0px' && originStyle.paddingInlineEnd === '0px' &&
+    originStyle.marginInlineStart === '0px' && originStyle.marginInlineEnd === '0px'),
+};
 origin?.click();
 pane.refreshOrigins();
 origin?.click();
@@ -314,6 +345,44 @@ await waitFor(() => colorRow && deepQuery(colorRow, 'devtools-color-swatch'), 'n
 const colorValue = colorRow && deepQuery(colorRow, '.value');
 const colorSwatch = colorRow && deepQuery(colorRow, 'devtools-color-swatch');
 const readonlySwatch = colorSwatch?.shadowRoot?.querySelector('.color-swatch.readonly');
+const expectedExactValues = {
+  'letter-spacing': '1.3em',
+  'outline-color': 'currentcolor',
+  'transition-timing-function': 'ease',
+  'transition-property': 'color, text-shadow',
+  width: '12.5px',
+  'caret-color': 'var(--brand-color, rebeccapurple)',
+  'animation-timing-function': 'cubic-bezier(0.42, 0, 0.58, 1)',
+  'list-style-image': 'url("images/card.png")',
+  'box-shadow': '1px 2px 4px 0 rgb(0 0 0 / 35%)',
+  'mask-image': 'linear-gradient(45deg, red 0%, blue 100%)',
+};
+const exactRenderedValues = {};
+const exactValueRows = {};
+for (const name of Object.keys(expectedExactValues)) {
+  const nameElement = deepQueryAll(pane.element, '.webkit-css-property')
+    .find(node => node.textContent === name);
+  const row = nameElement?.closest('li');
+  row?.scrollIntoView({block: 'nearest'});
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await waitFor(() => deepQuery(row, '.value'), 'native exact value for ' + name);
+  exactValueRows[name] = row;
+  exactRenderedValues[name] = deepQuery(row, '.value')?.innerText;
+}
+const rendererEvidence = {
+  variablePlainText: !deepQuery(exactValueRows['caret-color'], 'devtools-link-swatch.css-var-link') &&
+    exactRenderedValues['caret-color'] === expectedExactValues['caret-color'],
+  lengthStructured: Boolean(deepQuery(exactValueRows.width, '.value > span')),
+  easingStructured: Boolean(deepQuery(exactValueRows['animation-timing-function'], '.value > span')),
+  shadowColorSwatch: Boolean(deepQuery(exactValueRows['box-shadow'], 'devtools-color-swatch')),
+  gradientColorSwatches: deepQueryAll(exactValueRows['mask-image'], 'devtools-color-swatch').length,
+};
+const readOnlyRendererSafety = {
+  noBezierEditor: !deepQuery(exactValueRows['animation-timing-function'], '.bezier-swatch-icon'),
+  noShadowEditor: !deepQuery(exactValueRows['box-shadow'], 'devtools-css-shadow-swatch'),
+  noLengthPopover: !deepQuery(exactValueRows.width, 'devtools-tooltip'),
+  urlIsPlainText: !deepQuery(exactValueRows['list-style-image'], 'a'),
+};
 const shorthandExpectations = {
   margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
   border: ['border-top-width', 'border-right-style', 'border-bottom-color'],
@@ -376,6 +445,23 @@ const visibleIcons = {
   filter: iconEvidence(deepQuery(pane.element, '.pin-op-filter-icon')),
   origin: iconEvidence(deepQuery(pane.element, '.pin-op-rule-origin-icon')),
 };
+const toolbarFilter = deepQuery(pane.element, '.toolbar-input.toolbar-filter');
+const toolbarPrompt = deepQuery(toolbarFilter, '.toolbar-input-prompt.text-prompt');
+const toolbarButtons = deepQueryAll(toolbarFilter, 'devtools-button.pin-op-toolbar-icon-button');
+const toolbarFilterStyle = toolbarFilter ? getComputedStyle(toolbarFilter) : undefined;
+const toolbarControlEvidence = {
+  prompt: Boolean(toolbarPrompt?.isContentEditable &&
+    toolbarPrompt.getAttribute('data-placeholder') === 'Filter'),
+  noNativeInput: !deepQuery(toolbarFilter, 'input'),
+  iconButtons: toolbarButtons.length === 2 && toolbarButtons.every(button =>
+    Boolean(deepQuery(button, 'svg[viewBox="0 0 20 20"] path'))),
+  chromiumFlex: Boolean(toolbarFilterStyle && toolbarFilterStyle.flexGrow === '1' &&
+    toolbarFilterStyle.flexShrink === '1'),
+  chromiumShape: Boolean(toolbarFilterStyle && toolbarFilterStyle.boxSizing === 'border-box' &&
+    toolbarFilterStyle.borderRadius === '100px' && toolbarFilterStyle.minWidth === '35px'),
+  fillsToolbar: Boolean(toolbarFilter && toolbarFilter.getBoundingClientRect().width > 120),
+  emptyClearHidden: Boolean(toolbarButtons[0] && getComputedStyle(toolbarButtons[0]).display === 'none'),
+};
 const scrollOwner = pane.element;
 const stickyToolbar = deepQuery(pane.element, '.styles-sidebar-pane-toolbar-container');
 const stickyTopBefore = stickyToolbar?.getBoundingClientRect().top;
@@ -395,14 +481,30 @@ const scrollContract = {
   sticky: typeof stickyTopBefore === 'number' && typeof stickyTopAfter === 'number' &&
     Math.abs(stickyTopBefore - stickyTopAfter) <= 1,
 };
-const filterInput = deepQuery(pane.element, '.toolbar-filter input');
-filterInput.value = 'definitely-not-a-style';
-filterInput.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+toolbarPrompt.textContent = 'definitely-not-a-style';
+toolbarPrompt.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
 const noMatches = deepQuery(pane.element, '.gray-info-message');
 await waitFor(() => noMatches && !noMatches.classList.contains('hidden'), 'native no-matches filter state');
-filterInput.value = '';
-filterInput.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+toolbarButtons[0]?.click();
 await waitFor(() => noMatches?.classList.contains('hidden'), 'native filter reset');
+const lineBreakEvent = new InputEvent('beforeinput', {
+  bubbles: true,
+  cancelable: true,
+  inputType: 'insertParagraph',
+});
+const lineBreakBlocked = !toolbarPrompt.dispatchEvent(lineBreakEvent) && lineBreakEvent.defaultPrevented;
+toolbarPrompt.textContent = 'color\\nbackground';
+toolbarPrompt.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+const singleLine = toolbarPrompt.textContent === 'color background';
+toolbarButtons[0]?.click();
+await waitFor(() => noMatches?.classList.contains('hidden'), 'native normalized filter reset');
+toolbarButtons[1]?.click();
+const toolbarBehaviorEvidence = {
+  clear: toolbarPrompt.textContent === '',
+  lineBreakBlocked,
+  singleLine,
+  regexToggle: toolbarButtons[1]?.getAttribute('aria-pressed') === 'true',
+};
 const visibleSections = deepQueryAll(pane.element, '.styles-section').filter(node => !node.classList.contains('hidden'));
 visibleSections[0]?.focus();
 visibleSections[0]?.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
@@ -431,9 +533,16 @@ const value = {
   structuredColor: Boolean(colorValue && colorValue.childNodes.length > 1),
   lazyColorBeforeScroll,
   colorValueHTML: colorValue?.innerHTML,
+  colorValueText: colorValue?.textContent,
+  colorValueInnerText: colorValue?.innerText,
   colorValueChildren: colorValue?.childNodes.length,
   nativeColorSwatch: colorSwatch?.localName === 'devtools-color-swatch',
   readonlyColorSwatch: readonlySwatch instanceof HTMLElement,
+  exactRenderedValues,
+  rendererEvidence,
+  readOnlyRendererSafety,
+  readOnlyPresentation,
+  originPresentation,
   shorthandLonghands,
   shorthandCoverage,
   contextOrder,
@@ -441,6 +550,8 @@ const value = {
   lightTokens,
   darkTokens,
   visibleIcons,
+  toolbarControlEvidence,
+  toolbarBehaviorEvidence,
   scrollContract,
   emptyFirst,
   externalFocusRetained,
@@ -480,10 +591,20 @@ const expectedContextOrder = [
 if (!value.stable || !value.directChild || !value.hasNativeSection || !value.hasNativeShowAll || value.origin !== 'theme.scss:73' ||
     value.opened.join() !== 'rule:scss' || propertyRows <= 228 || !value.lazyColorBeforeScroll || !value.structuredColor || !value.nativeColorSwatch ||
     !value.readonlyColorSwatch || value.shorthandLonghands.length !== 5 ||
+    value.colorValueText !== 'rgb(255 0 0 / 75%)' ||
+    JSON.stringify(value.exactRenderedValues) !== JSON.stringify(expectedExactValues) ||
+    !value.rendererEvidence.variablePlainText || !value.rendererEvidence.lengthStructured ||
+    !value.rendererEvidence.easingStructured || !value.rendererEvidence.shadowColorSwatch ||
+    value.rendererEvidence.gradientColorSwatches < 2 ||
+    !Object.values(value.readOnlyRendererSafety).every(Boolean) ||
+    !value.readOnlyPresentation.sectionClassRetained || value.readOnlyPresentation.fontStyle !== 'normal' ||
+    !Object.values(value.originPresentation).every(Boolean) ||
     !Object.values(value.shorthandCoverage).every(Boolean) || JSON.stringify(value.contextOrder) !== JSON.stringify(expectedContextOrder) ||
     value.inheritedLabel !== 'body.site-shell' || !value.lightTokens.sysColor || !value.lightTokens.appColor ||
     value.lightTokens.size !== '12px' || value.lightTokens.sysColor === value.darkTokens.sysColor ||
     value.lightTokens.appColor === value.darkTokens.appColor || !Object.values(value.visibleIcons).every(Boolean) ||
+    !Object.values(value.toolbarControlEvidence).every(Boolean) ||
+    !Object.values(value.toolbarBehaviorEvidence).every(Boolean) ||
     !Object.values(value.scrollContract).every(Boolean) || !value.keyboardMoved || !value.filterRoundTrip ||
     !value.emptyFirst || !value.externalFocusRetained || !value.staleOriginListenerAborted ||
     !value.focusedToEmpty || !value.emptyToNonempty || !value.mountStyleRestored ||

@@ -34,7 +34,6 @@ export class InspectorPanelView implements PanelView {
   private readonly connectionStatus: InspectorPanelElement;
   private readonly protocolMismatch: InspectorPanelElement;
   private readonly protocolMismatchVersions: InspectorPanelElement;
-  private readonly linkOnboarding: InspectorPanelElement;
   private readonly workspace: InspectorPanelElement;
   private readonly mount: HTMLElement;
   private readonly selectedElementSummary: InspectorPanelElement;
@@ -69,7 +68,6 @@ export class InspectorPanelView implements PanelView {
       document,
       "protocol-mismatch-versions",
     );
-    this.linkOnboarding = required(document, "link-onboarding");
     this.workspace = required(document, "inspector-workspace");
     this.mount = required(
       document,
@@ -264,7 +262,6 @@ export class InspectorPanelView implements PanelView {
     this.panelError.hidden = model.errorText === undefined;
 
     this.toolbarFeatures.hidden = false;
-    this.linkOnboarding.hidden = !model.showLinkControls;
     this.workspace.hidden = false;
     this.operationalFooter.hidden = false;
   }

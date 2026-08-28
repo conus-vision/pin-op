@@ -10,6 +10,53 @@ import type {
 } from "../src/domProtocol.js";
 
 describe("ElementsInspectorAdapter", () => {
+  it("carries controller reveal identity and version into the neutral snapshot", async () => {
+    const root = locatedNode("root", "HTML", ["html"]);
+    const selected = locatedNode("selected", "BUTTON", ["html", "button"]);
+    const controller = new DomTreeController({
+      transport: {
+        async request(request): Promise<DomResponse> {
+          return {
+            type: "dom.root",
+            requestId: request.requestId,
+            documentEpoch: 7,
+            node: root,
+            prologue: [],
+            epilogue: [],
+          };
+        },
+        dispatch() {},
+        cancelPending() {},
+      },
+    });
+    const adapter = new ElementsInspectorAdapter(controller);
+
+    await controller.loadRoot();
+    controller.handleEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 7,
+      selectionRevision: 1,
+      nodeRef: selected.nodeRef,
+      ancestorPath: [root, selected],
+    });
+    expect(adapter.snapshot()).toMatchObject({
+      revealRef: selected.nodeRef,
+      revealVersion: 1,
+    });
+
+    controller.handleEvent({
+      type: "dom.selectionChanged",
+      documentEpoch: 7,
+      selectionRevision: 2,
+      nodeRef: selected.nodeRef,
+      ancestorPath: [root, selected],
+    });
+    expect(adapter.snapshot()).toMatchObject({
+      revealRef: selected.nodeRef,
+      revealVersion: 2,
+    });
+  });
+
   it("projects the one controller snapshot into immutable neutral rows", async () => {
     const root = node("root", "HTML", true);
     const child = node("child", "BODY");
@@ -173,5 +220,21 @@ function node(
     expandable,
     branchRevision: 1,
     label: nodeName.toLowerCase(),
+  });
+}
+
+function locatedNode(
+  nodeRef: string,
+  nodeName: string,
+  path: readonly string[],
+): DomNodeView {
+  return Object.freeze({
+    ...node(nodeRef, nodeName),
+    locator: {
+      version: 1,
+      targetKind: "element",
+      boundaries: [],
+      path: path.map((tagName) => ({ tagName, siblingIndex: 0 })),
+    },
   });
 }

@@ -70,9 +70,9 @@ export interface BrowserPackageContractOptions {
 
 export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
   "dist/inspector-panel.html":
-    "611b9234ef75d4d09427b8643d1f010b2260ca46899117959040f78e688bbfbf",
+    "3aef34d666e3dcd7c47ac629e126d0856293d7b651882ba351c4d80da488c5f5",
   "dist/devtools-elements.css":
-    "41dbf6fbb4b351bbd1f28298d36c0e20f834d32e5255709856604c0c79b3edec",
+    "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
 });
 
 export const SHARED_CHROMIUM_UI_SELECTORS = Object.freeze([
@@ -879,6 +879,12 @@ export function describeBrowserPackageContract(
         expect(backgroundBundle, marker).toContain(marker);
       }
       expect(panelCss).toBe(sharedAsset("panel.css"));
+      expect(panelCss).toMatch(
+        /\.panel-workspace\s*\{[^}]*overflow:\s*clip;/s,
+      );
+      expect(panelCss).toMatch(
+        /#inspector-elements-mount\s*\{[^}]*overflow:\s*clip;/s,
+      );
       expect(packagedBytes(packaged, "dist/pin-op.svg")).toEqual(
         Buffer.from(sharedAsset("pin-op.svg")),
       );

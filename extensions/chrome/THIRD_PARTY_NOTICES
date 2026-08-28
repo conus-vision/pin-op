@@ -747,7 +747,7 @@ Package gitHead: 23cccaa78f7458a5aad99c1af98dc1856d2494a3
 Package integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==
 Package repository: https://github.com/ChromeDevTools/devtools-frontend.git
 Runtime metadata: third_party/chromium-devtools-frontend/RUNTIME.json
-Runtime metadata SHA-256: 08a05a840ba8f7645a133e85fdaaa85fb1d18d16de1408a3fc920528ff70783a
+Runtime metadata SHA-256: 542ecf6fe35b8d23b80f10842e2653c7a3d4e4128d4410fd407363fc1d5399d0
 
 DOM overlay manifest: third_party/chromium-devtools-frontend/patches/1.0.1681091/manifest.json
 DOM overlay manifest SHA-256: 2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a
@@ -862,7 +862,7 @@ SHA-256: e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5
 - front_end/third_party/lit/LICENSE 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
 
 Rules overlay manifest: third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/manifest.json
-Rules overlay manifest SHA-256: 86c18a9b7b0a6bd2292fe78e40392bac61e08407f5370e55d946c353213c59bf
+Rules overlay manifest SHA-256: f23e083d705b9272530e218b40f77d706ac3ae520a2851573633478ebf07af85
 
 ### Rules npm closure
 File count: 61
@@ -870,7 +870,7 @@ SHA-256: 737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6
 
 ### Rules overlay closure
 File count: 18
-SHA-256: 16d72ee24720a7e0dad986970ffdf29b889d3186e90e3297064d8360db3b3a64
+SHA-256: 2f4fca474da3ef03111827868c186acae82eddd537dbf0403eebac25bd0d33e7
 
 ### Rules base overlay closure
 File count: 16
@@ -921,9 +921,9 @@ SHA-256: 7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8
 - facades/styles-dependencies.ts 7491c700a419866384ac46b0dec70475f70e73cb502d545f0cad4efe321df86e
 - facades/text-utils.ts 92e71f7a93cdbd459f7a9a3e9d8752ee1cfbe778de8fe18b0177eb48507d225a
 - facades/ui-utils.ts f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6
-- facades/ui.ts 1d7942654fa557f75c10721181125a6d3a84dd1fd0928d2bd9347806bf3d0cd7
+- facades/ui.ts ed362815c2cec6c9b956bb728d12809c5e68d6a73054eed9d635ad11a89c9750
 - facades/visual-logging.ts 974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96
-- runtime/read-only-styles-runtime.ts 4acdd14df0117d7d0b8d1e2bdfa07b921e9c546fc61d02b1ff713d0fe864268b
+- runtime/read-only-styles-runtime.ts c0214ca166c4ee53fc577996577a466f5fd210769ca760213484251054182233
 
 ### Rules required license inventory
 - LICENSE ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e

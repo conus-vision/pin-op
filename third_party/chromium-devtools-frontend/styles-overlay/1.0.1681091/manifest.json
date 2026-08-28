@@ -33,9 +33,9 @@
     "facades/styles-dependencies.ts": "7491c700a419866384ac46b0dec70475f70e73cb502d545f0cad4efe321df86e",
     "facades/text-utils.ts": "92e71f7a93cdbd459f7a9a3e9d8752ee1cfbe778de8fe18b0177eb48507d225a",
     "facades/ui-utils.ts": "f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6",
-    "facades/ui.ts": "1d7942654fa557f75c10721181125a6d3a84dd1fd0928d2bd9347806bf3d0cd7",
+    "facades/ui.ts": "ed362815c2cec6c9b956bb728d12809c5e68d6a73054eed9d635ad11a89c9750",
     "facades/visual-logging.ts": "974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96",
-    "runtime/read-only-styles-runtime.ts": "4acdd14df0117d7d0b8d1e2bdfa07b921e9c546fc61d02b1ff713d0fe864268b"
+    "runtime/read-only-styles-runtime.ts": "c0214ca166c4ee53fc577996577a466f5fd210769ca760213484251054182233"
   },
   "upstreamFiles": {
     "front_end/core/sdk/CSSProperty.ts": "6c699445cd13b6f841cc740b15fe1e01360c5afb4c87a3a68f1dd89b76f22047",
@@ -51,7 +51,7 @@
   },
   "reviewedStylesOverlayClosure": {
     "fileCount": 18,
-    "sha256": "16d72ee24720a7e0dad986970ffdf29b889d3186e90e3297064d8360db3b3a64"
+    "sha256": "2f4fca474da3ef03111827868c186acae82eddd537dbf0403eebac25bd0d33e7"
   },
   "reviewedBaseOverlayClosure": {
     "fileCount": 16,

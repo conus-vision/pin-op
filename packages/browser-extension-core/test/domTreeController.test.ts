@@ -1885,6 +1885,37 @@ describe("DomTreeController", () => {
     expect(transport.requests.at(-1)).toMatchObject({ cursor: "page-2" });
   });
 
+  it("joins an existing pending expansion without issuing a duplicate request", async () => {
+    const transport = new TestTransport();
+    const pendingChildren = deferred<DomResponse>();
+    transport.enqueue(rootResponse(node("root", true)));
+    transport.enqueue(pendingChildren.promise);
+    const controller = createController(transport);
+    await controller.loadRoot();
+
+    let firstSettled = false;
+    let secondSettled = false;
+    const first = controller.expand("root").then(() => {
+      firstSettled = true;
+    });
+    const second = controller.expand("root").then(() => {
+      secondSettled = true;
+    });
+    await flushAsync();
+
+    expect(transport.requests.filter(request => request.type === "dom.getChildren"))
+      .toHaveLength(1);
+    expect(firstSettled).toBe(false);
+    expect(secondSettled).toBe(false);
+
+    pendingChildren.resolve(childrenResponse("root", 0, [node("child")]));
+    await Promise.all([first, second]);
+
+    expect(firstSettled).toBe(true);
+    expect(secondSettled).toBe(true);
+    expect(nodeRefs(controller)).toEqual(["root", "child"]);
+  });
+
   it("keeps a selected reveal child outside paginated pages until its page loads", async () => {
     const transport = new TestTransport();
     transport.enqueue(rootResponse(node("root", true)));

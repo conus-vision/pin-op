@@ -46,7 +46,6 @@ import {
 import { parseStylesEvent } from "./stylesProtocol.js";
 import {
   RulesSourcesController,
-  type RulesOriginState,
 } from "./rulesSourcesController.js";
 import {
   SourcePaneView,
@@ -410,12 +409,7 @@ class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
   }
 
   public originFor(ruleRef: string) {
-    const origin = this.rulesSources.originFor(ruleRef);
-    if (origin) return origin;
-    const state = this.rulesSources.status();
-    return state === "ready"
-      ? undefined
-      : hiddenOriginState(state);
+    return this.rulesSources.originFor(ruleRef);
   }
 
   public openRuleOrigin(ruleRef: string): void {
@@ -1032,20 +1026,6 @@ function disconnectedResetReason(
   } catch {
     return undefined;
   }
-}
-
-function hiddenOriginState(
-  state: Exclude<RulesOriginState, "ready">,
-) {
-  return Object.freeze({
-    label: "unresolved.css",
-    languageId: "css" as const,
-    startLine: 1,
-    startColumn: 1,
-    confidence: "exact" as const,
-    clickable: false,
-    state,
-  });
 }
 
 function rulesWindowState(message: unknown): string | undefined {

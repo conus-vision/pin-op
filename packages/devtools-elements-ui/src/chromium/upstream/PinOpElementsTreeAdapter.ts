@@ -206,7 +206,24 @@ interface PendingLoadMoreRequest {
   readonly promise: Promise<void>;
 }
 
+interface AppliedSelectionState {
+  readonly node: ChromiumDOMNode | null;
+  readonly revealRef?: string;
+  readonly revealVersion: number;
+  readonly focused: boolean;
+}
+
+interface PendingNativeSelectionState {
+  readonly generation: number;
+  readonly node: ChromiumDOMNode;
+  readonly nodeRef: string;
+  readonly sourceSelectionRef?: string;
+  readonly sourceRevealRef?: string;
+  readonly sourceRevealVersion: number;
+}
+
 const syntheticDocumentNodeId = 1;
+const maximumNativeRevealContinuationTurns = 256;
 
 /**
  * Adapts Pin-op's browser-neutral tree snapshots to the real Chromium
@@ -249,6 +266,11 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
   private loadMoreBridge: ChromiumLoadMoreBridge | undefined;
   private unsubscribe: (() => void) | undefined;
   private lastSnapshot: TreePresentationSnapshot | undefined;
+  private appliedSelection: AppliedSelectionState | undefined;
+  private pendingNativeSelection: PendingNativeSelectionState | undefined;
+  private nativeSelectionGeneration = 0;
+  private nativeRevealGeneration = 0;
+  private nativeRevealContinuationTimer: ReturnType<typeof setTimeout> | undefined;
   private selectionSync = false;
   private readonly sourceMutationDepthByGeneration = new Map<number, number>();
   private desiredExpandedChildren = new Map<string | undefined, readonly string[]>();
@@ -286,6 +308,11 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       false,
     );
     this.element = this.outline.element;
+    this.element.classList.add("pin-op-elements-inspector__tree");
+    this.element.setAttribute(
+      "data-part",
+      "chromium-read-only-elements-tree",
+    );
     try {
       this.outline.addEventListener(
         this.selectedNodeChangedEvent,
@@ -311,7 +338,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       );
       this.element.addEventListener("pointerleave", this.onPointerLeave);
       this.element.addEventListener("mouseleave", this.onPointerLeave);
-      this.element.addEventListener("focusout", this.onPointerLeave);
+      this.element.addEventListener("focusout", this.onFocusOut);
       mount.append(this.element);
       this.unsubscribe = treeDataSource.subscribe(this.onSourceChanged);
       this.synchronize(true, runtime.DOMDocument);
@@ -331,6 +358,13 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.nativeSelectionGeneration += 1;
+    this.pendingNativeSelection = undefined;
+    this.nativeRevealGeneration += 1;
+    if (this.nativeRevealContinuationTimer !== undefined) {
+      clearTimeout(this.nativeRevealContinuationTimer);
+      this.nativeRevealContinuationTimer = undefined;
+    }
     const failures: unknown[] = [];
     const attempt = (operation: () => void): void => {
       try {
@@ -352,7 +386,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     this.sourceMutationDepthByGeneration.clear();
     attempt(() => this.element.removeEventListener("pointerleave", this.onPointerLeave));
     attempt(() => this.element.removeEventListener("mouseleave", this.onPointerLeave));
-    attempt(() => this.element.removeEventListener("focusout", this.onPointerLeave));
+    attempt(() => this.element.removeEventListener("focusout", this.onFocusOut));
     attempt(() => this.outline.removeEventListener(
       this.selectedNodeChangedEvent,
       this.onSelectedNodeChanged,
@@ -405,6 +439,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     if (this.disposed) return;
     const snapshot = this.treeDataSource.snapshot();
     const rebuild = forceTopology || !this.lastSnapshot ||
+      this.requiresRebuildForPendingNativePopulation(snapshot) ||
       !this.model.canReuseDocument(this.lastSnapshot, snapshot);
     if (rebuild) {
       this.documentGeneration += 1;
@@ -451,6 +486,19 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     this.updateLoadMoreBridge(snapshot);
   }
 
+  private requiresRebuildForPendingNativePopulation(
+    snapshot: TreePresentationSnapshot,
+  ): boolean {
+    if (
+      (this.sourceMutationDepthByGeneration.get(this.documentGeneration) ?? 0) === 0
+    ) return false;
+    const revealRef = snapshot.revealRef;
+    return snapshot.rows.some(row =>
+      row.type === "node" &&
+      ((row.selected && row.node?.selectable !== false) || row.nodeRef === revealRef) &&
+      !this.model.nodeForRef(row.nodeRef));
+  }
+
   private beginSourceMutation(documentGeneration: number): void {
     const depth = this.sourceMutationDepthByGeneration.get(documentGeneration) ?? 0;
     this.sourceMutationDepthByGeneration.set(documentGeneration, depth + 1);
@@ -472,7 +520,230 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       candidate.type === "node" && candidate.selected &&
       candidate.node?.selectable !== false);
     const node = row ? this.model.nodeForRef(row.nodeRef) : null;
-    this.outline.selectDOMNode(node, Boolean(row?.focused));
+    const pendingNativeSelection = this.pendingNativeSelection;
+    if (pendingNativeSelection) {
+      if (
+        row?.nodeRef === pendingNativeSelection.nodeRef &&
+        node === pendingNativeSelection.node
+      ) {
+        this.pendingNativeSelection = undefined;
+      } else if (this.canPreservePendingNativeSelection(
+        snapshot,
+        row?.nodeRef,
+        pendingNativeSelection,
+      )) {
+        return;
+      } else {
+        this.pendingNativeSelection = undefined;
+      }
+    }
+    const focused = Boolean(row?.focused);
+    const previous = this.appliedSelection;
+    if (
+      previous?.node === node &&
+      previous.revealRef === snapshot.revealRef &&
+      previous.revealVersion === snapshot.revealVersion &&
+      previous.focused === focused &&
+      this.outline.selectedDOMNode() === node &&
+      (node === null || this.outline.findTreeElement(node) !== null)
+    ) {
+      return;
+    }
+    if (this.nativeRevealContinuationTimer !== undefined) {
+      clearTimeout(this.nativeRevealContinuationTimer);
+      this.nativeRevealContinuationTimer = undefined;
+    }
+    const nativeRevealGeneration = ++this.nativeRevealGeneration;
+    this.outline.selectDOMNode(node, focused);
+    this.appliedSelection = {
+      node,
+      ...(snapshot.revealRef === undefined
+        ? {}
+        : { revealRef: snapshot.revealRef }),
+      revealVersion: snapshot.revealVersion,
+      focused,
+    };
+    if (row && node && !this.outline.findTreeElement(node)) {
+      const continuationTurns = Math.min(
+        maximumNativeRevealContinuationTurns,
+        Math.max(4, row.depth + 4),
+      );
+      this.continueNativeSelectionReveal(
+        node,
+        row.nodeRef,
+        focused,
+        snapshot.revealRef,
+        snapshot.revealVersion,
+        nativeRevealGeneration,
+        continuationTurns,
+      );
+    }
+  }
+
+  private canPreservePendingNativeSelection(
+    snapshot: TreePresentationSnapshot,
+    sourceSelectionRef: string | undefined,
+    pending: PendingNativeSelectionState,
+  ): boolean {
+    if (
+      sourceSelectionRef !== pending.sourceSelectionRef ||
+      snapshot.revealRef !== pending.sourceRevealRef ||
+      snapshot.revealVersion !== pending.sourceRevealVersion ||
+      this.model.nodeForRef(pending.nodeRef) !== pending.node ||
+      !this.model.isSelectable(pending.nodeRef) ||
+      this.outline.selectedDOMNode() !== pending.node
+    ) {
+      return false;
+    }
+    return snapshot.rows.some(candidate =>
+      candidate.type === "node" &&
+      candidate.nodeRef === pending.nodeRef &&
+      candidate.node?.selectable !== false);
+  }
+
+  private beginPendingNativeSelection(
+    node: ChromiumDOMNode,
+    nodeRef: string,
+  ): number {
+    this.nativeRevealGeneration += 1;
+    if (this.nativeRevealContinuationTimer !== undefined) {
+      clearTimeout(this.nativeRevealContinuationTimer);
+      this.nativeRevealContinuationTimer = undefined;
+    }
+    const snapshot = this.lastSnapshot ?? this.treeDataSource.snapshot();
+    const sourceSelectionRef = snapshot.rows.find(candidate =>
+      candidate.type === "node" &&
+      candidate.selected &&
+      candidate.node?.selectable !== false)?.nodeRef;
+    const generation = ++this.nativeSelectionGeneration;
+    this.pendingNativeSelection = {
+      generation,
+      node,
+      nodeRef,
+      ...(sourceSelectionRef === undefined ? {} : { sourceSelectionRef }),
+      ...(snapshot.revealRef === undefined
+        ? {}
+        : { sourceRevealRef: snapshot.revealRef }),
+      sourceRevealVersion: snapshot.revealVersion,
+    };
+    return generation;
+  }
+
+  private clearPendingNativeSelection(generation: number): boolean {
+    if (this.pendingNativeSelection?.generation !== generation) return false;
+    this.pendingNativeSelection = undefined;
+    return true;
+  }
+
+  private continueNativeSelectionReveal(
+    node: ChromiumDOMNode,
+    nodeRef: string,
+    focused: boolean,
+    revealRef: string | undefined,
+    revealVersion: number,
+    nativeRevealGeneration: number,
+    turnsRemaining: number,
+  ): void {
+    if (turnsRemaining <= 0) {
+      if (
+        this.isCurrentNativeSelectionReveal(
+          node,
+          nodeRef,
+          focused,
+          revealRef,
+          revealVersion,
+          nativeRevealGeneration,
+        ) &&
+        !this.outline.findTreeElement(node)
+      ) {
+        this.report(new Error(
+          `Chromium ElementsTreeOutline did not reveal selected node: ${nodeRef}`,
+        ));
+      }
+      return;
+    }
+    this.nativeRevealContinuationTimer = setTimeout(() => {
+      this.nativeRevealContinuationTimer = undefined;
+      if (!this.isCurrentNativeSelectionReveal(
+        node,
+        nodeRef,
+        focused,
+        revealRef,
+        revealVersion,
+        nativeRevealGeneration,
+      )) return;
+      if (this.outline.findTreeElement(node)) {
+        this.replayNativeSelection(node, focused);
+        return;
+      }
+      try {
+        const snapshot = this.treeDataSource.snapshot();
+        const selectedRow = snapshot.rows.find(candidate =>
+          candidate.type === "node" &&
+          candidate.nodeRef === nodeRef &&
+          candidate.selected &&
+          candidate.node?.selectable !== false);
+        if (
+          !selectedRow ||
+          Boolean(selectedRow.focused) !== focused ||
+          snapshot.revealRef !== revealRef ||
+          snapshot.revealVersion !== revealVersion
+        ) return;
+        const previousSelectionSync = this.selectionSync;
+        this.selectionSync = true;
+        try {
+          this.indexDesiredExpansions(snapshot);
+          this.reconcileVisibleExpansion(snapshot);
+          if (this.outline.findTreeElement(node)) {
+            this.outline.selectDOMNode(node, focused);
+          }
+        } finally {
+          this.selectionSync = previousSelectionSync;
+        }
+      } catch (error) {
+        this.report(error);
+        return;
+      }
+      if (!this.outline.findTreeElement(node)) {
+        this.continueNativeSelectionReveal(
+          node,
+          nodeRef,
+          focused,
+          revealRef,
+          revealVersion,
+          nativeRevealGeneration,
+          turnsRemaining - 1,
+        );
+      }
+    }, 0);
+  }
+
+  private isCurrentNativeSelectionReveal(
+    node: ChromiumDOMNode,
+    nodeRef: string,
+    focused: boolean,
+    revealRef: string | undefined,
+    revealVersion: number,
+    nativeRevealGeneration: number,
+  ): boolean {
+    const applied = this.appliedSelection;
+    return !this.disposed &&
+      this.nativeRevealGeneration === nativeRevealGeneration &&
+      this.model.nodeForRef(nodeRef) === node &&
+      applied?.node === node &&
+      applied.focused === focused &&
+      applied.revealRef === revealRef &&
+      applied.revealVersion === revealVersion;
+  }
+
+  private replayNativeSelection(node: ChromiumDOMNode, focused: boolean): void {
+    const previousSelectionSync = this.selectionSync;
+    this.selectionSync = true;
+    try {
+      this.outline.selectDOMNode(node, focused);
+    } finally {
+      this.selectionSync = previousSelectionSync;
+    }
   }
 
   private indexDesiredExpansions(snapshot: TreePresentationSnapshot): void {
@@ -593,10 +864,19 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       this.restoreSnapshotSelection();
       return;
     }
+    let nativeSelectionGeneration: number;
+    try {
+      nativeSelectionGeneration = this.beginPendingNativeSelection(node, nodeRef);
+    } catch (error) {
+      this.report(error);
+      this.restoreSnapshotSelection();
+      return;
+    }
     if (focus) {
       try {
         this.treeDataSource.focus(nodeRef);
       } catch (error) {
+        this.clearPendingNativeSelection(nativeSelectionGeneration);
         this.report(error);
         this.restoreSnapshotSelection();
         return;
@@ -606,6 +886,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
         this.model.nodeForRef(nodeRef) !== node ||
         !this.model.isSelectable(nodeRef)
       ) {
+        this.clearPendingNativeSelection(nativeSelectionGeneration);
         this.restoreSnapshotSelection();
         return;
       }
@@ -614,6 +895,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     try {
       selection = this.treeDataSource.select(nodeRef);
     } catch (error) {
+      this.clearPendingNativeSelection(nativeSelectionGeneration);
       this.report(error);
       this.restoreSnapshotSelection();
       return;
@@ -621,7 +903,9 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     void selection.catch(error => {
       if (this.disposed) return;
       this.report(error);
-      this.restoreSnapshotSelection();
+      if (this.clearPendingNativeSelection(nativeSelectionGeneration)) {
+        this.restoreSnapshotSelection();
+      }
     });
   };
 
@@ -781,6 +1065,11 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
   }
 
   private readonly onPointerLeave = (): void => {
+    this.updateHoveredNode(undefined);
+  };
+
+  private readonly onFocusOut = (event: FocusEvent): void => {
+    if (isOwnedFocusTarget(this.element, event.relatedTarget)) return;
     this.updateHoveredNode(undefined);
   };
 
@@ -1226,6 +1515,7 @@ class PinOpDOMModel implements ChromiumDOMModel {
       if (!parent || !parentRow?.node) continue;
       const loadedChildCount = graph.childRows(parentRef).length;
       const totalChildCount = parentRow.node.childCount;
+      if (loadedChildCount === totalChildCount) continue;
       parents.push(Object.freeze({
         parent,
         serviceRowRef: serviceRow.nodeRef,
@@ -1623,6 +1913,20 @@ function detachNode(node: ChromiumDOMNode): void {
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isOwnedFocusTarget(
+  host: HTMLElement,
+  target: EventTarget | null,
+): boolean {
+  if (!target) return false;
+  if (target === host) return true;
+  try {
+    const node = target as Node;
+    return host.contains(node) || Boolean(host.shadowRoot?.contains(node));
+  } catch {
+    return false;
+  }
 }
 
 function isChromiumDOMNode(value: unknown): value is ChromiumDOMNode {

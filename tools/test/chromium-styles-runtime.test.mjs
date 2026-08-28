@@ -244,9 +244,38 @@ test("bootstraps pinned tokens and visible read-only icons", async () => {
   }
   assert.match(uiSource, /pin-op-filter-icon/);
   assert.match(runtimeSource, /pin-op-rule-origin-icon/);
+  assert.match(
+    runtimeSource,
+    /button\.className = ['"]text-button link-style devtools-link pin-op-rule-origin['"]/,
+  );
   assert.match(runtimeSource, /button\.style\.inlineSize = ['"]100px['"]/);
   assert.match(runtimeSource, /button\.style\.maxInlineSize = ['"]100%['"]/);
   assert.match(runtimeSource, /button\.style\.textOverflow = ['"]ellipsis['"]/);
+});
+
+test("uses Chromium-faithful read-only toolbar controls instead of browser-native inputs", async () => {
+  const uiSource = await readFile(new URL(
+    "../../third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/facades/ui.ts",
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(uiSource, /class ReadOnlyToolbarPrompt/);
+  assert.match(uiSource, /className = ['"]toolbar-input-prompt text-prompt['"]/);
+  assert.match(uiSource, /setAttribute\(['"]contenteditable['"], ['"]plaintext-only['"]\)/);
+  assert.match(uiSource, /className = ['"]toolbar-prompt-proxy['"]/);
+  assert.match(uiSource, /className = ['"]toolbar-input toolbar-filter toolbar-input-empty['"]/);
+  assert.match(uiSource, /createReadOnlyIconButton\(['"]cross-circle-filled['"]/);
+  assert.match(uiSource, /createReadOnlyIconButton\(['"]regular-expression['"]/);
+  assert.match(uiSource, /addEventListener\(['"]beforeinput['"]/);
+  assert.match(uiSource, /inputType === ['"]insertParagraph['"]/);
+  assert.match(uiSource, /inputType === ['"]insertLineBreak['"]/);
+  assert.match(uiSource, /singleLineToolbarText/);
+  assert.match(uiSource, /const growFactor = args\[1\]/);
+  assert.match(uiSource, /const shrinkFactor = args\[2\]/);
+  assert.match(uiSource, /this\.element\.style\.flexGrow = String\(growFactor\)/);
+  assert.match(uiSource, /this\.element\.style\.flexShrink = String\(shrinkFactor\)/);
+  assert.doesNotMatch(uiSource, /document\.createElement\(['"]input['"]\)/);
+  assert.doesNotMatch(uiSource, /button\.textContent = ['"]\.\*['"]/);
 });
 
 test("keeps empty transitions focus-safe and renders inherited labels", async () => {
@@ -466,6 +495,72 @@ test("uses pinned Chromium parsing and structured property rendering", async () 
   assert.match(bundled.code, /new ColorRenderer\([^)]*,\s*null\)/);
   assert.match(bundled.code, /longhandProperties:\s*readOnlyLonghandProperties/);
   assert.doesNotMatch(bundled.code, /valueElement\.textContent\s*=\s*property\.value/);
+});
+
+test("preserves exact CSS text and normal read-only Rules presentation", async () => {
+  const bundled = await bundleChromiumReadOnlyStylesRuntime({repositoryRoot});
+  const propertyTree = bundledModule(
+    bundled.code,
+    "front_end/panels/elements/StylePropertyTreeElement.ts",
+  );
+  const stylesPane = bundledModule(
+    bundled.code,
+    "front_end/panels/elements/StylesSidebarPane.ts",
+  );
+
+  assert.match(
+    propertyTree,
+    /this\.valueElement\.textContent\s*!==\s*this\.property\.value/,
+  );
+  assert.match(
+    propertyTree,
+    /this\.valueElement\s*=\s*Renderer\.renderValueElement\(this\.property,\s*null,\s*\[\]\)\.valueElement/,
+  );
+  assert.doesNotMatch(propertyTree, /preservedNativeSwatches/);
+  assert.doesNotMatch(propertyTree, /rawValueElement\.prepend/);
+  assert.doesNotMatch(propertyTree, /this\.valueElement\.replaceWith/);
+  assert.match(
+    stylesPane,
+    /registerRequiredCSS\([\s\S]*stylesSidebarPane_(?:default|Styles)[\s\S]*styles-section\.read-only/,
+  );
+  assert.match(
+    stylesPane,
+    /styles-sidebar-pane-toolbar-container\s*\{\s*padding-inline-end:\s*52px;/,
+  );
+  assert.doesNotMatch(stylesPane, /document\.createElement\(['"]style['"]\)/);
+  assert.match(stylesPane, /font-style:\s*normal/);
+});
+
+test("installs the maximal upstream renderer set supported by read-only facades", async () => {
+  const bundled = await bundleChromiumReadOnlyStylesRuntime({repositoryRoot});
+  const propertyTree = bundledModule(
+    bundled.code,
+    "front_end/panels/elements/StylePropertyTreeElement.ts",
+  );
+  const factoryStart = propertyTree.indexOf("function getPropertyRenderers");
+  const factoryEnd = propertyTree.indexOf("var StylePropertyTreeElement", factoryStart);
+  assert.notEqual(factoryStart, -1);
+  assert.notEqual(factoryEnd, -1);
+  const factory = propertyTree.slice(factoryStart, factoryEnd);
+
+  for (const renderer of [
+    "ColorRenderer", "ContrastColorRenderer", "AngleRenderer", "BezierRenderer",
+    "StringRenderer", "GridTemplateRenderer", "LinearGradientRenderer", "FlexGridRenderer",
+    "EnvFunctionRenderer", "PositionTryRenderer", "LengthRenderer", "CustomFunctionRenderer",
+    "AutoBaseRenderer", "BinOpRenderer", "RelativeColorChannelRenderer",
+  ]) {
+    assert.match(factory, new RegExp(`new ${renderer}\\(`), `${renderer} is missing`);
+  }
+  for (const renderer of [
+    "VariableRenderer", "VariableNameRenderer", "ColorMixRenderer", "URLRenderer",
+    "LinkableNameRenderer", "ShadowRenderer", "CSSWideKeywordRenderer", "LightDarkColorRenderer",
+    "AnchorFunctionRenderer", "PositionAnchorRenderer", "MathFunctionRenderer", "AttributeRenderer",
+  ]) {
+    assert.doesNotMatch(factory, new RegExp(`new ${renderer}\\(`), `${renderer} must use exact fallback`);
+  }
+  assert.match(factory, /new ColorRenderer\([^)]*,\s*null\)/);
+  assert.match(factory, /new LengthRenderer\([^)]*,\s*null\)/);
+  assert.doesNotMatch(factory, /new (?:AngleRenderer|BezierRenderer|FlexGridRenderer)\([^)]*treeElement/);
 });
 
 test("pins Styles overlay bytes to LF across platforms", async () => {

@@ -1018,7 +1018,7 @@ describe("ElementsTreeOutline", () => {
     }
     expect(css).toMatch(/@media\s*\(prefers-color-scheme:\s*dark\)/);
     expect(css).toMatch(/@media\s*\(forced-colors:\s*active\)/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*320px\)/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*440px\)/);
     expect(css).toMatch(
       /\.pin-op-elements-inspector \.pin-op-elements-inspector__tree-row\s*\{[^}]*block-size:\s*20px;[^}]*line-height:\s*16px;/s,
     );
@@ -1267,7 +1267,7 @@ function tokenTexts(root: FakeElement, selector: string): string[] {
 }
 
 function presentation(rows: readonly TreeRowSnapshot[]): TreePresentationSnapshot {
-  return { rows };
+  return { rows, revealVersion: 0 };
 }
 
 function elementNode(

@@ -460,7 +460,8 @@ describe("ElementsInspectorView", () => {
 
     expect(root.children[0]).toBe(domPane);
     expect(root.children[1]).toBe(sidebar);
-    expect(domPane.querySelector('[data-part="pane-title"]')?.textContent).toBe("DOM");
+    expect(domPane.getAttribute("aria-label")).toBe("DOM tree");
+    expect(domPane.querySelector('[data-part="pane-title"]')).toBeNull();
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Rules", "Source"]);
     expect(tabs[0]?.tagName).toBe("BUTTON");
     expect(tabs[0]?.getAttribute("type")).toBe("button");
@@ -489,6 +490,99 @@ describe("ElementsInspectorView", () => {
     expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
     expect(rulesPanel.hidden).toBe(false);
     expect(extensionMount.hidden).toBe(true);
+  });
+
+  it("bridges the operating-system color scheme into Chromium theme classes", () => {
+    const colorScheme = new FakeMediaQueryList(true);
+    const document = new FakeDocument({
+      matchMedia: (query: string): MediaQueryList => {
+        expect(query).toBe("(prefers-color-scheme: dark)");
+        return colorScheme;
+      },
+    });
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+
+    expect(view.element.classList.contains("theme-with-dark-background")).toBe(false);
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
+    expect(colorScheme.listenerCount()).toBe(1);
+
+    colorScheme.publish(false);
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(false);
+
+    view.dispose();
+
+    expect(colorScheme.listenerCount()).toBe(0);
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(false);
+  });
+
+  it("coordinates Chromium theme ownership across inspector instances", () => {
+    const firstScheme = new FakeMediaQueryList(true);
+    const secondScheme = new FakeMediaQueryList(false);
+    const schemes = [firstScheme, secondScheme];
+    const document = new FakeDocument({
+      matchMedia: (): MediaQueryList => required(schemes.shift()),
+    });
+    const firstMount = document.createElement("main") as unknown as FakeElement;
+    const secondMount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(firstMount, secondMount);
+
+    const first = new ElementsInspectorView(
+      document.document,
+      firstMount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+    const second = new ElementsInspectorView(
+      document.document,
+      secondMount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
+
+    first.dispose();
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(false);
+
+    secondScheme.publish(true);
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
+
+    second.dispose();
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(false);
+    expect(firstScheme.listenerCount()).toBe(0);
+    expect(secondScheme.listenerCount()).toBe(0);
+  });
+
+  it("restores a pre-existing Chromium dark theme after disposal", () => {
+    const colorScheme = new FakeMediaQueryList(false);
+    const document = new FakeDocument({
+      matchMedia: (): MediaQueryList => colorScheme,
+    });
+    document.documentElement.classList.add("theme-with-dark-background");
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+
+    const view = new ElementsInspectorView(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
+
+    view.dispose();
+
+    expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
+    expect(colorScheme.listenerCount()).toBe(0);
   });
 
   it("implements a horizontal roving tablist with native keyboard focus", () => {
@@ -533,7 +627,6 @@ describe("ElementsInspectorView", () => {
   it("keeps every ARIA ID reference unique to its inspector instance", () => {
     const document = new FakeDocument();
     const occupiedIds = [
-      "pin-op-elements-dom-title",
       "pin-op-elements-rules-tab",
       "pin-op-elements-rules-panel",
       "pin-op-elements-source-tab",
@@ -565,12 +658,12 @@ describe("ElementsInspectorView", () => {
     expect(new Set(documentIds).size).toBe(documentIds.length);
     for (const root of roots) {
       const domPane = required(root.querySelector('[data-pane="dom"]'));
-      const domTitle = required(root.querySelector('[data-part="pane-title"]'));
       const rulesTab = required(root.querySelector('[role="tab"]'));
       const sourceTab = required(root.querySelectorAll('[role="tab"]')[1]);
       const rulesPanel = required(root.querySelector('[data-pane="rules"]'));
       const sourcePanel = required(root.querySelector('[data-part="sidebar-extension"]'));
-      expectOwnedIdReference(document, root, domPane, "aria-labelledby", domTitle);
+      expect(domPane.getAttribute("aria-label")).toBe("DOM tree");
+      expect(domPane.getAttribute("aria-labelledby")).toBeNull();
       expectOwnedIdReference(document, root, rulesTab, "aria-controls", rulesPanel);
       expectOwnedIdReference(document, root, rulesPanel, "aria-labelledby", rulesTab);
       expectOwnedIdReference(document, root, sourceTab, "aria-controls", sourcePanel);
@@ -800,6 +893,22 @@ describe("ElementsInspectorView", () => {
     expect(selectors.length).toBeGreaterThan(0);
     expect(unscopedSelectors(css)).toEqual([]);
     expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(/);
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\);[^}]*overflow:\s*clip;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__dom-pane,[\s\S]*?\.pin-op-elements-inspector \.pin-op-elements-inspector__sidebar\s*\{[^}]*overflow:\s*clip;/s,
+    );
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__dom-pane\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\);/s,
+    );
+    expect(css).not.toMatch(/pin-op-elements-inspector__pane-title/);
+    expect(css).toMatch(
+      /\.pin-op-elements-inspector \.pin-op-elements-inspector__tree,[\s\S]*?\.pin-op-elements-inspector \.pin-op-elements-inspector__rules\s*\{[^}]*min-block-size:\s*0;[^}]*overflow:\s*auto;/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*440px\)\s*\{[\s\S]*?\.pin-op-elements-inspector\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*grid-template-rows:\s*minmax\(160px,\s*1fr\)\s+minmax\(120px,\s*45%\);/s,
+    );
   });
 
   it("resets the exact Rules origin button without losing keyboard focus", () => {
@@ -845,11 +954,11 @@ describe("ElementsInspectorView", () => {
     expect(css).toMatch(
       /\.pin-op-elements-inspector \.styles-pane\s*\{[^}]*inline-size:\s*100%;/s,
     );
-    expect(css).toMatch(
-      /\.pin-op-elements-inspector \[data-part="chromium-read-only-styles-pane"\]::\-webkit-scrollbar\s*\{[^}]*width:\s*2px;[^}]*height:\s*2px;/s,
+    expect(css).not.toMatch(
+      /\[data-part="chromium-read-only-styles-pane"\]::\-webkit-scrollbar/,
     );
-    expect(css).toMatch(
-      /\.pin-op-elements-inspector \[data-part="chromium-read-only-styles-pane"\]\s*\{[^}]*scrollbar-width:\s*thin;/s,
+    expect(css).not.toMatch(
+      /\[data-part="chromium-read-only-styles-pane"\]\s*\{[^}]*scrollbar-(?:width|color)/s,
     );
     expect(css).not.toMatch(
       /\.pin-op-elements-inspector \.pseudo-state-controls\s*\{[^}]*display:\s*contents;/s,
@@ -1032,6 +1141,39 @@ class StaticRulesDataSource implements RulesDataSource {
   public publish(snapshot: RulesPresentationSnapshot): void {
     this.current = snapshot;
     for (const listener of [...this.listeners]) listener();
+  }
+
+  public listenerCount(): number {
+    return this.listeners.size;
+  }
+}
+
+class FakeMediaQueryList {
+  public matches: boolean;
+  private readonly listeners = new Set<(event: MediaQueryListEvent) => void>();
+
+  public constructor(matches: boolean) {
+    this.matches = matches;
+  }
+
+  public addEventListener(
+    type: "change",
+    listener: (event: MediaQueryListEvent) => void,
+  ): void {
+    if (type === "change") this.listeners.add(listener);
+  }
+
+  public removeEventListener(
+    type: "change",
+    listener: (event: MediaQueryListEvent) => void,
+  ): void {
+    if (type === "change") this.listeners.delete(listener);
+  }
+
+  public publish(matches: boolean): void {
+    this.matches = matches;
+    const event = { matches } as MediaQueryListEvent;
+    for (const listener of [...this.listeners]) listener(event);
   }
 
   public listenerCount(): number {

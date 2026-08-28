@@ -4,14 +4,18 @@ import type {
   TreePresentationSnapshot,
   TreeRowSnapshot,
 } from "../src/contracts.js";
-import { createPinOpElementsTreeAdapter } from
-  "../src/chromium/upstream/PinOpElementsTreeAdapter.js";
+import {
+  type ChromiumDOMNode,
+  createPinOpElementsTreeAdapter,
+} from "../src/chromium/upstream/PinOpElementsTreeAdapter.js";
 import {
   FakeChromiumElement,
   FakeChromiumDOMDocument,
   FakeChromiumDOMNode,
+  FakeChromiumElementsTreeOutline,
   FakeChromiumElementsRuntime,
   FakeChromiumMount,
+  FakeChromiumTreeElement,
 } from "./support/fakeChromiumElementsRuntime.js";
 import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 
@@ -57,7 +61,151 @@ describe("PinOpElementsTreeAdapter", () => {
     expect(outline.selectedDOMNode()).toBe(body);
     expect(required(outline.findTreeElement(html)).expanded).toBe(true);
     expect(mount.children).toEqual([host.element]);
+    expect((host.element as unknown as FakeChromiumElement).classList.contains(
+      "pin-op-elements-inspector__tree",
+    )).toBe(true);
+    expect((host.element as unknown as FakeChromiumElement).getAttribute(
+      "data-part",
+    )).toBe("chromium-read-only-elements-tree");
     expect(backend.listenerCount()).toBe(1);
+  });
+
+  it("replays only new reveal intent or focus for an already selected native node", () => {
+    const runtime = new FakeChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const selectedRows = [
+      row("main", 0, element("MAIN", 0), { selected: true, focused: true }),
+    ];
+    const initial = tree(selectedRows, { revealRef: "main", revealVersion: 1 });
+    const backend = new FakeElementsBackend(initial);
+    createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+    const outline = required(runtime.createdOutline);
+    const callsAfterMount = outline.selectDOMNodeCalls.length;
+    expect(callsAfterMount).toBeGreaterThan(0);
+
+    backend.publish(tree(selectedRows, {
+      revealRef: "main",
+      revealVersion: 1,
+    }));
+    expect(outline.selectDOMNodeCalls).toHaveLength(callsAfterMount);
+
+    backend.publish(tree(selectedRows, {
+      revealRef: "main",
+      revealVersion: 2,
+    }));
+    expect(outline.selectDOMNodeCalls).toHaveLength(callsAfterMount + 1);
+    expect(outline.selectDOMNodeCalls.at(-1)?.focus).toBe(true);
+
+    const unfocusedRows = [
+      row("main", 0, element("MAIN", 0), { selected: true, focused: false }),
+    ];
+    const unfocused = tree(unfocusedRows, {
+      revealRef: "main",
+      revealVersion: 2,
+    });
+    backend.publish(tree(unfocusedRows, {
+      revealRef: "main",
+      revealVersion: 2,
+    }));
+    expect(outline.selectDOMNodeCalls).toHaveLength(callsAfterMount + 2);
+    expect(outline.selectDOMNodeCalls.at(-1)?.focus).toBe(false);
+
+    backend.publish(unfocused);
+    expect(outline.selectDOMNodeCalls).toHaveLength(callsAfterMount + 2);
+  });
+
+  it("finishes an asynchronous native reveal for a deeply selected snapshot node", async () => {
+    const runtime = new AsyncPopulateChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const rows = deepSelectedRows(50);
+    const backend = new FakeElementsBackend(tree(rows, {
+      revealRef: "selected",
+      revealVersion: 1,
+    }));
+
+    createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+    const outline = required(runtime.createdAsyncOutline);
+    const selected = required(required(outline.rootDOMNode).children()?.[0]);
+    let selectedNode = selected;
+    while (selectedNode?.children()?.[0]) {
+      selectedNode = selectedNode.children()?.[0];
+    }
+
+    expect(outline.renderedSelectedDOMNode()).toBeNull();
+    for (let turn = 0; turn < 256 && !outline.renderedSelectedDOMNode(); turn += 1) {
+      await waitForTimerTask();
+    }
+
+    expect(outline.renderedSelectedDOMNode() === selectedNode).toBe(true);
+    expect(outline.populateDepths).toHaveLength(49);
+    expect(backend.selected).toEqual([]);
+    expect(backend.focused).toEqual([]);
+  });
+
+  it("continues a deep native reveal across timer-task population", async () => {
+    const runtime = new AsyncPopulateChromiumElementsRuntime(waitForTimerTask);
+    const mount = new FakeChromiumMount();
+    const backend = new FakeElementsBackend(tree(deepSelectedRows(50), {
+      revealRef: "selected",
+      revealVersion: 1,
+    }));
+
+    createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+    const outline = required(runtime.createdAsyncOutline);
+    const selected = deepestDOMNode(required(outline.rootDOMNode));
+
+    expect(outline.renderedSelectedDOMNode()).toBeNull();
+    for (let turn = 0; turn < 256 && !outline.renderedSelectedDOMNode(); turn += 1) {
+      await waitForTimerTask();
+    }
+
+    expect(outline.renderedSelectedDOMNode() === selected).toBe(true);
+    expect(outline.populateDepths).toHaveLength(49);
+    expect(backend.selected).toEqual([]);
+    expect(backend.focused).toEqual([]);
+  });
+
+  it("rebuilds a pending native population before revealing a newly materialized deep selection", () => {
+    const runtime = new PendingPopulateChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const initialRoot = required(deepSelectedRows(50)[0]);
+    const backend = new DeferredExpandBackend(tree([initialRoot]));
+    const host = createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+    const outline = required(runtime.createdPendingOutline);
+    const initialDocument = required(outline.rootDOMNode);
+
+    expect(backend.expanded).toEqual(["root"]);
+    expect(outline.rootSetCount).toBe(1);
+
+    backend.publish(tree(deepSelectedRows(50), {
+      revealRef: "selected",
+      revealVersion: 1,
+    }));
+
+    const currentDocument = required(outline.rootDOMNode);
+    const selected = deepestDOMNode(currentDocument);
+    expect(currentDocument === initialDocument).toBe(false);
+    expect(outline.rootSetCount).toBe(2);
+    expect(outline.findTreeElement(selected)).not.toBeNull();
+    expect(outline.selectedDOMNode()).toBe(selected);
+
+    host.dispose();
   });
 
   it("forwards user selection and applies source-owned selection without feedback", async () => {
@@ -86,6 +234,51 @@ describe("PinOpElementsTreeAdapter", () => {
     ]));
     expect(outline.selectedDOMNode()?.nodeName()).toBe("ASIDE");
     expect(backend.selected).toEqual(["aside"]);
+  });
+
+  it("keeps a native click selected while focus publishes before its deferred acknowledgement", async () => {
+    const runtime = new FakeChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const initial = tree([
+      row("main", 0, element("MAIN", 0), { selected: true, focused: true }),
+      row("aside", 0, element("ASIDE", 0)),
+    ], { revealRef: "main", revealVersion: 1 });
+    const focused = tree([
+      row("main", 0, element("MAIN", 0), { selected: true }),
+      row("aside", 0, element("ASIDE", 0), { focused: true }),
+    ], { revealRef: "main", revealVersion: 1 });
+    const acknowledged = tree([
+      row("main", 0, element("MAIN", 0)),
+      row("aside", 0, element("ASIDE", 0), { selected: true, focused: true }),
+    ], { revealRef: "aside", revealVersion: 2 });
+    const backend = new DeferredSelectionAcknowledgementBackend(
+      initial,
+      focused,
+      acknowledged,
+    );
+    createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+    const outline = required(runtime.createdOutline);
+    const main = required(outline.rootDOMNode?.children()?.[0]);
+    const aside = required(outline.rootDOMNode?.children()?.[1]);
+    const selectionCallsBeforeClick = outline.selectDOMNodeCalls.length;
+
+    outline.simulateUserSelection(aside);
+
+    expect(backend.focused).toEqual(["aside"]);
+    expect(backend.selected).toEqual(["aside"]);
+    expect(outline.selectedDOMNode()).toBe(aside);
+    expect(outline.selectDOMNodeCalls).toHaveLength(selectionCallsBeforeClick);
+
+    backend.acknowledge();
+    await backend.selectionSettled();
+
+    expect(outline.selectedDOMNode()).toBe(aside);
+    expect(outline.selectDOMNodeCalls.at(-1)?.node).toBe(aside);
+    expect(outline.selectDOMNodeCalls.at(-1)?.node).not.toBe(main);
   });
 
   it("hydrates a lazy branch from TreeDataSource and rejects every mutating agent call", async () => {
@@ -411,6 +604,30 @@ describe("PinOpElementsTreeAdapter", () => {
     expect(outline.rootSetCount).toBe(1);
   });
 
+  it("omits a stale load-more authority when every child is already materialized", () => {
+    const runtime = new FakeChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const backend = new FakeElementsBackend(tree([
+      row("main", 0, element("MAIN", 1), {
+        expandable: true,
+        expanded: true,
+      }),
+      row("selected", 1, element("BUTTON", 0), {
+        parentRef: "main",
+        selected: true,
+      }),
+      loadMoreRow("main", 1),
+    ]));
+
+    createPinOpElementsTreeAdapter(
+      runtime,
+      mount as unknown as HTMLElement,
+      backend,
+    );
+
+    expect(runtime.loadMoreParents).toEqual([]);
+  });
+
   it("restores the source total child count after bounded lazy hydration", async () => {
     const runtime = new FakeChromiumElementsRuntime();
     const mount = new FakeChromiumMount();
@@ -465,8 +682,23 @@ describe("PinOpElementsTreeAdapter", () => {
     model.overlayModel().highlightInOverlay({ node: doctype });
     expect(backend.hovered).toEqual(["main", undefined]);
     model.overlayModel().highlightInOverlay({ node: main });
+    const internalFocusTarget = new FakeChromiumElement();
+    (outline.element as unknown as FakeChromiumElement).append(
+      internalFocusTarget,
+    );
+    const hoverBeforeInternalFocus = [...backend.hovered];
+    (outline.element as unknown as FakeChromiumElement).dispatch("focusout", {
+      relatedTarget: internalFocusTarget,
+    });
+    expect(backend.hovered).toEqual(hoverBeforeInternalFocus);
+
+    (outline.element as unknown as FakeChromiumElement).dispatch("focusout");
+    expect(backend.hovered).toEqual([...hoverBeforeInternalFocus, undefined]);
+
+    model.overlayModel().highlightInOverlay({ node: main });
+    const hoverBeforePointerLeave = [...backend.hovered];
     (outline.element as unknown as FakeChromiumElement).dispatch("pointerleave");
-    expect(backend.hovered).toEqual(["main", undefined, "main", undefined]);
+    expect(backend.hovered).toEqual([...hoverBeforePointerLeave, undefined]);
 
     model.overlayModel().highlightInOverlay({ node: main });
     host.dispose();
@@ -925,6 +1157,171 @@ class PublishingExpandBackend extends FakeElementsBackend {
   }
 }
 
+class AsyncPopulateChromiumElementsRuntime extends FakeChromiumElementsRuntime {
+  public createdAsyncOutline: AsyncPopulateChromiumElementsTreeOutline | undefined;
+
+  public constructor(
+    waitForPopulation: () => Promise<void> = () => Promise.resolve(),
+  ) {
+    super();
+    const runtime = this;
+    Object.defineProperty(this, "ElementsTreeOutline", {
+      configurable: true,
+      value: class extends AsyncPopulateChromiumElementsTreeOutline {
+        public constructor(...arguments_: readonly unknown[]) {
+          super(waitForPopulation, ...arguments_);
+          runtime.createdOutline = this;
+          runtime.createdAsyncOutline = this;
+        }
+      },
+    });
+  }
+}
+
+class AsyncPopulateChromiumElementsTreeOutline extends FakeChromiumElementsTreeOutline {
+  public readonly populateDepths: number[] = [];
+  private readonly asyncTreeElements = new Map<
+    ChromiumDOMNode,
+    AsyncPopulateChromiumTreeElement
+  >();
+  private renderedSelectedNode: ChromiumDOMNode | null = null;
+  private visibleDepth = 0;
+
+  public constructor(
+    private readonly waitForPopulation: () => Promise<void>,
+    ...constructorArguments: readonly unknown[]
+  ) {
+    super(...constructorArguments);
+  }
+
+  public override get rootDOMNode(): ChromiumDOMNode | null {
+    return super.rootDOMNode;
+  }
+
+  public override set rootDOMNode(node: ChromiumDOMNode | null) {
+    super.rootDOMNode = node;
+    this.asyncTreeElements.clear();
+    this.renderedSelectedNode = null;
+    this.visibleDepth = node ? 1 : 0;
+  }
+
+  public override selectDOMNode(
+    node: ChromiumDOMNode | null,
+    focus = false,
+  ): void {
+    super.selectDOMNode(node, focus);
+    this.renderedSelectedNode = node && this.findTreeElement(node) ? node : null;
+  }
+
+  public override findTreeElement(
+    node: ChromiumDOMNode,
+  ): AsyncPopulateChromiumTreeElement | null {
+    const depth = chromiumNodeDepth(node);
+    if (
+      node === this.rootDOMNode ||
+      depth > this.visibleDepth ||
+      !super.findTreeElement(node)
+    ) {
+      return null;
+    }
+    let treeElement = this.asyncTreeElements.get(node);
+    if (!treeElement) {
+      treeElement = new AsyncPopulateChromiumTreeElement(node, async () => {
+        await this.waitForPopulation();
+        this.populateDepths.push(depth);
+        this.visibleDepth = Math.max(this.visibleDepth, depth + 1);
+      });
+      this.asyncTreeElements.set(node, treeElement);
+    }
+    return treeElement;
+  }
+
+  public renderedSelectedDOMNode(): ChromiumDOMNode | null {
+    return this.renderedSelectedNode;
+  }
+}
+
+class AsyncPopulateChromiumTreeElement extends FakeChromiumTreeElement {
+  private populated = false;
+
+  public constructor(
+    node: ChromiumDOMNode,
+    private readonly populate: () => Promise<void>,
+  ) {
+    super(node, () => undefined);
+  }
+
+  public async onpopulate(): Promise<void> {
+    await this.populate();
+  }
+
+  public override expand(): void {
+    const shouldPopulate = !this.expanded && !this.populated;
+    super.expand();
+    if (shouldPopulate) {
+      this.populated = true;
+      void this.onpopulate();
+    }
+  }
+}
+
+class PendingPopulateChromiumElementsRuntime extends FakeChromiumElementsRuntime {
+  public createdPendingOutline: PendingPopulateChromiumElementsTreeOutline | undefined;
+
+  public constructor() {
+    super();
+    const runtime = this;
+    Object.defineProperty(this, "ElementsTreeOutline", {
+      configurable: true,
+      value: class extends PendingPopulateChromiumElementsTreeOutline {
+        public constructor(...arguments_: readonly unknown[]) {
+          super(...arguments_);
+          runtime.createdOutline = this;
+          runtime.createdPendingOutline = this;
+        }
+      },
+    });
+  }
+}
+
+class PendingPopulateChromiumElementsTreeOutline extends FakeChromiumElementsTreeOutline {
+  private pendingRoot: ChromiumDOMNode | undefined;
+  private pendingRootElement: FakeChromiumTreeElement | undefined;
+  private pendingRequest: Promise<void> | undefined;
+
+  public override get rootDOMNode(): ChromiumDOMNode | null {
+    return super.rootDOMNode;
+  }
+
+  public override set rootDOMNode(node: ChromiumDOMNode | null) {
+    super.rootDOMNode = node;
+    this.pendingRoot = undefined;
+    this.pendingRootElement = undefined;
+  }
+
+  public override findTreeElement(
+    node: ChromiumDOMNode,
+  ): FakeChromiumTreeElement | null {
+    const sourceRoot = this.rootDOMNode?.children()?.[0];
+    if (node !== sourceRoot) return super.findTreeElement(node);
+    if (this.pendingRoot !== node || !this.pendingRootElement) {
+      this.pendingRoot = node;
+      this.pendingRootElement = new FakeChromiumTreeElement(node, () => {
+        if (node.children() !== null || this.pendingRequest) return;
+        this.pendingRequest = this.requestChildren(node).catch(() => undefined);
+      });
+    }
+    return this.pendingRootElement;
+  }
+}
+
+class DeferredExpandBackend extends FakeElementsBackend {
+  public override expand(nodeRef: string): Promise<void> {
+    this.expanded.push(nodeRef);
+    return new Promise<void>(() => undefined);
+  }
+}
+
 class SilentPublishingExpandBackend extends PublishingExpandBackend {
   public override subscribe(_listener: () => void): () => void {
     return () => undefined;
@@ -985,6 +1382,41 @@ class RejectingSelectionBackend extends FakeElementsBackend {
   public override async select(nodeRef: string): Promise<void> {
     await super.select(nodeRef);
     throw new Error("selection rejected");
+  }
+}
+
+class DeferredSelectionAcknowledgementBackend extends FakeElementsBackend {
+  private settleSelection: (() => void) | undefined;
+  private readonly pendingSelection = new Promise<void>(resolve => {
+    this.settleSelection = resolve;
+  });
+
+  public constructor(
+    initial: TreePresentationSnapshot,
+    private readonly focusedSnapshot: TreePresentationSnapshot,
+    private readonly acknowledgedSnapshot: TreePresentationSnapshot,
+  ) {
+    super(initial);
+  }
+
+  public override focus(nodeRef: string): void {
+    super.focus(nodeRef);
+    this.publish(this.focusedSnapshot);
+  }
+
+  public override select(nodeRef: string): Promise<void> {
+    this.selected.push(nodeRef);
+    return this.pendingSelection;
+  }
+
+  public acknowledge(): void {
+    this.publish(this.acknowledgedSnapshot);
+    this.settleSelection?.();
+    this.settleSelection = undefined;
+  }
+
+  public selectionSettled(): Promise<void> {
+    return this.pendingSelection;
   }
 }
 
@@ -1106,8 +1538,51 @@ class CrossGenerationDeferredLoadMoreBackend extends FakeElementsBackend {
   }
 }
 
-function tree(rows: readonly TreeRowSnapshot[]): TreePresentationSnapshot {
-  return { rows };
+function chromiumNodeDepth(node: ChromiumDOMNode): number {
+  let depth = 0;
+  for (let parent = node.parentNode; parent; parent = parent.parentNode) depth += 1;
+  return depth;
+}
+
+function deepestDOMNode(root: ChromiumDOMNode): ChromiumDOMNode {
+  let node = root;
+  while (node.children()?.[0]) node = required(node.children()?.[0]);
+  return node;
+}
+
+function waitForTimerTask(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function deepSelectedRows(length: number): readonly TreeRowSnapshot[] {
+  return Array.from({ length }, (_, index) => {
+    const nodeRef = index === 0
+      ? "root"
+      : index === length - 1
+        ? "selected"
+        : `deep-${index}`;
+    const hasChild = index < length - 1;
+    const nodeName = index === 0 ? "HTML" : hasChild ? "DIV" : "BUTTON";
+    return row(nodeRef, index, {
+      ...element(nodeName, hasChild ? 1 : 0),
+      nodeRef,
+    }, {
+      ...(index === 0 ? {} : {
+        parentRef: index === 1 ? "root" : `deep-${index - 1}`,
+      }),
+      expanded: hasChild,
+      expandable: hasChild,
+      selected: !hasChild,
+      focused: !hasChild,
+    });
+  });
+}
+
+function tree(
+  rows: readonly TreeRowSnapshot[],
+  reveal: { readonly revealRef?: string; readonly revealVersion?: number } = {},
+): TreePresentationSnapshot {
+  return { rows, revealVersion: reveal.revealVersion ?? 0, ...reveal };
 }
 
 function row(

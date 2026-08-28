@@ -382,6 +382,7 @@ class RecordingPseudoStateDataSource implements PseudoStateDataSource {
 
 function treeSnapshot(): TreePresentationSnapshot {
   return Object.freeze({
+    revealVersion: 0,
     rows: Object.freeze([Object.freeze({
       type: "node" as const,
       nodeRef: "html",

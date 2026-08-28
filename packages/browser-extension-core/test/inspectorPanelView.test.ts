@@ -45,7 +45,6 @@ describe("InspectorPanelView", () => {
     harness.view.render(linkedModel());
     expect(harness.element("connection-status").value).toBe("Connected");
     expect(harness.element("inspector-workspace").hidden).toBe(false);
-    expect(harness.element("link-onboarding").hidden).toBe(true);
     expect(harness.element("operational-footer").hidden).toBe(false);
     expect(harness.element("inspect-mode").getAttribute("aria-pressed")).toBe("true");
 
@@ -58,7 +57,7 @@ describe("InspectorPanelView", () => {
 
   it("mounts the Elements view with DOM, Rules, and the initially hidden Source panel", () => {
     const harness = createHarness();
-    const backend = new StaticTreeDataSource({ rows: [] });
+    const backend = new StaticTreeDataSource({ rows: [], revealVersion: 0 });
 
     harness.view.mountTree(backend);
 
@@ -74,7 +73,8 @@ describe("InspectorPanelView", () => {
     expect(harness.view.sidebarExtensionMount.hidden).toBe(true);
     expect(harness.view.sidebarExtensionMount.getAttribute("aria-hidden")).toBe("true");
     expect(harness.element("inspector-elements-mount").textContent)
-      .toContain("DOMRulesSource");
+      .toContain("RulesSource");
+    expect(harness.view.domRoot.querySelector('[data-part="pane-title"]')).toBeNull();
     expect(() => harness.view.mountTree(backend)).toThrow(/already mounted/i);
 
     harness.view.dispose();
@@ -103,7 +103,10 @@ describe("InspectorPanelView", () => {
     });
     const harness = createHarness(() => {}, createHost);
 
-    expect(harness.view.mountTree(new StaticTreeDataSource({ rows: [] }))).toBe(host);
+    expect(harness.view.mountTree(new StaticTreeDataSource({
+      rows: [],
+      revealVersion: 0,
+    }))).toBe(host);
     expect(harness.view.domRoot).toBe(host?.domRoot);
     expect(harness.view.rulesRoot).toBe(host?.rulesRoot);
 
@@ -114,16 +117,15 @@ describe("InspectorPanelView", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("keeps browser-local inspection visible beside usable IDE onboarding while unlinked", () => {
+  it("keeps browser-local inspection visible without an onboarding surface while unlinked", () => {
     const harness = createHarness();
-    const backend = new StaticTreeDataSource({ rows: [] });
+    const backend = new StaticTreeDataSource({ rows: [], revealVersion: 0 });
     harness.view.mountTree(backend);
 
     harness.view.render(unlinkedModel());
 
     expect(harness.element("connection-status").value).toBe("Not linked");
     expect(harness.element("link-controls").hidden).toBe(false);
-    expect(harness.element("link-onboarding").hidden).toBe(false);
     expect(harness.element("link-code").disabled).toBe(false);
     expect(harness.element("link-button").disabled).toBe(false);
     expect(harness.element("toolbar-features").hidden).toBe(false);
@@ -133,6 +135,8 @@ describe("InspectorPanelView", () => {
     expect(harness.view.domRoot.getAttribute("data-pane")).toBe("dom");
     expect(harness.view.rulesRoot.getAttribute("data-pane")).toBe("rules");
     expect(harness.view.sidebarExtensionMount.hidden).toBe(true);
+    expect(inspectorHtml).not.toContain('id="link-onboarding"');
+    expect(inspectorHtml).not.toContain('id="panel-branding"');
 
     harness.view.dispose();
   });
@@ -177,7 +181,6 @@ const INSPECTOR_IDS = [
   "ide-highlight-enabled",
   "protocol-mismatch",
   "protocol-mismatch-versions",
-  "link-onboarding",
   "inspector-workspace",
   "inspector-elements-mount",
   "selected-element-summary",

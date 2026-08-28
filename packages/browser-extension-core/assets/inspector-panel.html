@@ -52,18 +52,11 @@
         <span id="protocol-mismatch-versions">Browser protocol: unknown - IDE protocol: unknown</span>
       </section>
 
-      <section id="link-onboarding" class="link-onboarding" aria-labelledby="link-onboarding-title" hidden>
-        <div class="link-onboarding-content">
-          <h1 id="link-onboarding-title">Browser inspection is ready</h1>
-          <p>Select an element now. Link VS Code to enable IDE actions.</p>
-        </div>
-      </section>
-
       <section id="inspector-workspace" class="panel-workspace inspector-workspace" aria-label="Elements workspace">
         <div id="inspector-elements-mount" aria-label="Elements inspector mount"></div>
       </section>
 
-      <footer class="panel-footer">
+      <div id="inspector-status" class="inspector-status" role="group" aria-label="Inspector status">
         <div id="operational-footer" class="operational-footer">
           <output id="selected-element-summary" class="selected-element-summary" hidden></output>
           <div class="resolution-row">
@@ -71,12 +64,7 @@
           </div>
         </div>
         <output id="panel-error" class="panel-error" role="status" hidden></output>
-        <div id="panel-branding" class="panel-branding">
-          <span class="product-name"><img id="footer-logo" src="./pin-op.svg" alt="" width="10" height="10" /> Pin-op</span>
-          <span>by <a href="mailto:info@conus.vision">Volodymyr Moskvin</a></span>
-          <span>(c) 2026 <a href="https://conus.vision">Conus Vision</a></span>
-        </div>
-      </footer>
+      </div>
     </main>
     <script type="module" src="./inspectorPanel.js"></script>
   </body>

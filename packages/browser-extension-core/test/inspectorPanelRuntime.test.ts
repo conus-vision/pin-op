@@ -2,6 +2,7 @@ import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import {
   ElementsInspectorView,
   type PseudoStateDataSource,
+  type SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -652,7 +653,7 @@ describe("startInspectorPanelRuntime", () => {
     );
     expect(invalidated?.tagName).toBe("SPAN");
     expect(invalidated?.textContent).toBe("app.css:17:5");
-    expect(invalidated?.getAttribute("data-source-link-status")).toBe("stale");
+    expect(invalidated?.getAttribute("data-source-link-status")).toBe("unresolved");
 
     runtime.dispose();
   });
@@ -827,7 +828,6 @@ describe("startInspectorPanelRuntime", () => {
       .not.toBeNull();
     expect(harness.element("connection-status").dataset.state).toBe("notLinked");
     expect(harness.element("link-controls").hidden).toBe(false);
-    expect(harness.element("link-onboarding").hidden).toBe(false);
     expect(harness.element("link-code").disabled).toBe(false);
     expect(harness.element("link-button").disabled).toBe(false);
     expect(harness.element("toolbar-features").hidden).toBe(false);
@@ -909,7 +909,6 @@ describe("startInspectorPanelRuntime", () => {
       ?.textContent).toContain(".retained-card");
     expect(harness.document.querySelector('[data-node-ref="retained-card"]'))
       .not.toBeNull();
-    expect(harness.element("link-onboarding").hidden).toBe(false);
     expect(harness.element("inspector-workspace").hidden).toBe(false);
     expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
       .toHaveLength(rootRequestCount);
@@ -1136,6 +1135,49 @@ describe("startInspectorPanelRuntime", () => {
     expect(harness.element("ide-highlight-enabled").disabled).toBe(true);
     expect(harness.document.querySelector('[data-node-ref="blocked"]')).toBeNull();
     expect(harness.element("selected-element-summary").value).toBe("");
+    runtime.dispose();
+  });
+
+  it("leaves unresolved rule origins absent so native Rules can show generated CSS", async () => {
+    const harness = createHarness();
+    let sourceLinkDelegate: SourceLinkDelegate | undefined;
+    const runtime = harness.start({
+      createElementsInspectorView(ownerDocument, mount, source) {
+        const view = new ElementsInspectorView(ownerDocument, mount, source);
+        const bindRulesDataSource = view.bindRulesDataSource.bind(view);
+        view.bindRulesDataSource = (dataSource, delegate, pseudoStateDataSource) => {
+          sourceLinkDelegate = delegate;
+          bindRulesDataSource(dataSource, delegate, pseudoStateDataSource);
+        };
+        return view;
+      },
+    });
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    expect(sourceLinkDelegate?.originFor("rule-card")).toBeUndefined();
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-generated-origin",
+      selectionRevision: 1,
+      expectedRuleRefs: ["rule-card"],
+    });
+    expect(sourceLinkDelegate?.originFor("rule-card")).toBeUndefined();
+
+    port.emitMessage(rulesSources("inspect-generated-origin", 1, "rule-card"));
+    expect(sourceLinkDelegate?.originFor("rule-card")).toMatchObject({
+      label: "card.scss",
+      startLine: 41,
+      clickable: true,
+    });
+
+    port.emitMessage({
+      type: "pin-op.rules.invalidated",
+      inspectMessageId: "inspect-generated-origin",
+      rulesGeneration: 1,
+    });
+    expect(sourceLinkDelegate?.originFor("rule-card")).toBeUndefined();
+
     runtime.dispose();
   });
 
@@ -2411,7 +2453,6 @@ const IDS = [
   "ide-highlight-enabled",
   "protocol-mismatch",
   "protocol-mismatch-versions",
-  "link-onboarding",
   "inspector-workspace",
   "inspector-elements-mount",
   "selected-element-summary",

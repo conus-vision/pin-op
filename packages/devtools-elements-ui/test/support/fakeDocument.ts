@@ -39,6 +39,33 @@ export class FakeElement {
     public readonly tagName: string,
   ) {}
 
+  public get classList(): DOMTokenList {
+    const element = this;
+    const tokens = (): string[] => element.className.split(/\s+/).filter(Boolean);
+    const write = (values: readonly string[]): void => {
+      element.className = [...new Set(values)].join(" ");
+    };
+    return {
+      add(...values: string[]): void {
+        write([...tokens(), ...values]);
+      },
+      contains(value: string): boolean {
+        return tokens().includes(value);
+      },
+      remove(...values: string[]): void {
+        const removed = new Set(values);
+        write(tokens().filter((value) => !removed.has(value)));
+      },
+      toggle(value: string, force?: boolean): boolean {
+        const present = tokens().includes(value);
+        const enabled = force ?? !present;
+        if (enabled && !present) write([...tokens(), value]);
+        if (!enabled && present) write(tokens().filter((token) => token !== value));
+        return enabled;
+      },
+    } as DOMTokenList;
+  }
+
   public get textContent(): string {
     return this.ownText + this.children.map((child) => child.textContent).join("");
   }
@@ -196,6 +223,7 @@ export class FakeElement {
 }
 
 export class FakeDocument {
+  public readonly documentElement: FakeElement;
   public readonly body: FakeElement;
   public readonly document: Document;
   private readonly elements = new Set<FakeElement>();
@@ -205,12 +233,16 @@ export class FakeDocument {
   private focusedElement: FakeElement | null = null;
   public beforeFocus: ((element: FakeElement) => void) | undefined;
 
-  public constructor() {
+  public constructor(defaultView: Pick<Window, "matchMedia"> | null = null) {
+    this.documentElement = new FakeElement(this, "HTML");
     this.body = new FakeElement(this, "BODY");
+    this.elements.add(this.documentElement);
     this.elements.add(this.body);
     const owner = this;
     this.document = {
+      documentElement: this.documentElement,
       body: this.body,
+      defaultView: defaultView as Window | null,
       createElement: (tagName: string) => this.createElement(tagName),
       createTextNode: (data: string) => this.createTextNode(data),
       getElementById: (id: string) => (
