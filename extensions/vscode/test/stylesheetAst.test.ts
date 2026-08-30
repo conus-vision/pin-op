@@ -168,7 +168,7 @@ describe("stylesheet fingerprint lookup", () => {
     );
   });
 
-  it("fails closed for important and non-important duplicate properties", () => {
+  it("reads a rule that declares one property twice the way the browser does", () => {
     const parsed = stylesheet(
       ".card { color: red; color: blue !important; }",
     );
@@ -177,8 +177,18 @@ describe("stylesheet fingerprint lookup", () => {
       important: true,
     });
 
+    // The browser keeps the important declaration and reports only that one.
     expect(findRulesByFingerprint(parsed, normal)).toEqual([]);
-    expect(findRulesByFingerprint(parsed, important)).toEqual([]);
+    expect(findRulesByFingerprint(parsed, important)).toHaveLength(1);
+  });
+
+  it("keeps the last of two ordinary declarations of one property", () => {
+    const parsed = stylesheet(".card { width: 100%; width: 90%; }");
+
+    expect(findRulesByFingerprint(parsed, fact(".card", "width", "100%")))
+      .toEqual([]);
+    expect(findRulesByFingerprint(parsed, fact(".card", "width", "90%")))
+      .toHaveLength(1);
   });
 
   it("does not use selector-only evidence", () => {

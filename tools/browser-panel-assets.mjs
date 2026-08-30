@@ -5,7 +5,6 @@ const CORE_ASSET_ROOT = "../../packages/browser-extension-core/assets";
 const ELEMENTS_ASSET_ROOT = "../../packages/devtools-elements-ui/assets";
 
 const ASSETS = Object.freeze([
-  Object.freeze({ path: "panel.html", source: `${CORE_ASSET_ROOT}/panel.html` }),
   Object.freeze({
     path: "inspector-panel.html",
     source: `${CORE_ASSET_ROOT}/inspector-panel.html`,

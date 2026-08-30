@@ -546,12 +546,14 @@ describe("PageOverlay", () => {
   );
 
   it.each([
-    ["transform", { transform: "matrix(1, 0, 0, 1, 10, 0)" }],
-    ["translate", { translate: "1px" }],
     ["rotate", { rotate: "1deg" }],
-    ["scale", { scale: "2" }],
     ["zoom", { zoom: "2" }],
-    ["perspective", { perspective: "10px" }],
+    ["mirroring transform", { transform: "matrix(-1, 0, 0, 1, 0, 0)" }],
+    ["turning transform", { transform: "matrix(1, 0.5, 0, 1, 0, 0)" }],
+    ["3d transform", {
+      transform: "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -0.001, 0, 0, 0, 1)",
+    }],
+    ["unreadable transform", { transform: "rotate(1deg)" }],
     ["offset path", { offsetPath: "path('M 0 0 L 1 1')" }],
     ["motion path", { motionPath: "path('M 0 0 L 1 1')" }],
   ] as const)("fails closed before rect reads for target %s", (_name, style) => {
@@ -571,11 +573,122 @@ describe("PageOverlay", () => {
     expect(environment.document.defaultView.listenerCount("scroll")).toBe(0);
   });
 
-  it("fails closed before rect reads for a transformed target ancestor", () => {
+  it.each([
+    ["moved by a transform", { transform: "matrix(1, 0, 0, 1, 10, 0)" }],
+    ["moved by translate", { translate: "1px 2px" }],
+    ["moved in three dimensions", {
+      transform: "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1)",
+    }],
+    ["given a perspective", { perspective: "1000px" }],
+  ] as const)("still draws a box that is only %s", (_name, style) => {
+    const environment = createEnvironment();
+    const element = environment.createElement({
+      rects: [{ x: 5, y: 6, width: 70, height: 80 }],
+      style,
+    });
+    const overlay = environment.createOverlay();
+
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    // A viewport rect already carries the move, and nothing turned or resized
+    // the box, so its own widths still describe it.
+    expect(readAllBoxGeometry(environment.document, "border")).toEqual([{
+      left: "5px",
+      top: "6px",
+      width: "70px",
+      height: "80px",
+    }]);
+  });
+
+  it("still draws a box inside an ancestor that only sets a perspective", () => {
     const environment = createEnvironment();
     const ancestor = environment.createElement({
       rects: [],
-      style: { transform: "matrix(1, 0, 0, 1, 10, 0)" },
+      style: { perspective: "1000px" },
+    });
+    const element = environment.createElement({
+      rects: [{ x: 5, y: 6, width: 70, height: 80 }],
+      parentElement: ancestor,
+    });
+    const overlay = environment.createOverlay();
+
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    expect(readAllBoxGeometry(environment.document, "border")).toEqual([{
+      left: "5px",
+      top: "6px",
+      width: "70px",
+      height: "80px",
+    }]);
+  });
+
+  it("draws the widths a scaled box is painted with", () => {
+    const environment = createEnvironment();
+    const element = environment.createElement({
+      // A rect always reports the painted size, so the box arrives scaled.
+      rects: [{ x: 100, y: 80, width: 400, height: 200 }],
+      style: {
+        transform: "matrix(2, 0, 0, 2, 0, 0)",
+        marginTop: "10px",
+        marginLeft: "40px",
+        marginRight: "20px",
+        marginBottom: "30px",
+        paddingTop: "3px",
+        paddingRight: "5px",
+        paddingBottom: "7px",
+        paddingLeft: "9px",
+      },
+    });
+    const overlay = environment.createOverlay();
+
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    expect(readBoxGeometry(environment.document, "margin")).toEqual({
+      left: "20px",
+      top: "60px",
+      width: "520px",
+      height: "280px",
+    });
+    expect(readBoxGeometry(environment.document, "content")).toEqual({
+      left: "118px",
+      top: "86px",
+      width: "372px",
+      height: "180px",
+    });
+  });
+
+  it("scales a box by what its ancestors scale it by", () => {
+    const environment = createEnvironment();
+    const ancestor = environment.createElement({
+      rects: [],
+      style: { scale: "2" },
+    });
+    const element = environment.createElement({
+      rects: [{ x: 0, y: 0, width: 100, height: 100 }],
+      parentElement: ancestor,
+      style: { paddingLeft: "5px", paddingTop: "5px" },
+    });
+    const overlay = environment.createOverlay();
+
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    expect(readBoxGeometry(environment.document, "content")).toEqual({
+      left: "10px",
+      top: "10px",
+      width: "90px",
+      height: "90px",
+    });
+  });
+
+  it("fails closed before rect reads for a turned target ancestor", () => {
+    const environment = createEnvironment();
+    const ancestor = environment.createElement({
+      rects: [],
+      style: { transform: "matrix(1, 0.5, 0, 1, 0, 0)" },
     });
     const element = environment.createElement({
       rects: [{ x: 5, y: 6, width: 70, height: 80 }],
@@ -890,6 +1003,36 @@ describe("PageOverlay", () => {
     )).toEqual([host]);
     expect(overlay.ownsNode(shadowRoot as unknown as Node)).toBe(true);
     expect(overlay.ownsNode(root as unknown as Node)).toBe(true);
+  });
+
+  it("clears an overlay host a previous content session abandoned", () => {
+    const environment = createEnvironment();
+    const abandoned = environment.document.createElement("div") as unknown as {
+      setAttribute(name: string, value: string): void;
+    };
+    abandoned.setAttribute("data-pin-op-page-overlay", "");
+    environment.document.documentElement.append(abandoned as never);
+
+    const overlay = environment.createOverlay();
+    const element = environment.createElement({
+      boundingRect: { x: 1, y: 2, width: 10, height: 10 },
+      rects: [{ x: 1, y: 2, width: 10, height: 10 }],
+    });
+    overlay.show(element, environment.identity);
+    environment.animation.flush();
+
+    const hosts = environment.document.documentElement.childNodes.filter(
+      (child) => (child as unknown as {
+        getAttribute(name: string): string | null;
+      }).getAttribute?.("data-pin-op-page-overlay") !== null &&
+        (child as unknown as {
+          getAttribute(name: string): string | null;
+        }).getAttribute?.("data-pin-op-page-overlay") !== undefined,
+    );
+    // The page is left with one overlay host, and it is the live one.
+    expect(hosts).toHaveLength(1);
+    expect(hosts[0]).not.toBe(abandoned);
+    expect(overlay.ownsNode(hosts[0] as unknown as Node)).toBe(true);
   });
 
   it("restores a host adopted into another document without duplicate active hosts", () => {
@@ -1760,6 +1903,15 @@ class FakeDocument {
     const element = new FakeElement(tagName, this);
     this.createdElements.push(element);
     return element as unknown as HTMLElement;
+  }
+
+  /** Enough of a selector engine for the overlay's own marker lookup. */
+  public querySelectorAll(selector: string): Element[] {
+    const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
+    if (!attribute) return [];
+    return this.documentElement.childNodes.filter((child) => (
+      child instanceof FakeElement && child.getAttribute(attribute) !== null
+    )) as unknown as Element[];
   }
 
   public setPageImportantStyle(property: string, value: string): void {

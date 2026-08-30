@@ -15,8 +15,8 @@ browser core. The panel owns:
 - one toolbar row with the visual page picker, tab-local **Auto Refresh** and
   **IDE Highlight** controls, and the unchanged connection controls/code;
 - a virtualized, lazy DOM tree;
-- on the legacy rollback page, a responsive Source pane containing bounded
-  active-document excerpts for the Selected element and its immediate Parent;
+- a Source tab containing bounded active-document excerpts for the Selected
+  element and its immediate Parent;
 - the selected-element summary, exact IDE resolution footer, and selected-match
   source navigation controls.
 
@@ -46,6 +46,15 @@ Protocol backend, discover targets, or ship browser branding.
 `DomTreeProvider`, page inspection, overlay, selection, refresh, source
 authority, pseudo preview, and bridge routing remain Pin-op-owned.
 
+While an Inspector is mounted the panel declares Chromium's own root theme
+classes - the color scheme, its untinted `baseline-grayscale` surfaces, and one
+`platform-*` font class - and restores whatever the host document declared on
+disposal. Pin-op's read-only `:hov` control is mounted inside Chromium's Styles
+toolbar row and toolbar pane rather than above the rule list, and every upstream
+adorner is reported disabled because Pin-op ships neither adorner data nor the
+capabilities those badges reveal. Below 680 CSS pixels the DOM pane stacks above
+Rules, the same width at which Chromium's Elements panel moves its sidebar.
+
 The checked-in [native runtime manifest](../third_party/chromium-devtools-frontend/RUNTIME.json),
 DOM and Rules overlay manifests, [BSD license](../third_party/chromium-devtools-frontend/LICENSE),
 [reference-source manifest](../third_party/chromium-devtools-frontend/UPSTREAM.json),
@@ -59,17 +68,12 @@ The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,
 and document-type names with bounded public and system IDs. Document types and
 top-level comments are bounded display-only auxiliary rows; text and comment
-children are likewise non-selectable and have no stable locator. The legacy
-rollback renderer alone retains the temporary preformatted `label` field for
-its element-only presentation; that label is not the Inspector renderer's data
-authority.
+children are likewise non-selectable and have no stable locator.
 
-Chrome and Firefox copy the same two panel HTML entrypoints, core stylesheet,
+Chrome and Firefox copy the same panel HTML entrypoint, core stylesheet,
 scoped `devtools-elements.css`, logo, and icons through one deterministic asset
-assembler. Both bundles select `inspectorPanel.js` by default and emit the
-non-default legacy `panel.js` rollback path. The legacy page is retained for
-exactly one published rollback release and is selected only by an explicit
-local `PIN_OP_PANEL_VARIANT=legacy` rollback build. Release verification
+assembler. Both bundles ship exactly one panel page and one `inspectorPanel.js`
+bootstrap; Pin-op packages no second Inspector implementation. Release verification
 requires byte-identical derived CSS and Chromium notice inventory across
 browsers. It also requires the native runtime JavaScript itself to be
 byte-identical.
@@ -161,12 +165,12 @@ version, source map, or editor command.
 Each local VS Code window starts its bridge automatically. The status bar shows
 the managed port and two-digit PIN and copies the ungrouped code on click.
 
-The presenter retains the latest valid selection and resolves legacy Source and
-decorations against only the active text document. Passive inspection never
+The presenter retains the latest valid selection and resolves Source excerpts
+and decorations against only the active text document. Passive inspection never
 switches editors. It owns Selected and Parent decorations, validates and
 deduplicates plugin ranges, updates Applicable Sources, creates bounded Source
 excerpts, and sends protocol-v7 resolution and source-presentation outcomes back
-to the originating panel. Clicking a legacy Source excerpt returns only its
+to the originating panel. Clicking a Source excerpt returns only its
 opaque match ID; the IDE validates that private authority before revealing the
 exact range in the active document.
 
@@ -245,6 +249,53 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
    authority and updates the tree ancestor path.
 5. Only then does the browser collect and publish bounded selected/immediate-
    parent facts as a protocol-v7 inspect message.
+
+### Run Chromium's UI On Gecko
+
+The DOM Tree and Rules panes are Chromium's own, so they assume Blink's DOM.
+Where Gecko lacks a Blink-only API the shared runtime installs a narrow,
+reviewed shim before any upstream code runs, rather than forking the vendored
+source. Today that is `ShadowRoot.getSelection()`: Gecko does not implement it,
+Chromium's `Node.hasSelection()` is the first line of every tree click handler,
+and without the shim a missing method threw the whole interaction away -- rows
+would not open. Gecko does not scope selection to a shadow root, so the
+document's selection is the same answer Blink gives.
+
+It also assumes it owns the whole surface: a selected row's band is painted
+behind the row at `z-index: -1`, which only shows through while every ancestor
+background is transparent. Pin-op paints its own panel surface, so each row is
+given its own stacking context and the band stays inside it.
+
+Chromium's tree also assumes it owns the selection: `selectDOMNode()` re-centres
+the row it selects, every time. Pin-op routes every selection through it, so a
+row the reader could already see is selected in place and the scroll position is
+left alone; only a row that is off screen is scrolled into view.
+
+### Survive A Suspended Background
+
+Browsers stop an idle extension background whenever they like: Chrome unloads
+the MV3 service worker, Firefox unloads the event page. Everything the panel was
+showing belongs to a content session that dies with it, so the panel treats the
+dropped port as a blip rather than an ending.
+
+1. The panel freezes the tree on what it last showed and keeps the stable
+   locators for the selected and expanded rows.
+2. The reconnect wakes a fresh background, which starts a new inspection session
+   and injects the content script again.
+3. The panel restores the frozen selection from its locators against the new
+   content session, so the same element, tree and Rules come back.
+4. A read that reaches the background before its content lease has attached
+   waits for that lease instead of failing closed -- but only until the panel has
+   held one. After that a read with no lease has crossed a session boundary the
+   panel was told about, and it still fails closed.
+5. A restore that still outruns the content session keeps the frozen tree and
+   retries on the next window state, a bounded number of times; after that the
+   panel reloads the tree rather than staying frozen on stale rows.
+
+Matched rules are handed to the UI in cascade order -- the winning rule first,
+low-weight rules such as `*` and `:root` last -- which is how an inspector is
+read. Only the presentation is ordered; the cascade classification itself runs
+on document order and keeps its own source ordering.
 
 ### Resolve And Present
 

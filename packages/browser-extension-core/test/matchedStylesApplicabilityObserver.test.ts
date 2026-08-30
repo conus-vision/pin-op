@@ -157,7 +157,7 @@ describe("MatchedStylesApplicabilityObserver", () => {
     expect(document.view.dispatchEvent).not.toHaveBeenCalled();
   });
 
-  it("filters runtime-owned attribute and child-list mutation records", async () => {
+  it("filters runtime-owned records and reports only real applicability changes", async () => {
     const document = documentHarness(eventTargetHarness());
     const mutation = mutationHarness();
     const changes: unknown[] = [];
@@ -171,7 +171,8 @@ describe("MatchedStylesApplicabilityObserver", () => {
       ),
       onRuntimeArtifactMutationBatchComplete: finishRuntimeMutationBatch,
     });
-    observer.setSelection(matchable(document, new Set([".card"])), [
+    const active = new Set([".card"]);
+    observer.setSelection(matchable(document, active), [
       candidate("card", document, ".card"),
     ]);
     expect(finishRuntimeMutationBatch).toHaveBeenCalledOnce();
@@ -190,8 +191,16 @@ describe("MatchedStylesApplicabilityObserver", () => {
       { type: "attributes", attributeName: "class", runtime: false },
     ]);
     await Promise.resolve();
-    expect(changes).toEqual([{ reason: "observable-signal" }]);
+    expect(changes).toEqual([]);
     expect(finishRuntimeMutationBatch).toHaveBeenCalledTimes(2);
+
+    active.delete(".card");
+    mutation.emit([
+      { type: "attributes", attributeName: "class", runtime: false },
+    ]);
+    await Promise.resolve();
+    expect(changes).toEqual([{ reason: "applicability-change" }]);
+    expect(finishRuntimeMutationBatch).toHaveBeenCalledTimes(3);
   });
 
   it("fails open without scanning an oversized runtime mutation batch", async () => {

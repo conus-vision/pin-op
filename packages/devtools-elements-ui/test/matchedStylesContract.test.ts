@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type {
+  CreateElementsRulesRenderer,
+  CreateElementsTreeRenderer,
   MatchedStylesSnapshot,
   RulesDataSource,
   RulesPresentationSnapshot,
 } from "../src/contracts.js";
-import { ElementsInspectorView } from "../src/elementsInspectorView.js";
+import { ElementsInspectorShell } from "../src/elementsInspectorShell.js";
 import { elementsSession } from "./fixtures/elementsSession.js";
 import { FakeDocument, type FakeElement } from "./support/fakeDocument.js";
 import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
@@ -74,21 +76,18 @@ describe("matched styles contract", () => {
     const matchedStyles = readyMatchedStyles();
     const rules = new FakeRulesDataSource({ state: "empty" });
     const harness = createHarness(rules);
-    const selectedRow = required(
-      harness.mount.querySelector('[data-node-ref="body"]'),
-    );
 
-    expectRulesState(harness, "empty", selectedRow);
+    expectRulesState(harness, "empty");
 
     rules.publish({ state: "loading" });
-    expectRulesState(harness, "loading", selectedRow);
+    expectRulesState(harness, "loading");
     expect(harness.view.rulesRoot.getAttribute("aria-busy")).toBe("true");
 
     rules.publish({ state: "ready", matchedStyles });
-    expectRulesState(harness, "ready", selectedRow);
+    expectRulesState(harness, "ready");
 
     rules.publish({ state: "partial", matchedStyles });
-    expectRulesState(harness, "partial", selectedRow);
+    expectRulesState(harness, "partial");
 
     rules.publish({
       state: "error",
@@ -101,7 +100,7 @@ describe("matched styles contract", () => {
         }),
       ]),
     });
-    expectRulesState(harness, "error", selectedRow);
+    expectRulesState(harness, "error");
     expect(harness.view.rulesRoot.textContent).toContain(
       "Styles unavailable <img src=x onerror=alert(1)>",
     );
@@ -122,11 +121,15 @@ describe("matched styles contract", () => {
     document.body.append(mount);
     const treeBackend = new FakeElementsBackend(elementsSession.tree);
 
-    expect(() => new ElementsInspectorView(
+    expect(() => new ElementsInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       treeBackend,
       rules,
+      undefined,
+      undefined,
+      createTestTreeRenderer,
+      createTestRulesRenderer,
     )).toThrow(snapshotError);
 
     expect(rules.listenerCount()).toBe(0);
@@ -193,11 +196,15 @@ function createHarness(rules: RulesDataSource) {
   const mount = document.createElement("main") as unknown as FakeElement;
   document.body.append(mount);
   const treeBackend = new FakeElementsBackend(elementsSession.tree);
-  const view = new ElementsInspectorView(
+  const view = new ElementsInspectorShell(
     document.document,
     mount as unknown as HTMLElement,
     treeBackend,
     rules,
+    undefined,
+    undefined,
+    createTestTreeRenderer,
+    createTestRulesRenderer,
   );
   return { document, mount, rules, treeBackend, view };
 }
@@ -205,16 +212,43 @@ function createHarness(rules: RulesDataSource) {
 function expectRulesState(
   harness: ReturnType<typeof createHarness>,
   state: RulesPresentationSnapshot["state"],
-  selectedRow: FakeElement,
 ): void {
   expect(harness.view.rulesRoot.getAttribute("data-state")).toBe(state);
   expect(harness.view.rulesRoot.getAttribute("aria-busy")).toBe(
     state === "loading" ? "true" : "false",
   );
-  expect(harness.mount.querySelector('[data-node-ref="body"]')).toBe(selectedRow);
-  expect(selectedRow.getAttribute("aria-selected")).toBe("true");
-  expect(selectedRow.getAttribute("data-selected")).toBe("true");
 }
+
+const createTestTreeRenderer: CreateElementsTreeRenderer = (
+  document,
+  mount,
+  treeDataSource,
+) => {
+  const host = document.createElement("div");
+  mount.append(host);
+  const unsubscribe = treeDataSource.subscribe(() => {});
+  return {
+    dispose(): void {
+      unsubscribe();
+      host.remove();
+    },
+  };
+};
+
+const createTestRulesRenderer: CreateElementsRulesRenderer = (
+  document,
+  mount,
+) => {
+  const host = document.createElement("div");
+  mount.append(host);
+  return {
+    render(): void {},
+    clear(): void {},
+    dispose(): void {
+      host.remove();
+    },
+  };
+};
 
 function readyMatchedStyles(): MatchedStylesSnapshot {
   const presentation = elementsSession.rules as unknown as RulesPresentationSnapshot;

@@ -71,8 +71,6 @@ export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "dist/inspector-panel.html",
   "dist/inspectorPanel.js",
   "dist/panel.css",
-  "dist/panel.html",
-  "dist/panel.js",
   "dist/pin-op.svg",
   "dist/runtime-metadata.json",
 ]);
@@ -232,12 +230,10 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "packages/devtools-elements-ui/src/chromium/upstream/PinOpStylesSidebarAdapter.ts",
   "packages/devtools-elements-ui/src/contracts.ts",
   "packages/devtools-elements-ui/src/elementsInspectorShell.ts",
-  "packages/devtools-elements-ui/src/elementsInspectorView.ts",
   "packages/devtools-elements-ui/src/index.ts",
   "packages/devtools-elements-ui/src/pseudoStateController.ts",
   "packages/devtools-elements-ui/src/upstreamRuntime.ts",
-  "packages/devtools-elements-ui/test/elementsInspectorView.test.ts",
-  "packages/devtools-elements-ui/test/elementsTreeOutline.test.ts",
+  "packages/devtools-elements-ui/test/elementsInspectorShell.test.ts",
   "packages/devtools-elements-ui/test/fixtures/elementsSession.ts",
   "packages/devtools-elements-ui/test/matchedStylesContract.test.ts",
   "packages/devtools-elements-ui/test/matchedStylesContract.types.ts",
@@ -245,13 +241,11 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "packages/devtools-elements-ui/test/public-export.mjs",
   "packages/devtools-elements-ui/test/support/fakeDocument.ts",
   "packages/devtools-elements-ui/test/support/fakeElementsBackend.ts",
-  "packages/devtools-elements-ui/test/stylesSidebarPane.test.ts",
   "packages/devtools-elements-ui/test/types.tsconfig.json",
   "packages/devtools-elements-ui/tsconfig.json",
   "packages/browser-extension-core/package.json",
   "packages/browser-extension-core/assets/inspector-panel.html",
   "packages/browser-extension-core/assets/panel.css",
-  "packages/browser-extension-core/assets/panel.html",
   "packages/browser-extension-core/assets/pin-op.svg",
   "packages/browser-extension-core/assets/icons/pin-op-16.png",
   "packages/browser-extension-core/assets/icons/pin-op-32.png",
@@ -292,7 +286,6 @@ const FIREFOX_INSPECTOR_SOURCE_INPUTS = Object.freeze([
   "extensions/firefox/src/devtools.html",
   "extensions/firefox/src/devtools.ts",
   "extensions/firefox/src/inspectorPanel.ts",
-  "extensions/firefox/src/panel.ts",
   "extensions/firefox/test/adapter.test.ts",
   "extensions/firefox/test/manifest.test.ts",
   "extensions/firefox/test/panelAssets.test.ts",
@@ -302,65 +295,44 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
   {
     upstreamPath: "front_end/panels/elements/ElementsTreeOutline.ts",
     sha256: "36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256: "13a888ecc9cf4faec200bcb6a0149c0de7ae726a7406c95b94201f5b69f75d40",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/ElementsTreeElement.ts",
     sha256: "40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256: "882883d5a5231eff4d7aed88e58e5680690ef2a29948edd0e71926aecbe2eb64",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylesSidebarPane.ts",
     sha256: "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "43c30720702c295746c948b7eddf384e86eb36e6ef4a2cb82c1f39969fe3083e",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertiesSection.ts",
     sha256: "bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "2a23013161ed18920997793023f25a8fca5947bc036fcdf9310cf5da47e0c91f",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertyTreeElement.ts",
     sha256: "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "0fcb976c04ddc107ab372497fd2e1d816f9407500a4653ccc1b36028627bb1e9",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/PropertyRenderer.ts",
     sha256: "b13d5d5edede2f5dc0b8cb7e7d974f3b5cf69afd41e81c320f78466aa9e7464e",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "a74c190d654652966d209ddeb5d763fdc3c5e29bbc4e77468d40c8ece39d4759",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertyUtils.ts",
     sha256: "f4fc4e139fe9fac7ef2632f0ae0042de18e01ec00d3b60159d6827edc0e0ee4b",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256: "fa1652b5e6ec341854d8e745f20465f9ec20a0bdfadcee70aaccfd978b19528f",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/elementsTreeOutline.css",
@@ -368,7 +340,8 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+      localSha256:
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
   {
@@ -377,7 +350,8 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+      localSha256:
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
   {
@@ -386,7 +360,8 @@ const CHROMIUM_SOURCE_REPRODUCTION_INVENTORY = Object.freeze([
     derivedTargets: [{
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
-      localSha256: "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+      localSha256:
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
 ]);
@@ -768,31 +743,22 @@ export function validateBrowserArchive(archive, filename, browser) {
   for (const [size, path] of Object.entries(BROWSER_ICONS)) {
     assertPngDimensions(archive.files.get(path), `${filename} ${path}`, Number(size));
   }
-  verifyBrowserPanelIdentity(archive.files.get("dist/panel.html"), filename);
+  verifyBrowserPanelIdentity(
+    archive.files.get("dist/inspector-panel.html"),
+    filename,
+  );
   assertChromiumDerivedNotices(archive, filename);
   assertBrowserPackageRuntimeContract(archive, {
     artifactLabel: filename,
     metadataLabel: `${filename} runtime metadata`,
-    panelVariant: "inspector",
     platform: browser,
   });
 }
 
 function verifyBrowserPanelIdentity(panelBuffer, filename) {
   const panel = panelBuffer.toString("utf8");
-  if (!panel.includes('src="./pin-op.svg"')) {
-    throw new Error(`${filename} panel must reference ./pin-op.svg`);
-  }
-  if (
-    !panel.includes("<title>Pin-op</title>") ||
-    !panel.includes('id="panel-branding"') ||
-    !/<span\b[^>]*class="product-name"[^>]*>[\s\S]*?\bPin-op<\/span>/.test(
-      panel,
-    )
-  ) {
-    throw new Error(
-      `${filename} panel must present Pin-op in its title and branded footer`,
-    );
+  if (!panel.includes("<title>Pin-op</title>")) {
+    throw new Error(`${filename} panel must present Pin-op in its title`);
   }
 }
 
@@ -1472,7 +1438,10 @@ export function assertFirefoxSourceReproductionInputs(files, label) {
       }
       embeddedNotices.set(notice.sha256, normalizedText);
     }
-    if (!Array.isArray(file.derivedTargets) || file.derivedTargets.length === 0) {
+    if (
+      !Array.isArray(file.derivedTargets) ||
+      (file.derivedTargets.length === 0 && file.role !== "native-runtime-input")
+    ) {
       throw new Error(`${label} source ${file.upstreamPath} has no derived target`);
     }
 

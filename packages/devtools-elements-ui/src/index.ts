@@ -1,4 +1,4 @@
-export { ElementsInspectorView } from "./elementsInspectorView.js";
+export { ElementsInspectorShell } from "./elementsInspectorShell.js";
 export type {
   CreateElementsRulesRenderer,
   CreateElementsTreeRenderer,

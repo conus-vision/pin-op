@@ -37,10 +37,7 @@ rules are unavailable and reported as PARTIAL. Cross-origin frames are
 unavailable, and closed shadow roots are unavailable. Unsupported
 `:not(:hover)` is PARTIAL; unsupported results are not guessed.
 
-The packaged legacy rollback `panel.html` remains for exactly one published
-rollback release. Remove it only after support reports or manual field reports
-confirm no blocking regression. The default Inspector has no visible Source
-tab; Source remains active-document-only in the explicit rollback panel.
+The Inspector's Source tab remains active-document-only.
 
 The connection uses a loopback-only WebSocket and explicit browser-window
 linking, with no remote Pin-op service. Firefox 142 or newer and the matching
@@ -82,10 +79,7 @@ rules are unavailable and reported as PARTIAL. Cross-origin frames are
 unavailable, and closed shadow roots are unavailable. Unsupported
 `:not(:hover)` is PARTIAL; unsupported results are not guessed.
 
-The packaged legacy rollback `panel.html` remains for exactly one published
-rollback release. Remove it only after support reports or manual field reports
-confirm no blocking regression. The default Inspector has no visible Source
-tab; Source remains active-document-only in the explicit rollback panel.
+The Inspector's Source tab remains active-document-only.
 
 The connection uses a loopback-only WebSocket and explicit browser-window
 linking, with no remote Pin-op service. Chrome/Chromium 116 or newer and the

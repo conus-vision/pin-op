@@ -1,8 +1,27 @@
 type FakeListener = (event: FakeEvent) => void;
 
+function createFakeStyle(): CSSStyleDeclaration {
+  const properties = new Map<string, string>();
+  return {
+    getPropertyValue: (name: string): string => properties.get(name) ?? "",
+    setProperty: (name: string, value: string): void => {
+      properties.set(name, value);
+    },
+    removeProperty: (name: string): string => {
+      const previous = properties.get(name) ?? "";
+      properties.delete(name);
+      return previous;
+    },
+  } as unknown as CSSStyleDeclaration;
+}
+
 export class FakeEvent {
   public defaultPrevented = false;
   public propagationStopped = false;
+  public button = 0;
+  public pointerId = 0;
+  public clientX = 0;
+  public clientY = 0;
 
   public constructor(
     public readonly type: string,
@@ -29,6 +48,10 @@ export class FakeElement {
   public scrollTop = 0;
   public readonly children: FakeElement[] = [];
   public readonly dataset: Record<string, string> = {};
+  /** Present only when a test measures this element. */
+  public rect: DOMRect | undefined;
+  public readonly capturedPointers = new Set<number>();
+  public readonly style = createFakeStyle();
   public parentElement: FakeElement | undefined;
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<FakeListener>>();
@@ -176,13 +199,36 @@ export class FakeElement {
 
   public dispatch(
     type: string,
-    init: { readonly target?: FakeElement; readonly key?: string } = {},
+    init: {
+      readonly target?: FakeElement;
+      readonly key?: string;
+      readonly button?: number;
+      readonly pointerId?: number;
+      readonly clientX?: number;
+      readonly clientY?: number;
+    } = {},
   ): FakeEvent {
     const event = new FakeEvent(type, init.target ?? this, init.key);
+    if (init.button !== undefined) event.button = init.button;
+    if (init.pointerId !== undefined) event.pointerId = init.pointerId;
+    if (init.clientX !== undefined) event.clientX = init.clientX;
+    if (init.clientY !== undefined) event.clientY = init.clientY;
     for (const listener of [...(this.listeners.get(type) ?? [])]) {
       listener(event);
     }
     return event;
+  }
+
+  public getBoundingClientRect(): DOMRect | undefined {
+    return this.rect;
+  }
+
+  public setPointerCapture(pointerId: number): void {
+    this.capturedPointers.add(pointerId);
+  }
+
+  public releasePointerCapture(pointerId: number): void {
+    this.capturedPointers.delete(pointerId);
   }
 
   public focus(_options?: FocusOptions): void {

@@ -12,6 +12,7 @@ import {
 import {
   classifyDomTreeRecoveryError,
   DomTreeRecoveryFatalError,
+  DomTreeRecoveryNotReadyError,
 } from "./domTreeRecoveryError.js";
 
 export interface DomTreeRecoveryTransport {
@@ -97,6 +98,21 @@ export class DomTreeRecoveryCoordinator {
         rootResponse.type !== "dom.root" ||
         rootResponse.requestId !== rootRequest.requestId
       ) {
+        // A reconnect can outrun the content session the background is still
+        // establishing. Give up on the attempt but keep the frozen tree, so the
+        // caller can restore the same selection once the session is there.
+        if (
+          rootResponse.type === "dom.error" &&
+          rootResponse.requestId === rootRequest.requestId &&
+          rootResponse.code === "session-disposed" &&
+          this.isCurrent(token, contentSessionGeneration)
+        ) {
+          this.invalidateAttempt();
+          throw new DomTreeRecoveryNotReadyError(
+            "DOM recovery found no content session yet",
+            rootResponse.code,
+          );
+        }
         this.abortCurrent(
           token,
           contentSessionGeneration,
@@ -211,6 +227,9 @@ export class DomTreeRecoveryCoordinator {
         this.recoveryToken = undefined;
       }
     } catch (error) {
+      if (error instanceof DomTreeRecoveryNotReadyError) {
+        throw error;
+      }
       if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }

@@ -105,6 +105,7 @@ export class MatchedStylesApplicabilityObserver {
   private cursor = 0;
   private disposed = false;
   private pendingSignal = false;
+  private pendingSignalUnverified = false;
   private signalGeneration = 0;
   private readonly windows = new Map<number, string>();
   private readonly eventRegistrations: Array<{
@@ -335,7 +336,8 @@ export class MatchedStylesApplicabilityObserver {
     if (!create) return;
     try {
       const observer = create((records) => {
-        if (this.hasObservableMutation(records)) this.scheduleObservableSignal();
+        const observable = this.hasObservableMutation(records);
+        if (observable) this.scheduleObservableSignal(observable === "unverified");
       });
       this.mutationObserver = observer;
       for (const target of targets) {
@@ -369,7 +371,7 @@ export class MatchedStylesApplicabilityObserver {
         const listener: EventListener = () => {
           try {
             const result = this.check();
-            if (!result.changed) this.scheduleObservableSignal();
+            if (!result.changed) this.scheduleObservableSignal(true);
           } catch (error) {
             this.reportError(error);
           }
@@ -404,8 +406,17 @@ export class MatchedStylesApplicabilityObserver {
     return "unknown";
   }
 
-  private scheduleObservableSignal(): void {
-    if (this.disposed || this.pendingSignal) return;
+  /**
+   * A page signal only means "applicability may have changed". Re-running the
+   * bounded scan lets {@link check} decide, so an unrelated mutation, pointer
+   * move, or resize no longer re-queries matched styles for the selection.
+   * Signals the observer could not classify stay unverified and invalidate
+   * directly, keeping the fail-open guarantee for oversized or throwing batches.
+   */
+  private scheduleObservableSignal(unverified = false): void {
+    if (this.disposed) return;
+    this.pendingSignalUnverified ||= unverified;
+    if (this.pendingSignal) return;
     this.pendingSignal = true;
     const generation = this.signalGeneration;
     this.enqueue(() => {
@@ -415,12 +426,25 @@ export class MatchedStylesApplicabilityObserver {
         !this.pendingSignal
       ) return;
       this.pendingSignal = false;
-      this.emit({ reason: "observable-signal" });
+      const signalUnverified = this.pendingSignalUnverified;
+      this.pendingSignalUnverified = false;
+      if (signalUnverified) {
+        this.emit({ reason: "observable-signal" });
+        return;
+      }
+      try {
+        this.check();
+      } catch (error) {
+        this.reportError(error);
+        this.emit({ reason: "observable-signal" });
+      }
     });
   }
 
-  private hasObservableMutation(records: readonly unknown[]): boolean {
-    let observable = true;
+  private hasObservableMutation(
+    records: readonly unknown[],
+  ): false | "classified" | "unverified" {
+    let observable: false | "classified" | "unverified" = "unverified";
     try {
       const length = records.length;
       if (
@@ -428,16 +452,16 @@ export class MatchedStylesApplicabilityObserver {
         length < 0 ||
         length > APPLICABILITY_LIMITS.mutationRecordsPerBatch
       ) {
-        observable = true;
+        observable = "unverified";
       } else if (length === 0) {
         observable = false;
       } else {
         const isRuntimeArtifact = this.options.isRuntimeArtifactMutation;
-        observable = !isRuntimeArtifact;
+        observable = isRuntimeArtifact ? false : "classified";
         if (isRuntimeArtifact) {
           for (let index = 0; index < length; index += 1) {
             if (isRuntimeArtifact(records[index]) !== true) {
-              observable = true;
+              observable = "classified";
               break;
             }
           }
@@ -445,9 +469,9 @@ export class MatchedStylesApplicabilityObserver {
       }
     } catch (error) {
       this.reportError(error);
-      observable = true;
+      observable = "unverified";
     }
-    if (!this.finishRuntimeArtifactMutationBatch()) observable = true;
+    if (!this.finishRuntimeArtifactMutationBatch()) observable = "unverified";
     return observable;
   }
 
@@ -479,6 +503,7 @@ export class MatchedStylesApplicabilityObserver {
   private detachAll(): void {
     this.signalGeneration += 1;
     this.pendingSignal = false;
+    this.pendingSignalUnverified = false;
     const observer = this.mutationObserver;
     this.mutationObserver = undefined;
     try {

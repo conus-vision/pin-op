@@ -112,10 +112,6 @@ The default Inspector renders structured bounded attribute names and values and
 bounded text and comment rows through text APIs. Text, comment, and document-type
 rows are display-only and cannot drive selection or stable-locator recovery.
 
-The legacy rollback renderer alone uses names-only element labels containing
-tag, ID, classes, and approved attribute names. Attribute values and DOM text do
-not appear in those legacy rollback labels.
-
 Browser-local node refs are valid only inside their panel channel, document
 epoch, frame epoch, and branch revision. Navigation, mutation, collapse, and
 session disposal invalidate stale work rather than reusing it.
@@ -125,8 +121,8 @@ session disposal invalidate stale work rather than reusing it.
 Pin-op sends one selected target and, when available, its immediate DOM
 parent. VS Code retains the latest valid selection and resolves it only against
 the active document. Passive highlighting does not open, close, or switch
-editor tabs. This active-document authority is also the basis of Existing
-Source in the legacy rollback panel; it is separate from Rules-origin opening.
+editor tabs. This active-document authority is also the basis of the Source
+tab; it is separate from Rules-origin opening.
 
 Source lookup is workspace-bound when the document or stylesheet URL path
 begins with an open workspace folder name. Pin-op strips that leading
@@ -182,10 +178,8 @@ basename label and one-based start position for display, confidence, and opaque
 authority ID. No workspace URI/path, full range, document version, source-map
 path/content, or command crosses the bridge. There is no open acknowledgement.
 
-The default Inspector has no visible Source tab. Existing Source remains
-active-document-only in the packaged, non-default legacy rollback panel for its
-one published rollback release. A new Source tab and first-party PHP/template
-providers remain future scope.
+Source remains active-document-only. First-party PHP/template providers remain
+future scope.
 
 ## Preview `:hover` And `:focus`
 
@@ -233,7 +227,7 @@ reload. If that happens, reload the inspected page before continuing.
 
 ## Source Pane And Navigation
 
-On the legacy rollback panel, the DevTools Source pane shows bounded excerpts
+The Inspector's Source tab shows bounded excerpts
 from the active IDE document only. Selected matches are expanded; the immediate
 Parent group is collapsed by default. A click sends only the excerpt's opaque
 match ID and moves the VS Code cursor to that exact current range after the IDE

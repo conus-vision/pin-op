@@ -31,12 +31,10 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
-  DomPanelView,
   DomTreeController,
   DomTreeRecoveryCoordinator,
   DomTreeProvider,
   DomTreeProviderError,
-  DomTreeView,
   ElementsInspectorAdapter,
   DomProtocolError,
   FrameRegistry,
@@ -77,7 +75,6 @@ import {
   startContentRefreshRuntime,
   startDevtoolsRuntime,
   startInspectorPanelRuntime,
-  startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
   TopScrollSnapshotLeaseStore,
@@ -134,12 +131,10 @@ describe("browser extension core exports", () => {
     expect(publicExports.DOM_TREE_RECOVERY_MAX_EXPANDED).toBe(64);
     expect(publicExports.locatorDepth).toBeTypeOf("function");
     expect(DomNodeRegistry).toBeTypeOf("function");
-    expect(DomPanelView).toBeTypeOf("function");
     expect(DomTreeController).toBeTypeOf("function");
     expect(DomTreeRecoveryCoordinator).toBeTypeOf("function");
     expect(DomTreeProvider).toBeTypeOf("function");
     expect(DomTreeProviderError).toBeTypeOf("function");
-    expect(DomTreeView).toBeTypeOf("function");
     expect(ElementsInspectorAdapter).toBeTypeOf("function");
     expect(DomProtocolError).toBeTypeOf("function");
     expect(FrameRegistry).toBeTypeOf("function");
@@ -181,7 +176,6 @@ describe("browser extension core exports", () => {
     expect(startContentRefreshRuntime).toBeTypeOf("function");
     expect(startDevtoolsRuntime).toBeTypeOf("function");
     expect(startInspectorPanelRuntime).toBeTypeOf("function");
-    expect(startPanelRuntime).toBeTypeOf("function");
     expect(TabRefreshCoordinator).toBeTypeOf("function");
     expect(TabRefreshStateStore).toBeTypeOf("function");
     expect(TopScrollSnapshotLeaseStore).toBeTypeOf("function");

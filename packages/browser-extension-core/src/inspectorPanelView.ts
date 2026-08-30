@@ -8,13 +8,23 @@ import type {
   PanelView,
   PanelViewModel,
 } from "./panelController.js";
-import type { PanelDocument } from "./panelView.js";
 import type { ResolutionViewModel } from "./resolutionPresenter.js";
 import type {
   PanelSettingsController,
   PanelSettingsViewModel,
 } from "./panelSettingsController.js";
 import type { MatchedStylesModel } from "./matchedStylesModel.js";
+
+/** The narrow document surface the Inspector panel view actually uses. */
+export interface PanelDocument {
+  readonly activeElement?: unknown;
+  readonly documentElement?: unknown;
+  readonly body?: unknown;
+  getElementById(id: string): unknown;
+  createElement(tagName: string): unknown;
+  createTextNode(text: string): unknown;
+  createElementNS(namespace: string, qualifiedName: string): Element;
+}
 
 export type InspectorPanelDocument = PanelDocument & Document;
 

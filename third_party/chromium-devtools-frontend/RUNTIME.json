@@ -51,10 +51,10 @@
   },
   "readOnlyElementsRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    "manifestSha256": "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
+    "manifestSha256": "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
     "entryPoint": "entrypoints/read-only-elements.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 1079088,
+    "unminifiedBytes": 1078586,
     "maxUnminifiedBytes": 1310720,
     "browserTargets": ["chrome116", "firefox142"],
     "upstreamInputClosure": {
@@ -63,7 +63,7 @@
     },
     "overlayInputClosure": {
       "fileCount": 37,
-      "sha256": "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23"
+      "sha256": "904698780ca3486962022070d46e0c6333673e3d8ce19fc9387ece6bb0fbacc2"
     },
     "sharedInputInventory": [
       "chromium-shared-css:front_end/application_tokens.css",
@@ -76,7 +76,7 @@
     ],
     "sharedPayloadAttestation": {
       "fileCount": 7,
-      "sha256": "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5"
+      "sha256": "d2a538058651817f04cbd0a1104e083ccb256792a152b073978f7117478e50d2"
     },
     "requiredLicenseFiles": {
       "LICENSE": "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
@@ -85,7 +85,7 @@
   },
   "readOnlyStylesRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
-    "manifestSha256": "f23e083d705b9272530e218b40f77d706ac3ae520a2851573633478ebf07af85",
+    "manifestSha256": "3b34607e8940fcb7309e299994b47252fec4493b55c5dd88555438f0bb56f87c",
     "entryPoint": "entrypoints/read-only-styles.ts",
     "exactImporterSpecifierResolutions": true,
     "unminifiedBytes": 1993265,
@@ -99,7 +99,7 @@
     },
     "overlayInputClosure": {
       "fileCount": 18,
-      "sha256": "2f4fca474da3ef03111827868c186acae82eddd537dbf0403eebac25bd0d33e7"
+      "sha256": "ec8bc9f509142d6d1daa3e84ff0a8ef849138a4d18ff39afed9ab5466ac1e7e8"
     },
     "baseOverlayInputClosure": {
       "fileCount": 16,

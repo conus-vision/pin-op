@@ -19,6 +19,7 @@ export class FakeChromiumReadOnlyStylesRuntime implements
   public paneRefreshCompletion: PromiseLike<void> | undefined;
   public paneClearError: unknown;
   public paneDisposeError: unknown;
+  public exposeNativeToolbar = false;
   public paneCallDepth = 0;
   public maxPaneCallDepth = 0;
   public readonly paneCalls: string[] = [];
@@ -60,6 +61,8 @@ export class FakeChromiumReadOnlyStylesPane implements
   public refreshCount = 0;
   public clearCount = 0;
   public disposeCount = 0;
+  private readonly toolbar: HTMLElement | undefined;
+  private readonly toolbarPane: HTMLElement | undefined;
 
   public constructor(
     private readonly runtime: FakeChromiumReadOnlyStylesRuntime,
@@ -67,6 +70,21 @@ export class FakeChromiumReadOnlyStylesPane implements
   ) {
     this.element = options.document.createElement("div");
     this.element.setAttribute("data-part", "chromium-read-only-styles-pane");
+    if (runtime.exposeNativeToolbar) {
+      this.toolbar = options.document.createElement("div");
+      this.toolbar.setAttribute("data-part", "native-styles-toolbar");
+      this.toolbarPane = options.document.createElement("div");
+      this.toolbarPane.setAttribute("data-part", "native-styles-toolbar-pane");
+      this.element.append(this.toolbar, this.toolbarPane);
+    }
+  }
+
+  public toolbarElement(): HTMLElement | null {
+    return this.toolbar ?? null;
+  }
+
+  public toolbarPaneElement(): HTMLElement | null {
+    return this.toolbarPane ?? null;
   }
 
   public render(snapshot: MatchedStylesSnapshot): void | Promise<void> {

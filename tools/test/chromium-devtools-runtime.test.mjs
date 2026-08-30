@@ -138,10 +138,10 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
   assert.deepEqual(runtimeManifest.package, CHROMIUM_DEVTOOLS_PIN);
   assert.deepEqual(runtimeManifest.readOnlyElementsRuntime, {
     overlayRoot: "third_party/chromium-devtools-frontend/patches/1.0.1681091",
-    manifestSha256: "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
+    manifestSha256: "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
     entryPoint: "entrypoints/read-only-elements.ts",
     exactImporterSpecifierResolutions: true,
-    unminifiedBytes: 1_079_088,
+    unminifiedBytes: 1_078_586,
     maxUnminifiedBytes: 1_310_720,
     browserTargets: ["chrome116", "firefox142"],
     upstreamInputClosure: {
@@ -150,7 +150,7 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
     },
     overlayInputClosure: {
       fileCount: 37,
-      sha256: "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23",
+      sha256: "904698780ca3486962022070d46e0c6333673e3d8ce19fc9387ece6bb0fbacc2",
     },
     sharedInputInventory: [
       "chromium-shared-css:front_end/application_tokens.css",
@@ -163,7 +163,7 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
     ],
     sharedPayloadAttestation: {
       fileCount: 7,
-      sha256: "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5",
+      sha256: "d2a538058651817f04cbd0a1104e083ccb256792a152b073978f7117478e50d2",
     },
     requiredLicenseFiles: {
       LICENSE: "ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e",
@@ -288,7 +288,7 @@ test("read-only Elements overlay is versioned and resolves only exact reviewed i
   assert.deepEqual(CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.browserTargets, ["chrome116", "firefox142"]);
   assert.equal(
     CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME.manifestSha256,
-    "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
+    "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
   );
 
   const overlay = await verifyChromiumReadOnlyElementsOverlay(repositoryRoot);
@@ -681,14 +681,14 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
     assert.ok(!output.includes(removed), `read-only output retained ${removed}`);
   }
 
-  assert.equal(result.unminifiedBytes, 1_079_088);
+  assert.equal(result.unminifiedBytes, 1_078_586);
   assert.deepEqual(result.chromiumInputAttestation, {
     fileCount: 46,
     sha256: "53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a",
   });
   assert.deepEqual(result.overlayAttestation, {
     fileCount: 37,
-    sha256: "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23",
+    sha256: "904698780ca3486962022070d46e0c6333673e3d8ce19fc9387ece6bb0fbacc2",
   });
   assert.deepEqual(result.requiredLicenseFiles, [
     {

@@ -107,6 +107,8 @@ export interface ChromiumOverlayModel {
 
 export interface ChromiumTreeElement {
   readonly expanded: boolean;
+  /** The row's own element, so its position on screen can be read. */
+  readonly listItemElement?: HTMLElement;
   expand(): void;
   collapse(): void;
   node?(): ChromiumDOMNode;
@@ -120,6 +122,11 @@ export interface ChromiumElementsTreeOutline {
   selectedDOMNode(): ChromiumDOMNode | null;
   selectDOMNode(node: ChromiumDOMNode | null, focus?: boolean): void;
   findTreeElement(node: ChromiumDOMNode): ChromiumTreeElement | null;
+  /**
+   * Chromium's own deferred reveal scroll. Declared so a selection replay can
+   * leave the scroll position alone; see `selectNativeNode`.
+   */
+  deferredScrollIntoView?(treeElement: unknown, center: boolean): void;
   addEventListener(
     eventName: string,
     listener: (event: { readonly data: unknown }) => void,
@@ -187,6 +194,50 @@ export interface PinOpElementsTreeAdapterOptions {
 export interface PinOpElementsTreeAdapterHost {
   readonly element: HTMLElement;
   dispose(): void;
+}
+
+/** Pin-op presents no Chromium adorners; the tree renders none of them. */
+/**
+ * Styles Pin-op adds to the upstream tree, in its own shadow root.
+ *
+ * The `isolation` rule is load-bearing: upstream paints a selected row's band as
+ * a child at `z-index: -1`, which only shows while every ancestor background
+ * stays transparent. Pin-op's panel paints its own surface, so the band landed
+ * behind it and no selected row was ever highlighted, in either browser. Giving
+ * each row its own stacking context keeps the band inside the row -- in front of
+ * the panel's surface, still behind the row's own text.
+ *
+ * The cursor rule follows what the tree is for: rows are clicked to select an
+ * element, not to be typed into, so the pointer stays an arrow over them the way
+ * it does over any other list of rows.
+ */
+const PIN_OP_TREE_STYLES = `
+.elements-tree-outline .adorner-container {
+  display: none;
+}
+.elements-tree-outline li {
+  isolation: isolate;
+}
+.elements-tree-outline,
+.elements-tree-outline li,
+.elements-tree-outline li * {
+  cursor: default;
+}
+`;
+
+interface ShadowRootLike {
+  append(node: unknown): void;
+  querySelector(selectors: string): unknown;
+}
+
+function isShadowRootLike(value: unknown): value is ShadowRootLike {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "host" in value &&
+    typeof (value as unknown as ShadowRootLike).append === "function" &&
+    typeof (value as unknown as ShadowRootLike).querySelector === "function",
+  );
 }
 
 interface SelectedNodeChangedData {
@@ -336,6 +387,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
         this.outline,
         this.onLoadMoreRequested,
       );
+      this.adoptPinOpTreeStyles();
       this.element.addEventListener("pointerleave", this.onPointerLeave);
       this.element.addEventListener("mouseleave", this.onPointerLeave);
       this.element.addEventListener("focusout", this.onFocusOut);
@@ -353,6 +405,29 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       }
       throw error;
     }
+  }
+
+  /**
+   * Chromium renders the `view-source` adorner beside the root element without
+   * consulting the adorner policy, and its reveal handler is not part of the
+   * Pin-op runtime. Pin-op presents no adorners at all, so the container is
+   * hidden inside the tree's own shadow root, where the panel stylesheet on the
+   * host document cannot reach.
+   */
+  private adoptPinOpTreeStyles(): void {
+    const root = this.element.shadowRoot ?? this.element.getRootNode?.();
+    const ownerDocument = this.element.ownerDocument;
+    if (
+      !isShadowRootLike(root) ||
+      !ownerDocument ||
+      root.querySelector('style[data-part="pin-op-tree-styles"]')
+    ) {
+      return;
+    }
+    const style = ownerDocument.createElement("style");
+    style.setAttribute("data-part", "pin-op-tree-styles");
+    style.textContent = PIN_OP_TREE_STYLES;
+    root.append(style);
   }
 
   public dispose(): void {
@@ -554,7 +629,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
       this.nativeRevealContinuationTimer = undefined;
     }
     const nativeRevealGeneration = ++this.nativeRevealGeneration;
-    this.outline.selectDOMNode(node, focused);
+    this.selectNativeNode(node, focused);
     this.appliedSelection = {
       node,
       ...(snapshot.revealRef === undefined
@@ -695,7 +770,7 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
           this.indexDesiredExpansions(snapshot);
           this.reconcileVisibleExpansion(snapshot);
           if (this.outline.findTreeElement(node)) {
-            this.outline.selectDOMNode(node, focused);
+            this.selectNativeNode(node, focused);
           }
         } finally {
           this.selectionSync = previousSelectionSync;
@@ -740,10 +815,66 @@ class PinOpElementsTreeAdapter implements PinOpElementsTreeAdapterHost {
     const previousSelectionSync = this.selectionSync;
     this.selectionSync = true;
     try {
-      this.outline.selectDOMNode(node, focused);
+      this.selectNativeNode(node, focused);
     } finally {
       this.selectionSync = previousSelectionSync;
     }
+  }
+
+  /**
+   * Chromium re-centres the row it selects, every time. Pin-op echoes every
+   * selection back through `selectDOMNode`, so clicking a row the reader could
+   * already see scrolled the tree out from under the cursor and the next click
+   * landed two rows away. When the row is already on screen the scroll position
+   * is left alone; a selection that arrives from the page, or from a row that is
+   * off screen, still scrolls it into view.
+   */
+  private selectNativeNode(
+    node: ChromiumDOMNode | null,
+    focused: boolean,
+  ): void {
+    const suppress = node !== null && this.rowAlreadyOnScreen(node);
+    const deferred = suppress ? this.outline.deferredScrollIntoView : undefined;
+    if (!suppress || typeof deferred !== "function") {
+      this.outline.selectDOMNode(node, focused);
+      return;
+    }
+    const outline = this.outline as {
+      deferredScrollIntoView?: (treeElement: unknown, center: boolean) => void;
+    };
+    outline.deferredScrollIntoView = () => {};
+    try {
+      this.outline.selectDOMNode(node, focused);
+    } finally {
+      outline.deferredScrollIntoView = deferred;
+    }
+  }
+
+  /** Whether the node's row is fully inside the tree's scrolling viewport. */
+  private rowAlreadyOnScreen(node: ChromiumDOMNode): boolean {
+    const element = this.outline.findTreeElement(node)?.listItemElement;
+    if (!element || typeof element.getBoundingClientRect !== "function") {
+      return false;
+    }
+    const row = element.getBoundingClientRect();
+    if (row.height <= 0) return false;
+    const viewport = this.scrollViewportRect();
+    return Boolean(viewport && row.top >= viewport.top && row.bottom <= viewport.bottom);
+  }
+
+  /** The scrolling ancestor Chromium's own reveal walks up to. */
+  private scrollViewportRect(): { top: number; bottom: number } | undefined {
+    const view = this.element.ownerDocument?.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return undefined;
+    let candidate: Element | null = this.element;
+    for (let depth = 0; candidate && depth < 32; depth += 1) {
+      if (view.getComputedStyle(candidate).overflowY !== "visible") {
+        return candidate.getBoundingClientRect();
+      }
+      const root = candidate.getRootNode() as { host?: Element } | null;
+      candidate = candidate.parentElement ?? root?.host ?? null;
+    }
+    return undefined;
   }
 
   private indexDesiredExpansions(snapshot: TreePresentationSnapshot): void {

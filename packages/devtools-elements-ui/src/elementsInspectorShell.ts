@@ -10,6 +10,26 @@ import type {
   TreeDataSource,
 } from "./contracts.js";
 
+const CHROMIUM_BASELINE_THEME_CLASS = "baseline-grayscale";
+
+// Chromium's Elements panel stacks its sidebar under the tree at this width.
+const STACKED_LAYOUT_QUERY = "(max-width: 680px)";
+const RESIZE_STEP = 16;
+const MINIMUM_PANE_SIZE = 160;
+const RESIZE_AXES = Object.freeze(["inline", "block"] as const);
+const SIDEBAR_SIZE_PROPERTY = Object.freeze({
+  inline: "--pin-op-elements-sidebar-width",
+  block: "--pin-op-elements-sidebar-height",
+});
+const SIDEBAR_SIZE_STORAGE_KEY = Object.freeze({
+  inline: "pin-op.inspector.sidebar-width",
+  block: "pin-op.inspector.sidebar-height",
+});
+const DEFAULT_SIDEBAR_FRACTION = Object.freeze({ inline: 0.38, block: 0.45 });
+const MINIMUM_SIDEBAR_SIZE = Object.freeze({ inline: 220, block: 120 });
+
+type ResizeAxis = (typeof RESIZE_AXES)[number];
+
 const nextAriaIdSequence = new WeakMap<Document, number>();
 const chromiumThemeBridges = new WeakMap<Document, ChromiumThemeBridgeState>();
 
@@ -20,6 +40,10 @@ export class ElementsInspectorShell {
   public readonly sidebarExtensionMount: HTMLElement;
   private readonly rulesTab: HTMLElement;
   private readonly sourceTab: HTMLElement;
+  private readonly resizer: HTMLElement;
+  private stackedMediaQuery: MediaQueryList | undefined;
+  private resizePointerId: number | undefined;
+  private resizeOffset = 0;
   private treeRendererHost: ElementsTreeRendererHost | undefined;
   private rulesDataSource: RulesDataSource | undefined;
   private rulesPane: ElementsRulesRendererHost | undefined;
@@ -34,6 +58,26 @@ export class ElementsInspectorShell {
   private readonly updateChromiumTheme = (event: MediaQueryListEvent): void => {
     if (!this.ownsChromiumTheme) return;
     updateChromiumThemeOwner(this.document, this.themeOwner, event.matches);
+  };
+
+  private readonly startResize = (event: PointerEvent): void => {
+    this.beginResize(event);
+  };
+
+  private readonly continueResize = (event: PointerEvent): void => {
+    this.updateResize(event);
+  };
+
+  private readonly finishResize = (event: PointerEvent): void => {
+    this.endResize(event);
+  };
+
+  private readonly resizeByKey = (event: KeyboardEvent): void => {
+    this.nudgeResize(event);
+  };
+
+  private readonly applyStackedOrientation = (): void => {
+    this.renderResizerOrientation();
   };
 
   private readonly showRules = (): void => {
@@ -118,6 +162,21 @@ export class ElementsInspectorShell {
         type: "button",
       },
     });
+    this.resizer = this.createElement("div", {
+      className: "pin-op-elements-inspector__resizer",
+      attributes: {
+        "aria-label": "Resize the element details pane",
+        "aria-orientation": "vertical",
+        "data-part": "sidebar-resizer",
+        role: "separator",
+        tabindex: "0",
+      },
+    });
+    this.resizer.addEventListener("pointerdown", this.startResize);
+    this.resizer.addEventListener("pointermove", this.continueResize);
+    this.resizer.addEventListener("pointerup", this.finishResize);
+    this.resizer.addEventListener("pointercancel", this.finishResize);
+    this.resizer.addEventListener("keydown", this.resizeByKey);
     this.rulesTab.addEventListener("click", this.showRules);
     this.sourceTab.addEventListener("click", this.showSource);
     this.rulesTab.addEventListener("keydown", this.navigateFromRulesTab);
@@ -146,10 +205,11 @@ export class ElementsInspectorShell {
     });
     this.sidebarExtensionMount.hidden = true;
     sidebar.append(tabList, this.rulesRoot, this.sidebarExtensionMount);
-    this.element.append(this.domRoot, sidebar);
+    this.element.append(this.domRoot, this.resizer, sidebar);
 
     try {
       this.bindColorScheme();
+      this.bindSidebarSize();
       this.treeRendererHost = createTreeRenderer(
         document,
         this.domRoot,
@@ -239,6 +299,21 @@ export class ElementsInspectorShell {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.resizer.removeEventListener("pointerdown", this.startResize);
+    this.resizer.removeEventListener("pointermove", this.continueResize);
+    this.resizer.removeEventListener("pointerup", this.finishResize);
+    this.resizer.removeEventListener("pointercancel", this.finishResize);
+    this.resizer.removeEventListener("keydown", this.resizeByKey);
+    const stackedMediaQuery = this.stackedMediaQuery;
+    this.stackedMediaQuery = undefined;
+    try {
+      stackedMediaQuery?.removeEventListener(
+        "change",
+        this.applyStackedOrientation,
+      );
+    } catch {
+      // A view that dropped listener support has nothing left to release.
+    }
     this.rulesTab.removeEventListener("click", this.showRules);
     this.sourceTab.removeEventListener("click", this.showSource);
     this.rulesTab.removeEventListener("keydown", this.navigateFromRulesTab);
@@ -287,6 +362,119 @@ export class ElementsInspectorShell {
     if (disposeError !== undefined) throw disposeError;
   }
 
+  private bindSidebarSize(): void {
+    const defaultView = this.document.defaultView;
+    const stacked = defaultView?.matchMedia?.(STACKED_LAYOUT_QUERY);
+    if (stacked) {
+      this.stackedMediaQuery = stacked;
+      try {
+        stacked.addEventListener("change", this.applyStackedOrientation);
+      } catch {
+        // A view without listener support keeps the initial orientation.
+        this.stackedMediaQuery = undefined;
+      }
+    }
+    for (const axis of RESIZE_AXES) {
+      const stored = readStoredSidebarSize(defaultView, axis);
+      if (stored !== undefined) this.writeSidebarSize(axis, stored);
+    }
+    this.renderResizerOrientation();
+  }
+
+  private renderResizerOrientation(): void {
+    if (this.disposed) return;
+    // A separator reports the axis it moves along, which is the opposite of
+    // the axis it splits.
+    this.resizer.setAttribute(
+      "aria-orientation",
+      this.stackedAxis() === "block" ? "horizontal" : "vertical",
+    );
+  }
+
+  private stackedAxis(): ResizeAxis {
+    return this.stackedMediaQuery?.matches ? "block" : "inline";
+  }
+
+  private beginResize(event: PointerEvent): void {
+    if (this.disposed || event.button !== 0) return;
+    const bounds = boundsOf(this.resizer);
+    if (!bounds) return;
+    event.preventDefault();
+    this.resizePointerId = event.pointerId;
+    this.resizeOffset = this.stackedAxis() === "block"
+      ? event.clientY - bounds.top
+      : event.clientX - bounds.left;
+    this.resizer.dataset.state = "active";
+    try {
+      this.resizer.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Without pointer capture the pointerup listener still ends the drag.
+    }
+  }
+
+  private updateResize(event: PointerEvent): void {
+    if (this.disposed || this.resizePointerId !== event.pointerId) return;
+    const root = boundsOf(this.element);
+    const separator = boundsOf(this.resizer);
+    if (!root || !separator) return;
+    event.preventDefault();
+    const axis = this.stackedAxis();
+    const size = axis === "block"
+      ? root.bottom - (event.clientY - this.resizeOffset) - separator.height
+      : root.right - (event.clientX - this.resizeOffset) - separator.width;
+    const total = axis === "block" ? root.height : root.width;
+    this.writeSidebarSize(axis, clampSidebarSize(size, total, axis));
+  }
+
+  private endResize(event: PointerEvent): void {
+    if (this.resizePointerId !== event.pointerId) return;
+    this.resizePointerId = undefined;
+    delete this.resizer.dataset.state;
+    try {
+      this.resizer.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Releasing a capture the view already dropped is not an error.
+    }
+    if (this.disposed) return;
+    const axis = this.stackedAxis();
+    const current = this.readSidebarSize(axis);
+    if (current !== undefined) {
+      writeStoredSidebarSize(this.document.defaultView, axis, current);
+    }
+  }
+
+  private nudgeResize(event: KeyboardEvent): void {
+    if (this.disposed) return;
+    const axis = this.stackedAxis();
+    const grow = axis === "block" ? "ArrowUp" : "ArrowLeft";
+    const shrink = axis === "block" ? "ArrowDown" : "ArrowRight";
+    if (event.key !== grow && event.key !== shrink) return;
+    const root = boundsOf(this.element);
+    if (!root) return;
+    event.preventDefault();
+    const total = axis === "block" ? root.height : root.width;
+    const current = this.readSidebarSize(axis) ?? Math.round(
+      total * DEFAULT_SIDEBAR_FRACTION[axis],
+    );
+    const next = current + (event.key === grow ? RESIZE_STEP : -RESIZE_STEP);
+    const size = clampSidebarSize(next, total, axis);
+    this.writeSidebarSize(axis, size);
+    writeStoredSidebarSize(this.document.defaultView, axis, size);
+  }
+
+  private readSidebarSize(axis: ResizeAxis): number | undefined {
+    const raw = this.element.style.getPropertyValue(SIDEBAR_SIZE_PROPERTY[axis]);
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  private writeSidebarSize(axis: ResizeAxis, size: number): void {
+    this.element.style.setProperty(
+      SIDEBAR_SIZE_PROPERTY[axis],
+      `${Math.round(size)}px`,
+    );
+  }
+
   private bindColorScheme(): void {
     const defaultView = this.document.defaultView;
     if (!defaultView) return;
@@ -325,8 +513,9 @@ export class ElementsInspectorShell {
       rulesPane.clear();
       messageText = "Loading styles";
     } else if (snapshot.state === "partial") {
+      // A partial snapshot still shows every rule it has, and the footer already
+      // reports what could not be read; the pane keeps its room for the rules.
       rulesPane.render(snapshot.matchedStyles);
-      messageText = "Some styles could not be inspected";
     } else if (snapshot.state === "ready") {
       rulesPane.render(snapshot.matchedStyles);
     } else if (snapshot.state === "error") {
@@ -485,6 +674,66 @@ function primaryRuleRef(
   return undefined;
 }
 
+function boundsOf(element: HTMLElement): DOMRect | undefined {
+  const measure = (element as Partial<HTMLElement>).getBoundingClientRect;
+  if (typeof measure !== "function") return undefined;
+  const bounds = measure.call(element);
+  return Number.isFinite(bounds?.width) && Number.isFinite(bounds?.height)
+    ? bounds
+    : undefined;
+}
+
+function clampSidebarSize(
+  size: number,
+  total: number,
+  axis: ResizeAxis,
+): number {
+  const minimum = MINIMUM_SIDEBAR_SIZE[axis];
+  const maximum = Math.max(minimum, total - MINIMUM_PANE_SIZE);
+  if (!Number.isFinite(size)) return minimum;
+  return Math.min(Math.max(size, minimum), maximum);
+}
+
+function sidebarSizeStorage(view: Window | null): Storage | undefined {
+  try {
+    return view?.localStorage ?? undefined;
+  } catch {
+    // A view that refuses storage keeps the default split for this session.
+    return undefined;
+  }
+}
+
+function readStoredSidebarSize(
+  view: Window | null,
+  axis: ResizeAxis,
+): number | undefined {
+  let raw: string | null | undefined;
+  try {
+    raw = sidebarSizeStorage(view)?.getItem(SIDEBAR_SIZE_STORAGE_KEY[axis]);
+  } catch {
+    return undefined;
+  }
+  const value = Number.parseFloat(raw ?? "");
+  return Number.isFinite(value) && value >= MINIMUM_SIDEBAR_SIZE[axis]
+    ? value
+    : undefined;
+}
+
+function writeStoredSidebarSize(
+  view: Window | null,
+  axis: ResizeAxis,
+  size: number,
+): void {
+  try {
+    sidebarSizeStorage(view)?.setItem(
+      SIDEBAR_SIZE_STORAGE_KEY[axis],
+      String(Math.round(size)),
+    );
+  } catch {
+    // Losing one remembered split never blocks inspection.
+  }
+}
+
 interface InspectorAriaIds {
   readonly rulesTab: string;
   readonly rulesPanel: string;
@@ -494,7 +743,27 @@ interface InspectorAriaIds {
 
 interface ChromiumThemeBridgeState {
   readonly initiallyDark: boolean;
+  readonly initiallyBaseline: boolean;
+  readonly platformClass: string | undefined;
+  readonly initiallyPlatform: boolean;
   readonly owners: Map<symbol, boolean>;
+}
+
+/**
+ * Chromium selects its UI and source-code font tokens through one
+ * `platform-*` root class. Without it the pinned token set keeps its generic
+ * fallback fonts instead of the host platform's DevTools typography.
+ */
+function chromiumPlatformClass(document: Document): string | undefined {
+  const navigator = document.defaultView?.navigator as
+    | (Navigator & { readonly userAgentData?: { readonly platform?: string } })
+    | undefined;
+  if (!navigator) return undefined;
+  const platform = navigator.userAgentData?.platform || navigator.platform || "";
+  if (/mac/i.test(platform)) return "platform-mac";
+  if (/win/i.test(platform)) return "platform-windows";
+  if (/linux|x11|cros|android/i.test(platform)) return "platform-linux";
+  return undefined;
 }
 
 function updateChromiumThemeOwner(
@@ -504,10 +773,17 @@ function updateChromiumThemeOwner(
 ): void {
   let bridge = chromiumThemeBridges.get(document);
   if (!bridge) {
+    const platformClass = chromiumPlatformClass(document);
     bridge = {
       initiallyDark: document.documentElement.classList.contains(
         "theme-with-dark-background",
       ),
+      initiallyBaseline: document.documentElement.classList.contains(
+        CHROMIUM_BASELINE_THEME_CLASS,
+      ),
+      platformClass,
+      initiallyPlatform: platformClass !== undefined &&
+        document.documentElement.classList.contains(platformClass),
       owners: new Map(),
     };
     chromiumThemeBridges.set(document, bridge);
@@ -540,6 +816,19 @@ function synchronizeChromiumTheme(
     "theme-with-dark-background",
     dark,
   );
+  // Chromium's design tokens reserve untinted surfaces for its baseline
+  // themes. Without this class the pinned token set falls back to the
+  // browser-theme-tinted branch and paints Chromium surfaces blue.
+  document.documentElement.classList.toggle(
+    CHROMIUM_BASELINE_THEME_CLASS,
+    bridge.initiallyBaseline || bridge.owners.size > 0,
+  );
+  if (bridge.platformClass !== undefined) {
+    document.documentElement.classList.toggle(
+      bridge.platformClass,
+      bridge.initiallyPlatform || bridge.owners.size > 0,
+    );
+  }
 }
 
 function allocateAriaIds(document: Document): InspectorAriaIds {

@@ -3,8 +3,15 @@ import { INSPECT_LIMITS, utf8ByteLength } from "@pin-op/protocol";
 import {
   classifyCascade,
   type CascadeCandidate,
+  type CascadeClassification,
   type SelectorSpecificity,
 } from "./cascadeClassifier.js";
+import {
+  createShorthandExpander,
+  readAuthoredDeclarations,
+  type AuthoredLonghand,
+  type ShorthandExpander,
+} from "./authoredDeclarations.js";
 import {
   createCssRuleWalkBudget,
   walkCssRules,
@@ -106,7 +113,8 @@ interface RuleDraft {
 interface DeclarationDraft {
   readonly rule: RuleDraft;
   readonly record: CssRuleWalkRecord;
-  readonly candidate: CascadeCandidate;
+  /** One candidate per longhand the presented declaration sets. */
+  readonly candidates: readonly CascadeCandidate[];
 }
 
 /** Synchronous browser-local matched-author snapshot for one selected node. */
@@ -137,7 +145,13 @@ export class MatchedStylesCollector {
     );
     const workBudget = createCssRuleWalkBudget();
     const applicabilityCandidates = new Map<string, ApplicabilityCandidate>();
-    const inline = this.collectInline(selected.element, diagnostics, workBudget);
+    const expand = shorthandExpander(selected.element);
+    const inline = this.collectInline(
+      selected.element,
+      diagnostics,
+      workBudget,
+      expand,
+    );
     const direct = this.collectElement(
       selected.element,
       authority,
@@ -145,6 +159,7 @@ export class MatchedStylesCollector {
       diagnostics,
       workBudget,
       applicabilityCandidates,
+      expand,
     );
     const domParent = directDomParent(selected.element);
     let domParentAncestorIndex: number | undefined;
@@ -159,7 +174,12 @@ export class MatchedStylesCollector {
       }
       visited.add(ancestor);
       if (ancestor === domParent) domParentAncestorIndex = ancestorIndex;
-      const ancestorInline = this.collectInline(ancestor, diagnostics, workBudget);
+      const ancestorInline = this.collectInline(
+        ancestor,
+        diagnostics,
+        workBudget,
+        expand,
+      );
       const collected = this.collectElement(
         ancestor,
         authority,
@@ -167,6 +187,7 @@ export class MatchedStylesCollector {
         diagnostics,
         workBudget,
         applicabilityCandidates,
+        expand,
       );
       const inheritedRules = buildRules(
         ancestorInline ? [ancestorInline, ...collected] : collected,
@@ -246,6 +267,7 @@ export class MatchedStylesCollector {
     diagnostics: Set<string>,
     workBudget: CssRuleWalkBudget,
     applicabilityCandidates: Map<string, ApplicabilityCandidate>,
+    expand: ShorthandExpander | undefined,
   ): RuleDraft[] {
     detectUnsupportedCrossRootSelectors(element, snapshot, diagnostics);
     let scopedEntries: readonly StylesheetRegistryEntry[];
@@ -286,6 +308,7 @@ export class MatchedStylesCollector {
       { pageUrl: pageUrlFor(element), styleSheets: roots },
       {
         workBudget,
+        ...(expand ? { expandShorthand: expand } : {}),
         ...(this.options.isRuntimeStylesheet
           ? { isRuntimeStylesheet: this.options.isRuntimeStylesheet }
           : {}),
@@ -389,6 +412,7 @@ export class MatchedStylesCollector {
     element: Element,
     diagnostics: Set<string>,
     workBudget: CssRuleWalkBudget,
+    expand: ShorthandExpander | undefined,
   ): RuleDraft | undefined {
     if (workBudget.remainingBytes <= 0) {
       diagnostics.add("byte-limit");
@@ -396,7 +420,12 @@ export class MatchedStylesCollector {
     }
     const style = safeStyle(element, diagnostics);
     if (!style) return undefined;
-    const declarations = readInlineDeclarations(style, workBudget, diagnostics);
+    const declarations = readInlineDeclarations(
+      style,
+      workBudget,
+      diagnostics,
+      expand,
+    );
     if (declarations.length === 0) return undefined;
     let ruleRef: string;
     try {
@@ -447,12 +476,18 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
   let declarationOrder = 0;
   for (const rule of drafts) {
     for (const record of rule.declarations) {
+      // A shorthand is presented as one row but cascades as its longhands, so
+      // each longhand competes on its own and the row reports what they agree on.
+      const parts: readonly AuthoredLonghand[] = record.longhands ?? [{
+        property: record.property,
+        value: record.value,
+      }];
       declarationDrafts.push({
         rule,
         record,
-        candidate: {
-          property: record.property,
-          value: record.value,
+        candidates: parts.map((part) => ({
+          property: part.property,
+          value: part.value,
           important: record.important,
           specificity: rule.specificity,
           sourceOrder: rule.sourceOrder * INSPECT_LIMITS.declarationsPerRule +
@@ -460,14 +495,18 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
           contexts: rule.contexts,
           active: rule.active,
           inherited,
-        },
+        })),
       });
     }
   }
-  const candidates = declarationDrafts.map(({ candidate }) => candidate);
+  const candidates = declarationDrafts.flatMap(
+    ({ candidates: parts }) => parts,
+  );
   const byRule = new Map<RuleDraft, MatchedDeclaration[]>();
   for (const draft of declarationDrafts) {
-    const classification = classifyCascade(draft.candidate, candidates);
+    const classification = foldCascade(
+      draft.candidates.map((candidate) => classifyCascade(candidate, candidates)),
+    );
     const declaration: MatchedDeclaration = {
       ruleRef: draft.rule.ruleRef,
       property: draft.record.property,
@@ -480,7 +519,12 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
     declarations.push(declaration);
     byRule.set(draft.rule, declarations);
   }
-  return drafts.flatMap((draft) => {
+  // Rules are presented as the cascade, not as the file: whatever wins sits at
+  // the top, so universal rules like `*` and `:root` sink to the bottom however
+  // early they were authored. Only the presentation order changes here -- the
+  // classification above ran on the drafts in document order and keeps its own
+  // source ordering.
+  return [...drafts].sort(compareCascadePresentation).flatMap((draft) => {
     const declarations = byRule.get(draft);
     if (!declarations || declarations.length === 0) return [];
     return [{
@@ -497,6 +541,48 @@ function buildRules(drafts: readonly RuleDraft[], inherited: boolean): MatchedRu
       source: draft.source,
     }];
   });
+}
+
+/**
+ * One row carries one verdict. A shorthand is struck through only when every
+ * longhand it sets lost -- a partly overridden `margin` still applies -- and a
+ * longhand Pin-op could not decide leaves the whole row undecided.
+ */
+function foldCascade(
+  classifications: readonly CascadeClassification[],
+): CascadeClassification {
+  const first = classifications[0];
+  if (!first) return { state: "unknown", reason: "unsupported-shorthand" };
+  if (classifications.length === 1) return first;
+  const undecided = classifications.find(({ state }) => state === "unknown");
+  if (undecided) return undecided;
+  const inactive = classifications.find(({ state }) => state === "inactive");
+  if (inactive) return inactive;
+  return classifications.every(
+      ({ state }) => state === "overridden-known-author",
+    )
+    ? {
+      state: "overridden-known-author",
+      reason: "lower-precedence-author-declaration",
+    }
+    : {
+      state: "winning-known-author",
+      reason: "highest-precedence-known-author-declaration",
+    };
+}
+
+/** Highest-winning first: specificity, then the later rule in the document. */
+function compareCascadePresentation(left: RuleDraft, right: RuleDraft): number {
+  const leftSpecificity = left.specificity;
+  const rightSpecificity = right.specificity;
+  if (leftSpecificity && rightSpecificity) {
+    const difference = compareSpecificity(rightSpecificity, leftSpecificity);
+    if (difference !== 0) return difference;
+  } else if (leftSpecificity !== rightSpecificity) {
+    // A selector Pin-op could not weigh never outranks one it could.
+    return leftSpecificity ? -1 : 1;
+  }
+  return right.sourceOrder - left.sourceOrder;
 }
 
 function matchingSelectors(
@@ -800,18 +886,18 @@ function supportsActive(element: Element, condition: string): boolean | undefine
   }
 }
 
+type InlineDeclaration = Pick<
+  CssRuleWalkRecord,
+  "property" | "value" | "important" | "valueTruncated" | "longhands"
+>;
+
 function readInlineDeclarations(
   style: StyleDeclarationSource,
   workBudget: CssRuleWalkBudget,
   diagnostics: Set<string>,
-): Array<Pick<
-  CssRuleWalkRecord,
-  "property" | "value" | "important" | "valueTruncated"
->> {
-  const result: Array<Pick<
-    CssRuleWalkRecord,
-    "property" | "value" | "important" | "valueTruncated"
-  >> = [];
+  expand: ShorthandExpander | undefined,
+): InlineDeclaration[] {
+  const result: InlineDeclaration[] = [];
   let declaredLength: number;
   try {
     declaredLength = style.length;
@@ -874,7 +960,61 @@ function readInlineDeclarations(
       continue;
     }
   }
-  return result;
+  return result.length === declaredLength
+    ? inlineAuthoredForm(style, result, workBudget, diagnostics, expand) ?? result
+    : result;
+}
+
+/** The `style=""` attribute as it is written, when its text accounts for it all. */
+function inlineAuthoredForm(
+  style: StyleDeclarationSource,
+  longhands: readonly InlineDeclaration[],
+  workBudget: CssRuleWalkBudget,
+  diagnostics: Set<string>,
+  expand?: ShorthandExpander,
+): InlineDeclaration[] | undefined {
+  let cssText: unknown;
+  try {
+    cssText = style.cssText;
+  } catch {
+    diagnostics.add("inline-declaration-unavailable");
+    return undefined;
+  }
+  if (typeof cssText !== "string" || cssText === "") return undefined;
+  let bytes: number;
+  try {
+    bytes = utf8ByteLength(cssText);
+  } catch {
+    return undefined;
+  }
+  if (bytes > workBudget.remainingBytes) return undefined;
+  workBudget.remainingBytes -= bytes;
+  const authored = readAuthoredDeclarations(cssText, longhands, expand);
+  return authored?.map((declaration) => {
+    const [only] = declaration.longhands;
+    const shorthand = declaration.longhands.length !== 1 ||
+      only?.property !== declaration.property;
+    return {
+      property: declaration.property,
+      value: truncate(declaration.value, INSPECT_LIMITS.valueLength).trim(),
+      important: declaration.important,
+      valueTruncated: declaration.value.length > INSPECT_LIMITS.valueLength,
+      ...(shorthand ? { longhands: declaration.longhands } : {}),
+    };
+  });
+}
+
+function shorthandExpander(element: Element): ShorthandExpander | undefined {
+  try {
+    const document = (element as unknown as {
+      readonly ownerDocument?: unknown;
+    }).ownerDocument;
+    return typeof document === "object" && document !== null
+      ? createShorthandExpander(document)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function consumeInlineBytes(

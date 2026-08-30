@@ -352,6 +352,8 @@ interface PanelPortRecord {
   inspectTabId?: number;
   inspectWindowId?: number;
   contentSessionId?: ContentSessionId;
+  contentLeaseArrival?: ContentLeaseArrival;
+  contentLeaseEverAttached?: boolean;
   replacingContentSessionId?: ContentSessionId;
   rejectPendingContentLeaseReplacements?: boolean;
   stylesSelectionAuthority?: StylesSelectionAuthority;
@@ -389,6 +391,24 @@ interface PanelTabStateActivation {
 
 interface WindowStateQueue {
   tail: Promise<void>;
+}
+
+/**
+ * Resolves once the inspection session that owns it has either attached its
+ * first content lease or been torn down, so a DOM read that arrives while the
+ * lease is still being established can wait instead of failing closed.
+ */
+interface ContentLeaseArrival {
+  readonly ready: Promise<void>;
+  settle(): void;
+}
+
+function createContentLeaseArrival(): ContentLeaseArrival {
+  let settle!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { ready, settle };
 }
 
 interface BufferedSelectionHolder {
@@ -2123,6 +2143,8 @@ export class BackgroundRouter {
     }
     record.contentRecoveryAvailable = false;
     record.contentSessionId = undefined;
+    record.contentLeaseArrival?.settle();
+    record.contentLeaseArrival = undefined;
     record.replacingContentSessionId = undefined;
     record.rejectPendingContentLeaseReplacements = undefined;
     record.pendingWindowTransitionSelection = undefined;
@@ -2131,6 +2153,7 @@ export class BackgroundRouter {
     record.refreshRepublishAuthority = undefined;
     record.republishPublication = undefined;
     record.availabilityRepublish = undefined;
+    record.contentLeaseArrival = createContentLeaseArrival();
     const panelSessionBinding = this.panelSessions.bind(
       record.channel,
       binding.tabId,
@@ -2231,6 +2254,9 @@ export class BackgroundRouter {
               });
             }
             record.contentSessionId = contentSessionId;
+            record.contentLeaseEverAttached = true;
+            record.contentLeaseArrival?.settle();
+            record.contentLeaseArrival = undefined;
             record.stylesSelectionAuthority = undefined;
             record.stylesInvalidationAuthority = undefined;
             record.refreshRepublishAuthority = undefined;
@@ -2262,6 +2288,8 @@ export class BackgroundRouter {
       return;
     }
     record.contentSessionId = undefined;
+    record.contentLeaseArrival?.settle();
+    record.contentLeaseArrival = undefined;
     record.replacingContentSessionId = undefined;
     record.rejectPendingContentLeaseReplacements = undefined;
     record.pendingWindowTransitionSelection = undefined;
@@ -2309,6 +2337,8 @@ export class BackgroundRouter {
     record.inspectTabId = undefined;
     record.inspectWindowId = undefined;
     record.contentSessionId = undefined;
+    record.contentLeaseArrival?.settle();
+    record.contentLeaseArrival = undefined;
     record.replacingContentSessionId = undefined;
     record.rejectPendingContentLeaseReplacements = undefined;
     record.stylesSelectionAuthority = undefined;
@@ -3224,8 +3254,14 @@ export class BackgroundRouter {
         this.postDomQueryError(record, requestId, code);
       }
     };
-    const contentSessionId = record.contentSessionId;
+    const queuedContentSessionId = record.contentSessionId;
+    const queuedInspectSession = record.inspectSession;
     const operation = record.inspectCommandTail.then(async () => {
+      const contentSessionId = await this.resolveQueuedContentSession(
+        record,
+        queuedContentSessionId,
+        queuedInspectSession,
+      );
       const binding = this.bindings.get(record.channel);
       if (
         !contentSessionId ||
@@ -3299,6 +3335,36 @@ export class BackgroundRouter {
     });
   }
 
+  /**
+   * Resolves the content session a queued read belongs to. A panel that opens --
+   * or that reconnects to a background the browser had suspended -- takes its
+   * first read while the content lease is still being attached; that is a
+   * session on its way in, not a disposed one, so wait for the lease this very
+   * inspection session establishes instead of failing the read closed. The wait
+   * ends with the lease or with the session's teardown, never on a timer. Once
+   * this panel has held a content lease the wait is over for good: a later read
+   * without one crossed a session boundary the panel was told about, and it
+   * still fails closed.
+   */
+  private async resolveQueuedContentSession(
+    record: PanelPortRecord,
+    queuedContentSessionId: ContentSessionId | undefined,
+    queuedInspectSession: BackgroundInspectSession | undefined,
+  ): Promise<ContentSessionId | undefined> {
+    if (
+      queuedContentSessionId !== undefined ||
+      record.contentLeaseEverAttached ||
+      queuedInspectSession === undefined ||
+      record.inspectSession !== queuedInspectSession
+    ) {
+      return queuedContentSessionId;
+    }
+    await record.contentLeaseArrival?.ready;
+    return record.inspectSession === queuedInspectSession
+      ? record.contentSessionId
+      : undefined;
+  }
+
   private queueStylesRequest(
     record: PanelPortRecord,
     activationToken: object,
@@ -3307,8 +3373,14 @@ export class BackgroundRouter {
     const settle = (code: StylesErrorCode): void => {
       this.postStylesQueryError(record, request.requestId, code);
     };
-    const contentSessionId = record.contentSessionId;
+    const queuedContentSessionId = record.contentSessionId;
+    const queuedInspectSession = record.inspectSession;
     const operation = record.inspectCommandTail.then(async () => {
+      const contentSessionId = await this.resolveQueuedContentSession(
+        record,
+        queuedContentSessionId,
+        queuedInspectSession,
+      );
       const binding = this.bindings.get(record.channel);
       if (
         !contentSessionId ||
@@ -4199,6 +4271,8 @@ export class BackgroundRouter {
     record.inspectTabId = undefined;
     record.inspectWindowId = undefined;
     record.contentSessionId = undefined;
+    record.contentLeaseArrival?.settle();
+    record.contentLeaseArrival = undefined;
     record.replacingContentSessionId = undefined;
     record.rejectPendingContentLeaseReplacements = undefined;
     record.stylesSelectionAuthority = undefined;

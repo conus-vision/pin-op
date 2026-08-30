@@ -8,9 +8,8 @@ Only CSS and SCSS plugins ship as production implementations today. The public
 API is intentionally general enough for framework and template integrations.
 
 This plugin API remains active-document-only. It supplies highlighting and the
-Existing Source experience in the legacy rollback panel; it does not mint
-cross-file Rules open authorities. The new Inspector has no visible Source tab.
-Its built-in Rules resolver owns exact workspace CSS/SCSS/source-map verification
+Inspector's Source tab; it does not mint cross-file Rules open authorities.
+The built-in Rules resolver owns exact workspace CSS/SCSS/source-map verification
 and only an explicit Rules origin click may switch VS Code using a current
 IDE-issued opaque authority. No workspace URI/path, full range, document
 version, or command crosses the bridge. First-party PHP/template providers and

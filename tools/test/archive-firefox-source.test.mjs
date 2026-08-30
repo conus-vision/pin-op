@@ -90,72 +90,44 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
   {
     upstreamPath: "front_end/panels/elements/ElementsTreeElement.ts",
     sha256: "40167299e234ad6378823514f2265b2e4fb5530821aeae4c3fcc39ae301ec07b",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256:
-        "882883d5a5231eff4d7aed88e58e5680690ef2a29948edd0e71926aecbe2eb64",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/ElementsTreeOutline.ts",
     sha256: "36049536b7e146addc2de9784790d8ae630f28c1640b3b679506d9e4cc7bfd9d",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-      localSha256:
-        "13a888ecc9cf4faec200bcb6a0149c0de7ae726a7406c95b94201f5b69f75d40",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/PropertyRenderer.ts",
     sha256: "b13d5d5edede2f5dc0b8cb7e7d974f3b5cf69afd41e81c320f78466aa9e7464e",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256:
-        "a74c190d654652966d209ddeb5d763fdc3c5e29bbc4e77468d40c8ece39d4759",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertiesSection.ts",
     sha256: "bd02a2628edd75360d29eb7da8630dd5b0ef9b5e409cf83bd20288fa52a293be",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256:
-        "2a23013161ed18920997793023f25a8fca5947bc036fcdf9310cf5da47e0c91f",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertyTreeElement.ts",
     sha256: "427124f750a785db8d64676c970ae1576c7c11df7136393e8f4b82e679ecba2d",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256:
-        "0fcb976c04ddc107ab372497fd2e1d816f9407500a4653ccc1b36028627bb1e9",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylePropertyUtils.ts",
     sha256: "f4fc4e139fe9fac7ef2632f0ae0042de18e01ec00d3b60159d6827edc0e0ee4b",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256:
-        "fa1652b5e6ec341854d8e745f20465f9ec20a0bdfadcee70aaccfd978b19528f",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/StylesSidebarPane.ts",
     sha256: "575f17e4eee88efa04c627277f9c490233317181c429b535b110001fc1ad8e28",
-    derivedTargets: [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-      localSha256:
-        "43c30720702c295746c948b7eddf384e86eb36e6ef4a2cb82c1f39969fe3083e",
-    }],
+    role: "native-runtime-input",
+    derivedTargets: [],
   },
   {
     upstreamPath: "front_end/panels/elements/elementsTreeOutline.css",
@@ -164,7 +136,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
   {
@@ -174,7 +146,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
   {
@@ -184,7 +156,7 @@ const EXPECTED_CHROMIUM_SOURCE_INVENTORY = Object.freeze([
       path: "packages/devtools-elements-ui/assets/devtools-elements.css",
       changeRecord: "PIN_OP_CHANGES.md#scoped-styles",
       localSha256:
-        "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+        "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
     }],
   },
 ]);
@@ -224,12 +196,10 @@ const EXPECTED_FIXED_SOURCE_PATHS = Object.freeze([
   "packages/devtools-elements-ui/assets/devtools-elements.css",
   "packages/devtools-elements-ui/package.json",
   "packages/devtools-elements-ui/src/contracts.ts",
-  "packages/devtools-elements-ui/src/elementsInspectorView.ts",
   "packages/devtools-elements-ui/src/index.ts",
   "packages/devtools-elements-ui/src/pseudoStateController.ts",
   "packages/devtools-elements-ui/src/upstreamRuntime.ts",
-  "packages/devtools-elements-ui/test/elementsInspectorView.test.ts",
-  "packages/devtools-elements-ui/test/elementsTreeOutline.test.ts",
+  "packages/devtools-elements-ui/test/elementsInspectorShell.test.ts",
   "packages/devtools-elements-ui/test/fixtures/elementsSession.ts",
   "packages/devtools-elements-ui/test/matchedStylesContract.test.ts",
   "packages/devtools-elements-ui/test/matchedStylesContract.types.ts",
@@ -237,13 +207,11 @@ const EXPECTED_FIXED_SOURCE_PATHS = Object.freeze([
   "packages/devtools-elements-ui/test/public-export.mjs",
   "packages/devtools-elements-ui/test/support/fakeDocument.ts",
   "packages/devtools-elements-ui/test/support/fakeElementsBackend.ts",
-  "packages/devtools-elements-ui/test/stylesSidebarPane.test.ts",
   "packages/devtools-elements-ui/test/types.tsconfig.json",
   "packages/devtools-elements-ui/tsconfig.json",
   "packages/browser-extension-core/package.json",
   "packages/browser-extension-core/assets/inspector-panel.html",
   "packages/browser-extension-core/assets/panel.css",
-  "packages/browser-extension-core/assets/panel.html",
   "packages/browser-extension-core/assets/pin-op.svg",
   "packages/browser-extension-core/assets/icons/pin-op-16.png",
   "packages/browser-extension-core/assets/icons/pin-op-32.png",
@@ -271,7 +239,6 @@ const EXPECTED_FIXED_SOURCE_PATHS = Object.freeze([
   "extensions/firefox/src/devtools.html",
   "extensions/firefox/src/devtools.ts",
   "extensions/firefox/src/inspectorPanel.ts",
-  "extensions/firefox/src/panel.ts",
   "extensions/firefox/test/adapter.test.ts",
   "extensions/firefox/test/manifest.test.ts",
   "extensions/firefox/test/panelAssets.test.ts",
@@ -326,9 +293,10 @@ test("source archive locks the current Chromium pin and derived source bytes", (
   assert.deepEqual(pin, EXPECTED_CHROMIUM_PIN);
   assert.deepEqual(
     files
-      .map(({ upstreamPath, sha256, derivedTargets }) => ({
+      .map(({ upstreamPath, sha256, role, derivedTargets }) => ({
         upstreamPath,
         sha256,
+        ...(role === undefined ? {} : { role }),
         derivedTargets,
       }))
       .sort((left, right) => compareAscii(left.upstreamPath, right.upstreamPath)),
@@ -433,12 +401,14 @@ test("source archive pins the native Chromium dependency through package and loc
       "lock importer version",
       (files) => {
         const lockfile = files.get("pnpm-lock.yaml").toString("utf8");
+        // A checkout may hold the lockfile with either line ending.
+        const pin = new RegExp(
+          "specifier: " + version.replaceAll(".", "\\.") +
+            "(\\r?\\n\\s*)version: " + version.replaceAll(".", "\\."),
+        );
         files.set(
           "pnpm-lock.yaml",
-          Buffer.from(lockfile.replace(
-            `specifier: ${version}\n        version: ${version}`,
-            `specifier: 1.0.0\n        version: 1.0.0`,
-          )),
+          Buffer.from(lockfile.replace(pin, "specifier: 1.0.0$1version: 1.0.0")),
         );
       },
       /native Chromium lockfile pin/i,
@@ -612,7 +582,7 @@ test("source archive confines derived targets to the approved repository roots",
   ]) {
     const files = chromiumInspectorSourceFixture();
     const manifest = JSON.parse(files.get(upstreamManifestPath).toString("utf8"));
-    const target = manifest.files[0].derivedTargets[0];
+    const target = derivedManifestTarget(manifest);
     const originalBytes = files.get(target.path);
     assert.ok(originalBytes);
     files.set(injectedPath, originalBytes);
@@ -636,7 +606,7 @@ test("source archive verifies pinned upstream and derived bytes", () => {
     const manifest = JSON.parse(files.get(upstreamManifestPath).toString("utf8"));
     const path = kind === "upstream"
       ? `third_party/chromium-devtools-frontend/upstream/${manifest.files[0].upstreamPath}`
-      : manifest.files[0].derivedTargets[0].path;
+      : derivedManifestTarget(manifest).path;
     files.set(path, Buffer.from(`tampered ${kind} bytes`));
 
     assert.throws(
@@ -657,7 +627,7 @@ test("source archive locks every derived target mapping and digest", () => {
   ]) {
     const files = chromiumInspectorSourceFixture();
     const manifest = JSON.parse(files.get(upstreamManifestPath).toString("utf8"));
-    mutate(manifest.files[0].derivedTargets[0]);
+    mutate(derivedManifestTarget(manifest));
     files.set(upstreamManifestPath, Buffer.from(JSON.stringify(manifest)));
 
     assert.throws(
@@ -732,6 +702,14 @@ function distinctNoticeDigests(manifest) {
       file.embeddedNotices.map((notice) => notice.sha256),
     ),
   )].sort(compareAscii);
+}
+
+function derivedManifestTarget(manifest) {
+  const target = manifest.files
+    .flatMap(({ derivedTargets }) => derivedTargets)
+    .at(0);
+  if (!target) throw new Error("Expected one derived Chromium target");
+  return target;
 }
 
 function compareAscii(left, right) {

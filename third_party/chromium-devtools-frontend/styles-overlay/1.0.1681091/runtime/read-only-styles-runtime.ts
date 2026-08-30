@@ -141,6 +141,22 @@ class ChromiumReadOnlyStylesPane {
     this.element.style.maxHeight = '100%';
     this.element.style.flex = '1 1 auto';
     this.element.style.overflow = 'auto';
+    this.#adoptPinOpControlStyles();
+  }
+
+  // Chromium keeps this pane inside a widget shadow root, so the panel's own
+  // scoped stylesheet cannot reach a Pin-op control mounted in the native
+  // toolbar. Adopt exactly the read-only control rules next to it instead.
+  #adoptPinOpControlStyles(): void {
+    const root = this.#pane.contentElement.getRootNode();
+    if (!(root instanceof ShadowRoot) ||
+      root.querySelector('style[data-part="pin-op-control-styles"]')) {
+      return;
+    }
+    const style = document.createElement('style');
+    style.setAttribute('data-part', 'pin-op-control-styles');
+    style.textContent = PIN_OP_CONTROL_STYLES;
+    root.append(style);
   }
 
   render(snapshot: MatchedStylesSnapshot): Promise<void> {
@@ -157,6 +173,22 @@ class ChromiumReadOnlyStylesPane {
   refreshOrigins(): void {
     if (this.#disposed || !this.#rendered) return;
     this.#decorateOrigins(this.#rendered);
+  }
+
+  /**
+   * Chromium's own Styles toolbar row. Pin-op mounts its read-only `:hov`
+   * control here so the preview toggle sits where DevTools keeps the
+   * element-state toggle instead of floating over the rule list.
+   */
+  toolbarElement(): HTMLElement|null {
+    if (this.#disposed) return null;
+    return this.#pane.contentElement.querySelector<HTMLElement>('devtools-toolbar.styles-pane-toolbar');
+  }
+
+  /** Chromium's toolbar pane below the toolbar row, used by the `:hov` preview. */
+  toolbarPaneElement(): HTMLElement|null {
+    if (this.#disposed) return null;
+    return this.#pane.contentElement.querySelector<HTMLElement>('.styles-sidebar-toolbar-pane');
   }
 
   clear(): void {
@@ -270,6 +302,105 @@ class ChromiumReadOnlyStylesPane {
     }
   }
 }
+
+const PIN_OP_CONTROL_STYLES = `
+.pseudo-state-toolbar-item {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-inline: 2px;
+}
+
+.pseudo-state-button {
+  appearance: none;
+  min-height: 20px;
+  min-width: 36px;
+  margin: 0;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 100px;
+  color: var(--sys-color-on-surface);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pseudo-state-button:hover:not(:disabled),
+.pseudo-state-button[aria-expanded="true"] {
+  background: var(--sys-color-state-hover-on-subtle);
+}
+
+.pseudo-state-button:disabled {
+  color: var(--sys-color-state-disabled);
+  cursor: default;
+}
+
+.pseudo-state-button:focus-visible {
+  outline: 2px solid var(--sys-color-state-focus-ring);
+  outline-offset: -2px;
+}
+
+.pseudo-state-pane {
+  display: block;
+  min-width: 0;
+}
+
+.pseudo-state-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 2px 5px;
+}
+
+.pseudo-state-choice {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  cursor: pointer;
+}
+
+.pseudo-state-choice:has(input:disabled) {
+  color: var(--sys-color-state-disabled);
+  cursor: default;
+}
+
+.pseudo-state-choice input {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--sys-color-primary);
+}
+
+.pseudo-state-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pseudo-state-description[role="status"],
+.pseudo-state-description[role="alert"] {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 2px 5px 4px;
+  overflow: visible;
+  clip-path: none;
+  color: var(--sys-color-on-surface-subtle);
+  white-space: normal;
+}
+
+.pseudo-state-description[role="alert"] {
+  border-inline-start: 3px solid var(--sys-color-error);
+}
+`;
 
 async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<RenderedModel> {
   const cssModel = createReadOnlyCSSModel();

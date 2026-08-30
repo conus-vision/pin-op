@@ -51,6 +51,7 @@ import {
   type InspectModeOptions,
 } from "./inspectMode.js";
 import {
+  PAGE_OVERLAY_MARKER_ATTRIBUTE,
   PageOverlay,
   type PageOverlayOptions,
 } from "./pageOverlay.js";
@@ -92,6 +93,7 @@ import {
 } from "./stylesProtocol.js";
 
 export const PAGE_INSPECTION_SELECTION_INTERVAL_MS = 100;
+
 
 export type PageInspectionDocument = Document & {
   readonly styleSheets: CssDocumentSource["styleSheets"];
@@ -2953,10 +2955,11 @@ export class PageInspectionSession {
     if (this.isRuntimeArtifactNode(node)) return true;
     try {
       const overlay = this.overlay as PageInspectionOverlay | undefined;
-      return overlay ? overlay.ownsNode(node) : false;
+      if (overlay?.ownsNode(node)) return true;
     } catch {
       return true;
     }
+    return bearsOverlayMarker(node);
   }
 
   private isRuntimeArtifactNode(node: Node): boolean {
@@ -3525,4 +3528,28 @@ function summarizeElement(element: InspectableElement): string | undefined {
     }
   }
   return summary.slice(0, 512);
+}
+
+/**
+ * Whether a node is inside Pin-op's own overlay host. The running session may
+ * not own it -- a suspended background leaves hosts behind -- but the marker is
+ * Pin-op's namespace, and Pin-op never presents its own overlay as page content.
+ */
+function bearsOverlayMarker(node: Node): boolean {
+  try {
+    let current: Node | null = node;
+    for (let depth = 0; current && depth < 64; depth += 1) {
+      const element = current as Element;
+      if (
+        typeof element.hasAttribute === "function" &&
+        element.hasAttribute(PAGE_OVERLAY_MARKER_ATTRIBUTE)
+      ) {
+        return true;
+      }
+      current = current.parentNode;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }

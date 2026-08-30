@@ -1,9 +1,9 @@
 import { PROTOCOL_VERSION } from "@pin-op/protocol";
 import {
-  ElementsInspectorView,
   type PseudoStateDataSource,
   type SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
+import { TestElementsInspector } from "./support/testElementsInspector.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   startInspectorPanelRuntime,
@@ -230,7 +230,7 @@ describe("startInspectorPanelRuntime", () => {
 
   it("binds immutable :hov state only to the exact selected tree and matched-style authority", async () => {
     const bindRules = vi.spyOn(
-      ElementsInspectorView.prototype,
+      TestElementsInspector.prototype,
       "bindRulesDataSource",
     );
     const harness = createHarness();
@@ -1143,7 +1143,7 @@ describe("startInspectorPanelRuntime", () => {
     let sourceLinkDelegate: SourceLinkDelegate | undefined;
     const runtime = harness.start({
       createElementsInspectorView(ownerDocument, mount, source) {
-        const view = new ElementsInspectorView(ownerDocument, mount, source);
+        const view = new TestElementsInspector(ownerDocument, mount, source);
         const bindRulesDataSource = view.bindRulesDataSource.bind(view);
         view.bindRulesDataSource = (dataSource, delegate, pseudoStateDataSource) => {
           sourceLinkDelegate = delegate;
@@ -1385,6 +1385,187 @@ describe("startInspectorPanelRuntime", () => {
     expect(harness.element("protocol-mismatch").hidden).toBe(true);
     expect(port.sent.filter((message) => isType(message, "dom.getRoot")))
       .toHaveLength(2);
+    runtime.dispose();
+  });
+
+  it("restores the selection after the background port drops mid-session", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    // The browser suspends an idle background page; the panel reconnects.
+    port.disconnect();
+    await waitForPortCount(harness.ports, 2);
+    const replacementPort = requiredPort(harness.ports, 1);
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    replacementPort.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    // A second window state must not race a competing root load against the
+    // restore, which would drop the recovered selection on the floor.
+    replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    await flushAsync();
+    expect(replacementPort.sent.filter((message) => isType(message, "dom.getRoot")))
+      .toHaveLength(1);
+
+    const restoredRoot = lastMessage(replacementPort.sent, "dom.getRoot");
+    replacementPort.emitMessage({
+      type: "dom.root",
+      requestId: restoredRoot.requestId,
+      documentEpoch: 7,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    await flushAsync();
+    const resolve = lastMessage(replacementPort.sent, "dom.resolveLocator");
+    expect(resolve.locator).toMatchObject({
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    });
+    runtime.dispose();
+  });
+
+  it("holds the frozen tree until the reconnect can actually restore it", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+
+    port.disconnect();
+    await waitForPortCount(harness.ports, 2);
+    const replacementPort = requiredPort(harness.ports, 1);
+
+    replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    replacementPort.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const firstRestore = lastMessage(replacementPort.sent, "dom.getRoot");
+
+    // The reconnect can outrun the content session the background is still
+    // establishing; the frozen tree has to survive that answer and be restored
+    // on the next window state instead.
+    replacementPort.emitMessage({
+      type: "dom.error",
+      requestId: firstRestore.requestId,
+      code: "session-disposed",
+    });
+    await flushAsync();
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    await flushAsync();
+    const secondRestore = lastMessage(replacementPort.sent, "dom.getRoot");
+    expect(secondRestore.requestId).not.toBe(firstRestore.requestId);
+    replacementPort.emitMessage({
+      type: "dom.root",
+      requestId: secondRestore.requestId,
+      documentEpoch: 7,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    await flushAsync();
+    expect(lastMessage(replacementPort.sent, "dom.resolveLocator").locator)
+      .toMatchObject({ path: [{ tagName: "div", siblingIndex: 0 }] });
+    runtime.dispose();
+  });
+
+  it("stops holding a frozen tree the reconnect cannot restore", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+
+    port.disconnect();
+    await waitForPortCount(harness.ports, 2);
+    const replacementPort = requiredPort(harness.ports, 1);
+    replacementPort.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+
+    // A tree frozen forever is its own defect: the retries are bounded.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      replacementPort.emitMessage({ type: "pin-op.windowState", state: "linked" });
+      await flushAsync();
+      replacementPort.emitMessage({
+        type: "dom.error",
+        requestId: lastMessage(replacementPort.sent, "dom.getRoot").requestId,
+        code: "session-disposed",
+      });
+      await flushAsync();
+    }
+
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .toBeNull();
     runtime.dispose();
   });
 
@@ -2175,7 +2356,7 @@ describe("startInspectorPanelRuntime", () => {
 
   it("fences local preview authority before DOM recovery and requires fresh generation one", async () => {
     const bindRules = vi.spyOn(
-      ElementsInspectorView.prototype,
+      TestElementsInspector.prototype,
       "bindRulesDataSource",
     );
     const harness = createHarness();
@@ -2502,7 +2683,7 @@ function createHarness(): {
         document: document.document,
         createElementsInspectorView:
           overrides.createElementsInspectorView ?? ((ownerDocument, mount, source) =>
-            new ElementsInspectorView(ownerDocument, mount, source)),
+            new TestElementsInspector(ownerDocument, mount, source)),
         connectRuntimePort(name) {
           const port = new TestRuntimePort(name);
           ports.push(port);

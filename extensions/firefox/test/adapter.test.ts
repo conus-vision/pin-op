@@ -17,7 +17,6 @@ vi.mock("@pin-op/browser-extension-core", () => ({
   startContentScriptRuntime: harness.starts.contentScript,
   startContentRefreshBootstrapRuntime: harness.starts.contentRefresh,
   startDevtoolsRuntime: harness.starts.devtools,
-  startPanelRuntime: harness.starts.panel,
   startInspectorPanelRuntime: harness.starts.inspectorPanel,
   sanitizeErrorMessage: harness.sanitize,
 }));
@@ -31,7 +30,6 @@ describeBrowserAdapterContract(
     importBackground: () => import("../src/background.js"),
     importContentScript: () => import("../src/contentScript.js"),
     importDevtools: () => import("../src/devtools.js"),
-    importPanel: () => import("../src/panel.js"),
     importInspectorPanel: () => import("../src/inspectorPanel.js"),
     expectedMatchedStylesRequestType: "styles.getMatched",
   },

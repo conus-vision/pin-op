@@ -14,7 +14,9 @@ import {
 import { completeCssRuleEvidence } from "../sourcePlugins/cssFacts.js";
 import {
   completeDeclarationFingerprint,
-  equalDeclarationFingerprints,
+  declarationsBrowsersKeep,
+  declarationsContainEvidence,
+  equalReportedDeclarations,
   normalizeCondition,
 } from "../sourcePlugins/declarationFingerprint.js";
 import {
@@ -516,7 +518,17 @@ export class RulesSourceResolver {
     }
     const originalText = originalSnapshot.text;
     const originalRule = mappedOriginalRule(originalStylesheet, mapped);
-    if (!originalRule || !ruleMatchesEvidence(originalRule, evidence)) {
+    // The map carried this file's own text and it matched byte for byte above,
+    // so the position it gives is the compiler's own answer for a rule already
+    // matched declaration for declaration.
+    const mapCarriedThisSource = mapped.sourceContent !== undefined ||
+      mapped.selectorMappings.some(
+        (mapping) => mapping.sourceContent !== undefined,
+      );
+    if (
+      !originalRule ||
+      !originalRuleCarriesEvidence(originalRule, evidence, mapCarriedThisSource)
+    ) {
       return this.freshCssFallback(
         cssResult,
         generatedDocumentUri,
@@ -975,6 +987,55 @@ function exactProtocolRangeMatchesRule(
     generated.endColumn === rule.range.end.character + 1;
 }
 
+const RELATIVE_SELECTOR = /&|#\{/;
+
+/**
+ * Whether a preprocessor rule is the one the generated rule was compiled from.
+ *
+ * The generated rule has already been matched declaration for declaration, and
+ * the source map is what ties the two together; what is checked here is that
+ * the rule the map points at is the same rule. Its declarations cannot be
+ * required to match: a preprocessor rule may write none of them out -- a mixin
+ * include compiles to a dozen -- so what it does declare directly must be
+ * present in what the browser reported, and no more is asked of it.
+ */
+function originalRuleCarriesEvidence(
+  rule: StylesheetRule,
+  evidence: InspectRuleEvidence,
+  mapCarriedThisSource: boolean,
+): boolean {
+  if (rule.hasUnsupportedGroupingContext) return false;
+  const declarations = completeDeclarationFingerprint(
+    declarationEvidence(evidence),
+  );
+  if (declarations === undefined) return false;
+  // A rule written inside a mixin says `&`, or names a state by interpolation,
+  // and what that becomes is only known where the mixin is used -- as is the
+  // `@media` it is used under. Its selector and conditions cannot be compared
+  // with anything; what it declares directly still can, and the map is what
+  // says this is the rule.
+  const comparableSelector = !RELATIVE_SELECTOR.test(rule.selector);
+  if (comparableSelector && !mapCarriedThisSource) {
+    if (
+      normalizeSelector(evidence.selector) !==
+        (rule.expandedSelector ?? rule.fingerprint.selector)
+    ) {
+      return false;
+    }
+    if (
+      !equalContexts(evidence.generatedSource?.contexts ?? [], rule.contexts)
+    ) {
+      return false;
+    }
+  }
+  const written = declarationsBrowsersKeep(
+    declarations,
+    rule.fingerprint.declarations,
+  );
+  return written.length === 0 ||
+    declarationsContainEvidence(declarations, written);
+}
+
 function ruleMatchesEvidence(
   rule: StylesheetRule,
   evidence: InspectRuleEvidence,
@@ -994,10 +1055,7 @@ function ruleMatchesEvidence(
   );
   if (
     declarations === undefined ||
-    !equalDeclarationFingerprints(
-      declarations,
-      rule.fingerprint.declarations,
-    )
+    !equalReportedDeclarations(declarations, rule.fingerprint.declarations)
   ) {
     return false;
   }

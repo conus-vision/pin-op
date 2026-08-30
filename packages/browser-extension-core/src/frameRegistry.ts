@@ -1409,6 +1409,111 @@ export function hasNeutralGeometryStyle(
   );
 }
 
+/** How much an element's own styles scale its box, when they keep it upright. */
+export interface UprightBoxScale {
+  readonly x: number;
+  readonly y: number;
+}
+
+const UNSCALED: UprightBoxScale = Object.freeze({ x: 1, y: 1 });
+
+/**
+ * Reads how an element's own styles place its box, and answers `undefined` when
+ * they turn or skew it.
+ *
+ * This is weaker than `hasNeutralGeometryStyle` on purpose. A viewport rect
+ * already carries a move and a scale, so as long as the box stays upright it
+ * can still be drawn back from its own margin, border and padding widths --
+ * scaled by the same factor. `perspective` only projects children that are
+ * themselves transformed, and every transform on the way up is read here, so on
+ * its own it changes nothing. Refusing all three is what left an ordinary
+ * carousel, and a button that grows a little under the pointer, with no
+ * highlight at all.
+ */
+export function readUprightBoxScale(
+  style: object,
+  isAuthoritative: GeometryAuthority,
+): UprightBoxScale | undefined {
+  const values = style as Record<string, unknown>;
+  const transform = readGeometryValue(() => values.transform, isAuthoritative);
+  const zoom = readGeometryValue(() => values.zoom, isAuthoritative);
+  const translate = readGeometryValue(() => values.translate, isAuthoritative);
+  const rotate = readGeometryValue(() => values.rotate, isAuthoritative);
+  const scale = readGeometryValue(() => values.scale, isAuthoritative);
+  const offsetPath = readGeometryValue(() => values.offsetPath, isAuthoritative);
+  const motionPath = readGeometryValue(() => values.motionPath, isAuthoritative);
+  if (
+    !transform || !zoom || !translate || !rotate || !scale ||
+    !offsetPath || !motionPath ||
+    !isUnitZoom(zoom.value) ||
+    !isUprightTranslate(translate.value) ||
+    !isNeutralRotate(rotate.value) ||
+    !isNoneStyleValue(offsetPath.value) ||
+    !isNoneStyleValue(motionPath.value)
+  ) {
+    return undefined;
+  }
+  const fromTransform = readTransformScale(transform.value);
+  const fromScale = readScaleProperty(scale.value);
+  return fromTransform && fromScale
+    ? { x: fromTransform.x * fromScale.x, y: fromTransform.y * fromScale.y }
+    : undefined;
+}
+
+/** `none`, or a matrix that only moves and axis-scales the box. */
+function readTransformScale(value: unknown): UprightBoxScale | undefined {
+  const normalized = normalizeOptionalStyleValue(value);
+  if (normalized === undefined || normalized === "none") return UNSCALED;
+  const matrix = readTransformMatrix(normalized);
+  if (!matrix) return undefined;
+  const upright = matrix.length === 6
+    ? matrix[1] === 0 && matrix[2] === 0
+    : matrix[1] === 0 && matrix[2] === 0 && matrix[3] === 0 &&
+      matrix[4] === 0 && matrix[6] === 0 && matrix[7] === 0 &&
+      matrix[8] === 0 && matrix[9] === 0 && matrix[11] === 0 &&
+      matrix[10] === 1 && matrix[15] === 1;
+  if (!upright) return undefined;
+  const x = matrix[0]!;
+  const y = matrix.length === 6 ? matrix[3]! : matrix[5]!;
+  return isPositiveScale(x) && isPositiveScale(y) ? { x, y } : undefined;
+}
+
+function readScaleProperty(value: unknown): UprightBoxScale | undefined {
+  const normalized = normalizeOptionalStyleValue(value);
+  if (normalized === undefined || normalized === "none") return UNSCALED;
+  const components = normalized.split(/\s+/).map(Number);
+  if (
+    components.length < 1 ||
+    components.length > 3 ||
+    !components.every(isPositiveScale)
+  ) {
+    return undefined;
+  }
+  return { x: components[0]!, y: components[1] ?? components[0]! };
+}
+
+function isPositiveScale(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function readTransformMatrix(value: string): readonly number[] | undefined {
+  const match = /^matrix(3d)?\(([^)]*)\)$/.exec(value.trim());
+  if (!match) return undefined;
+  const parts = match[2]!.split(",").map((part) => Number(part.trim()));
+  const expected = match[1] ? 16 : 6;
+  return parts.length === expected && parts.every(Number.isFinite)
+    ? parts
+    : undefined;
+}
+
+/** Any translation keeps the box upright; a viewport rect already includes it. */
+function isUprightTranslate(value: unknown): boolean {
+  const normalized = normalizeOptionalStyleValue(value);
+  if (normalized === undefined || normalized === "none") return true;
+  const components = normalized.split(/\s+/);
+  return components.length >= 1 && components.length <= 3;
+}
+
 function isUnitZoom(value: unknown): boolean {
   if (value === undefined || value === 1) {
     return true;

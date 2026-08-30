@@ -272,10 +272,8 @@ different workspace CSS or SCSS file; passive inspection never does.
 There is no open acknowledgement message. Local transport acceptance cannot
 prove bridge-to-browser delivery, so stale or mismatched generations fail
 closed and a fresh inspect republishes authority. Existing `source.matches`,
-`source.open`, and active-document-only Source semantics remain separate. The
-default Inspector has no visible Source tab; Source remains available only in
-the packaged, non-default legacy rollback panel for its one published rollback
-release.
+`source.open`, and active-document-only Source semantics remain separate and
+back the Inspector's Source tab.
 
 ## Auto Refresh
 

@@ -570,6 +570,7 @@ describe("PageInspectionSession", () => {
     );
     let mutationCallback: ((records: readonly unknown[]) => void) | undefined;
     let runtimeMutationFilter: ((record: unknown) => boolean) | undefined;
+    let applicabilityChecks = 0;
     const harness = createSessionHarness({
       createRuntimeArtifacts: () => artifacts,
       createPseudoStatePreview: () => preview,
@@ -578,7 +579,7 @@ describe("PageInspectionSession", () => {
       createApplicabilityObserver(options) {
         const typed = options as MatchedStylesApplicabilityObserverOptions;
         runtimeMutationFilter = typed.isRuntimeArtifactMutation;
-        return new MatchedStylesApplicabilityObserver({
+        const observer = new MatchedStylesApplicabilityObserver({
           ...typed,
           queueMicrotask: (callback) => callback(),
           createMutationObserver(callback) {
@@ -586,6 +587,12 @@ describe("PageInspectionSession", () => {
             return { observe: vi.fn(), disconnect: vi.fn() };
           },
         });
+        const check = observer.check.bind(observer);
+        observer.check = () => {
+          applicabilityChecks += 1;
+          return check();
+        };
+        return observer;
       },
     });
     ownedElement = harness.card as unknown as Element;
@@ -649,19 +656,21 @@ describe("PageInspectionSession", () => {
       stylesRevision: 6,
       stylesheetRevision: 2,
     });
+    // A runtime-owned record is filtered outright; a page-owned one reaches the
+    // applicability re-check, which reports a change only when one happened.
+    applicabilityChecks = 0;
     mutationCallback?.([ownMarkerMutation]);
+    expect(applicabilityChecks).toBe(0);
     expect(harness.session.styleRevisions).toMatchObject({
       stylesRevision: 6,
       stylesheetRevision: 2,
     });
     mutationCallback?.([pageMarkerRemoval]);
-    expect(harness.session.styleRevisions).toMatchObject({
-      stylesRevision: 7,
-      stylesheetRevision: 2,
-    });
+    expect(applicabilityChecks).toBe(1);
     mutationCallback?.([pageStyleRemoval]);
+    expect(applicabilityChecks).toBe(2);
     expect(harness.session.styleRevisions).toMatchObject({
-      stylesRevision: 8,
+      stylesRevision: 6,
       stylesheetRevision: 2,
     });
     await expect(harness.session.handle({
@@ -670,7 +679,7 @@ describe("PageInspectionSession", () => {
       documentEpoch: 3,
       nodeRef: "node-2",
       selectionRevision: selection.selectionRevision,
-      expectedStylesRevision: 6,
+      expectedStylesRevision: 5,
       expectedPseudoStateRevision: 1,
       states: ["hover"],
     })).resolves.toEqual({
@@ -680,17 +689,16 @@ describe("PageInspectionSession", () => {
     });
     expect(harness.session.clearPseudoStates()).toBe(true);
     expect(harness.session.styleRevisions).toMatchObject({
-      stylesRevision: 9,
+      stylesRevision: 7,
       stylesheetRevision: 2,
     });
+    applicabilityChecks = 0;
     mutationCallback?.([ownChildMutation]);
-    expect(harness.session.styleRevisions).toMatchObject({
-      stylesRevision: 9,
-      stylesheetRevision: 2,
-    });
+    expect(applicabilityChecks).toBe(0);
     mutationCallback?.([historicalReattach]);
+    expect(applicabilityChecks).toBe(1);
     expect(harness.session.styleRevisions).toMatchObject({
-      stylesRevision: 10,
+      stylesRevision: 7,
       stylesheetRevision: 2,
     });
     expect(finishExpectedOwnMutationBatch).toHaveBeenCalled();
@@ -2018,11 +2026,12 @@ describe("PageInspectionSession", () => {
       stylesheetRevision: 0,
       styles: {
         rules: [
-          { ruleRef: firstRuleRef, selectorText },
+          // Cascade order: the later rule of equal weight leads.
           {
             selectorText: ".field:checked",
             matchingSelectorIndices: [0],
           },
+          { ruleRef: firstRuleRef, selectorText },
         ],
       },
     });
@@ -2162,6 +2171,12 @@ describe("PageInspectionSession", () => {
       },
       onStylesInvalidated: (event) => invalidations.push(event),
     });
+    (harness.card as typeof harness.card & { getRootNode(): object })
+      .getRootNode = () => harness.document;
+    let cardMatches = true;
+    harness.card.matches = (selector: string) => (
+      selector === ".card" ? cardMatches : false
+    );
     await harness.session.selectByRef("node-2", 3);
     const entry = registry!.snapshot().entries[0]!;
     const ruleRef = registry!.referenceRule(entry, "0", nativeRule);
@@ -2172,6 +2187,7 @@ describe("PageInspectionSession", () => {
       removedNodes: [],
     };
 
+    cardMatches = false;
     registryMutation?.([record]);
     applicabilityMutation?.([record]);
     await Promise.resolve();

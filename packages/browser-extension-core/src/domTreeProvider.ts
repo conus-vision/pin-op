@@ -128,6 +128,22 @@ export interface DomTreeElementIdentity extends FrameIdentity {
   readonly nodeRef: string;
 }
 
+const STABILITY_MEMO_MAX_ENTRIES = 256;
+
+
+
+interface RevealedElementMemoValue {
+  readonly scope: NodeScope;
+  readonly revealed: DomTreeRevealedElement;
+}
+
+interface StabilityMemo<T> {
+  readonly stabilityGeneration: number;
+  readonly documentEpoch: number;
+  readonly authorityGeneration: number;
+  readonly value: T;
+}
+
 export interface DomTreeRevealedElement extends DomTreeElementIdentity {
   readonly ancestorPath: readonly DomNodeView[];
 }
@@ -461,6 +477,22 @@ export class DomTreeProvider {
   private activeFrameMutationScanGuard: (() => boolean) | undefined;
   private activeFrameMutationVisitBudget: FrameMutationVisitBudget | undefined;
   private authorityGeneration = 0;
+  /**
+   * A moment in which nothing the tree can observe has changed. The page cannot
+   * run script while a read holds the thread, so two reads of the same element
+   * inside one such moment must answer the same; the second is served from here
+   * instead of walking and re-validating the path again.
+   */
+  private stabilityGeneration = 0;
+  private resolvedElementMemo = new Map<string, StabilityMemo<
+    DomTreeResolvedElement
+  >>();
+  private revealedElementMemo = new WeakMap<Element, StabilityMemo<
+    RevealedElementMemoValue
+  >>();
+  private locatorResolutionMemo = new WeakMap<object, StabilityMemo<
+    StableLocatorResolution | undefined
+  >>();
   #activeFrameOwnershipProof: ActiveFrameOwnershipProof | undefined;
   private activePublicationGuard: (() => boolean) | undefined;
   private externalValueReadDepth = 0;
@@ -1045,6 +1077,13 @@ export class DomTreeProvider {
       throwDomTreeError("invalid-request");
     }
     this.flushMutationBarrier();
+    const revealedMemo = this.revealedElementMemo.get(element);
+    if (
+      this.isStable(revealedMemo) &&
+      this.revealedStillHolds(element, revealedMemo.value)
+    ) {
+      return revealedMemo.value.revealed;
+    }
     const scope = this.attachedScopeFor(element);
     if (!scope) {
       throwDomTreeError("node-unavailable");
@@ -1078,13 +1117,18 @@ export class DomTreeProvider {
       { requireTargetLocator: true },
     );
     if (!ancestorPath) throwDomTreeError("node-unavailable");
-    return Object.freeze({
+    const revealed = Object.freeze({
       nodeRef: target.nodeRef,
       frameRef: context.frameRef,
       frameEpoch: context.frameEpoch,
       documentEpoch: context.documentEpoch,
       ancestorPath,
     });
+    this.revealedElementMemo.set(
+      element,
+      this.currentStability({ scope, revealed }),
+    );
+    return revealed;
   }
 
   public resolveElement(
@@ -1099,6 +1143,13 @@ export class DomTreeProvider {
       throwDomTreeError("stale-document");
     }
     this.flushMutationBarrier();
+    const resolvedMemo = this.resolvedElementMemo.get(nodeRef);
+    if (
+      this.isStable(resolvedMemo) &&
+      this.resolvedStillHolds(resolvedMemo.value)
+    ) {
+      return resolvedMemo.value;
+    }
     const record = this.records.get(nodeRef);
     if (!record) {
       return undefined;
@@ -1126,13 +1177,15 @@ export class DomTreeProvider {
     ) {
       throwDomTreeError("node-unavailable");
     }
-    return Object.freeze({
+    const resolved = Object.freeze({
       element,
       nodeRef,
       frameRef: context.frameRef,
       frameEpoch: context.frameEpoch,
       documentEpoch: context.documentEpoch,
     });
+    this.rememberResolvedElement(nodeRef, resolved);
+    return resolved;
   }
 
   public resolveLocator(locator: DomStableLocator): DomTreeResolvedLocator | undefined {
@@ -2163,6 +2216,7 @@ export class DomTreeProvider {
         }
         authorVisitedNodes += 1;
         const childType = readNodeType(current);
+        if (childType === 3 && isIgnorableWhitespaceText(current)) continue;
         if (childType === 1) {
           children.push({ kind: "element", node: current as Element });
         } else if (childType === 3) {
@@ -2207,6 +2261,7 @@ export class DomTreeProvider {
       }
       authorVisitedNodes += 1;
       const childType = readNodeType(child);
+      if (childType === 3 && isIgnorableWhitespaceText(child)) continue;
       if (childType === 1) {
         children.push({ kind: "element", node: child as Element });
       } else if (childType === 3) {
@@ -2517,6 +2572,7 @@ export class DomTreeProvider {
         if (isCurrent()) this.markMutationOverflow(observedRoot);
         return;
       }
+      if (recordCount > 0) this.invalidateStability();
       if (!isCurrent() || this.pendingMutationOverflow) return;
       let index = 0;
       let skippedRuntimeRecords = 0;
@@ -2727,6 +2783,7 @@ export class DomTreeProvider {
   }
 
   private markMutationOverflow(observedRoot: Node, target?: Node): void {
+    this.invalidateStability();
     const overflow = this.pendingMutationOverflow ?? {
       observedRoots: new Set<Node>(),
       targets: new Set<Node>(),
@@ -2773,6 +2830,7 @@ export class DomTreeProvider {
   }
 
   private processMutations(): void {
+    this.invalidateStability();
     const authority: MutationDrainAuthority = {
       topDocument: this.topDocument,
       documentEpoch: this.documentEpoch,
@@ -2951,7 +3009,8 @@ export class DomTreeProvider {
         } else if (
           removed &&
           (removedType === 3 || removedType === 8 || removedType === 10) &&
-          !this.isNodeExcluded(removed)
+          !this.isNodeExcluded(removed) &&
+          !isIgnorableWhitespaceText(removed)
         ) {
           if (!isCurrent()) return false;
           logicalTreeChanged = true;
@@ -2993,7 +3052,8 @@ export class DomTreeProvider {
         } else if (
           added &&
           (addedType === 3 || addedType === 8 || addedType === 10) &&
-          !this.isNodeExcluded(added)
+          !this.isNodeExcluded(added) &&
+          !isIgnorableWhitespaceText(added)
         ) {
           if (!isCurrent()) return false;
           logicalTreeChanged = true;
@@ -3276,6 +3336,79 @@ export class DomTreeProvider {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * A memoized read is still only an answer about a live element: the cheap
+   * proof that it is where it was is taken again, and only the walk that built
+   * and re-resolved its locator is skipped.
+   */
+  private revealedStillHolds(
+    element: Element,
+    memo: RevealedElementMemoValue,
+  ): boolean {
+    const scope = this.attachedScopeFor(element);
+    if (!scope || !sameNodeScope(scope, memo.scope)) return false;
+    return memo.revealed.ancestorPath.every((view) => {
+      const record = this.records.get(view.nodeRef);
+      return record?.kind === view.kind &&
+        record.scope.documentEpoch === this.documentEpoch &&
+        this.nodeRegistry.resolve(view.nodeRef, record.scope) !== undefined;
+    });
+  }
+
+  private resolvedStillHolds(resolved: DomTreeResolvedElement): boolean {
+    const record = this.records.get(resolved.nodeRef);
+    if (record?.kind !== "element") return false;
+    const element = this.resolveNode(resolved.nodeRef, record.scope);
+    if (element !== resolved.element || !isElementNode(element)) return false;
+    const attachedScope = this.attachedScopeFor(element);
+    const context = this.frameRegistry.getContext(record.scope.frameRef);
+    return !!attachedScope &&
+      !!context &&
+      sameNodeScope(attachedScope, record.scope) &&
+      sameNodeScope(context, record.scope);
+  }
+
+  private rememberResolvedElement(
+    nodeRef: string,
+    value: DomTreeResolvedElement,
+  ): void {
+    if (this.resolvedElementMemo.size >= STABILITY_MEMO_MAX_ENTRIES) {
+      this.resolvedElementMemo = new Map();
+    }
+    this.resolvedElementMemo.set(nodeRef, this.currentStability(value));
+  }
+
+  /** Ends the current stable moment: every memoized read must be taken again. */
+  private invalidateStability(): void {
+    this.stabilityGeneration += 1;
+    try {
+      this.locatorService.forgetCapturedSegments();
+    } catch {
+      // The service is replaced with the document; nothing to forget.
+    }
+    if (this.resolvedElementMemo.size > 0) {
+      this.resolvedElementMemo = new Map();
+    }
+    this.revealedElementMemo = new WeakMap();
+    this.locatorResolutionMemo = new WeakMap();
+  }
+
+  private currentStability<T>(value: T): StabilityMemo<T> {
+    return {
+      stabilityGeneration: this.stabilityGeneration,
+      documentEpoch: this.documentEpoch,
+      authorityGeneration: this.authorityGeneration,
+      value,
+    };
+  }
+
+  private isStable<T>(memo: StabilityMemo<T> | undefined): memo is StabilityMemo<T> {
+    return memo !== undefined &&
+      memo.stabilityGeneration === this.stabilityGeneration &&
+      memo.documentEpoch === this.documentEpoch &&
+      memo.authorityGeneration === this.authorityGeneration;
   }
 
   private flushMutationBarrier(): void {
@@ -4675,6 +4808,19 @@ export class DomTreeProvider {
   }
 
   private resolveLocatorForLiveValidation(
+    locator: DomStableLocator,
+  ): StableLocatorResolution | undefined {
+    // Read-only by contract: within one unmutated moment the same locator
+    // resolves to the same node, and a path is validated locator by locator
+    // more than once per selection.
+    const memo = this.locatorResolutionMemo.get(locator);
+    if (this.isStable(memo)) return memo.value;
+    const resolution = this.resolveLocatorWithoutMemo(locator);
+    this.locatorResolutionMemo.set(locator, this.currentStability(resolution));
+    return resolution;
+  }
+
+  private resolveLocatorWithoutMemo(
     locator: DomStableLocator,
   ): StableLocatorResolution | undefined {
     const buffer = this.outwardEffectBuffer ?? [];
@@ -6157,6 +6303,7 @@ function hasLogicalChild(
     for (let index = 0; index < length; index += 1) {
       const child = childNodes[index];
       if (!child) return true;
+      if (isIgnorableWhitespaceText(child)) continue;
       if (!isExcluded(child)) return true;
       runtimeNodeCount += 1;
       if (runtimeNodeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) return true;
@@ -6211,6 +6358,18 @@ function readSafeArrayLikeLength(value: ArrayLike<unknown>): number {
     throw new TypeError("invalid array-like length");
   }
   return length;
+}
+
+/**
+ * Chromium's DOM agent never reports whitespace-only text nodes, so the DevTools
+ * tree shows markup indentation as structure rather than as blank `" "` rows.
+ * Pin-op projects the same logical tree: these nodes are skipped everywhere a
+ * branch is enumerated, counted, or probed for children.
+ */
+function isIgnorableWhitespaceText(node: Node): boolean {
+  if (readNodeType(node) !== 3) return false;
+  const value = readNodeValue(node);
+  return value !== undefined && value.trim().length === 0;
 }
 
 function readNodeType(node: Node): number | undefined {
@@ -6355,6 +6514,7 @@ function safeChildCount(
     for (let index = 0; index < length; index += 1) {
       const child = childNodes[index];
       if (!child) continue;
+      if (isIgnorableWhitespaceText(child)) continue;
       if (isExcluded(child)) {
         runtimeNodeCount += 1;
         if (runtimeNodeCount > RUNTIME_ARTIFACT_SCAN_LIMIT) {

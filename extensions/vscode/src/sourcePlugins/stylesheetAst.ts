@@ -28,8 +28,10 @@ import {
   completeDeclarationFingerprint,
   declarationEvidenceFromFact,
   declarationFingerprint,
+  declarationsAfterInRuleCascade,
   declarationsContainEvidence,
   equalDeclarationFingerprints,
+  equalReportedDeclarations,
   normalizeCondition,
 } from "./declarationFingerprint.js";
 import type {
@@ -359,7 +361,7 @@ function ruleFromNode(
     end,
   );
   if (selectorEnd === undefined || selectorEnd <= start) return undefined;
-  const declarations = directDeclarations(node);
+  const declarations = declarationsAfterInRuleCascade(directDeclarations(node));
   const normalizedDeclarations = declarationFingerprint(declarations);
   return {
     selector: node.selector,
@@ -379,9 +381,9 @@ function ruleFromNode(
     selectorPreludeStartOffset: start,
     selectorPreludeEndOffset: selectorEnd,
     contexts: containingRuleContexts(node),
-    hasUnsupportedGroupingContext: hasUnsupportedGroupingContext(node),
+    hasUnsupportedGroupingContext: hasUnsupportedGroupingContext(node, syntax),
     hasCompleteDeclarationFingerprint: declarations.length === 0 ||
-      normalizedDeclarations.length === declarations.length,
+      normalizedDeclarations.length > 0,
     fingerprint: {
       selector: normalizeSelector(node.selector),
       declarations: normalizedDeclarations,
@@ -494,10 +496,7 @@ export function findUniqueRuleByCompleteFingerprint(
     return undefined;
   }
   const matches = compatible.filter((rule) =>
-    equalDeclarationFingerprints(
-      declarations,
-      rule.fingerprint.declarations,
-    )
+    equalReportedDeclarations(declarations, rule.fingerprint.declarations)
   );
   return matches.length === 1 ? matches[0] : undefined;
 }
@@ -587,12 +586,43 @@ function containingRuleContexts(node: Rule): readonly StylesheetRuleContext[] {
   return contexts;
 }
 
-function hasUnsupportedGroupingContext(node: Rule): boolean {
+/**
+ * A preprocessor writes rules inside constructs that say how the stylesheet is
+ * built -- a mixin body, an `@each` loop -- and none of them is a condition the
+ * cascade knows about; the rule they hold is an ordinary rule. Everything else
+ * that is not `@media` or `@supports` still puts a rule beyond what Pin-op can
+ * account for.
+ */
+const PREPROCESSOR_AT_RULES = new Set([
+  "at-root",
+  "content",
+  "debug",
+  "each",
+  "else",
+  "error",
+  "extend",
+  "for",
+  "forward",
+  "function",
+  "if",
+  "include",
+  "mixin",
+  "return",
+  "use",
+  "warn",
+  "while",
+]);
+
+function hasUnsupportedGroupingContext(
+  node: Rule,
+  syntax: StylesheetSyntax,
+): boolean {
   let current: Container | Document | undefined = node.parent;
   while (current) {
     if (current.type === "atrule") {
       const kind = (current as AtRule).name.toLowerCase();
-      if (kind !== "media" && kind !== "supports") return true;
+      const authoring = syntax === "scss" && PREPROCESSOR_AT_RULES.has(kind);
+      if (!authoring && kind !== "media" && kind !== "supports") return true;
     }
     current = current.parent;
   }

@@ -333,6 +333,46 @@ describe("PinOpStylesSidebarAdapter", () => {
     expect(harness.document.totalListeners()).toBe(0);
   });
 
+  it("mounts the pseudo-state preview in the native toolbar when one exists", () => {
+    const pseudo = new FakePseudoStateDataSource();
+    const harness = createHarness({ pseudo, nativeToolbar: true });
+    const toolbar = required(
+      harness.pane.element.querySelector('[data-part="native-styles-toolbar"]'),
+    );
+    const toolbarPane = required(
+      harness.pane.element.querySelector('[data-part="native-styles-toolbar-pane"]'),
+    );
+    const button = required(
+      harness.pane.element.querySelector('[data-part="pseudo-state-toolbar-item"]'),
+    );
+    const previews = required(
+      harness.pane.element.querySelector('[data-part="pseudo-state-pane"]'),
+    );
+
+    expect(button.parentElement).toBe(toolbar);
+    expect(previews.parentElement).toBe(toolbarPane);
+    expect(harness.mount.querySelector('[data-part="pseudo-state-controls"]'))
+      .toBe(null);
+    expect(harness.mount.children.length).toBe(2);
+    expect(harness.mount.children.at(-1)).toBe(
+      harness.pane.element as unknown as FakeElement,
+    );
+
+    harness.pane.element.remove();
+    harness.host.render(styles("rule:one", 1));
+
+    expect(harness.mount.children.at(-1)).toBe(
+      harness.pane.element as unknown as FakeElement,
+    );
+    expect(harness.mount.children.length).toBe(2);
+
+    harness.host.dispose();
+
+    expect(toolbar.children.length).toBe(0);
+    expect(toolbarPane.children.length).toBe(0);
+    expect(pseudo.listenerCount()).toBe(0);
+  });
+
   it("rolls back every new node when the runtime factory throws", () => {
     const runtime = new FakeChromiumReadOnlyStylesRuntime();
     runtime.leakBeforeCreateError = true;
@@ -1034,9 +1074,11 @@ describe("PinOpStylesSidebarAdapter", () => {
 function createHarness(options: {
   readonly source?: SourceLinkDelegate;
   readonly pseudo?: PseudoStateDataSource;
+  readonly nativeToolbar?: boolean;
   readonly onError?: (error: unknown) => void;
 } = {}) {
   const runtime = new FakeChromiumReadOnlyStylesRuntime();
+  runtime.exposeNativeToolbar = options.nativeToolbar === true;
   const document = new FakeDocument();
   const mount = document.createElement("main") as unknown as FakeElement;
   const sentinel = document.createElement("p") as unknown as FakeElement;

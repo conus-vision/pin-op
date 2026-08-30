@@ -83,7 +83,7 @@
     "facades/css-metadata-protocol.ts": "c6576a2c3d51f193dd7ff2f6805be30d64becd85a2c863baaca2ff034d457dd7",
     "facades/elements-components.ts": "9e5a16f88d4ffd1694a5916567b7ce0a2301d4f21a3caa447569b55eb9f4f0ad",
     "facades/elements-model.ts": "5146e9a9ce9d71d3560ada60305b68f1fc626ed3a81b19e07b79c64e221af917",
-    "facades/elements-panel.ts": "03485c26e4b4a650def348c756d2a5587c4410789401414bf1a71613caa83e77",
+    "facades/elements-panel.ts": "d8243cc4b010d6b61d6bff53514d475dd91b4271f53c04d2259276b5d9dc1b2d",
     "facades/highlighting.ts": "bc57cf863d48da5f216e1729d0b26f611d8491b88d3e5e4cb6d79c001115f525",
     "facades/host.ts": "c3f7adc4255e1a98432155103b58c71fa1635d14af29219979bbde76d0ae35c1",
     "facades/i18n.ts": "5edc7257906e74a1a5ff5dee92fc8086753c7b30f701ce68ce37eca755447592",
@@ -116,7 +116,7 @@
   },
   "reviewedOverlayClosure": {
     "fileCount": 37,
-    "sha256": "485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23"
+    "sha256": "904698780ca3486962022070d46e0c6333673e3d8ce19fc9387ece6bb0fbacc2"
   },
   "reviewedSharedInputInventory": [
     "chromium-shared-css:front_end/application_tokens.css",
@@ -129,7 +129,7 @@
   ],
   "reviewedSharedPayloadAttestation": {
     "fileCount": 7,
-    "sha256": "e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5"
+    "sha256": "d2a538058651817f04cbd0a1104e083ccb256792a152b073978f7117478e50d2"
   },
   "requiredImageFiles": {
     "front_end/Images/src/arrow-collapse.svg": "560c000f11f363d016e4f183fe4d2d5db81e814eb4de3ceb0d84c18e673e4b0e",

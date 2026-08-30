@@ -10,14 +10,14 @@ import type {
   RulesPresentationSnapshot,
   TreePresentationSnapshot,
 } from "../src/contracts.js";
-import { ElementsInspectorView } from "../src/elementsInspectorView.js";
+import { ElementsInspectorShell } from "../src/elementsInspectorShell.js";
 import { elementsSession, withTextValue } from "./fixtures/elementsSession.js";
 import { FakeDocument, type FakeElement } from "./support/fakeDocument.js";
 import { FakeElementsBackend } from "./support/fakeElementsBackend.js";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
-describe("ElementsInspectorView", () => {
+describe("ElementsInspectorShell", () => {
   it("delegates Rules rendering to an injected renderer and owns its host", () => {
     const document = new FakeDocument();
     const mount = document.createElement("main") as unknown as FakeElement;
@@ -44,7 +44,7 @@ describe("ElementsInspectorView", () => {
     };
     document.body.append(mount);
 
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       backend,
@@ -102,7 +102,7 @@ describe("ElementsInspectorView", () => {
       };
     };
     document.body.append(mount);
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       backend,
@@ -133,6 +133,35 @@ describe("ElementsInspectorView", () => {
     view.dispose();
   });
 
+  it("gives a partial snapshot the whole pane and no status line", () => {
+    const document = new FakeDocument();
+    const mount = document.createElement("main") as unknown as FakeElement;
+    const backend = new FakeElementsBackend(elementsSession.tree);
+    const rules = new StaticRulesDataSource(elementsSession.rules);
+    document.body.append(mount);
+    const view = new TestInspectorShell(
+      document.document,
+      mount as unknown as HTMLElement,
+      backend,
+      rules,
+    );
+
+    rules.publish(Object.freeze({
+      state: "partial",
+      matchedStyles: elementsSession.rules.matchedStyles,
+    }));
+    const message = required(
+      view.rulesRoot.querySelector('[data-part="rules-message"]'),
+    ) as unknown as FakeElement;
+
+    // What could not be read is reported in the footer; the pane keeps its room.
+    expect(message.hidden).toBe(true);
+    expect(message.textContent).toBe("");
+    expect(view.rulesRoot.getAttribute("data-state")).toBe("partial");
+
+    view.dispose();
+  });
+
   it("keeps a newer reentrant Rules status after an older clear resumes", () => {
     const document = new FakeDocument();
     const mount = document.createElement("main") as unknown as FakeElement;
@@ -157,7 +186,7 @@ describe("ElementsInspectorView", () => {
       };
     };
     document.body.append(mount);
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -206,7 +235,7 @@ describe("ElementsInspectorView", () => {
       };
     };
     document.body.append(mount);
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -263,7 +292,7 @@ describe("ElementsInspectorView", () => {
       };
     };
     document.body.append(mount);
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -298,7 +327,7 @@ describe("ElementsInspectorView", () => {
       throw factoryError;
     };
     document.body.append(mount);
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -318,50 +347,6 @@ describe("ElementsInspectorView", () => {
     view.dispose();
   });
 
-  it("preserves Rules mount and cleanup errors from the local fallback", () => {
-    const harness = createHarness();
-    const appendError = new Error("Rules mount append failed");
-    const pseudoDisposeError = new Error("pseudo unsubscribe failed");
-    const rulesRoot = harness.view.rulesRoot as unknown as FakeElement;
-    const append = rulesRoot.append.bind(rulesRoot);
-    let appendCalls = 0;
-    rulesRoot.append = (...nodes: FakeElement[]): void => {
-      appendCalls += 1;
-      if (appendCalls === 2) throw appendError;
-      append(...nodes);
-    };
-    const pseudo = new ThrowingUnsubscribePseudoStateDataSource(
-      {
-        state: "ready",
-        states: Object.freeze([]),
-        unsupportedRuleCount: 0,
-        inaccessibleStylesheetCount: 0,
-        approximateRuleCount: 0,
-      },
-      pseudoDisposeError,
-    );
-    let failure: unknown;
-
-    try {
-      harness.view.bindRulesDataSource(
-        new StaticRulesDataSource(elementsSession.rules),
-        undefined,
-        pseudo,
-      );
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors).toEqual([
-      appendError,
-      pseudoDisposeError,
-    ]);
-    expect(rulesRoot.children).toHaveLength(0);
-    expect(pseudo.listenerCount()).toBe(0);
-
-    harness.view.dispose();
-  });
 
   it("delegates the DOM mount to an injected tree renderer and owns its host", () => {
     const document = new FakeDocument();
@@ -383,7 +368,7 @@ describe("ElementsInspectorView", () => {
     };
     document.body.append(mount);
 
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       backend,
@@ -431,7 +416,7 @@ describe("ElementsInspectorView", () => {
     };
     document.body.append(mount);
 
-    expect(() => new ElementsInspectorView(
+    expect(() => new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       backend,
@@ -459,7 +444,8 @@ describe("ElementsInspectorView", () => {
     const extensionMount = required(root.querySelector('[data-part="sidebar-extension"]'));
 
     expect(root.children[0]).toBe(domPane);
-    expect(root.children[1]).toBe(sidebar);
+    expect(root.children[1]?.getAttribute("data-part")).toBe("sidebar-resizer");
+    expect(root.children[2]).toBe(sidebar);
     expect(domPane.getAttribute("aria-label")).toBe("DOM tree");
     expect(domPane.querySelector('[data-part="pane-title"]')).toBeNull();
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Rules", "Source"]);
@@ -494,21 +480,24 @@ describe("ElementsInspectorView", () => {
 
   it("bridges the operating-system color scheme into Chromium theme classes", () => {
     const colorScheme = new FakeMediaQueryList(true);
+    const stacked = new FakeMediaQueryList(false);
+    const queries: string[] = [];
     const document = new FakeDocument({
       matchMedia: (query: string): MediaQueryList => {
-        expect(query).toBe("(prefers-color-scheme: dark)");
-        return colorScheme;
+        queries.push(query);
+        return query === "(prefers-color-scheme: dark)" ? colorScheme : stacked;
       },
     });
     const mount = document.createElement("main") as unknown as FakeElement;
     document.body.append(mount);
 
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
     );
 
+    expect(queries).toContain("(prefers-color-scheme: dark)");
     expect(view.element.classList.contains("theme-with-dark-background")).toBe(false);
     expect(document.documentElement.classList.contains("theme-with-dark-background")).toBe(true);
     expect(colorScheme.listenerCount()).toBe(1);
@@ -528,18 +517,22 @@ describe("ElementsInspectorView", () => {
     const secondScheme = new FakeMediaQueryList(false);
     const schemes = [firstScheme, secondScheme];
     const document = new FakeDocument({
-      matchMedia: (): MediaQueryList => required(schemes.shift()),
+      matchMedia: (query: string): MediaQueryList => (
+        query === "(prefers-color-scheme: dark)"
+          ? required(schemes.shift())
+          : new FakeMediaQueryList(false)
+      ),
     });
     const firstMount = document.createElement("main") as unknown as FakeElement;
     const secondMount = document.createElement("main") as unknown as FakeElement;
     document.body.append(firstMount, secondMount);
 
-    const first = new ElementsInspectorView(
+    const first = new TestInspectorShell(
       document.document,
       firstMount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
     );
-    const second = new ElementsInspectorView(
+    const second = new TestInspectorShell(
       document.document,
       secondMount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -562,6 +555,123 @@ describe("ElementsInspectorView", () => {
     expect(secondScheme.listenerCount()).toBe(0);
   });
 
+  it("resizes the sidebar by pointer and keyboard and remembers the size", () => {
+    const stored = new Map<string, string>();
+    const view = {
+      matchMedia: (query: string): MediaQueryList => (
+        new FakeMediaQueryList(false, query) as unknown as MediaQueryList
+      ),
+      localStorage: {
+        getItem: (key: string): string | null => stored.get(key) ?? null,
+        setItem: (key: string, value: string): void => {
+          stored.set(key, value);
+        },
+      },
+    };
+    const document = new FakeDocument(view as unknown as Pick<Window, "matchMedia">);
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+    const inspector = new TestInspectorShell(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+    const root = required(mount.querySelector(".pin-op-elements-inspector"));
+    const resizer = required(mount.querySelector('[data-part="sidebar-resizer"]'));
+    root.rect = rect(0, 0, 800, 600);
+    resizer.rect = rect(496, 0, 0, 600);
+
+    expect(resizer.getAttribute("role")).toBe("separator");
+    expect(resizer.getAttribute("aria-orientation")).toBe("vertical");
+
+    resizer.dispatch("pointerdown", { pointerId: 7, clientX: 496, clientY: 300 });
+    expect(resizer.capturedPointers.has(7)).toBe(true);
+    expect(resizer.dataset.state).toBe("active");
+
+    resizer.dispatch("pointermove", { pointerId: 7, clientX: 420, clientY: 300 });
+    expect(root.style.getPropertyValue("--pin-op-elements-sidebar-width"))
+      .toBe("380px");
+
+    // A drag past the minimum pane size clamps instead of hiding the tree.
+    resizer.dispatch("pointermove", { pointerId: 7, clientX: 20, clientY: 300 });
+    expect(root.style.getPropertyValue("--pin-op-elements-sidebar-width"))
+      .toBe("640px");
+
+    resizer.dispatch("pointerup", { pointerId: 7, clientX: 20, clientY: 300 });
+    expect(resizer.capturedPointers.has(7)).toBe(false);
+    expect(resizer.dataset.state).toBeUndefined();
+    expect(stored.get("pin-op.inspector.sidebar-width")).toBe("640");
+
+    const shrink = resizer.dispatch("keydown", { key: "ArrowRight" });
+    expect(shrink.defaultPrevented).toBe(true);
+    expect(root.style.getPropertyValue("--pin-op-elements-sidebar-width"))
+      .toBe("624px");
+    expect(stored.get("pin-op.inspector.sidebar-width")).toBe("624");
+
+    expect(resizer.dispatch("keydown", { key: "ArrowUp" }).defaultPrevented)
+      .toBe(false);
+
+    inspector.dispose();
+
+    const restored = new TestInspectorShell(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+    const restoredRoot = required(mount.querySelector(".pin-op-elements-inspector"));
+
+    expect(restoredRoot.style.getPropertyValue("--pin-op-elements-sidebar-width"))
+      .toBe("624px");
+
+    restored.dispose();
+  });
+
+  it("selects Chromium's untinted baseline surfaces while mounted", () => {
+    const colorScheme = new FakeMediaQueryList(false);
+    const document = new FakeDocument({
+      matchMedia: (): MediaQueryList => colorScheme,
+    });
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+
+    expect(document.documentElement.classList.contains("baseline-grayscale")).toBe(false);
+
+    const view = new TestInspectorShell(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+
+    expect(document.documentElement.classList.contains("baseline-grayscale")).toBe(true);
+
+    colorScheme.publish(true);
+
+    expect(document.documentElement.classList.contains("baseline-grayscale")).toBe(true);
+
+    view.dispose();
+
+    expect(document.documentElement.classList.contains("baseline-grayscale")).toBe(false);
+  });
+
+  it("restores a pre-existing Chromium baseline theme after disposal", () => {
+    const colorScheme = new FakeMediaQueryList(false);
+    const document = new FakeDocument({
+      matchMedia: (): MediaQueryList => colorScheme,
+    });
+    document.documentElement.classList.add("baseline-grayscale");
+    const mount = document.createElement("main") as unknown as FakeElement;
+    document.body.append(mount);
+
+    const view = new TestInspectorShell(
+      document.document,
+      mount as unknown as HTMLElement,
+      new FakeElementsBackend(elementsSession.tree),
+    );
+    view.dispose();
+
+    expect(document.documentElement.classList.contains("baseline-grayscale")).toBe(true);
+  });
+
   it("restores a pre-existing Chromium dark theme after disposal", () => {
     const colorScheme = new FakeMediaQueryList(false);
     const document = new FakeDocument({
@@ -571,7 +681,7 @@ describe("ElementsInspectorView", () => {
     const mount = document.createElement("main") as unknown as FakeElement;
     document.body.append(mount);
 
-    const view = new ElementsInspectorView(
+    const view = new TestInspectorShell(
       document.document,
       mount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -642,12 +752,12 @@ describe("ElementsInspectorView", () => {
     const firstMount = document.createElement("main") as unknown as FakeElement;
     const secondMount = document.createElement("main") as unknown as FakeElement;
     document.body.append(firstMount, secondMount);
-    const firstView = new ElementsInspectorView(
+    const firstView = new TestInspectorShell(
       document.document,
       firstMount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
     );
-    const secondView = new ElementsInspectorView(
+    const secondView = new TestInspectorShell(
       document.document,
       secondMount as unknown as HTMLElement,
       new FakeElementsBackend(elementsSession.tree),
@@ -677,118 +787,8 @@ describe("ElementsInspectorView", () => {
     secondView.dispose();
   });
 
-  it("renders and refreshes page-controlled text only as text", () => {
-    const harness = createHarness();
-    const initialText = "Hello <img src=x onerror=alert(1)>";
-    const textRow = required(
-      harness.mount.querySelector('[data-node-ref="intro-text"]')
-        ?.querySelector(".webkit-html-text-node"),
-    );
 
-    expect(textRow.textContent).toBe(initialText);
-    expect(harness.document.createdTags()).not.toContain("img");
-    expect(harness.mount.querySelector("img")).toBeNull();
 
-    harness.backend.publish(withTextValue("Updated <script>alert(1)</script>"));
-
-    const updatedText = required(
-      harness.mount.querySelector('[data-node-ref="intro-text"]')
-        ?.querySelector(".webkit-html-text-node"),
-    );
-    expect(updatedText.textContent).toBe("Updated <script>alert(1)</script>");
-    expect(harness.document.createdTags()).not.toContain("script");
-    expect(harness.mount.querySelector("script")).toBeNull();
-  });
-
-  it("binds the :hov preview to Rules and resets it with selection authority", () => {
-    const harness = createHarness();
-    const rules = new StaticRulesDataSource(elementsSession.rules);
-    const pseudo = new MutablePseudoStateDataSource({
-      state: "ready",
-      states: Object.freeze(["hover"]),
-      unsupportedRuleCount: 0,
-      inaccessibleStylesheetCount: 0,
-      approximateRuleCount: 0,
-    });
-    const bindRulesDataSource = harness.view.bindRulesDataSource as unknown as (
-      dataSource: RulesDataSource,
-      sourceLinkDelegate: undefined,
-      pseudoStateDataSource: MutablePseudoStateDataSource,
-    ) => void;
-    bindRulesDataSource.call(harness.view, rules, undefined, pseudo);
-
-    const button = required(
-      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
-    ) as unknown as FakeElement;
-    const hover = required(
-      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
-    ) as unknown as FakeElement & { checked: boolean };
-    expect(button.textContent).toBe(":hov");
-    expect(button.getAttribute("aria-label")).toMatch(/preview/i);
-    expect(hover.checked).toBe(true);
-    expect(pseudo.listenerCount()).toBe(1);
-
-    pseudo.publish({
-      state: "unavailable",
-      reason: "no-selection",
-      states: Object.freeze([]),
-      unsupportedRuleCount: 0,
-      inaccessibleStylesheetCount: 0,
-      approximateRuleCount: 0,
-    });
-
-    const resetButton = required(
-      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
-    ) as unknown as FakeElement;
-    const resetHover = required(
-      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
-    ) as unknown as FakeElement & { checked: boolean };
-    expect(resetButton.disabled).toBe(true);
-    expect(resetHover.checked).toBe(false);
-
-    harness.view.dispose();
-    expect(pseudo.listenerCount()).toBe(0);
-  });
-
-  it("keeps the :hov toolbar mounted while an atomic Rules reload is pending", () => {
-    const harness = createHarness();
-    const rules = new StaticRulesDataSource(elementsSession.rules);
-    const pseudo = new MutablePseudoStateDataSource({
-      state: "ready",
-      states: Object.freeze(["hover"]),
-      unsupportedRuleCount: 0,
-      inaccessibleStylesheetCount: 0,
-      approximateRuleCount: 0,
-    });
-    const bindRulesDataSource = harness.view.bindRulesDataSource as unknown as (
-      dataSource: RulesDataSource,
-      sourceLinkDelegate: undefined,
-      pseudoStateDataSource: MutablePseudoStateDataSource,
-    ) => void;
-    bindRulesDataSource.call(harness.view, rules, undefined, pseudo);
-
-    pseudo.publish({
-      state: "loading",
-      states: Object.freeze(["hover"]),
-      unsupportedRuleCount: 0,
-      inaccessibleStylesheetCount: 0,
-      approximateRuleCount: 0,
-    });
-    rules.publish(Object.freeze({ state: "loading" }));
-
-    const button = required(
-      harness.view.rulesRoot.querySelector('[data-part="pseudo-state-button"]'),
-    ) as unknown as FakeElement;
-    const hover = required(
-      harness.view.rulesRoot.querySelector('[data-pseudo-state="hover"]'),
-    ) as unknown as FakeElement & { checked: boolean };
-    expect(button.disabled).toBe(true);
-    expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(hover.checked).toBe(true);
-    expect(harness.view.rulesRoot.textContent).toContain("Loading styles");
-
-    harness.view.dispose();
-  });
 
   it("contains no Pin-op toolbar ownership or editable/inline surfaces", () => {
     const harness = createHarness();
@@ -814,8 +814,8 @@ describe("ElementsInspectorView", () => {
 
   it("removes subscriptions, DOM listeners, and owned elements on dispose", () => {
     const harness = createHarness();
-    const renderedRows = required(
-      harness.mount.querySelector('[data-part="dom-rows"]'),
+    const renderedTree = required(
+      harness.mount.querySelector('[data-part="test-tree-renderer"]'),
     );
     expect(harness.backend.listenerCount()).toBe(1);
 
@@ -826,42 +826,10 @@ describe("ElementsInspectorView", () => {
     expect(harness.backend.listenerCount()).toBe(0);
     expect(harness.document.totalListeners()).toBe(0);
     expect(harness.mount.children).toHaveLength(0);
-    expect(renderedRows.textContent).toBe("");
-    expect(renderedRows.children).toHaveLength(0);
+    expect(renderedTree.parentElement).toBeUndefined();
   });
 
-  it("does not commit rows when snapshot reentrancy disposes the view", () => {
-    const backend = new SnapshotHookBackend(elementsSession.tree);
-    const harness = createHarness(backend);
-    const retainedRows = required(
-      harness.mount.querySelector('[data-part="dom-rows"]'),
-    );
-    backend.beforeSnapshot = () => harness.view.dispose();
 
-    backend.publish(withTextValue("must not commit after dispose"));
-
-    expect(harness.mount.children).toHaveLength(0);
-    expect(retainedRows.textContent).toBe("");
-    expect(retainedRows.children).toHaveLength(0);
-  });
-
-  it("does not let an outer render overwrite a newer nested render", () => {
-    const backend = new SnapshotHookBackend(elementsSession.tree);
-    const harness = createHarness(backend);
-    const rows = required(harness.mount.querySelector('[data-part="dom-rows"]'));
-    backend.beforeSnapshot = () => {
-      backend.publish(withTextValue("newer nested render"));
-    };
-
-    backend.publish(withTextValue("stale outer render"));
-
-    expect(
-      required(
-        rows.querySelector('[data-node-ref="intro-text"]')
-          ?.querySelector(".webkit-html-text-node"),
-      ).textContent,
-    ).toBe("newer nested render");
-  });
 
   it("removes owned DOM when unsubscribe throws and never retries cleanup", () => {
     const backend = new ThrowingUnsubscribeBackend(elementsSession.tree);
@@ -892,7 +860,9 @@ describe("ElementsInspectorView", () => {
 
     expect(selectors.length).toBeGreaterThan(0);
     expect(unscopedSelectors(css)).toEqual([]);
-    expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(/);
+    expect(css).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s+minmax\(220px,\s*var\(--pin-op-elements-sidebar-width,\s*38%\)\)/s,
+    );
     expect(css).toMatch(
       /\.pin-op-elements-inspector\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\);[^}]*overflow:\s*clip;/s,
     );
@@ -907,7 +877,7 @@ describe("ElementsInspectorView", () => {
       /\.pin-op-elements-inspector \.pin-op-elements-inspector__tree,[\s\S]*?\.pin-op-elements-inspector \.pin-op-elements-inspector__rules\s*\{[^}]*min-block-size:\s*0;[^}]*overflow:\s*auto;/s,
     );
     expect(css).toMatch(
-      /@media\s*\(max-width:\s*440px\)\s*\{[\s\S]*?\.pin-op-elements-inspector\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*grid-template-rows:\s*minmax\(160px,\s*1fr\)\s+minmax\(120px,\s*45%\);/s,
+      /@media\s*\(max-width:\s*680px\)\s*\{[\s\S]*?\.pin-op-elements-inspector\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*grid-template-rows:\s*minmax\(160px,\s*1fr\)\s+auto\s+minmax\(120px,\s*var\(--pin-op-elements-sidebar-height,\s*45%\)\);/s,
     );
   });
 
@@ -939,7 +909,7 @@ describe("ElementsInspectorView", () => {
     );
   });
 
-  it("keeps the native Rules pane full-width beside the overlaid :hov control", () => {
+  it("keeps the native Rules pane full-width around the toolbar :hov control", () => {
     const css = readFileSync(
       path.join(packageRoot, "assets", "devtools-elements.css"),
       "utf8",
@@ -949,7 +919,7 @@ describe("ElementsInspectorView", () => {
       /\.pin-op-elements-inspector \.pin-op-elements-inspector__rules\s*\{[^}]*position:\s*relative;/s,
     );
     expect(css).toMatch(
-      /\.pin-op-elements-inspector \.pseudo-state-controls\s*\{[^}]*position:\s*absolute;[^}]*inset-inline-end:\s*4px;/s,
+      /\.pin-op-elements-inspector \.pseudo-state-toolbar-item\s*\{[^}]*position:\s*relative;[^}]*flex:\s*none;/s,
     );
     expect(css).toMatch(
       /\.pin-op-elements-inspector \.styles-pane\s*\{[^}]*inline-size:\s*100%;/s,
@@ -964,7 +934,7 @@ describe("ElementsInspectorView", () => {
       /\.pin-op-elements-inspector \.pseudo-state-controls\s*\{[^}]*display:\s*contents;/s,
     );
     expect(css).toMatch(
-      /\.pseudo-state-description\[role="status"\],[\s\S]*?\.pseudo-state-description\[role="alert"\]\s*\{[^}]*clip-path:\s*none;[^}]*white-space:\s*normal;/s,
+      /\.pseudo-state-description\[role="status"\],[\s\S]*?\.pseudo-state-description\[role="alert"\]\s*\{[^}]*position:\s*static;[^}]*clip-path:\s*none;[^}]*white-space:\s*normal;/s,
     );
   });
 
@@ -1078,13 +1048,78 @@ function createHarness(
   const document = new FakeDocument();
   const mount = document.createElement("main") as unknown as FakeElement;
   document.body.append(mount);
-  const view = new ElementsInspectorView(
+  const view = new TestInspectorShell(
     document.document,
     mount as unknown as HTMLElement,
     backend,
   );
   return { document, mount, backend, view };
 }
+
+/**
+ * The production shell always receives Chromium's renderers. Tests inject
+ * deterministic stand-ins so shell ownership is observable on its own.
+ */
+class TestInspectorShell extends ElementsInspectorShell {
+  public constructor(
+    document: Document,
+    mount: HTMLElement,
+    treeDataSource: Parameters<CreateElementsTreeRenderer>[2],
+    rulesDataSource?: RulesDataSource,
+    sourceLinkDelegate?: Parameters<CreateElementsRulesRenderer>[3],
+    pseudoStateDataSource?: Parameters<CreateElementsRulesRenderer>[4],
+    createTreeRenderer: CreateElementsTreeRenderer = createTestTreeRenderer,
+    createRulesRenderer: CreateElementsRulesRenderer = createTestRulesRenderer,
+  ) {
+    super(
+      document,
+      mount,
+      treeDataSource,
+      rulesDataSource,
+      sourceLinkDelegate,
+      pseudoStateDataSource,
+      createTreeRenderer,
+      createRulesRenderer,
+    );
+  }
+}
+
+const createTestTreeRenderer: CreateElementsTreeRenderer = (
+  document,
+  mount,
+  treeDataSource,
+) => {
+  const host = document.createElement("div");
+  host.setAttribute("data-part", "test-tree-renderer");
+  mount.append(host);
+  const unsubscribe = treeDataSource.subscribe(() => {
+    host.textContent = String(treeDataSource.snapshot().rows.length);
+  });
+  host.textContent = String(treeDataSource.snapshot().rows.length);
+  return {
+    dispose(): void {
+      unsubscribe();
+      host.textContent = "";
+      host.remove();
+    },
+  };
+};
+
+const createTestRulesRenderer: CreateElementsRulesRenderer = (
+  document,
+  mount,
+) => {
+  const host = document.createElement("div");
+  host.setAttribute("data-part", "test-rules-renderer");
+  mount.append(host);
+  return {
+    render(): void {},
+    clear(): void {},
+    dispose(): void {
+      host.remove();
+    },
+  };
+};
 
 class SnapshotHookBackend extends FakeElementsBackend {
   public beforeSnapshot: (() => void) | undefined;
@@ -1148,11 +1183,29 @@ class StaticRulesDataSource implements RulesDataSource {
   }
 }
 
+function rect(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+  } as DOMRect;
+}
+
 class FakeMediaQueryList {
   public matches: boolean;
   private readonly listeners = new Set<(event: MediaQueryListEvent) => void>();
 
-  public constructor(matches: boolean) {
+  public constructor(matches: boolean, public readonly media = "") {
     this.matches = matches;
   }
 

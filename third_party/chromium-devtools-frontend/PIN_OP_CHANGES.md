@@ -8,62 +8,49 @@ The Pin-op derivations are deliberately read-only and backend-neutral. Across
 the derived subset, remove editing, context menus, AI features, SDK/CDP objects,
 Linkifier, Metrics/Layout/Computed integrations, DevTools Host integration,
 telemetry, and browser branding. Retain upstream copyright/license headers in
-every derived source.
+every derived source. Only `devtools-elements.css` is derived today; the
+TypeScript anchors below record the policy applied to the reviewed
+native-runtime inputs that replaced Pin-op's former derived renderers.
 
 <a id="dom-tree"></a>
 ## DOM tree
 
-- Derive only the useful tree presentation and keyboard-navigation algorithms
-  from `ElementsTreeOutline.ts` and `ElementsTreeElement.ts`.
-- Replace Chromium SDK nodes, mutation commands, tree widgets, host services,
-  issue UI, tooltips, and metrics with Pin-op's neutral `TreeDataSource` and safe
-  DOM rendering helpers.
-- Keep selection, expansion, lazy loading, focus, and hover read-only. Do not
-  retain dormant edit or context-menu paths.
-- Preserve Chromium's document-type, tag, attribute, text, comment,
-  shadow-root, and frame-document syntax classes while rendering only bounded
-  immutable snapshots through text APIs.
-- Adapt disclosure and roving tree focus to delegated `TreeDataSource`
-  commands. Focus remains controller-owned; the renderer performs only the
-  immediate DOM-focus restoration required for keyboard continuity.
-- Bound local row materialization to 512 rows even when a caller violates the
-  controller's normal virtual-window contract. Navigation still uses the full
-  bounded snapshot and shifts that materialized window around controller-owned
-  focus. In-flight expand/load/select commands are independently capped and
-  deduplicated until settlement.
-- Describe virtualized rows with sibling-local `aria-posinset` and
-  `aria-setsize` values from the full immutable snapshot. Represent omitted-row
-  height with a bounded binary set of predeclared CSS chunks, never runtime
-  inline styles.
+Pin-op no longer derives its own DOM-tree renderer. `ElementsTreeOutline.ts`
+and `ElementsTreeElement.ts` are reviewed native-runtime inputs compiled from
+the pinned npm package, and this anchor records the policy applied to them
+through the hash-pinned DOM overlay:
+
+- Remove editing, context menus, drag-and-drop, clipboard paths, AI, Issues,
+  Metrics, DevTools Host integration, telemetry, and browser branding.
+- Report every upstream adorner as disabled. Pin-op ships no adorner data,
+  no adorner presentation, and none of the Sources or layout capabilities the
+  upstream badges reveal.
+- Keep selection, expansion, lazy loading, focus, and hover read-only, driven by
+  Pin-op's neutral `TreeDataSource`.
 
 <a id="rules"></a>
 ## Rules
 
-- Derive read-only rule/declaration rendering from `StylesSidebarPane.ts`,
-  `StylePropertiesSection.ts`, `StylePropertyTreeElement.ts`,
-  `PropertyRenderer.ts`, and `StylePropertyUtils.ts`.
-- Replace Chromium CSS/DOM models and Linkifier dependencies with immutable
-  Pin-op rule snapshots and a narrow source-link delegate.
-- Do not carry editing, element-state mutation, AI assistance, computed/layout
-  panes, host integration, or telemetry into the derived boundary.
-- Retain inline, matched-author, and inherited section ordering; selector-match
-  emphasis; ordered group context; declaration importance and proven cascade
-  states; generated public origin labels; local filtering; and roving section
-  focus.
-- Keep generated origins as plain unresolved text until a later exact source
-  authority is present. The derived modules contain no dormant declaration,
-  selector, value, color, shortcut, or rule mutation path.
-- Adapt `MatchedStylesModel` through `RulesDataSource` in the shared Inspector
-  runtime so selection and rendering remain browser-local and independent of
-  IDE source resolution.
-- Adapt the Chromium Rules toolbar/pane boundary to a bounded, read-only `:hov`
-  preview controller. Replace SDK element-state forcing with immutable
-  `PseudoStateDataSource` snapshots and atomic complete-state replacement;
-  expose only `:hover` and `:focus`, and label every control as a preview.
-- Disable pseudo-state previews while selection authority is unavailable or an
-  update is pending. Report unsupported rules, inaccessible stylesheets, and
-  source-order approximation as author-style coverage limits; never claim
-  native browser forcing or exact cascade parity.
+Pin-op no longer derives its own Rules renderer. `StylesSidebarPane.ts`,
+`StylePropertiesSection.ts`, `StylePropertyTreeElement.ts`,
+`PropertyRenderer.ts`, and `StylePropertyUtils.ts` are reviewed native-runtime
+inputs compiled from the pinned npm package, and this anchor records the policy
+applied to them through the hash-pinned Rules overlay:
+
+- Remove declaration, selector, value, color, shortcut, and rule mutation paths
+  along with AI assistance, computed/layout panes, host integration, and
+  telemetry.
+- Adapt `MatchedStylesModel` through `RulesDataSource` so selection and
+  rendering stay browser-local and independent of IDE source resolution.
+- Mount the read-only `:hov` preview control in Chromium's own Styles toolbar
+  row and toolbar pane, and adopt exactly its control rules into the widget
+  shadow root that owns them. The preview never floats above the rule list.
+- Replace SDK element-state forcing with immutable `PseudoStateDataSource`
+  snapshots and atomic complete-state replacement; expose only `:hover` and
+  `:focus`, and label every control as a preview.
+- Report unsupported rules, inaccessible stylesheets, and source-order
+  approximation as author-style coverage limits; never claim native browser
+  forcing or exact cascade parity.
 - Decorate each rule origin through the narrow source-link delegate: keep the
   generated public label as non-clickable text until an exact current Rules
   authority is available, then make only the exact label and line clickable.
@@ -79,6 +66,12 @@ every derived source.
 - Prefix every retained selector with `.pin-op-elements-inspector`, replace
   Chromium theme variables with documented Pin-op variables, and preserve
   light, dark, high-contrast, narrow-panel, and keyboard-focus behavior.
+- Carry Chromium's own root theme classes while an Inspector is mounted:
+  `theme-with-dark-background` for the color scheme, `baseline-grayscale` for
+  its untinted baseline surfaces, and one `platform-*` class for its font
+  tokens. Restore whatever the host document declared on disposal.
+- Stack the DOM pane above Rules below 680 CSS pixels, the same width at which
+  Chromium's Elements panel moves its sidebar under the tree.
 - Do not retain unscoped rules, remote resources, inline style behavior, or
   Chromium browser branding.
 - The retained DOM-tree subset includes disclosure/indent guides, syntax token

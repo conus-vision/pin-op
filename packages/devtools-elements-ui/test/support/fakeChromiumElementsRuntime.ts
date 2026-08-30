@@ -38,6 +38,39 @@ export class FakeChromiumElement {
   public readonly classList = new FakeClassList();
   public parent: FakeChromiumMount | undefined;
   public removed = false;
+  /** Layout the scroll-preserving selection path reads. */
+  public rect = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+  public overflowY = "visible";
+  public parentElement: FakeChromiumElement | null = null;
+
+  public getBoundingClientRect(): {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    width: number;
+    height: number;
+  } {
+    return { ...this.rect };
+  }
+
+  public getRootNode(): FakeChromiumElement {
+    return this;
+  }
+
+  public get ownerDocument(): {
+    defaultView: {
+      getComputedStyle(element: FakeChromiumElement): { overflowY: string };
+    };
+  } {
+    return {
+      defaultView: {
+        getComputedStyle: (element: FakeChromiumElement) => ({
+          overflowY: element.overflowY,
+        }),
+      },
+    };
+  }
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<ElementListener>>();
 
@@ -290,6 +323,8 @@ export class FakeChromiumDOMDocument extends FakeChromiumDOMNode {
 
 export class FakeChromiumTreeElement implements ChromiumTreeElement {
   public expanded = false;
+  public readonly listItemElement =
+    new FakeChromiumElement() as unknown as HTMLElement;
 
   public constructor(
     private readonly chromiumNode: ChromiumDOMNode,
@@ -374,8 +409,16 @@ implements ChromiumElementsTreeOutline {
     return this.selectedInternal;
   }
 
+  public readonly deferredScrollCalls: number[] = [];
+
+  /** Chromium's reveal scroll, so a test can see whether it was suppressed. */
+  public deferredScrollIntoView(_treeElement: unknown, center: boolean): void {
+    this.deferredScrollCalls.push(center ? 1 : 0);
+  }
+
   public selectDOMNode(node: ChromiumDOMNode | null, focus = false): void {
     this.selectDOMNodeCalls.push({ node, focus });
+    this.deferredScrollIntoView(this.treeElements.get(node as ChromiumDOMNode), true);
     this.selectedInternal = node;
     this.emit("SelectedNodeChanged", { node, focus });
   }

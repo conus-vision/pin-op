@@ -1,10 +1,10 @@
 import {
-  ElementsInspectorView,
   type CreateElementsInspectorView,
   type ElementsInspectorHost,
   type TreeDataSource,
   type TreePresentationSnapshot,
 } from "@pin-op/devtools-elements-ui";
+import { TestElementsInspector } from "./support/testElementsInspector.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { InspectorPanelView } from "../src/inspectorPanelView.js";
@@ -211,7 +211,7 @@ function createHarness(
     elements.set(id, element);
   }
   const createElementsInspectorView = vi.fn<CreateElementsInspectorView>(
-    factory ?? ((ownerDocument, mount, source) => new ElementsInspectorView(
+    factory ?? ((ownerDocument, mount, source) => new TestElementsInspector(
       ownerDocument,
       mount,
       source,

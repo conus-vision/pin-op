@@ -25,6 +25,8 @@ export interface PinOpChromiumInspectorAdapterOptions {
  * Styles renderers. Browser builds provide the concrete, versioned runtime;
  * this package keeps all page and IDE authority behind the neutral sources.
  */
+export { installGeckoDomCompatibility } from "./GeckoDomCompatibility.js";
+
 export function createPinOpChromiumInspectorViewFactory(
   runtime: PinOpChromiumInspectorRuntime,
   options: PinOpChromiumInspectorAdapterOptions = {},

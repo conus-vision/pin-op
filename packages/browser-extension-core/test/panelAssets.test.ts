@@ -2,13 +2,11 @@ import { load } from "cheerio";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const html = readFileSync(new URL("../assets/panel.html", import.meta.url), "utf8");
 const inspectorHtml = readFileSync(
   new URL("../assets/inspector-panel.html", import.meta.url),
   "utf8",
 );
 const css = readFileSync(new URL("../assets/panel.css", import.meta.url), "utf8");
-const $ = load(html);
 const inspector = load(inspectorHtml);
 const STATUS_TOKENS = [
   "--status-success",
@@ -73,10 +71,36 @@ describe("DevTools panel assets", () => {
     expect(inspectorHtml).not.toContain("location.search");
   });
 
-  it("keeps the Inspector shell compact without onboarding or branding", () => {
+  it("names the product and its author on one line under the status row", () => {
+    const credit = inspector("#panel-credit");
+
+    expect(credit).toHaveLength(1);
+    expect(inspector("#inspector-status + #panel-credit.panel-credit"))
+      .toHaveLength(1);
+    expect(credit.text().replace(/\s+/g, " ").trim()).toBe(
+      "Pin-op by Volodymyr Moskvin (info@conus.vision) (c) Conus Vision " +
+        "(https://conus.vision)",
+    );
+    expect(inspector("#panel-credit-mail").attr("href"))
+      .toBe("mailto:info@conus.vision");
+    const site = inspector("#panel-credit-site");
+    expect(site.attr("href")).toBe("https://conus.vision");
+    expect(site.attr("rel")).toBe("noreferrer noopener");
+
+    const strip = ruleDeclarations(
+      /\.panel-credit\s*\{([^}]*)\}/s,
+      "Inspector credit strip",
+    );
+    expect(strip).toMatch(/grid-area:\s*credit;/);
+    expect(strip).toMatch(/justify-content:\s*flex-end;/);
+    expect(strip).toMatch(/max-height:\s*18px;/);
+    expect(strip).toMatch(/overflow:\s*hidden;/);
+  });
+
+  it("keeps the Inspector shell compact without onboarding", () => {
     expect(inspector("main.panel-layout.inspector-panel-layout")).toHaveLength(1);
     expect(inspector("#link-onboarding, .link-onboarding")).toHaveLength(0);
-    expect(inspector("#panel-branding, footer")).toHaveLength(0);
+    expect(inspector("#panel-branding")).toHaveLength(0);
     expect(inspector("#inspector-workspace + #inspector-status.inspector-status"))
       .toHaveLength(1);
     expect(inspector("#inspector-status").attr("role")).toBe("group");
@@ -90,10 +114,10 @@ describe("DevTools panel assets", () => {
       "Inspector panel layout",
     );
     expect(layout).toMatch(
-      /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"status";/s,
+      /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"status"\s*"credit";/s,
     );
     expect(layout).toMatch(
-      /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) minmax\(0,\s*26px\);/,
+      /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) minmax\(0,\s*26px\) minmax\(0,\s*18px\);/,
     );
 
     const toolbar = ruleDeclarations(
@@ -113,106 +137,13 @@ describe("DevTools panel assets", () => {
     expect(css).toMatch(
       /\.panel-workspace\s*\{[^}]*grid-area:\s*workspace;[^}]*min-height:\s*0;/s,
     );
-    expect($("main.panel-layout.inspector-panel-layout")).toHaveLength(0);
   });
 
-  it("ships one compact toolbar with settings and unchanged connection controls", () => {
-    expect(html.match(/class="panel-toolbar"/g)).toHaveLength(1);
-    expect(openingTag("inspect-mode")).toMatch(/aria-label="Select an element"/);
-    expect(openingTag("auto-refresh-enabled")).toMatch(/type="checkbox"/);
-    expect(openingTag("ide-highlight-enabled")).toMatch(/type="checkbox"/);
-    expect(html).toMatch(/<label[^>]*>\s*<input[^>]*id="auto-refresh-enabled"[^>]*>\s*Auto Refresh\s*<\/label>/);
-    expect(html).toMatch(/<label[^>]*>\s*<input[^>]*id="ide-highlight-enabled"[^>]*>\s*IDE Highlight\s*<\/label>/);
-    for (const id of [
-      "toolbar-features",
-      "connection-status",
-      "linked-code",
-      "link-controls",
-      "link-code",
-      "paste-button",
-      "link-button",
-      "disconnect-button",
-      "link-onboarding",
-      "operational-footer",
-    ]) {
-      expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
-    }
-    expect(html).toMatch(/id="disconnect-button"[^>]*>\s*Disconnect\s*<\/button>/);
-  });
 
-  it("ships a focused unlinked onboarding surface", () => {
-    const onboarding = $("#link-onboarding");
-    const titleId = onboarding.attr("aria-labelledby");
-    const footer = $("footer.panel-footer");
 
-    expect(onboarding.is("[hidden]")).toBe(true);
-    expect(titleId).toBe("link-onboarding-title");
-    expect($(`h1#${titleId}`)).toHaveLength(1);
-    expect(footer.children("#operational-footer")).toHaveLength(1);
-    expect(footer.children("#panel-error")).toHaveLength(1);
-    expect(footer.children("#panel-branding:not([hidden])")).toHaveLength(1);
-    expect(html).toContain("Connect Pin-op to VS Code");
-    expect(html).toContain(
-      "click the Pin-op status item to copy its seven-digit link code",
-    );
-    expect(html).toContain(
-      "Pin-op reveals the related ranges in the active IDE file",
-    );
-    expect(css).toMatch(
-      /\.primary-button\s*\{[^}]*color:\s*#fff;[^}]*background:\s*var\(--primary-action\);/s,
-    );
-    expect(css).toMatch(
-      /\.link-onboarding\s*\{[^}]*grid-area:\s*workspace;[^}]*place-items:\s*center;/s,
-    );
-  });
 
-  it("defines the responsive DOM and Source workspace without duplicate panes", () => {
-    for (const id of [
-      "panel-workspace",
-      "workspace-tabs",
-      "dom-tab",
-      "source-tab",
-      "dom-pane",
-      "pane-separator",
-      "source-pane",
-      "source-pane-root",
-      "protocol-mismatch",
-    ]) {
-      expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
-    }
-    expect(openingTag("workspace-tabs")).toMatch(/role="tablist"/);
-    expect(openingTag("dom-tab")).toMatch(/role="tab"/);
-    expect(openingTag("source-tab")).toMatch(/role="tab"/);
-    expect(openingTag("pane-separator")).toMatch(/role="separator"/);
-    expect(openingTag("source-pane-root")).toMatch(/aria-label="Source matches"/);
-    expect(html).toContain("Extensions are incompatible");
-    expect(html).toContain(
-      "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
-    );
-    expect(html).toContain('id="protocol-mismatch-versions"');
-  });
 
-  it("keeps navigation status above centered accessible branding", () => {
-    expect(html).toMatch(
-      /id="resolution-status"[\s\S]*id="panel-branding"[\s\S]*<\/footer>/,
-    );
-    expect(openingTag("footer-logo")).toMatch(/width="10"/);
-    expect(openingTag("footer-logo")).toMatch(/height="10"/);
-    expect(html).toMatch(/class="product-name"[^>]*>[\s\S]*?Pin-op<\/span>/);
-    expect(html).toContain('href="mailto:info@conus.vision"');
-    expect(html).toContain('href="https://conus.vision"');
-    expect(html).toContain("Volodymyr Moskvin");
-    expect(html).toContain("(c) 2026 ");
-  });
-
-  it("defines stable responsive constraints without absolute workspace controls", () => {
-    expect(css).toMatch(/\.panel-toolbar-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
-    expect(css).toMatch(/\.panel-toolbar\s*\{[^}]*min-width:\s*300px;/s);
-    expect(css).toContain('[data-layout="split"]');
-    expect(css).toContain('[data-layout="stack"]');
-    expect(css).toContain('[data-layout="tabs"]');
-    expect(css).toMatch(/\.workspace-pane\s*\{[^}]*min-width:\s*160px;[^}]*min-height:\s*160px;/s);
-    expect(css).not.toMatch(/\.(?:panel-toolbar|workspace-tabs|source-pane)\s*\{[^}]*position:\s*absolute;/s);
+  it("keeps the Source pane presentation the Inspector tab still renders", () => {
     expect(css).toMatch(/\.source-pane-excerpt\s*\{[^}]*overflow:\s*auto;/s);
     expect(css).toContain(".source-pane-entry.is-active");
     expect(css).toMatch(/\.source-pane-list\s*\{[^}]*list-style:\s*none;/s);
@@ -224,9 +155,6 @@ describe("DevTools panel assets", () => {
     );
     expect(css).toMatch(/\.source-pane-open\s*\{[^}]*height:\s*22px;/s);
     expect(css).not.toContain(".source-pane-entry:focus-visible");
-    expect(css).toMatch(/\.panel-branding\s*\{[^}]*flex-wrap:\s*wrap;[^}]*text-align:\s*center;/s);
-    expect(css).toMatch(/\.panel-branding\s*\{[^}]*white-space:\s*normal;/s);
-    expect(css).toMatch(/\.panel-branding\s*\{[^}]*line-height:\s*16px;/s);
   });
 
   it("constrains the Inspector mount so Rules owns its vertical scroll", () => {
@@ -235,21 +163,6 @@ describe("DevTools panel assets", () => {
     );
   });
 
-  it("keeps the workspace in the flexible shell row when the protocol banner is hidden", () => {
-    expect(css).toMatch(
-      /\.panel-layout\s*\{[^}]*grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"footer";/s,
-    );
-    expect(css).toMatch(
-      /\.panel-toolbar-scroll\s*\{[^}]*grid-area:\s*toolbar;/s,
-    );
-    expect(css).toMatch(
-      /\.protocol-mismatch\s*\{[^}]*grid-area:\s*protocol;/s,
-    );
-    expect(css).toMatch(
-      /\.panel-workspace\s*\{[^}]*grid-area:\s*workspace;/s,
-    );
-    expect(css).toMatch(/\.panel-footer\s*\{[^}]*grid-area:\s*footer;/s);
-  });
 
   it("keeps semantic status text above WCAG AA contrast in both palettes", () => {
     const palettes = [
@@ -311,13 +224,6 @@ describe("DevTools panel assets", () => {
   });
 });
 
-function openingTag(id: string): string {
-  const match = new RegExp(`<[^>]+\\bid="${id}"[^>]*>`).exec(html);
-  if (!match) {
-    throw new Error(`Missing #${id}`);
-  }
-  return match[0];
-}
 
 function ruleDeclarations(pattern: RegExp, description: string): string {
   const match = pattern.exec(css);

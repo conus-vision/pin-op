@@ -206,6 +206,35 @@ describe("DomStableLocatorService runtime-artifact exclusion", () => {
   });
 });
 
+describe("DomStableLocatorService captured segments", () => {
+  it("reuses an ancestor's segment until the moment it was captured in ends", () => {
+    const document = new FakeDocument();
+    const html = new FakeElement("html", document);
+    const body = new FakeElement("body", document);
+    const first = new FakeElement("div", document);
+    const second = new FakeElement("div", document);
+    const target = new FakeElement("button", document);
+    document.append(html);
+    html.append(body);
+    body.append(first);
+    body.append(second);
+    second.append(target);
+    const service = createService(document, undefined, target);
+
+    const captured = service.capture(target as unknown as Node, "element");
+    expect(captured.path.at(-2)).toMatchObject({ tagName: "div", siblingIndex: 1 });
+
+    body.remove(first);
+    // The moment has not ended, so the ancestor reads as it did when captured.
+    expect(service.capture(target as unknown as Node, "element").path.at(-2))
+      .toMatchObject({ siblingIndex: 1 });
+
+    service.forgetCapturedSegments();
+    expect(service.capture(target as unknown as Node, "element").path.at(-2))
+      .toMatchObject({ siblingIndex: 0 });
+  });
+});
+
 function createService(
   document: FakeDocument,
   runtimeNode: FakeElement | readonly FakeElement[] | undefined,

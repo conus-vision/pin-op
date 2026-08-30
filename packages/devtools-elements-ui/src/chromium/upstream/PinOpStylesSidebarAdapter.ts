@@ -33,6 +33,10 @@ export interface ChromiumReadOnlyStylesPane {
   refreshOrigins(): void | Promise<void>;
   clear(): void;
   dispose(): void;
+  /** Chromium's own Styles toolbar row, when the runtime exposes it. */
+  toolbarElement?(): HTMLElement | null;
+  /** Chromium's toolbar pane below that row, when the runtime exposes it. */
+  toolbarPaneElement?(): HTMLElement | null;
 }
 
 export interface PinOpStylesRulesRendererOptions {
@@ -81,6 +85,7 @@ function createHost(
   let pane: ChromiumReadOnlyStylesPane | undefined;
   let paneElement: HTMLElement | undefined;
   let pseudoStateController: PseudoStateController | undefined;
+  let pseudoMountedInPane = false;
   try {
     pane = runtime.createPane({
       document,
@@ -104,7 +109,19 @@ function createHost(
         document,
         pseudoStateDataSource,
       );
-      mount.append(pseudoStateController.element, paneElement);
+      // Prefer Chromium's own toolbar row and toolbar pane so the read-only
+      // preview toggle occupies the native element-state position instead of
+      // floating above the rule list. Those elements live behind the pane's
+      // widget shadow root, so the runtime is their only authority.
+      const toolbar = mountTarget(pane.toolbarElement?.());
+      const toolbarPane = mountTarget(pane.toolbarPaneElement?.());
+      if (toolbar && toolbarPane) {
+        toolbar.append(pseudoStateController.buttonHost);
+        toolbarPane.append(pseudoStateController.paneHost);
+        pseudoMountedInPane = true;
+      } else {
+        mount.append(pseudoStateController.element, paneElement);
+      }
     }
     const ownedNodes = directChildren(mount).filter(
       node => !originalNodeSet.has(node),
@@ -114,6 +131,7 @@ function createHost(
       pane,
       paneElement,
       pseudoStateController,
+      pseudoMountedInPane,
       originBoundary,
       ownedNodes,
     );
@@ -141,6 +159,7 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
     private readonly pane: ChromiumReadOnlyStylesPane,
     private readonly paneElement: HTMLElement,
     private readonly pseudoStateController: PseudoStateController | undefined,
+    private readonly pseudoMountedInPane: boolean,
     private readonly originBoundary: RuleOriginBoundary,
     private readonly ownedNodes: readonly Node[],
   ) {}
@@ -375,7 +394,9 @@ class PinOpStylesRulesRendererHost implements ElementsRulesRendererHost {
 
   private restoreStableChildren(): void {
     if (this.disposed) return;
-    const pseudoElement = this.pseudoStateController?.element;
+    const pseudoElement = this.pseudoMountedInPane
+      ? undefined
+      : this.pseudoStateController?.element;
     const children = directChildren(this.mount);
     if (pseudoElement) {
       const pseudoIndex = children.indexOf(pseudoElement);
@@ -605,6 +626,10 @@ function isSafeLabel(label: unknown): label is string {
 
 function isOneBasedPosition(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 1;
+}
+
+function mountTarget(value: HTMLElement | null | undefined): HTMLElement | undefined {
+  return isRecord(value) && typeof value.append === "function" ? value : undefined;
 }
 
 function assertPane(

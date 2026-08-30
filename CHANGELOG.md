@@ -28,9 +28,8 @@ All notable changes to Pin-op will be documented in this file.
 - Tab-local Auto Refresh for changed CSS/preprocessor, JavaScript, TypeScript,
   Vue, PHP, and HTML saves, including soft stylesheet replacement and reload
   scroll restore.
-- In the packaged non-default legacy rollback panel, a responsive DevTools
-  Source pane with bounded active-document excerpts for Selected and immediate
-  Parent matches and exact opaque-ID opening in VS Code.
+- A responsive Source tab with bounded active-document excerpts for Selected and
+  immediate Parent matches and exact opaque-ID opening in VS Code.
 - A tab-local IDE Highlight setting that controls decorations without removing
   resolution, Source presentation, or navigation.
 - One shared Chromium-derived, read-only DOM Tree and Rules UI enabled by
@@ -42,6 +41,8 @@ All notable changes to Pin-op will be documented in this file.
 - A browser-local author-style `:hover` and `:focus` preview for supported
   readable rules, with bounded partial diagnostics for unsupported,
   inaccessible, and source-order-approximate cases.
+- A draggable, keyboard-adjustable separator between the DOM tree and the
+  element details pane, with its size remembered per browser.
 
 ### Changed
 
@@ -55,13 +56,135 @@ All notable changes to Pin-op will be documented in this file.
 - Kept Firefox Stable and current Chrome/Chromium on the shared Inspector
   behavior and read-only resolution path.
 - Made the Chromium-derived Inspector the default panel in both browser
-  packages. The non-default legacy panel and its Source UI remain packaged for
-  exactly one published rollback release.
+  packages.
+
+### Removed
+
+- The non-default legacy rollback panel, its own DOM/Rules renderers, and the
+  `PIN_OP_PANEL_VARIANT` build switch. Chrome and Firefox now package exactly
+  one panel page and one Inspector implementation; the Source tab, resolution
+  footer, and every bridge owner are unchanged.
+- The `== $0` console hint in the DOM tree. Pin-op exposes no console binding
+  for it.
 
 ### Fixed
 
+- Restored Chromium's real Inspector surfaces: the panel now declares the
+  browser's baseline theme and platform font classes, so Rules controls stop
+  rendering on a tinted blue field and use DevTools typography.
+- Removed the unstyled `view-source` badge that leaked next to the root element
+  by reporting every upstream adorner as disabled.
+- Moved the `:hov` preview into Chromium's own Styles toolbar row and toolbar
+  pane. Its coverage status no longer floats over the rule list, and neutral
+  status text stays announced without occupying the pane.
+- Stacked the DOM tree above Rules below 680 CSS pixels, matching the width at
+  which Chromium's Elements panel moves its sidebar under the tree.
 - Bound DOM-tree timers to the inspected page window in Firefox, restoring
   content-script startup, the page picker, the DOM tree, and source highlights.
+- Stopped presenting Pin-op's own page overlay as page content. A content
+  session the browser tore down without warning leaves its overlay host behind,
+  owned by nobody: it kept whatever it had last painted and appeared in the DOM
+  tree as an enormous inline-styled element. A new overlay now clears abandoned
+  hosts, and the tree never shows a node wearing Pin-op's overlay marker.
+- Rules source links now open the preprocessor source for rules a mixin wrote.
+  A rule inside a mixin says `&`, and what that becomes is only known where the
+  mixin is used, so the selector could not be compared and the link stopped at
+  the compiled CSS; a rule that cannot state its own selector is now identified
+  by the source map and by what it does declare directly. A mixin body, an
+  `@each` loop and the rest of a preprocessor's own constructs no longer read as
+  cascade conditions Pin-op cannot account for. A value that names properties --
+  `transition`, `will-change` -- is also read the way a browser reports it: each
+  browser answers in the property names it knows, and leaves out a `0s` delay.
+- Added a slim line under the panel's status row naming the product, its author
+  and Conus Vision, with the address and the site as links.
+- Gave the Rules pane back the two lines it spent on itself. A partial snapshot
+  no longer prints "some styles could not be inspected" above the rules -- the
+  footer already reports what could not be read -- and what the `:hov` preview
+  covers is now what its button says when the pointer rests on it. Both stay
+  announced to a screen reader, and a real preview error still takes its line.
+- Rules source links now open the preprocessor source for the rules a
+  preprocessor actually wrote. Four more spellings are settled before the two
+  sides are compared: a shorthand and the sides it sets are read as the same
+  four values, so a file's `top/right/bottom/left` matches the browser's
+  `inset`, and a `margin-top` written after a `margin` shorthand overrides just
+  that side; a bare number matches the pixels a quirks-mode browser made of it;
+  and a rule whose declarations a mixin writes is no longer required to declare
+  them itself -- the source map and a matching selector and condition identify
+  it, and whatever it does declare must still be present in what the browser
+  reported. On a production theme every rule of an element now opens its `.scss`
+  line rather than stopping at the compiled CSS.
+- Restored the hover highlight on pages that move or scale what they show. The
+  highlight is drawn from an element's own margin, border and padding widths, so
+  it was refused whenever anything on the way to the viewport was transformed --
+  which on an ordinary carousel, or a button that grows a little under the
+  pointer, meant no highlight at all. A box that is only moved or scaled stays an
+  upright rectangle, so it is now drawn with its widths scaled by as much as the
+  box was; a `perspective` that projects nothing is no longer read as a
+  transform. Anything that turns, skews or mirrors a box still shows nothing
+  rather than something misplaced.
+- Gave the DOM tree the pointer arrow it should have. Rows are clicked to select
+  an element, not typed into, and the text cursor over them said otherwise.
+- Made a pick on a large page about three times faster. Selecting an element
+  read the same element back many times over -- the path was walked and every
+  locator on it rebuilt and re-resolved for each read -- although the page
+  cannot change anything while a read holds the thread. Each read now answers
+  from the moment it was taken in, re-proving cheaply that the element is still
+  where it was and skipping only the walk; any mutation the tree observes ends
+  that moment. On a production page a pick fell from about 1.5 seconds to about
+  0.4.
+- Rules source links now reach the preprocessor source for rules that a
+  preprocessor rewrote on the way out. A stylesheet's `'font'` becomes `"font"`
+  in the generated CSS, and the rule then verified against the generated file
+  but not against its own source, so the link stopped at the CSS. Quoted text
+  now reads the same in either quote style, and a value token no longer loses
+  the space that follows a closing parenthesis.
+- Rules now shows a rule the way it is written. A stylesheet that says
+  `margin: 0` holds four longhands in the browser, and Pin-op used to list all
+  four: a `*` rule became twenty-five rows and no longer resembled the file it
+  came from. Each declaration is now presented as the rule spells it, with the
+  longhands it sets kept behind the same disclosure triangle an inspector shows,
+  and the cascade is still decided one longhand at a time -- a shorthand is
+  struck through only when every longhand it sets has lost.
+- Rules source links now find rules written with shorthands, prefixed
+  fallbacks, or a property declared twice. The three spellings a stylesheet and
+  a browser disagree on are settled before the two sides are compared: the sides
+  of a box (`padding: 2em 0` and `padding: 2em 0 2em 0`), the order inside a
+  shadow (the browser always writes the colour first), and a repeated property
+  (the browser keeps the last, or the important one). A file may also carry the
+  prefixed declarations a browser silently discards, such as `-moz-box-sizing`
+  beside `box-sizing`; everything the browser did report must still match
+  exactly, and the rule must still be the only one in the file that matches.
+- Rules source links no longer miss a rule because the stylesheet and the
+  browser spelled the same value differently. Colours, zero lengths and number
+  forms are settled on one canonical spelling before the two sides are compared,
+  so `#0b57d0` and `rgb(11, 87, 208)`, or `0` and `0px`, read as the same
+  declaration. A zero percentage is left alone, being a different value.
+- Rules now reads as the cascade rather than as the file. Whatever wins sits at
+  the top and low-weight rules such as `*` and `:root` sink to the bottom
+  wherever they were authored, the way a browser's own inspector presents them;
+  a selector whose weight cannot be proven never outranks one that can.
+- Made the selected DOM row visible again. Upstream paints a row's selection
+  band behind it at `z-index: -1`, which needs every ancestor background to stay
+  transparent; the panel paints its own surface, so the band was landing behind
+  it and no selection ever showed, in either browser. Each row now carries its
+  own stacking context.
+- Stopped the DOM tree from moving out from under the pointer. Chromium
+  re-centres the row it selects and Pin-op echoed every selection back through
+  it, so clicking a row the reader could already see scrolled the tree and the
+  next click landed two rows away. A row that is already on screen is now
+  selected in place; one that is off screen still scrolls into view.
+- Restored DOM tree interaction in Firefox. Chromium's tree calls
+  `ShadowRoot.getSelection()`, which only Blink implements, on the first line of
+  every click handler; in Gecko that threw and took the handler with it, so a
+  row's disclosure arrow never opened it. The shared runtime now installs a
+  reviewed Gecko shim before any upstream code runs.
+- Kept the panel alive across a suspended extension background. The browser
+  unloads an idle background page, and the panel used to answer with cleared DOM
+  and Rules panes that only a fresh pick could revive. It now freezes what it was
+  showing and restores the same element once the background is back, the
+  background waits for a content lease it is still establishing instead of
+  reporting a disposed session, and a DOM read that goes unanswered now times
+  out instead of hanging forever.
 
 ### Security And Privacy
 

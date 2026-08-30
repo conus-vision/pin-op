@@ -47,6 +47,13 @@ import {
 
 const DOM_WIRE_REQUEST_ID_PREFIX = "domq-";
 const STYLES_WIRE_REQUEST_ID_PREFIX = "stylesq-";
+/**
+ * A DOM query that never comes back used to hang forever, which is how a panel
+ * ended up stuck on "Resolving in VS Code" with an empty tree after the
+ * extension background was suspended and its content lease went with it.
+ */
+const DEFAULT_DOM_REQUEST_TIMEOUT_MS = 15_000;
+const MAX_DOM_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_STYLES_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_STYLES_REQUEST_TIMEOUT_MS = 60_000;
 
@@ -59,6 +66,7 @@ type PanelCancelTimeout = (
 ) => void;
 
 export interface PanelInspectTransportOptions {
+  readonly domRequestTimeoutMs?: number;
   readonly stylesRequestTimeoutMs?: number;
   readonly setTimeout?: typeof globalThis.setTimeout;
   readonly clearTimeout?: typeof globalThis.clearTimeout;
@@ -77,6 +85,7 @@ export class PanelInspectTransport {
     {
       readonly callerRequest: DomQuery;
       readonly wireRequest: DomQuery;
+      readonly removeTimer: () => void;
       resolve(value: DomResponse): void;
       reject(reason: unknown): void;
     }
@@ -96,6 +105,7 @@ export class PanelInspectTransport {
   private nextRequestId = 1;
   private connection: PortConnection | undefined;
   private disposed = false;
+  private readonly domRequestTimeoutMs: number;
   private readonly stylesRequestTimeoutMs: number;
   private readonly scheduleTimeout: PanelScheduleTimeout;
   private readonly cancelTimeout: PanelCancelTimeout;
@@ -107,6 +117,9 @@ export class PanelInspectTransport {
     private readonly onConnectionActivated: () => void = () => {},
     options: PanelInspectTransportOptions = {},
   ) {
+    this.domRequestTimeoutMs = validDomRequestTimeout(
+      options.domRequestTimeoutMs,
+    );
     this.stylesRequestTimeoutMs = validStylesRequestTimeout(
       options.stylesRequestTimeoutMs,
     );
@@ -180,14 +193,29 @@ export class PanelInspectTransport {
     const wireRequest = cloneDomQueryWithRequestId(request, wireRequestId);
 
     return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+      const removeTimer = (): void => {
+        if (timer === undefined) return;
+        try {
+          this.cancelTimeout(timer);
+        } catch {
+          // Timer authority is already revoked even if host cleanup fails.
+        }
+        timer = undefined;
+      };
       this.pendingDomCallerIds.add(request.requestId);
       this.pendingDom.set(wireRequestId, {
         callerRequest: request,
         wireRequest,
+        removeTimer,
         resolve,
         reject,
       });
       try {
+        timer = this.scheduleTimeout(() => {
+          const pending = this.takePendingDom(wireRequestId);
+          pending?.reject(new Error("DOM request timed out"));
+        }, this.domRequestTimeoutMs);
         connection.port.postMessage(wireRequest);
       } catch {
         this.closeConnection(connection, true);
@@ -339,6 +367,7 @@ export class PanelInspectTransport {
   public cancelDomRequests(reason = "DOM session changed"): void {
     const error = new Error(reason);
     for (const pending of this.pendingDom.values()) {
+      pending.removeTimer();
       pending.reject(error);
     }
     this.pendingDom.clear();
@@ -457,6 +486,7 @@ export class PanelInspectTransport {
       ) {
         this.pendingDom.delete(requestId);
         this.pendingDomCallerIds.delete(pending.callerRequest.requestId);
+        pending.removeTimer();
         pending.resolve(normalizeDomResponseRequestId(
           domResponse,
           pending.callerRequest.requestId,
@@ -532,6 +562,18 @@ export class PanelInspectTransport {
     this.pendingInspect.clear();
     this.cancelDomRequests("Inspect connection is closed");
     this.cancelStylesRequests("Inspect connection is closed");
+  }
+
+  /** Settles one DOM request exactly once, clearing its timeout bookkeeping. */
+  private takePendingDom(wireRequestId: string): {
+    reject(reason: unknown): void;
+  } | undefined {
+    const pending = this.pendingDom.get(wireRequestId);
+    if (!pending) return undefined;
+    this.pendingDom.delete(wireRequestId);
+    this.pendingDomCallerIds.delete(pending.callerRequest.requestId);
+    pending.removeTimer();
+    return pending;
   }
 
   private takePendingStyles(
@@ -796,6 +838,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isOpaqueId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function validDomRequestTimeout(value: number | undefined): number {
+  const timeout = value ?? DEFAULT_DOM_REQUEST_TIMEOUT_MS;
+  if (
+    !Number.isFinite(timeout) ||
+    timeout <= 0 ||
+    timeout > MAX_DOM_REQUEST_TIMEOUT_MS
+  ) {
+    throw new RangeError("Invalid DOM request timeout");
+  }
+  return timeout;
 }
 
 function validStylesRequestTimeout(value: number | undefined): number {

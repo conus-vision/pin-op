@@ -4,21 +4,23 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import * as elementsUi from "../dist/index.js";
 import * as upstreamRuntime from "../dist/upstreamRuntime.js";
-import { ElementsInspectorView } from "@pin-op/devtools-elements-ui";
+import { ElementsInspectorShell } from "@pin-op/devtools-elements-ui";
 import * as chromiumAdapter from "@pin-op/devtools-elements-ui/chromium-adapter";
 
-assert.deepEqual(Object.keys(elementsUi).sort(), ["ElementsInspectorView"]);
-assert.equal(elementsUi.ElementsInspectorView, ElementsInspectorView);
-assert.equal(typeof ElementsInspectorView, "function");
+assert.deepEqual(Object.keys(elementsUi).sort(), ["ElementsInspectorShell"]);
+assert.equal(elementsUi.ElementsInspectorShell, ElementsInspectorShell);
+assert.equal(typeof ElementsInspectorShell, "function");
 assert.deepEqual(Object.keys(upstreamRuntime), ["createElementsInspectorView"]);
 assert.equal(typeof upstreamRuntime.createElementsInspectorView, "function");
 assert.deepEqual(Object.keys(chromiumAdapter), [
   "createPinOpChromiumInspectorViewFactory",
+  "installGeckoDomCompatibility",
 ]);
 assert.equal(
   typeof chromiumAdapter.createPinOpChromiumInspectorViewFactory,
   "function",
 );
+assert.equal(typeof chromiumAdapter.installGeckoDomCompatibility, "function");
 
 const chromiumDeclarations = await readFile(
   new URL(
@@ -31,6 +33,7 @@ for (const expectedExport of [
   "PinOpChromiumInspectorAdapterOptions",
   "PinOpChromiumInspectorRuntime",
   "createPinOpChromiumInspectorViewFactory",
+  "installGeckoDomCompatibility",
 ]) {
   assert.match(chromiumDeclarations, new RegExp(`\\b${expectedExport}\\b`));
 }
@@ -57,7 +60,7 @@ const expectedExports = [
   "CreateElementsInspectorView",
   "ElementsInspectorHost",
   "ElementsRulesRendererHost",
-  "ElementsInspectorView",
+  "ElementsInspectorShell",
   "ElementsTreeRendererHost",
   "GeneratedRuleSourceSnapshot",
   "InheritedRulesSnapshot",

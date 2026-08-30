@@ -78,8 +78,8 @@ are available in the source tree and Firefox source submission.
 - An author-style `:hover` and `:focus` preview for supported readable rules;
   this is not native pseudo-state forcing.
 - Separate Selected and immediate Parent source decorations.
-- In the packaged non-default legacy rollback panel, bounded Source excerpts
-  with exact navigation back to the IDE.
+- A Source tab with bounded active-document excerpts and exact navigation back
+  to the IDE.
 - Auto Refresh for changed styles and tab reloads with scroll restoration after
   changed script, Vue, PHP, or HTML saves.
 - Explicit browser-window linking over a loopback-only WebSocket.
@@ -107,10 +107,8 @@ Negated targets such as `:not(:hover)`, ancestor or sibling pseudo targets,
 stylesheets/scopes and closed shadow roots are unavailable; closed-shadow
 internals do not contribute an unsupported pseudo-rule count.
 
-The default Inspector has no visible Source tab. Existing Source remains
-active-document-only in the packaged, non-default legacy rollback panel for
-exactly one published rollback release. A remounted Source tab and first-party
-PHP/template providers remain future scope.
+Source remains active-document-only. First-party PHP/template providers remain
+future scope.
 
 ## Compatibility
 

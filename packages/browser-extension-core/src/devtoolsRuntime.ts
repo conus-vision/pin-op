@@ -3,9 +3,7 @@ export interface DevtoolsPanelHandle {
   removeShownListener(listener: () => void): void;
 }
 
-export type DevtoolsPanelPage =
-  | "/dist/panel.html"
-  | "/dist/inspector-panel.html";
+export type DevtoolsPanelPage = "/dist/inspector-panel.html";
 
 export interface DevtoolsRuntimeOptions {
   readonly inspectedTabId: number;
@@ -152,7 +150,6 @@ function assertRegistrationOptions(options: DevtoolsRuntimeOptions): void {
     !isIdentifier(options.sourceId) ||
     (
       options.panelPage !== undefined &&
-      options.panelPage !== "/dist/panel.html" &&
       options.panelPage !== "/dist/inspector-panel.html"
     )
   ) {

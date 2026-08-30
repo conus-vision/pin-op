@@ -4,6 +4,7 @@ import {
   type DomTreeTransport,
 } from "../src/domTreeController.js";
 import { DomTreeRecoveryCoordinator } from "../src/domTreeRecoveryCoordinator.js";
+import { DomTreeRecoveryNotReadyError } from "../src/domTreeRecoveryError.js";
 import type {
   DomChildrenResponse,
   DomErrorCode,
@@ -64,6 +65,30 @@ describe("DomTreeRecoveryCoordinator", () => {
       "recovery",
     ]);
     expect(transport.requests.map(({ type }) => type)).toEqual(["dom.getRoot"]);
+    expect(nodeRefs(controller)).toEqual(["new-root"]);
+  });
+
+  it("keeps the frozen tree when the content session is not established yet", async () => {
+    const transport = new TestTransport();
+    const controller = createController(transport);
+    transport.enqueue(rootResponse(node("old-root", locator(1, 0)), 1));
+    await controller.loadRoot();
+    transport.requests.length = 0;
+    const coordinator = new DomTreeRecoveryCoordinator({ controller, transport });
+    transport.enqueue(errorResponse("session-disposed"));
+
+    await expect(coordinator.begin()).rejects.toBeInstanceOf(
+      DomTreeRecoveryNotReadyError,
+    );
+
+    // The attempt is over; the frozen rows and the snapshot behind them are not.
+    expect(controller.snapshot().recovering).toBe(true);
+    expect(nodeRefs(controller)).toEqual(["old-root"]);
+
+    transport.enqueue(rootResponse(node("new-root", locator(1, 0)), 2));
+    await coordinator.begin();
+
+    expect(controller.snapshot().recovering).toBe(false);
     expect(nodeRefs(controller)).toEqual(["new-root"]);
   });
 
@@ -235,7 +260,14 @@ describe("DomTreeRecoveryCoordinator", () => {
 
     await coordinator.begin();
 
-    expect(transport.requests).toEqual([]);
+    // Recovery itself asks for nothing; the abandoned reveal only fills the
+    // revealed ancestor branch once the manual selection stands.
+    expect(transport.requests.filter((request) => (
+      request.type !== "dom.getChildren"
+    ))).toEqual([]);
+    expect(transport.requests.filter(isChildrenRequest).map((request) => (
+      request.nodeRef
+    ))).toEqual(["manual-root"]);
     expect(controller.snapshot()).toMatchObject({
       documentEpoch: 2,
       selectedRef: "manual-selected",

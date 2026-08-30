@@ -12,7 +12,7 @@ import type {
   SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
 import type { DomTreeController } from "./domTreeController.js";
-import type { DomTreeDocument } from "./domTreeView.js";
+import type { DomTreeDocument } from "./domTreeDocument.js";
 import { ElementsInspectorAdapter } from "./elementsInspectorAdapter.js";
 import {
   startPanelRuntimeWithPresentation,

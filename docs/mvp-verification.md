@@ -13,9 +13,8 @@ fixture, disposable browser profiles, Chrome 151, and Firefox 154. It is not
 installed-VSIX, packaged-ZIP, Mozilla-signed-XPI, persistence, or release-candidate
 evidence.
 
-Both browsers were built with `PIN_OP_PANEL_VARIANT=inspector` and displayed the
-registered Pin-op DevTools tab. The shared `inspector-panel.html` runtime
-connected to the fixture and never exposed a visible Source tab. Chrome
+Both browsers displayed the registered Pin-op DevTools tab. The shared
+`inspector-panel.html` runtime connected to the fixture. Chrome
 exercised the complete interactive checklist. Firefox used its registered native
 custom tab for the complete interactive checklist. The native Firefox Inspector
 panel covered Link, Rules, picker, tree selection, mutation, reload, Auto Refresh,
@@ -70,10 +69,6 @@ both unpacked extensions without a panel-variant environment variable:
 corepack pnpm --filter pin-op-chrome build
 corepack pnpm --filter pin-op-firefox build
 ```
-
-The legacy panel is an explicit non-default rollback asset. A release owner can
-select it only with `PIN_OP_PANEL_VARIANT=legacy`; rebuild without that variable
-before ordinary packaging.
 
 Record the visible selector, declaration state, origin label, diagnostic, and
 revision probe for every row in each browser:
@@ -234,7 +229,7 @@ here. This document does not claim these checks were performed or passed.
 9. Select **Disconnect**. Confirm navigation controls are disabled or hidden,
    no stale route can update them, no old Previous/Next intent moves VS Code,
    and another linked browser window remains connected.
-10. In the legacy rollback panel, confirm the Source pane shows only bounded
+10. In the Inspector's Source tab, confirm it shows only bounded
     excerpts from the active IDE document, with Selected expanded and immediate
     Parent collapsed. Click an excerpt and confirm the cursor opens that exact
     range without switching the active editor.
@@ -268,9 +263,7 @@ Firefox artifacts; both register the shared Inspector by default.
    only; stale authority cannot move the cursor or reveal a range.
 5. Confirm no workspace URI/path, full range, document version, source-map path,
    or command appears in browser/bridge diagnostics or wire capture.
-6. Separately build with `PIN_OP_PANEL_VARIANT=legacy` and verify the explicit
-   rollback `panel.html`. Existing Source must remain active-document-only and
-   otherwise unchanged.
+6. Confirm the Source tab remains active-document-only and otherwise unchanged.
 
 Record Chrome and Firefox outcomes in the Checkpoint 3 matrix in
 `docs/installed-verification.md`. If the native UI harness cannot perform the
@@ -330,6 +323,50 @@ not open the DevTools extension panel, link VS Code, click a Rules origin, or
 receive an open acknowledgement. It cannot replace the Chrome/Firefox Rules
 manual gate above, whose unperformed native cells remain
 `PARTIAL/HARNESS_BLOCKED`.
+
+The Inspector panel smoke drives the real extension end to end -- background
+service worker, content script, and the panel itself -- without a DevTools
+window, by opening the devtools page as an ordinary extension tab with
+`chrome.devtools` stubbed:
+
+```powershell
+corepack pnpm smoke:inspector-extension
+corepack pnpm smoke:inspector-extension-firefox
+node tools/smoke-inspector-extension.mjs --workspace examples/basic-css
+node tools/smoke-inspector-extension.mjs --browser firefox --workspace examples/basic-css
+node tools/smoke-inspector-extension.mjs --url http://localhost/site/ `
+  --pick "#heading" --branch "content_block" --triangle "block_cnt"
+```
+
+`--browser firefox` runs the same contract against the shipped Firefox
+extension. Gecko has no CDP, so that path speaks Marionette (the only way to
+reach chrome scope, and chrome scope is the only way to open a `moz-extension://`
+tab) bridged into WebDriver BiDi through the `webSocketUrl` capability. Firefox
+must be installed; `PIN_OP_FIREFOX` overrides where it is looked for.
+
+Another page needs its own targets: `--pick` is the element clicked on the page,
+`--branch` the tree row to select, and `--triangle` the row to open or close.
+Needles match the row text, so a page whose top-level rows carry no `class=`
+needs its own; the `_ORB` project runs green with `--pick "#section_title_id1"
+--branch "<div" --triangle "<div"`.
+
+It arms the picker, clicks the page, suspends the extension background the way
+the browser does with an idle one, then clicks a tree row and a disclosure
+triangle, and holds the result to the panel contract: the pick lands on the
+element the page shows under the cursor, the picker disarms afterwards, the
+revealed tree carries no whitespace-only rows and no leftover `Load more` rows
+over hidden siblings, Chromium adorners stay hidden, the suspended background
+comes back with the same element selected and its tree and Rules intact instead
+of cleared panes, a run of row clicks aimed from one measurement in a short pane
+each selects the row it aimed at without the tree moving underneath, the selected
+row paints a selection band that is not buried behind the panel's own surface,
+every interaction lands inside `INSPECTOR_INTERACTION_BUDGET`,
+and the panel's own console stays free of thrown errors -- a Chrome-only DOM call
+once threw out of every tree click in Gecko while every other gate still passed. With `--workspace` it also launches the
+Pin-op VS Code extension on that folder, links the panel with the IDE's link
+code, and requires at least one Rules row to resolve to a workspace source. It
+still does not click a Rules origin or assert an open acknowledgement, so the
+native Rules manual gate stays as recorded above.
 
 On Linux, `smoke:chrome-package` requires a graphical session or Xvfb. Set
 `DISPLAY` or `WAYLAND_DISPLAY`, or run it under `xvfb-run -a`; the script refuses
@@ -516,64 +553,19 @@ Keep the ordinary default Inspector loaded for this block.
    At 320 px, confirm DOM Tree stacks above Rules, the toolbar remains reachable,
    and neither pane is clipped.
 
-### Legacy Rollback Source And DOM/Source Layout
-
-This block alone uses the legacy rollback. Build both adapters with the explicit
-legacy selector, then reload the Chrome extension card and reload the Firefox
-Temporary Add-on (or restart its `web-ext` development process) before opening
-fresh DevTools panels:
-
-```powershell
-$env:PIN_OP_PANEL_VARIANT = "legacy"
-corepack pnpm --filter pin-op-chrome build
-corepack pnpm --filter pin-op-firefox build
-Remove-Item Env:PIN_OP_PANEL_VARIANT
-```
-
-Confirm both panels registered packaged `dist/panel.html`, then:
+### Source Tab
 
 1. Select an element with several Selected matches and an immediate Parent
    match while the intended CSS or SCSS file is active.
-2. Confirm the Source pane contains excerpts only from that active document;
-   Selected is expanded and Parent is initially collapsed.
+2. Open the Inspector's **Source** tab and confirm it contains excerpts only
+   from that active document; Selected is expanded and Parent is initially
+   collapsed.
 3. Click each excerpt and confirm VS Code reveals the exact current range by
    opaque match identity. Repeat after a newer inspect and confirm an old click
    is ignored.
-4. Turn **IDE Highlight** off. Confirm decorations clear while the Source pane,
+4. Turn **IDE Highlight** off. Confirm decorations clear while the Source tab,
    exact excerpt opening, resolution footer, and navigation remain usable; turn
    it back on.
-5. Resize DevTools to 680 px or wider. When the measured usable workspace width
-   fits two 160 px panes plus the measured separator, confirm side-by-side
-   DOM/Source remains split.
-6. Keep the viewport at least 680 px wide and 520 px tall, then constrain the
-   measured workspace width below that horizontal fit threshold while its
-   height still fits two 160 px panes plus the measured separator. Confirm DOM
-   stacks above Source, both panes remain visible, tabs are hidden, and the
-   visible separator is horizontal.
-7. Resize below 680 px while keeping the viewport at least 520 px tall. When the
-   measured usable workspace height fits two 160 px panes plus the measured
-   separator (currently at least 325 px total), confirm DOM/Source stacks.
-8. Keep split unavailable in a tall viewport and reduce the usable workspace
-   height below the vertical fit threshold, for example with the mismatch
-   banner or window constraints. Confirm tabs appear with no clipping, then
-   restore enough workspace and confirm stack re-entry.
-9. When split is unavailable, reduce the viewport below 520 px tall and confirm
-   tabs remain active because neither two-pane arrangement fits. In every mode,
-   confirm the toolbar code and controls do not overlap.
-
-### Restore The Default Inspector
-
-Before continuing the ordinary development matrix, rebuild without the legacy
-selector and reload both browser extensions again:
-
-```powershell
-corepack pnpm --filter pin-op-chrome build
-corepack pnpm --filter pin-op-firefox build
-```
-
-Open fresh DevTools panels and confirm both register
-`dist/inspector-panel.html`, show DOM Tree and Rules, and expose no Source tab.
-Reconnect each browser window if the extension reload revoked its session.
 
 ### Auto Refresh
 

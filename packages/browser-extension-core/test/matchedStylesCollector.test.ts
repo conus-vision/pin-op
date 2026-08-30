@@ -71,6 +71,22 @@ describe("MatchedStylesCollector", () => {
       rules: [
         {
           ruleRef: expect.stringMatching(/^rule-/),
+          selectorText: "#never, .card",
+          matchingSelectorIndices: [1],
+          declarations: [expect.objectContaining({
+            property: "color",
+            value: "blue",
+            important: true,
+            state: "winning-known-author",
+          })],
+          contexts: [],
+          source: {
+            sourceUrl: "https://example.test/a.css",
+            rulePath: "0.1",
+          },
+        },
+        {
+          ruleRef: expect.stringMatching(/^rule-/),
           selectorText: "article, .card, .featured",
           matchingSelectorIndices: [0, 1, 2],
           declarations: [
@@ -87,22 +103,6 @@ describe("MatchedStylesCollector", () => {
           source: {
             sourceUrl: "https://example.test/a.css",
             rulePath: "0.0",
-          },
-        },
-        {
-          ruleRef: expect.stringMatching(/^rule-/),
-          selectorText: "#never, .card",
-          matchingSelectorIndices: [1],
-          declarations: [expect.objectContaining({
-            property: "color",
-            value: "blue",
-            important: true,
-            state: "winning-known-author",
-          })],
-          contexts: [],
-          source: {
-            sourceUrl: "https://example.test/a.css",
-            rulePath: "0.1",
           },
         },
       ],
@@ -148,15 +148,17 @@ describe("MatchedStylesCollector", () => {
       rule.selectorText,
       rule.contexts,
       rule.declarations[0]?.state,
+    // Presented as the cascade: the winning rule leads and the imported sheet,
+    // which the document reads first, sits last.
     ])).toEqual([
+      [".card", [], "winning-known-author"],
+      [".card", [], "overridden-known-author"],
+      [".card", [{ kind: "supports", text: "(display: subgrid)" }], "inactive"],
+      [".card", [{ kind: "media", text: "print" }], "inactive"],
       [".card", [
         { kind: "media", text: "screen" },
         { kind: "supports", text: "(display: grid)" },
       ], "winning-known-author"],
-      [".card", [{ kind: "media", text: "print" }], "inactive"],
-      [".card", [{ kind: "supports", text: "(display: subgrid)" }], "inactive"],
-      [".card", [], "overridden-known-author"],
-      [".card", [], "winning-known-author"],
     ]);
     expect(new Set(result.rules.map(({ ruleRef }) => ruleRef))).toHaveLength(5);
   });
@@ -188,9 +190,10 @@ describe("MatchedStylesCollector", () => {
     expect(projection.facts.map(({ ruleRef }) => ruleRef)).toEqual(
       matched.rules.map(({ ruleRef }) => ruleRef),
     );
+    // Rules read as the cascade, so the later of two equal-weight rules leads.
     expect([...contextsByRef.values()]).toEqual([
-      [{ kind: "supports", conditionText: firstCondition }],
       [{ kind: "supports", conditionText: secondCondition }],
+      [{ kind: "supports", conditionText: firstCondition }],
     ]);
     expect(new Set(contextsByRef.keys())).toHaveLength(2);
   });
@@ -503,13 +506,15 @@ describe("MatchedStylesCollector", () => {
 
     expect(result.rules.flatMap(({ declarations }) => declarations.map(({ property }) => property)))
       .not.toContain("opacity");
+    // Cascade order, and a selector whose weight is unknown never outranks one
+    // that could be weighed.
     expect(result.rules.map(({ declarations }) => declarations[0]?.reason)).toEqual([
-      "unsupported-selector-specificity",
-      "unsupported-selector-specificity",
-      "unsupported-selector-specificity",
-      "unsupported-cascade-layer",
-      "unsupported-cascade-scope",
       "unsupported-container-query",
+      "unsupported-cascade-scope",
+      "unsupported-cascade-layer",
+      "unsupported-selector-specificity",
+      "unsupported-selector-specificity",
+      "unsupported-selector-specificity",
     ]);
     expect(result.inaccessibleStylesheetCount).toBe(2);
     expect(result.partial).toBe(true);
@@ -599,15 +604,16 @@ describe("MatchedStylesCollector", () => {
     );
     const matched = collector(selected, authority);
 
+    // Cascade order: the last sheet leads.
     expect(matched.collect(AUTHORITY)!.rules.map(
       ({ declarations }) => declarations[0]?.state,
-    )).toEqual(["inactive", "inactive", "unknown"]);
+    )).toEqual(["unknown", "inactive", "inactive"]);
 
     disabled.disabled = false;
     mutableMedia.media.mediaText = "screen";
     expect(matched.collect(AUTHORITY)!.rules.map(
       ({ declarations }) => declarations[0]?.state,
-    )).toEqual(["winning-known-author", "winning-known-author", "unknown"]);
+    )).toEqual(["unknown", "winning-known-author", "winning-known-author"]);
   });
 
   it("keeps the full Rules model while truncating only inspect evidence", () => {
@@ -1027,10 +1033,12 @@ describe("MatchedStylesCollector", () => {
       pseudoStates: Object.freeze(["hover"] as const),
     }))!;
 
+    // Cascade order: `.card:hover` outweighs the single-class rules, and the
+    // later of those two leads.
     expect(result.rules.map(({ selectorText }) => selectorText)).toEqual([
       ".card:hover",
-      ".never:hover, .always",
       ".always",
+      ".never:hover, .always",
     ]);
     expect(result.rules[0]?.ruleRef).toBe(stylesheets.referenceRule(
       stylesheets.entriesForElement(selected as unknown as Element)[0]!,
@@ -1038,7 +1046,7 @@ describe("MatchedStylesCollector", () => {
       supported,
     ));
     expect(result.rules.map(({ matchingSelectorIndices }) => matchingSelectorIndices))
-      .toEqual([[0], [1], [0]]);
+      .toEqual([[0], [0], [1]]);
     expect(result.rules.some(({ selectorText }) => selectorText === ".parent:hover .card"))
       .toBe(false);
   });
@@ -1146,6 +1154,97 @@ describe("MatchedStylesCollector", () => {
       previewSelectorText: transformed,
     })]);
     expect(Object.isFrozen(candidates[0])).toBe(true);
+  });
+
+  it("presents a rule as it is written and cascades it longhand by longhand", () => {
+    const scope = documentScope();
+    const selected = element(scope, {
+      matches: new Set([".card", "*"]),
+      ownerDocument: expandingDocument(),
+      inline: declaration({ ...edges("padding", "2px") }, "padding: 2px;"),
+    });
+    const sheet = stylesheet("https://example.test/a.css", [
+      styleRule(
+        "*",
+        { ...edges("margin", "0px"), ...edges("padding", "0px") },
+        "margin: 0px; padding: 0px;",
+      ),
+      styleRule(".card", edges("margin", "8px"), "margin: 8px;"),
+    ]);
+
+    const result = collector(selected, stylesheetAuthority(scope, [sheet]))
+      .collect(AUTHORITY)!;
+
+    expect(result.inline?.declarations).toEqual([expect.objectContaining({
+      property: "padding",
+      value: "2px",
+      state: "winning-known-author",
+    })]);
+    expect(result.rules.map(({ selectorText, declarations }) => ({
+      selectorText,
+      declarations: declarations.map(({ property, value, state }) => ({
+        property,
+        value,
+        state,
+      })),
+    }))).toEqual([
+      {
+        selectorText: ".card",
+        declarations: [
+          { property: "margin", value: "8px", state: "winning-known-author" },
+        ],
+      },
+      {
+        selectorText: "*",
+        declarations: [
+          { property: "margin", value: "0px", state: "overridden-known-author" },
+          { property: "padding", value: "0px", state: "overridden-known-author" },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps a partly overridden shorthand applying", () => {
+    const scope = documentScope();
+    const selected = element(scope, {
+      matches: new Set([".card", "*"]),
+      ownerDocument: expandingDocument(),
+    });
+    const sheet = stylesheet("https://example.test/a.css", [
+      styleRule("*", edges("margin", "0px"), "margin: 0px;"),
+      styleRule(".card", { "margin-top": "8px" }, "margin-top: 8px;"),
+    ]);
+
+    const result = collector(selected, stylesheetAuthority(scope, [sheet]))
+      .collect(AUTHORITY)!;
+
+    expect(result.rules.map(({ selectorText, declarations }) => [
+      selectorText,
+      declarations.map(({ property, state }) => `${property}:${state}`),
+    ])).toEqual([
+      [".card", ["margin-top:winning-known-author"]],
+      ["*", ["margin:winning-known-author"]],
+    ]);
+  });
+
+  it("presents the longhands when the shorthand cannot be expanded", () => {
+    const scope = documentScope();
+    const selected = element(scope, { matches: new Set(["*"]) });
+    const sheet = stylesheet("https://example.test/a.css", [
+      styleRule("*", edges("margin", "0px"), "margin: 0px;"),
+    ]);
+
+    const result = collector(selected, stylesheetAuthority(scope, [sheet]))
+      .collect(AUTHORITY)!;
+
+    expect(result.rules[0]?.declarations.map(({ property }) => property))
+      .toEqual([
+        "margin-top",
+        "margin-right",
+        "margin-bottom",
+        "margin-left",
+      ]);
+    expect(result.rules[0]?.declarationsTruncated).toBeUndefined();
   });
 });
 
@@ -1332,6 +1431,7 @@ function element(
     classNames?: readonly string[];
     assignedSlot?: ReturnType<typeof element> | null;
     shadowRoot?: ReturnType<typeof shadowScope> | null;
+    ownerDocument?: object | null;
   },
 ) {
   return {
@@ -1343,6 +1443,7 @@ function element(
     assignedSlot: options.assignedSlot ?? null,
     shadowRoot: options.shadowRoot ?? null,
     style: options.inline ?? declaration({}),
+    ownerDocument: options.ownerDocument ?? null,
     getRootNode: () => root,
     matches(selector: string) {
       options.onMatch?.(selector);
@@ -1357,15 +1458,19 @@ function stylesheet(href: string | null, cssRules: object[]) {
   return { href, cssRules };
 }
 
-function styleRule(selectorText: string, values: Record<string, string>) {
+function styleRule(
+  selectorText: string,
+  values: Record<string, string>,
+  declarationText?: string,
+) {
   return {
     selectorText,
     cssText: `${selectorText} { ... }`,
-    style: declaration(values),
+    style: declaration(values, declarationText),
   };
 }
 
-function declaration(values: Record<string, string>) {
+function declaration(values: Record<string, string>, cssText?: string) {
   const entries = Object.entries(values).map(([property, raw]) => ({
     property,
     value: raw.replace(/\s*!important$/i, ""),
@@ -1373,12 +1478,50 @@ function declaration(values: Record<string, string>) {
   }));
   return {
     length: entries.length,
+    ...(cssText === undefined ? {} : { cssText }),
     item: (index: number) => entries[index]?.property ?? "",
     getPropertyValue: (property: string) =>
       entries.find((entry) => entry.property === property)?.value ?? "",
     getPropertyPriority: (property: string) =>
       entries.find((entry) => entry.property === property)?.priority ?? "",
   };
+}
+
+const SHORTHAND_EXPANSIONS: Readonly<Record<string, readonly string[]>> = {
+  margin: ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+  padding: ["padding-top", "padding-right", "padding-bottom", "padding-left"],
+};
+
+/** Stands in for the browser's own shorthand expansion. */
+function expandingDocument() {
+  return {
+    createElement: () => {
+      let names: readonly string[] = [];
+      return {
+        style: {
+          get length() {
+            return names.length;
+          },
+          get cssText() {
+            return "";
+          },
+          set cssText(_text: string) {
+            names = [];
+          },
+          setProperty(property: string) {
+            names = SHORTHAND_EXPANSIONS[property] ?? [property];
+          },
+          item: (index: number) => names[index] ?? "",
+        },
+      };
+    },
+  };
+}
+
+function edges(prefix: string, value: string): Record<string, string> {
+  return Object.fromEntries(
+    SHORTHAND_EXPANSIONS[prefix]!.map((property) => [property, value]),
+  );
 }
 
 function mediaRule(conditionText: string, cssRules: object[]) {

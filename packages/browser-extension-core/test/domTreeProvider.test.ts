@@ -163,6 +163,42 @@ describe("DomTreeProvider", () => {
     }
   });
 
+  it("omits whitespace-only text nodes from children, counts, and expandability", () => {
+    const document = createDocument();
+    const section = createElement("section", document);
+    document.documentElement.append(createText("\n  "));
+    document.documentElement.append(section);
+    document.documentElement.append(createText("\n  "));
+    document.documentElement.append(createText(" visible "));
+    document.documentElement.append(createText("\n"));
+    const blank = createElement("div", document);
+    blank.append(createText("\n    "));
+    document.documentElement.append(blank);
+    const provider = createProvider(document);
+    const root = provider.getRoot();
+
+    expect(root.node.childCount).toBe(3);
+    const children = provider.getChildren({
+      type: "dom.getChildren",
+      requestId: "whitespace-children",
+      documentEpoch: root.documentEpoch,
+      nodeRef: root.node.nodeRef,
+      branchRevision: root.node.branchRevision,
+    });
+
+    expect(children.nodes.map((node) => node.kind)).toEqual([
+      "element",
+      "text",
+      "element",
+    ]);
+    expect(children.nodes[1]).toMatchObject({ nodeValue: " visible " });
+    expect(children.nodes[2]).toMatchObject({
+      nodeName: "DIV",
+      childCount: 0,
+      expandable: false,
+    });
+  });
+
   it("returns structured element, text, and comment children in fixed-size pages", () => {
     const document = createDocument();
     for (let index = 0; index < 17; index += 1) {
@@ -420,6 +456,62 @@ describe("DomTreeProvider", () => {
     expect(provider.resolveElement("missing-ref", root.documentEpoch)).toBeUndefined();
     expect(() => provider.resolveElement(root.node.nodeRef, root.documentEpoch - 1))
       .toThrowError("stale-document");
+  });
+
+  it("answers the same element read twice in one unmutated moment", () => {
+    const document = createDocument();
+    const child = createElement("article", document);
+    document.documentElement.append(child);
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+    const element = child as unknown as Element;
+
+    const revealed = provider.revealElement(element);
+    const root = provider.getRoot();
+    const resolved = provider.resolveElement(revealed.nodeRef, root.documentEpoch);
+
+    // Nothing can change while a read holds the thread, so the second read of
+    // the same element is the first read's answer, not a second walk.
+    expect(provider.revealElement(element)).toBe(revealed);
+    expect(provider.resolveElement(revealed.nodeRef, root.documentEpoch))
+      .toBe(resolved);
+
+    const sibling = createElement("aside", document);
+    document.documentElement.append(sibling);
+    harness.observers[0]!.emit([mutationRecord(document.documentElement, [sibling])]);
+    harness.flushTimers();
+
+    const afterMutation = provider.revealElement(element);
+    expect(afterMutation).not.toBe(revealed);
+    expect(afterMutation.nodeRef).toBe(revealed.nodeRef);
+    expect(provider.resolveElement(revealed.nodeRef, root.documentEpoch))
+      .not.toBe(resolved);
+  });
+
+  it("stops answering from an unmutated moment once the element moves", () => {
+    const document = createDocument();
+    const first = createElement("article", document);
+    const second = createElement("article", document);
+    document.documentElement.append(first);
+    document.documentElement.append(second);
+    const harness = createProviderHarness(document);
+    const provider = harness.provider;
+
+    const revealed = provider.revealElement(second as unknown as Element);
+    const root = provider.getRoot();
+    document.documentElement.remove(first);
+    harness.observers[0]!.emit([
+      mutationRecord(document.documentElement, [], [first]),
+    ]);
+    harness.flushTimers();
+
+    const moved = provider.revealElement(second as unknown as Element);
+    expect(moved).not.toBe(revealed);
+    expect(moved.ancestorPath.at(-1)?.locator).not.toEqual(
+      revealed.ancestorPath.at(-1)?.locator,
+    );
+    expect(provider.resolveElement(moved.nodeRef, root.documentEpoch)?.element)
+      .toBe(second as unknown as Element);
   });
 
   it("never splits astral characters at element label token boundaries", () => {

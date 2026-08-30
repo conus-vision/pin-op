@@ -22,13 +22,6 @@ import {
   validatePackagedChromeArchive,
 } from "../smoke-packaged-chrome.mjs";
 
-const panelHtmlFixture = readFileSync(
-  new URL(
-    "../../packages/browser-extension-core/assets/panel.html",
-    import.meta.url,
-  ),
-  "utf8",
-);
 const panelCssFixture = readFileSync(
   new URL(
     "../../packages/browser-extension-core/assets/panel.css",
@@ -108,7 +101,7 @@ function compiledPanelRuntime(panelPage) {
   return [
     "function compiledPanelPage() {",
     `  const value = "${panelPage}";`,
-    '  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") return value;',
+    '  if (value === "/dist/inspector-panel.html") return value;',
     '  throw new Error("Invalid compiled panel page");',
     "}",
     "const activePanelPage = compiledPanelPage();",
@@ -116,7 +109,6 @@ function compiledPanelRuntime(panelPage) {
   ].join("\n");
 }
 
-const LEGACY_PANEL_PAGE = "/dist/panel.html";
 const INSPECTOR_PANEL_PAGE = "/dist/inspector-panel.html";
 let acceptedPackagedPanelPage;
 
@@ -136,11 +128,9 @@ function createArchive(
       }),
     ),
   );
-  files.set("dist/panel.html", Buffer.from(panelHtmlFixture));
   files.set("dist/inspector-panel.html", Buffer.from(inspectorPanelHtmlFixture));
   files.set("dist/panel.css", Buffer.from(panelCssFixture));
   files.set("dist/devtools-elements.css", Buffer.from(elementsCssFixture));
-  files.set("dist/panel.js", Buffer.from(panelBundleFixture));
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundleFixture));
   files.set(
     "dist/chromiumElementsRuntime.js",
@@ -170,7 +160,7 @@ function createArchive(
 function currentPackagedPanelPage() {
   if (acceptedPackagedPanelPage) return acceptedPackagedPanelPage;
   const failures = [];
-  for (const panelPage of [INSPECTOR_PANEL_PAGE, LEGACY_PANEL_PAGE]) {
+  for (const panelPage of [INSPECTOR_PANEL_PAGE]) {
     try {
       validatePackagedChromeArchive(createArchive(CHROME_ARCHIVE_FILES, panelPage));
       acceptedPackagedPanelPage = panelPage;
@@ -230,80 +220,6 @@ test("requires packaged inspector assets and semantic static markers", () => {
   const cases = [
     ["dist/inspector-panel.html", 'id="inspector-workspace"', /Inspector workspace/i],
     ["dist/inspector-panel.html", 'id="inspector-elements-mount"', /Inspector mount/i],
-    ["dist/panel.html", 'class="panel-toolbar"', /toolbar/i],
-    ["dist/panel.html", 'id="inspect-mode"', /picker/i],
-    ["dist/panel.html", "Auto Refresh", /Auto Refresh/i],
-    ["dist/panel.html", "IDE Highlight", /IDE Highlight/i],
-    ["dist/panel.html", 'id="link-code"', /connection controls/i],
-    ["dist/panel.html", 'id="disconnect-button"', /connection controls/i],
-    ["dist/panel.html", 'id="panel-workspace"', /workspace/i],
-    ["dist/panel.html", 'id="dom-pane"', /DOM workspace/i],
-    ["dist/panel.html", 'id="source-pane"', /Source workspace/i],
-    ["dist/panel.html", 'id="source-pane-root"', /source pane/i],
-    [
-      "dist/panel.html",
-      "Extensions are incompatible",
-      /incompatibility copy/i,
-    ],
-    [
-      "dist/panel.html",
-      "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
-      /incompatibility copy/i,
-    ],
-    ["dist/panel.html", 'id="panel-branding"', /branded footer/i],
-    [
-      "dist/panel.html",
-      'href="mailto:info@conus.vision"',
-      /branded footer/i,
-    ],
-    [
-      "dist/panel.html",
-      'href="https://conus.vision"',
-      /branded footer/i,
-    ],
-    [
-      "dist/panel.html",
-      "source-navigation-footer",
-      /source navigation footer/i,
-    ],
-    ["dist/panel.css", ".panel-toolbar-scroll", /responsive toolbar/i],
-    ["dist/panel.css", '[data-layout="split"]', /responsive split layout/i],
-    ["dist/panel.css", '[data-layout="stack"]', /responsive stack layout/i],
-    ["dist/panel.css", '[data-layout="tabs"]', /responsive tab layout/i],
-    ["dist/panel.css", ".workspace-pane", /workspace style/i],
-    ["dist/panel.css", ".source-pane-excerpt", /source excerpt style/i],
-    ["dist/panel.css", ".panel-branding", /branded footer style/i],
-    [
-      "dist/panel.css",
-      ".source-navigation-controls",
-      /source navigation controls/i,
-    ],
-    [
-      "dist/panel.js",
-      "source.matches",
-      /source matches/i,
-    ],
-    [
-      "dist/panel.js",
-      "source.open",
-      /source open/i,
-    ],
-    [
-      "dist/panel.js",
-      "source.navigate",
-      /source navigation intent/i,
-    ],
-    [
-      "dist/panel.js",
-      "source.navigationState",
-      /source navigation state/i,
-    ],
-    ["dist/panel.js", "matchId", /opaque match identity/i],
-    [
-      "dist/panel.js",
-      "dom.resolveLocator",
-      /locator recovery/i,
-    ],
     [
       "dist/inspectorPanel.js",
       "styles.getMatched",
@@ -521,7 +437,6 @@ test("rejects literal local paths in packaged runtime bundles", () => {
     "dist/background.js",
     "dist/contentScript.js",
     "dist/devtools.js",
-    "dist/panel.js",
     "dist/inspectorPanel.js",
     "dist/chromiumElementsRuntime.js",
   ]) {
@@ -550,7 +465,7 @@ test("rejects literal local paths in packaged runtime bundles", () => {
       /local POSIX path/i,
     ],
     [
-      "dist/panel.html",
+      "dist/inspector-panel.html",
       "<!-- built from /Users/alice/private/panel.html -->",
       /local POSIX path/i,
     ],
@@ -626,9 +541,9 @@ test("fixture runtime expression derives pseudo and artifact evidence from page 
 
 test("requires exactly one packaged toolbar", () => {
   const archive = createArchive();
-  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
   archive.files.set(
-    "dist/panel.html",
+    "dist/inspector-panel.html",
     Buffer.from(
       `${panel}\n<header class="panel-toolbar secondary"></header>\n`,
     ),
@@ -642,9 +557,9 @@ test("requires exactly one packaged toolbar", () => {
 
 test("rejects an entity-encoded duplicate packaged toolbar", () => {
   const archive = createArchive();
-  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
   archive.files.set(
-    "dist/panel.html",
+    "dist/inspector-panel.html",
     Buffer.from(
       `${panel}\n<header class="secondary panel&#45;toolbar"></header>\n`,
     ),
@@ -681,9 +596,9 @@ test("rejects packaged stylesheets that hide the link code", () => {
 
 test("rejects inline style blocks that hide the link code", () => {
   const archive = createArchive();
-  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
   archive.files.set(
-    "dist/panel.html",
+    "dist/inspector-panel.html",
     Buffer.from(
       panel.replace(
         "</head>",
@@ -707,21 +622,12 @@ test("accepts the Inspector entrypoint as the packaged Chrome default", () => {
   );
 });
 
-test("keeps the legacy page packaged only as a non-default rollback", () => {
-  const archive = createArchive(CHROME_ARCHIVE_FILES, LEGACY_PANEL_PAGE);
-  assert.ok(archive.files.has("dist/panel.html"));
-  assert.ok(archive.files.has("dist/panel.js"));
-  assert.throws(
-    () => validatePackagedChromeArchive(archive),
-    /Inspector panel|expected \/dist\/inspector-panel\.html/i,
-  );
-});
 
 test("accepts the packaged toolbar class token with additional classes", () => {
   const archive = createArchive();
-  const panel = archive.files.get("dist/panel.html").toString("utf8");
+  const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
   archive.files.set(
-    "dist/panel.html",
+    "dist/inspector-panel.html",
     Buffer.from(
       panel.replace(
         'class="panel-toolbar"',

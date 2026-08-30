@@ -27,11 +27,9 @@ import {
   DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES,
   DOM_PROTOCOL_MAX_SUMMARY_LENGTH,
   DomNodeRegistry,
-  DomPanelView,
   DomTreeController,
   DomTreeProvider,
   DomTreeProviderError,
-  DomTreeView,
   ElementsInspectorAdapter,
   DomProtocolError,
   FrameRegistry,
@@ -71,7 +69,6 @@ import {
   startContentRefreshRuntime,
   startDevtoolsRuntime,
   startInspectorPanelRuntime,
-  startPanelRuntime,
   TabRefreshCoordinator,
   TabRefreshStateStore,
   TopScrollSnapshotLeaseStore,
@@ -107,11 +104,9 @@ assert.equal(DOM_PROTOCOL_MAX_ROOT_CHILDREN_SCANNED, 128);
 assert.equal(DOM_PROTOCOL_MAX_SERIALIZED_MESSAGE_BYTES, 64 * 1024);
 assert.equal(DOM_PROTOCOL_MAX_SUMMARY_LENGTH, 512);
 assert.equal(typeof DomNodeRegistry, "function");
-assert.equal(typeof DomPanelView, "function");
 assert.equal(typeof DomTreeController, "function");
 assert.equal(typeof DomTreeProvider, "function");
 assert.equal(typeof DomTreeProviderError, "function");
-assert.equal(typeof DomTreeView, "function");
 assert.equal(typeof ElementsInspectorAdapter, "function");
 assert.equal(typeof DomProtocolError, "function");
 assert.equal(typeof FrameRegistry, "function");
@@ -151,7 +146,6 @@ assert.equal(typeof startContentScriptRuntime, "function");
 assert.equal(typeof startContentRefreshRuntime, "function");
 assert.equal(typeof startDevtoolsRuntime, "function");
 assert.equal(typeof startInspectorPanelRuntime, "function");
-assert.equal(typeof startPanelRuntime, "function");
 assert.equal(typeof TabRefreshCoordinator, "function");
 assert.equal(typeof TabRefreshStateStore, "function");
 assert.equal(typeof TopScrollSnapshotLeaseStore, "function");

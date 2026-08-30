@@ -359,17 +359,7 @@ export type {
   DomTreeRecoveryCoordinatorOptions,
   DomTreeRecoveryTransport,
 } from "./domTreeRecoveryCoordinator.js";
-export {
-  DEFAULT_DOM_TREE_OVERSCAN,
-  DEFAULT_DOM_TREE_ROW_HEIGHT,
-  DomTreeView,
-} from "./domTreeView.js";
-export type {
-  DomTreeDocument,
-  DomTreeResizeObserver,
-  DomTreeResizeObserverFactory,
-  DomTreeViewOptions,
-} from "./domTreeView.js";
+export type { DomTreeDocument } from "./domTreeDocument.js";
 export { virtualTreeRows } from "./virtualTreeRows.js";
 export type {
   VirtualTreeRow,
@@ -522,16 +512,16 @@ export type {
 } from "./panelSettingsController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
-export { DomPanelView } from "./panelView.js";
-export type { PanelDocument } from "./panelView.js";
 export { InspectorPanelView } from "./inspectorPanelView.js";
-export type { InspectorPanelDocument } from "./inspectorPanelView.js";
+export type {
+  InspectorPanelDocument,
+  PanelDocument,
+} from "./inspectorPanelView.js";
 export { startInspectorPanelRuntime } from "./inspectorPanelRuntime.js";
 export type {
   InspectorPanelRuntime,
   InspectorPanelRuntimeOptions,
 } from "./inspectorPanelRuntime.js";
-export { startPanelRuntime } from "./panelRuntime.js";
 export type {
   PanelRuntime,
   PanelRuntimeOptions,

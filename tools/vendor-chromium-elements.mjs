@@ -38,55 +38,15 @@ const ALLOWED_DOWNLOAD_PATHS = new Set([LICENSE_UPSTREAM_PATH, ...UPSTREAM_PATHS
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const DERIVED_TARGETS = new Map([
-  [
+  ...[
     "front_end/panels/elements/ElementsTreeOutline.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-    }],
-  ],
-  [
     "front_end/panels/elements/ElementsTreeElement.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylesSidebarPane.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertiesSection.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertyTreeElement.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/PropertyRenderer.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertyUtils.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
+  ].map((upstreamPath) => [upstreamPath, []]),
   ...[
     "front_end/panels/elements/elementsTreeOutline.css",
     "front_end/panels/elements/stylesSidebarPane.css",

@@ -38,7 +38,9 @@
   --pin-op-elements-rules-value: #1a1aa6;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 38%);
+  grid-template-columns:
+    minmax(0, 1fr) auto
+    minmax(220px, var(--pin-op-elements-sidebar-width, 38%));
   grid-template-rows: minmax(0, 1fr);
   block-size: 100%;
   min-block-size: 0;
@@ -46,7 +48,7 @@
   overflow: clip;
   color: CanvasText;
   background: Canvas;
-  font: 12px/1.4 system-ui, sans-serif;
+  font: 12px/1.4 var(--default-font-family, system-ui, sans-serif);
 }
 
 .pin-op-elements-inspector *,
@@ -70,6 +72,38 @@
 .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
   grid-template-rows: minmax(0, 1fr);
   border-inline-end: 1px solid var(--pin-op-elements-border);
+}
+
+/*
+ * The separator keeps a zero-size grid track so the two panes stay exactly
+ * contiguous; only its generated hit area overlaps the boundary.
+ */
+.pin-op-elements-inspector .pin-op-elements-inspector__resizer {
+  position: relative;
+  z-index: 2;
+  inline-size: 0;
+  overflow: visible;
+  touch-action: none;
+}
+
+.pin-op-elements-inspector .pin-op-elements-inspector__resizer::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: -3px;
+  inline-size: 6px;
+  background: transparent;
+  content: "";
+  cursor: col-resize;
+}
+
+.pin-op-elements-inspector .pin-op-elements-inspector__resizer:hover::before,
+.pin-op-elements-inspector .pin-op-elements-inspector__resizer[data-state="active"]::before {
+  background: color-mix(in srgb, Highlight 45%, transparent);
+}
+
+.pin-op-elements-inspector .pin-op-elements-inspector__resizer:focus-visible::before {
+  outline: 2px solid Highlight;
+  outline-offset: -2px;
 }
 
 .pin-op-elements-inspector .pin-op-elements-inspector__sidebar {
@@ -296,7 +330,7 @@
   color: GrayText;
 }
 
-.pin-op-elements-inspector .pin-op-elements-inspector__rules {
+.pin-op-elements-inspector .styles-pane {
   font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
 }
 
@@ -318,7 +352,6 @@
   align-items: start;
   gap: 4px;
   padding: 4px;
-  padding-inline-end: 52px;
   border-block-end: 1px solid var(--pin-op-elements-border);
   background: Canvas;
 }
@@ -335,26 +368,37 @@
 }
 
 .pin-op-elements-inspector .pseudo-state-controls {
-  position: absolute;
+  position: relative;
   z-index: 3;
-  inset-block-start: 3px;
-  inset-inline-end: 4px;
   display: grid;
   justify-items: end;
+  min-inline-size: 0;
+}
+
+.pin-op-elements-inspector .pseudo-state-toolbar-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-inline: 2px;
+}
+
+.pin-op-elements-inspector .pseudo-state-pane {
+  display: block;
+  min-inline-size: 0;
 }
 
 .pin-op-elements-inspector .pseudo-state-button {
   appearance: none;
-  min-block-size: 24px;
-  min-inline-size: 42px;
+  min-block-size: 20px;
+  min-inline-size: 36px;
   margin: 0;
-  padding: 3px 6px;
-  border: 1px solid var(--pin-op-elements-border);
-  border-radius: 2px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 100px;
   color: inherit;
-  background: Canvas;
+  background: transparent;
   font: inherit;
-  font-weight: 600;
   line-height: 1.4;
   cursor: pointer;
 }
@@ -376,20 +420,14 @@
 }
 
 .pin-op-elements-inspector .pseudo-state-menu {
-  position: absolute;
-  inset-block-start: calc(100% + 2px);
-  inset-inline-end: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
   min-inline-size: 0;
-  inline-size: min(260px, calc(100vw - 20px));
-  padding: 4px;
-  border: 1px solid var(--pin-op-elements-border);
-  border-radius: 2px;
+  padding: 2px 5px;
+  border: 0;
   color: CanvasText;
-  background: Canvas;
-  box-shadow: 0 2px 5px color-mix(in srgb, CanvasText 20%, transparent);
+  background: transparent;
 }
 
 .pin-op-elements-inspector .pseudo-state-choice {
@@ -438,16 +476,15 @@
 
 .pin-op-elements-inspector .pseudo-state-description[role="status"],
 .pin-op-elements-inspector .pseudo-state-description[role="alert"] {
-  inset-block-start: calc(100% + 2px);
-  inset-inline-end: 0;
-  inline-size: min(260px, calc(100vw - 20px));
+  position: static;
+  inline-size: auto;
   block-size: auto;
   margin: 0;
-  padding: 4px 5px;
+  padding: 2px 5px 4px;
   overflow: visible;
   clip-path: none;
-  color: CanvasText;
-  background: Canvas;
+  color: var(--pin-op-elements-rules-meta);
+  background: transparent;
   white-space: normal;
 }
 
@@ -685,10 +722,13 @@
   }
 }
 
-@media (max-width: 440px) {
+/* Chromium's Elements panel stacks its sidebar below 680px; match it. */
+@media (max-width: 680px) {
   .pin-op-elements-inspector {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(160px, 1fr) minmax(120px, 45%);
+    grid-template-rows:
+      minmax(160px, 1fr) auto
+      minmax(120px, var(--pin-op-elements-sidebar-height, 45%));
   }
 
   .pin-op-elements-inspector .pin-op-elements-inspector__dom-pane {
@@ -696,10 +736,22 @@
     border-block-end: 1px solid var(--pin-op-elements-border);
   }
 
+  .pin-op-elements-inspector .pin-op-elements-inspector__resizer {
+    inline-size: auto;
+    block-size: 0;
+  }
+
+  .pin-op-elements-inspector .pin-op-elements-inspector__resizer::before {
+    inset-block: -3px auto;
+    inset-inline: 0;
+    inline-size: auto;
+    block-size: 6px;
+    cursor: row-resize;
+  }
+
   .pin-op-elements-inspector .styles-sidebar-pane-toolbar-container {
     gap: 3px;
     padding: 3px;
-    padding-inline-end: 51px;
   }
 
   .pin-op-elements-inspector .styles-section-subtitle {

@@ -62,7 +62,7 @@ export const CHROMIUM_READ_ONLY_ELEMENTS_RUNTIME = Object.freeze({
   overlayRoot: `third_party/chromium-devtools-frontend/patches/${CHROMIUM_DEVTOOLS_PIN.version}`,
   maxUnminifiedBytes: 1280 * 1024,
   browserTargets: Object.freeze(["chrome116", "firefox142"]),
-  manifestSha256: "2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a",
+  manifestSha256: "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
 });
 
 function sha256(bytes) {
@@ -684,6 +684,11 @@ function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCss
   };
 }
 
+// Chromium prints " == $0" beside the selected node so the console can refer
+// to it. Pin-op exposes no console, so the hint would promise a binding that
+// does not exist.
+const CONSOLE_SELECTION_HINT_RULE_COUNT = 3;
+
 const UNUSED_APPLICATION_TOKEN_COUNTS = Object.freeze({
   "--app-color-ai-assistance-input-divider": 2,
   "--app-color-google-ai-blue": 1,
@@ -746,6 +751,21 @@ export function sanitizeChromiumSharedCss(
     if (enforceReviewedTransformCounts && replacedProductFonts !== 1) {
       throw new Error(
         "Chromium shared CSS reviewed product-font count changed",
+      );
+    }
+  }
+
+  if (relativeCssPath === "front_end/panels/elements/elementsTreeOutline.css") {
+    let removedHints = 0;
+    root.walkRules(rule => {
+      if (!rule.selector.includes(".selected-hint")) return;
+      removedHints += 1;
+      rule.remove();
+    });
+    if (enforceReviewedTransformCounts &&
+      removedHints !== CONSOLE_SELECTION_HINT_RULE_COUNT) {
+      throw new Error(
+        "Chromium shared CSS reviewed console selection-hint count changed",
       );
     }
   }

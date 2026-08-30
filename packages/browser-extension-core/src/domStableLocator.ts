@@ -124,7 +124,21 @@ type CaptureRootBoundary =
   | { readonly kind: "frame-document" | "shadow-root"; readonly host: Element };
 
 /** Captures and proves browser-local DOM identity without selector or URL fallback. */
+interface CapturedSegment {
+  readonly parent: Node;
+  readonly root: Node;
+  readonly segment: DomPathSegment;
+}
+
 export class DomStableLocatorService {
+  /**
+   * Segments already captured in the current unmutated moment. Capturing a
+   * path walks every ancestor, and one selection captures a locator for each
+   * node on that path, so the same ancestor segment would otherwise be built
+   * -- uniqueness traversal and all -- once per descendant.
+   */
+  private segments = new WeakMap<Element, CapturedSegment>();
+
   private readonly topDocument: Document;
   private readonly frameRegistry: DomStableLocatorServiceOptions["frameRegistry"];
   private readonly isExcludedNode: DomStableLocatorServiceOptions["isExcludedNode"];
@@ -143,6 +157,11 @@ export class DomStableLocatorService {
     this.isRuntimeArtifactAttributeName = options.isRuntimeArtifactAttributeName ?? (
       () => false
     );
+  }
+
+  /** Ends the moment the captured segments were valid for. */
+  public forgetCapturedSegments(): void {
+    this.segments = new WeakMap();
   }
 
   public capture(
@@ -322,6 +341,7 @@ export class DomStableLocatorService {
         this.isRuntimeArtifactNode,
         this.isRuntimeArtifactAttributeName,
         budget,
+        this.segments,
       );
       if (path.length > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
       return Object.freeze({
@@ -338,6 +358,7 @@ export class DomStableLocatorService {
       this.isRuntimeArtifactNode,
       this.isRuntimeArtifactAttributeName,
       budget,
+      this.segments,
     );
     const pathDepth = parent.pathDepth + path.length;
     if (pathDepth > DOM_STABLE_LOCATOR_MAX_DEPTH) throw invalidLocator();
@@ -556,6 +577,7 @@ function capturePath(
   isRuntimeArtifactNode: (node: Node) => boolean,
   isRuntimeArtifactAttributeName: (name: string) => boolean,
   budget: LocatorVisitBudget,
+  segments?: WeakMap<Element, CapturedSegment>,
 ): readonly DomPathSegment[] {
   const reversed: DomPathSegment[] = [];
   const seen = new Set<Node>();
@@ -568,14 +590,23 @@ function capturePath(
     if (isExcludedNode(current)) throw invalidLocator();
     const parent = readParentNode(current);
     if (!parent || parent === current || isExcludedNode(parent)) throw invalidLocator();
-    reversed.push(captureSegment(
-      current as Element,
+    const element = current as Element;
+    const remembered = segments?.get(element);
+    if (remembered && remembered.parent === parent && remembered.root === root) {
+      reversed.push(remembered.segment);
+      current = parent;
+      continue;
+    }
+    const segment = captureSegment(
+      element,
       parent,
       root,
       isRuntimeArtifactNode,
       isRuntimeArtifactAttributeName,
       budget,
-    ));
+    );
+    segments?.set(element, Object.freeze({ parent, root, segment }));
+    reversed.push(segment);
     current = parent;
   }
   if (reversed.length === 0) throw invalidLocator();

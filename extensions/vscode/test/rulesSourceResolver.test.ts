@@ -1046,8 +1046,9 @@ describe("RulesSourceResolver", () => {
     });
 
     for (const scss of [
+      // Unparsable, and a rule that declares what the browser never reported.
       ".card { color: red; ",
-      ".card { @include paint; }",
+      ".card { color: red; display: grid; }",
     ]) {
       const result = await resolveOne(memoryWorkspace({
         [cssUri]: css,
@@ -1060,6 +1061,32 @@ describe("RulesSourceResolver", () => {
         confidence: "exact",
       });
     }
+  });
+
+  it("opens the preprocessor rule a mixin wrote the declarations for", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const mapUri = `${cssUri}.map`;
+    const scssUri = "file:///workspace/src/card.scss";
+    const css = ".card { color: red; }\n/*# sourceMappingURL=app.css.map */";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/card.scss",
+    });
+
+    // The rule writes none of its declarations out; the mixin compiles them.
+    const result = await resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [mapUri]: generator.toString(),
+      [scssUri]: ".card { @include paint; }",
+    }), evidence({ selector: ".card", startLine: 1, startColumn: 1 }));
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
+    });
   });
 
   it("rejects ambiguous and outside generated CSS before reading it", async () => {

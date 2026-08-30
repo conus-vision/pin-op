@@ -18,10 +18,6 @@ const {
 } = artifactVerifier;
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const panelHtml = readFileSync(
-  resolve(repositoryRoot, "packages/browser-extension-core/assets/panel.html"),
-  "utf8",
-);
 const inspectorPanelHtml = readFileSync(
   resolve(
     repositoryRoot,
@@ -97,14 +93,13 @@ function compiledPanelRuntime(panelPage) {
   return [
     "function compiledPanelPage() {",
     `  const value = "${panelPage}";`,
-    '  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") return value;',
+    '  if (value === "/dist/inspector-panel.html") return value;',
     '  throw new Error("Invalid compiled panel page");',
     "}",
     "const activePanelPage = compiledPanelPage();",
     "",
   ].join("\n");
 }
-const LEGACY_PANEL_PAGE = "/dist/panel.html";
 const INSPECTOR_PANEL_PAGE = "/dist/inspector-panel.html";
 const acceptedBrowserPanelPages = new Map();
 const upstreamManifest = JSON.parse(
@@ -150,18 +145,16 @@ const nativeCodeMirrorLicense = readFileSync(
 // Retaining those helpers after dependency/build changes requires a security
 // review before deliberately updating this list.
 const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  { browser: "chrome", path: "dist/background.js", sha256: "f4cb9afbcf76e95d1a86849d112fedec178346827a300320474dce36da6e40ce", inspectorSha256: "188ab7b04531cd878fb457b800d5a93362108f22c838b3580136c1b340c82b96" },
-  { browser: "chrome", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" },
-  { browser: "chrome", path: "dist/devtools.js", sha256: "88f98da93c272282d2a025f603441d5f2a97bbd92821ad944ab08264ea6bca47", inspectorSha256: "b27daa5bc3e1033c88a4cfc734cd647d24e8d0fdacac5cdc80fab11686fadc07" },
-  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d", inspectorSha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d" },
-  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df", inspectorSha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df" },
-  { browser: "chrome", path: "dist/panel.js", sha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516", inspectorSha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516" },
-  { browser: "firefox", path: "dist/background.js", sha256: "f4cb9afbcf76e95d1a86849d112fedec178346827a300320474dce36da6e40ce", inspectorSha256: "188ab7b04531cd878fb457b800d5a93362108f22c838b3580136c1b340c82b96" },
-  { browser: "firefox", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" },
-  { browser: "firefox", path: "dist/devtools.js", sha256: "9ccd3f59c92b024c4400e0c2c230e19262caed0855b292e448edd9d3707a6b58", inspectorSha256: "bd70c7203c3aa689dbea242a3f9bbafd898b38d962cc8db8cd69e083b8e5c86d" },
-  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d", inspectorSha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d" },
-  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df", inspectorSha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df" },
-  { browser: "firefox", path: "dist/panel.js", sha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516", inspectorSha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516" },
+  { browser: "chrome", path: "dist/background.js", sha256: "8ce72ec6a795d0d5865b265592e60270d6517b0b396623a22ae07f9ab9df6112" },
+  { browser: "chrome", path: "dist/contentScript.js", sha256: "14a2dd0835e3c449250d7ffb0fd55e16824c6995aa4fac4a0b384b1f2e19a2c0" },
+  { browser: "chrome", path: "dist/devtools.js", sha256: "405d9fb49aeaf9cb1644554059bf18acca8355999b1020e82bb5c5272c015553" },
+  { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "31f6a2d2860c3390cf02e898b481de80bdd64f1504c4a1632a4df6ca99c66ec2" },
+  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "c1daa1c59299be872d5dca1ebe8f13ec084545caed97e18204920fc3377cabd3" },
+  { browser: "firefox", path: "dist/background.js", sha256: "8ce72ec6a795d0d5865b265592e60270d6517b0b396623a22ae07f9ab9df6112" },
+  { browser: "firefox", path: "dist/contentScript.js", sha256: "14a2dd0835e3c449250d7ffb0fd55e16824c6995aa4fac4a0b384b1f2e19a2c0" },
+  { browser: "firefox", path: "dist/devtools.js", sha256: "d01153c4355e6a6fbd05520cd7d214e91e6979b558097c05398ca8bf576ade56" },
+  { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "31f6a2d2860c3390cf02e898b481de80bdd64f1504c4a1632a4df6ca99c66ec2" },
+  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "c1daa1c59299be872d5dca1ebe8f13ec084545caed97e18204920fc3377cabd3" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -193,120 +186,14 @@ const requiredMarkers = [
     marker: ".pseudo-state-menu",
   },
   {
-    label: "toolbar",
-    path: "dist/panel.html",
-    marker: 'class="panel-toolbar"',
-  },
-  {
-    label: "picker",
-    path: "dist/panel.html",
-    marker: 'id="inspect-mode"',
-  },
-  {
-    label: "Auto Refresh",
-    path: "dist/panel.html",
-    marker: "Auto Refresh",
-  },
-  {
-    label: "IDE Highlight",
-    path: "dist/panel.html",
-    marker: "IDE Highlight",
-  },
-  {
-    label: "connection controls",
-    path: "dist/panel.html",
-    marker: 'id="link-code"',
-  },
-  {
-    label: "DOM workspace",
-    path: "dist/panel.html",
-    marker: 'id="dom-pane"',
-  },
-  {
-    label: "Source workspace",
-    path: "dist/panel.html",
-    marker: 'id="source-pane"',
-  },
-  {
-    label: "source pane",
-    path: "dist/panel.html",
-    marker: 'id="source-pane-root"',
-  },
-  {
-    label: "incompatibility copy",
-    path: "dist/panel.html",
-    marker:
-      "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
-  },
-  {
-    label: "branded footer",
-    path: "dist/panel.html",
-    marker: 'href="mailto:info@conus.vision"',
-  },
-  {
-    label: "source navigation footer",
-    path: "dist/panel.html",
-    marker: "source-navigation-footer",
-  },
-  {
     label: "responsive toolbar",
     path: "dist/panel.css",
     marker: ".panel-toolbar-scroll",
   },
   {
-    label: "responsive split layout",
-    path: "dist/panel.css",
-    marker: '[data-layout="split"]',
-  },
-  {
-    label: "responsive stack layout",
-    path: "dist/panel.css",
-    marker: '[data-layout="stack"]',
-  },
-  {
-    label: "responsive tab layout",
-    path: "dist/panel.css",
-    marker: '[data-layout="tabs"]',
-  },
-  {
     label: "source excerpt style",
     path: "dist/panel.css",
     marker: ".source-pane-excerpt",
-  },
-  {
-    label: "source navigation controls",
-    path: "dist/panel.css",
-    marker: ".source-navigation-controls",
-  },
-  {
-    label: "source matches",
-    path: "dist/panel.js",
-    marker: "source.matches",
-  },
-  {
-    label: "source open",
-    path: "dist/panel.js",
-    marker: "source.open",
-  },
-  {
-    label: "source navigation intent",
-    path: "dist/panel.js",
-    marker: "source.navigate",
-  },
-  {
-    label: "source navigation state",
-    path: "dist/panel.js",
-    marker: "source.navigationState",
-  },
-  {
-    label: "opaque match identity",
-    path: "dist/panel.js",
-    marker: "matchId",
-  },
-  {
-    label: "locator recovery",
-    path: "dist/panel.js",
-    marker: "dom.resolveLocator",
   },
   {
     label: "Rules source publication",
@@ -473,8 +360,6 @@ test("browser artifact inventory includes the Inspector default and legacy rollb
     "dist/inspectorPanel.js",
     "dist/chromiumElementsRuntime.js",
     "dist/devtools-elements.css",
-    "dist/panel.html",
-    "dist/panel.js",
   ]) {
     assert.ok(BROWSER_ARCHIVE_FILES.includes(path), path);
   }
@@ -562,13 +447,13 @@ for (const browser of ["firefox", "chrome"]) {
 
   test(`common ${browser} artifact verifier accepts toolbar class tokens in any order`, () => {
     const archive = browserArchive(browser);
-    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
     const reordered = panel.replace(
       'class="panel-toolbar"',
       "class='secondary panel-toolbar primary'",
     );
     assert.notEqual(reordered, panel);
-    archive.files.set("dist/panel.html", Buffer.from(reordered));
+    archive.files.set("dist/inspector-panel.html", Buffer.from(reordered));
 
     assert.doesNotThrow(() =>
       validateBrowserArchive(
@@ -687,7 +572,7 @@ for (const browser of ["firefox", "chrome"]) {
   });
 
   test(`common ${browser} artifact verifier rejects remote Inspector UI resources`, () => {
-    for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+    for (const path of ["dist/inspector-panel.html"]) {
       for (const resource of [
         '<script src="https://attacker.test/ui.js"></script>',
         '<link rel="stylesheet" href="https://attacker.test/ui.css" />',
@@ -796,7 +681,7 @@ for (const browser of ["firefox", "chrome"]) {
   });
 
   test(`common ${browser} artifact verifier rejects indirect Inspector UI resources`, () => {
-    for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+    for (const path of ["dist/inspector-panel.html"]) {
       for (const resource of [
         '<base href="https://attacker.test/" />',
         '<img srcset="https://attacker.test/ui.png 1x, ./local.png 2x" alt="" />',
@@ -884,7 +769,7 @@ for (const browser of ["firefox", "chrome"]) {
   });
 
   test(`common ${browser} artifact verifier rejects inline panel code and styles`, () => {
-    for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+    for (const path of ["dist/inspector-panel.html"]) {
       for (const injection of [
         "<script>globalThis.attack = true;</script>",
         "<style>body { display: block; }</style>",
@@ -916,7 +801,6 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/background.js",
       "dist/contentScript.js",
       "dist/devtools.js",
-      "dist/panel.js",
       "dist/inspectorPanel.js",
       "dist/chromiumElementsRuntime.js",
     ]) {
@@ -1074,20 +958,6 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
-  test(`common ${browser} release verifier keeps legacy only as a rollback entrypoint`, () => {
-    const archive = browserArchive(browser, LEGACY_PANEL_PAGE);
-    assert.ok(archive.files.has("dist/panel.html"));
-    assert.ok(archive.files.has("dist/panel.js"));
-
-    assert.throws(
-      () => validateBrowserArchive(
-        archive,
-        `pin-op-${browser}-0.3.0.zip`,
-        browser,
-      ),
-      /Inspector panel|expected \/dist\/inspector-panel\.html/i,
-    );
-  });
 
   test(`common ${browser} artifact verifier rejects a copied schema clone constructor pattern`, () => {
     const archive = browserArchive(browser);
@@ -1122,7 +992,6 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/background.js",
       "dist/contentScript.js",
       "dist/devtools.js",
-      "dist/panel.js",
       "dist/inspectorPanel.js",
       "dist/chromiumElementsRuntime.js",
     ]) {
@@ -1147,7 +1016,6 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/background.js",
       "dist/contentScript.js",
       "dist/devtools.js",
-      "dist/panel.js",
       "dist/inspectorPanel.js",
       "dist/chromiumElementsRuntime.js",
     ]) {
@@ -1303,9 +1171,9 @@ for (const browser of ["firefox", "chrome"]) {
     for (const mutate of [
       (manifest) => { manifest.commands = { attack: { suggested_key: "Ctrl+A" } }; },
       (manifest) => { manifest.externally_connectable = { matches: ["<all_urls>"] }; },
-      (manifest) => { manifest.web_accessible_resources = [{ resources: ["dist/panel.js"], matches: ["<all_urls>"] }]; },
+      (manifest) => { manifest.web_accessible_resources = [{ resources: ["dist/inspectorPanel.js"], matches: ["<all_urls>"] }]; },
       (manifest) => { manifest.x_pin_op_test_capability = true; },
-      (manifest) => { manifest.content_scripts = [{ matches: ["<all_urls>"], js: ["dist/panel.js"] }]; },
+      (manifest) => { manifest.content_scripts = [{ matches: ["<all_urls>"], js: ["dist/inspectorPanel.js"] }]; },
     ]) {
       const archive = browserArchive(browser);
       const manifest = JSON.parse(archive.files.get("manifest.json").toString("utf8"));
@@ -1380,12 +1248,12 @@ for (const browser of ["firefox", "chrome"]) {
         /local drive path/i,
       ],
       [
-        "dist/panel.js",
+        "dist/inspectorPanel.js",
         'const leaked = "\\\\\\\\server\\\\share\\\\card.scss";',
         /local UNC path/i,
       ],
       [
-        "dist/panel.js",
+        "dist/inspectorPanel.js",
         'const leaked = "\\\\\\\\server\\\\_private\\\\card.scss";',
         /local UNC path/i,
       ],
@@ -1425,7 +1293,7 @@ for (const browser of ["firefox", "chrome"]) {
         /local POSIX path/i,
       ],
       [
-        "dist/panel.html",
+        "dist/inspector-panel.html",
         "<!-- built from /Users/alice/private/panel.html -->",
         /local POSIX path/i,
       ],
@@ -1462,7 +1330,7 @@ for (const browser of ["firefox", "chrome"]) {
       "dist/devtools.js",
       Buffer.from(
         `${archive.files.get("dist/devtools.js").toString("utf8")}\n` +
-          'const safe = ["file:", "file:///", "C:", "./card.scss", "/dist/panel.html", ' +
+          'const safe = ["file:", "file:///", "C:", "./card.scss", "/assets/panel.html", ' +
           '"/assets/card.css", "https://example.test/home/card.css"];\n' +
           'const cssEscape = /(^|\\\\+)?(\\\\[A-F0-9]{1,6})\\x20/;\n',
       ),
@@ -1581,32 +1449,13 @@ for (const browser of ["firefox", "chrome"]) {
     );
   });
 
-  test(`common ${browser} artifact verifier requires the renamed panel image`, () => {
-    const archive = browserArchive(browser);
-    const panel = archive.files.get("dist/panel.html").toString("utf8");
-    const legacyPanel = panel.replace(
-      'src="./pin-op.svg"',
-      `src="./${["pin", "op"].join("")}.svg"`,
-    );
-    assert.notEqual(legacyPanel, panel);
-    archive.files.set("dist/panel.html", Buffer.from(legacyPanel));
-
-    assert.throws(
-      () => validateBrowserArchive(
-        archive,
-        `pin-op-${browser}-0.3.0.zip`,
-        browser,
-      ),
-      /panel must reference \.\/pin-op\.svg/i,
-    );
-  });
 
   test(`common ${browser} artifact verifier requires visible Pin-op panel identity`, () => {
     const archive = browserArchive(browser);
-    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
     const legacyPanel = panel.replaceAll("Pin-op", ["Pin", "Op"].join(""));
     assert.notEqual(legacyPanel, panel);
-    archive.files.set("dist/panel.html", Buffer.from(legacyPanel));
+    archive.files.set("dist/inspector-panel.html", Buffer.from(legacyPanel));
 
     assert.throws(
       () => validateBrowserArchive(
@@ -1614,15 +1463,15 @@ for (const browser of ["firefox", "chrome"]) {
         `pin-op-${browser}-0.3.0.zip`,
         browser,
       ),
-      /panel must present Pin-op in its title and branded footer/i,
+      /panel must present Pin-op in its title/i,
     );
   });
 
   test(`common ${browser} artifact verifier requires exactly one toolbar`, () => {
     const archive = browserArchive(browser);
-    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
     archive.files.set(
-      "dist/panel.html",
+      "dist/inspector-panel.html",
       Buffer.from(
         `${panel}\n<header class="secondary panel-toolbar"></header>\n`,
       ),
@@ -1645,9 +1494,9 @@ for (const browser of ["firefox", "chrome"]) {
       "secondary&Tab;panel-toolbar",
     ]) {
       const archive = browserArchive(browser);
-      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
       archive.files.set(
-        "dist/panel.html",
+        "dist/inspector-panel.html",
         Buffer.from(`${panel}\n<header class="${encodedClass}"></header>\n`),
       );
 
@@ -1677,10 +1526,10 @@ for (const browser of ["firefox", "chrome"]) {
       ],
     ]) {
       const archive = browserArchive(browser);
-      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
       const hidden = panel.replace(source, replacement);
       assert.notEqual(hidden, panel, name);
-      archive.files.set("dist/panel.html", Buffer.from(hidden));
+      archive.files.set("dist/inspector-panel.html", Buffer.from(hidden));
 
       assert.throws(
         () => validateBrowserArchive(
@@ -1835,9 +1684,9 @@ for (const browser of ["firefox", "chrome"]) {
       ],
     ]) {
       const archive = browserArchive(browser);
-      const panel = archive.files.get("dist/panel.html").toString("utf8");
+      const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
       archive.files.set(
-        "dist/panel.html",
+        "dist/inspector-panel.html",
         Buffer.from(
           panel.replace("</head>", `<style>${rule}</style>\n</head>`),
         ),
@@ -1908,9 +1757,9 @@ for (const browser of ["firefox", "chrome"]) {
 
   test(`common ${browser} artifact verifier rejects controls outside the toolbar`, () => {
     const archive = browserArchive(browser);
-    const panel = archive.files.get("dist/panel.html").toString("utf8");
+    const panel = archive.files.get("dist/inspector-panel.html").toString("utf8");
     archive.files.set(
-      "dist/panel.html",
+      "dist/inspector-panel.html",
       Buffer.from(moveElementAfterToolbar(panel, "paste-button")),
     );
 
@@ -1993,7 +1842,6 @@ function browserArchive(browser, panelPage = currentBrowserPanelPage(browser)) {
     "manifest.json",
     readFileSync(resolve(repositoryRoot, `extensions/${browser}/manifest.json`)),
   );
-  files.set("dist/panel.html", Buffer.from(panelHtml));
   files.set("dist/inspector-panel.html", Buffer.from(inspectorPanelHtml));
   files.set("dist/panel.css", Buffer.from(panelCss));
   files.set("dist/devtools-elements.css", Buffer.from(elementsCss));
@@ -2013,7 +1861,6 @@ function browserArchive(browser, panelPage = currentBrowserPanelPage(browser)) {
       ),
     );
   }
-  files.set("dist/panel.js", Buffer.from(panelBundle));
   files.set("dist/inspectorPanel.js", Buffer.from(inspectorPanelBundle));
   files.set(
     "dist/chromiumElementsRuntime.js",
@@ -2041,7 +1888,7 @@ function currentBrowserPanelPage(browser) {
   const accepted = acceptedBrowserPanelPages.get(browser);
   if (accepted) return accepted;
   const failures = [];
-  for (const panelPage of [INSPECTOR_PANEL_PAGE, LEGACY_PANEL_PAGE]) {
+  for (const panelPage of [INSPECTOR_PANEL_PAGE]) {
     try {
       validateBrowserArchive(
         browserArchive(browser, panelPage),

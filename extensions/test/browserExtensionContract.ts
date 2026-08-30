@@ -51,7 +51,6 @@ export interface BrowserAdapterContractOptions {
   readonly importBackground: () => Promise<unknown>;
   readonly importContentScript: () => Promise<unknown>;
   readonly importDevtools: () => Promise<unknown>;
-  readonly importPanel: () => Promise<unknown>;
   readonly importInspectorPanel: () => Promise<unknown>;
   readonly expectedMatchedStylesRequestType: "styles.getMatched";
 }
@@ -70,9 +69,9 @@ export interface BrowserPackageContractOptions {
 
 export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
   "dist/inspector-panel.html":
-    "3aef34d666e3dcd7c47ac629e126d0856293d7b651882ba351c4d80da488c5f5",
+    "47b221b4b4a5aa7353d29248f2adbaeaf73493e80c13e9a816b6bec2a573216b",
   "dist/devtools-elements.css":
-    "1fbd097a8166465273f59c6f59c080d668100ccd2789a3b9afaebb7baa983982",
+    "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
 });
 
 export const SHARED_CHROMIUM_UI_SELECTORS = Object.freeze([
@@ -113,7 +112,6 @@ export function createBrowserAdapterHarness() {
       contentScript: vi.fn(() => ({ dispose: vi.fn() })),
       contentRefresh: vi.fn(() => ({ dispose: vi.fn() })),
       devtools: vi.fn(() => ({ dispose: vi.fn() })),
-      panel: vi.fn(() => ({ dispose: vi.fn() })),
       inspectorPanel: vi.fn(() => ({ dispose: vi.fn() })),
     },
     sanitize: vi.fn((_error: unknown) => "sanitized error"),
@@ -612,26 +610,11 @@ export function describeBrowserAdapterContract(
       expectSanitizedLog(consoleError, "DevTools", secret, harness);
     });
 
-    it("uses the explicit legacy rollback page for registration and sender authority", async () => {
-      vi.stubGlobal("__PIN_OP_PANEL_PAGE__", "/dist/panel.html");
-
-      await contract.importBackground();
-      await contract.importDevtools();
-
-      const background = calledOptions(harness.starts.background);
-      const devtools = calledOptions(harness.starts.devtools);
-      expect(background.expectedPanelUrl).toBe(
-        `${contract.extensionOrigin}/dist/panel.html`,
-      );
-      expect(background.browserLocalInspection).toBe(false);
-      expect(devtools.panelPage).toBe("/dist/panel.html");
-    });
 
     it("starts the separate Inspector entry through the shared runtime only", async () => {
       await contract.importInspectorPanel();
 
       expect(harness.starts.inspectorPanel).toHaveBeenCalledOnce();
-      expect(harness.starts.panel).not.toHaveBeenCalled();
       const options = calledOptions(harness.starts.inspectorPanel);
       expectOptionKeys(options, [
         "connectRuntimePort",
@@ -662,45 +645,6 @@ export function describeBrowserAdapterContract(
       ).not.toContain(contract.expectedMatchedStylesRequestType);
     });
 
-    it("starts the shared panel runtime through narrow wrappers", async () => {
-      await contract.importPanel();
-
-      expect(harness.starts.panel).toHaveBeenCalledOnce();
-      expect(clipboard.readText).not.toHaveBeenCalled();
-      const options = calledOptions(harness.starts.panel);
-      expectOptionKeys(options, [
-        "connectRuntimePort",
-        "document",
-        "locationSearch",
-        "onError",
-        "readClipboard",
-        "sendRuntimeMessage",
-        "subscribeUnload",
-      ]);
-      expect(options.locationSearch).toBe("?channel=test-channel");
-      expect(options.document).toBe(globalThis.document);
-
-      call(options.connectRuntimePort, "pin-op.devtools.test-channel");
-      expect(harness.browser.runtime.connect).toHaveBeenCalledWith({
-        name: "pin-op.devtools.test-channel",
-      });
-      await callAsync(options.readClipboard);
-      expect(clipboard.readText).toHaveBeenCalledOnce();
-      await callAsync(options.sendRuntimeMessage, { type: "panelReady" });
-      expect(harness.browser.runtime.sendMessage).toHaveBeenCalledWith({
-        type: "panelReady",
-      });
-      const removeUnload = call(options.subscribeUnload, vi.fn());
-      call(removeUnload);
-      expect(globalEvents.removeEventListener).toHaveBeenCalledWith(
-        "unload",
-        expect.any(Function),
-      );
-
-      const secret = new Error("secret panel stack");
-      call(options.onError, secret);
-      expectSanitizedLog(consoleError, "panel", secret, harness);
-    });
 
     it("enforces adapter and shared-runtime module boundaries", () => {
       const sharedSourceDirectory = new URL(
@@ -722,7 +666,6 @@ export function describeBrowserAdapterContract(
         "background.ts",
         "contentScript.ts",
         "devtools.ts",
-        "panel.ts",
         "inspectorPanel.ts",
       ]) {
         const source = readFileSync(
@@ -774,74 +717,26 @@ export function describeBrowserPackageContract(
 ): void {
   describe(`${contract.platformName} emitted package contract`, () => {
     let packaged: PackagedExtension;
-    let legacyPackaged: PackagedExtension;
 
     beforeAll(() => {
       packaged = buildPackagedExtension(contract);
-      legacyPackaged = buildPackagedExtension(contract, "legacy");
     }, 60_000);
 
     afterAll(() => {
       packaged?.dispose();
-      legacyPackaged?.dispose();
     });
 
-    it.each([
-      "",
-      "attacker",
-      "Inspector",
-      "https://attacker.invalid/panel.html",
-      "/dist/attacker.html",
-    ])(
-      "rejects panel variant %j before mutating build output",
-      (panelVariant) => {
-        const workspaceRoot = resolve(
-          fileURLToPath(new URL("../../", import.meta.url)),
-        );
-        const temporaryDirectory = mkdtempSync(
-          join(tmpdir(), ".pin-op-panel-variant-"),
-        );
-        try {
-          const buildRoot = stageBrowserExtensionProject(
-            workspaceRoot,
-            fileURLToPath(contract.extensionRoot),
-            temporaryDirectory,
-          );
-          const output = join(buildRoot, "dist");
-          const sentinel = join(output, "sentinel.txt");
-          mkdirSync(output, { recursive: true });
-          writeFileSync(sentinel, "retained", "utf8");
-
-          expect(() => execFileSync(
-            process.execPath,
-            [join(buildRoot, "esbuild.mjs")],
-            {
-              cwd: buildRoot,
-              env: { ...process.env, PIN_OP_PANEL_VARIANT: panelVariant },
-              stdio: "pipe",
-              timeout: 30_000,
-            },
-          )).toThrow();
-          expect(readFileSync(sentinel, "utf8")).toBe("retained");
-        } finally {
-          rmSync(temporaryDirectory, { recursive: true, force: true });
-        }
-      },
-    );
 
     it("ships the shared inspector panel from the real package", () => {
-      const panel = packagedText(packaged, "dist/panel.html");
       const inspectorPanel = packagedText(packaged, "dist/inspector-panel.html");
       const panelCss = packagedText(packaged, "dist/panel.css");
       const elementsCss = packagedText(packaged, "dist/devtools-elements.css");
-      const panelBundle = packagedText(packaged, "dist/panel.js");
       const inspectorPanelBundle = packagedText(packaged, "dist/inspectorPanel.js");
       const elementsRuntimeBundle = packagedText(
         packaged,
         "dist/chromiumElementsRuntime.js",
       );
 
-      expect(panel).toBe(sharedAsset("panel.html"));
       expect(inspectorPanel).toBe(sharedAsset("inspector-panel.html"));
       expect(elementsCss).toBe(sharedElementsAsset("devtools-elements.css"));
       expect(inspectorPanel).toMatch(
@@ -893,89 +788,8 @@ export function describeBrowserPackageContract(
           sharedAssetBytes(`icons/pin-op-${size}.png`),
         );
       }
-      expect(panel.match(/class="panel-toolbar"/g)).toHaveLength(1);
-      expect(openingTag(panel, "dom-tree")).toMatch(/role="tree"/);
-      expect(openingTag(panel, "linked-code")).toMatch(/^<output\b/);
-      expect(panel).toMatch(
-        /id="disconnect-button"[^>]*>\s*Disconnect\s*<\/button>/,
-      );
-      expect(openingTag(panel, "inspect-mode")).toMatch(
-        /aria-label="Select an element"/,
-      );
-      expect(panel).toContain('data-lucide="mouse-pointer-2"');
-      expect(openingTag(panel, "auto-refresh-enabled")).toMatch(
-        /type="checkbox"/,
-      );
-      expect(openingTag(panel, "ide-highlight-enabled")).toMatch(
-        /type="checkbox"/,
-      );
-      expect(panel).toMatch(
-        /id="auto-refresh-enabled"[^>]*>[\s\S]*?Auto Refresh\s*<\/label>/,
-      );
-      expect(panel).toMatch(
-        /id="ide-highlight-enabled"[^>]*>[\s\S]*?IDE Highlight\s*<\/label>/,
-      );
-      for (const id of [
-        "connection-status",
-        "linked-code",
-        "link-controls",
-        "link-code",
-        "paste-button",
-        "link-button",
-        "disconnect-button",
-      ]) {
-        expect(panel.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
-      }
-      for (const id of [
-        "panel-workspace",
-        "workspace-tabs",
-        "dom-tab",
-        "source-tab",
-        "dom-pane",
-        "pane-separator",
-        "source-pane",
-        "source-pane-root",
-      ]) {
-        expect(panel.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
-      }
-      expect(openingTag(panel, "workspace-tabs")).toMatch(/role="tablist"/);
-      expect(openingTag(panel, "dom-tab")).toMatch(/role="tab"/);
-      expect(openingTag(panel, "source-tab")).toMatch(/role="tab"/);
-      expect(openingTag(panel, "pane-separator")).toMatch(/role="separator"/);
-      expect(openingTag(panel, "source-pane-root")).toMatch(
-        /aria-label="Source matches"/,
-      );
-      expect(panel).toContain("Extensions are incompatible");
-      expect(panel).toContain(
-        "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
-      );
-      expect(openingTag(panel, "resolution-status")).toMatch(/role="status"/);
-      expect(panel).toMatch(
-        /<footer\b[^>]*class="panel-footer"[^>]*>[\s\S]*id="resolution-status"[\s\S]*<\/footer>/,
-      );
-      expect(panel).toContain("source-navigation-footer");
-      expect(panel).toContain('id="panel-branding"');
-      expect(panel).toContain('href="mailto:info@conus.vision"');
-      expect(panel).toContain('href="https://conus.vision"');
       expect(panelCss).toContain(".panel-toolbar-scroll");
-      expect(panelCss).toContain('[data-layout="split"]');
-      expect(panelCss).toContain('[data-layout="stack"]');
-      expect(panelCss).toContain('[data-layout="tabs"]');
-      expect(panelCss).toContain(".workspace-pane");
       expect(panelCss).toContain(".source-pane-excerpt");
-      expect(panelCss).toContain(".panel-branding");
-      expect(panelCss).toContain(".source-navigation-controls");
-      for (const marker of [
-        "source-presentation",
-        "source.matches",
-        "source.open",
-        "source.navigate",
-        "source.navigationState",
-        "matchId",
-        "dom.resolveLocator",
-      ]) {
-        expect(panelBundle).toContain(marker);
-      }
     });
 
     it("emits the pinned shared Chromium-derived UI bytes and selectors", () => {
@@ -1005,7 +819,6 @@ export function describeBrowserPackageContract(
           artifactLabel: `${contract.platformName} real emitted package`,
           metadataLabel: `${contract.platformName} real emitted metadata`,
           platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
-          panelVariant: "inspector",
         },
       )).not.toThrow();
     });
@@ -1021,57 +834,14 @@ export function describeBrowserPackageContract(
         sha256: createHash("sha256").update(packagedBytes(packaged, path)).digest("hex"),
       }));
 
-      expect(actual).toEqual(expected.map(({ browser, path, inspectorSha256 }) => ({
-        browser,
-        path,
-        sha256: inspectorSha256,
-      })));
-      expect(compiledPanelPage(packaged)).toBe("/dist/inspector-panel.html");
-    });
-
-    it("builds and validates the explicit legacy rollback package", () => {
-      const browser = contract.platformName === "Chrome" ? "chrome" : "firefox";
-      const expected = TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.filter(
-        (entry) => entry.browser === browser,
-      );
-
-      expect(() => assertBrowserPackageRuntimeContract(
-        { files: new Map(legacyPackaged.files) },
-        {
-          artifactLabel: `${contract.platformName} real emitted rollback package`,
-          metadataLabel: `${contract.platformName} real emitted rollback metadata`,
-          platform: browser,
-          panelVariant: "inspector",
-        },
-      )).toThrow(/inspector panel|expected \/dist\/inspector-panel\.html/i);
-      expect(() => assertBrowserPackageRuntimeContract(
-        { files: new Map(legacyPackaged.files) },
-        {
-          artifactLabel: `${contract.platformName} real emitted rollback package`,
-          metadataLabel: `${contract.platformName} real emitted rollback metadata`,
-          platform: browser,
-          panelVariant: "legacy",
-        },
-      )).not.toThrow();
-      expect(compiledPanelPage(legacyPackaged)).toBe("/dist/panel.html");
-      expect(expected.map(({ path }) => ({
-        browser,
-        path,
-        sha256: createHash("sha256")
-          .update(packagedBytes(legacyPackaged, path))
-          .digest("hex"),
-      }))).toEqual(expected.map(({ path, sha256 }) => ({
+      expect(actual).toEqual(expected.map(({ browser, path, sha256 }) => ({
         browser,
         path,
         sha256,
       })));
-      for (const path of ["dist/inspector-panel.html", "dist/panel.html"]) {
-        expect(legacyPackaged.files.has(path), path).toBe(true);
-      }
-      expect(legacyPackaged.checkoutAfter).toEqual(
-        legacyPackaged.checkoutBefore,
-      );
+      expect(compiledPanelPage(packaged)).toBe("/dist/inspector-panel.html");
     });
+
 
     it("rejects byte drift and copied constructor code in a real emitted bundle", () => {
       const path = "dist/background.js";
@@ -1109,8 +879,7 @@ export function describeBrowserPackageContract(
             artifactLabel: `${contract.platformName} altered emitted package`,
             metadataLabel: `${contract.platformName} altered emitted metadata`,
             platform: contract.platformName === "Chrome" ? "chrome" : "firefox",
-            panelVariant: "inspector",
-          },
+            },
         )).toThrow(/dynamic code evaluation/i);
       }
     });
@@ -1199,7 +968,6 @@ export function describeBrowserPackageContract(
         ) => void;
       };
       expect(helper.BROWSER_PANEL_ASSET_PATHS).toEqual([
-        "panel.html",
         "inspector-panel.html",
         "panel.css",
         "devtools-elements.css",
@@ -1214,7 +982,7 @@ export function describeBrowserPackageContract(
       expect(typeof helper.assertVerifiedNativeInspectorBuild).toBe("function");
       expect(() => helper.assertNoChromiumUpstreamInputs?.({
         inputs: {
-          "src/panel.ts": {},
+          "src/inspectorPanel.ts": {},
           "../../packages/devtools-elements-ui/src/index.ts": {},
         },
       }, contract.platformName)).not.toThrow();
@@ -1235,8 +1003,8 @@ export function describeBrowserPackageContract(
       }
     });
 
-    it("keeps both panel entrypoints free of inline and remote UI resources", () => {
-      for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+    it("keeps the panel entrypoint free of inline and remote UI resources", () => {
+      for (const path of ["dist/inspector-panel.html"]) {
         const html = packagedText(packaged, path);
         expect(html, path).not.toMatch(/<style\b/i);
         expect(html, path).not.toMatch(/\sstyle\s*=/i);
@@ -1253,8 +1021,8 @@ export function describeBrowserPackageContract(
     });
 
     it("keeps browser product branding out of user-facing panel UI strings", () => {
-      for (const candidate of [packaged, legacyPackaged]) {
-        for (const path of ["dist/panel.html", "dist/inspector-panel.html"]) {
+      for (const candidate of [packaged]) {
+        for (const path of ["dist/inspector-panel.html"]) {
           expect(packagedText(candidate, path), path).not.toMatch(
             /\b(?:Chrome|Chromium|Google)\b/,
           );
@@ -1262,7 +1030,6 @@ export function describeBrowserPackageContract(
         for (const path of [
           "dist/inspectorPanel.js",
           "dist/chromiumElementsRuntime.js",
-          "dist/panel.js",
         ]) {
           expect(userFacingBrowserBranding(
             packagedText(candidate, path),
@@ -1308,7 +1075,6 @@ export function describeBrowserPackageContract(
       );
 
       for (const path of [
-        "dist/panel.js",
         "dist/inspectorPanel.js",
         "dist/chromiumElementsRuntime.js",
       ]) {
@@ -1332,7 +1098,7 @@ export function describeBrowserPackageContract(
       });
 
       const adapter = readFileSync(
-        new URL("src/panel.ts", contract.extensionRoot),
+        new URL("src/inspectorPanel.ts", contract.extensionRoot),
         "utf8",
       );
       expect(adapter).not.toContain("PROTOCOL_VERSION");
@@ -1347,7 +1113,7 @@ export function describeBrowserPackageContract(
       );
       const sharedView = readFileSync(
         new URL(
-          "../../packages/browser-extension-core/src/panelView.ts",
+          "../../packages/browser-extension-core/src/inspectorPanelView.ts",
           import.meta.url,
         ),
         "utf8",
@@ -1380,9 +1146,7 @@ export function describeBrowserPackageContract(
         "dist/background.js",
         "dist/contentScript.js",
         "dist/devtools.js",
-        "dist/panel.js",
         "dist/devtools.html",
-        "dist/panel.html",
         "dist/panel.css",
         ...contract.expectedInspectorAssets,
         "dist/pin-op.svg",
@@ -1410,7 +1174,7 @@ export function describeBrowserPackageContract(
     });
 
     it("contains the exact approved manifest permissions and CSP", () => {
-      for (const candidate of [packaged, legacyPackaged]) {
+      for (const candidate of [packaged]) {
         const manifest = JSON.parse(
           packagedText(candidate, "manifest.json"),
         ) as PackagedManifest;
@@ -1448,7 +1212,6 @@ export function describeBrowserPackageContract(
         "dist/background.js",
         "dist/contentScript.js",
         "dist/devtools.js",
-        "dist/panel.js",
         "dist/inspectorPanel.js",
         "dist/chromiumElementsRuntime.js",
       ]
@@ -1904,7 +1667,6 @@ interface PackagedManifest {
 
 function buildPackagedExtension(
   contract: BrowserPackageContractOptions,
-  panelVariant: "default" | "legacy" = "default",
 ): PackagedExtension {
   const extensionRoot = fileURLToPath(contract.extensionRoot);
   const workspaceRoot = resolve(
@@ -1926,10 +1688,6 @@ function buildPackagedExtension(
       temporaryDirectory,
     );
     const buildEnvironment = { ...process.env };
-    delete buildEnvironment.PIN_OP_PANEL_VARIANT;
-    if (panelVariant === "legacy") {
-      buildEnvironment.PIN_OP_PANEL_VARIANT = "legacy";
-    }
     execFileSync(process.execPath, [join(buildRoot, "esbuild.mjs")], {
       cwd: buildRoot,
       env: buildEnvironment,
@@ -2002,30 +1760,18 @@ function compiledPanelPage(packaged: PackagedExtension): string | undefined {
     true,
     ts.ScriptKind.JS,
   );
-  let panelPage: string | undefined;
+  const panelPages = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (
-      panelPage === undefined &&
-      ts.isFunctionDeclaration(node) &&
-      node.body?.getText(sourceFile).includes("Invalid compiled panel page")
+      ts.isStringLiteralLike(node) &&
+      /^\/dist\/[A-Za-z0-9._-]+\.html$/.test(node.text)
     ) {
-      for (const statement of node.body.statements) {
-        if (!ts.isVariableStatement(statement)) continue;
-        for (const declaration of statement.declarationList.declarations) {
-          if (
-            declaration.initializer &&
-            ts.isStringLiteralLike(declaration.initializer) &&
-            declaration.initializer.text.startsWith("/dist/")
-          ) {
-            panelPage = declaration.initializer.text;
-          }
-        }
-      }
+      panelPages.add(node.text);
     }
-    if (panelPage === undefined) ts.forEachChild(node, visit);
+    ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return panelPage;
+  return panelPages.size === 1 ? [...panelPages][0] : undefined;
 }
 
 function sharedAsset(name: string): string {
@@ -2087,7 +1833,6 @@ const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "startContentRefreshBootstrapRuntime",
   "startDevtoolsRuntime",
   "startInspectorPanelRuntime",
-  "startPanelRuntime",
 ]);
 
 interface ModuleImportEdge {

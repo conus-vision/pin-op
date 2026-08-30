@@ -67,7 +67,7 @@ test("store listings use ordered, attributed browser sections", () => {
   assert.equal(matches?.length ?? 0, 2);
 });
 
-test("browser listings state the Inspector preview and rollback truth", () => {
+test("browser listings state the Inspector preview and Source truth", () => {
   for (const heading of ["Firefox AMO", "Chrome Web Store"]) {
     const content = requireSection(listingSections, heading).content;
     const sharedUi = requireParagraph(
@@ -165,18 +165,13 @@ test("browser listings state the Inspector preview and rollback truth", () => {
     assert.match(limits, /:not\(:hover\)[\s\S]*PARTIAL/i, heading);
     assert.match(limits, /not guessed/i, heading);
 
-    const rollback = requireParagraph(
+    const source = requireParagraph(
       content,
-      /legacy rollback/i,
-      `${heading} legacy rollback disclosure`,
+      /Source tab/i,
+      `${heading} Source scope disclosure`,
     );
-    assert.match(rollback, /exactly one published rollback release/i, heading);
-    assert.match(
-      rollback,
-      /remove[\s\S]*only after[\s\S]*(?:support evidence|support reports?|manual field reports?)[\s\S]*confirm(?:s|ed)?[\s\S]*no blocking regression/i,
-      heading,
-    );
-    assert.doesNotMatch(rollback, /\btelemetry\b/i, heading);
+    assert.match(source, /active-document-only/i, heading);
+    assert.doesNotMatch(source, /telemetry/i, heading);
   }
 });
 

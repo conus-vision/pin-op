@@ -747,10 +747,10 @@ Package gitHead: 23cccaa78f7458a5aad99c1af98dc1856d2494a3
 Package integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==
 Package repository: https://github.com/ChromeDevTools/devtools-frontend.git
 Runtime metadata: third_party/chromium-devtools-frontend/RUNTIME.json
-Runtime metadata SHA-256: 542ecf6fe35b8d23b80f10842e2653c7a3d4e4128d4410fd407363fc1d5399d0
+Runtime metadata SHA-256: 681fa3504955cfb9fcac72a44dd3148bde6338cb45c28ff44aa8cd1dd3a96f82
 
 DOM overlay manifest: third_party/chromium-devtools-frontend/patches/1.0.1681091/manifest.json
-DOM overlay manifest SHA-256: 2f1ec093bf83838dd914d10f30163eb66ab2c2f423621b076a67cc0c73a2555a
+DOM overlay manifest SHA-256: 6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f
 
 ### DOM npm closure
 File count: 46
@@ -758,11 +758,11 @@ SHA-256: 53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a
 
 ### DOM overlay closure
 File count: 37
-SHA-256: 485baf9b0daba152f434d8411cafb30b594212dfa5d5d95bbca358e47742fa23
+SHA-256: 904698780ca3486962022070d46e0c6333673e3d8ce19fc9387ece6bb0fbacc2
 
 ### DOM shared payload
 File count: 7
-SHA-256: e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5
+SHA-256: d2a538058651817f04cbd0a1104e083ccb256792a152b073978f7117478e50d2
 
 ### DOM shared input inventory
 - chromium-shared-css:front_end/application_tokens.css
@@ -830,7 +830,7 @@ SHA-256: e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5
 - facades/css-metadata-protocol.ts c6576a2c3d51f193dd7ff2f6805be30d64becd85a2c863baaca2ff034d457dd7
 - facades/elements-components.ts 9e5a16f88d4ffd1694a5916567b7ce0a2301d4f21a3caa447569b55eb9f4f0ad
 - facades/elements-model.ts 5146e9a9ce9d71d3560ada60305b68f1fc626ed3a81b19e07b79c64e221af917
-- facades/elements-panel.ts 03485c26e4b4a650def348c756d2a5587c4410789401414bf1a71613caa83e77
+- facades/elements-panel.ts d8243cc4b010d6b61d6bff53514d475dd91b4271f53c04d2259276b5d9dc1b2d
 - facades/highlighting.ts bc57cf863d48da5f216e1729d0b26f611d8491b88d3e5e4cb6d79c001115f525
 - facades/host.ts c3f7adc4255e1a98432155103b58c71fa1635d14af29219979bbde76d0ae35c1
 - facades/i18n.ts 5edc7257906e74a1a5ff5dee92fc8086753c7b30f701ce68ce37eca755447592
@@ -862,7 +862,7 @@ SHA-256: e78e6e0202d0291765fe41ae023a233e550589e9badf3784892f04a091a35ba5
 - front_end/third_party/lit/LICENSE 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
 
 Rules overlay manifest: third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/manifest.json
-Rules overlay manifest SHA-256: f23e083d705b9272530e218b40f77d706ac3ae520a2851573633478ebf07af85
+Rules overlay manifest SHA-256: 3b34607e8940fcb7309e299994b47252fec4493b55c5dd88555438f0bb56f87c
 
 ### Rules npm closure
 File count: 61
@@ -870,7 +870,7 @@ SHA-256: 737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6
 
 ### Rules overlay closure
 File count: 18
-SHA-256: 2f4fca474da3ef03111827868c186acae82eddd537dbf0403eebac25bd0d33e7
+SHA-256: ec8bc9f509142d6d1daa3e84ff0a8ef849138a4d18ff39afed9ab5466ac1e7e8
 
 ### Rules base overlay closure
 File count: 16
@@ -923,7 +923,7 @@ SHA-256: 7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8
 - facades/ui-utils.ts f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6
 - facades/ui.ts ed362815c2cec6c9b956bb728d12809c5e68d6a73054eed9d635ad11a89c9750
 - facades/visual-logging.ts 974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96
-- runtime/read-only-styles-runtime.ts c0214ca166c4ee53fc577996577a466f5fd210769ca760213484251054182233
+- runtime/read-only-styles-runtime.ts b4f978db78d288c4c22983ec6757626dbf0b3ea35b001cdc8a328bcc78f38d7b
 
 ### Rules required license inventory
 - LICENSE ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e

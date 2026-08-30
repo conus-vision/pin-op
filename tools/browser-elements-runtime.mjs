@@ -37,6 +37,7 @@ const CHROMIUM_INSPECTOR_ADAPTER_IMPORT_FILTER =
   /^@pin-op\/devtools-elements-ui\/chromium-adapter$/;
 const REVIEWED_LOCAL_RUNTIME_INPUTS = Object.freeze([
   CHROMIUM_INSPECTOR_ENTRY,
+  "packages/devtools-elements-ui/dist/chromium/upstream/GeckoDomCompatibility.js",
   "packages/devtools-elements-ui/dist/chromium/upstream/PinOpChromiumInspectorAdapter.js",
   "packages/devtools-elements-ui/dist/chromium/upstream/PinOpElementsTreeAdapter.js",
   "packages/devtools-elements-ui/dist/chromium/upstream/PinOpStylesSidebarAdapter.js",

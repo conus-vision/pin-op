@@ -24,25 +24,12 @@ import {
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const outdir = resolve(extensionRoot, "dist");
-const panelVariant = process.env.PIN_OP_PANEL_VARIANT;
-if (
-  panelVariant !== undefined &&
-  panelVariant !== "legacy" &&
-  panelVariant !== "inspector"
-) {
-  throw new Error("PIN_OP_PANEL_VARIANT must be legacy or inspector");
-}
-const panelPage = panelVariant === "legacy"
-  ? "/dist/panel.html"
-  : "/dist/inspector-panel.html";
-
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 const browserBundleResult = await build({
   absWorkingDir: extensionRoot,
   entryPoints: {
     devtools: "src/devtools.ts",
-    panel: "src/panel.ts",
     background: "src/background.ts",
     contentScript: "src/contentScript.ts",
   },
@@ -54,9 +41,6 @@ const browserBundleResult = await build({
   minify: true,
   sourcemap: false,
   metafile: true,
-  define: {
-    __PIN_OP_PANEL_PAGE__: JSON.stringify(panelPage),
-  },
 });
 const inspectorBuild = await buildBrowserInspectorModules({ extensionRoot, outdir });
 const { inspectorPanelResult } = inspectorBuild;

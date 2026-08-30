@@ -1,10 +1,18 @@
 import {
-  hasNeutralGeometryStyle,
+  readUprightBoxScale,
+  type UprightBoxScale,
   type FrameContext,
   type FrameIdentity,
   type TopViewportRect,
   type ViewportRect,
 } from "./frameRegistry.js";
+
+/**
+ * Marks the overlay's own host element. Pin-op's namespace, so anything wearing
+ * it is Pin-op's -- including a host a previous content session left behind,
+ * which the running session does not own but must still recognise.
+ */
+export const PAGE_OVERLAY_MARKER_ATTRIBUTE = "data-pin-op-page-overlay";
 
 export interface PageOverlayFrameRegistry {
   getContext(frameRef: string): FrameContext | undefined;
@@ -278,6 +286,7 @@ export class PageOverlay {
   }
 
   private createHost(document: Document): void {
+    removeAbandonedHosts(document);
     let host: HTMLElement | undefined;
     try {
       host = document.createElement("div");
@@ -371,9 +380,13 @@ export class PageOverlay {
     const read: AuthorityReader = <T>(operation: () => T) => (
       this.readExternal(authority, operation)
     );
-    if (!this.ensureHostAttached(authority, read)) return this.currentOutcome(authority);
+    if (!this.ensureHostAttached(authority, read)) {
+      return this.currentOutcome(authority);
+    }
     const targetContext = this.readTargetContext(authority, read);
-    if (!targetContext) return this.currentOutcome(authority);
+    if (!targetContext) {
+      return this.currentOutcome(authority);
+    }
 
     const isExcludedNode = this.isExcludedNode;
     const checkedAncestry = isExcludedNode
@@ -393,26 +406,30 @@ export class PageOverlay {
     const styleRead = read(() => getStyle(authority.target));
     if (!styleRead) return "stale";
     if (!isObject(styleRead.value)) return "failed";
-    const hasNeutralAncestry = checkedAncestry
-      ? this.hasNeutralCheckedTargetAncestry(
+    // Whatever moved or scaled the box on the way to the viewport, scaled the
+    // widths it is drawn from by exactly as much.
+    const ancestryScale = checkedAncestry
+      ? this.checkedTargetAncestryScale(
         authority,
         checkedAncestry,
         styleRead.value,
         getStyle,
         read,
       )
-      : this.hasNeutralTargetAncestry(
+      : this.targetAncestryScale(
         authority,
         targetContext.document,
         styleRead.value,
         getStyle,
         read,
       );
-    if (!hasNeutralAncestry) {
+    if (!ancestryScale) {
       return this.currentOutcome(authority);
     }
     const boxModel = readBoxModel(styleRead.value, read);
-    if (!boxModel) return this.currentOutcome(authority);
+    if (!boxModel) {
+      return this.currentOutcome(authority);
+    }
 
     const rectListRead = read(() => authority.target.getClientRects());
     if (!rectListRead || !isObject(rectListRead.value)) {
@@ -436,7 +453,9 @@ export class PageOverlay {
     const boundingRectRead = read(() => authority.target.getBoundingClientRect());
     if (!boundingRectRead) return "stale";
     const sourceBounds = readViewportRect(boundingRectRead.value, read);
-    if (!sourceBounds) return this.currentOutcome(authority);
+    if (!sourceBounds) {
+      return this.currentOutcome(authority);
+    }
     const translatedBoundsRead = read(() => (
       authority.frameRegistry.toTopViewport(authority.identity, sourceBounds)
     ));
@@ -468,6 +487,7 @@ export class PageOverlay {
         boxModel,
         index,
         rectCount,
+        ancestryScale,
       );
       if (!Object.values(geometries).every(isValidLayerGeometry)) return "failed";
       fragmentGeometries.push(geometries);
@@ -803,60 +823,64 @@ export class PageOverlay {
     return undefined;
   }
 
-  private hasNeutralCheckedTargetAncestry(
+  private checkedTargetAncestryScale(
     authority: RenderAuthority,
     ancestry: readonly object[],
     targetStyle: object,
     getStyle: GetStyle,
     read: AuthorityReader,
-  ): boolean {
+  ): UprightBoxScale | undefined {
+    let accumulated: UprightBoxScale = { x: 1, y: 1 };
     for (const [index, element] of ancestry.entries()) {
       const style = index === 0
         ? targetStyle
         : read(() => getStyle(element as Element))?.value;
-      if (
-        !isObject(style) ||
-        !hasNeutralGeometryStyle(style, () => this.isAuthority(authority))
-      ) {
-        return false;
-      }
+      if (!isObject(style)) return undefined;
+      const scale = readUprightBoxScale(
+        style,
+        () => this.isAuthority(authority),
+      );
+      if (!scale) return undefined;
+      accumulated = { x: accumulated.x * scale.x, y: accumulated.y * scale.y };
     }
-    return this.isAuthority(authority);
+    return this.isAuthority(authority) ? accumulated : undefined;
   }
 
-  private hasNeutralTargetAncestry(
+  private targetAncestryScale(
     authority: RenderAuthority,
     targetDocument: Document,
     targetStyle: object,
     getStyle: GetStyle,
     read: AuthorityReader,
-  ): boolean {
+  ): UprightBoxScale | undefined {
     const seen = new Set<object>();
     let current: object = authority.target;
     let style = targetStyle;
+    let accumulated: UprightBoxScale = { x: 1, y: 1 };
     for (let depth = 0; depth < MAX_TARGET_GEOMETRY_ANCESTORS; depth += 1) {
-      if (seen.has(current) || !this.isAuthority(authority)) return false;
+      if (seen.has(current) || !this.isAuthority(authority)) return undefined;
       seen.add(current);
-      if (
-        !hasNeutralGeometryStyle(style, () => this.isAuthority(authority))
-      ) {
-        return false;
-      }
+      const scale = readUprightBoxScale(
+        style,
+        () => this.isAuthority(authority),
+      );
+      if (!scale) return undefined;
+      accumulated = { x: accumulated.x * scale.x, y: accumulated.y * scale.y };
 
       const assignedSlotRead = read(() => (
         (current as { readonly assignedSlot?: unknown }).assignedSlot
       ));
-      if (!assignedSlotRead) return false;
+      if (!assignedSlotRead) return undefined;
       if (assignedSlotRead.value !== null) {
-        if (!isObject(assignedSlotRead.value)) return false;
+        if (!isObject(assignedSlotRead.value)) return undefined;
         current = assignedSlotRead.value;
       } else {
         const parentElementRead = read(() => (
           (current as { readonly parentElement?: unknown }).parentElement
         ));
-        if (!parentElementRead) return false;
+        if (!parentElementRead) return undefined;
         if (parentElementRead.value !== null) {
-          if (!isObject(parentElementRead.value)) return false;
+          if (!isObject(parentElementRead.value)) return undefined;
           current = parentElementRead.value;
         } else {
           const getRootNodeRead = read(() => (
@@ -864,14 +888,14 @@ export class PageOverlay {
           ));
           const getRootNode = getRootNodeRead?.value;
           if (typeof getRootNode !== "function") {
-            return false;
+            return undefined;
           }
           const rootRead = read(() => getRootNode.call(current) as unknown);
-          if (!rootRead) return false;
+          if (!rootRead) return undefined;
           if (rootRead.value === targetDocument) {
-            return this.isAuthority(authority);
+            return this.isAuthority(authority) ? accumulated : undefined;
           }
-          if (!isObject(rootRead.value)) return false;
+          if (!isObject(rootRead.value)) return undefined;
           const modeRead = read(() => (
             (rootRead.value as { readonly mode?: unknown }).mode
           ));
@@ -884,17 +908,17 @@ export class PageOverlay {
             !hostRead ||
             !isObject(hostRead.value)
           ) {
-            return false;
+            return undefined;
           }
           current = hostRead.value;
         }
       }
 
       const styleRead = read(() => getStyle(current as Element));
-      if (!styleRead || !isObject(styleRead.value)) return false;
+      if (!styleRead || !isObject(styleRead.value)) return undefined;
       style = styleRead.value;
     }
-    return false;
+    return undefined;
   }
 
   private refreshListeners(
@@ -1153,8 +1177,32 @@ export class PageOverlay {
   }
 }
 
+/**
+ * A content session that was torn down without a chance to clean up -- the
+ * browser suspending the extension background is enough -- leaves its overlay
+ * host in the page. It belongs to nobody, keeps whatever it last painted, and
+ * shows up as page content in the tree. A new overlay clears them first.
+ */
+function removeAbandonedHosts(document: Document): void {
+  try {
+    const abandoned = document.querySelectorAll(
+      `[${PAGE_OVERLAY_MARKER_ATTRIBUTE}]`,
+    );
+    for (const host of Array.from(abandoned)) {
+      try {
+        host.remove();
+      } catch {
+        // A hostile DOM may refuse removal; the marker still hides it.
+      }
+    }
+  } catch {
+    // Querying is best effort: a new host is created either way.
+  }
+}
+
+
 function configureHost(host: HTMLElement): void {
-  host.setAttribute("data-pin-op-page-overlay", "");
+  host.setAttribute(PAGE_OVERLAY_MARKER_ATTRIBUTE, "");
   setImportantStyle(host, "all", "initial");
   setVisualSafety(host, true);
   setImportantStyle(host, "position", "fixed");
@@ -1404,10 +1452,20 @@ function createLayerGeometries(
   boxModel: BoxModel,
   fragmentIndex: number,
   fragmentCount: number,
+  scale: UprightBoxScale,
 ): Record<"margin" | "border" | "padding" | "content", LayerGeometry> {
-  const margin = fragmentEdges(boxModel.margin, boxModel.decoration, fragmentIndex, fragmentCount);
-  const border = fragmentEdges(boxModel.border, boxModel.decoration, fragmentIndex, fragmentCount);
-  const padding = fragmentEdges(boxModel.padding, boxModel.decoration, fragmentIndex, fragmentCount);
+  const margin = scaleEdges(
+    fragmentEdges(boxModel.margin, boxModel.decoration, fragmentIndex, fragmentCount),
+    scale,
+  );
+  const border = scaleEdges(
+    fragmentEdges(boxModel.border, boxModel.decoration, fragmentIndex, fragmentCount),
+    scale,
+  );
+  const padding = scaleEdges(
+    fragmentEdges(boxModel.padding, boxModel.decoration, fragmentIndex, fragmentCount),
+    scale,
+  );
   const paddingBox = inset(borderBox, border);
   return {
     margin: {
@@ -1424,6 +1482,16 @@ function createLayerGeometries(
     },
     padding: paddingBox,
     content: inset(paddingBox, padding),
+  };
+}
+
+/** Widths as they are painted: a scaled box scales what it is drawn from. */
+function scaleEdges(edges: BoxEdges, scale: UprightBoxScale): BoxEdges {
+  return scale.x === 1 && scale.y === 1 ? edges : {
+    top: edges.top * scale.y,
+    right: edges.right * scale.x,
+    bottom: edges.bottom * scale.y,
+    left: edges.left * scale.x,
   };
 }
 

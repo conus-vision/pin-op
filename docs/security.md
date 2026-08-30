@@ -82,7 +82,7 @@ and wrong sessions fail closed. Routes are bounded and removed with the client.
 
 Auto-refresh, source-presentation, presentation-settings, source-navigation,
 and Rules-source messages require their negotiated capabilities and reuse exact
-authenticated routes. Legacy Source-open carries only an opaque current match
+authenticated routes. Source-open carries only an opaque current match
 ID; presentation settings carry only the current correlation and IDE Highlight
 boolean. `rules.sources` adds sanitized labels/start positions and IDE-issued
 opaque authority IDs; `rules.open` returns only the inspect ID, independent Rules
@@ -150,9 +150,7 @@ bounded attribute names and values, bounded text and comment values, and
 document-type names with bounded public and system IDs. Document-type, text,
 and comment rows are display-only, receive no stable locator, and cannot drive
 selection or the page overlay. Every page-provided name or value renders through
-text APIs. The legacy rollback renderer alone retains the temporary preformatted
-`label` field for its element-only labels; those labels include tag, ID, classes,
-and approved attribute names but not DOM text or attribute values.
+text APIs.
 
 - Open shadow roots are traversed only when the platform exposes them.
 - Same-origin frame documents are registered under bounded frame authority.
@@ -237,7 +235,7 @@ parsing, selector analysis, and URL rebasing. Their bundled constructor uses
 were reviewed as typed AST cloning/prototype wiring, not global `Function` or
 `eval`. Package verification still rejects dynamic code evaluation and remote
 code loading, and accepts the existing Zod schema-clone helper only for exact
-reviewed legacy/Inspector bundle SHA-256 provenance. Generated Chrome and
+reviewed Inspector bundle SHA-256 provenance. Generated Chrome and
 Firefox notices include these packages and every bundled transitive license.
 
 Stylesheet identity changes advance `stylesheetRevision` and aggregate
@@ -350,7 +348,7 @@ closed when a bound is reached.
 
 ## Source Resolution
 
-Legacy Source/highlight resolution uses only the active document. Exact CSS
+Source/highlight resolution uses only the active document. Exact CSS
 evidence wins. Its CSS fingerprint fallback requires stable
 selector/media/declaration evidence and a unique result; ambiguity produces no
 highlight. Its SCSS path requires one generated rule, a valid source map, and a
@@ -359,11 +357,8 @@ other-document cases fail closed and produce a bounded footer status.
 
 Rules origin resolution is a separate IDE-owned batch over bounded workspace
 CSS/SCSS/map dependencies. It can authorize a cross-file open only after exact
-CSS or source-mapped SCSS verification. Existing Source remains
-active-document-only in the packaged, non-default legacy rollback panel for its
-one published rollback release; the default Inspector has no visible Source
-tab. A new Source tab and first-party PHP/template providers remain future
-scope.
+CSS or source-mapped SCSS verification. Source remains active-document-only.
+First-party PHP/template providers remain future scope.
 
 Pin-op does not load executable code from an inspected workspace. Built-in CSS
 and SCSS resolvers use source-plugin API v3; its synchronous refresh classifiers

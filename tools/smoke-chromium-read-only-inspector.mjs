@@ -720,7 +720,7 @@ function packagedSmokeHTML(inspectorHtml) {
       .every(expected=>propertyRows().some(text=>text.includes(expected)));
     const firstSection=deepQueryAll(document,'.styles-section')[0];
     const normalRuleFont=firstSection?getComputedStyle(firstSection).fontStyle==='normal':false;
-    const pseudoButton=document.querySelector('[data-part="pseudo-state-button"]');
+    const pseudoButton=deepQueryAll(document,'[data-part="pseudo-state-button"]')[0];
     const filterControl=deepQueryAll(document,'.toolbar-input.toolbar-filter')[0];
     const pseudoRect=pseudoButton?.getBoundingClientRect();
     const filterRect=filterControl?.getBoundingClientRect();
@@ -987,7 +987,7 @@ Promise.resolve().then(async () => {
   const rulesTab = [...view.element.querySelectorAll('[role="tab"]')].find(tab => tab.textContent==='Rules');
   const sourceTab = [...view.element.querySelectorAll('[role="tab"]')].find(tab => tab.textContent==='Source');
   const toolbar=deepQuery(view.rulesRoot,'.styles-sidebar-pane-toolbar-container');
-  const pseudoButton = view.rulesRoot.querySelector('[data-part="pseudo-state-button"]');
+  const pseudoButton = deepQuery(view.rulesRoot,'[data-part="pseudo-state-button"]');
   const filterPrompt=deepQuery(view.rulesRoot,'.toolbar-input-prompt.text-prompt');
   const filterControl=deepQuery(view.rulesRoot,'.toolbar-input.toolbar-filter');
   const activeTabStyle=getComputedStyle(rulesTab);
@@ -1069,7 +1069,7 @@ Promise.resolve().then(async () => {
   const domSelectionForwarded=treeCalls.select.length>0;
 
   pseudoButton?.click();
-  const hoverChoice = view.rulesRoot.querySelector('[data-pseudo-state="hover"]');
+  const hoverChoice = deepQuery(view.rulesRoot,'[data-pseudo-state="hover"]');
   hoverChoice?.click();
   await waitFor(() => pseudoSnapshot.states.includes('hover'), 'pseudo-state update');
 

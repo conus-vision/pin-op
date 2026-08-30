@@ -5029,6 +5029,43 @@ describe("BackgroundRouter", () => {
     expect(messagesOfType(panel, "dom.selectionChanged")).toEqual([]);
   });
 
+  it("answers a styles query that arrives while the content lease is attaching", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "styles.getMatched"
+          ? stylesMatched(String(message.requestId))
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    panel.emitMessage({
+      type: "styles.getMatched",
+      requestId: "styles-1",
+      documentEpoch: 4,
+      nodeRef: "node-1",
+      selectionRevision: 7,
+      pseudoStateRevision: 2,
+      pseudoStates: ["hover"],
+      manualRefresh: true,
+    });
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "styles.error")).toEqual([]);
+
+    await harness.attachContentSession(17, "content-styles");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "styles.error")).toEqual([]);
+    expect(messagesOfType(panel, "styles.matched")).toEqual([
+      stylesMatched("styles-1"),
+    ]);
+  });
+
   it("routes strict matched styles and trusted invalidation/renewal events without IDE resolution", async () => {
     const harness = createHarness({
       sendTabMessage: async (_tabId, message) => {
@@ -8561,6 +8598,65 @@ describe("BackgroundRouter", () => {
       code: "session-disposed",
     });
     expect(harness.inspectCalls).not.toContainEqual(["tab", 17, request]);
+  });
+
+  it("answers a DOM query that arrives while the content lease is attaching", async () => {
+    const harness = createHarness({
+      sendTabMessage: async (_tabId, message) =>
+        isRecord(message) && message.type === "dom.getRoot"
+          ? domRoot("reconnect-root")
+          : undefined,
+    });
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+
+    await flushMicrotasks();
+
+    // A background that was suspended mid-session takes the panel's first read
+    // before the replacement content lease has attached. The read belongs to
+    // the session on its way in, not to a disposed one.
+    panel.emitMessage({ type: "dom.getRoot", requestId: "reconnect-root" });
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "dom.error")).toEqual([]);
+    expect(messagesOfType(panel, "dom.root")).toEqual([]);
+
+    await harness.attachContentSession(17);
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toEqual([]);
+    expect(messagesOfType(panel, "dom.root")).toContainEqual(
+      domRoot("reconnect-root"),
+    );
+  });
+
+  it("settles a DOM query waiting on a content lease that never attaches", async () => {
+    const harness = createHarness();
+    const panel = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    panel.emitMessage({ type: "dom.getRoot", requestId: "abandoned-root" });
+    await flushMicrotasks();
+    expect(messagesOfType(panel, "dom.error")).toEqual([]);
+
+    // The wait ends with the session's teardown, never on a timer.
+    harness.coordinator.registrations[0]?.onStateChanged?.("notLinked");
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await flushMicrotasks();
+
+    expect(messagesOfType(panel, "dom.error")).toContainEqual({
+      type: "dom.error",
+      requestId: "abandoned-root",
+      code: "session-disposed",
+    });
   });
 
   it("settles an in-flight DOM query when its tab migrates", async () => {

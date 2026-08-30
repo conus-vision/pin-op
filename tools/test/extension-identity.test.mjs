@@ -95,12 +95,10 @@ for (const browser of ["chrome", "firefox"]) {
 }
 
 test("browser extension HTML presents Pin-op and the renamed vector asset", () => {
-  const panel = readText("packages/browser-extension-core/assets/panel.html");
+  const panel = readText(
+    "packages/browser-extension-core/assets/inspector-panel.html",
+  );
   assert.match(panel, /<title>Pin-op<\/title>/);
-  assert.match(panel, /src="\.\/pin-op\.svg"/);
-  assert.match(panel, /id="panel-branding"[\s\S]*Pin-op[\s\S]*<\/footer>/);
-  assert.match(panel, /href="mailto:info@conus\.vision"/);
-  assert.match(panel, /href="https:\/\/conus\.vision"/);
 
   for (const browser of ["chrome", "firefox"]) {
     assert.match(

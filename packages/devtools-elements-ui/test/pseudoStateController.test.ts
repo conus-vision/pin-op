@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { StylesSidebarPane } from "../src/chromium/rules/StylesSidebarPane.js";
+import { PseudoStateController } from "../src/pseudoStateController.js";
 import type {
   RulesDataSource,
   RulesPresentationSnapshot,
@@ -30,15 +30,13 @@ interface PseudoStateDataSourceShape {
   setStates(states: readonly PseudoState[]): Promise<void>;
 }
 
-type PseudoAwareStylesSidebarPaneConstructor = new (
+type PseudoAwarePseudoStateController = new (
   document: Document,
-  rulesDataSource: RulesDataSource,
-  sourceLinkDelegate: undefined,
   pseudoStateDataSource: PseudoStateDataSourceShape,
-) => StylesSidebarPane;
+) => PseudoStateController;
 
-const PseudoAwareStylesSidebarPane = StylesSidebarPane as unknown as
-  PseudoAwareStylesSidebarPaneConstructor;
+const PreviewController = PseudoStateController as unknown as
+  PseudoAwarePseudoStateController;
 
 describe(":hov preview controller", () => {
   it("renders only hover and focus preview choices with screen-reader labels", () => {
@@ -171,13 +169,16 @@ describe(":hov preview controller", () => {
     const button = part(harness.root, "pseudo-state-button");
     const description = part(harness.root, "pseudo-state-description");
 
-    expect(description.getAttribute("role")).toBe("status");
-    expect(description.textContent).toMatch(/author styles only/i);
-    expect(description.textContent).toMatch(/2 .*unsupported/i);
-    expect(description.textContent).toMatch(/1 .*inaccessible/i);
-    expect(description.textContent).toMatch(/3 .*source-order approximation/i);
-    expect(description.textContent).toMatch(/not .*native browser forcing/i);
-    expect(description.textContent).toMatch(/not .*exact cascade parity/i);
+    // Coverage is what the button says on hover; it takes no room in the pane.
+    expect(description.getAttribute("role")).toBe("note");
+    for (const text of [description.textContent, button.title]) {
+      expect(text).toMatch(/author styles only/i);
+      expect(text).toMatch(/2 .*unsupported/i);
+      expect(text).toMatch(/1 .*inaccessible/i);
+      expect(text).toMatch(/3 .*source-order approximation/i);
+      expect(text).toMatch(/not .*native browser forcing/i);
+      expect(text).toMatch(/not .*exact cascade parity/i);
+    }
     expect(button.getAttribute("aria-describedby")).toBe(description.id);
   });
 
@@ -290,18 +291,11 @@ interface CheckboxElement extends FakeElement {
 
 function createHarness(initial: PseudoStateSnapshot) {
   const document = new FakeDocument();
-  const rules = new FakeRulesDataSource();
   const pseudo = new FakePseudoStateDataSource(initial);
-  const pane = new PseudoAwareStylesSidebarPane(
-    document.document,
-    rules,
-    undefined,
-    pseudo,
-  );
-  const root = pane.element as unknown as FakeElement;
+  const controller = new PreviewController(document.document, pseudo);
+  const root = controller.element as unknown as FakeElement;
   document.body.append(root);
-  pane.render(elementsSession.rules.matchedStyles);
-  return { document, pane, pseudo, root };
+  return { document, controller, pseudo, root };
 }
 
 function part(root: FakeElement, name: string): FakeElement {

@@ -4,6 +4,12 @@ import {
   type ProtocolErrorCode,
 } from "@pin-op/protocol";
 import {
+  readAuthoredDeclarations,
+  type AuthoredDeclaration,
+  type AuthoredLonghand,
+  type ShorthandExpander,
+} from "./authoredDeclarations.js";
+import {
   boundedLength,
   enumerateBounded,
   exactBoundedUrl,
@@ -18,6 +24,8 @@ export interface MatchableElement {
 
 export interface StyleDeclarationSource {
   readonly length: number;
+  /** Serialized declaration block; absent sources are presented as longhands. */
+  readonly cssText?: string;
   item(index: number): string;
   getPropertyValue(name: string): string;
   getPropertyPriority(name: string): string;
@@ -91,6 +99,8 @@ export interface CssRuleWalkRecord {
   readonly value: string;
   readonly important: boolean;
   readonly valueTruncated: boolean;
+  /** Present when the record is a shorthand: the longhands it sets. */
+  readonly longhands?: readonly AuthoredLonghand[];
   readonly sourceUrl: string;
   readonly stylesheetIdentity: string;
   readonly rulePath: string;
@@ -143,6 +153,7 @@ export interface CssRuleWalkOptions {
     rulePath: string,
     nativeRule: object,
   ) => string | undefined;
+  readonly expandShorthand?: ShorthandExpander;
   readonly onStyleRuleCandidate?: (record: CssStyleRuleCandidateRecord) => void;
   readonly onMatchedRule?: (record: CssMatchedRuleWalkRecord) => void;
   readonly onSelectorUnavailable?: (selector: string) => void;
@@ -629,9 +640,8 @@ function* walkDeclarations(
       nativeRule,
     );
   }
-  const records: CssRuleWalkRecord[] = [];
+  const longhands: PresentedDeclaration[] = [];
   for (const property of declarationNames) {
-    if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) break;
     try {
       const priority = style.getPropertyPriority(property);
       if (typeof priority !== "string") continue;
@@ -640,27 +650,47 @@ function* walkDeclarations(
       const rawValue = style.getPropertyValue(property);
       if (typeof rawValue !== "string") continue;
       if (!consumeWalkBytes(state, rawValue)) break;
-      const record: CssRuleWalkRecord = {
-        selector: selector.sourceSelector,
-        resolvedSelector: selector.resolvedSelector,
+      longhands.push({
         property,
         value: truncate(rawValue, INSPECT_LIMITS.valueLength).trim(),
         important: priority === "important",
         valueTruncated: rawValue.length > INSPECT_LIMITS.valueLength,
-        sourceUrl: stylesheet.sourceUrl,
-        stylesheetIdentity: stylesheet.stylesheetIdentity,
-        rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
-        media: [...media.values],
-        mediaTruncated: media.truncated,
-        contexts: contexts.values.map((context) => ({ ...context })),
-        contextsTruncated: contexts.truncated,
-        ...(ruleRef ? { ruleRef } : {}),
-      };
-      state.recordsEmitted += 1;
-      records.push(record);
+      });
     } catch {
       continue;
     }
+  }
+
+  // The rule is presented the way it is written -- `margin: 0`, not its four
+  // longhands -- whenever its serialized text accounts for every longhand the
+  // CSSOM holds. The longhands ride along on the record so the cascade is still
+  // decided one longhand at a time.
+  const authored = longhands.length === declaredLength
+    ? authoredForm(style, longhands, state)
+    : undefined;
+  const presented = authored ?? longhands;
+
+  const records: CssRuleWalkRecord[] = [];
+  for (const declaration of presented) {
+    if (state.recordsEmitted >= INSPECT_LIMITS.factsPerTarget) break;
+    records.push({
+      selector: selector.sourceSelector,
+      resolvedSelector: selector.resolvedSelector,
+      property: declaration.property,
+      value: declaration.value,
+      important: declaration.important,
+      valueTruncated: declaration.valueTruncated,
+      ...(declaration.longhands ? { longhands: declaration.longhands } : {}),
+      sourceUrl: stylesheet.sourceUrl,
+      stylesheetIdentity: stylesheet.stylesheetIdentity,
+      rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
+      media: [...media.values],
+      mediaTruncated: media.truncated,
+      contexts: contexts.values.map((context) => ({ ...context })),
+      contextsTruncated: contexts.truncated,
+      ...(ruleRef ? { ruleRef } : {}),
+    });
+    state.recordsEmitted += 1;
   }
   state.options.onMatchedRule?.({
     nativeRule,
@@ -674,10 +704,56 @@ function* walkDeclarations(
     mediaTruncated: media.truncated,
     contexts: contexts.values.map((context) => ({ ...context })),
     contextsTruncated: contexts.truncated,
-    declarationsTruncated: declaredLength > records.length,
+    declarationsTruncated: presented.length > records.length ||
+      (!authored && declaredLength > records.length),
     ...(ruleRef ? { ruleRef } : {}),
   });
   for (const record of records) yield record;
+}
+
+interface PresentedDeclaration {
+  readonly property: string;
+  readonly value: string;
+  readonly important: boolean;
+  readonly valueTruncated: boolean;
+  readonly longhands?: readonly AuthoredLonghand[];
+}
+
+function authoredForm(
+  style: StyleDeclarationSource,
+  longhands: readonly PresentedDeclaration[],
+  state: WalkState,
+): readonly PresentedDeclaration[] | undefined {
+  let cssText: unknown;
+  try {
+    cssText = style.cssText;
+  } catch {
+    return undefined;
+  }
+  if (typeof cssText !== "string" || cssText === "") return undefined;
+  // A soft charge: the text carries the declarations already charged as
+  // longhands, so a rule too large for what is left simply stays longhand.
+  if (!offerWalkBytes(state, cssText)) return undefined;
+  const authored = readAuthoredDeclarations(
+    cssText,
+    longhands,
+    state.options.expandShorthand,
+  );
+  return authored?.map((declaration) => ({
+    property: declaration.property,
+    value: truncate(declaration.value, INSPECT_LIMITS.valueLength).trim(),
+    important: declaration.important,
+    valueTruncated: declaration.value.length > INSPECT_LIMITS.valueLength,
+    ...(coversOtherProperties(declaration)
+      ? { longhands: declaration.longhands }
+      : {}),
+  }));
+}
+
+function coversOtherProperties(declaration: AuthoredDeclaration): boolean {
+  const [only] = declaration.longhands;
+  return declaration.longhands.length !== 1 ||
+    only?.property !== declaration.property;
 }
 
 function* walkImportedStylesheet(
@@ -1273,6 +1349,19 @@ function consumeWalkBytes(state: WalkState, value: string): boolean {
     return false;
   }
   return consumeWalkByteCount(state, bytes);
+}
+
+/** Charges bytes when they fit, and otherwise declines without closing the walk. */
+function offerWalkBytes(state: WalkState, value: string): boolean {
+  let bytes: number;
+  try {
+    bytes = utf8ByteLength(value);
+  } catch {
+    return false;
+  }
+  if (bytes > state.workBudget.remainingBytes) return false;
+  state.workBudget.remainingBytes -= bytes;
+  return true;
 }
 
 function consumeWalkByteCount(state: WalkState, bytes: number): boolean {

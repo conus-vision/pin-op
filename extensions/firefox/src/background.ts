@@ -7,12 +7,10 @@ import {
   type DevtoolsPanelPage,
 } from "@pin-op/browser-extension-core";
 
-declare const __PIN_OP_PANEL_PAGE__: unknown;
-
-const panelPage = compiledPanelPage();
+const panelPage: DevtoolsPanelPage = "/dist/inspector-panel.html";
 
 startBackgroundRuntime({
-  browserLocalInspection: panelPage === "/dist/inspector-panel.html",
+  browserLocalInspection: true,
   expectedDevtoolsUrl: browser.runtime.getURL("dist/devtools.html"),
   expectedPanelUrl: browser.runtime.getURL(panelPage.slice(1)),
   storage: {
@@ -102,15 +100,6 @@ startBackgroundRuntime({
     console.error("Pin-op background:", sanitizeErrorMessage(error)),
 });
 
-function compiledPanelPage(): DevtoolsPanelPage {
-  const value = typeof __PIN_OP_PANEL_PAGE__ === "string"
-    ? __PIN_OP_PANEL_PAGE__
-    : "/dist/inspector-panel.html";
-  if (value === "/dist/panel.html" || value === "/dist/inspector-panel.html") {
-    return value;
-  }
-  throw new Error("Invalid compiled panel page");
-}
 
 interface FirefoxMessageSender {
   readonly url?: string;

@@ -177,6 +177,19 @@ export class PanelController {
     this.render();
   }
 
+  /**
+   * A page pick is one-shot, the way DevTools element selection is: once the
+   * selection lands the picker disarms, so the next click belongs to the page
+   * again instead of silently reselecting.
+   */
+  public async finishInspectPick(): Promise<void> {
+    if (this.disposed || !this.inspectController.enabled) {
+      return;
+    }
+    await this.disableInspect();
+    this.render();
+  }
+
   public async handleTransportDisconnect(): Promise<void> {
     if (this.disposed) {
       return;

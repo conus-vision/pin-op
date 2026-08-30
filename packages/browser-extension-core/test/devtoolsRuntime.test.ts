@@ -121,29 +121,6 @@ describe("registerDevtoolsPanel", () => {
     expect(removed).toEqual(["runtime"]);
   });
 
-  it("registers only the explicitly selected legacy rollback page", async () => {
-    const created: string[] = [];
-    const registration = await registerDevtoolsPanel({
-      inspectedTabId: 42,
-      channelId: "channel-1",
-      sourceId: "firefox-source-1",
-      panelPage: "/dist/panel.html",
-      async createPanel(_title, _icon, page) {
-        created.push(page);
-        return {
-          addShownListener() {},
-          removeShownListener() {},
-        };
-      },
-      addRuntimeMessageListener: () => () => {},
-      async sendRuntimeMessage() {},
-    });
-
-    expect(created).toEqual([
-      "/dist/panel.html?channel=channel-1",
-    ]);
-    registration.dispose();
-  });
 
   it("rejects an arbitrary panel page instead of weakening registration authority", async () => {
     await expect(registerDevtoolsPanel({

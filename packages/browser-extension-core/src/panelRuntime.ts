@@ -12,26 +12,22 @@ import {
 } from "./panelController.js";
 import { DomTreeController } from "./domTreeController.js";
 import { DomTreeRecoveryCoordinator } from "./domTreeRecoveryCoordinator.js";
+import { DomTreeRecoveryNotReadyError } from "./domTreeRecoveryError.js";
 import {
   isSelectionRevision,
   parseDomEvent,
   type DomSelectionChangedEvent,
   type DomSelectionClearedEvent,
 } from "./domProtocol.js";
-import { DomTreeView, type DomTreeDocument } from "./domTreeView.js";
+import type { DomTreeDocument } from "./domTreeDocument.js";
 import { PanelInspectController } from "./panelInspectController.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
 import {
-  PanelLayoutController,
-  type PanelResizeObserverFactory,
-  type PanelSessionStateStorage,
-} from "./panelLayoutController.js";
-import {
   PanelSettingsController,
   type PanelSettingsBindingToken,
 } from "./panelSettingsController.js";
-import { DomPanelView, type PanelDocument } from "./panelView.js";
+import type { PanelDocument } from "./inspectorPanelView.js";
 import { parseProtocolData } from "./protocolDataSnapshot.js";
 import {
   ResolutionPresenter,
@@ -69,8 +65,6 @@ export interface PanelRuntimeOptions {
   readonly subscribeUnload: (listener: () => void) => () => void;
   readonly diagnostics?: PanelDiagnostics;
   readonly initializeIcons?: () => void;
-  readonly createResizeObserver?: PanelResizeObserverFactory;
-  readonly layoutStorage?: PanelSessionStateStorage;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -127,13 +121,16 @@ export type PanelRuntimePresentationFactory = (
   reportError: (error: unknown) => void,
 ) => PanelRuntimePresentation;
 
+/**
+ * How many window states a reconnect may spend waiting for the background to
+ * bring its content session back before the panel gives up on the frozen
+ * selection and reloads the tree.
+ */
+const MAX_RECONNECT_RESTORE_RETRIES = 3;
+
 type DomSelectionAuthorityEvent =
   | DomSelectionChangedEvent
   | DomSelectionClearedEvent;
-
-export function startPanelRuntime(options: PanelRuntimeOptions): PanelRuntime {
-  return startPanelRuntimeWithPresentation(options, createLegacyPresentation);
-}
 
 export function startPanelRuntimeWithPresentation(
   options: PanelRuntimeOptions,
@@ -168,6 +165,9 @@ export function startPanelRuntimeWithPresentation(
   let controller: PanelController;
   let treeController: DomTreeController;
   let treeSessionActive = false;
+  let pendingReconnectRestore = false;
+  let restoreAttemptsLeft = 0;
+  let treeSessionRestore: object | undefined;
   let domRecoveryStatusGeneration = 0;
   let acceptedSelectionDocumentEpoch: number | undefined;
   let acceptedSelectionRevision: number | undefined;
@@ -203,8 +203,13 @@ export function startPanelRuntimeWithPresentation(
     () => options.connectRuntimePort(createDevtoolsPanelPortName(channel)),
     () => {
       const preserveMismatch = mismatchBlocked;
+      const restorable = treeSessionActive && !preserveMismatch;
       presentationBinding.contentLeaseReplaced();
-      deactivateTreeSession();
+      if (restorable) {
+        suspendTreeSessionForReconnect();
+      } else {
+        deactivateTreeSession();
+      }
       disconnectFeatureControllers(preserveMismatch);
       void controller.handleTransportDisconnect()
         .catch(reportError)
@@ -299,8 +304,7 @@ export function startPanelRuntimeWithPresentation(
         if (!disposed) {
           inspectTransport.connect();
           if (browserLocalInspection && !mismatchBlocked) {
-            treeSessionActive = true;
-            void treeController.loadRoot();
+            resumeTreeSession();
           }
         }
       })
@@ -428,8 +432,7 @@ export function startPanelRuntimeWithPresentation(
           if (!isCurrentRoute()) {
             return;
           }
-          treeSessionActive = true;
-          void treeController.loadRoot();
+          resumeTreeSession();
         }
       }
     } else if (tabState) {
@@ -510,6 +513,7 @@ export function startPanelRuntimeWithPresentation(
       if (domEvent.type === "dom.selectionChanged") {
         domRecoveryStatusGeneration += 1;
         recoveryCoordinator.handleManualSelection(domEvent);
+        void controller?.finishInspectPick().catch(reportError);
         if (selectionOwnership === "advanced") {
           activeInspectSelectionRevision = undefined;
           sourceNavigationController.invalidate();
@@ -659,8 +663,7 @@ export function startPanelRuntimeWithPresentation(
         }
       }
       if (!mismatchBlocked) {
-        treeSessionActive = true;
-        void treeController.loadRoot();
+        resumeTreeSession();
       }
     } else if (parseInspectPortInvalidated(message)) {
       const shouldRecover = treeSessionActive;
@@ -680,6 +683,10 @@ export function startPanelRuntimeWithPresentation(
           .catch((error) => {
             reportError(error);
             finishRecoveryStatus(statusGeneration);
+            // Recovery restores the previous selection; when it cannot, the
+            // panel must still come back with a live tree instead of staying
+            // empty until the next manual pick.
+            reloadTreeSession();
           });
       } else {
         recoveryCoordinator.cancel("Inactive DOM session invalidated");
@@ -899,8 +906,83 @@ export function startPanelRuntimeWithPresentation(
     }
   }
 
+  /**
+   * A dropped background port is a blip -- the browser suspends an idle
+   * background page and the panel reconnects seconds later. Freeze the tree on
+   * what it last showed instead of emptying it, so the reconnect can put the
+   * same selection back rather than leaving cleared panels behind.
+   */
+  function suspendTreeSessionForReconnect(): void {
+    domRecoveryStatusGeneration += 1;
+    resetSelectionOwnership();
+    sourceNavigationController.invalidate();
+    sourcePaneController.invalidate();
+    settingsController.invalidateInspect();
+    try {
+      treeController.beginRecovery();
+    } catch (error) {
+      reportError(error);
+      deactivateTreeSession();
+      return;
+    }
+    pendingReconnectRestore = true;
+    restoreAttemptsLeft = MAX_RECONNECT_RESTORE_RETRIES;
+    resetResolutionState("restoring");
+  }
+
+  /** Resumes the tree after a reconnect, restoring the frozen selection first. */
+  function resumeTreeSession(): void {
+    if (!pendingReconnectRestore) {
+      // A restore in flight owns the tree: a second window state would drop the
+      // recovered selection on the floor and reload an empty root instead.
+      if (treeSessionRestore) {
+        return;
+      }
+      treeSessionActive = true;
+      void treeController.loadRoot();
+      return;
+    }
+    pendingReconnectRestore = false;
+    treeSessionActive = true;
+    const restore = {};
+    treeSessionRestore = restore;
+    const statusGeneration = ++domRecoveryStatusGeneration;
+    const settle = (): void => {
+      if (treeSessionRestore === restore) {
+        treeSessionRestore = undefined;
+      }
+    };
+    resetResolutionState("restoring");
+    void recoveryCoordinator.begin()
+      .then(() => {
+        settle();
+        finishRecoveryStatus(statusGeneration);
+      })
+      .catch((error) => {
+        settle();
+        // The content session was not there yet; the frozen tree still is, so
+        // wait for the next window state rather than throwing the selection
+        // away. Bounded, because a tree frozen forever is its own defect.
+        if (
+          error instanceof DomTreeRecoveryNotReadyError &&
+          restoreAttemptsLeft > 0
+        ) {
+          restoreAttemptsLeft -= 1;
+          pendingReconnectRestore = true;
+          return;
+        }
+        reportError(error);
+        finishRecoveryStatus(statusGeneration);
+        // The selection could not be restored; the panel must still come back
+        // with a live tree instead of staying frozen on stale rows.
+        reloadTreeSession();
+      });
+  }
+
   function deactivateTreeSession(): void {
     treeSessionActive = false;
+    pendingReconnectRestore = false;
+    treeSessionRestore = undefined;
     domRecoveryStatusGeneration += 1;
     resetSelectionOwnership();
     sourceNavigationController.invalidate();
@@ -955,6 +1037,23 @@ export function startPanelRuntimeWithPresentation(
       kind: "incompatible",
       statusText: "Extensions are incompatible",
     });
+  }
+
+  /** Drops whatever the tree held and asks the content session for a new root. */
+  function reloadTreeSession(): void {
+    if (disposed || mismatchBlocked) return;
+    pendingReconnectRestore = false;
+    treeSessionRestore = undefined;
+    try {
+      recoveryCoordinator.cancel("DOM recovery could not restore the session");
+      treeController.reset();
+      resetSelectionOwnership();
+      resetResolutionState();
+      treeSessionActive = true;
+      void treeController.loadRoot().catch(reportError);
+    } catch (error) {
+      reportError(error);
+    }
   }
 
   function resetResolutionState(status?: "restoring"): void {
@@ -1221,92 +1320,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function browserResizeObserver(
-  callback: Parameters<PanelResizeObserverFactory>[0],
-) {
-  const Observer = globalThis.ResizeObserver;
-  if (typeof Observer !== "function") {
-    return Object.freeze({
-      observe: () => undefined,
-      disconnect: () => undefined,
-    });
-  }
-  const observer = new Observer((entries) => {
-    callback(entries.map((entry) => Object.freeze({
-      target: entry.target,
-      contentRect: Object.freeze({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      }),
-    })));
-  });
-  return Object.freeze({
-    observe: (target: object) => observer.observe(target as Element),
-    disconnect: () => observer.disconnect(),
-  });
-}
 
-function browserSessionStorage(): PanelSessionStateStorage | undefined {
-  try {
-    const storage = globalThis.sessionStorage;
-    return storage && typeof storage.getItem === "function" &&
-        typeof storage.setItem === "function"
-      ? storage
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
-function createLegacyPresentation(
-  options: PanelRuntimeOptions,
-  reportError: (error: unknown) => void,
-): PanelRuntimePresentation {
-  const view = new DomPanelView(options.document, reportError);
-  return {
-    view,
-    browserLocalInspection: false,
-    attach(context) {
-      const sourcePaneView = new SourcePaneView({
-        document: options.document as unknown as SourcePaneDocument,
-        root: view.sourceRoot(),
-        controller: context.sourcePaneController,
-        onError: reportError,
-      });
-      const layoutController = new PanelLayoutController({
-        createResizeObserver:
-          options.createResizeObserver ?? browserResizeObserver,
-        storage: options.layoutStorage ?? browserSessionStorage(),
-      });
-      const removeSettingsBindings = view.bindSettings(
-        context.settingsController,
-      );
-      const removeLayoutBindings = view.bindLayout(layoutController);
-      const removeSourceNavigationBindings = view.bindSourceNavigation(
-        context.sourceNavigationController,
-      );
-      const treeView = new DomTreeView({
-        document: options.document,
-        controller: context.treeController,
-        sourceNavigationController: context.sourceNavigationController,
-        onError: reportError,
-      });
-      let disposed = false;
-      return {
-        sourcePaneView,
-        removeSettingsBindings,
-        removeSourceNavigationBindings,
-        removeLayoutBindings,
-        beforeControlledTransition: () => true,
-        contentLeaseReplaced() {},
-        disposePresentation() {
-          if (disposed) return;
-          disposed = true;
-          treeView.dispose();
-          sourcePaneView.dispose();
-          layoutController.dispose();
-        },
-      };
-    },
-  };
-}

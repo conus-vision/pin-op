@@ -1354,6 +1354,7 @@ export class DomTreeController {
     this.recoveredFocusRef = undefined;
     this.replaceRevealPath(ancestorPath);
     const expandedAdoptedRefs: string[] = [];
+    const revealedRefs: string[] = [];
     let parentRef: string | undefined;
     for (const [index, view] of ancestorPath.entries()) {
       const wasExpanded = this.expanded.has(view.nodeRef);
@@ -1374,6 +1375,7 @@ export class DomTreeController {
       }
       if (index < ancestorPath.length - 1) {
         this.expanded.add(view.nodeRef);
+        revealedRefs.push(view.nodeRef);
       }
       parentRef = view.nodeRef;
     }
@@ -1385,7 +1387,33 @@ export class DomTreeController {
     this.currentRevealVersion += 1;
     this.currentError = undefined;
     this.resumeOwnedExpandedBranches(expandedAdoptedRefs);
+    this.fillRevealedBranches(revealedRefs, this.currentRevealVersion);
     this.notify();
+  }
+
+  /**
+   * A reveal path carries only the ancestor that leads to the selected node, so
+   * every revealed branch would otherwise render one child and a "Load more"
+   * row over its hidden siblings. Fill those branches on the next microtask,
+   * and only while the reveal still stands: a recovery or a newer selection
+   * replaces the path outright and owns its own loading.
+   */
+  private fillRevealedBranches(
+    nodeRefs: readonly string[],
+    revealVersion: number,
+  ): void {
+    if (nodeRefs.length === 0) return;
+    const refs = [...nodeRefs];
+    void Promise.resolve().then(() => {
+      if (
+        this.disposed ||
+        this.recovering ||
+        this.currentRevealVersion !== revealVersion
+      ) {
+        return;
+      }
+      this.resumeOwnedExpandedBranches(refs);
+    });
   }
 
   private handleSelectionChanged(event: DomSelectionChangedEvent): void {

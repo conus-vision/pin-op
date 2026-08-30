@@ -317,6 +317,111 @@ describe("PanelInspectTransport DOM integration", () => {
     }
   });
 
+  it("expires a lost DOM query instead of stranding the panel", async () => {
+    const port = new FakePort();
+    const clock = new FakeClock();
+    const transport = new PanelInspectTransport(
+      () => port,
+      undefined,
+      undefined,
+      undefined,
+      {
+        domRequestTimeoutMs: 25,
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout,
+      },
+    );
+
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-timeout",
+    });
+    const state = promiseState(pending);
+    const wireRequest = sentDomQuery(port);
+
+    clock.advanceBy(24);
+    await flushPanelTasks();
+    expect(state.status).toBe("pending");
+    expect(pendingDomCounts(transport)).toEqual({
+      callerIds: 1,
+      wireRequests: 1,
+    });
+
+    clock.advanceBy(1);
+    await flushPanelTasks();
+    expect(state).toEqual({
+      status: "rejected",
+      reason: "DOM request timed out",
+    });
+    expect(pendingDomCounts(transport)).toEqual({
+      callerIds: 0,
+      wireRequests: 0,
+    });
+    expect(clock.pendingCount()).toBe(0);
+
+    // A late answer belongs to nobody and must not resolve the expired caller.
+    port.emitMessage(rootResponse(wireRequest.requestId));
+    await flushPanelTasks();
+    expect(state).toEqual({
+      status: "rejected",
+      reason: "DOM request timed out",
+    });
+
+    const reissued = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-timeout",
+    });
+    const reissuedState = promiseState(reissued);
+    await flushPanelTasks();
+    expect(reissuedState.status).toBe("pending");
+    transport.cancelDomRequests();
+    await flushPanelTasks();
+    expect(clock.pendingCount()).toBe(0);
+  });
+
+  it("clears the DOM timeout when the answer arrives", async () => {
+    const port = new FakePort();
+    const clock = new FakeClock();
+    const transport = new PanelInspectTransport(
+      () => port,
+      undefined,
+      undefined,
+      undefined,
+      {
+        domRequestTimeoutMs: 25,
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout,
+      },
+    );
+
+    const pending = transport.requestDom({
+      type: "dom.getRoot",
+      requestId: "root-answered",
+    });
+    const wireRequest = sentDomQuery(port);
+    port.emitMessage(rootResponse(wireRequest.requestId));
+
+    await expect(pending).resolves.toEqual(rootResponse("root-answered"));
+    expect(clock.pendingCount()).toBe(0);
+    expect(pendingDomCounts(transport)).toEqual({
+      callerIds: 0,
+      wireRequests: 0,
+    });
+  });
+
+  it("bounds an injected DOM request timeout", () => {
+    const port = new FakePort();
+    for (const domRequestTimeoutMs of [0, 60_001, Number.NaN]) {
+      expect(() => new PanelInspectTransport(
+        () => port,
+        undefined,
+        undefined,
+        undefined,
+        { domRequestTimeoutMs },
+      )).toThrow(RangeError);
+    }
+  });
+
   it("correlates a validated DOM query without a panel-supplied tab ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);

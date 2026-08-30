@@ -242,12 +242,6 @@ test("ordinary installed artifacts use the shared Inspector by default", () => {
   assert.match(defaultParagraph, /Rules origin/i);
   assert.doesNotMatch(defaultParagraph, /default[\s\S]*legacy rollback panel/i);
 
-  const rollbackParagraph = requireMarkdownParagraph(
-    installedGuide,
-    /PIN_OP_PANEL_VARIANT=legacy/i,
-    "installed legacy rollback instructions",
-  );
-  assert.match(rollbackParagraph, /legacy rollback[\s\S]*`?panel\.html`?/i);
 });
 
 test("current rollout docs reject stale opt-in and store-default legacy claims", () => {
@@ -394,26 +388,6 @@ test("MVP usage scopes structured DOM values to the default Inspector", () => {
     /attribute values[^.]*do not appear|DOM text[^.]*do(?:es)? not appear/i,
   );
 
-  const namesOnlyParagraphs = domTreeUsage
-    .split(/\r?\n\s*\r?\n/)
-    .map((value) => value.replace(/\s+/g, " ").trim())
-    .filter((value) =>
-      /attribute names only|attribute values[^.]*do not appear|names[^.]*not values|DOM text[^.]*do(?:es)? not appear/i.test(
-        value,
-      ),
-    );
-  assert.notEqual(
-    namesOnlyParagraphs.length,
-    0,
-    "legacy names-only DOM boundary is required",
-  );
-  for (const paragraph of namesOnlyParagraphs) {
-    assert.match(
-      paragraph,
-      /legacy rollback/i,
-      "every names-only DOM claim must be scoped to the legacy rollback",
-    );
-  }
 });
 
 test("MVP usage preserves CORS-readable cross-origin stylesheet support", () => {
@@ -554,22 +528,8 @@ test("preview docs disclose observable artifacts, abrupt loss, and unsupported c
   assert.match(limits, /unsupported[\s\S]{0,240}not guessed/i);
 });
 
-test("release docs bound the legacy rollback asset to one published release", () => {
-  const rollback = requireMarkdownParagraph(
-    releaseGuide,
-    /legacy rollback/i,
-    "legacy rollback lifetime",
-  );
-  assert.match(rollback, /`?panel\.html`?/i);
-  assert.match(rollback, /exactly one published rollback release/i);
-  assert.match(
-    rollback,
-    /remove[\s\S]*only after[\s\S]*(?:support evidence|support reports?|manual field reports?)[\s\S]*confirm(?:s|ed)?[\s\S]*no blocking regression/i,
-  );
-  assert.doesNotMatch(rollback, /\btelemetry\b/i);
-});
 
-test("architecture and security document structured Inspector DOM data and the legacy label boundary", () => {
+test("architecture and security document structured Inspector DOM data", () => {
   for (const [name, guide] of [
     ["architecture", architectureGuide],
     ["security", securityGuide],
@@ -580,11 +540,6 @@ test("architecture and security document structured Inspector DOM data and the l
     assert.match(
       guide,
       /document[- ]type[\s\S]{0,160}(?:public and system|public\/system) IDs/i,
-      name,
-    );
-    assert.match(
-      guide,
-      /legacy[\s\S]{0,160}preformatted\s+`label`[\s\S]{0,160}element-only/i,
       name,
     );
   }
@@ -828,7 +783,7 @@ test("privacy docs disclose bounded browser-local DOM text processing", () => {
   }
 });
 
-test("release verifies the default Inspector and an explicit legacy rollback", () => {
+test("release verifies the packaged Inspector", () => {
   const [, installedAndLater = ""] = releaseGuide.split(
     "## Verify Installed Artifacts",
   );
@@ -836,9 +791,7 @@ test("release verifies the default Inspector and an explicit legacy rollback", (
 
   assert.match(installedSection, /shared Chromium-derived[\s\S]*Inspector/i);
   assert.match(installedSection, /Rules origin/i);
-  assert.doesNotMatch(installedSection, /default[\s\S]*legacy rollback panel/i);
-  assert.match(releaseGuide, /PIN_OP_PANEL_VARIANT\s*=\s*"?legacy"?/i);
-  assert.match(releaseGuide, /legacy rollback[\s\S]*`?panel\.html`?/i);
+  assert.doesNotMatch(installedSection, /legacy rollback panel/i);
 });
 
 test("installed guide contains the honest Chrome and Firefox Rules-origin matrix", () => {
@@ -860,8 +813,7 @@ test("installed guide contains the honest Chrome and Firefox Rules-origin matrix
     "Map edit",
     "Stale authority",
     "Cross-file editor switch",
-    "Inspector without Source tab",
-    "Legacy Source",
+    "Inspector Rules and Source tabs",
   ]) {
     const row = matrix
       .split(/\r?\n/)

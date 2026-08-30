@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { ElementsInspectorView } from "@pin-op/devtools-elements-ui";
 import { DomTreeController } from "../src/domTreeController.js";
 import { ElementsInspectorAdapter } from "../src/elementsInspectorAdapter.js";
 import { FakeDocument, type FakeElement } from "../../devtools-elements-ui/test/support/fakeDocument.js";
@@ -142,20 +141,6 @@ describe("ElementsInspectorAdapter", () => {
     expect(Object.isFrozen(snapshot.rows[0])).toBe(true);
     expect(Object.isFrozen(snapshot.rows[0]?.node)).toBe(true);
     expect(publications).toBeGreaterThan(0);
-
-    const fakeDocument = new FakeDocument();
-    const mount = fakeDocument.createElement("main") as unknown as FakeElement;
-    fakeDocument.body.append(mount);
-    const view = new ElementsInspectorView(
-      fakeDocument.document,
-      mount as unknown as HTMLElement,
-      adapter,
-    );
-    const renderedRoot = mount.querySelector('[data-node-ref="root"]');
-    expect(renderedRoot?.getAttribute("aria-level")).toBe("1");
-    expect(renderedRoot?.getAttribute("data-depth")).toBe("0");
-    expect(renderedRoot?.querySelectorAll(".elements-tree-indent-guide")).toHaveLength(0);
-    view.dispose();
 
     unsubscribe();
     const before = publications;

@@ -70,6 +70,79 @@ describe("PinOpElementsTreeAdapter", () => {
     expect(backend.listenerCount()).toBe(1);
   });
 
+  it("leaves the scroll alone when the selected row is already on screen", () => {
+    const runtime = new FakeChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const backend = new FakeElementsBackend(tree([
+      row("html", 0, element("HTML", 1), { expanded: true }),
+      row("body", 1, element("BODY", 0), { parentRef: "html" }),
+    ]));
+    createPinOpElementsTreeAdapter(runtime, mount as unknown as HTMLElement, backend);
+    const outline = required(runtime.createdOutline);
+    const treeElement = outline.element as unknown as FakeChromiumElement;
+    const pane = new FakeChromiumElement();
+    pane.overflowY = "auto";
+    pane.rect = { top: 0, bottom: 200, left: 0, right: 300, width: 300, height: 200 };
+    treeElement.parentElement = pane;
+
+    const document = required(outline.rootDOMNode);
+    const html = required(document.children()?.[0]);
+    const body = required(html.children()?.[0]);
+    const onScreen = required(outline.findTreeElement(body))
+      .listItemElement as unknown as FakeChromiumElement;
+    onScreen.rect = { top: 40, bottom: 57, left: 0, right: 300, width: 300, height: 17 };
+    outline.deferredScrollCalls.length = 0;
+
+    backend.publish(tree([
+      row("html", 0, element("HTML", 1), { expanded: true }),
+      row("body", 1, element("BODY", 0), {
+        parentRef: "html",
+        selected: true,
+        focused: true,
+      }),
+    ], { revealRef: "body", revealVersion: 2 }));
+
+    expect(outline.selectedDOMNode()).toBe(body);
+    // Chromium would have re-centred the row; the reader's next click depends
+    // on it staying put.
+    expect(outline.deferredScrollCalls).toEqual([]);
+  });
+
+  it("still scrolls a selected row that is off screen into view", () => {
+    const runtime = new FakeChromiumElementsRuntime();
+    const mount = new FakeChromiumMount();
+    const backend = new FakeElementsBackend(tree([
+      row("html", 0, element("HTML", 1), { expanded: true }),
+      row("body", 1, element("BODY", 0), { parentRef: "html" }),
+    ]));
+    createPinOpElementsTreeAdapter(runtime, mount as unknown as HTMLElement, backend);
+    const outline = required(runtime.createdOutline);
+    const treeElement = outline.element as unknown as FakeChromiumElement;
+    const pane = new FakeChromiumElement();
+    pane.overflowY = "auto";
+    pane.rect = { top: 0, bottom: 200, left: 0, right: 300, width: 300, height: 200 };
+    treeElement.parentElement = pane;
+
+    const document = required(outline.rootDOMNode);
+    const html = required(document.children()?.[0]);
+    const body = required(html.children()?.[0]);
+    const offScreen = required(outline.findTreeElement(body))
+      .listItemElement as unknown as FakeChromiumElement;
+    offScreen.rect = { top: 640, bottom: 657, left: 0, right: 300, width: 300, height: 17 };
+    outline.deferredScrollCalls.length = 0;
+
+    backend.publish(tree([
+      row("html", 0, element("HTML", 1), { expanded: true }),
+      row("body", 1, element("BODY", 0), {
+        parentRef: "html",
+        selected: true,
+        focused: true,
+      }),
+    ], { revealRef: "body", revealVersion: 2 }));
+
+    expect(outline.deferredScrollCalls.length).toBeGreaterThan(0);
+  });
+
   it("replays only new reveal intent or focus for an already selected native node", () => {
     const runtime = new FakeChromiumElementsRuntime();
     const mount = new FakeChromiumMount();

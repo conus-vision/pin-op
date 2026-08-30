@@ -99,7 +99,9 @@ describe("PinOpChromiumInspectorAdapter", () => {
     ]);
 
     const inspector = host.element as unknown as FakeElement;
-    const sidebar = required(inspector.children[1]);
+    const sidebar = required(inspector.children.find(
+      (child) => child.getAttribute("data-pane") === "sidebar",
+    ));
     const tabList = required(sidebar.children[0]);
     required(tabList.children[1]).dispatch("click");
     expect((host.rulesRoot as unknown as FakeElement).hidden).toBe(true);

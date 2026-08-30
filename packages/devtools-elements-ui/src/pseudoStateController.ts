@@ -10,6 +10,10 @@ const nextControlId = new WeakMap<Document, number>();
 
 export class PseudoStateController {
   public readonly element: HTMLElement;
+  /** Toolbar-sized host for the `:hov` toggle alone. */
+  public readonly buttonHost: HTMLElement;
+  /** Host for the preview choices and their coverage status. */
+  public readonly paneHost: HTMLElement;
   private readonly button: HTMLButtonElement;
   private readonly menu: HTMLElement;
   private readonly description: HTMLElement;
@@ -42,6 +46,14 @@ export class PseudoStateController {
     this.element = createElement(document, "div", {
       className: "pseudo-state-controls",
       attributes: { "data-part": "pseudo-state-controls" },
+    });
+    this.buttonHost = createElement(document, "div", {
+      className: "pseudo-state-toolbar-item",
+      attributes: { "data-part": "pseudo-state-toolbar-item" },
+    });
+    this.paneHost = createElement(document, "div", {
+      className: "pseudo-state-pane",
+      attributes: { "data-part": "pseudo-state-pane" },
     });
     this.button = createElement(document, "button", {
       className: "pseudo-state-button",
@@ -99,7 +111,9 @@ export class PseudoStateController {
         role: "status",
       },
     });
-    this.element.append(this.button, this.menu, this.description);
+    this.buttonHost.append(this.button);
+    this.paneHost.append(this.menu, this.description);
+    this.element.append(this.buttonHost, this.paneHost);
     this.button.addEventListener("click", this.onButtonClickListener);
     this.button.addEventListener("keydown", this.onButtonKeyDownListener);
     this.menu.addEventListener("keydown", this.onMenuKeyDownListener);
@@ -151,7 +165,11 @@ export class PseudoStateController {
     this.removeOwnedListeners();
     this.choices.clear();
     this.choiceListeners.clear();
+    this.buttonHost.replaceChildren();
+    this.paneHost.replaceChildren();
     this.element.replaceChildren();
+    this.buttonHost.remove();
+    this.paneHost.remove();
     this.element.remove();
     if (disposeError !== undefined) throw disposeError;
   }
@@ -289,21 +307,17 @@ export class PseudoStateController {
     const error = this.localError ?? (this.current.state === "error"
       ? this.current.message ?? "Pseudo-state preview is unavailable"
       : undefined);
-    const hasCoverageWarning = this.current.state === "partial" ||
-      this.current.unsupportedRuleCount > 0 ||
-      this.current.inaccessibleStylesheetCount > 0 ||
-      this.current.approximateRuleCount > 0;
-    this.description.setAttribute(
-      "role",
-      error
-        ? "alert"
-        : hasCoverageWarning || this.current.state !== "ready"
-          ? "status"
-          : "note",
-    );
+    // Only a real error earns visible space beside the toolbar. What the
+    // preview covers is a property of the button, so it is what the button says
+    // when the pointer rests on it, and it stays announced either way.
+    this.description.setAttribute("role", error ? "alert" : "note");
+    const coverage = descriptionFor(this.current);
     this.description.textContent = error
       ? `Pseudo-state preview error: ${error}`
-      : descriptionFor(this.current);
+      : coverage;
+    this.button.title = error
+      ? `Pseudo-state preview error: ${error}`
+      : coverage;
   }
 
   private renderChoices(states: readonly PseudoState[]): void {

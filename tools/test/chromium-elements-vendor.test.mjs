@@ -45,55 +45,15 @@ const EXPECTED_IMPORT_PATHS = [
 const EXPECTED_UPSTREAM_PATHS = [...EXPECTED_IMPORT_PATHS].sort();
 
 const EXPECTED_DERIVED_TARGETS = new Map([
-  [
+  ...[
     "front_end/panels/elements/ElementsTreeOutline.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeOutline.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-    }],
-  ],
-  [
     "front_end/panels/elements/ElementsTreeElement.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/dom/ElementsTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#dom-tree",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylesSidebarPane.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylesSidebarPane.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertiesSection.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertiesSection.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertyTreeElement.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyTreeElement.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/PropertyRenderer.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/PropertyRenderer.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
-  [
     "front_end/panels/elements/StylePropertyUtils.ts",
-    [{
-      path: "packages/devtools-elements-ui/src/chromium/rules/StylePropertyUtils.ts",
-      changeRecord: "PIN_OP_CHANGES.md#rules",
-    }],
-  ],
+  ].map((upstreamPath) => [upstreamPath, []]),
   ...[
     "front_end/panels/elements/elementsTreeOutline.css",
     "front_end/panels/elements/stylesSidebarPane.css",
@@ -111,6 +71,12 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const VENDOR_RELATIVE = path.join("third_party", "chromium-devtools-frontend");
 const VENDOR_ROOT = path.join(REPO_ROOT, VENDOR_RELATIVE);
 const MANIFEST_RELATIVE = path.join(VENDOR_RELATIVE, "UPSTREAM.json");
+
+function derivedEntry(manifest) {
+  const entry = manifest.files.find(({ derivedTargets }) => derivedTargets.length > 0);
+  if (!entry) throw new Error("Expected one Chromium-derived manifest entry");
+  return entry;
+}
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -319,29 +285,21 @@ test("checked-in Chromium Elements provenance is exact and verifies offline", as
   );
 });
 
-test("every recorded Chromium-derived TypeScript target is pinned to LF", async () => {
+test("the recorded Chromium-derived stylesheet is pinned to LF", async () => {
   const manifest = await readManifest();
   const packagePrefix = "packages/devtools-elements-ui/";
-  const derivedTypeScriptTargets = manifest.files
-    .flatMap(({ derivedTargets }) => derivedTargets)
-    .filter(({ localSha256, path: targetPath }) => (
-      localSha256 !== "pending" && targetPath.endsWith(".ts")
-    ));
+  const derivedTargets = manifest.files
+    .flatMap(({ derivedTargets: targets }) => targets)
+    .filter(({ localSha256 }) => localSha256 !== "pending");
   const attributes = await readFile(
     path.join(REPO_ROOT, "packages/devtools-elements-ui/.gitattributes"),
     "utf8",
   );
 
-  assert.ok(derivedTypeScriptTargets.length > 0);
-  assert.match(attributes, /^src\/chromium\/\*\*\/\*\.ts text eol=lf$/m);
-  for (const target of derivedTypeScriptTargets) {
-    assert.ok(target.path.startsWith(packagePrefix), target.path);
-    const packageRelativePath = target.path.slice(packagePrefix.length);
-    assert.match(
-      packageRelativePath,
-      /^src\/chromium\/(?:[^/]+\/)*[^/]+\.ts$/,
-      `${target.path} must be covered by the pinned Chromium TypeScript glob`,
-    );
+  assert.ok(derivedTargets.length > 0);
+  assert.match(attributes, /^assets\/devtools-elements\.css text eol=lf$/m);
+  for (const target of derivedTargets) {
+    assert.equal(target.path, `${packagePrefix}assets/devtools-elements.css`);
     const bytes = await readFile(path.join(REPO_ROOT, ...target.path.split("/")));
     assert.equal(
       bytes.includes(13),
@@ -503,10 +461,10 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
   await t.test("an existing target cannot remain pending", async (t) => {
     const root = await makeTemporaryRepository(t);
     const manifest = await readManifest(root);
-    const target = manifest.files[0].derivedTargets[0];
+    const target = derivedEntry(manifest).derivedTargets[0];
     await createDerivedTarget(root, target.path, "derived\n");
     await mutateManifest(root, (temporaryManifest) => {
-      temporaryManifest.files[0].derivedTargets[0].localSha256 = "pending";
+      derivedEntry(temporaryManifest).derivedTargets[0].localSha256 = "pending";
     });
     await assert.rejects(() => verifyVendor(root), /existing derived target.*pending/);
   });
@@ -514,11 +472,11 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
   await t.test("a missing target cannot retain a digest", async (t) => {
     const root = await makeTemporaryRepository(t);
     const manifest = await mutateManifest(root, (temporaryManifest) => {
-      temporaryManifest.files[0].derivedTargets[0].localSha256 = "0".repeat(64);
+      derivedEntry(temporaryManifest).derivedTargets[0].localSha256 = "0".repeat(64);
     });
     const targetPath = path.join(
       root,
-      ...manifest.files[0].derivedTargets[0].path.split("/"),
+      ...derivedEntry(manifest).derivedTargets[0].path.split("/"),
     );
     await unlink(targetPath).catch((error) => {
       if (error?.code !== "ENOENT") {
@@ -531,7 +489,7 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
   await t.test("changed derived bytes fail", async (t) => {
     const root = await makeTemporaryRepository(t);
     const manifest = await readManifest(root);
-    const target = manifest.files[0].derivedTargets[0];
+    const target = derivedEntry(manifest).derivedTargets[0];
     const targetPath = await createDerivedTarget(root, target.path, "derived v1\n");
     await updateChromiumDerivations(root);
     await writeFile(targetPath, "derived v2\n");
@@ -542,14 +500,17 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
     const root = await makeTemporaryRepository(t);
     const changesPath = path.join(root, VENDOR_RELATIVE, "PIN_OP_CHANGES.md");
     const changes = await readFile(changesPath, "utf8");
-    await writeFile(changesPath, changes.replace('<a id="dom-tree"></a>', ""));
-    await assert.rejects(() => verifyVendor(root), /missing change-record anchor.*dom-tree/);
+    await writeFile(changesPath, changes.replace('<a id="scoped-styles"></a>', ""));
+    await assert.rejects(
+      () => verifyVendor(root),
+      /missing change-record anchor.*scoped-styles/,
+    );
   });
 
   await t.test("unknown change-record anchor fails", async (t) => {
     const root = await makeTemporaryRepository(t);
     await mutateManifest(root, (manifest) => {
-      manifest.files[0].derivedTargets[0].changeRecord = "PIN_OP_CHANGES.md#unknown";
+      derivedEntry(manifest).derivedTargets[0].changeRecord = "PIN_OP_CHANGES.md#unknown";
     });
     await assert.rejects(() => verifyVendor(root), /unexpected derived target mapping/);
   });
@@ -557,7 +518,7 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
   await t.test("an unrecorded target fails", async (t) => {
     const root = await makeTemporaryRepository(t);
     await mutateManifest(root, (manifest) => {
-      manifest.files[0].derivedTargets = [];
+      derivedEntry(manifest).derivedTargets = [];
     });
     await assert.rejects(() => verifyVendor(root), /unexpected derived target mapping/);
   });
@@ -566,7 +527,7 @@ test("derived target state is exact, anchored, and byte-verified", async (t) => 
 test("derived hashes are recorded and refreshed deterministically", async (t) => {
   const root = await makeTemporaryRepository(t);
   const initialManifest = await readManifest(root);
-  const target = initialManifest.files[0].derivedTargets[0];
+  const target = derivedEntry(initialManifest).derivedTargets[0];
   const originalMappings = initialManifest.files.map(({ upstreamPath, derivedTargets }) => ({
     upstreamPath,
     derivedTargets: derivedTargets.map(({ path: targetPath, changeRecord }) => ({
@@ -578,17 +539,17 @@ test("derived hashes are recorded and refreshed deterministically", async (t) =>
   const targetPath = await createDerivedTarget(root, target.path, "derived v1\n");
   await updateChromiumDerivations(root);
   let updated = await readManifest(root);
-  assert.equal(updated.files[0].derivedTargets[0].localSha256, sha256("derived v1\n"));
+  assert.equal(derivedEntry(updated).derivedTargets[0].localSha256, sha256("derived v1\n"));
 
   await writeFile(targetPath, "derived v2\n");
   await updateChromiumDerivations(root);
   updated = await readManifest(root);
-  assert.equal(updated.files[0].derivedTargets[0].localSha256, sha256("derived v2\n"));
+  assert.equal(derivedEntry(updated).derivedTargets[0].localSha256, sha256("derived v2\n"));
 
   await unlink(targetPath);
   await updateChromiumDerivations(root);
   updated = await readManifest(root);
-  assert.equal(updated.files[0].derivedTargets[0].localSha256, "pending");
+  assert.equal(derivedEntry(updated).derivedTargets[0].localSha256, "pending");
   assert.deepEqual(
     updated.files.map(({ upstreamPath, derivedTargets }) => ({
       upstreamPath,
@@ -625,7 +586,7 @@ test("derived updater rejects a target through a directory-link ancestor", async
   const outsideRoot = await mkdtemp(path.join(tmpdir(), "pin-op-chromium-outside-"));
   await populateTemporaryRepository(root);
   const manifest = await readManifest(root);
-  const target = manifest.files[0].derivedTargets[0];
+  const target = derivedEntry(manifest).derivedTargets[0];
   const targetPath = path.join(root, ...target.path.split("/"));
   const targetLink = path.dirname(targetPath);
   t.after(async () => {
@@ -700,7 +661,7 @@ test("hermetic successful import replaces the snapshot and verifies offline", as
 
   const derivedBytes = Buffer.from("existing derived output\n");
   const derivedPath = EXPECTED_DERIVED_TARGETS
-    .get("front_end/panels/elements/ElementsTreeOutline.ts")[0].path;
+    .get("front_end/panels/elements/elementsTreeOutline.css")[0].path;
   await createDerivedTarget(root, derivedPath, derivedBytes);
 
   const responseBytes = await makePinnedResponses();

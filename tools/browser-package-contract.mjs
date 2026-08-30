@@ -6,60 +6,12 @@ import valueParser from "postcss-value-parser";
 import ts from "typescript";
 import { parseRuntimeMetadata } from "./runtime-metadata.mjs";
 
-const PANEL_HTML_MARKERS = Object.freeze([
-  ["Auto Refresh control", "Auto Refresh"],
-  ["IDE Highlight control", "IDE Highlight"],
-  ["DOM tree asset", 'id="dom-tree"'],
-  ["DOM tree asset", 'id="dom-tree-spacer"'],
-  ["DOM tree asset", 'id="dom-tree-empty"'],
-  ["DOM tree asset", 'role="tree"'],
-  ["connection controls", "Disconnect"],
-  ["workspace", 'id="panel-workspace"'],
-  ["workspace", 'id="workspace-tabs"'],
-  ["DOM workspace", 'id="dom-tab"'],
-  ["DOM workspace", 'id="dom-pane"'],
-  ["Source workspace", 'id="source-tab"'],
-  ["Source workspace", 'id="source-pane"'],
-  ["source pane", 'id="source-pane-root"'],
-  ["responsive workspace", 'id="pane-separator"'],
-  ["incompatibility copy", "Extensions are incompatible"],
-  [
-    "incompatibility copy",
-    "Update the Pin-op browser and IDE extensions to compatible versions, then reconnect.",
-  ],
-  ["resolution footer", 'class="panel-footer"'],
-  ["resolution footer", 'id="resolution-status"'],
-  ["source navigation footer", "source-navigation-footer"],
-  ["branded footer", 'id="panel-branding"'],
-  ["branded footer", 'href="mailto:info@conus.vision"'],
-  ["branded footer", 'href="https://conus.vision"'],
-]);
 const PANEL_CSS_MARKERS = Object.freeze([
   ["responsive toolbar", ".panel-toolbar-scroll"],
-  ["responsive split layout", '[data-layout="split"]'],
-  ["responsive stack layout", '[data-layout="stack"]'],
-  ["responsive tab layout", '[data-layout="tabs"]'],
-  ["workspace style", ".workspace-pane"],
-  ["DOM tree style", ".dom-tree-row"],
-  ["DOM tree style", ".is-shadow-root"],
-  ["DOM tree style", ".is-frame-document"],
-  ["DOM tree style", ".is-inaccessible"],
-  ["resolution footer style", ".panel-footer"],
-  ["resolution footer style", '.resolution-status[data-tone="success"]'],
-  ["resolution footer style", '.resolution-status[data-tone="warning"]'],
-  ["resolution footer style", '.resolution-status[data-tone="error"]'],
-  ["source navigation controls", ".source-navigation-controls"],
+  ["resolution status style", '.resolution-status[data-tone="success"]'],
+  ["resolution status style", '.resolution-status[data-tone="warning"]'],
+  ["resolution status style", '.resolution-status[data-tone="error"]'],
   ["source excerpt style", ".source-pane-excerpt"],
-  ["branded footer style", ".panel-branding"],
-]);
-const PANEL_BUNDLE_MARKERS = Object.freeze([
-  ["source presentation capability", "source-presentation"],
-  ["source matches", "source.matches"],
-  ["source open", "source.open"],
-  ["source navigation intent", "source.navigate"],
-  ["source navigation state", "source.navigationState"],
-  ["opaque match identity", "matchId"],
-  ["locator recovery", "dom.resolveLocator"],
 ]);
 const INSPECTOR_BUNDLE_MARKERS = Object.freeze([
   ["pseudo-state request", "styles.setPseudoStates"],
@@ -113,8 +65,6 @@ const RUNTIME_TEXT_ASSET_PATHS = Object.freeze([
   "dist/inspector-panel.html",
   "dist/inspectorPanel.js",
   "dist/panel.css",
-  "dist/panel.html",
-  "dist/panel.js",
   "dist/pin-op.svg",
   "dist/runtime-metadata.json",
 ]);
@@ -186,18 +136,16 @@ const MAX_STATIC_STRING_LENGTH = 256;
 // outputs, hashing the raw archived bytes. Any retained helper requires
 // deliberate review.
 export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
-  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "f4cb9afbcf76e95d1a86849d112fedec178346827a300320474dce36da6e40ce", inspectorSha256: "188ab7b04531cd878fb457b800d5a93362108f22c838b3580136c1b340c82b96" }),
-  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" }),
-  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "88f98da93c272282d2a025f603441d5f2a97bbd92821ad944ab08264ea6bca47", inspectorSha256: "b27daa5bc3e1033c88a4cfc734cd647d24e8d0fdacac5cdc80fab11686fadc07" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d", inspectorSha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d" }),
-  Object.freeze({ browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df", inspectorSha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df" }),
-  Object.freeze({ browser: "chrome", path: "dist/panel.js", sha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516", inspectorSha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516" }),
-  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "f4cb9afbcf76e95d1a86849d112fedec178346827a300320474dce36da6e40ce", inspectorSha256: "188ab7b04531cd878fb457b800d5a93362108f22c838b3580136c1b340c82b96" }),
-  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8", inspectorSha256: "86c347b40d11fecd68fdf09ab96cf93895352ea003f704640c66780d560f9ee8" }),
-  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "9ccd3f59c92b024c4400e0c2c230e19262caed0855b292e448edd9d3707a6b58", inspectorSha256: "bd70c7203c3aa689dbea242a3f9bbafd898b38d962cc8db8cd69e083b8e5c86d" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d", inspectorSha256: "80a98c121fc6dd892eee6c4f5eef1667b909ca88f8971774d85602c00e6d3e5d" }),
-  Object.freeze({ browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df", inspectorSha256: "7e7857be0ff13aac9d7c4c077b25c7dc68305d2cbb51122c967cef172be324df" }),
-  Object.freeze({ browser: "firefox", path: "dist/panel.js", sha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516", inspectorSha256: "59b8d180431c4582934faee12f820a8c1b0ab52e6f57826065326eb5d7ad3516" }),
+  Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "8ce72ec6a795d0d5865b265592e60270d6517b0b396623a22ae07f9ab9df6112" }),
+  Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "14a2dd0835e3c449250d7ffb0fd55e16824c6995aa4fac4a0b384b1f2e19a2c0" }),
+  Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "405d9fb49aeaf9cb1644554059bf18acca8355999b1020e82bb5c5272c015553" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "31f6a2d2860c3390cf02e898b481de80bdd64f1504c4a1632a4df6ca99c66ec2" }),
+  Object.freeze({ browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "c1daa1c59299be872d5dca1ebe8f13ec084545caed97e18204920fc3377cabd3" }),
+  Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "8ce72ec6a795d0d5865b265592e60270d6517b0b396623a22ae07f9ab9df6112" }),
+  Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "14a2dd0835e3c449250d7ffb0fd55e16824c6995aa4fac4a0b384b1f2e19a2c0" }),
+  Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "d01153c4355e6a6fbd05520cd7d214e91e6979b558097c05398ca8bf576ade56" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "31f6a2d2860c3390cf02e898b481de80bdd64f1504c4a1632a4df6ca99c66ec2" }),
+  Object.freeze({ browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "c1daa1c59299be872d5dca1ebe8f13ec084545caed97e18204920fc3377cabd3" }),
 ]);
 
 export function assertRulesSourceJavaScriptContract(
@@ -284,25 +232,12 @@ function isForbiddenRulesOpenLiteral(value) {
 
 export function assertBrowserPackageRuntimeContract(
   archive,
-  { artifactLabel, metadataLabel, platform, panelVariant },
+  { artifactLabel, metadataLabel, platform },
 ) {
-  if (panelVariant !== "legacy" && panelVariant !== "inspector") {
-    throw new Error(`${artifactLabel} requires an explicit browser panel variant`);
-  }
-  const expectedPanelPage = panelVariant === "legacy"
-    ? "/dist/panel.html"
-    : "/dist/inspector-panel.html";
+  const expectedPanelPage = "/dist/inspector-panel.html";
   for (const path of ["dist/devtools.js", "dist/background.js"]) {
     assertCompiledPanelPage(archive, artifactLabel, path, expectedPanelPage);
   }
-  assertStaticPanelResourceBoundary(
-    archive,
-    artifactLabel,
-    "dist/panel.html",
-    ["./panel.css"],
-    ["./panel.js"],
-    [],
-  );
   assertStaticPanelResourceBoundary(
     archive,
     artifactLabel,
@@ -311,6 +246,7 @@ export function assertBrowserPackageRuntimeContract(
     ["./inspectorPanel.js"],
     ["./inspectorPanel.js"],
   );
+  assertPanelHtmlContract(archive, artifactLabel);
   assertNoRemoteCssResources(
     archive,
     artifactLabel,
@@ -338,19 +274,7 @@ export function assertBrowserPackageRuntimeContract(
   );
   assertStaticElementsRuntimeBoundary(archive, artifactLabel);
   assertNoLocalPathsInRuntimeAssets(archive, artifactLabel);
-  assertBrowserBundlesAreStatic(
-    archive,
-    artifactLabel,
-    platform,
-    panelVariant,
-  );
-  assertTextMarkers(
-    archive,
-    artifactLabel,
-    "dist/panel.html",
-    PANEL_HTML_MARKERS,
-  );
-  assertPanelHtmlContract(archive, artifactLabel);
+  assertBrowserBundlesAreStatic(archive, artifactLabel, platform);
   assertTextMarkers(
     archive,
     artifactLabel,
@@ -393,12 +317,6 @@ export function assertBrowserPackageRuntimeContract(
   assertTextMarkers(
     archive,
     artifactLabel,
-    "dist/panel.js",
-    PANEL_BUNDLE_MARKERS,
-  );
-  assertTextMarkers(
-    archive,
-    artifactLabel,
     "dist/contentScript.js",
     CONTENT_SCRIPT_BUNDLE_MARKERS,
   );
@@ -428,38 +346,164 @@ function assertCompiledPanelPage(
   if (sourceFile.parseDiagnostics.length > 0) {
     throw new Error(`${artifactLabel} ${path} contains invalid static JavaScript`);
   }
-  let panelPage;
+  // The panel page is one exact static literal in every reviewed bundle.
+  const panelPages = new Set();
   const visit = (node) => {
     if (
-      panelPage === undefined &&
-      ts.isFunctionDeclaration(node) &&
-      node.body?.getText(sourceFile).includes("Invalid compiled panel page")
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      /^\/dist\/[A-Za-z0-9._-]+\.html$/.test(node.text)
     ) {
-      for (const statement of node.body.statements) {
-        if (!ts.isVariableStatement(statement)) continue;
-        for (const declaration of statement.declarationList.declarations) {
-          if (
-            declaration.initializer &&
-            (ts.isStringLiteral(declaration.initializer) ||
-              ts.isNoSubstitutionTemplateLiteral(declaration.initializer)) &&
-            declaration.initializer.text.startsWith("/dist/")
-          ) {
-            panelPage = declaration.initializer.text;
-          }
-        }
-      }
+      panelPages.add(node.text);
     }
-    if (panelPage === undefined) ts.forEachChild(node, visit);
+    ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+  const panelPage = panelPages.size === 1 ? [...panelPages][0] : undefined;
   if (panelPage !== expectedPanelPage) {
-    const expectedVariant = expectedPanelPage === "/dist/panel.html"
-      ? "legacy panel"
-      : "Inspector panel";
     throw new Error(
-      `${artifactLabel} ${path} expected ${expectedVariant} ` +
+      `${artifactLabel} ${path} expected Inspector panel ` +
         `${expectedPanelPage}; found ${panelPage ?? "no compiled panel page"}`,
     );
+  }
+}
+
+function assertPanelHtmlContract(archive, artifactLabel) {
+  const path = "dist/inspector-panel.html";
+  const bytes = archive.files.get(path);
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error(`${artifactLabel} is missing ${path}`);
+  }
+  let document;
+  try {
+    document = parseStaticHtmlElements(bytes.toString("utf8"));
+  } catch (error) {
+    throw new Error(
+      `${artifactLabel} ${path} has invalid static HTML: ${error.message}`,
+    );
+  }
+  const cssPath = "dist/panel.css";
+  const cssBytes = archive.files.get(cssPath);
+  if (!Buffer.isBuffer(cssBytes)) {
+    throw new Error(`${artifactLabel} is missing ${cssPath}`);
+  }
+  let styleCascade;
+  try {
+    styleCascade = parsePanelStyleCascade(
+      document,
+      cssBytes.toString("utf8"),
+    );
+  } catch (error) {
+    throw new Error(
+      `${artifactLabel} panel styles have invalid static CSS: ${error.message}`,
+    );
+  }
+  const { elements } = document;
+  const visibilityContext = { styleCascade };
+
+  const toolbars = elements.filter((element) =>
+    hasClassToken(element, "panel-toolbar")
+  );
+  if (toolbars.length !== 1) {
+    throw new Error(
+      `${artifactLabel} toolbar class="panel-toolbar" must appear exactly one time ` +
+        `by class token in ${path}; ` +
+        `found ${toolbars.length}`,
+    );
+  }
+  const toolbar = toolbars[0];
+  const featureGroup = requireSingleClassElement(
+    elements,
+    "toolbar-features",
+    artifactLabel,
+    path,
+  );
+  const connectionGroup = requireSingleClassElement(
+    elements,
+    "connection-summary",
+    artifactLabel,
+    path,
+  );
+  for (const [group, className] of [
+    [featureGroup, "toolbar-features"],
+    [connectionGroup, "connection-summary"],
+  ]) {
+    if (!isDescendantOf(group, toolbar)) {
+      throw new Error(
+        `${artifactLabel} toolbar group .${className} must be inside the toolbar in ${path}`,
+      );
+    }
+  }
+
+  for (const specification of [
+    {
+      id: "inspect-mode",
+      label: "picker asset",
+      tagName: "button",
+      attributes: { "aria-label": "Select an element" },
+    },
+    {
+      id: "auto-refresh-enabled",
+      label: "Auto Refresh control",
+      tagName: "input",
+      attributes: { type: "checkbox" },
+    },
+    {
+      id: "ide-highlight-enabled",
+      label: "IDE Highlight control",
+      tagName: "input",
+      attributes: { type: "checkbox" },
+    },
+  ]) {
+    requireControl(
+      elements,
+      specification,
+      featureGroup,
+      "toolbar-features",
+      visibilityContext,
+      artifactLabel,
+      path,
+    );
+  }
+
+  const connectionControls = new Map();
+  for (const specification of [
+    {
+      id: "connection-status",
+      tagName: "output",
+      visible: true,
+    },
+    { id: "linked-code", tagName: "output", visible: false },
+    { id: "link-controls", tagName: "section", visible: true },
+    {
+      id: "link-code",
+      tagName: "input",
+      visible: true,
+      attributes: { "aria-label": "VS Code window code" },
+    },
+    { id: "paste-button", tagName: "button", visible: true },
+    { id: "link-button", tagName: "button", visible: true },
+    { id: "disconnect-button", tagName: "button", visible: false },
+  ]) {
+    const control = requireControl(
+      elements,
+      { label: "connection controls", ...specification },
+      connectionGroup,
+      "connection-summary",
+      visibilityContext,
+      artifactLabel,
+      path,
+    );
+    connectionControls.set(specification.id, control);
+  }
+
+  const linkControls = connectionControls.get("link-controls");
+  for (const id of ["link-code", "paste-button", "link-button"]) {
+    if (!isDescendantOf(connectionControls.get(id), linkControls)) {
+      throw new Error(
+        `${artifactLabel} connection controls id="${id}" must be inside ` +
+          `id="link-controls" in ${path}`,
+      );
+    }
   }
 }
 
@@ -818,18 +862,12 @@ function lineAndColumnAt(value, index) {
   return { line, column: index - lastNewline };
 }
 
-function assertBrowserBundlesAreStatic(
-  archive,
-  artifactLabel,
-  platform,
-  panelVariant,
-) {
+function assertBrowserBundlesAreStatic(archive, artifactLabel, platform) {
   for (const path of [
     "dist/background.js",
     "dist/chromiumElementsRuntime.js",
     "dist/contentScript.js",
     "dist/devtools.js",
-    "dist/panel.js",
     "dist/inspectorPanel.js",
   ]) {
     const bytes = archive.files.get(path);
@@ -840,7 +878,6 @@ function assertBrowserBundlesAreStatic(
     const sourceSha256 = createHash("sha256").update(bytes).digest("hex");
     assertStaticJavaScript(source, artifactLabel, path, {
       platform,
-      panelVariant,
       sourceSha256,
     });
     if (
@@ -980,7 +1017,7 @@ function assertStaticJavaScript(
   source,
   artifactLabel,
   path,
-  { platform, panelVariant, sourceSha256 },
+  { platform, sourceSha256 },
 ) {
   const analysisPath = path.replaceAll("\\", "/");
   const sourceFile = ts.createSourceFile(
@@ -1003,9 +1040,9 @@ function assertStaticJavaScript(
     capabilityAliases,
     globalObjectAliases,
     staticStringAliases,
-    { platform, panelVariant, path, sourceSha256 },
+    { platform, path, sourceSha256 },
   );
-  const provenance = { platform, panelVariant, path, sourceSha256 };
+  const provenance = { platform, path, sourceSha256 };
   const reviewedAstClones = collectReviewedPostCssAstClones(
     sourceFile,
     checker,
@@ -1235,14 +1272,11 @@ function collectStaticJavaScriptAliases(
 }
 
 function hasTrustedBundleProvenance(provenance) {
-  const digestKey = provenance.panelVariant === "inspector"
-    ? "inspectorSha256"
-    : "sha256";
   return TRUSTED_ZOD_V3_BUNDLE_PROVENANCE.some(
     (entry) =>
       entry.browser === provenance.platform &&
       entry.path === provenance.path &&
-      entry[digestKey] === provenance.sourceSha256,
+      entry.sha256 === provenance.sourceSha256,
   );
 }
 
@@ -1757,145 +1791,6 @@ function sameStrings(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function assertPanelHtmlContract(archive, artifactLabel) {
-  const path = "dist/panel.html";
-  const bytes = archive.files.get(path);
-  if (!Buffer.isBuffer(bytes)) {
-    throw new Error(`${artifactLabel} is missing ${path}`);
-  }
-  let document;
-  try {
-    document = parseStaticHtmlElements(bytes.toString("utf8"));
-  } catch (error) {
-    throw new Error(
-      `${artifactLabel} ${path} has invalid static HTML: ${error.message}`,
-    );
-  }
-  const cssPath = "dist/panel.css";
-  const cssBytes = archive.files.get(cssPath);
-  if (!Buffer.isBuffer(cssBytes)) {
-    throw new Error(`${artifactLabel} is missing ${cssPath}`);
-  }
-  let styleCascade;
-  try {
-    styleCascade = parsePanelStyleCascade(
-      document,
-      cssBytes.toString("utf8"),
-    );
-  } catch (error) {
-    throw new Error(
-      `${artifactLabel} panel styles have invalid static CSS: ${error.message}`,
-    );
-  }
-  const { elements } = document;
-  const visibilityContext = { styleCascade };
-
-  const toolbars = elements.filter((element) =>
-    hasClassToken(element, "panel-toolbar")
-  );
-  if (toolbars.length !== 1) {
-    throw new Error(
-      `${artifactLabel} toolbar class="panel-toolbar" must appear exactly one time ` +
-        `by class token in ${path}; ` +
-        `found ${toolbars.length}`,
-    );
-  }
-  const toolbar = toolbars[0];
-  const featureGroup = requireSingleClassElement(
-    elements,
-    "toolbar-features",
-    artifactLabel,
-    path,
-  );
-  const connectionGroup = requireSingleClassElement(
-    elements,
-    "connection-summary",
-    artifactLabel,
-    path,
-  );
-  for (const [group, className] of [
-    [featureGroup, "toolbar-features"],
-    [connectionGroup, "connection-summary"],
-  ]) {
-    if (!isDescendantOf(group, toolbar)) {
-      throw new Error(
-        `${artifactLabel} toolbar group .${className} must be inside the toolbar in ${path}`,
-      );
-    }
-  }
-
-  for (const specification of [
-    {
-      id: "inspect-mode",
-      label: "picker asset",
-      tagName: "button",
-      attributes: { "aria-label": "Select an element" },
-    },
-    {
-      id: "auto-refresh-enabled",
-      label: "Auto Refresh control",
-      tagName: "input",
-      attributes: { type: "checkbox" },
-    },
-    {
-      id: "ide-highlight-enabled",
-      label: "IDE Highlight control",
-      tagName: "input",
-      attributes: { type: "checkbox" },
-    },
-  ]) {
-    requireControl(
-      elements,
-      specification,
-      featureGroup,
-      "toolbar-features",
-      visibilityContext,
-      artifactLabel,
-      path,
-    );
-  }
-
-  const connectionControls = new Map();
-  for (const specification of [
-    {
-      id: "connection-status",
-      tagName: "output",
-      visible: true,
-    },
-    { id: "linked-code", tagName: "output", visible: false },
-    { id: "link-controls", tagName: "section", visible: true },
-    {
-      id: "link-code",
-      tagName: "input",
-      visible: true,
-      attributes: { "aria-label": "VS Code window code" },
-    },
-    { id: "paste-button", tagName: "button", visible: true },
-    { id: "link-button", tagName: "button", visible: true },
-    { id: "disconnect-button", tagName: "button", visible: false },
-  ]) {
-    const control = requireControl(
-      elements,
-      { label: "connection controls", ...specification },
-      connectionGroup,
-      "connection-summary",
-      visibilityContext,
-      artifactLabel,
-      path,
-    );
-    connectionControls.set(specification.id, control);
-  }
-
-  const linkControls = connectionControls.get("link-controls");
-  for (const id of ["link-code", "paste-button", "link-button"]) {
-    if (!isDescendantOf(connectionControls.get(id), linkControls)) {
-      throw new Error(
-        `${artifactLabel} connection controls id="${id}" must be inside ` +
-          `id="link-controls" in ${path}`,
-      );
-    }
-  }
-}
 
 function requireSingleClassElement(
   elements,
@@ -2113,13 +2008,14 @@ function parsePanelStyleCascade(document, panelCss) {
     inlineStyleIndex += 1;
     appendStylesheetDeclarations(
       source.css,
-      `dist/panel.html <style ${inlineStyleIndex}>`,
+      `dist/inspector-panel.html <style ${inlineStyleIndex}>`,
       state,
     );
   }
-  if (linkedPanelCssCount !== 1) {
+  if (linkedPanelCssCount !== PACKAGED_PANEL_STYLESHEET_PATHS.size) {
     throw new Error(
-      `dist/panel.html must link ./panel.css exactly once; found ${linkedPanelCssCount}`,
+      "dist/inspector-panel.html must link ./panel.css and " +
+        `./devtools-elements.css exactly once; found ${linkedPanelCssCount}`,
     );
   }
 
@@ -2127,7 +2023,7 @@ function parsePanelStyleCascade(document, panelCss) {
     const style = element.attributes.get("style");
     if (typeof style !== "string") continue;
     const root = postcss.parse(`element { ${style} }`, {
-      from: "dist/panel.html style attribute",
+      from: "dist/inspector-panel.html style attribute",
     });
     const declarations = [];
     for (const node of root.first?.nodes ?? []) {
@@ -2152,13 +2048,18 @@ function parsePanelStyleCascade(document, panelCss) {
   };
 }
 
+const PACKAGED_PANEL_STYLESHEET_PATHS = new Set([
+  "/dist/panel.css",
+  "/dist/devtools-elements.css",
+]);
+
 function isPackagedPanelStylesheetHref(href) {
   if (typeof href !== "string") return false;
   try {
-    const base = new URL("https://package.invalid/dist/panel.html");
+    const base = new URL("https://package.invalid/dist/inspector-panel.html");
     const resolved = new URL(href, base);
     return resolved.origin === base.origin &&
-      resolved.pathname === "/dist/panel.css" &&
+      PACKAGED_PANEL_STYLESHEET_PATHS.has(resolved.pathname) &&
       resolved.search === "" &&
       resolved.hash === "";
   } catch {

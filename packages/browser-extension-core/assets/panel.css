@@ -95,8 +95,40 @@ input:disabled { cursor: default; opacity: 0.55; }
     "toolbar"
     "protocol"
     "workspace"
-    "status";
-  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 26px);
+    "status"
+    "credit";
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 26px) minmax(0, 18px);
+}
+
+.panel-credit {
+  display: flex;
+  grid-area: credit;
+  min-width: 0;
+  max-height: 18px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 6px;
+  overflow: hidden;
+  border-top: 1px solid var(--hairline);
+  color: var(--muted);
+}
+
+.panel-credit-text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-credit a {
+  color: inherit;
+}
+
+.panel-credit a:hover,
+.panel-credit a:focus-visible {
+  color: var(--primary-action);
 }
 
 .panel-toolbar-scroll {

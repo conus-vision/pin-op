@@ -75,9 +75,8 @@ Pin-op product WebSocket.
 Structured Inspector rows can show bounded attribute names and values plus
 bounded DOM text and comments. Text and comment rows are display-only and have
 no stable locator. This data stays browser-local in the private inspected-tab
-channel and does not cross the product WebSocket. The legacy rollback renderer's
-element labels show bounded tag, ID, class, and approved attribute names, not
-attribute values or DOM text. Open shadow roots and same-origin frame documents
+channel and does not cross the product WebSocket. Open shadow roots and
+same-origin frame documents
 can be traversed. Cross-origin frames become locked leaves and fail closed.
 Closed shadow roots are not traversed and fail closed.
 
@@ -143,7 +142,7 @@ edit workspace source, and does not execute page, shell, workspace, or
 user-supplied commands. Its extension-owned page changes are limited to the
 inspection overlay, the temporary pseudo-preview markers and mirror styles
 described above, and typed Auto Refresh replacement of an eligible stylesheet
-link. Passive inspection and the legacy Source flow highlight or reveal only
+link. Passive inspection and the Source flow highlight or reveal only
 the document already active in VS Code. An explicit Rules origin click may
 switch VS Code to a verified workspace CSS or SCSS file using a current
 IDE-issued opaque authority. Missing or invalid source maps expose verified
@@ -152,10 +151,8 @@ replace eligible stylesheet links or reload the current participating tab; it
 does not edit page-owned source or application data. These commitments apply to
 Pin-op-operated components, not to separately installed source plugins.
 
-The default Inspector has no visible Source tab. Existing Source remains
-active-document-only in the packaged, non-default legacy rollback panel for its
-one published rollback release; a new Source tab and first-party PHP/template
-providers remain a future milestone.
+Source remains active-document-only; first-party PHP/template providers remain
+a future milestone.
 
 ## Source Plugins
 

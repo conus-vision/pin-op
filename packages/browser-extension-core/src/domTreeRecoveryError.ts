@@ -39,3 +39,18 @@ export class DomTreeRecoveryFatalError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * The content session the panel reconnected to has not been established yet, so
+ * the frozen tree is still worth restoring: the attempt is over, the snapshot
+ * is not.
+ */
+export class DomTreeRecoveryNotReadyError extends Error {
+  public readonly code: DomErrorCode | undefined;
+
+  public constructor(message: string, code?: DomErrorCode) {
+    super(message);
+    this.name = "DomTreeRecoveryNotReadyError";
+    this.code = code;
+  }
+}
