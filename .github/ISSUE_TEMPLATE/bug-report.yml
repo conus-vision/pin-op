@@ -12,7 +12,7 @@ body:
     attributes:
       label: Pin-op version
       description: Enter the installed Pin-op extension version.
-      placeholder: 0.3.0
+      placeholder: 0.3.2
     validations:
       required: true
   - type: input

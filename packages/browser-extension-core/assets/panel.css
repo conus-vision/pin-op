@@ -97,17 +97,17 @@ input:disabled { cursor: default; opacity: 0.55; }
     "workspace"
     "status"
     "credit";
-  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 26px) minmax(0, 18px);
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 26px) minmax(0, 24px);
 }
 
 .panel-credit {
   display: flex;
   grid-area: credit;
   min-width: 0;
-  max-height: 18px;
+  max-height: 24px;
   align-items: center;
   justify-content: flex-end;
-  padding: 0 6px;
+  padding: 0 8px;
   overflow: hidden;
   border-top: 1px solid var(--hairline);
   color: var(--muted);
@@ -116,8 +116,8 @@ input:disabled { cursor: default; opacity: 0.55; }
 .panel-credit-text {
   min-width: 0;
   overflow: hidden;
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 11px;
+  line-height: 22px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

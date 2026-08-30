@@ -60,14 +60,14 @@ const legacyTechnicalUpper = ["PIN", "OP"].join("");
 const legacyOriginalDisplay = ["Browser", "2", "IDE"].join("");
 const legacyOriginalSlug = ["browser", "2", "ide"].join("");
 const releaseArtifactNames = [
-  "pin-op-vscode-0.3.0.vsix",
-  "pin-op-chrome-0.3.0.zip",
-  "pin-op-firefox-0.3.0.zip",
-  "pin-op-firefox-0.3.0.xpi",
-  "pin-op-firefox-source-0.3.0.zip",
+  "pin-op-vscode-0.3.2.vsix",
+  "pin-op-chrome-0.3.2.zip",
+  "pin-op-firefox-0.3.2.zip",
+  "pin-op-firefox-0.3.2.xpi",
+  "pin-op-firefox-source-0.3.2.zip",
   "SHA256SUMS",
 ];
-const recordHeading = "## 0.3.0 Candidate Verification Record";
+const recordHeading = "## 0.3.2 Candidate Verification Record";
 const [primaryPath, verificationRecord] = installedGuide.split(recordHeading);
 const installedRunbookHeading = "## Installed Product Verification";
 const sourceWorkflowHeading = "## Development And Source Workflow";
@@ -155,7 +155,7 @@ const securityDisclosureContracts = [
 ];
 
 test("installed primary path is terminal-free and starts automatically", () => {
-  assert.ok(verificationRecord, "0.3.0 candidate verification record is required");
+  assert.ok(verificationRecord, "0.3.2 candidate verification record is required");
   for (const prohibited of [
     "--extensionDevelopmentPath",
     "web-ext run",
@@ -200,21 +200,21 @@ test("MVP runbook uses flat downloaded filenames for installed packages", () => 
   assert.doesNotMatch(installedProductRunbook, /artifacts[\\/]/i);
   assert.match(
     installedProductRunbook,
-    /`pin-op-vscode-0\.3\.0\.vsix`/,
+    /`pin-op-vscode-0\.3\.2\.vsix`/,
   );
   assert.match(
     installedProductRunbook,
-    /`pin-op-chrome-0\.3\.0\.zip`/,
+    /`pin-op-chrome-0\.3\.2\.zip`/,
   );
   assert.match(installedProductRunbook, /Load unpacked/);
   assert.match(
     installedProductRunbook,
-    /`pin-op-firefox-0\.3\.0\.zip`/,
+    /`pin-op-firefox-0\.3\.2\.zip`/,
   );
   assert.match(installedProductRunbook, /Temporary Add-on|about:debugging/i);
   assert.match(
     installedProductRunbook,
-    /signed[\s\S]*`pin-op-firefox-0\.3\.0\.xpi`/i,
+    /signed[\s\S]*`pin-op-firefox-0\.3\.2\.xpi`/i,
   );
 });
 
@@ -246,12 +246,12 @@ test("ordinary installed artifacts use the shared Inspector by default", () => {
 
 test("current rollout docs reject stale opt-in and store-default legacy claims", () => {
   const [, currentChangelogAndLater = ""] = changelog.split(
-    "## [0.3.0] - Unreleased",
+    "## [0.3.2] - Unreleased",
   );
   const [currentChangelog = ""] = currentChangelogAndLater.split("\n## ");
   const currentScopes = [
     ["README.md", readme],
-    ["CHANGELOG.md 0.3.0", currentChangelog],
+    ["CHANGELOG.md 0.3.2", currentChangelog],
     ["PRIVACY.md", privacy],
     ["docs/architecture.md", architectureGuide],
     ["docs/security.md", securityGuide],
@@ -1064,9 +1064,9 @@ test("privacy and security materials describe the release trust boundaries", () 
   assert.match(materials, /closed shadow[\s\S]*fail closed/i);
 });
 
-test("0.3.0 record marks unperformed external evidence pending", () => {
+test("0.3.2 record marks unperformed external evidence pending", () => {
   assert.match(verificationRecord, /Pending external release evidence/);
-  assert.match(verificationRecord, /No signed `0\.3\.0` XPI/i);
+  assert.match(verificationRecord, /No signed `0\.3\.2` XPI/i);
   assert.match(verificationRecord, /hashes?\s+(?:are|is)\s+pending/i);
   assert.match(verificationRecord, /screenshots? (?:and|or) GIF[\s\S]*pending/i);
   assert.doesNotMatch(verificationRecord, /[0-9a-f]{64}/i);
@@ -1103,7 +1103,7 @@ test("README presents the canonical Pin-op workflow and release status", () => {
   );
   assert.ok(
     normalizedReadme.includes(
-      "No signed `0.3.0` XPI or public `0.3.0` release is claimed yet.",
+      "No signed `0.3.2` XPI or public `0.3.2` release is claimed yet.",
     ),
   );
   assert.ok(
@@ -1149,7 +1149,7 @@ for (const mutation of [
   `corepack pnpm --filter ${legacyTechnicalTitle} build`,
   `https://github.com/conus-vision/${legacyTechnicalSlug}`,
   `https://${legacyTechnicalSlug}.conus.vision`,
-  `artifacts/${legacyTechnicalSlug}-vscode-0.3.0.vsix`,
+  `artifacts/${legacyTechnicalSlug}-vscode-0.3.2.vsix`,
   `docs/${legacyTechnicalSlug}/setup.md`,
 ]) {
   test(`legacy identity detector rejects ${JSON.stringify(mutation)}`, () => {

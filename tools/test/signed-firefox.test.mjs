@@ -7,7 +7,7 @@ import AdmZip from "adm-zip";
 
 import { verifySignedFirefoxXpi } from "../verify-signed-firefox.mjs";
 
-const version = "0.3.0";
+const version = "0.3.2";
 const geckoId = "info@conus.vision";
 const signatureEntries = [
   "META-INF/cose.manifest",

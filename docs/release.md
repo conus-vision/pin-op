@@ -1,6 +1,6 @@
 # Pin-op Release Guide
 
-This is the owner runbook for signed public releases. Version `0.3.0` is the
+This is the owner runbook for signed public releases. Version `0.3.2` is the
 current release candidate. Its external signing and installed-product evidence is
 pending. Do not create its release tag or publish a GitHub release until AMO
 signing and installed-product verification are complete.
@@ -138,7 +138,7 @@ $releaseFiles = @(
   'docs/security.md'
 )
 rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|pin-op-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|Pin-op\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
-node tools/verify-release-version.mjs v0.3.0
+node tools/verify-release-version.mjs v0.3.2
 ```
 
 Keep the changelog entry under `Unreleased` until the signed XPI passes installed
@@ -174,14 +174,14 @@ that the protected `amo-signing` environment and its required reviewer are ready
 Create and inspect an annotated tag:
 
 ```powershell
-git tag -a v0.3.0 -m "Pin-op 0.3.0"
-git cat-file -t refs/tags/v0.3.0
+git tag -a v0.3.2 -m "Pin-op 0.3.2"
+git cat-file -t refs/tags/v0.3.2
 git push origin master
-git push origin v0.3.0
+git push origin v0.3.2
 ```
 
 `git cat-file` must print `tag`; a lightweight tag is rejected. Cryptographic tag
-signing is not configured for the `0.3.0` release, and this runbook does not claim GPG
+signing is not configured for the `0.3.2` release, and this runbook does not claim GPG
 verification. Both release workflows require the annotated tag commit to be an
 ancestor of `origin/master`, and all package and manifest versions must match the
 `vX.Y.Z` tag.
@@ -316,7 +316,7 @@ separate signing and installed Stable checks above actually complete.
 Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
 
 ```powershell
-(Get-FileHash .\pin-op-firefox-0.3.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\pin-op-firefox-0.3.2.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
 ## Publish

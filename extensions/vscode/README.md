@@ -6,7 +6,7 @@ source-mapped SCSS ranges highlighted in the active VS Code file.
 ## Install From VSIX
 
 1. Open the Command Palette and run **Extensions: Install from VSIX...**.
-2. Select `pin-op-vscode-0.3.0.vsix` and reload VS Code if prompted.
+2. Select `pin-op-vscode-0.3.2.vsix` and reload VS Code if prompted.
 3. Open a local project. Pin-op starts automatically.
 
 ## Link And Inspect

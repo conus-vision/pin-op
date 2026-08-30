@@ -78,14 +78,17 @@ describe("DevTools panel assets", () => {
     expect(inspector("#inspector-status + #panel-credit.panel-credit"))
       .toHaveLength(1);
     expect(credit.text().replace(/\s+/g, " ").trim()).toBe(
-      "Pin-op by Volodymyr Moskvin (info@conus.vision) (c) Conus Vision " +
-        "(https://conus.vision)",
+      "Pin-op by Volodymyr Moskvin \u00a9 2026 Conus Vision",
     );
-    expect(inspector("#panel-credit-mail").attr("href"))
-      .toBe("mailto:info@conus.vision");
-    const site = inspector("#panel-credit-site");
-    expect(site.attr("href")).toBe("https://conus.vision");
-    expect(site.attr("rel")).toBe("noreferrer noopener");
+    const author = inspector("#panel-credit-author");
+    expect(author.text()).toBe("Volodymyr Moskvin");
+    expect(author.attr("href")).toBe("mailto:info@conus.vision");
+    expect(author.attr("title")).toBe("info@conus.vision");
+    const company = inspector("#panel-credit-company");
+    expect(company.text()).toBe("Conus Vision");
+    expect(company.attr("href")).toBe("https://conus.vision");
+    expect(company.attr("title")).toBe("https://conus.vision");
+    expect(company.attr("rel")).toBe("noreferrer noopener");
 
     const strip = ruleDeclarations(
       /\.panel-credit\s*\{([^}]*)\}/s,
@@ -93,7 +96,7 @@ describe("DevTools panel assets", () => {
     );
     expect(strip).toMatch(/grid-area:\s*credit;/);
     expect(strip).toMatch(/justify-content:\s*flex-end;/);
-    expect(strip).toMatch(/max-height:\s*18px;/);
+    expect(strip).toMatch(/max-height:\s*24px;/);
     expect(strip).toMatch(/overflow:\s*hidden;/);
   });
 
@@ -117,7 +120,7 @@ describe("DevTools panel assets", () => {
       /grid-template-areas:\s*"toolbar"\s*"protocol"\s*"workspace"\s*"status"\s*"credit";/s,
     );
     expect(layout).toMatch(
-      /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) minmax\(0,\s*26px\) minmax\(0,\s*18px\);/,
+      /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) minmax\(0,\s*26px\) minmax\(0,\s*24px\);/,
     );
 
     const toolbar = ruleDeclarations(

@@ -2,7 +2,7 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.3.0] - Unreleased
+## [0.3.2] - Unreleased
 
 ### Added
 
@@ -43,10 +43,13 @@ All notable changes to Pin-op will be documented in this file.
   inaccessible, and source-order-approximate cases.
 - A draggable, keyboard-adjustable separator between the DOM tree and the
   element details pane, with its size remembered per browser.
+- A line under the panel's status row naming the product, its author and Conus
+  Vision: `Pin-op by Volodymyr Moskvin © 2026 Conus Vision`, where the author
+  opens a message and the company opens its site.
 
 ### Changed
 
-- Advanced the product release to `0.3.0` and the exact wire protocol to the
+- Advanced the product release to `0.3.2` and the exact wire protocol to the
   breaking version `7`.
 - Added capability-gated auto-refresh, source-presentation, presentation-
   settings, navigation intents, and repeated navigation-state updates. Protocol
@@ -95,8 +98,6 @@ All notable changes to Pin-op will be documented in this file.
   cascade conditions Pin-op cannot account for. A value that names properties --
   `transition`, `will-change` -- is also read the way a browser reports it: each
   browser answers in the property names it knows, and leaves out a `0s` delay.
-- Added a slim line under the panel's status row naming the product, its author
-  and Conus Vision, with the address and the site as links.
 - Gave the Rules pane back the two lines it spent on itself. A partial snapshot
   no longer prints "some styles could not be inspected" above the rules -- the
   footer already reports what could not be read -- and what the `:hov` preview

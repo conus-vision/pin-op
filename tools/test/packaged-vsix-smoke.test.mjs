@@ -535,16 +535,16 @@ test("validated VSIX payload installs under its canonical artifact identity", as
     const result = await installVerifiedVsix(artifactPath, extensionsDirectory);
     const expectedDirectory = join(
       extensionsDirectory,
-      "conus-vision.pin-op-0.3.0",
+      "conus-vision.pin-op-0.3.2",
     );
 
     assert.deepEqual(result, {
       extensionDirectory: expectedDirectory,
       extensionId: "conus-vision.pin-op",
-      version: "0.3.0",
+      version: "0.3.2",
     });
     assert.deepEqual(await readdir(extensionsDirectory), [
-      "conus-vision.pin-op-0.3.0",
+      "conus-vision.pin-op-0.3.2",
     ]);
     assert.deepEqual(
       JSON.parse(await readFile(join(expectedDirectory, "package.json"), "utf8")),
@@ -756,7 +756,7 @@ test("VSIX installation validates identity before deriving its directory", async
     ["repository", "https://example.test/repository", /unexpected extension repository/],
     ["bugs", "https://example.test/issues", /unexpected extension bugs URL/],
     ["homepage", "https://example.test", /unexpected extension homepage/],
-    ["version", "../0.3.0", /extension version must be 0\.3\.0/],
+    ["version", "../0.3.2", /extension version must be 0\.3\.2/],
     ["icon", "resources/unexpected.png", /unexpected extension icon/],
   ]) {
     await withTemporaryDirectory("pin-op-vsix-identity-", async (directory) => {
@@ -868,7 +868,7 @@ test("VSIX installation rejects VSIX manifest identity mismatches", async (t) =>
     ],
     [
       "version",
-      manifestXml.replace('Version="0.3.0"', 'Version="0.3.1"'),
+      manifestXml.replace('Version="0.3.2"', 'Version="0.3.1"'),
       /extension\.vsixmanifest version 0\.3\.1 does not match extension\/package\.json/,
     ],
   ]) {
@@ -1019,7 +1019,7 @@ function expectedManifest(overrides = {}) {
     repository: "https://github.com/conus-vision/pin-op",
     bugs: "https://github.com/conus-vision/pin-op/issues",
     homepage: "https://pin-op.conus.vision",
-    version: "0.3.0",
+    version: "0.3.2",
     main: "./dist/extension.cjs",
     icon: "resources/pin-op.png",
     contributes: {
@@ -1097,7 +1097,7 @@ function expectedVsixManifestXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Language="en-US" Id="pin-op" Version="0.3.0" Publisher="conus-vision" />
+    <Identity Language="en-US" Id="pin-op" Version="0.3.2" Publisher="conus-vision" />
   </Metadata>
   <Installation><InstallationTarget Id="Microsoft.VisualStudio.Code"/></Installation>
   <Dependencies/>

@@ -1,7 +1,7 @@
 # Architecture
 
 Pin-op is a local, read-only bridge from browser DevTools inspection to
-source highlighting in VS Code. Product semver is `0.3.0`; the independent wire
+source highlighting in VS Code. Product semver is `0.3.2`; the independent wire
 protocol version is `7`.
 
 ## Components
@@ -18,7 +18,9 @@ browser core. The panel owns:
 - a Source tab containing bounded active-document excerpts for the Selected
   element and its immediate Parent;
 - the selected-element summary, exact IDE resolution footer, and selected-match
-  source navigation controls.
+  source navigation controls;
+- one line under the status row naming the product, its author and Conus Vision,
+  with the address and the site as links.
 
 Layout selection combines viewport breakpoints with the measured usable
 workspace. DOM and Source use split when the viewport is at least 680 px wide
@@ -26,8 +28,9 @@ and the workspace width fits two 160 px panes plus the measured separator. If
 split does not fit, stack is available at any viewport width when the viewport
 is at least 520 px tall and the workspace height fits two 160 px panes plus the
 measured separator (currently at least 325 px total). The panel uses tabs only
-when neither two-pane arrangement fits. The footer carries the compact Pin-op
-product identity without replacing operational status.
+when neither two-pane arrangement fits. The product identity has its own line
+under the status row and never takes room from operational status; what a
+partial snapshot could not read is reported by that status, not above the rules.
 
 Each panel receives an opaque browser-extension channel. DOM requests and events
 are routed through that channel to the inspected tab, never through the product
@@ -84,7 +87,11 @@ The content runtime owns the browser-local Inspector session. One selection
 authority serves both page clicks and DOM-tree commands. It:
 
 - renders a style-isolated, pointer-inert, half-alpha box-model overlay only
-  while a page element or DOM-tree row is hovered;
+  while a page element or DOM-tree row is hovered. The overlay is drawn from the
+  element's own margin, border and padding widths, so it is drawn only while the
+  box stays an upright rectangle: a box that is merely moved or scaled is drawn
+  with those widths scaled by as much as the box was, and one that is turned,
+  skewed or mirrored is not drawn at all;
 - exposes bounded tree pages on demand;
 - traverses the top document, open shadow roots, and same-origin frame
   documents;
@@ -212,6 +219,23 @@ existing exact-path and unique-basename search across all open folders. Its
 local diagnostic is `Automatic source matching`; this convenience means the
 user accepts the risk of a coincidental automatic mapping.
 
+Rules presents a rule as the stylesheet writes it. The browser holds four
+longhands for a `margin: 0`, so each declaration is rebuilt from the rule's own
+serialized text and the longhands it sets ride along; the cascade is still
+decided one longhand at a time, and a shorthand reads as overridden only when
+every longhand it sets has lost. Sections are ordered as the cascade rather than
+as the file.
+
+A stylesheet and a browser spell the same declaration differently, and both
+sides are read the same way before they are compared: colours, zero lengths,
+numbers and quote style settle on one spelling; a shorthand is read as the parts
+it sets, so written-out sides and `inset: 0` agree; a shadow is read by its
+offsets and colour; a property declared twice is read the way the browser keeps
+it; a value that names properties is read in the property names a browser
+reports and without a `0s` delay. A file may also carry the prefixed fallbacks a
+browser drops, and a bare number matches the pixels a quirks-mode browser made
+of it. Everything the browser did report must still match exactly.
+
 The CSS resolver prefers exact source position or CSSOM rule-path evidence. A
 workspace-bound CSS source miss never fingerprint-matches an unrelated active
 CSS document. Automatic CSS may retain the conservative fingerprint fallback,
@@ -224,6 +248,14 @@ a mapping into the exact active SCSS document. Automatic unique-basename
 matching may locate generated CSS and is diagnosed, but a basename-only match
 can never authorize the original SCSS source. Missing, invalid, ambiguous,
 unmapped, and other-document outcomes fail closed.
+
+A preprocessor rule cannot always be compared with what the browser reports: a
+rule written inside a mixin says `&`, and what that becomes -- and the `@media`
+it is used under -- is known only where the mixin is used. Such a rule is
+identified by the map and by what it declares directly, which must be present in
+what the browser reported; a rule that can state its own selector is still held
+to it. A mixin body, an `@each` loop and the rest of a preprocessor's own
+constructs are ways of writing a rule, not cascade conditions.
 
 Plugins return semantic ranges. Core owns all editor UI. The authoring contract
 is in [source-plugin-authoring.md](source-plugin-authoring.md).
@@ -249,6 +281,12 @@ is in [source-plugin-authoring.md](source-plugin-authoring.md).
    authority and updates the tree ancestor path.
 5. Only then does the browser collect and publish bounded selected/immediate-
    parent facts as a protocol-v7 inspect message.
+
+A selection reads the same element back several times, and the page cannot run
+script while a read holds the thread, so each read is answered from the moment
+it was taken in: the cheap proof that the element is still where it was is taken
+again and only the walk that rebuilt and re-resolved its locator is skipped. Any
+mutation the tree observes ends that moment.
 
 ### Run Chromium's UI On Gecko
 

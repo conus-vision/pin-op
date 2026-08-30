@@ -69,7 +69,7 @@ export interface BrowserPackageContractOptions {
 
 export const SHARED_CHROMIUM_UI_SHA256 = Object.freeze({
   "dist/inspector-panel.html":
-    "47b221b4b4a5aa7353d29248f2adbaeaf73493e80c13e9a816b6bec2a573216b",
+    "45738033e5bb9bed23f7ab7b2e528f5264c8a8687ffb33413725370f024d931d",
   "dist/devtools-elements.css":
     "1d04b131e7e38b4337660404e2d20922687fd066e0c96e05419f1f45a7118a34",
 });

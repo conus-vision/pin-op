@@ -156,6 +156,19 @@ the Selected decoration; only its immediate parent uses Parent. A single
 selection can create multiple source ranges for either role. `Applicable
 Sources` lists the same ranges without changing the active editor.
 
+## Read Rules
+
+Rules shows a rule the way the stylesheet writes it: a `margin: 0` is one row,
+and the four longhands it sets are behind the row's disclosure triangle. What
+wins sits at the top -- sections are ordered as the cascade, so low-weight rules
+such as `*` and `:root` sink to the bottom wherever they were written -- and a
+declaration is struck through when the cascade overrode it, a shorthand only
+when every longhand it sets has lost.
+
+A partial snapshot still shows every rule it could read; what could not be read
+is reported in the status row, and what the `:hov` preview covers is what its
+button says when the pointer rests on it.
+
 ## Rules Origins And Exact Open
 
 The default Inspector's read-only Rules rows first show a verified generated CSS
@@ -177,6 +190,11 @@ The wire carries only the inspect ID, independent Rules generation, safe
 basename label and one-based start position for display, confidence, and opaque
 authority ID. No workspace URI/path, full range, document version, source-map
 path/content, or command crosses the bridge. There is no open acknowledgement.
+
+A rule that a preprocessor wrote through a mixin has no selector of its own to
+compare, so it is identified by its source map and by what it declares directly;
+its origin opens the line where those declarations are written, which may be the
+mixin rather than the rule that includes it.
 
 Source remains active-document-only. First-party PHP/template providers remain
 future scope.
