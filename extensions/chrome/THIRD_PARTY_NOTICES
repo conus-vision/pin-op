@@ -747,7 +747,7 @@ Package gitHead: 23cccaa78f7458a5aad99c1af98dc1856d2494a3
 Package integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==
 Package repository: https://github.com/ChromeDevTools/devtools-frontend.git
 Runtime metadata: third_party/chromium-devtools-frontend/RUNTIME.json
-Runtime metadata SHA-256: 681fa3504955cfb9fcac72a44dd3148bde6338cb45c28ff44aa8cd1dd3a96f82
+Runtime metadata SHA-256: 1500d9227fdb44b866a9fa9e4430dc3113c17a4945719305d27acad5865cde4d
 
 DOM overlay manifest: third_party/chromium-devtools-frontend/patches/1.0.1681091/manifest.json
 DOM overlay manifest SHA-256: 6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f
