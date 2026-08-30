@@ -602,7 +602,8 @@ function rulesInspectMessage(
           "rule-scss",
           `http://localhost:4173/${workspacePath}/dist/app.css`,
           ".dynamic-card",
-          64,
+          // The line the fixture's compiled `.dynamic-card` rule starts on.
+          105,
           [
             ["max-width", "20rem"],
             ["margin-block-start", "0.5rem"],
