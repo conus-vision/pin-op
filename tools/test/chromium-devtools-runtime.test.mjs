@@ -141,7 +141,7 @@ test("Chromium DevTools runtime is pinned to the reviewed official package", asy
     manifestSha256: "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
     entryPoint: "entrypoints/read-only-elements.ts",
     exactImporterSpecifierResolutions: true,
-    unminifiedBytes: 1_078_586,
+    unminifiedBytes: 1_077_816,
     maxUnminifiedBytes: 1_310_720,
     browserTargets: ["chrome116", "firefox142"],
     upstreamInputClosure: {
@@ -219,7 +219,7 @@ test("esbuild compiles the real upstream Elements tree and generated CSS modules
     "/chrome-devtools-frontend/front_end/ui/legacy/Treeoutline.ts",
   )));
   assert.ok(inputs.some(value => value.endsWith(
-    "/chrome-devtools-frontend/front_end/panels/elements/elementsTreeOutline.css",
+    "chromium-shared-css:front_end/panels/elements/elementsTreeOutline.css",
   )));
 
   const javascript = result.outputFiles.find(file => file.path.endsWith(".js"));
@@ -262,7 +262,7 @@ test("esbuild compiles the real upstream Rules pane", async () => {
     "/chrome-devtools-frontend/front_end/panels/elements/StylePropertiesSection.ts",
   )));
   assert.ok(inputs.some(value => value.endsWith(
-    "/chrome-devtools-frontend/front_end/panels/elements/stylesSidebarPane.css",
+    "chromium-shared-css:front_end/panels/elements/stylesSidebarPane.css",
   )));
 
   const javascript = result.outputFiles.find(file => file.path.endsWith(".js"));
@@ -505,9 +505,10 @@ test("canonical Chromium shared plugins expose frozen namespaces and payload att
     path: "./application_tokens.css.js",
   });
   assert.equal(registered.namespace, shared.namespaces.css);
+  assert.equal(registered.path, "front_end/application_tokens.css");
   const emitted = await cssLoader.callback({path: registered.path});
   const css = sanitizeChromiumSharedCss(
-    await readFile(registered.path, "utf8"),
+    await readFile(path.join(verified.packageRoot, registered.path), "utf8"),
     "front_end/application_tokens.css",
   );
   assert.equal(emitted.contents, `export default ${JSON.stringify(css)};\n`);
@@ -616,11 +617,11 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
     "/front_end/core/sdk/DOMModel.ts",
     "/front_end/panels/elements/ElementsTreeOutline.ts",
     "/front_end/panels/elements/ElementsTreeElement.ts",
-    "/front_end/panels/elements/elementsTreeOutline.css",
-    "/front_end/application_tokens.css",
-    "/front_end/design_system_tokens.css",
-    "/front_end/ui/components/buttons/textButton.css",
-    "/front_end/ui/legacy/inspectorCommon.css",
+    "chromium-shared-css:front_end/panels/elements/elementsTreeOutline.css",
+    "chromium-shared-css:front_end/application_tokens.css",
+    "chromium-shared-css:front_end/design_system_tokens.css",
+    "chromium-shared-css:front_end/ui/components/buttons/textButton.css",
+    "chromium-shared-css:front_end/ui/legacy/inspectorCommon.css",
     "/front_end/ui/legacy/Treeoutline.ts",
   ]) {
     assert.ok(inputs.some(value => value.endsWith(required)), required);
@@ -681,7 +682,7 @@ test("production read-only runtime keeps the real Chromium DOM tree in a bounded
     assert.ok(!output.includes(removed), `read-only output retained ${removed}`);
   }
 
-  assert.equal(result.unminifiedBytes, 1_078_586);
+  assert.equal(result.unminifiedBytes, 1_077_816);
   assert.deepEqual(result.chromiumInputAttestation, {
     fileCount: 46,
     sha256: "53294d77cfdfcc48bacd7573e1134c809fe846e9ff074d8eadf9ae861a4dd75a",

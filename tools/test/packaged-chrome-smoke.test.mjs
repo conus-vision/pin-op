@@ -1103,7 +1103,9 @@ test("surviving owned child cannot keep the smoke parent command alive", {
   let ownedPid;
 
   try {
-    const result = await waitForSubprocess(parent, 750);
+    // What is under test is that a surviving child cannot hold the parent open
+    // at all, not how fast a loaded machine can start Node and load the module.
+    const result = await waitForSubprocess(parent, 5_000);
     ownedPid = await readOwnedPid(pidFile);
     assert.equal(result.code, 23, result.stderr);
     assert.match(result.stderr, /EXPECTED_OWNED_CHILD_FAILURE/);

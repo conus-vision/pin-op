@@ -54,7 +54,7 @@
     "manifestSha256": "6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f",
     "entryPoint": "entrypoints/read-only-elements.ts",
     "exactImporterSpecifierResolutions": true,
-    "unminifiedBytes": 1078586,
+    "unminifiedBytes": 1077816,
     "maxUnminifiedBytes": 1310720,
     "browserTargets": ["chrome116", "firefox142"],
     "upstreamInputClosure": {

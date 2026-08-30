@@ -954,7 +954,10 @@ async function classifyStylesInputs({
     if (input.startsWith(`${sharedNamespaces.css}:`)) {
       sharedInputs.push(input);
       const namespace = `${sharedNamespaces.css}:`;
-      const absolutePath = await realpath(input.slice(namespace.length));
+      // A shared CSS input names its place in the package, not on this machine.
+      const absolutePath = await realpath(
+        path.resolve(packageRoot, input.slice(namespace.length)),
+      );
       const relativePath = relativePathWithin(packageRoot, absolutePath);
       if (!relativePath) throw new Error(`Chromium Styles CSS input is outside the pinned package: ${input}`);
       packageInputs.push(Object.freeze({input, absolutePath, relativePath}));

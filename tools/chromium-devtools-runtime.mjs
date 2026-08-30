@@ -543,8 +543,12 @@ export async function createChromiumSharedRuntimePlugins({packageRoot, allowedIm
   const imagePayload = await createChromiumImagesPayload(physicalPackageRoot);
   const allowImporter = importer => reviewedImporters.has(path.resolve(importer));
   const resolvedCssInputs = new Map();
+  const cssPhysicalPaths = new Map();
   const loadedCssPayloads = new Map();
   const resolvedGeneratedInputs = new Set();
+  // The module path a bundle records must name the package, not the checkout:
+  // an absolute path would put this machine's directories in the output and
+  // make the same sources measure differently on another one.
   const resolveCssInput = async ({cssPath, importer}) => {
     if (!allowImporter(path.resolve(importer))) return undefined;
     const physicalCssPath = await realpath(cssPath);
@@ -553,22 +557,24 @@ export async function createChromiumSharedRuntimePlugins({packageRoot, allowedIm
       physicalCssPath,
       "Chromium shared CSS module",
     );
-    resolvedCssInputs.set(physicalCssPath, `chromium-shared-css:${normalizeRelativePath(
+    const packagePath = normalizeRelativePath(
       path.relative(physicalPackageRoot, physicalCssPath),
-    )}`);
-    return {path: physicalCssPath, namespace: CHROMIUM_SHARED_NAMESPACES.css};
+    );
+    resolvedCssInputs.set(packagePath, `${CHROMIUM_SHARED_NAMESPACES.css}:${packagePath}`);
+    cssPhysicalPaths.set(packagePath, physicalCssPath);
+    return {path: packagePath, namespace: CHROMIUM_SHARED_NAMESPACES.css};
   };
   const imagesModulePath = path.join(physicalPackageRoot, "front_end", "Images", "Images.js");
   const resolveImagesInput = ({importer}) => {
     if (!allowImporter(path.resolve(importer))) return undefined;
-    resolvedGeneratedInputs.add(imagesModulePath);
-    return {path: imagesModulePath, namespace: CHROMIUM_SHARED_NAMESPACES.images};
+    resolvedGeneratedInputs.add(CHROMIUM_IMAGES_PACKAGE_PATH);
+    return {path: CHROMIUM_IMAGES_PACKAGE_PATH, namespace: CHROMIUM_SHARED_NAMESPACES.images};
   };
   const plugins = Object.freeze([
     createChromiumCssModulePlugin(
       physicalPackageRoot,
       resolveCssInput,
-      resolvedCssInputs,
+      cssPhysicalPaths,
       loadedCssPayloads,
     ),
     createChromiumGeneratedModulePlugin(
@@ -590,13 +596,15 @@ export async function createChromiumSharedRuntimePlugins({packageRoot, allowedIm
     for (const input of inputKeys) {
       if (input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`)) {
         const cssPath = input.slice(CHROMIUM_SHARED_NAMESPACES.css.length + 1);
-        if (!path.isAbsolute(cssPath) || !cssPath.endsWith(".css")) {
+        if (path.isAbsolute(cssPath) || !cssPath.endsWith(".css")) {
           throw new Error(`Invalid Chromium shared CSS input: ${input}`);
         }
-        const physicalCssPath = path.resolve(cssPath);
-        assertWithin(physicalPackageRoot, physicalCssPath, "Chromium shared CSS input");
-        const canonicalInput = resolvedCssInputs.get(physicalCssPath);
-        const payload = loadedCssPayloads.get(physicalCssPath);
+        const physicalCssPath = cssPhysicalPaths.get(cssPath);
+        if (physicalCssPath !== undefined) {
+          assertWithin(physicalPackageRoot, physicalCssPath, "Chromium shared CSS input");
+        }
+        const canonicalInput = resolvedCssInputs.get(cssPath);
+        const payload = loadedCssPayloads.get(cssPath);
         if (!canonicalInput || payload === undefined) {
           throw new Error(`Unregistered Chromium shared CSS input: ${input}`);
         }
@@ -607,7 +615,7 @@ export async function createChromiumSharedRuntimePlugins({packageRoot, allowedIm
         generatedInputs.push(canonicalInput);
         inputInventory.push(canonicalInput);
         payloadRows.push(`${canonicalInput}\0${sha256(CHROMIUM_ENGLISH_LOCALES_PAYLOAD)}`);
-      } else if (input === `${CHROMIUM_SHARED_NAMESPACES.images}:${path.join(physicalPackageRoot, "front_end", "Images", "Images.js")}`) {
+      } else if (input === `${CHROMIUM_SHARED_NAMESPACES.images}:${CHROMIUM_IMAGES_PACKAGE_PATH}`) {
         const canonicalInput = `${CHROMIUM_SHARED_NAMESPACES.images}:front_end/Images/Images.js`;
         generatedInputs.push(canonicalInput);
         inputInventory.push(canonicalInput);
@@ -646,7 +654,9 @@ export function assertChromiumSharedRuntimeAuthority(runtime, physicalPackageRoo
   }
 }
 
-function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCssInputs, loadedCssPayloads) {
+const CHROMIUM_IMAGES_PACKAGE_PATH = "front_end/Images/Images.js";
+
+function createChromiumCssModulePlugin(packageRoot, resolveCssInput, cssPhysicalPaths, loadedCssPayloads) {
   const frontEndRoot = path.join(packageRoot, "front_end");
   return {
     name: "chromium-devtools-css-module",
@@ -659,9 +669,10 @@ function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCss
       buildContext.onLoad(
         { filter: /\.css$/, namespace: CHROMIUM_SHARED_NAMESPACES.css },
         async args => {
-          const physicalCssPath = await realpath(args.path);
+          const registeredCssPath = cssPhysicalPaths.get(args.path);
+          const physicalCssPath = registeredCssPath ?? await realpath(args.path);
           assertWithin(frontEndRoot, physicalCssPath, "Chromium shared CSS load");
-          if (!resolvedCssInputs.has(physicalCssPath)) {
+          if (!registeredCssPath) {
             throw new Error(`Unregistered Chromium shared CSS load: ${args.path}`);
           }
           const relativeCssPath = normalizeRelativePath(
@@ -672,7 +683,7 @@ function createChromiumCssModulePlugin(packageRoot, resolveCssInput, resolvedCss
             relativeCssPath,
           );
           const contents = `export default ${JSON.stringify(css)};\n`;
-          loadedCssPayloads.set(physicalCssPath, contents);
+          loadedCssPayloads.set(relativeCssPath, contents);
           return {
             contents,
             loader: "js",
@@ -802,6 +813,7 @@ function createChromiumGeneratedModulePlugin(
 ) {
   const frontEndRoot = path.join(packageRoot, "front_end");
   const expectedImagesPath = path.join(frontEndRoot, "Images", "Images.js");
+  const expectedImagesInput = CHROMIUM_IMAGES_PACKAGE_PATH;
   return {
     name: "chromium-devtools-generated-modules",
     setup(buildContext) {
@@ -835,7 +847,7 @@ function createChromiumGeneratedModulePlugin(
       buildContext.onLoad(
         { filter: /Images\.js$/, namespace: CHROMIUM_SHARED_NAMESPACES.images },
         args => {
-          if (args.path !== expectedImagesPath || !resolvedGeneratedInputs.has(expectedImagesPath)) {
+          if (args.path !== expectedImagesInput || !resolvedGeneratedInputs.has(expectedImagesInput)) {
             throw new Error(`Unregistered Chromium shared images load: ${args.path}`);
           }
           return {contents: imagePayload.contents, loader: "js", watchFiles: imagePayload.watchFiles};
@@ -963,7 +975,11 @@ async function attestChromiumInputs(repositoryRoot, packageRoot, metafile) {
   for (const input of Object.keys(metafile.inputs)) {
     let inputPath;
     if (input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`)) {
-      inputPath = input.slice(CHROMIUM_SHARED_NAMESPACES.css.length + 1);
+      // A shared CSS input names its place in the package.
+      inputPath = path.resolve(
+        packageRoot,
+        input.slice(CHROMIUM_SHARED_NAMESPACES.css.length + 1),
+      );
     } else if (input.startsWith("chromium-")) {
       continue;
     } else {
@@ -1021,13 +1037,16 @@ async function classifyChromiumReadOnlyMetafileInputs({
   const generatedInputs = [];
   const exactGeneratedInputs = new Set([
     `${CHROMIUM_SHARED_NAMESPACES.generated}:english-only-locales`,
-    `${CHROMIUM_SHARED_NAMESPACES.images}:${path.join(packageRoot, "front_end", "Images", "Images.js")}`,
+    `${CHROMIUM_SHARED_NAMESPACES.images}:${CHROMIUM_IMAGES_PACKAGE_PATH}`,
   ]);
   for (const input of Object.keys(metafile.inputs)) {
     const cssNamespace = input.startsWith(`${CHROMIUM_SHARED_NAMESPACES.css}:`) ?
       `${CHROMIUM_SHARED_NAMESPACES.css}:` : undefined;
     if (cssNamespace) {
-      const absolutePath = await realpath(input.slice(cssNamespace.length));
+      // The input names its place in the package, not on this machine.
+      const absolutePath = await realpath(
+        path.resolve(packageRoot, input.slice(cssNamespace.length)),
+      );
       const relativePath = relativePathWithin(packageRoot, absolutePath);
       if (!relativePath) {
         throw new Error(`Chromium CSS input is outside the pinned package: ${input}`);
