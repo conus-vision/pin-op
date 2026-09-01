@@ -222,8 +222,9 @@ origins become explicit click targets. An explicit Rules origin click may switch
 VS Code using a current IDE-issued opaque authority. No workspace URI/path, full
 range, document version, source-map path, or command crosses the bridge.
 Missing or invalid source maps show verified generated CSS only, with no
-approximate SCSS authority. Source remains active-document-only. First-party
-PHP/template providers remain future scope.
+approximate SCSS authority. Source remains active-document-only, now
+including a built-in PHP provider. Twig, Blade, and other template providers
+remain future scope.
 
 ## Checkpoint 3 Rules-Origin Installed Matrix
 

@@ -468,6 +468,24 @@ input[type="text"] {
 .source-pane-status[data-state="error"],
 .source-pane-status[data-state="incompatible"] { color: var(--status-error); }
 
+.source-pane-status[data-state="not-linked"] {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.source-pane-status-headline { margin: 0; font-weight: 600; }
+.source-pane-guidance-intro { margin: 0; color: var(--muted); }
+
+.source-pane-guidance {
+  display: grid;
+  padding-inline-start: 18px;
+  margin: 0;
+  gap: 4px;
+}
+
+.source-pane-guidance-step { min-width: 0; }
+
 .source-navigation-controls { display: flex; width: 44px; flex: 0 0 44px; justify-content: flex-end; gap: 2px; }
 
 .source-navigation-button {

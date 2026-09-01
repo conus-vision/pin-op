@@ -79,7 +79,9 @@ are available in the source tree and Firefox source submission.
   this is not native pseudo-state forcing.
 - Separate Selected and immediate Parent source decorations.
 - A Source tab with bounded active-document excerpts and exact navigation back
-  to the IDE.
+  to the IDE, and a link walkthrough in that tab whenever no IDE is connected.
+- A built-in PHP provider that finds the selected element in the active PHP
+  template, exactly from instrumentation or heuristically from its markup.
 - Auto Refresh for changed styles and tab reloads with scroll restoration after
   changed script, Vue, PHP, or HTML saves.
 - Explicit browser-window linking over a loopback-only WebSocket.
@@ -107,8 +109,11 @@ Negated targets such as `:not(:hover)`, ancestor or sibling pseudo targets,
 stylesheets/scopes and closed shadow roots are unavailable; closed-shadow
 internals do not contribute an unsupported pseudo-rule count.
 
-Source remains active-document-only. First-party PHP/template providers remain
-future scope.
+Source remains active-document-only. A built-in PHP provider reads the
+active PHP document, using instrumented `php.template` or
+`wordpress.acf-block` facts when a runtime emits them and otherwise matching
+the document's literal markup heuristically. Twig, Blade, and other template
+providers remain future scope.
 
 ## Compatibility
 
@@ -119,6 +124,7 @@ future scope.
 | Local VS Code | Supported; opens projects and starts automatically |
 | CSS | Supported in the active document |
 | Source-mapped SCSS | Supported with a usable inline or external source map |
+| PHP templates | Supported in the active document; instrumented, else heuristic |
 | Separately installed source plugins | Supported through the versioned plugin API |
 | Remote SSH and WSL extension hosts | Not supported |
 | Source editing and reverse sync | Not supported |

@@ -1,5 +1,6 @@
 import type { SelectionSnapshot } from "@pin-op/plugin-api";
 import type { InspectMessage } from "@pin-op/protocol";
+import { withDomAttributeFacts } from "../sourcePlugins/domFacts.js";
 
 export class SelectionStore {
   private value: SelectionSnapshot | undefined;
@@ -8,7 +9,7 @@ export class SelectionStore {
     this.value = {
       sessionId: message.sessionId,
       messageId: message.messageId,
-      targets: message.targets,
+      targets: withDomAttributeFacts(message.targets),
       ruleEvidence: message.ruleEvidence,
       context: message.context,
       metadata: message.metadata,

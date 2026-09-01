@@ -235,6 +235,19 @@ here. This document does not claim these checks were performed or passed.
     range without switching the active editor.
 11. Turn **IDE Highlight** off. Confirm decorations clear while Source excerpts
     and Selected-only navigation continue to work; turn it back on.
+11a. Select **Disconnect**, then open the Source tab. Confirm it names where the
+    seven-digit code is copied from (the VS Code status bar item) and where it
+    is pasted (the field at the top of the panel), and that linking again
+    restores excerpts. Confirm the same walkthrough appears in a panel that has
+    never been linked.
+11b. Make a PHP template the active IDE document and select an element it
+    renders. Confirm the Source tab shows that element's markup when the
+    template identifies it uniquely by `id`, by a `data-*`/`aria-*`/`role`
+    attribute, or by the classes the template writes literally, including when
+    the element carries further classes added by PHP or scripts. Confirm a
+    block written in two conditional branches lists both, and that a template
+    element whose literal `id`, class, or attribute the element contradicts is
+    left out.
 12. With **Auto Refresh** on, change and save CSS, SCSS, JavaScript, TypeScript,
     Vue, PHP, and HTML as described below. Confirm unchanged saves do nothing.
 

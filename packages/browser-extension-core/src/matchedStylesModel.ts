@@ -81,6 +81,10 @@ export class MatchedStylesModel {
   private invalidationQueued = false;
   private pendingInvalidation: StylesInvalidatedEvent | undefined;
   private pendingReloadGeneration: number | undefined;
+  private cancelledRetries = 0;
+  private readonly cancelledRetryTimers = new Set<
+    ReturnType<typeof globalThis.setTimeout>
+  >();
   private disposed = false;
   private readonly listeners = new Set<
     (snapshot: MatchedStylesModelSnapshot) => void
@@ -129,6 +133,24 @@ export class MatchedStylesModel {
     }
     this.selection = key;
     await this.load(key);
+  }
+
+  /**
+   * The stylesheet generation the rendered rule references were minted in.
+   * Only a stylesheet revision re-mints them, so this is the floor that
+   * decides whether an invalidation actually stales a reference.
+   */
+  public get acceptedStylesheetGeneration(): {
+    readonly documentEpoch: number;
+    readonly stylesheetRevision: number;
+  } | undefined {
+    const key = this.lastAcceptedKey;
+    return key
+      ? Object.freeze({
+          documentEpoch: key.documentEpoch,
+          stylesheetRevision: key.stylesheetRevision,
+        })
+      : undefined;
   }
 
   /** Requeries the current selection through the existing matched-style path. */
@@ -339,6 +361,7 @@ export class MatchedStylesModel {
       ) return;
     }
     this.revisionAuthority = freezeRevisionAuthority(event);
+    this.cancelledRetries = 0;
     if (!selection) return;
     if (this.state.state === "loading") {
       this.pendingReloadGeneration = this.generation;
@@ -383,6 +406,8 @@ export class MatchedStylesModel {
 
   public dispose(): void {
     if (this.disposed) return;
+    for (const timer of this.cancelledRetryTimers) globalThis.clearTimeout(timer);
+    this.cancelledRetryTimers.clear();
     this.cancelCurrent();
     this.disposed = true;
     this.generation += 1;
@@ -396,6 +421,7 @@ export class MatchedStylesModel {
     selection: MatchedStylesModelSelection,
     manualRefresh = false,
   ): Promise<void> {
+    if (this.selection !== selection) this.cancelledRetries = 0;
     this.cancelCurrent();
     const generation = ++this.generation;
     this.pendingReloadGeneration = undefined;
@@ -464,6 +490,7 @@ export class MatchedStylesModel {
       pseudoStates: response.pseudoStates,
     });
     this.lastAcceptedKey = key;
+    this.cancelledRetries = 0;
     this.publish(Object.freeze({
       state: response.styles.partial ? "partial" : "ready",
       generation,
@@ -553,6 +580,7 @@ export class MatchedStylesModel {
     errorCode: StylesErrorCode,
   ): void {
     if (this.reloadPendingFloor(generation, selection)) return;
+    if (this.retryCancelledLoad(generation, selection, errorCode)) return;
     this.pendingReloadGeneration = undefined;
     this.publish(Object.freeze({
       state: "error",
@@ -586,6 +614,44 @@ export class MatchedStylesModel {
     } catch {
       // Reset notification cannot expand rule identity authority.
     }
+  }
+
+  /**
+   * `cancelled` means the page moved its style authority while collecting, not
+   * that the styles are unavailable. Dragging a resize does that repeatedly,
+   * and the last cancellation carries no invalidation behind it to reload from,
+   * so without this retry the pane stays on an error the page has already moved
+   * past.
+   */
+  private retryCancelledLoad(
+    generation: number,
+    selection: MatchedStylesModelSelection,
+    errorCode: StylesErrorCode,
+  ): boolean {
+    if (
+      errorCode !== "cancelled" ||
+      this.cancelledRetries >= MAX_CANCELLED_LOAD_RETRIES ||
+      this.disposed ||
+      this.generation !== generation ||
+      this.selection !== selection
+    ) return false;
+    this.cancelledRetries += 1;
+    this.pendingReloadGeneration = undefined;
+    // A stylesheet swap keeps moving the page's style authority for a moment:
+    // replacing the link is itself a mutation the applicability observer sees.
+    // Retrying in the same turn just burns the budget against a page that has
+    // not settled, so each attempt waits a beat.
+    const timer = globalThis.setTimeout(() => {
+      this.cancelledRetryTimers.delete(timer);
+      if (
+        this.disposed ||
+        this.generation !== generation ||
+        this.selection !== selection
+      ) return;
+      void this.load(selection);
+    }, CANCELLED_LOAD_RETRY_DELAY_MS);
+    this.cancelledRetryTimers.add(timer);
+    return true;
   }
 
   private reloadPendingFloor(
@@ -727,6 +793,18 @@ function revisionPairMeetsFloor(
 }
 
 const EMPTY_PSEUDO_STATES: readonly PseudoState[] = Object.freeze([]);
+/**
+ * Bounded so a page that never settles still reports rather than spins. A
+ * stylesheet swap replaces several sheets in turn and each replacement can
+ * cancel the collect in flight, so the budget has to cover a whole rebuild, not
+ * a single race. Any invalidation refills it: that is the page reporting
+ * progress rather than the same race repeating.
+ */
+const MAX_CANCELLED_LOAD_RETRIES = 12;
+
+/** Long enough for a stylesheet swap to settle, short enough to be unnoticed. */
+const CANCELLED_LOAD_RETRY_DELAY_MS = 80;
+
 const MAX_PSEUDO_INTENT_RECONCILIATIONS = 8;
 
 function canonicalPseudoStates(value: readonly PseudoState[]): readonly PseudoState[] {

@@ -357,8 +357,10 @@ other-document cases fail closed and produce a bounded footer status.
 
 Rules origin resolution is a separate IDE-owned batch over bounded workspace
 CSS/SCSS/map dependencies. It can authorize a cross-file open only after exact
-CSS or source-mapped SCSS verification. Source remains active-document-only.
-First-party PHP/template providers remain future scope.
+CSS or source-mapped SCSS verification. Source remains active-document-only. Its
+built-in PHP provider resolves only the active PHP document and never mints a
+cross-file open authority. Twig, Blade, and other template providers remain
+future scope.
 
 Pin-op does not load executable code from an inspected workspace. Built-in CSS
 and SCSS resolvers use source-plugin API v3; its synchronous refresh classifiers

@@ -26,13 +26,27 @@ export interface DomTreeRecoveryCoordinatorOptions {
   readonly transport: DomTreeRecoveryTransport;
   readonly createRequestId?: () => string;
   readonly beforeControlledTransition?: () => boolean | Promise<boolean>;
+  /** How long the optimistic root request waits before it counts as not ready. */
+  readonly rootDeadlineMs?: number;
 }
+
+/**
+ * A reload replaces the content session, and the panel is told the moment the
+ * old one goes rather than when the new one arrives. A root request sent into
+ * that gap is not answered and not refused: it sits on the ordinary DOM request
+ * timeout, holding the tree frozen and the styles empty for as long as that
+ * takes. Recovery is optimistic, so it gives the page far less time than a
+ * request the user asked for, and reports "not ready" instead - which keeps the
+ * frozen tree and lets the caller try again.
+ */
+const DEFAULT_RECOVERY_ROOT_DEADLINE_MS = 1_200;
 
 export class DomTreeRecoveryCoordinator {
   private readonly controller: DomTreeController;
   private readonly transport: DomTreeRecoveryTransport;
   private readonly createRequestId: () => string;
   private readonly beforeControlledTransition: () => boolean | Promise<boolean>;
+  private readonly rootDeadlineMs: number;
   private recoveryToken: object | undefined;
   private contentSessionGeneration = 0;
   private requestSequence = 0;
@@ -46,6 +60,12 @@ export class DomTreeRecoveryCoordinator {
     ));
     this.beforeControlledTransition = options.beforeControlledTransition ??
       (() => true);
+    const deadline = options.rootDeadlineMs;
+    this.rootDeadlineMs = typeof deadline === "number" &&
+        Number.isFinite(deadline) &&
+        deadline > 0
+      ? deadline
+      : DEFAULT_RECOVERY_ROOT_DEADLINE_MS;
   }
 
   public async begin(): Promise<void> {
@@ -90,7 +110,18 @@ export class DomTreeRecoveryCoordinator {
       if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }
-      const rootResponse = await this.transport.request(rootRequest);
+      let rootResponse: DomResponse;
+      try {
+        rootResponse = await this.requestRootWithinDeadline(rootRequest);
+      } catch (error) {
+        if (
+          error instanceof DomTreeRecoveryNotReadyError &&
+          this.isCurrent(token, contentSessionGeneration)
+        ) {
+          this.invalidateAttempt();
+        }
+        throw error;
+      }
       if (!this.isActiveRecovery(token, contentSessionGeneration)) {
         return;
       }
@@ -271,6 +302,30 @@ export class DomTreeRecoveryCoordinator {
     }
     this.cancel("DOM tree recovery disposed");
     this.disposed = true;
+  }
+
+  /**
+   * Races the root request against the recovery deadline. The request itself is
+   * left to settle on its own; only this attempt is over.
+   */
+  private async requestRootWithinDeadline(
+    request: DomGetRootRequest,
+  ): Promise<DomResponse> {
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.transport.request(request),
+        new Promise<never>((_resolve, reject) => {
+          timer = globalThis.setTimeout(() => {
+            reject(new DomTreeRecoveryNotReadyError(
+              "DOM recovery root did not answer within the recovery deadline",
+            ));
+          }, this.rootDeadlineMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) globalThis.clearTimeout(timer);
+    }
   }
 
   private async resolveLocator(

@@ -517,11 +517,13 @@ export class RulesSourceController<
 
   private retainCurrentDependencies(): void {
     for (const uri of this.registry.dependencyUris()) {
-      if (this.retainedDependencyUris.size >= MAX_RETAINED_DEPENDENCIES) {
-        this.watchAllRulesCandidates = true;
-        return;
+      for (const watched of [uri, ...sourceMapSiblings(uri)]) {
+        if (this.retainedDependencyUris.size >= MAX_RETAINED_DEPENDENCIES) {
+          this.watchAllRulesCandidates = true;
+          return;
+        }
+        this.retainedDependencyUris.add(canonicalUri(watched));
       }
-      this.retainedDependencyUris.add(canonicalUri(uri));
     }
   }
 
@@ -613,6 +615,25 @@ function equalPosition(left: SourcePosition, right: SourcePosition): boolean {
 
 function canonicalUri(uri: string): string {
   return canonicalRulesSourceUri(uri) ?? uri;
+}
+
+/**
+ * A generated stylesheet that resolved to CSS positions only records no map
+ * among its dependencies, because it did not use one. A build writes the CSS
+ * first and the map a moment later, so a resolution landing between the two
+ * verifies against a map that no longer describes this CSS and correctly falls
+ * back. Watching the map that belongs to a stylesheet already depended on is
+ * what lets the map's own arrival resolve the origin again, instead of leaving
+ * it on generated CSS until the element is picked a second time. Watching costs
+ * a re-resolution; it does not make the CSS answer stale.
+ */
+function sourceMapSiblings(uri: string): readonly string[] {
+  try {
+    const parsed = new URL(uri);
+    return /\.css$/i.test(parsed.pathname) ? [`${uri}.map`] : [];
+  } catch {
+    return [];
+  }
 }
 
 function isRulesDependencyCandidate(uri: string): boolean {

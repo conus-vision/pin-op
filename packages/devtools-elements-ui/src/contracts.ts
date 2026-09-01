@@ -177,7 +177,14 @@ export type RulesPresentationState =
 
 export type RulesPresentationSnapshot =
   | { readonly state: "empty" }
-  | { readonly state: "loading" }
+  /**
+   * A reload of the same selection carries the rules already on screen, so a
+   * style refresh or a media-query re-evaluation does not blank the pane.
+   */
+  | {
+    readonly state: "loading";
+    readonly matchedStyles?: MatchedStylesSnapshot;
+  }
   | {
     readonly state: "ready";
     readonly matchedStyles: MatchedStylesSnapshot;

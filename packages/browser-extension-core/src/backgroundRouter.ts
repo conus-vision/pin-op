@@ -4085,10 +4085,12 @@ export class BackgroundRouter {
       !record ||
       !record.inspectSession ||
       record.contentSessionId !== contentSessionId ||
-      (this.hasInspectTransitionGate(record) &&
-        event.type !== "styles.invalidated") ||
       record.bindingGeneration !== binding.generation ||
       (senderTab.windowId !== undefined && senderTab.windowId !== binding.windowId)
+    ) return undefined;
+    if (
+      this.hasInspectTransitionGate(record) &&
+      event.type !== "styles.invalidated"
     ) return undefined;
     if (event.type === "styles.invalidated") {
       const authority = record.stylesInvalidationAuthority;
@@ -4660,9 +4662,24 @@ export class BackgroundRouter {
       ...authority,
       phase: "committed",
     });
-    if (record.pendingRefreshRenewalToken === authority.republishToken) {
-      record.pendingRefreshRenewalToken = undefined;
-    }
+    if (record.pendingRefreshRenewalToken !== authority.republishToken) return;
+    record.pendingRefreshRenewalToken = undefined;
+    // The page renewed its evidence while this republish was in flight. What
+    // the IDE has just received therefore describes the stylesheet as it was
+    // before the refresh replaced it, and every rule position in it is stale -
+    // which is exactly what leaves Rules origins on generated CSS until the
+    // element is picked again. Ask once more for what the page has now.
+    this.republishRenewedSelection(record);
+  }
+
+  /** Republishes the retained selection without claiming refresh authority. */
+  private republishRenewedSelection(record: PanelPortRecord): void {
+    if (this.disposed || this.hasInspectTransitionGate(record)) return;
+    const request = this.currentRepublishRequest(record);
+    if (!request) return;
+    void this.panelSessions
+      .republishSelection(record.channel, request)
+      .catch((error) => this.reportError(error));
   }
 
   private rejectPendingRefreshRepublishAuthority(

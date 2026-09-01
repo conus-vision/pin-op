@@ -43,7 +43,10 @@ import {
   parsePanelRulesSourcesInvalidatedState,
   parseProtocolCompatibilityMessage,
 } from "./inspectPortProtocol.js";
-import { parseStylesEvent } from "./stylesProtocol.js";
+import {
+  parseStylesEvent,
+  type StylesInvalidatedEvent,
+} from "./stylesProtocol.js";
 import {
   RulesSourcesController,
 } from "./rulesSourcesController.js";
@@ -247,8 +250,11 @@ async function routeInspectorLifecycle(
     return;
   }
   pseudoStateAdapter.acceptLifecycle(message);
+  // The accepted generation is read before the reload this may start, so it
+  // still describes the rule references the panel is showing.
+  const acceptedStylesheet = model.acceptedStylesheetGeneration;
   const matchedLifecycle = routeMatchedStylesLifecycle(model, message);
-  routeRulesSourcesLifecycle(controller, lifecycle, message);
+  routeRulesSourcesLifecycle(controller, lifecycle, message, acceptedStylesheet);
   await matchedLifecycle;
 }
 
@@ -256,6 +262,7 @@ function routeRulesSourcesLifecycle(
   controller: RulesSourcesController,
   lifecycle: RulesLifecycleAuthority,
   message: unknown,
+  acceptedStylesheet: AcceptedStylesheetGeneration,
 ): void {
   const inspectStarted = parsePanelInspectStartedState(message);
   if (inspectStarted) {
@@ -278,7 +285,10 @@ function routeRulesSourcesLifecycle(
   if (controller.accept(message) === "published") return;
   try {
     const event = parseStylesEvent(message);
-    if (event.type === "styles.invalidated") {
+    if (
+      event.type === "styles.invalidated" &&
+      stalesRuleReferences(event, acceptedStylesheet)
+    ) {
       controller.invalidate("stylesheet-refresh");
     }
     return;
@@ -342,6 +352,26 @@ interface RulesLifecycleAuthority {
   selectionRevision?: number;
 }
 
+type AcceptedStylesheetGeneration = {
+  readonly documentEpoch: number;
+  readonly stylesheetRevision: number;
+} | undefined;
+
+/**
+ * A rule reference is re-minted only when the stylesheet revision advances, so
+ * only that can stale an origin the IDE published against it. An
+ * applicability-only invalidation - a media query flipping as the page is
+ * resized, a hover, an unrelated DOM mutation - leaves every reference intact,
+ * and dropping the origins there is what made resizing lose the source links.
+ */
+function stalesRuleReferences(
+  event: StylesInvalidatedEvent,
+  accepted: AcceptedStylesheetGeneration,
+): boolean {
+  if (!accepted || accepted.documentEpoch !== event.documentEpoch) return true;
+  return event.stylesheetRevision > accepted.stylesheetRevision;
+}
+
 async function routeMatchedStylesLifecycle(
   model: MatchedStylesModel,
   message: unknown,
@@ -384,6 +414,7 @@ async function routeMatchedStylesLifecycle(
 class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
   private sourceSnapshot: MatchedStylesModelSnapshot | undefined;
   private presentationSnapshot: RulesPresentationSnapshot = EMPTY_RULES_PRESENTATION;
+  private retained: RetainedRules | undefined;
 
   public constructor(
     private readonly model: MatchedStylesModel,
@@ -394,7 +425,11 @@ class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
     const source = this.model.snapshot();
     if (source !== this.sourceSnapshot) {
       this.sourceSnapshot = source;
-      this.presentationSnapshot = projectRulesPresentation(source);
+      this.presentationSnapshot = projectRulesPresentation(
+        source,
+        this.retained,
+      );
+      this.retained = retainedRules(this.presentationSnapshot, source);
     }
     return this.presentationSnapshot;
   }
@@ -530,34 +565,11 @@ class MatchedStylesPseudoStateAdapter implements PseudoStateDataSource {
       }
       return;
     }
-    const windowState = rulesWindowState(message);
-    if (windowState === "incompatible") {
-      this.selectionRevision = undefined;
-      this.lastReady = undefined;
-      this.beginBoundary("mismatch", true);
-      return;
-    }
-    if (windowState === "linked") {
-      this.resumeBoundary("disconnected");
-      return;
-    }
-    if (isConnectedPeer(message)) {
-      this.resumeBoundary("disconnected");
-      return;
-    }
-    if (
-      windowState === "offline" ||
-      windowState === "reconnecting" ||
-      windowState === "notLinked" ||
-      windowState === "linking" ||
-      windowState === "rateLimited" ||
-      windowState === "error" ||
-      isIdeDisconnectedState(message) ||
-      isDisconnectedPeer(message)
-    ) {
-      this.lastReady = undefined;
-      this.beginBoundary("disconnected", true);
-    }
+    // The preview is browser-local by design: it moves only between the panel,
+    // the background and the inspected page, and never over the IDE bridge. So
+    // the IDE's window, peer and link state say nothing about whether it can
+    // run, and gating on them left `:hov` permanently dead for anyone reading
+    // styles without an editor linked.
   }
 
   public contentLeaseReplaced(): void {
@@ -858,14 +870,73 @@ const LOADING_RULES_PRESENTATION: RulesPresentationSnapshot = Object.freeze({
   state: "loading",
 });
 
+interface RetainedRules {
+  readonly selection: RulesSelectionIdentity;
+  readonly matchedStyles: MatchedStylesSnapshot;
+}
+
+interface RulesSelectionIdentity {
+  readonly documentEpoch: number;
+  readonly nodeRef: string;
+  readonly selectionRevision: number;
+}
+
+/** Rules already on screen are only reusable for the same selection. */
+function retainedRules(
+  presentation: RulesPresentationSnapshot,
+  source: MatchedStylesModelSnapshot,
+): RetainedRules | undefined {
+  if (
+    (presentation.state !== "ready" &&
+      presentation.state !== "partial" &&
+      presentation.state !== "loading") ||
+    !presentation.matchedStyles ||
+    !source.key
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    selection: rulesSelectionIdentity(source.key),
+    matchedStyles: presentation.matchedStyles,
+  });
+}
+
+function rulesSelectionIdentity(
+  key: RulesSelectionIdentity,
+): RulesSelectionIdentity {
+  return Object.freeze({
+    documentEpoch: key.documentEpoch,
+    nodeRef: key.nodeRef,
+    selectionRevision: key.selectionRevision,
+  });
+}
+
+function sameRulesSelection(
+  left: RulesSelectionIdentity,
+  right: RulesSelectionIdentity,
+): boolean {
+  return left.documentEpoch === right.documentEpoch &&
+    left.nodeRef === right.nodeRef &&
+    left.selectionRevision === right.selectionRevision;
+}
+
 function projectRulesPresentation(
   source: MatchedStylesModelSnapshot,
+  retained: RetainedRules | undefined,
 ): RulesPresentationSnapshot {
   switch (source.state) {
     case "idle":
       return EMPTY_RULES_PRESENTATION;
-    case "loading":
-      return LOADING_RULES_PRESENTATION;
+    case "loading": {
+      const carried = retained &&
+          source.key &&
+          sameRulesSelection(retained.selection, source.key)
+        ? retained.matchedStyles
+        : undefined;
+      return carried
+        ? Object.freeze({ state: "loading", matchedStyles: carried })
+        : LOADING_RULES_PRESENTATION;
+    }
     case "error":
       return Object.freeze({
         state: "error",
@@ -1078,23 +1149,6 @@ function isDisconnectedPeer(message: unknown): boolean {
       descriptors.connected?.enumerable === true &&
       Object.hasOwn(descriptors.connected, "value") &&
       descriptors.connected.value === false;
-  } catch {
-    return false;
-  }
-}
-
-function isConnectedPeer(message: unknown): boolean {
-  try {
-    if (typeof message !== "object" || message === null || Array.isArray(message)) {
-      return false;
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(message);
-    return descriptors.type?.enumerable === true &&
-      Object.hasOwn(descriptors.type, "value") &&
-      descriptors.type.value === "peerState" &&
-      descriptors.connected?.enumerable === true &&
-      Object.hasOwn(descriptors.connected, "value") &&
-      descriptors.connected.value === true;
   } catch {
     return false;
   }

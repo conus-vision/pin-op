@@ -52,7 +52,21 @@ describe("ActiveEditorCoordinator", () => {
     unsupported.coordinator.select(inspectMessage("unsupported"));
     await unsupported.flush();
 
-    const noFacts = outcomeHarness();
+    // A real registry dispatches no plugin when the browser sent no facts a
+    // resolver declares, so the fixture has to return no candidates too.
+    const noFacts = outcomeHarness({
+      dispatch: {
+        kind: "resolved",
+        resolution: {
+          selectionMessageId: "no-facts",
+          documentUri: "file:///src/app.css",
+          documentVersion: 1,
+          matches: [],
+          diagnostics: [],
+        },
+        candidates: [],
+      },
+    });
     noFacts.coordinator.select(inspectMessage("no-facts", false));
     await noFacts.flush();
 
@@ -60,6 +74,34 @@ describe("ActiveEditorCoordinator", () => {
       "unsupported-document",
     );
     expect(noFacts.outcomes[0]?.outcome.status).toBe("no-facts");
+  });
+
+  it("keeps a DOM-only resolution out of the no-facts short circuit", async () => {
+    const harness = outcomeHarness({
+      activeEditor: editor("file:///src/page.php", "php", 1),
+      dispatch: {
+        kind: "resolved",
+        resolution: {
+          selectionMessageId: "dom-only",
+          documentUri: "file:///src/page.php",
+          documentVersion: 1,
+          matches: [resolvedMatch("selected", 0, 12, "pin-op.php")],
+          diagnostics: [],
+        },
+        candidates: [{
+          pluginId: "pin-op.php",
+          status: "matched",
+          matches: [resolvedMatch("selected", 0, 12, "pin-op.php")],
+          diagnostics: [],
+        }],
+      },
+    });
+
+    harness.coordinator.select(inspectMessage("dom-only", false));
+    await harness.flush();
+
+    expect(harness.outcomes[0]?.outcome.status).toBe("matched");
+    expect(harness.outcomes[0]?.outcome.matches).toHaveLength(1);
   });
 
   it("counts normalized selected ranges before immediate-parent ranges", async () => {

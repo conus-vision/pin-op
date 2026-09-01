@@ -214,6 +214,21 @@ describe("RulesSourceController", () => {
     },
   );
 
+  it("re-resolves when the map a generated-only answer could not use arrives", async () => {
+    const harness = controllerHarness();
+    await harness.controller.acceptInspect(inspect("inspect-1", "rule-a"));
+    expect(harness.controller.dependencyUris()).toContain(
+      "file:///workspace/dist/app.css.map",
+    );
+
+    // A build writes the CSS first and its map a moment later. The map is not
+    // among the answer's dependencies, because the answer could not use it -
+    // watching it anyway is what lets its arrival resolve the origin again.
+    await expect(harness.controller.dependencyChanged(
+      "file:///workspace/dist/app.css.map",
+    )).resolves.toBe(true);
+  });
+
   it("commits a locally accepted generation before a reentrant republish fails", async () => {
     let acceptReplacement = false;
     let republish: Promise<void> | undefined;
@@ -234,8 +249,11 @@ describe("RulesSourceController", () => {
       inspectMessageId: "inspect-1",
       rulesGeneration: 1,
     });
+    // The map that belongs to a watched stylesheet is watched with it, so a
+    // build writing the map after the CSS resolves the origin again.
     expect(harness.controller.dependencyUris()).toEqual([
       "file:///workspace/dist/app.css",
+      "file:///workspace/dist/app.css.map",
     ]);
     expect(harness.failures).toEqual(["rules-sources-send-failed"]);
 

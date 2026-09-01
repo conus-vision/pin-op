@@ -41,6 +41,7 @@ import {
 import { createPinOpApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
+import { PhpSourcePlugin } from "../sourcePlugins/phpSourcePlugin.js";
 import { ScssSourcePlugin } from "../sourcePlugins/scssSourcePlugin.js";
 import type { TextDocumentLike } from "../sourcePlugins/sourceDocument.js";
 import {
@@ -244,6 +245,7 @@ export function createPresenterRuntime(
   const builtIns: Disposable[] = [
     registry.register(new CssSourcePlugin()),
     registry.register(new ScssSourcePlugin()),
+    registry.register(new PhpSourcePlugin()),
   ];
   const workspace = options.workspace ?? new VsCodeSourceWorkspace(
     createRulesWorkspaceHost(host),

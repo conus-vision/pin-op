@@ -4,16 +4,16 @@ Source plugins connect runtime facts from a browser selection to ranges in the
 active VS Code document. A plugin is a separately installed VS Code extension;
 Pin-op never loads plugin code or packages from the inspected workspace.
 
-Only CSS and SCSS plugins ship as production implementations today. The public
-API is intentionally general enough for framework and template integrations.
+CSS, SCSS, and PHP ship as production implementations today. The public API is
+intentionally general enough for framework and template integrations.
 
 This plugin API remains active-document-only. It supplies highlighting and the
 Inspector's Source tab; it does not mint cross-file Rules open authorities.
 The built-in Rules resolver owns exact workspace CSS/SCSS/source-map verification
 and only an explicit Rules origin click may switch VS Code using a current
 IDE-issued opaque authority. No workspace URI/path, full range, document
-version, or command crosses the bridge. First-party PHP/template providers and
-a new Source tab remain future scope.
+version, or command crosses the bridge. PHP ships as a first-party provider;
+Twig, Blade, and other template providers remain future scope.
 
 ## Extension Setup
 
@@ -439,11 +439,57 @@ conditionals, hooks, and server rendering erase source identity. Exact-looking
 DOM-only matches must remain `heuristic`; use source maps or instrumentation for
 stronger confidence.
 
-These framework sections define third-party authoring constraints, not shipped
-first-party providers. PHP, Twig, Blade, WordPress, ACF, and other template
-providers remain future scope. Missing or invalid CSS source maps in the built-in
-Rules resolver show verified generated CSS only, with no approximate SCSS
-origin.
+PHP is the one shipped first-party template provider; see **Built-In PHP
+Provider** below. The remaining framework sections define third-party authoring
+constraints. Twig, Blade, and other template providers remain future scope.
+Missing or invalid CSS source maps in the built-in Rules resolver show verified
+generated CSS only, with no approximate SCSS origin.
+
+## Built-In PHP Provider
+
+`pin-op.php` resolves the active `php` file document. It consumes the built-in
+`dom-attribute` facts and the `php.template` and `wordpress.acf-block`
+instrumentation kinds.
+
+An instrumented fact wins when its `payload.template` (or `source.uri`)
+resolves `exact` to the active document. Its protocol `source` location becomes
+the match range and the match is `instrumented`.
+
+Without instrumentation the provider searches the document's literal markup in
+evidence tiers, strongest first:
+
+1. the element's `id`;
+2. its `data-*`, `aria-*`, and `role` attributes;
+3. its classes.
+
+A template holds only an element's static markup, so containment runs template
+into element: every class the template writes literally must be on the selected
+element, which may carry further classes and attributes that PHP or scripts
+added later. A literal `id`, class, or attribute value the element contradicts
+rules that template element out, and the tag name must agree.
+
+The strongest tier with candidates wins, and within it the most specific
+candidates - those matching the most literal classes and attributes. Each one
+produces a `heuristic` match over its element's range, because a template
+routinely writes the same block more than once: the branches of an `if`/`else`
+render it for different page types, and all of them are real candidate origins.
+Beyond eight equally strong candidates the result is reported as ambiguous
+instead, and weaker tiers are not tried after a tier answers. `<?php ... ?>`
+blocks are opaque to the scan, so an `id` a PHP expression produced never
+matches, and only the literal half of a `class` attribute is compared.
+
+The provider mints no cross-file authority. It resolves only the active
+document, exactly like the CSS and SCSS providers.
+
+## Built-In DOM Attribute Facts
+
+The browser sends the selected and parent element identity in each target's
+`subject`. Before dispatch the VS Code host restates that bounded identity as
+built-in `dom-attribute` facts: `id`, `class` (space-separated), and each
+permitted `data-*`, `aria-*`, or `role` attribute. Declare `dom-attribute` in
+`supportedFactKinds` to have a DOM-driven resolver dispatched for an ordinary
+selection; read the tag name from `subject.metadata.tag`, which the facts do not
+carry. These facts are host-side only and add nothing to the wire envelope.
 
 ## Versioning And Distribution
 

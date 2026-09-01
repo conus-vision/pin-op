@@ -49,6 +49,100 @@ describe("MatchedStylesModel", () => {
     });
   });
 
+  it("retries a cancelled load the resizing page has already moved past", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      async request(request) {
+        requests.push(request as StylesGetMatchedRequest);
+        // The first collect races the page's own revision advance; the second
+        // lands on the settled authority.
+        return requests.length === 1
+          ? { type: "styles.error", requestId: request.requestId, code: "cancelled" }
+          : matchedResponse({
+            request,
+            stylesRevision: 10,
+            stylesheetRevision: 3,
+          });
+      },
+    });
+
+    vi.useFakeTimers();
+    try {
+      await model.select(selectionIdentity());
+      await flushAsync();
+      await vi.advanceTimersByTimeAsync(200);
+      await flushAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(requests).toHaveLength(2);
+    expect(model.snapshot()).toMatchObject({
+      state: "ready",
+      key: { stylesRevision: 10, stylesheetRevision: 3 },
+    });
+  });
+
+  it("stops retrying a page whose style authority never settles", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      async request(request) {
+        requests.push(request as StylesGetMatchedRequest);
+        return { type: "styles.error", requestId: request.requestId, code: "cancelled" };
+      },
+    });
+
+    vi.useFakeTimers();
+    try {
+      await model.select(selectionIdentity());
+      await flushAsync();
+      for (let attempt = 0; attempt < 13; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(200);
+        await flushAsync();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(requests).toHaveLength(13);
+    expect(model.snapshot()).toMatchObject({
+      state: "error",
+      errorCode: "cancelled",
+    });
+  });
+
+  it("refills the cancelled budget whenever the page reports progress", async () => {
+    const requests: StylesGetMatchedRequest[] = [];
+    const model = new MatchedStylesModel({
+      async request(request) {
+        requests.push(request as StylesGetMatchedRequest);
+        return { type: "styles.error", requestId: request.requestId, code: "cancelled" };
+      },
+    });
+
+    vi.useFakeTimers();
+    try {
+      await model.select(selectionIdentity());
+      await flushAsync();
+      for (let attempt = 0; attempt < 13; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(200);
+        await flushAsync();
+      }
+      const spent = requests.length;
+
+      // A stylesheet swap that keeps replacing sheets keeps cancelling, but
+      // each invalidation is the page moving on, not the same race repeating.
+      model.invalidate(stylesInvalidated(20, 6));
+      await flushAsync();
+      await vi.advanceTimersByTimeAsync(200);
+      await flushAsync();
+
+      expect(requests.length).toBeGreaterThan(spent + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("atomically adopts pseudo-state authority and fences a delayed pre-preview response", async () => {
     const requests: StylesRequest[] = [];
     const staleRefresh = deferred<StylesResponse>();

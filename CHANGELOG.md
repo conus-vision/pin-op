@@ -46,6 +46,92 @@ All notable changes to Pin-op will be documented in this file.
 - A line under the panel's status row naming the product, its author and Conus
   Vision: `Pin-op by Volodymyr Moskvin © 2026 Conus Vision`, where the author
   opens a message and the company opens its site.
+- A built-in PHP source provider for the active PHP document. It uses
+  `php.template` and `wordpress.acf-block` instrumentation facts when a runtime
+  emits them, and otherwise searches the template's literal markup by `id`, then
+  `data-*`/`aria-*`/`role` attributes, then classes. Containment runs template
+  into element, so classes and attributes PHP or scripts add later never hide
+  the template that wrote the static ones, and a contradicting literal value
+  rules a template element out. Equally strong candidates are all listed, since
+  a template routinely writes one block in several conditional branches; beyond
+  eight the result is reported as ambiguous instead of guessed.
+- Built-in `dom-attribute` facts derived host-side from the selected and parent
+  element identity, so DOM-driven source resolvers dispatch on an ordinary
+  selection. Nothing new crosses the bridge.
+- A link walkthrough in the Source tab whenever no IDE is connected, naming
+  where the seven-digit code is copied from and where it is pasted. The pane
+  follows the connection state rather than a single message, so it shows the
+  walkthrough from the first paint and keeps it across panel recovery.
+
+### Fixed
+
+- Previewed `:hover` and `:focus` styles reach the page. A mirror is written
+  from the longhands the CSSOM enumerates for a shorthand, and the engine hands
+  that back as the shorthand it parsed. The mount check compared the two as text
+  and read the difference as tampering, dropping the whole mirror - so on any
+  stylesheet holding one such shorthand, which is most real ones, ticking
+  `:hover` listed the rule in Rules and changed nothing on the page. The
+  expectation now goes through the same parser before the two serializations are
+  compared.
+- `:hov` no longer needs a linked editor. The preview never leaves the browser:
+  it moves only between the panel, the background worker, and the inspected
+  page. Disabling it on the IDE's window and peer state left the control dead
+  for anyone reading styles without VS Code linked, reporting that the browser
+  was disconnected while the Rules pane was plainly working.
+- The `:hov` menu stays on screen while a tick settles. Ticking a box began the
+  atomic replacement, which disabled the control, which closed the menu - so the
+  box vanished from under the pointer that had just ticked it, and every reload
+  of the same element closed it again. A busy menu now keeps its boxes visible
+  and only disables them; a control with nothing left to offer still closes.
+- Rules origins survive an applicability-only invalidation. Resizing the page
+  re-evaluates media queries, which advances the styles revision but not the
+  stylesheet revision, so every rule reference - and every CSS/SCSS origin the
+  IDE published against it - is still current. The panel used to drop them on
+  any invalidation, which is what lost the source links on resize.
+- A reload of the same element keeps its rules on screen. The pane reports
+  itself busy through `aria-busy` instead of emptying and filling again, so
+  Refresh reads as an update rather than as the Rules list resetting.
+- Auto Refresh no longer leaves Rules on `Styles unavailable (cancelled)`.
+  Replacing a stylesheet keeps the page's style authority moving for a moment,
+  because swapping the link is itself a mutation the applicability observer
+  sees. The retries a cancelled collect is given all ran in the same turn, so
+  they were spent against a page that had not settled and the pane stayed on the
+  error. Each retry now waits a beat.
+- Auto Refresh republishes the evidence the page has after the swap, not the
+  evidence it had before it. A refresh republishes the retained selection, and a
+  renewal arriving while that republish was in flight - the page reporting that
+  its own evidence moved again, which a stylesheet swap always causes - was
+  recorded and then dropped when the republish succeeded. The IDE was left
+  resolving rule positions from the stylesheet the refresh had already replaced,
+  so every origin fell back to generated CSS until the element was picked again.
+- Rules origins recover when a build writes the source map after the CSS. A
+  resolution that lands between the two verifies against a map that no longer
+  describes this CSS and correctly falls back to generated CSS positions, but it
+  recorded no map among its dependencies - so the map's own arrival changed
+  nothing and the origin stayed on `style.css` until the element was picked
+  again. The map belonging to a watched stylesheet is now watched with it.
+  Watching costs a re-resolution; it does not make the CSS answer stale.
+- The cancelled-collect retry budget covers a whole stylesheet rebuild rather
+  than a single race, and any invalidation refills it.
+- DOM recovery no longer waits out the ordinary DOM request timeout. A reload
+  replaces the content session, and the panel is told when the old one goes
+  rather than when the new one arrives, so an optimistic root request can land
+  in that gap and be neither answered nor refused. It sat on the 15-second
+  request timeout, holding the tree frozen on `Restoring DOM` with the Rules
+  pane empty, and then gave up on the selection. Recovery now gives the page a
+  far shorter deadline of its own, reports "not ready", and retries.
+- A tab reload no longer empties the DOM tree. The panel is told its content
+  lease is gone the moment the old one is replaced, which is before the new one
+  has attached, so the first recovery attempt could find no session at all and
+  reset the tree to a root the reloading page could not fill. The frozen tree is
+  now held while the panel waits for the new session, bounded, and the previous
+  selection is restored from it. Saving a PHP file is the ordinary way to hit
+  this.
+- A cancelled matched-styles collection retries instead of settling on
+  `Styles unavailable (cancelled)`. `cancelled` means the page moved its style
+  authority mid-collect, which a resize drag does repeatedly; the last
+  cancellation carried no invalidation behind it to reload from, so the pane
+  stayed on an error the page had already moved past. Retries are bounded.
 
 ### Changed
 

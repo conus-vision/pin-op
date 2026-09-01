@@ -148,6 +148,20 @@ strategy with the exact local text `Workspace-bound: <folder>` (for example,
   and diagnose the generated CSS, but it can never authorize a basename-only
   original SCSS source. Missing, invalid, ambiguous, unmapped, and
   other-document outcomes fail closed.
+- PHP resolves the active PHP document. A development runtime that emits a
+  `php.template` or `wordpress.acf-block` fact gives an `instrumented` range.
+  Otherwise Pin-op searches the template's literal markup for the element's
+  `id`, then its `data-*`, `aria-*`, and `role` attributes, then its classes,
+  and highlights the first tier that answers. Those matches are `heuristic`. A
+  template holds only an element's static markup, so the comparison runs
+  template into element: every class and value the template writes literally
+  must be on the selected element, which may carry further classes and
+  attributes added later by PHP or scripts. A literal value the element
+  contradicts rules that template element out, and `<?php ... ?>` output is
+  never matched literally. A template often writes one block twice - the
+  branches of an `if`/`else` render it for different page types - so equally
+  strong candidates are all listed; beyond eight the result is reported as
+  ambiguous instead of guessed.
 - Compatible separately installed source plugins can resolve other active
   document types through the versioned source-plugin API.
 
@@ -196,8 +210,11 @@ compare, so it is identified by its source map and by what it declares directly;
 its origin opens the line where those declarations are written, which may be the
 mixin rather than the rule that includes it.
 
-Source remains active-document-only. First-party PHP/template providers remain
-future scope.
+Source remains active-document-only. A built-in PHP provider reads the
+active PHP document, using instrumented `php.template` or
+`wordpress.acf-block` facts when a runtime emits them and otherwise matching
+the document's literal markup heuristically. Twig, Blade, and other template
+providers remain future scope.
 
 ## Preview `:hover` And `:focus`
 
@@ -247,7 +264,13 @@ reload. If that happens, reload the inspected page before continuing.
 
 The Inspector's Source tab shows bounded excerpts
 from the active IDE document only. Selected matches are expanded; the immediate
-Parent group is collapsed by default. A click sends only the excerpt's opaque
+Parent group is collapsed by default.
+
+Excerpts exist only while a VS Code window is linked, so with no IDE connected
+the tab shows what to do instead of an empty list: open the project in VS Code,
+click the Pin-op status bar item to copy that window's seven-digit code, and
+paste it into the field at the top of the panel before selecting **Link**. The
+same walkthrough appears when a linked IDE disconnects. A click sends only the excerpt's opaque
 match ID and moves the VS Code cursor to that exact current range after the IDE
 revalidates it. It cannot name or open an arbitrary path. Previous/Next remains
 Selected-only and does not include Parent matches.
@@ -263,6 +286,12 @@ or window constraints change, so restoring enough workspace re-enters split or
 stack. The toolbar and connection code remain available in every layout. The
 centered footer shows the compact Pin-op mark and name, a mail link on Volodymyr
 Moskvin, and `(c) 2026 Conus Vision` linked to `https://conus.vision`.
+
+Resizing the page re-evaluates media queries, so Rules re-queries what now
+applies. The rules already on screen stay there while it does, and their exact
+CSS/SCSS origins stay clickable: only an actual stylesheet change re-mints the
+rule identities those origins are bound to. **Refresh styles** behaves the same
+way - the list updates in place instead of emptying first.
 
 Turning **IDE Highlight** off clears only VS Code decorations. Resolution,
 Source excerpts, exact Source opening, and Selected-only navigation remain

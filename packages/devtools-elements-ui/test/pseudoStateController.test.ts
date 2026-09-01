@@ -133,6 +133,57 @@ describe(":hov preview controller", () => {
     ).toBe(true);
   });
 
+  it("keeps the open menu on screen while a tick and a reload settle", async () => {
+    const harness = createHarness(ready([]));
+    const update = deferred<void>();
+    harness.pseudo.nextUpdate = update.promise;
+    const button = part(harness.root, "pseudo-state-button");
+    button.dispatch("click");
+    const menu = part(harness.root, "pseudo-state-menu");
+    const hover = pseudoChoice(menu, "hover") as CheckboxElement;
+    expect(menu.hidden).toBe(false);
+
+    hover.checked = true;
+    hover.dispatch("change");
+
+    // Ticking a box must not take the box away: it stays visible and checked,
+    // only disabled, while the atomic replacement is in flight.
+    expect(menu.hidden).toBe(false);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(hover.checked).toBe(true);
+    expect(hover.disabled).toBe(true);
+
+    harness.pseudo.publish(snapshot({ state: "loading", states: ["hover"] }));
+    expect(part(harness.root, "pseudo-state-menu").hidden).toBe(false);
+
+    harness.pseudo.publish(ready(["hover"]));
+    update.resolve();
+    await update.promise;
+    await Promise.resolve();
+
+    const settled = part(harness.root, "pseudo-state-menu");
+    expect(settled.hidden).toBe(false);
+    expect((pseudoChoice(harness.root, "hover") as CheckboxElement).checked)
+      .toBe(true);
+    expect((pseudoChoice(harness.root, "hover") as CheckboxElement).disabled)
+      .toBe(false);
+  });
+
+  it("reopens nothing on its own after the control loses its selection", () => {
+    const harness = createHarness(ready([]));
+    const button = part(harness.root, "pseudo-state-button");
+    button.dispatch("click");
+    expect(part(harness.root, "pseudo-state-menu").hidden).toBe(false);
+
+    harness.pseudo.publish(unavailable("no-selection"));
+    expect(part(harness.root, "pseudo-state-menu").hidden).toBe(true);
+
+    harness.pseudo.publish(ready([]));
+    expect(part(harness.root, "pseudo-state-menu").hidden).toBe(true);
+    expect(part(harness.root, "pseudo-state-button").getAttribute("aria-expanded"))
+      .toBe("false");
+  });
+
   it.each([
     ["no-selection", /select/i],
     ["recovery", /recover/i],

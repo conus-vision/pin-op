@@ -28,6 +28,7 @@ export class PseudoStateController {
   private sourceRevision = 0;
   private updateRevision = 0;
   private disposed = false;
+  private menuOpen = false;
   private localError: string | undefined;
   private returnFocusAfterUpdate = false;
   private readonly onButtonClickListener = (): void => this.toggleMenu();
@@ -200,8 +201,8 @@ export class PseudoStateController {
 
   private toggleMenu(): void {
     if (this.disposed || this.button.disabled) return;
-    if (this.menu.hidden) this.openMenu(false);
-    else this.closeMenu(false);
+    if (this.menuOpen) this.closeMenu(false);
+    else this.openMenu(false);
   }
 
   private onButtonKeyDown(event: Event): void {
@@ -222,15 +223,20 @@ export class PseudoStateController {
 
   private openMenu(focusFirst: boolean): void {
     if (this.disposed || this.button.disabled) return;
-    this.menu.hidden = false;
-    this.button.setAttribute("aria-expanded", "true");
+    this.menuOpen = true;
+    this.showMenu(true);
     if (focusFirst) this.choices.get("hover")?.focus();
   }
 
   private closeMenu(returnFocus: boolean): void {
-    this.menu.hidden = true;
-    this.button.setAttribute("aria-expanded", "false");
+    this.menuOpen = false;
+    this.showMenu(false);
     if (returnFocus && !this.disposed) this.button.focus();
+  }
+
+  private showMenu(open: boolean): void {
+    this.menu.hidden = !open;
+    this.button.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   private onChoiceChanged(
@@ -302,7 +308,13 @@ export class PseudoStateController {
     this.button.setAttribute("aria-busy", busy ? "true" : "false");
     for (const choice of this.choices.values()) choice.disabled = disabled;
     this.renderChoices(this.displayedStates());
-    if (disabled) this.closeMenu(false);
+    // An open menu is the reader's own choice, and a change they made is the
+    // most common reason it re-renders. Only a control with nothing to offer -
+    // no selection, a lost browser, an error - takes that choice back; a menu
+    // that is merely busy stays open with its choices disabled, so the boxes
+    // do not vanish from under the pointer that just ticked one.
+    if (!this.isAvailable()) this.menuOpen = false;
+    this.showMenu(this.menuOpen);
 
     const error = this.localError ?? (this.current.state === "error"
       ? this.current.message ?? "Pseudo-state preview is unavailable"
@@ -337,6 +349,11 @@ export class PseudoStateController {
 
   private isInteractive(): boolean {
     return this.current.state === "ready" || this.current.state === "partial";
+  }
+
+  /** Whether the control still has choices to show, busy or not. */
+  private isAvailable(): boolean {
+    return this.current.state !== "unavailable" && this.current.state !== "error";
   }
 
   private removeOwnedListeners(): void {

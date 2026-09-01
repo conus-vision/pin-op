@@ -510,8 +510,15 @@ export class ElementsInspectorShell {
     let messageText: string | undefined;
     let messageRole: "alert" | "status" = "status";
     if (snapshot.state === "loading") {
-      rulesPane.clear();
-      messageText = "Loading styles";
+      // Keeping the rules a reload started from means a refresh reads as an
+      // update rather than as the pane emptying and filling again. `aria-busy`
+      // above already reports that the pane is not current.
+      if (snapshot.matchedStyles) {
+        rulesPane.render(snapshot.matchedStyles);
+      } else {
+        rulesPane.clear();
+        messageText = "Loading styles";
+      }
     } else if (snapshot.state === "partial") {
       // A partial snapshot still shows every rule it has, and the footer already
       // reports what could not be read; the pane keeps its room for the rules.

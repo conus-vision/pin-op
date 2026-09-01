@@ -8,6 +8,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { SourcePaneController } from "../src/sourcePaneController.js";
 import {
+  SOURCE_PANE_LINK_GUIDANCE,
   SourcePaneView,
   type SourcePaneViewState,
 } from "../src/sourcePaneView.js";
@@ -270,6 +271,7 @@ describe("SourcePaneView", () => {
     { kind: "loading", statusText: "Loading source excerpts" },
     { kind: "empty", statusText: "No source matches" },
     { kind: "error", statusText: "Could not load source" },
+    { kind: "not-linked", statusText: "No IDE linked" },
     { kind: "incompatible", statusText: "Update extensions" },
   ])("moves inside focus to the structural $kind status", (state) => {
     const dispatch = vi.fn();
@@ -420,6 +422,7 @@ describe("SourcePaneView", () => {
     { kind: "loading", statusText: "Loading source excerpts" },
     { kind: "empty", statusText: "No source matches" },
     { kind: "error", statusText: "Could not load <source>" },
+    { kind: "not-linked", statusText: "No <IDE> linked" },
     { kind: "incompatible", statusText: "Update <extensions>" },
   ])("renders and disables interactions in $kind state", (state) => {
     const dispatch = vi.fn();
@@ -528,6 +531,37 @@ describe("SourcePaneView", () => {
     harness.controller.acceptNavigationState(navigationState("selected-1"));
     expect(dispatch).not.toHaveBeenCalled();
     expect(harness.root.children).toHaveLength(0);
+  });
+
+  it("says where the link code comes from and where it goes when unlinked", () => {
+    const harness = createHarness([excerpt("selected-1", "selected")]);
+
+    harness.view.setState({ kind: "not-linked", statusText: "No IDE linked" });
+
+    const status = harness.root.findByData("state", "not-linked");
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(harness.root.text()).toContain("No IDE linked");
+    expect(harness.root.text()).toContain(SOURCE_PANE_LINK_GUIDANCE.intro);
+    for (const step of SOURCE_PANE_LINK_GUIDANCE.steps) {
+      expect(harness.root.text()).toContain(step);
+    }
+    expect(harness.root.text()).toContain("VS Code status bar");
+    expect(harness.root.text()).toContain("this panel");
+    expect(harness.dom.innerHtmlWrites).toBe(0);
+    expect(status?.findTag("ol")?.children).toHaveLength(
+      SOURCE_PANE_LINK_GUIDANCE.steps.length,
+    );
+  });
+
+  it("replaces the unlinked guidance once matches are published again", () => {
+    const harness = createHarness([excerpt("selected-1", "selected")]);
+    harness.view.setState({ kind: "not-linked", statusText: "IDE disconnected" });
+    expect(harness.root.findByData("state", "not-linked")).toBeDefined();
+
+    harness.view.setState({ kind: "ready" });
+
+    expect(harness.root.findByData("state", "not-linked")).toBeUndefined();
+    expect(harness.root.text()).toContain("color: red");
   });
 
   it("contains listener and fake-DOM failures", () => {

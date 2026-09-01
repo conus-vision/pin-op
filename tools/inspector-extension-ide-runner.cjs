@@ -4,7 +4,7 @@
 // soon as this function resolves.
 "use strict";
 
-const { writeFile, access } = require("node:fs/promises");
+const { writeFile, readFile, access, rm } = require("node:fs/promises");
 const vscode = require("vscode");
 
 const HANDSHAKE_TIMEOUT_MS = 60_000;
@@ -45,13 +45,61 @@ exports.run = async function run() {
     throw error;
   }
 
+  // Auto Refresh starts at an editor save, which nothing outside the host can
+  // produce. The smoke asks for one through this file so the refresh path can
+  // be driven end to end instead of only from its file watchers.
+  const commandPath = `${handshakePath}.command`;
+  const resultPath = `${handshakePath}.command-result`;
   const deadline = Date.now() + HOST_LIFETIME_MS;
   while (Date.now() < deadline) {
     if (await exists(stopPath)) return;
+    await runPendingCommand(commandPath, resultPath, note);
     await delay(250);
   }
   throw new Error("The Inspector smoke never released the VS Code host");
 };
+
+/**
+ * Applies one queued edit-and-save. The command file is removed first, so a
+ * command runs exactly once however long the save takes.
+ */
+async function runPendingCommand(commandPath, resultPath, note) {
+  let command;
+  try {
+    command = JSON.parse(await readFile(commandPath, "utf8"));
+  } catch {
+    return;
+  }
+  try {
+    await rm(commandPath, { force: true });
+  } catch {
+    return;
+  }
+  try {
+    const uri = vscode.Uri.file(command.path);
+    const document = await vscode.workspace.openTextDocument(uri);
+    const edit = new vscode.WorkspaceEdit();
+    if (command.prepend) {
+      edit.insert(uri, new vscode.Position(0, 0), String(command.prepend));
+    }
+    if (command.append) {
+      const end = document.lineAt(document.lineCount - 1).range.end;
+      edit.insert(uri, end, String(command.append));
+    }
+    if (!await vscode.workspace.applyEdit(edit)) {
+      throw new Error("the workspace edit was refused");
+    }
+    if (!await document.save()) throw new Error("the document did not save");
+    await writeFile(resultPath, JSON.stringify({ saved: command.path }), "utf8");
+  } catch (error) {
+    await note("command failed", error?.stack ?? error);
+    await writeFile(
+      resultPath,
+      JSON.stringify({ error: String(error?.message ?? error) }),
+      "utf8",
+    );
+  }
+}
 
 /**
  * The link code is only published through the clipboard command, so poll it:

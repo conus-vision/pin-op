@@ -3580,6 +3580,53 @@ describe("PseudoStatePreview", () => {
     expect(owner.parentNode?.children).toEqual([owner]);
   });
 
+  it("accepts a committed serialization the engine rewrote back into a shorthand", () => {
+    const environment = createEnvironment();
+    const owner = environment.owner("style");
+    // The CSSOM enumerates `border-color` as four longhands, so that is what
+    // the mirror asks for; the engine parses them and answers in the shorthand.
+    environment.document.nextStyleSheetMode = "collapse-shorthand";
+    environment.document.normalizationStylesheetMode = "collapse-shorthand";
+
+    const result = environment.preview.apply(
+      environment.selected as unknown as Element,
+      [environment.entry(owner, [
+        styleRule(".button:hover", [
+          ["border-top-color", "rgb(180, 35, 24)", ""],
+          ["border-right-color", "rgb(180, 35, 24)", ""],
+          ["border-bottom-color", "rgb(180, 35, 24)", ""],
+          ["border-left-color", "rgb(180, 35, 24)", ""],
+        ]),
+      ])],
+      ["hover"],
+    );
+
+    expect(result).toMatchObject({ states: ["hover"], mountedRuleCount: 1 });
+    expect(result.diagnostics).not.toContain("style-mount-rejected");
+  });
+
+  it("still rejects a commit its own parser does not produce", () => {
+    const environment = createEnvironment();
+    const owner = environment.owner("style");
+    // The mounted sheet rewrote the rule, but asking the same parser for the
+    // mirror's text does not produce that rewrite, so it is not the engine's
+    // own serialization and the mount stays rejected.
+    environment.document.nextStyleSheetMode = "same-count-wrong";
+    environment.document.normalizationStylesheetMode = "collapse-shorthand";
+
+    const result = environment.preview.apply(
+      environment.selected as unknown as Element,
+      [environment.entry(owner, [
+        styleRule(".button:hover", [["color", "red", ""]]),
+      ])],
+      ["hover"],
+    );
+
+    expect(result).toMatchObject({ states: ["hover"], mountedRuleCount: 0 });
+    expect(result.diagnostics).toContain("style-mount-rejected");
+    expect(owner.parentNode?.children).toEqual([owner]);
+  });
+
   it("accepts an equivalent quoted URL serialization from committed CSSOM", () => {
     const environment = createEnvironment();
     const owner = environment.owner("link");
@@ -4246,7 +4293,7 @@ interface FakeSheet {
   media: { mediaText: string };
   replacedText?: string;
   replaceMode?: "normal" | "no-op" | "empty" | "unexpected" | "same-count-wrong" |
-    "same-count-custom-case" | "quote-urls" | "throw";
+    "same-count-custom-case" | "quote-urls" | "collapse-shorthand" | "throw";
   onReplaceSync?: () => void;
   replaceSync(text: string): void;
 }
@@ -4406,6 +4453,7 @@ class FakeRoot {
     | "persistent-reorder" = "normal";
   public insertMode: "normal" | "throw-after-insert" | "no-op" | "misplace" = "normal";
   public nextStyleSheetMode: FakeSheet["replaceMode"] = "normal";
+  public normalizationStylesheetMode: FakeSheet["replaceMode"] = "normal";
   public nextConstructableSheetMode: FakeSheet["replaceMode"] = "normal";
   public nextStyleTextMode: FakeElement["textWriteMode"] = "normal";
   public nextStyleProvenRoot: FakeRoot | undefined;
@@ -4594,6 +4642,23 @@ function previewCssomRules(
       declaration.prop = "--theme";
     });
   }
+  if (mode === "collapse-shorthand") {
+    // What a real engine does with the longhands the CSSOM enumerates for a
+    // shorthand: it gives the shorthand back.
+    parsed.walkRules((rule) => {
+      const sides = ["top", "right", "bottom", "left"]
+        .map((side) => rule.nodes.find((child) => (
+          child.type === "decl" && child.prop === `border-${side}-color`
+        )));
+      const [first] = sides;
+      if (
+        first?.type !== "decl" ||
+        sides.some((side) => side?.type !== "decl" || side.value !== first.value)
+      ) return;
+      first.prop = "border-color";
+      for (const side of sides.slice(1)) side?.remove();
+    });
+  }
   if (mode === "quote-urls") {
     parsed.walkDecls((declaration) => {
       declaration.value = declaration.value.replace(
@@ -4771,6 +4836,11 @@ function createEnvironment() {
     createStyleElement(rootDocument) {
       return (rootDocument as unknown as FakeRoot).createElement("style") as unknown as
         HTMLStyleElement;
+    },
+    createNormalizationStylesheet() {
+      const created = sheet([]);
+      created.replaceMode = document.normalizationStylesheetMode;
+      return created as unknown as CSSStyleSheet;
     },
     resolveOpenShadowRootHost: resolveShadowHost,
     testOnlyIntrinsics: structuralTestIntrinsics(),

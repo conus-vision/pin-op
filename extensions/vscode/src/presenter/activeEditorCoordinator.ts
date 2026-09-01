@@ -23,6 +23,7 @@ import type {
   SourcePluginDispatch,
   SourceResolution,
 } from "../sourcePlugins/types.js";
+import { isDomAttributeFact } from "../sourcePlugins/domFacts.js";
 import type { SelectionStore } from "./selectionStore.js";
 import { visibleMatches } from "./visibleMatches.js";
 
@@ -242,7 +243,10 @@ export class ActiveEditorCoordinator implements Disposable {
         return;
       }
 
-      if (factCount(selection) === 0) {
+      // Host-synthesized DOM identity facts accompany every selection, so
+      // `no-facts` still has to mean the browser sent no resolvable evidence
+      // and no resolver for this document ran on that identity alone.
+      if (dispatch.candidates.length === 0 && factCount(selection) === 0) {
         const resolution = { ...dispatch.resolution, matches: [] };
         this.publishCurrent(
           selection,
@@ -407,7 +411,8 @@ function emptyResolution(
 
 function factCount(selection: SelectionSnapshot): number {
   return selection.targets.reduce(
-    (count, target) => count + target.facts.length,
+    (count, target) =>
+      count + target.facts.filter((fact) => !isDomAttributeFact(fact)).length,
     0,
   );
 }

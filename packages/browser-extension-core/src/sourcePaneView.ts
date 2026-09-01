@@ -15,7 +15,21 @@ export type SourcePaneViewState =
   | { readonly kind: "loading"; readonly statusText: string }
   | { readonly kind: "empty"; readonly statusText: string }
   | { readonly kind: "error"; readonly statusText: string }
+  | { readonly kind: "not-linked"; readonly statusText: string }
   | { readonly kind: "incompatible"; readonly statusText: string };
+
+/**
+ * Source excerpts only exist while a VS Code window is linked, so the
+ * unlinked pane has to say where the link code comes from and where it goes.
+ */
+export const SOURCE_PANE_LINK_GUIDANCE = {
+  intro: "Source excerpts come from the linked VS Code window.",
+  steps: [
+    "Open your project in VS Code with the Pin-op extension installed.",
+    "Click the Pin-op item in the VS Code status bar to copy that window's seven-digit code.",
+    "Paste the code into the field at the top of this panel, then select Link.",
+  ],
+} as const;
 
 export interface SourcePaneViewOptions {
   readonly document: SourcePaneDocument;
@@ -311,12 +325,44 @@ export class SourcePaneView {
   }
 
   private createStatus(kind: Exclude<SourcePaneViewState["kind"], "ready">, text: string): HTMLElement {
+    if (kind === "not-linked") {
+      return this.createLinkGuidance(text);
+    }
     const status = this.document.createElement("p");
     status.className = `source-pane-status is-${kind}`;
     status.dataset.state = kind;
     status.setAttribute("tabindex", "-1");
     status.setAttribute("role", kind === "error" || kind === "incompatible" ? "alert" : "status");
     status.textContent = text;
+    return status;
+  }
+
+  private createLinkGuidance(text: string): HTMLElement {
+    const status = this.document.createElement("section");
+    status.className = "source-pane-status is-not-linked";
+    status.dataset.state = "not-linked";
+    status.setAttribute("tabindex", "-1");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-label", text);
+
+    const headline = this.document.createElement("p");
+    headline.className = "source-pane-status-headline";
+    headline.textContent = text;
+
+    const intro = this.document.createElement("p");
+    intro.className = "source-pane-guidance-intro";
+    intro.textContent = SOURCE_PANE_LINK_GUIDANCE.intro;
+
+    const steps = this.document.createElement("ol");
+    steps.className = "source-pane-guidance";
+    for (const step of SOURCE_PANE_LINK_GUIDANCE.steps) {
+      const item = this.document.createElement("li");
+      item.className = "source-pane-guidance-step";
+      item.textContent = step;
+      steps.append(item);
+    }
+
+    status.append(headline, intro, steps);
     return status;
   }
 

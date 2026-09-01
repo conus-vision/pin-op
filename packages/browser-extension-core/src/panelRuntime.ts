@@ -128,6 +128,15 @@ export type PanelRuntimePresentationFactory = (
  */
 const MAX_RECONNECT_RESTORE_RETRIES = 3;
 
+/**
+ * A tab reload tells the panel its content lease is gone the moment the old one
+ * is replaced, which is before the new one has attached. The first recovery
+ * attempt can therefore find no session at all. These bound how long the panel
+ * waits for it, holding the frozen tree meanwhile.
+ */
+const MAX_INVALIDATION_RECOVERY_RETRIES = 6;
+const INVALIDATION_RECOVERY_RETRY_MS = 200;
+
 type DomSelectionAuthorityEvent =
   | DomSelectionChangedEvent
   | DomSelectionClearedEvent;
@@ -187,6 +196,14 @@ export function startPanelRuntimeWithPresentation(
   let mismatchBlocked = false;
   let deferredLinkedState: unknown;
   let compatibilityFailureRouteDepth = 0;
+  // Source excerpts only exist while a VS Code window is linked, so the idle
+  // pane has to say how to link instead of asking for a selection it cannot
+  // resolve. Message order at startup is not stable, so the pane follows this
+  // connection state rather than any single message.
+  const invalidationRecoveryTimers = new Set<ReturnType<typeof setTimeout>>();
+  let ideLinked = false;
+  let unlinkedHeadline = "No IDE linked";
+  let sourcePaneStateKind: SourcePaneViewState["kind"] = "empty";
 
   let inspectTransport!: PanelInspectTransport;
   const sourcePaneController = new SourcePaneController((message) =>
@@ -267,10 +284,7 @@ export function startPanelRuntimeWithPresentation(
     removeSourceNavigationBindings,
     removeLayoutBindings,
   } = presentationBinding;
-  sourcePaneView.setState({
-    kind: "empty",
-    statusText: "Select an element to inspect",
-  });
+  setSourcePaneIdle();
   const inspectController = new PanelInspectController((message) =>
     inspectTransport.send(message),
   );
@@ -287,6 +301,22 @@ export function startPanelRuntimeWithPresentation(
     clearLinkedState: clearLinkedInspectionState,
     allowInspectWithoutIde: browserLocalInspection,
   });
+
+  function setSourcePaneState(state: SourcePaneViewState): void {
+    sourcePaneStateKind = state.kind;
+    sourcePaneView.setState(state);
+  }
+
+  function setSourcePaneIdle(): void {
+    setSourcePaneState(ideLinked
+      ? { kind: "empty", statusText: "Select an element to inspect" }
+      : { kind: "not-linked", statusText: unlinkedHeadline });
+  }
+
+  /** Leaves published excerpts alone; only the link walkthrough is replaced. */
+  function clearSourcePaneLinkGuidance(): void {
+    if (sourcePaneStateKind === "not-linked") setSourcePaneIdle();
+  }
 
   function ensurePanelPort(): Promise<void> {
     if (disposed) {
@@ -418,10 +448,7 @@ export function startPanelRuntimeWithPresentation(
         }
       } else if (mismatchBlocked) {
         mismatchBlocked = false;
-        sourcePaneView.setState({
-          kind: "empty",
-          statusText: "Select an element to inspect",
-        });
+        setSourcePaneIdle();
         if (!isCurrentRoute()) {
           return;
         }
@@ -477,7 +504,7 @@ export function startPanelRuntimeWithPresentation(
       sourceNavigationController.beginInspect(inspectStarted.inspectMessageId);
       sourcePaneController.beginInspect(inspectStarted.inspectMessageId);
       settingsController.beginInspect(inspectStarted.inspectMessageId);
-      sourcePaneView.setState({
+      setSourcePaneState({
         kind: "loading",
         statusText: "Resolving source matches",
       });
@@ -518,7 +545,7 @@ export function startPanelRuntimeWithPresentation(
           activeInspectSelectionRevision = undefined;
           sourceNavigationController.invalidate();
           if (!mismatchBlocked) {
-            sourcePaneView.setState({
+            setSourcePaneState({
               kind: "loading",
               statusText: "Resolving source matches",
             });
@@ -542,10 +569,7 @@ export function startPanelRuntimeWithPresentation(
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
         if (!mismatchBlocked) {
-          sourcePaneView.setState({
-            kind: "empty",
-            statusText: "Select an element to inspect",
-          });
+          setSourcePaneIdle();
         }
         resetResolutionState();
       } else if (domEvent.type === "dom.selectionChanged") {
@@ -571,7 +595,7 @@ export function startPanelRuntimeWithPresentation(
         diagnostics.recordResolution(resolution);
         view.renderResolution(model);
         if (acceptedSourceResolution && resolution.status !== "matched") {
-          sourcePaneView.setState({
+          setSourcePaneState({
             kind: resolution.status === "error" ? "error" : "empty",
             statusText: model.statusText,
           });
@@ -579,7 +603,7 @@ export function startPanelRuntimeWithPresentation(
       }
     } else if (sourceMatches) {
       if (sourcePaneController.acceptMatches(sourceMatches) === "published") {
-        sourcePaneView.setState({ kind: "ready" });
+        setSourcePaneState({ kind: "ready" });
       }
     } else if (validatedSourceNavigationState(message)) {
       const navigationState = SourceNavigationStateMessageSchema.parse(message);
@@ -587,12 +611,17 @@ export function startPanelRuntimeWithPresentation(
       sourceNavigationController.acceptState(navigationState);
     } else if (validatedPeerState(message)) {
       const peer = PeerStateMessageSchema.parse(message);
-      if (!peer.connected) {
+      if (peer.connected) {
+        ideLinked = true;
+        unlinkedHeadline = "IDE disconnected";
+        clearSourcePaneLinkGuidance();
+      } else {
+        ideLinked = false;
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
-        sourcePaneView.setState({
-          kind: "error",
+        setSourcePaneState({
+          kind: "not-linked",
           statusText: "IDE disconnected",
         });
       }
@@ -610,6 +639,7 @@ export function startPanelRuntimeWithPresentation(
         view.renderResolution(model);
       }
     } else if (isIdeDisconnected(message)) {
+      ideLinked = false;
       const model = resolutionPresenter.ideDisconnected(
         message.inspectMessageId,
       );
@@ -617,8 +647,8 @@ export function startPanelRuntimeWithPresentation(
         sourceNavigationController.invalidate();
         sourcePaneController.invalidate();
         settingsController.invalidateInspect();
-        sourcePaneView.setState({
-          kind: "error",
+        setSourcePaneState({
+          kind: "not-linked",
           statusText: "IDE disconnected",
         });
         diagnostics.recordIdeDisconnected();
@@ -633,6 +663,9 @@ export function startPanelRuntimeWithPresentation(
         return;
       }
       if (windowState.state === "linked") {
+        ideLinked = true;
+        unlinkedHeadline = "IDE disconnected";
+        clearSourcePaneLinkGuidance();
         deferredLinkedState = message;
         if (!settingsBinding) {
           if (!activatePanelBinding()) {
@@ -644,20 +677,21 @@ export function startPanelRuntimeWithPresentation(
           forwardToStateListeners = false;
         }
       } else {
+        ideLinked = false;
         sourceNavigationController.invalidate();
         settingsController.invalidateInspect();
         if (mismatchBlocked) {
           sourcePaneController.setCompatible(false);
           compatibility = "incompatible";
-          sourcePaneView.setState({
+          setSourcePaneState({
             kind: "incompatible",
             statusText: "Extensions are incompatible",
           });
         } else {
           sourcePaneController.disconnect();
           compatibility = "pending";
-          sourcePaneView.setState({
-            kind: "error",
+          setSourcePaneState({
+            kind: "not-linked",
             statusText: "IDE disconnected",
           });
         }
@@ -671,23 +705,14 @@ export function startPanelRuntimeWithPresentation(
       sourceNavigationController.invalidate();
       sourcePaneController.invalidate();
       settingsController.invalidateInspect();
-      sourcePaneView.setState({
-        kind: "empty",
-        statusText: "Select an element to inspect",
-      });
+      setSourcePaneIdle();
       if (shouldRecover) {
         const statusGeneration = ++domRecoveryStatusGeneration;
         resetResolutionState("restoring");
-        void recoveryCoordinator.begin()
-          .then(() => finishRecoveryStatus(statusGeneration))
-          .catch((error) => {
-            reportError(error);
-            finishRecoveryStatus(statusGeneration);
-            // Recovery restores the previous selection; when it cannot, the
-            // panel must still come back with a live tree instead of staying
-            // empty until the next manual pick.
-            reloadTreeSession();
-          });
+        recoverInvalidatedTree(
+          statusGeneration,
+          MAX_INVALIDATION_RECOVERY_RETRIES,
+        );
       } else {
         recoveryCoordinator.cancel("Inactive DOM session invalidated");
         treeController.reset();
@@ -702,7 +727,10 @@ export function startPanelRuntimeWithPresentation(
         return;
       }
       deferredLinkedState = undefined;
+      ideLinked = false;
+      unlinkedHeadline = "No IDE linked";
       clearLinkedInspectionState();
+      if (!mismatchBlocked) setSourcePaneIdle();
     } else if (windowState?.state === "incompatible") {
       if (!settingsBinding && !activatePanelBinding()) {
         return;
@@ -715,7 +743,7 @@ export function startPanelRuntimeWithPresentation(
       deferredLinkedState = undefined;
       clearLinkedInspectionState(true);
       sourcePaneController.setCompatible(false);
-      sourcePaneView.setState({
+      setSourcePaneState({
         kind: "incompatible",
         statusText: "Extensions are incompatible",
       });
@@ -886,9 +914,10 @@ export function startPanelRuntimeWithPresentation(
     }
     compatibility = preserveMismatch ? "incompatible" : "pending";
     mismatchBlocked = preserveMismatch;
-    sourcePaneView.setState(preserveMismatch
+    ideLinked = false;
+    setSourcePaneState(preserveMismatch
       ? { kind: "incompatible", statusText: "Extensions are incompatible" }
-      : { kind: "error", statusText: "IDE disconnected" });
+      : { kind: "not-linked", statusText: "IDE disconnected" });
     if (!preserveMismatch) {
       deferredLinkedState = undefined;
     }
@@ -979,6 +1008,49 @@ export function startPanelRuntimeWithPresentation(
       });
   }
 
+  /**
+   * The frozen tree is the only copy of what the panel was showing, so a
+   * content session that has not arrived yet must not cost it. Resetting is
+   * reserved for a recovery that genuinely failed.
+   */
+  function recoverInvalidatedTree(
+    statusGeneration: number,
+    attemptsLeft: number,
+  ): void {
+    void recoveryCoordinator.begin()
+      .then(() => finishRecoveryStatus(statusGeneration))
+      .catch((error) => {
+        if (
+          error instanceof DomTreeRecoveryNotReadyError &&
+          attemptsLeft > 0 &&
+          !disposed &&
+          domRecoveryStatusGeneration === statusGeneration
+        ) {
+          scheduleInvalidationRecoveryRetry(() => {
+            if (disposed || domRecoveryStatusGeneration !== statusGeneration) {
+              return;
+            }
+            recoverInvalidatedTree(statusGeneration, attemptsLeft - 1);
+          });
+          return;
+        }
+        reportError(error);
+        finishRecoveryStatus(statusGeneration);
+        // Recovery restores the previous selection; when it cannot, the
+        // panel must still come back with a live tree instead of staying
+        // empty until the next manual pick.
+        reloadTreeSession();
+      });
+  }
+
+  function scheduleInvalidationRecoveryRetry(retry: () => void): void {
+    const timer = globalThis.setTimeout(() => {
+      invalidationRecoveryTimers.delete(timer);
+      retry();
+    }, INVALIDATION_RECOVERY_RETRY_MS);
+    invalidationRecoveryTimers.add(timer);
+  }
+
   function deactivateTreeSession(): void {
     treeSessionActive = false;
     pendingReconnectRestore = false;
@@ -987,10 +1059,7 @@ export function startPanelRuntimeWithPresentation(
     resetSelectionOwnership();
     sourceNavigationController.invalidate();
     sourcePaneController.invalidate();
-    sourcePaneView.setState({
-      kind: "empty",
-      statusText: "Select an element to inspect",
-    });
+    setSourcePaneIdle();
     settingsController.invalidateInspect();
     recoveryCoordinator.cancel("DOM tree session deactivated");
     treeController.reset();
@@ -1033,7 +1102,7 @@ export function startPanelRuntimeWithPresentation(
     sourceNavigationController.invalidate();
     sourcePaneController.setCompatible(false);
     settingsController.invalidateInspect();
-    sourcePaneView.setState({
+    setSourcePaneState({
       kind: "incompatible",
       statusText: "Extensions are incompatible",
     });
@@ -1171,6 +1240,8 @@ export function startPanelRuntimeWithPresentation(
       return;
     }
     disposed = true;
+    for (const timer of invalidationRecoveryTimers) globalThis.clearTimeout(timer);
+    invalidationRecoveryTimers.clear();
     const remove = removeUnload;
     removeUnload = undefined;
     remove?.();

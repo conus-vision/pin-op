@@ -641,6 +641,7 @@ describe("presenter runtime", () => {
     expect(harness.registeredPluginIds).toEqual([
       "pin-op.css",
       "pin-op.scss",
+      "pin-op.php",
     ]);
     expect(harness.openDocumentCalls).toBe(0);
     expect(harness.runtime.tree.getDocumentUri()).toBe(

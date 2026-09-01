@@ -70,7 +70,33 @@ export async function startInspectorIde({ workspace, executablePath }) {
 
   try {
     const handshake = await readHandshake(handshakePath, child, () => output);
-    return { linkCode: handshake.linkCode, workspace: workspaceRoot, stop };
+    const commandPath = `${handshakePath}.command`;
+    const resultPath = `${handshakePath}.command-result`;
+    /** Edits and saves one workspace file inside the host, the way a user does. */
+    const saveDocument = async (path, edit, timeoutMs = 20_000) => {
+      await rm(resultPath, { force: true });
+      await writeFile(commandPath, JSON.stringify({ path, ...edit }), "utf8");
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          const result = JSON.parse(await readFile(resultPath, "utf8"));
+          if (result.error) throw new Error(`IDE save failed: ${result.error}`);
+          return result;
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("IDE save failed")) {
+            throw error;
+          }
+        }
+        await delay(150);
+      }
+      throw new Error("The IDE never reported the requested save");
+    };
+    return {
+      linkCode: handshake.linkCode,
+      workspace: workspaceRoot,
+      saveDocument,
+      stop,
+    };
   } catch (error) {
     await stop();
     throw error;

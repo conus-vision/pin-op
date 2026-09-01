@@ -43,6 +43,79 @@ describe("startInspectorPanelRuntime", () => {
     });
   });
 
+  it("shows the Source link walkthrough before any window state arrives", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    const guidance = () => harness.document
+      .querySelector('[data-state="not-linked"]')?.textContent ?? "";
+    expect(guidance()).toContain("No IDE linked");
+
+    // A port invalidation returns the pane to idle; unlinked, idle is still the
+    // walkthrough rather than a selection prompt nothing can resolve.
+    port.emitMessage({ type: "pin-op.inspect.invalidated", reason: "documentDisconnected" });
+    await flushAsync();
+
+    expect(guidance()).toContain("No IDE linked");
+    expect(harness.document.body.textContent)
+      .not.toContain("Select an element to inspect");
+
+    runtime.dispose();
+  });
+
+  it("returns the Source pane to a selection prompt once a window links", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    await flushAsync();
+
+    expect(harness.document.querySelector('[data-state="not-linked"]'))
+      .toBeNull();
+    expect(harness.document.body.textContent)
+      .toContain("Select an element to inspect");
+
+    runtime.dispose();
+  });
+
+  it("tells an unlinked Source pane where the link code comes from", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+    await flushAsync();
+
+    const guidance = harness.document
+      .querySelector('[data-state="not-linked"]');
+    expect(guidance?.textContent).toContain("No IDE linked");
+    expect(guidance?.textContent).toContain("VS Code status bar");
+    expect(guidance?.textContent).toContain("Paste the code");
+
+    port.emitMessage({
+      type: "pin-op.windowState",
+      state: "linked",
+      displayLinkCode: "48735 07",
+    });
+    port.emitMessage({ type: "pin-op.windowState", state: "offline" });
+    await flushAsync();
+
+    expect(harness.document
+      .querySelector('[data-state="not-linked"]')
+      ?.textContent).toContain("IDE disconnected");
+
+    runtime.dispose();
+  });
+
   it("projects inherited display labels separately from stable ancestor indices", () => {
     const request = {
       requestId: "projection-inherited-label",
@@ -314,6 +387,65 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("previews pseudo states on a panel that never linked an IDE", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    // What a reader who only wants to look at styles sees: no link code typed,
+    // so the window reports itself unlinked and no peer ever connects.
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 3,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 3, 2));
+    await flushAsync();
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    port.emitMessage(stylesMatched(request, 4, 1));
+    await flushAsync();
+
+    const button = harness.document.querySelector(
+      '[data-part="pseudo-state-button"]',
+    );
+    expect(button?.disabled).toBe(false);
+    expect(harness.document.querySelector(
+      '[data-part="pseudo-state-description"]',
+    )?.textContent).not.toMatch(/disconnect/i);
+
+    const hover = harness.document.querySelector(
+      '[data-pseudo-state="hover"]',
+    ) as MutableFakeElement | null;
+    if (!hover) throw new Error("Missing :hover preview checkbox");
+    expect(hover.disabled).toBe(false);
+    hover.checked = true;
+    hover.dispatch("change");
+    await waitForMessage(port.sent, "styles.setPseudoStates");
+    expect(lastMessage(port.sent, "styles.setPseudoStates")).toMatchObject({
+      documentEpoch: 3,
+      nodeRef: "selected-card",
+      selectionRevision: 2,
+      states: ["hover"],
+    });
+    runtime.dispose();
+  });
+
   it("routes one atomic checkbox replacement and fences stale preview lifecycle", async () => {
     const harness = createHarness();
     const runtime = harness.start();
@@ -408,32 +540,24 @@ describe("startInspectorPanelRuntime", () => {
       typeof initialRequest;
     port.emitMessage(stylesMatched(nextRequest, 10, 3));
     await flushAsync();
+    // The preview never leaves the browser, so an IDE that comes and goes says
+    // nothing about whether it can run.
     port.emitMessage(peerState(false, 1));
-    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
-      ?.disabled).toBe(true);
-    port.emitMessage(stylesMatched(nextRequest, 10, 3));
+    port.emitMessage({ type: "pin-op.windowState", state: "notLinked" });
     await flushAsync();
     expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
-      ?.disabled).toBe(true);
-
-    const requestCountBeforeReconnect = port.sent.filter((message) => (
+      ?.disabled).toBe(false);
+    const requestCountWhileUnlinked = port.sent.filter((message) => (
       isType(message, "styles.getMatched")
     )).length;
     port.emitMessage(peerState(true, 2));
-    await waitForMessageCount(
-      port.sent,
-      "styles.getMatched",
-      requestCountBeforeReconnect + 1,
-    );
-    const resumedRequest = lastMessage(port.sent, "styles.getMatched") as
-      typeof initialRequest;
-    expect(resumedRequest.requestId).not.toBe(nextRequest.requestId);
-    port.emitMessage(stylesMatched(resumedRequest, 11, 3));
-    const resumedButton = harness.document.querySelector(
-      '[data-part="pseudo-state-button"]',
-    );
-    if (!resumedButton) throw new Error("Missing resumed pseudo-state button");
-    await waitForDisabled(resumedButton, false);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    await flushAsync();
+    expect(harness.document.querySelector('[data-part="pseudo-state-button"]')
+      ?.disabled).toBe(false);
+    expect(port.sent.filter((message) => (
+      isType(message, "styles.getMatched")
+    ))).toHaveLength(requestCountWhileUnlinked);
 
     port.emitMessage({
       type: "pin-op.protocol.compatibility",
@@ -523,6 +647,343 @@ describe("startInspectorPanelRuntime", () => {
     expect(harness.document.querySelector('[data-rule-ref="rule-card"]')
       ?.textContent).toContain("color: rebeccapurple !important;");
     expect(harness.document.body.textContent).toContain("Source");
+
+    runtime.dispose();
+  });
+
+  it("keeps the tree while the reloaded page's content session is still arriving", async () => {
+    vi.useFakeTimers();
+    try {
+      await runReloadRecoveryScenario();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  async function runReloadRecoveryScenario(): Promise<void> {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    // Saving PHP reloads the tab. The panel is told the moment the old content
+    // lease is replaced, which is before the new one has attached.
+    port.emitMessage({
+      type: "pin-op.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    await flushAsync();
+    await flushAsync();
+    const firstAttempt = lastMessage(port.sent, "dom.getRoot").requestId;
+    port.emitMessage({
+      type: "dom.error",
+      requestId: firstAttempt,
+      code: "session-disposed",
+    });
+    await flushAsync();
+    await flushAsync();
+
+    // The reloaded page's rows are not there yet, but the frozen tree must be.
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    // The new content session attaches, and the retry restores from it.
+    await vi.advanceTimersByTimeAsync(250);
+    const retryAttempt = lastMessage(port.sent, "dom.getRoot").requestId;
+    expect(retryAttempt).not.toBe(firstAttempt);
+    port.emitMessage({
+      type: "dom.root",
+      requestId: retryAttempt,
+      documentEpoch: 7,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    await flushAsync();
+
+    expect(lastMessage(port.sent, "dom.resolveLocator").locator)
+      .toMatchObject({ path: [{ tagName: "div", siblingIndex: 0 }] });
+
+    runtime.dispose();
+  }
+
+  it("restores the selected row after a page reload invalidates the inspect port", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
+      .not.toBeNull();
+
+    // Saving a PHP file reloads the tab, which invalidates the inspect port.
+    const rootsBefore = port.sent.filter((m) => isType(m, "dom.getRoot")).length;
+    port.emitMessage({ type: "pin-op.inspect.invalidated", reason: "documentDisconnected" });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    const rootsAfter = port.sent.filter((m) => isType(m, "dom.getRoot")).length;
+    expect(rootsAfter).toBe(rootsBefore + 1);
+    const restoredRoot = lastMessage(port.sent, "dom.getRoot");
+    expect(restoredRoot.requestId).not.toBe(rootRequest.requestId);
+    port.emitMessage({
+      type: "dom.root",
+      requestId: restoredRoot.requestId,
+      documentEpoch: 7,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    await flushAsync();
+
+    const resolve = lastMessage(port.sent, "dom.resolveLocator");
+    expect(resolve.locator).toMatchObject({
+      path: [{ tagName: "div", siblingIndex: 0 }],
+    });
+
+    runtime.dispose();
+  });
+
+  it("keeps the rules on screen while a refresh of the same element reloads", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      readonly requestId: string;
+      readonly documentEpoch: number;
+      readonly nodeRef: string;
+      readonly selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(request, 9, 2));
+    await flushAsync();
+
+    const rules = () => harness.document.querySelector('[data-pane="rules"]');
+    expect(rules()?.getAttribute("data-state")).toBe("ready");
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]'))
+      .not.toBeNull();
+
+    // The reload is in flight: the pane reports itself busy but still shows the
+    // rules it started from.
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 6,
+      stylesRevision: 10,
+      stylesheetRevision: 3,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    await flushAsync();
+
+    expect(rules()?.getAttribute("data-state")).toBe("loading");
+    expect(rules()?.getAttribute("aria-busy")).toBe("true");
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]'))
+      .not.toBeNull();
+
+    const reloaded = lastMessage(port.sent, "styles.getMatched") as {
+      readonly requestId: string;
+      readonly documentEpoch: number;
+      readonly nodeRef: string;
+      readonly selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(reloaded, 10, 3));
+    await flushAsync();
+
+    expect(rules()?.getAttribute("data-state")).toBe("ready");
+    expect(rules()?.getAttribute("aria-busy")).toBe("false");
+
+    runtime.dispose();
+  });
+
+  it("drops retained rules when the reload belongs to another element", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      readonly requestId: string;
+      readonly documentEpoch: number;
+      readonly nodeRef: string;
+      readonly selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(request, 9, 2));
+    await flushAsync();
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]'))
+      .not.toBeNull();
+
+    port.emitMessage(selection("other-card", 6, 5));
+    await flushAsync();
+
+    expect(harness.document.querySelector('[data-pane="rules"]')
+      ?.getAttribute("data-state")).toBe("loading");
+    expect(harness.document.querySelector('[data-rule-ref="rule-card"]'))
+      .toBeNull();
+
+    runtime.dispose();
+  });
+
+  it("keeps published rule origins across an applicability-only invalidation", async () => {
+    const harness = createHarness();
+    const runtime = harness.start();
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({ type: "pin-op.windowState", state: "linked" });
+    port.emitMessage({
+      type: "pin-op.protocol.compatibility",
+      compatible: true,
+      browserProtocolVersion: PROTOCOL_VERSION,
+    });
+    await flushAsync();
+
+    const rootRequest = lastMessage(port.sent, "dom.getRoot");
+    port.emitMessage({
+      type: "dom.root",
+      requestId: rootRequest.requestId,
+      documentEpoch: 6,
+      node: domNode("root", "HTML", true),
+      prologue: [],
+      epilogue: [],
+    });
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-rules",
+      selectionRevision: 4,
+      expectedRuleRefs: ["rule-card"],
+    });
+    port.emitMessage(selection("selected-card", 6, 4));
+    await flushAsync();
+
+    const request = lastMessage(port.sent, "styles.getMatched") as {
+      requestId: string;
+      documentEpoch: number;
+      nodeRef: string;
+      selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(request, 9, 2));
+    await flushAsync();
+    port.emitMessage(rulesSources("inspect-rules", 1, "rule-card"));
+    await flushAsync();
+    const origin = () => harness.document
+      .querySelector('[data-rule-origin="rule-card"]')?.tagName;
+    expect(origin()).toBe("BUTTON");
+
+    // Resizing the page re-evaluates media queries. That advances the styles
+    // revision but not the stylesheet revision, so every rule reference - and
+    // the origin published against it - is still current.
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 6,
+      stylesRevision: 10,
+      stylesheetRevision: 2,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    await flushAsync();
+    const reloaded = lastMessage(port.sent, "styles.getMatched") as {
+      readonly requestId: string;
+      readonly documentEpoch: number;
+      readonly nodeRef: string;
+      readonly selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(reloaded, 10, 2));
+    await flushAsync();
+
+    expect(origin()).toBe("BUTTON");
+
+    // A real stylesheet change re-mints the references, so the origins must go.
+    port.emitMessage({
+      type: "styles.invalidated",
+      documentEpoch: 6,
+      stylesRevision: 11,
+      stylesheetRevision: 3,
+      pseudoStateRevision: 0,
+      pseudoStates: [],
+    });
+    await flushAsync();
+    const refreshed = lastMessage(port.sent, "styles.getMatched") as {
+      readonly requestId: string;
+      readonly documentEpoch: number;
+      readonly nodeRef: string;
+      readonly selectionRevision: number;
+    };
+    port.emitMessage(cardStylesWithSource(refreshed, 11, 3));
+    await flushAsync();
+
+    expect(origin()).toBe("SPAN");
 
     runtime.dispose();
   });
@@ -1497,6 +1958,9 @@ describe("startInspectorPanelRuntime", () => {
       requestId: firstRestore.requestId,
       code: "session-disposed",
     });
+    // Recovery bounds its own root request, so the "not ready" answer settles
+    // one turn later than a bare await would.
+    await flushAsync();
     await flushAsync();
     expect(harness.document.querySelector('[data-node-ref="selected-card"]'))
       .not.toBeNull();
@@ -1561,6 +2025,9 @@ describe("startInspectorPanelRuntime", () => {
         requestId: lastMessage(replacementPort.sent, "dom.getRoot").requestId,
         code: "session-disposed",
       });
+      // Recovery bounds its own root request, so the "not ready" answer settles
+      // one turn later than a bare await would.
+      await flushAsync();
       await flushAsync();
     }
 
@@ -2873,6 +3340,36 @@ function deferred<T>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function cardStylesWithSource(
+  request: {
+    readonly requestId: string;
+    readonly documentEpoch: number;
+    readonly nodeRef: string;
+    readonly selectionRevision: number;
+  },
+  stylesRevision: number,
+  stylesheetRevision: number,
+) {
+  const response = stylesMatched(request, stylesRevision, stylesheetRevision);
+  return {
+    ...response,
+    styles: {
+      ...response.styles,
+      rules: [{
+        ...matchedRule("rule-card", ".selected-card"),
+        source: {
+          sourceUrl: "https://example.test/app.css",
+          startLine: 17,
+          startColumn: 5,
+          endLine: 18,
+          endColumn: 2,
+          rulePath: "0.3",
+        },
+      }],
+    },
+  };
 }
 
 function stylesMatched(

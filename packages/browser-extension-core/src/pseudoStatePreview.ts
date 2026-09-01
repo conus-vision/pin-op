@@ -100,6 +100,12 @@ export interface PseudoStatePreviewOptions {
     root: Document | ShadowRoot,
   ) => CSSStyleSheet;
   readonly createStyleElement?: (document: Document) => HTMLStyleElement;
+  /**
+   * Parses a mirror's own text the way the page's engine will, so the mount
+   * check can compare two serializations instead of text against serialization.
+   * The sheet it returns is never adopted and never reaches the page.
+   */
+  readonly createNormalizationStylesheet?: () => CSSStyleSheet;
   readonly resolveOpenShadowRootHost?: (root: object) => Element | undefined;
   /** Explicit fake-DOM authority for tests; production uses captured intrinsics. */
   readonly testOnlyIntrinsics?: BrowserIntrinsicAccess;
@@ -297,6 +303,7 @@ export class PseudoStatePreview {
     root: Document | ShadowRoot,
   ) => CSSStyleSheet;
   private readonly createStyleElement: (document: Document) => HTMLStyleElement;
+  private readonly normalizeCssText: (cssText: string) => string | undefined;
   private readonly resolveOpenShadowRootHost: (root: object) => Element | undefined;
   private readonly intrinsics: BrowserIntrinsicAccess;
   private currentStates: readonly PseudoState[] = Object.freeze([]);
@@ -310,6 +317,10 @@ export class PseudoStatePreview {
       (root) => createRealmStylesheet(root)
     );
     this.createStyleElement = options.createStyleElement ?? createRealmStyleElement;
+    this.normalizeCssText = createCssTextNormalizer(
+      options.createNormalizationStylesheet ?? realmNormalizationStylesheet,
+      this.intrinsics,
+    );
     this.resolveOpenShadowRootHost = options.resolveOpenShadowRootHost ??
       resolveRealmOpenShadowRootHost;
   }
@@ -541,7 +552,11 @@ export class PseudoStatePreview {
         !stateMarkersAreOwned(this.artifacts, element, canonical) ||
         !verifyPreparedSources(root, verifiedSources, verification) ||
         !sourcesRemainInapplicable(root, inapplicableSources) ||
-        mountedPreviews.some((mounted) => !validateMountedPreview(root, mounted)) ||
+        mountedPreviews.some((mounted) => !validateMountedPreview(
+          root,
+          mounted,
+          this.normalizeCssText,
+        )) ||
         selectedRoot(element, this.resolveOpenShadowRootHost, this.intrinsics) !== root ||
         !stateMarkersAreOwned(this.artifacts, element, canonical)
       ) {
@@ -627,6 +642,7 @@ export class PseudoStatePreview {
           mount.cssText,
           mount.ruleCount,
           mount.parts[0]?.entry.intrinsics ?? this.intrinsics,
+          this.normalizeCssText,
         )) {
           throw new Error("constructable stylesheet contents were not committed");
         }
@@ -664,6 +680,7 @@ export class PseudoStatePreview {
             mount.cssText,
             mount.ruleCount,
             mount.parts[0]?.entry.intrinsics ?? this.intrinsics,
+            this.normalizeCssText,
           ) ||
           !revalidatePreparedMount(root, mount)
         ) {
@@ -705,6 +722,7 @@ export class PseudoStatePreview {
       diagnostics,
       transactionSourceSheets,
       this.createStyleElement,
+      this.normalizeCssText,
     );
   }
 }
@@ -1010,6 +1028,7 @@ function verifyPreparedSourceContent(
 function validateMountedPreview(
   root: Document | ShadowRoot,
   mounted: MountedPreview,
+  normalizeCssText: CssTextNormalizer,
 ): boolean {
   const { mount, sheet } = mounted;
   const intrinsics = mount.parts[0]?.entry.intrinsics ?? DEFAULT_BROWSER_INTRINSICS;
@@ -1018,6 +1037,7 @@ function validateMountedPreview(
     mount.cssText,
     mount.ruleCount,
     intrinsics,
+    normalizeCssText,
   )) return false;
   let placementMatches = false;
   if (mounted.kind === "adopted") {
@@ -2504,6 +2524,7 @@ function mountedStylesheetMatches(
   expectedCssText: string,
   expectedRuleCount: number,
   intrinsics: BrowserIntrinsicAccess = DEFAULT_BROWSER_INTRINSICS,
+  normalizeCssText: CssTextNormalizer = noNormalization,
 ): boolean {
   if (
     !Number.isSafeInteger(expectedRuleCount) ||
@@ -2528,12 +2549,53 @@ function mountedStylesheetMatches(
       intrinsics,
     );
     if (committedCssText === undefined) return false;
+    const committedSignature = canonicalCssSignature(committedCssText);
+    if (committedSignature === undefined) return false;
     const expectedSignature = canonicalCssSignature(expectedCssText);
-    return expectedSignature !== undefined &&
-      expectedSignature === canonicalCssSignature(committedCssText);
+    if (expectedSignature === undefined) return false;
+    if (expectedSignature === committedSignature) return true;
+    // The engine echoes what it parsed, not what it was handed: the longhands
+    // the CSSOM enumerates for a shorthand come back as that shorthand. Reading
+    // that as tampering drops the whole mirror, and with it every previewed
+    // rule of the sheet, so the expectation is put through the same parser and
+    // the two serializations are compared instead.
+    const normalized = normalizeCssText(expectedCssText);
+    if (normalized === undefined) return false;
+    const normalizedSignature = canonicalCssSignature(normalized);
+    return normalizedSignature !== undefined &&
+      normalizedSignature === committedSignature;
   } catch {
     return false;
   }
+}
+
+type CssTextNormalizer = (cssText: string) => string | undefined;
+
+const noNormalization: CssTextNormalizer = () => undefined;
+
+/**
+ * Reads back what the page's own CSS parser makes of a mirror's text. The sheet
+ * is constructed, never adopted and never handed to the page, so this is a pure
+ * serialization question: it changes nothing the page can observe.
+ */
+function createCssTextNormalizer(
+  createStylesheet: (() => CSSStyleSheet | undefined) | undefined,
+  intrinsics: BrowserIntrinsicAccess,
+): CssTextNormalizer {
+  if (!createStylesheet) return noNormalization;
+  return (cssText) => {
+    try {
+      if (utf8ByteLength(cssText) > PREVIEW_MAX_BYTES) return undefined;
+      const sheet = createStylesheet();
+      if (!isObject(sheet)) return undefined;
+      intrinsics.call(sheet, "stylesheet.replaceSync", [cssText]);
+      const rules = intrinsics.read(sheet, "stylesheet.cssRules");
+      if (!isObject(rules)) return undefined;
+      return readMountedCssText(rules as ArrayLike<object>, intrinsics);
+    } catch {
+      return undefined;
+    }
+  };
 }
 
 function readMountedCssText(
@@ -2739,6 +2801,7 @@ function mountStyleNode(
   diagnostics: Set<PseudoStatePreviewDiagnostic>,
   transactionSourceSheets: ReadonlySet<object>,
   createStyleElement: (document: Document) => HTMLStyleElement,
+  normalizeCssText: CssTextNormalizer,
 ): MountAttempt {
   const intrinsics = mount.parts[0]?.entry.intrinsics ?? DEFAULT_BROWSER_INTRINSICS;
   let style: HTMLStyleElement | undefined;
@@ -2830,6 +2893,7 @@ function mountStyleNode(
         mount.cssText,
         mount.ruleCount,
         intrinsics,
+        normalizeCssText,
       ) ||
       !revalidatePreparedMount(root, mount)
     ) throw new Error("style mount was not committed");
@@ -2939,6 +3003,10 @@ function createRealmStylesheet(_root: Document | ShadowRoot): CSSStyleSheet {
     throw new Error("constructable sheets unavailable");
   }
   return new EXTENSION_CSS_STYLESHEET();
+}
+
+function realmNormalizationStylesheet(): CSSStyleSheet | undefined {
+  return EXTENSION_CSS_STYLESHEET ? new EXTENSION_CSS_STYLESHEET() : undefined;
 }
 
 function createRealmStyleElement(document: Document): HTMLStyleElement {
