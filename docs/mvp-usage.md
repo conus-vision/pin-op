@@ -224,6 +224,11 @@ author rules on the currently selected element. The operation replaces the
 complete requested state set atomically; it does not edit user-authored CSS or
 DOM.
 
+Rules marks the selectors the preview is what makes match, with the same fill
+the filter leaves on what it matched. Selectors the preview cannot force - a
+negated target, a target inside `:has()`, an ancestor or sibling target - match
+on their own or not at all, and stay unmarked.
+
 This is author-style pseudo preview, not native pseudo-state forcing. Pin-op
 mirrors a supported positive `:hover` or `:focus` selector using random,
 extension-owned markers and temporary styles in the selected element's

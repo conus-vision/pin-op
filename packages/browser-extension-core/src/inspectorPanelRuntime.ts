@@ -11,6 +11,7 @@ import type {
   RulesPresentationSnapshot,
   SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
+import selectorParser from "postcss-selector-parser";
 import type { DomTreeController } from "./domTreeController.js";
 import type { DomTreeDocument } from "./domTreeDocument.js";
 import { ElementsInspectorAdapter } from "./elementsInspectorAdapter.js";
@@ -47,6 +48,7 @@ import {
   parseStylesEvent,
   type StylesInvalidatedEvent,
 } from "./stylesProtocol.js";
+import { selectorPreviewsPseudoState } from "./pseudoStateSelector.js";
 import {
   RulesSourcesController,
 } from "./rulesSourcesController.js";
@@ -762,6 +764,7 @@ interface PseudoLifecycleBoundary {
 }
 
 const NO_PSEUDO_STATES = Object.freeze([] as PseudoState[]);
+const NO_PREVIEWED_SELECTORS = Object.freeze([] as number[]);
 const PSEUDO_UNAVAILABLE_NO_SELECTION = pseudoUnavailable("no-selection");
 const PSEUDO_UNAVAILABLE_RECOVERY = pseudoUnavailable("recovery");
 const PSEUDO_UNAVAILABLE_MISMATCH = pseudoUnavailable("mismatch");
@@ -979,12 +982,18 @@ export function projectMatchedStylesSnapshot(
     pseudoStateRevision: source.pseudoStateRevision,
     pseudoStates: Object.freeze([...source.pseudoStates]),
     nodeRef: source.nodeRef,
-    ...(source.inline ? { inlineStyle: projectMatchedRule(source.inline) } : {}),
-    matchedRules: Object.freeze(source.rules.map(projectMatchedRule)),
+    ...(source.inline
+      ? { inlineStyle: projectMatchedRule(source.inline, source.pseudoStates) }
+      : {}),
+    matchedRules: Object.freeze(source.rules.map((rule) => (
+      projectMatchedRule(rule, source.pseudoStates)
+    ))),
     inherited: Object.freeze(source.inherited.map((group) => Object.freeze({
       ancestorIndex: group.ancestorIndex,
       displayLabel: group.elementName,
-      matchedRules: Object.freeze(group.rules.map(projectMatchedRule)),
+      matchedRules: Object.freeze(group.rules.map((rule) => (
+        projectMatchedRule(rule, source.pseudoStates)
+      ))),
     }))),
     inaccessibleStylesheetCount: source.inaccessibleStylesheetCount,
     unsupportedRuleCount: source.unsupportedRuleCount,
@@ -1000,12 +1009,17 @@ export function projectMatchedStylesSnapshot(
   });
 }
 
-function projectMatchedRule(rule: MatchedRule): MatchedRuleSnapshot {
+function projectMatchedRule(
+  rule: MatchedRule,
+  pseudoStates: readonly PseudoState[],
+): MatchedRuleSnapshot {
   const generatedSource = projectGeneratedSource(rule.source);
+  const previewedSelectorIndices = previewedSelectors(rule, pseudoStates);
   return Object.freeze({
     ruleRef: rule.ruleRef,
     selectorText: rule.selectorText,
     matchingSelectorIndices: Object.freeze([...rule.matchingSelectorIndices]),
+    ...(previewedSelectorIndices.length > 0 ? { previewedSelectorIndices } : {}),
     declarations: Object.freeze(rule.declarations.map((declaration, index) => (
       projectDeclaration(declaration, index)
     ))),
@@ -1015,6 +1029,34 @@ function projectMatchedRule(rule: MatchedRule): MatchedRuleSnapshot {
     }))),
     ...(generatedSource ? { generatedSource } : {}),
   });
+}
+
+/**
+ * Which of a rule's matching selectors match because the preview is forcing
+ * their state. The selector list is split the way the collector counted its
+ * matching indices, so the two describe the same positions.
+ */
+function previewedSelectors(
+  rule: MatchedRule,
+  pseudoStates: readonly PseudoState[],
+): readonly number[] {
+  if (pseudoStates.length === 0 || rule.matchingSelectorIndices.length === 0) {
+    return NO_PREVIEWED_SELECTORS;
+  }
+  let selectors: readonly string[];
+  try {
+    selectors = selectorParser().astSync(rule.selectorText).nodes.map(
+      (selector) => selector.toString().trim(),
+    );
+  } catch {
+    return NO_PREVIEWED_SELECTORS;
+  }
+  const previewed = rule.matchingSelectorIndices.filter((index) => {
+    const selector = selectors[index];
+    return selector !== undefined &&
+      selectorPreviewsPseudoState(selector, pseudoStates);
+  });
+  return previewed.length > 0 ? Object.freeze(previewed) : NO_PREVIEWED_SELECTORS;
 }
 
 function projectDeclaration(

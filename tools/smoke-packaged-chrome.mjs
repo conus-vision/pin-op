@@ -189,7 +189,7 @@ export function findProductServiceWorker(targets, extensionId) {
 export function isProductManifest(manifest) {
   return (
     manifest?.name === "Pin-op" &&
-    manifest?.version === "0.3.2" &&
+    manifest?.version === "0.4.0" &&
     manifest?.manifest_version === 3 &&
     manifest?.background?.service_worker === "dist/background.js"
   );

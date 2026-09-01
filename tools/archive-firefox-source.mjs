@@ -7,7 +7,7 @@ const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(
   repositoryRoot,
-  "artifacts/pin-op-firefox-source-0.3.2.zip",
+  "artifacts/pin-op-firefox-source-0.4.0.zip",
 );
 
 export function archiveArguments(root) {

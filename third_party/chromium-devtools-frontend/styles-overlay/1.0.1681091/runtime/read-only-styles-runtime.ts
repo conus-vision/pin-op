@@ -30,6 +30,7 @@ interface RuleSnapshot {
   readonly ruleRef: string;
   readonly selectorText: string;
   readonly matchingSelectorIndices: readonly number[];
+  readonly previewedSelectorIndices?: readonly number[];
   readonly declarations: readonly DeclarationSnapshot[];
   readonly contexts: readonly ContextSnapshot[];
   readonly generatedSource?: GeneratedSourceSnapshot;
@@ -235,6 +236,7 @@ class ChromiumReadOnlyStylesPane {
       if (this.#disposed || revision !== this.#revision) return;
       this.#rendered = rendered;
       this.#decorateOrigins(rendered);
+      this.#decoratePreviewedSelectors(rendered);
     } catch (error) {
       if (this.#disposed || revision !== this.#revision || controller.signal.aborted) return;
       this.#rendered = undefined;
@@ -294,6 +296,25 @@ class ChromiumReadOnlyStylesPane {
     }
   }
 
+  /**
+   * Marks the selectors the `:hov` preview is what makes match, so a previewed
+   * rule reads the way a filtered one does instead of appearing among the
+   * ordinary matches with nothing to tell it apart.
+   */
+  #decoratePreviewedSelectors(rendered: RenderedModel): void {
+    for (const sectionElement of this.#pane.contentElement.querySelectorAll<HTMLElement>('.styles-section')) {
+      const section = this.#pane.sectionByElement.get(sectionElement);
+      const style = section?.style();
+      const ruleRef = style ? rendered.ruleRefByStyle.get(style) : undefined;
+      const rule = ruleRef ? rendered.ruleByRef.get(ruleRef) : undefined;
+      const previewed = new Set(rule?.previewedSelectorIndices ?? []);
+      const selectors = sectionElement.getElementsByClassName('simple-selector');
+      for (let index = 0; index < selectors.length; index += 1) {
+        selectors[index].classList.toggle(PREVIEWED_SELECTOR_CLASS, previewed.has(index));
+      }
+    }
+  }
+
   #report(error: unknown): void {
     try {
       this.#options.onError(error);
@@ -302,6 +323,8 @@ class ChromiumReadOnlyStylesPane {
     }
   }
 }
+
+const PREVIEWED_SELECTOR_CLASS = 'pin-op-previewed-selector';
 
 const PIN_OP_CONTROL_STYLES = `
 .pseudo-state-toolbar-item {
@@ -399,6 +422,12 @@ const PIN_OP_CONTROL_STYLES = `
 
 .pseudo-state-description[role="alert"] {
   border-inline-start: 3px solid var(--sys-color-error);
+}
+
+/* Exactly the mark the filter puts on what it matched, for what :hov matched. */
+.simple-selector.pin-op-previewed-selector {
+  background-color: var(--sys-color-tonal-container);
+  color: var(--sys-color-on-surface);
 }
 `;
 

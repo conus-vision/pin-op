@@ -43,6 +43,83 @@ describe("startInspectorPanelRuntime", () => {
     });
   });
 
+  it("names the matching selectors the active preview is what makes match", () => {
+    const request = {
+      requestId: "projection-previewed",
+      documentEpoch: 4,
+      nodeRef: "node-projection",
+      selectionRevision: 7,
+      pseudoStateRevision: 1,
+      pseudoStates: ["hover"] as const,
+    };
+    const rule = (ruleRef: string, selectorText: string, indices: number[]) => ({
+      ruleRef,
+      selectorText,
+      matchingSelectorIndices: indices,
+      specificity: undefined,
+      contexts: [],
+      contextsTruncated: false,
+      mediaTruncated: false,
+      declarationsTruncated: false,
+      declarations: [],
+      source: { rulePath: "0" },
+    });
+    const styles = {
+      ...stylesMatched(request, 9, 3).styles,
+      rules: [
+        // Only the second branch is forced, and only it is named.
+        rule("rule:mixed", ".card, .card:hover", [0, 1]),
+        // The preview cannot force a negated target, so this is an ordinary match.
+        rule("rule:negated", ".card:not(:hover)", [0]),
+        // :focus is not among the active states.
+        rule("rule:other-state", ".card:focus", [0]),
+        // A selector the preview forces but that is not matching stays out.
+        rule("rule:unmatched", ".other:hover, .card", [1]),
+      ],
+    };
+
+    const projected = projectMatchedStylesSnapshot(styles);
+
+    expect(projected.matchedRules.map((matched) => [
+      matched.ruleRef,
+      matched.previewedSelectorIndices,
+    ])).toEqual([
+      ["rule:mixed", [1]],
+      ["rule:negated", undefined],
+      ["rule:other-state", undefined],
+      ["rule:unmatched", undefined],
+    ]);
+    expect(Object.isFrozen(projected.matchedRules[0]?.previewedSelectorIndices))
+      .toBe(true);
+  });
+
+  it("names no previewed selectors while no preview is active", () => {
+    const request = {
+      requestId: "projection-no-preview",
+      documentEpoch: 4,
+      nodeRef: "node-projection",
+      selectionRevision: 7,
+    };
+    const styles = {
+      ...stylesMatched(request, 9, 3).styles,
+      rules: [{
+        ruleRef: "rule:hover",
+        selectorText: ".card:hover",
+        matchingSelectorIndices: [0],
+        specificity: undefined,
+        contexts: [],
+        contextsTruncated: false,
+        mediaTruncated: false,
+        declarationsTruncated: false,
+        declarations: [],
+        source: { rulePath: "0" },
+      }],
+    };
+
+    expect(projectMatchedStylesSnapshot(styles).matchedRules[0])
+      .not.toHaveProperty("previewedSelectorIndices");
+  });
+
   it("shows the Source link walkthrough before any window state arrives", async () => {
     const harness = createHarness();
     const runtime = harness.start();

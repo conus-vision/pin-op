@@ -279,6 +279,7 @@ const snapshot = {
     generatedSource: {label: 'style.css', lineNumber: 41, columnNumber: 2},
   }, {
     ruleRef: 'rule:duplicate-a', selectorText: '.duplicate', matchingSelectorIndices: [0],
+    previewedSelectorIndices: [0],
     declarations: [declaration('dup:a', 'display', 'block')], contexts: [],
   }, {
     ruleRef: 'rule:duplicate-b', selectorText: '.duplicate', matchingSelectorIndices: [0],
@@ -319,6 +320,32 @@ const section = deepQuery(pane.element, '.styles-section');
 const readOnlyPresentation = {
   sectionClassRetained: section?.classList.contains('read-only') === true,
   fontStyle: section ? getComputedStyle(section).fontStyle : undefined,
+};
+// Only rule:duplicate-a names a previewed selector, and the two .duplicate
+// sections are otherwise identical: the mark has to land on exactly one.
+const allSelectors = deepQueryAll(pane.element, '.simple-selector');
+const previewedSelectors = allSelectors.filter(node =>
+  node.classList.contains('pin-op-previewed-selector'));
+const previewedStyle = previewedSelectors[0]
+  ? getComputedStyle(previewedSelectors[0]) : undefined;
+const previewedPresentation = {
+  onlyTheNamedSelector: previewedSelectors.length === 1 &&
+    previewedSelectors[0]?.textContent === '.duplicate',
+  oneOfTwoDuplicates: allSelectors
+    .filter(node => node.textContent === '.duplicate')
+    .filter(node => node.classList.contains('pin-op-previewed-selector')).length === 1,
+  // The mark has to read as the filter's does: borrow Chromium's own
+  // filter-match class for a moment and compare what the two paint.
+  sameFillAsFilterMatch: (() => {
+    const probe = allSelectors.find(node =>
+      !node.classList.contains('pin-op-previewed-selector'));
+    if (!probe || !previewedStyle) return false;
+    const plain = getComputedStyle(probe).backgroundColor;
+    probe.classList.add('filter-match');
+    const filtered = getComputedStyle(probe).backgroundColor;
+    probe.classList.remove('filter-match');
+    return plain !== filtered && previewedStyle.backgroundColor === filtered;
+  })(),
 };
 const origin = deepQuery(pane.element, '.pin-op-rule-origin');
 const originStyle = origin ? getComputedStyle(origin) : undefined;
@@ -542,6 +569,7 @@ const value = {
   rendererEvidence,
   readOnlyRendererSafety,
   readOnlyPresentation,
+  previewedPresentation,
   originPresentation,
   shorthandLonghands,
   shorthandCoverage,
@@ -598,6 +626,7 @@ if (!value.stable || !value.directChild || !value.hasNativeSection || !value.has
     value.rendererEvidence.gradientColorSwatches < 2 ||
     !Object.values(value.readOnlyRendererSafety).every(Boolean) ||
     !value.readOnlyPresentation.sectionClassRetained || value.readOnlyPresentation.fontStyle !== 'normal' ||
+    !Object.values(value.previewedPresentation).every(Boolean) ||
     !Object.values(value.originPresentation).every(Boolean) ||
     !Object.values(value.shorthandCoverage).every(Boolean) || JSON.stringify(value.contextOrder) !== JSON.stringify(expectedContextOrder) ||
     value.inheritedLabel !== 'body.site-shell' || !value.lightTokens.sysColor || !value.lightTokens.appColor ||

@@ -4,10 +4,10 @@
 
 | Version | Status |
 | --- | --- |
-| 0.3.x | Supported when the `0.3.2` release is published. |
+| 0.4.x | Supported when the `0.4.0` release is published. |
 | Earlier versions | Unsupported. |
 
-No public `0.3.2` release is claimed yet. Until publication, identify the exact
+No public `0.4.0` release is claimed yet. Until publication, identify the exact
 reviewed source commit when reporting or reproducing an issue.
 
 ## Report A Vulnerability

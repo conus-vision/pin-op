@@ -8,7 +8,7 @@ and routes typed refresh generations from the IDE to participating tabs.
 ## Version And Capability Negotiation
 
 The current protocol version is `7`. Every product message uses
-`protocolVersion: 7`; product release semver (`0.3.2`) is independent. Packaged
+`protocolVersion: 7`; product release semver (`0.4.0`) is independent. Packaged
 runtime metadata reports protocol version `7`.
 
 The protocol uses exact version matching with no downgrade negotiation.

@@ -8,11 +8,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const attribution =
   "Pin-op by Volodymyr Moskvin (c) 2026 [Conus Vision](https://conus.vision)";
 const releaseArtifacts = [
-  "pin-op-vscode-0.3.2.vsix",
-  "pin-op-chrome-0.3.2.zip",
-  "pin-op-firefox-0.3.2.zip",
-  "pin-op-firefox-0.3.2.xpi",
-  "pin-op-firefox-source-0.3.2.zip",
+  "pin-op-vscode-0.4.0.vsix",
+  "pin-op-chrome-0.4.0.zip",
+  "pin-op-firefox-0.4.0.zip",
+  "pin-op-firefox-0.4.0.xpi",
+  "pin-op-firefox-source-0.4.0.zip",
   "SHA256SUMS",
 ];
 
@@ -222,7 +222,7 @@ test("root README leads with the installed alpha workflow without timing claims"
     rootReadme,
     /> Alpha: product and installation details may change before 1\.0\./,
   );
-  assert.match(rootReadme, /The `0\.3\.2` release is being prepared\./);
+  assert.match(rootReadme, /The `0\.4\.0` release is being prepared\./);
 });
 
 test("root README preserves release artifact trust facts", () => {
@@ -244,7 +244,7 @@ test("root README preserves release artifact trust facts", () => {
   );
   assert.ok(
     normalizedStatus.includes(
-      "No signed `0.3.2` XPI or public `0.3.2` release is claimed yet.",
+      "No signed `0.4.0` XPI or public `0.4.0` release is claimed yet.",
     ),
   );
 });

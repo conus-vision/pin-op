@@ -128,6 +128,12 @@ export interface MatchedRuleSnapshot {
   readonly ruleRef: string;
   readonly selectorText: string;
   readonly matchingSelectorIndices: readonly number[];
+  /**
+   * Indices into the same selector list as `matchingSelectorIndices`, naming
+   * the selectors the active `:hover`/`:focus` preview is what makes match.
+   * Display-only: it marks them in the pane and changes no authority.
+   */
+  readonly previewedSelectorIndices?: readonly number[];
   readonly declarations: readonly MatchedDeclarationSnapshot[];
   readonly contexts: readonly RuleContextSnapshot[];
   readonly generatedSource?: GeneratedRuleSourceSnapshot;

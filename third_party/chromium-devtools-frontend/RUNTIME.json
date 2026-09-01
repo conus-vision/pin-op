@@ -85,7 +85,7 @@
   },
   "readOnlyStylesRuntime": {
     "overlayRoot": "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
-    "manifestSha256": "3b34607e8940fcb7309e299994b47252fec4493b55c5dd88555438f0bb56f87c",
+    "manifestSha256": "119d711aa8e9a943c7c6cb2e33c74e02971b959d7cc119aa504bc8b329779d9d",
     "entryPoint": "entrypoints/read-only-styles.ts",
     "exactImporterSpecifierResolutions": true,
     "unminifiedBytes": 1993265,
@@ -99,7 +99,7 @@
     },
     "overlayInputClosure": {
       "fileCount": 18,
-      "sha256": "ec8bc9f509142d6d1daa3e84ff0a8ef849138a4d18ff39afed9ab5466ac1e7e8"
+      "sha256": "a782d79e07b05476c24d5b01d0babc61ebf47ad7ea32d31f16bedfe751b89886"
     },
     "baseOverlayInputClosure": {
       "fileCount": 16,

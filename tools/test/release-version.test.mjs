@@ -9,15 +9,15 @@ import {
   verifyReleaseVersion,
 } from "../verify-release-version.mjs";
 
-const releaseVersion = "0.3.2";
+const releaseVersion = "0.4.0";
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 
 test("release tags must use the exact vX.Y.Z format", () => {
-  assert.equal(parseReleaseTag("v0.3.2"), "0.3.2");
+  assert.equal(parseReleaseTag("v0.4.0"), "0.4.0");
   assert.equal(parseReleaseTag("v12.34.56"), "12.34.56");
 
   for (const tag of [
-    "0.3.2",
+    "0.4.0",
     "v01.2.0",
     "v1.02.0",
     "v1.2.03",
@@ -57,14 +57,14 @@ test("release version verifier rejects every mismatched product version", async 
 
     await assert.rejects(
       () => verifyReleaseVersion(fixture, `v${releaseVersion}`),
-      /Chrome manifest version must be 0\.3\.2, received 0\.3\.1/,
+      /Chrome manifest version must be 0\.4\.0, received 0\.3\.1/,
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test("repository product metadata is aligned to release 0.3.2", async () => {
+test("repository product metadata is aligned to release 0.4.0", async () => {
   const result = await verifyReleaseVersion(
     repositoryRoot,
     `v${releaseVersion}`,

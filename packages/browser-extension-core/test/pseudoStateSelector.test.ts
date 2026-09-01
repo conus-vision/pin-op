@@ -2,6 +2,7 @@ import selectorParser from "postcss-selector-parser";
 import { describe, expect, it } from "vitest";
 import {
   PSEUDO_STATE_SELECTOR_LIMITS,
+  selectorPreviewsPseudoState,
   transformPseudoStateSelector,
   type PseudoStateMarkerNames,
   type SelectorTransformResult,
@@ -11,6 +12,29 @@ const MARKERS: PseudoStateMarkerNames = Object.freeze({
   selection: "data-pin-op-preview-selected-abcdefghijkl",
   hover: "data-pin-op-preview-hover-abcdefghijkl",
   focus: "data-pin-op-preview-focus-abcdefghijkl",
+});
+
+describe("selectorPreviewsPseudoState", () => {
+  it.each([
+    [".button:hover", ["hover"], true],
+    [".button:focus", ["focus"], true],
+    [".button:hover:focus", ["hover", "focus"], true],
+    [":is(.button:hover, .link:hover)", ["hover"], true],
+    // The preview forces nothing when the state is not among the active ones.
+    [".button:hover", ["focus"], false],
+    [".button", ["hover"], false],
+    // Shapes the transform refuses are shapes the preview cannot force either.
+    [".button:not(:hover)", ["hover"], false],
+    [".button:has(:hover)", ["hover"], false],
+    [".panel:hover .button", ["hover"], false],
+    ["", ["hover"], false],
+  ] as const)("answers %s for %s", (selector, states, expected) => {
+    expect(selectorPreviewsPseudoState(selector, states)).toBe(expected);
+  });
+
+  it("answers false with no active state, whatever the selector says", () => {
+    expect(selectorPreviewsPseudoState(".button:hover", [])).toBe(false);
+  });
 });
 
 describe("transformPseudoStateSelector", () => {

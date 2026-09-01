@@ -312,7 +312,12 @@ async function openExtensionTab(bidi, marionette, url, viewport) {
     ));
     if (opened) {
       const target = { context: opened.context };
-      await applyViewport(bidi, target, viewport);
+      // Firefox 155 refuses to size a privileged context, and every extension
+      // page this harness drives is one. The viewport is a convenience for
+      // measurement here, not part of what is under test, so the refusal is
+      // carried; `setPanelViewport` still fails loudly, because a run that
+      // measures in a short pane has to actually get one.
+      await applyViewport(bidi, target, viewport, { optional: true });
       await waitFor(bidi, target, 'document.readyState !== "loading"', 30_000);
       return target;
     }
@@ -326,12 +331,18 @@ async function listContexts(bidi) {
   return contexts.map(({ context, url }) => ({ context, url }));
 }
 
-async function applyViewport(bidi, target, viewport) {
-  await bidi.send("browsingContext.setViewport", {
-    context: target.context,
-    viewport: { width: viewport.width, height: viewport.height },
-    devicePixelRatio: 1,
-  });
+async function applyViewport(bidi, target, viewport, { optional = false } = {}) {
+  try {
+    await bidi.send("browsingContext.setViewport", {
+      context: target.context,
+      viewport: { width: viewport.width, height: viewport.height },
+      devicePixelRatio: 1,
+    });
+  } catch (error) {
+    if (!optional || !/privileged scope/i.test(String(error?.message ?? error))) {
+      throw error;
+    }
+  }
 }
 
 async function evaluate(bidi, target, expression) {

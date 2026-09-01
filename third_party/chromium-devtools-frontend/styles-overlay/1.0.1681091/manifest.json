@@ -35,7 +35,7 @@
     "facades/ui-utils.ts": "f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6",
     "facades/ui.ts": "ed362815c2cec6c9b956bb728d12809c5e68d6a73054eed9d635ad11a89c9750",
     "facades/visual-logging.ts": "974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96",
-    "runtime/read-only-styles-runtime.ts": "b4f978db78d288c4c22983ec6757626dbf0b3ea35b001cdc8a328bcc78f38d7b"
+    "runtime/read-only-styles-runtime.ts": "70e5583e6ae8c4fdd671bc3928853e2bf8923c1fa5ca51ba3f4c3a77c5991a3c"
   },
   "upstreamFiles": {
     "front_end/core/sdk/CSSProperty.ts": "6c699445cd13b6f841cc740b15fe1e01360c5afb4c87a3a68f1dd89b76f22047",
@@ -51,7 +51,7 @@
   },
   "reviewedStylesOverlayClosure": {
     "fileCount": 18,
-    "sha256": "ec8bc9f509142d6d1daa3e84ff0a8ef849138a4d18ff39afed9ab5466ac1e7e8"
+    "sha256": "a782d79e07b05476c24d5b01d0babc61ebf47ad7ea32d31f16bedfe751b89886"
   },
   "reviewedBaseOverlayClosure": {
     "fileCount": 16,

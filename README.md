@@ -131,18 +131,18 @@ providers remain future scope.
 
 ## Install Status
 
-The `0.3.2` release is being prepared. Its complete GitHub Release will contain:
+The `0.4.0` release is being prepared. Its complete GitHub Release will contain:
 
-- `pin-op-vscode-0.3.2.vsix`;
-- `pin-op-chrome-0.3.2.zip`;
-- `pin-op-firefox-0.3.2.zip`;
-- `pin-op-firefox-0.3.2.xpi`;
-- `pin-op-firefox-source-0.3.2.zip`;
+- `pin-op-vscode-0.4.0.vsix`;
+- `pin-op-chrome-0.4.0.zip`;
+- `pin-op-firefox-0.4.0.zip`;
+- `pin-op-firefox-0.4.0.xpi`;
+- `pin-op-firefox-source-0.4.0.zip`;
 - `SHA256SUMS`.
 
 `SHA256SUMS` verifies the five packaged artifacts. The Firefox ZIP is unsigned
 Mozilla-review/build input and cannot be installed persistently in Firefox
-Stable. No signed `0.3.2` XPI or public `0.3.2` release is claimed yet. Follow
+Stable. No signed `0.4.0` XPI or public `0.4.0` release is claimed yet. Follow
 the [installed artifact guide](docs/installed-verification.md) for candidate
 installation and current evidence status.
 

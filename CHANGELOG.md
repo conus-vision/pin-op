@@ -2,10 +2,15 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.3.2] - Unreleased
+## [0.4.0] - Unreleased
 
 ### Added
 
+- Rules marks the selectors the `:hov` preview is what makes match, with the
+  same fill the filter leaves on what it matched, so a previewed rule is
+  distinguishable from the ordinary matches around it. A negated target, a
+  target inside `:has()`, and anything else the preview cannot force stay
+  unmarked, because the preview is not what makes those match.
 - A terminal-free Browser Inspector workflow: VS Code starts automatically,
   the status item copies the port and PIN, and the DevTools panel confirms the
   same displayed code after linking.
@@ -135,7 +140,7 @@ All notable changes to Pin-op will be documented in this file.
 
 ### Changed
 
-- Advanced the product release to `0.3.2` and the exact wire protocol to the
+- Advanced the product release to `0.4.0` and the exact wire protocol to the
   breaking version `7`.
 - Added capability-gated auto-refresh, source-presentation, presentation-
   settings, navigation intents, and repeated navigation-state updates. Protocol

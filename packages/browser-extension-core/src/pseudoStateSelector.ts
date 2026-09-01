@@ -147,6 +147,35 @@ export function transformPseudoStateSelector(
   });
 }
 
+/**
+ * Marker names for the display-only probe below. The transform only validates
+ * their shape and writes them into a selector it then throws away, so these are
+ * never the page's own markers and never leave the panel.
+ */
+const PROBE_MARKER_NAMES: PseudoStateMarkerNames = Object.freeze({
+  selection: "data-pin-op-preview-probe-selection-display",
+  hover: "data-pin-op-preview-probe-hover-display",
+  focus: "data-pin-op-preview-probe-focus-display",
+});
+
+/**
+ * Whether the preview is what makes this selector match: it carries a supported
+ * positive target for one of the active states. A negated target, a target
+ * inside `:has()`, or any other shape the transform refuses answers false,
+ * because the preview cannot force those either.
+ */
+export function selectorPreviewsPseudoState(
+  selectorText: string,
+  requestedStates: readonly PseudoState[],
+): boolean {
+  if (requestedStates.length === 0) return false;
+  return transformPseudoStateSelector(
+    selectorText,
+    PROBE_MARKER_NAMES,
+    requestedStates,
+  ).kind === "supported";
+}
+
 /** Bounded semantic probe used when nesting cannot be resolved safely. */
 export function selectorContainsRequestedPseudoState(
   selectorText: string,
