@@ -70,6 +70,13 @@ All notable changes to Pin-op will be documented in this file.
 
 ### Fixed
 
+- Paste answers in the Chrome panel. The asynchronous Clipboard API is gated on
+  the `clipboard-read` permissions policy, which a document delegates only to
+  its own origin, and a DevTools panel is a frame the toolbox embeds
+  cross-origin without delegating it - so the read was refused however the
+  extension was permitted, and the control reported nothing to paste. The read
+  now falls back to the editing command, which is gated on the extension's own
+  `clipboardRead` permission and still answers inside the panel.
 - Rules origins resolve in Chrome for a rule that names a quoted font family.
   Blink drops the quotes the stylesheet wrote and Gecko keeps them, so a rule
   declaring `font-family: "gilroy-bold", Arial` matched the file in Firefox and

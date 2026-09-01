@@ -139,12 +139,12 @@ export const TRUSTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
   Object.freeze({ browser: "chrome", path: "dist/background.js", sha256: "5d392c3e9c233e85e4ab6b8d866ce554cb56683da2dcd85a4075d6a6ae5cb3ab" }),
   Object.freeze({ browser: "chrome", path: "dist/contentScript.js", sha256: "981d358e5ef2fb08e98c5e5cd6618fb27874ecd03c32d6caac49c61feb7ec92f" }),
   Object.freeze({ browser: "chrome", path: "dist/devtools.js", sha256: "158a0e3e82419fcd935e2b290c0f6111fe7a5b7c931ed6cbf657de2169337363" }),
-  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "103fd7d5d9cf0534e2ce6cbae63e12b6223ec04f6cf59bcf2844456093f8fec0" }),
+  Object.freeze({ browser: "chrome", path: "dist/inspectorPanel.js", sha256: "2edf800051e3f02ca3a712be32025ec4aad81a30b9181b95b360ccd6562a8df9" }),
   Object.freeze({ browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "b61cf8e09811c0144c12d818dd4549aca5c62deca5a10c486e4ee6abbe7e4dca" }),
   Object.freeze({ browser: "firefox", path: "dist/background.js", sha256: "5d392c3e9c233e85e4ab6b8d866ce554cb56683da2dcd85a4075d6a6ae5cb3ab" }),
   Object.freeze({ browser: "firefox", path: "dist/contentScript.js", sha256: "981d358e5ef2fb08e98c5e5cd6618fb27874ecd03c32d6caac49c61feb7ec92f" }),
   Object.freeze({ browser: "firefox", path: "dist/devtools.js", sha256: "97374cf4c4b9a5eb47d03e95ad3ca94929d9e475766f02b9984a9edea9b92ab7" }),
-  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "103fd7d5d9cf0534e2ce6cbae63e12b6223ec04f6cf59bcf2844456093f8fec0" }),
+  Object.freeze({ browser: "firefox", path: "dist/inspectorPanel.js", sha256: "2edf800051e3f02ca3a712be32025ec4aad81a30b9181b95b360ccd6562a8df9" }),
   Object.freeze({ browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "b61cf8e09811c0144c12d818dd4549aca5c62deca5a10c486e4ee6abbe7e4dca" }),
 ]);
 

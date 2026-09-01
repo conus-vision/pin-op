@@ -1827,6 +1827,7 @@ const ALLOWED_SHARED_ADAPTER_IMPORTS = new Set([
   "ContentScriptDocument",
   "DevtoolsPanelPage",
   "PanelInspectPort",
+  "readPanelClipboardText",
   "sanitizeErrorMessage",
   "startBackgroundRuntime",
   "startContentScriptRuntime",

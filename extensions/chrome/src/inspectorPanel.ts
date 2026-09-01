@@ -1,6 +1,7 @@
 import browser from "webextension-polyfill";
 import { createElementsInspectorView } from "@pin-op/devtools-elements-ui/upstream-runtime";
 import {
+  readPanelClipboardText,
   sanitizeErrorMessage,
   startInspectorPanelRuntime,
   type PanelInspectPort,
@@ -13,7 +14,10 @@ startInspectorPanelRuntime({
   connectRuntimePort: (name) =>
     browser.runtime.connect({ name }) as unknown as PanelInspectPort,
   sendRuntimeMessage: (message) => browser.runtime.sendMessage(message),
-  readClipboard: () => navigator.clipboard.readText(),
+  readClipboard: () => readPanelClipboardText({
+    document,
+    clipboard: navigator.clipboard,
+  }),
   subscribeUnload(listener) {
     window.addEventListener("unload", listener);
     return () => window.removeEventListener("unload", listener);

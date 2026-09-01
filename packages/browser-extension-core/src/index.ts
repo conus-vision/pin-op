@@ -526,6 +526,8 @@ export type {
   PanelRuntime,
   PanelRuntimeOptions,
 } from "./panelRuntime.js";
+export { readPanelClipboardText } from "./panelClipboard.js";
+export type { PanelClipboardOptions } from "./panelClipboard.js";
 export { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";
 export type {
   BrowserWindowConnectionState,
