@@ -70,6 +70,12 @@ All notable changes to Pin-op will be documented in this file.
 
 ### Fixed
 
+- Rules origins resolve in Chrome for a rule that names a quoted font family.
+  Blink drops the quotes the stylesheet wrote and Gecko keeps them, so a rule
+  declaring `font-family: "gilroy-bold", Arial` matched the file in Firefox and
+  fell back to generated CSS in Chrome. A family name that is already an
+  identifier sequence is now read as that name on both sides; a name that needs
+  its quotes, and a quoted generic or CSS-wide keyword, keep them.
 - Previewed `:hover` and `:focus` styles reach the page. A mirror is written
   from the longhands the CSSOM enumerates for a shorthand, and the engine hands
   that back as the shorthand it parsed. The mount check compared the two as text

@@ -619,6 +619,7 @@ function canonicalizeSidesValue(property: string, value: string): string {
   if (PROPERTY_NAMING_VALUES.has(property)) {
     return canonicalizePropertyNamingValue(value);
   }
+  if (property === "font-family") return canonicalizeFontFamilyValue(value);
   if (SHADOW_PROPERTIES.has(property)) return canonicalizeShadowValue(value);
   if (SLASHED_SIDES_PROPERTIES.has(property)) {
     const groups = splitTopLevel(value, "/");
@@ -640,6 +641,58 @@ const PROPERTY_NAMING_VALUES = new Set([
   "transition-property",
   "will-change",
 ]);
+
+/**
+ * A font family name that is already a sequence of identifiers means the same
+ * quoted or not, and browsers disagree about which they hand back: Blink drops
+ * the quotes the stylesheet wrote, Gecko keeps them. Reading both as the
+ * unquoted name is what lets a rule declaring `"gilroy-bold", Arial` match what
+ * either engine reports for it.
+ */
+const UNQUOTED_FAMILY_NAME =
+  /^-?[A-Za-z_][A-Za-z0-9_-]*(?: -?[A-Za-z_][A-Za-z0-9_-]*)*$/;
+
+/**
+ * Quoted, these name a family; unquoted they are keywords with another meaning,
+ * so their quotes carry the difference and are kept.
+ */
+const RESERVED_FAMILY_NAMES = new Set([
+  "cursive",
+  "default",
+  "emoji",
+  "fangsong",
+  "fantasy",
+  "inherit",
+  "initial",
+  "math",
+  "monospace",
+  "revert",
+  "revert-layer",
+  "sans-serif",
+  "serif",
+  "system-ui",
+  "ui-monospace",
+  "ui-rounded",
+  "ui-sans-serif",
+  "ui-serif",
+  "unset",
+]);
+
+function canonicalizeFontFamilyValue(value: string): string {
+  return splitTopLevel(value, ",")
+    .map((entry) => canonicalizeFontFamilyName(entry.trim()))
+    .join(",");
+}
+
+function canonicalizeFontFamilyName(name: string): string {
+  const quoted = /^"([^"]*)"$/.exec(name) ?? /^'([^']*)'$/.exec(name);
+  const inner = quoted?.[1];
+  if (inner === undefined) return name;
+  return UNQUOTED_FAMILY_NAME.test(inner) &&
+      !RESERVED_FAMILY_NAMES.has(inner.toLowerCase())
+    ? inner
+    : name;
+}
 
 const VENDOR_PREFIXED_IDENT = /^-(?:webkit|moz|ms|o)-([a-z][a-z0-9-]*)$/;
 const TIME_VALUE = /^-?(?:\d+|\d*\.\d+)m?s$/;

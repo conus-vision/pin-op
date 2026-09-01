@@ -55,6 +55,54 @@ describe("declarationFingerprint", () => {
     ]);
   });
 
+  it("reads a quoted font family and its bare identifier as the same name", () => {
+    // Blink drops the quotes the stylesheet wrote; Gecko keeps them. The rule
+    // is the same rule either way, and a Chrome pick used to lose its origin
+    // over exactly this.
+    const declared: CssDeclarationEvidence[] = [{
+      property: "font-family",
+      value: '"gilroy-bold", Arial, Helvetica, sans-serif',
+      important: false,
+    }];
+    const reported: CssDeclarationEvidence[] = [{
+      property: "font-family",
+      value: "gilroy-bold, Arial, Helvetica, sans-serif",
+      important: false,
+    }];
+
+    expect(declarationFingerprint(reported)).toEqual(
+      declarationFingerprint(declared),
+    );
+    expect(declarationFingerprint(declared)).toEqual([{
+      property: "font-family",
+      value: "gilroy-bold,Arial,Helvetica,sans-serif",
+      important: false,
+    }]);
+  });
+
+  it("keeps the quotes a font family name needs to keep its meaning", () => {
+    const quotedValue = (value: string) => declarationFingerprint([{
+      property: "font-family",
+      value,
+      important: false,
+    }])[0]?.value;
+
+    // A name that is not an identifier sequence cannot lose its quotes.
+    expect(quotedValue('"2 Wide", Arial')).toBe('"2 Wide",Arial');
+    expect(quotedValue('"Font, Inc.", Arial')).toBe('"Font, Inc.",Arial');
+    // Quoted, these name a family; bare, they are generic or CSS-wide keywords.
+    expect(quotedValue('"serif"')).toBe('"serif"');
+    expect(quotedValue('"inherit"')).toBe('"inherit"');
+    // Multi-word identifier sequences are still names a browser may unquote.
+    expect(quotedValue('"Helvetica Neue", Arial')).toBe("Helvetica Neue,Arial");
+    // Only font-family is read this way.
+    expect(declarationFingerprint([{
+      property: "content",
+      value: '"gilroy-bold"',
+      important: false,
+    }])[0]?.value).toBe('"gilroy-bold"');
+  });
+
   it("preserves significant string whitespace while normalizing token spacing", () => {
     expect(declarationFingerprint([
       {
@@ -324,7 +372,9 @@ describe("declarationFingerprint", () => {
         ?.value;
 
     expect(family("'gilroy-bold', Arial")).toBe(family('"gilroy-bold", Arial'));
-    expect(family("'gilroy-bold'")).toBe('"gilroy-bold"');
+    // A name that needs no quotes settles on the bare identifier, which is
+    // what Blink reports for it.
+    expect(family("'gilroy-bold'")).toBe("gilroy-bold");
     // Text that would need escaping to requote keeps the quotes it was given.
     expect(family("'say \"hi\"'")).toBe("'say \"hi\"'");
   });
