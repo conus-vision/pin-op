@@ -13,3 +13,7 @@ web-ext-artifacts/
 .worktrees/
 promotion/
 docs/superpowers/
+.superpowers/
+.agents/
+.pnpm-store/
+*.log
