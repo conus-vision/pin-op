@@ -37,7 +37,7 @@ import {
   rejectSensitivePath,
 } from "./release-policy.mjs";
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const CHROMIUM_NATIVE_PACKAGE_PIN = Object.freeze({
   packageName: "chrome-devtools-frontend",
   version: "1.0.1681091",

@@ -2,7 +2,7 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.4.1] - Unreleased
+## [0.4.2] - Unreleased
 
 ### Added
 
@@ -19,10 +19,30 @@ All notable changes to Pin-op will be documented in this file.
   `GitHub Release` where it means the GitHub Release rather than the store
   listings, and the security policy supports `0.4.x` outright instead of
   waiting on a publication that has happened.
-- Advanced the product release to `0.4.1`. The wire protocol stays at `7`.
+- Advanced the product release to `0.4.2`. The wire protocol stays at `7`.
 
 ### Fixed
 
+- Rules links a rule to its SCSS again. The browser names a matched rule by its
+  index in the CSSOM, and that index cannot be recovered from the stylesheet on
+  disk: an engine drops every rule whose selector it does not implement -- a
+  `:-ms-input-placeholder` block, say -- and from the first dropped rule onwards
+  every later index is shifted, so the index named a different rule. Pin-op read
+  that disagreement as "the rule is not identified", stopped before the source
+  map, and showed the generated CSS. The rule the browser reported is now
+  identified by what it reported -- selector, every declaration, and grouping
+  context -- and the index is corroboration rather than a precondition, so a
+  stylesheet with one unimplemented selector no longer loses its origins from
+  that point down. A rule the browser cannot be matched to exactly one rule in
+  the file is still left unresolved.
+- Rules follows the source map for a rule whose selector the mixin around it
+  wrote. `@include link-states(hover) { b { ... } }` compiles to
+  `.btn:hover b`, which nesting expansion cannot produce from `b`, so the
+  comparison rejected the very rule the map points at. Such a rule is now
+  matched on what it declares, as a rule that writes `&` already was.
+- The Rules pane says `No element selected` instead of emptying without a word.
+  It is the state a selection lost to page script lands in, and every other
+  state that empties the pane already explained itself.
 - `prepackage` now also clears an unpacked candidate build left in
   `artifacts/`. The artifact verifier rejects every non-file entry there, so
   a directory extracted from the previous version failed the next

@@ -149,12 +149,12 @@ const EXPECTED_ZOD_V3_BUNDLE_PROVENANCE = Object.freeze([
   { browser: "chrome", path: "dist/contentScript.js", sha256: "981d358e5ef2fb08e98c5e5cd6618fb27874ecd03c32d6caac49c61feb7ec92f" },
   { browser: "chrome", path: "dist/devtools.js", sha256: "158a0e3e82419fcd935e2b290c0f6111fe7a5b7c931ed6cbf657de2169337363" },
   { browser: "chrome", path: "dist/inspectorPanel.js", sha256: "2edf800051e3f02ca3a712be32025ec4aad81a30b9181b95b360ccd6562a8df9" },
-  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "b61cf8e09811c0144c12d818dd4549aca5c62deca5a10c486e4ee6abbe7e4dca" },
+  { browser: "chrome", path: "dist/chromiumElementsRuntime.js", sha256: "70050d0e5a375ac40b1bf99dc8859ea91de580d35b1328250eced58a74720210" },
   { browser: "firefox", path: "dist/background.js", sha256: "5d392c3e9c233e85e4ab6b8d866ce554cb56683da2dcd85a4075d6a6ae5cb3ab" },
   { browser: "firefox", path: "dist/contentScript.js", sha256: "981d358e5ef2fb08e98c5e5cd6618fb27874ecd03c32d6caac49c61feb7ec92f" },
   { browser: "firefox", path: "dist/devtools.js", sha256: "97374cf4c4b9a5eb47d03e95ad3ca94929d9e475766f02b9984a9edea9b92ab7" },
   { browser: "firefox", path: "dist/inspectorPanel.js", sha256: "2edf800051e3f02ca3a712be32025ec4aad81a30b9181b95b360ccd6562a8df9" },
-  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "b61cf8e09811c0144c12d818dd4549aca5c62deca5a10c486e4ee6abbe7e4dca" },
+  { browser: "firefox", path: "dist/chromiumElementsRuntime.js", sha256: "70050d0e5a375ac40b1bf99dc8859ea91de580d35b1328250eced58a74720210" },
 ]);
 
 test("browser runtime contract pins reviewed constructor-clone provenance per browser and path", () => {
@@ -439,7 +439,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.doesNotThrow(() =>
       validateBrowserArchive(
         browserArchive(browser, INSPECTOR_PANEL_PAGE),
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
     );
@@ -458,7 +458,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.doesNotThrow(() =>
       validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
     );
@@ -478,7 +478,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         new RegExp(`missing archive path ${escapeRegex(path)}`, "i"),
@@ -506,7 +506,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /(?:unscoped|global).*Chromium.*CSS/i,
@@ -530,7 +530,7 @@ for (const browser of ["firefox", "chrome"]) {
 
     assert.doesNotThrow(() => validateBrowserArchive(
       archive,
-      `pin-op-${browser}-0.4.1.zip`,
+      `pin-op-${browser}-0.4.2.zip`,
       browser,
     ));
   });
@@ -561,7 +561,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.throws(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           /(?:remote.*CSS|invalid static CSS.*import)/i,
@@ -594,7 +594,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.throws(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           /remote UI resource/i,
@@ -616,7 +616,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         classicArchive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /unexpected module scripts/i,
@@ -636,7 +636,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         bareImportArchive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /must statically import exactly \.\/chromiumElementsRuntime\.js/i,
@@ -653,7 +653,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         unbundledRuntimeArchive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /must be a bundled ESM module/i,
@@ -673,7 +673,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         reexportedRuntimeArchive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /must be a bundled ESM module/i,
@@ -719,7 +719,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.throws(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           /(?:remote UI resource|srcset|srcdoc|meta refresh|inline frame)/i,
@@ -753,7 +753,7 @@ for (const browser of ["firefox", "chrome"]) {
       try {
         validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         );
         accepted.push(resource);
@@ -786,7 +786,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.throws(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           /inline (?:script|style|event)/i,
@@ -867,7 +867,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.throws(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           /(?:dynamic code|remote code|upstream snapshot)/i,
@@ -924,7 +924,7 @@ for (const browser of ["firefox", "chrome"]) {
       try {
         validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         );
         accepted.push(marker);
@@ -952,7 +952,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.doesNotThrow(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
     );
@@ -980,7 +980,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /dynamic code evaluation/i,
@@ -1002,7 +1002,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /invalid static JavaScript/i,
@@ -1040,7 +1040,7 @@ for (const browser of ["firefox", "chrome"]) {
         assert.doesNotThrow(
           () => validateBrowserArchive(
             archive,
-            `pin-op-${browser}-0.4.1.zip`,
+            `pin-op-${browser}-0.4.2.zip`,
             browser,
           ),
           `${path}: ${marker}`,
@@ -1065,7 +1065,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /unexpected manifest permissions/i,
@@ -1086,7 +1086,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /unexpected manifest content security policy/i,
@@ -1115,7 +1115,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /incomplete Chromium-derived notices/i,
@@ -1140,7 +1140,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /unexpected manifest (?:host|optional)/i,
@@ -1183,7 +1183,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /unexpected manifest (?:capability|key)/i,
@@ -1210,7 +1210,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /unexpected manifest (?:devtools page|background)/i,
@@ -1228,7 +1228,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /runtime metadata protocolVersion expected 7 but found 5/i,
@@ -1316,7 +1316,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         expectedError,
@@ -1337,7 +1337,7 @@ for (const browser of ["firefox", "chrome"]) {
     );
     assert.doesNotThrow(() => validateBrowserArchive(
       archive,
-      `pin-op-${browser}-0.4.1.zip`,
+      `pin-op-${browser}-0.4.2.zip`,
       browser,
     ));
   });
@@ -1354,7 +1354,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /Rules source open|Rules open acknowledgement|rules\.opened/i,
@@ -1379,7 +1379,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         new RegExp(`${label}.*${escapeRegex(marker)}`, "i"),
@@ -1396,7 +1396,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /unexpected manifest icons/i,
@@ -1410,7 +1410,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /pin-op-48\.png.*valid PNG/i,
@@ -1426,7 +1426,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /unexpected manifest name/i,
@@ -1442,7 +1442,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /unexpected manifest description/i,
@@ -1460,7 +1460,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /panel must present Pin-op in its title/i,
@@ -1480,7 +1480,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /toolbar.*exactly one/i,
@@ -1503,7 +1503,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /toolbar.*exactly one/i,
@@ -1534,7 +1534,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /connection controls.*visible/i,
@@ -1604,7 +1604,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /connection controls.*visible/i,
@@ -1663,7 +1663,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /connection controls.*visible/i,
@@ -1695,7 +1695,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.throws(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         /inline style/i,
@@ -1747,7 +1747,7 @@ for (const browser of ["firefox", "chrome"]) {
       assert.doesNotThrow(
         () => validateBrowserArchive(
           archive,
-          `pin-op-${browser}-0.4.1.zip`,
+          `pin-op-${browser}-0.4.2.zip`,
           browser,
         ),
         name,
@@ -1766,7 +1766,7 @@ for (const browser of ["firefox", "chrome"]) {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       ),
       /connection controls.*paste-button.*connection-summary/i,
@@ -1781,7 +1781,7 @@ test("common Firefox artifact verifier preserves the Gecko extension ID", () => 
   archive.files.set("manifest.json", Buffer.from(JSON.stringify(manifest)));
 
   assert.throws(
-    () => validateBrowserArchive(archive, "pin-op-firefox-0.4.1.zip", "firefox"),
+    () => validateBrowserArchive(archive, "pin-op-firefox-0.4.2.zip", "firefox"),
     /unexpected Firefox (?:Gecko ID|browser_specific_settings)/i,
   );
 });
@@ -1821,7 +1821,7 @@ test("common Firefox artifact verifier requires exact Gecko settings", () => {
     assert.throws(
       () => validateBrowserArchive(
         archive,
-        "pin-op-firefox-0.4.1.zip",
+        "pin-op-firefox-0.4.2.zip",
         "firefox",
       ),
       /unexpected Firefox browser_specific_settings/i,
@@ -1892,7 +1892,7 @@ function currentBrowserPanelPage(browser) {
     try {
       validateBrowserArchive(
         browserArchive(browser, panelPage),
-        `pin-op-${browser}-0.4.1.zip`,
+        `pin-op-${browser}-0.4.2.zip`,
         browser,
       );
       acceptedBrowserPanelPages.set(browser, panelPage);

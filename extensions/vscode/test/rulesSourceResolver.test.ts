@@ -350,7 +350,7 @@ describe("RulesSourceResolver", () => {
     ["a declaration-body start", 9, undefined],
     ["a mismatched end", 1, 10],
     ["a zero-length range", 1, 1],
-  ])("limits %s to unique-fingerprint CSS fallback", async (
+  ])("still reaches SCSS through %s", async (
     _case,
     startColumn,
     endColumn,
@@ -383,12 +383,12 @@ describe("RulesSourceResolver", () => {
 
     expect(result).toMatchObject({
       kind: "resolved",
-      document: { uri: cssUri, languageId: "css" },
-      confidence: "exact",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
     });
   });
 
-  it("does not promote a rule-path match with an end-only range to SCSS", async () => {
+  it("promotes a rule-path match with an end-only range to SCSS", async () => {
     const cssUri = "file:///workspace/dist/app.css";
     const scssUri = "file:///workspace/src/card.scss";
     const block = ".card { color: red; }";
@@ -415,8 +415,84 @@ describe("RulesSourceResolver", () => {
 
     expect(result).toMatchObject({
       kind: "resolved",
-      document: { uri: cssUri, languageId: "css" },
-      confidence: "exact",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
+    });
+  });
+
+  it("follows the source map when a path-only rule path names another rule", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const scssUri = "file:///workspace/src/card.scss";
+    const scss = [".other { color: blue; }", ".card { color: red; }"].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/card.scss",
+    });
+    generator.addMapping({
+      generated: { line: 2, column: 0 },
+      original: { line: 2, column: 0 },
+      source: "../src/card.scss",
+    });
+    const css = `${scss}\n/*# sourceMappingURL=app.css.map */`;
+    // An engine drops every rule whose selector it does not implement, so the
+    // CSSOM index it reports for a later rule names an earlier one in the file.
+    const rule = evidence({ selector: ".card", rulePath: "0.0" });
+
+    const result = await resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: generator.toString(),
+      [scssUri]: scss,
+    }), rule);
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 1, character: 0 } },
+      confidence: "sourcemap",
+    });
+  });
+
+  it("resolves a rule whose selector the mixin around it rewrote", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const scssUri = "file:///workspace/src/card.scss";
+    const scss = [
+      ".btn {",
+      "    @include link-states(hover) {",
+      "        b { padding-right: 4.1em; }",
+      "    }",
+      "}",
+    ].join("\n");
+    const block = ".btn:hover b { padding-right: 4.1em; }";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 3, column: 8 },
+      source: "../src/card.scss",
+    });
+    const css = `${block}\n/*# sourceMappingURL=app.css.map */`;
+    const rule = evidence({
+      selector: ".btn:hover b",
+      startLine: 1,
+      startColumn: 1,
+      endLine: 1,
+      endColumn: block.length + 1,
+      rulePath: "0.0",
+      declarations: [{ property: "padding-right", value: "4.1em" }],
+    });
+
+    const result = await resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: generator.toString(),
+      [scssUri]: scss,
+    }), rule);
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 2, character: 8 } },
+      confidence: "sourcemap",
     });
   });
 
@@ -480,7 +556,7 @@ describe("RulesSourceResolver", () => {
     });
   });
 
-  it("relocates one complete fingerprint to verified CSS but never promotes it through a map", async () => {
+  it("relocates one complete fingerprint and promotes it through the map", async () => {
     const cssUri = "file:///workspace/dist/app.css";
     const scssUri = "file:///workspace/src/card.scss";
     const generator = new SourceMapGenerator({ file: "app.css" });
@@ -513,9 +589,9 @@ describe("RulesSourceResolver", () => {
 
     expect(result).toMatchObject({
       kind: "resolved",
-      document: { uri: cssUri, languageId: "css" },
-      range: { start: { line: 1, character: 0 } },
-      confidence: "exact",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 0, character: 0 } },
+      confidence: "sourcemap",
     });
   });
 

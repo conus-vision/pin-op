@@ -530,7 +530,13 @@ export class ElementsInspectorShell {
       messageText = snapshot.message;
       messageRole = "alert";
     } else {
+      // Every other state that empties the pane says why. This one is reached
+      // both before anything is picked and when the picked element stops
+      // existing -- page script replaced it, or the document went away -- and
+      // an unexplained blank pane reads as the panel breaking rather than as
+      // the selection being gone.
       rulesPane.clear();
+      messageText = "No element selected";
     }
     if (this.disposed || revision !== this.rulesRenderRevision) return;
     this.updateRulesMessage(messageText, messageRole);

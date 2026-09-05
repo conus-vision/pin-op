@@ -1,7 +1,7 @@
 {
   "name": "@pin-op/workspace",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.",
   "license": "MIT",
   "repository": {
@@ -29,7 +29,7 @@
     "package:chrome": "pnpm --filter pin-op-chrome run package",
     "package:firefox": "pnpm --filter pin-op-firefox run package",
     "package:firefox-source": "node tools/archive-firefox-source.mjs",
-    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.4.1.zip",
+    "smoke:chrome-package": "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.4.2.zip",
     "smoke:inspector-extension": "node tools/smoke-inspector-extension.mjs",
     "smoke:inspector-extension-firefox": "node tools/smoke-inspector-extension.mjs --browser firefox",
     "smoke:vscode-package": "pnpm --filter pin-op run smoke:vsix",

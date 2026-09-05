@@ -9,7 +9,7 @@ const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const artifactPath = resolve(
   extensionRoot,
-  "../../artifacts/pin-op-vscode-0.4.1.vsix",
+  "../../artifacts/pin-op-vscode-0.4.2.vsix",
 );
 const require = createRequire(import.meta.url);
 const vsceCli = require.resolve("@vscode/vsce/vsce");
