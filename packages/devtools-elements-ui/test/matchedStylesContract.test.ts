@@ -78,6 +78,9 @@ describe("matched styles contract", () => {
     const harness = createHarness(rules);
 
     expectRulesState(harness, "empty");
+    // A pane that empties without saying why reads as the panel breaking, and
+    // this is the state a selection lost to page script lands in.
+    expect(harness.view.rulesRoot.textContent).toContain("No element selected");
 
     rules.publish({ state: "loading" });
     expectRulesState(harness, "loading");

@@ -52,6 +52,7 @@ export interface StylesheetRule {
   readonly selectorPreludeEndOffset: number;
   readonly contexts: readonly StylesheetRuleContext[];
   readonly hasUnsupportedGroupingContext: boolean;
+  readonly hasAuthoringRewrittenSelector: boolean;
   readonly hasCompleteDeclarationFingerprint: boolean;
   readonly fingerprint: RuleFingerprint;
 }
@@ -382,6 +383,7 @@ function ruleFromNode(
     selectorPreludeEndOffset: selectorEnd,
     contexts: containingRuleContexts(node),
     hasUnsupportedGroupingContext: hasUnsupportedGroupingContext(node, syntax),
+    hasAuthoringRewrittenSelector: hasAuthoringRewrittenSelector(node, syntax),
     hasCompleteDeclarationFingerprint: declarations.length === 0 ||
       normalizedDeclarations.length > 0,
     fingerprint: {
@@ -623,6 +625,45 @@ function hasUnsupportedGroupingContext(
       const kind = (current as AtRule).name.toLowerCase();
       const authoring = syntax === "scss" && PREPROCESSOR_AT_RULES.has(kind);
       if (!authoring && kind !== "media" && kind !== "supports") return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
+ * A preprocessor construct that decides the selector its body ends up under.
+ *
+ * `@include link-states(hover) { b { ... } }` writes `b`, and the mixin turns
+ * it into `.landing_btn:hover b`; `@each` and `@if` rewrite it through the
+ * values they carry. Nesting expansion cannot see any of that, so a rule held
+ * by one of these has no selector that can be compared with what the browser
+ * reports -- the same position `&` is already in.
+ */
+const SELECTOR_REWRITING_AT_RULES = new Set([
+  "at-root",
+  "content",
+  "each",
+  "else",
+  "for",
+  "if",
+  "include",
+  "mixin",
+  "while",
+]);
+
+function hasAuthoringRewrittenSelector(
+  node: Rule,
+  syntax: StylesheetSyntax,
+): boolean {
+  if (syntax !== "scss") return false;
+  let current: Container | Document | undefined = node.parent;
+  while (current) {
+    if (
+      current.type === "atrule" &&
+      SELECTOR_REWRITING_AT_RULES.has((current as AtRule).name.toLowerCase())
+    ) {
+      return true;
     }
     current = current.parent;
   }

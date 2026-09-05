@@ -107,11 +107,6 @@ export interface RulesSourceProjection {
   readonly confidence: "exact" | "sourcemap";
 }
 
-interface VerifiedGeneratedRule {
-  readonly rule: StylesheetRule;
-  readonly exactIdentity: boolean;
-}
-
 type CachedStylesheet =
   | { readonly kind: "parsed"; readonly value: ParsedStylesheet }
   | { readonly kind: "failed"; readonly error: unknown };
@@ -347,19 +342,10 @@ export class RulesSourceResolver {
       generatedDocumentUri,
       "css",
       generatedSnapshot.documentVersion,
-      verified.rule.range,
+      verified.range,
       "exact",
       [dependency("generated-css", generatedSnapshot)],
     );
-    if (!verified.exactIdentity) {
-      return this.freshCssFallback(
-        cssResult,
-        generatedDocumentUri,
-        generatedText,
-        request,
-        batch,
-      );
-    }
 
     let mapped: Awaited<
       ReturnType<SourceMapLoader["resolveSelectorPrelude"]>
@@ -368,7 +354,7 @@ export class RulesSourceResolver {
       mapped = await this.sourceMaps.resolveSelectorPrelude(
         generatedDocumentUri,
         generatedText,
-        verified.rule,
+        verified,
         batch.sourceMapWorkspace,
         generated.sourceUrl,
         request.signal,
@@ -902,10 +888,22 @@ export function projectRulesSource(
   };
 }
 
+/**
+ * The generated rule the browser reported, found in the file on disk.
+ *
+ * The browser names a rule by its index in the CSSOM, and that index cannot be
+ * predicted from the file's text: an engine drops every rule whose selector it
+ * does not implement -- `:-ms-input-placeholder` in one engine, `::-moz-*` in
+ * another -- and from the first such rule onwards every later index is shifted.
+ * So the index is corroboration, not identity. Identity is the rule the browser
+ * reported matched selector, declaration for declaration, and grouping context:
+ * when exactly one rule in the file carries all of it, that rule is the one,
+ * whichever index the browser gave it.
+ */
 function verifyGeneratedRule(
   stylesheet: ParsedStylesheet,
   evidence: InspectRuleEvidence,
-): VerifiedGeneratedRule | undefined {
+): StylesheetRule | undefined {
   const generated = evidence.generatedSource;
   if (!generated) return undefined;
   const byPosition = generated.startLine === undefined ||
@@ -925,16 +923,13 @@ function verifyGeneratedRule(
     byPath,
   );
   if (identityCandidate && ruleMatchesEvidence(identityCandidate, evidence)) {
-    return { rule: identityCandidate, exactIdentity: true };
+    return identityCandidate;
   }
-  const fallback = findUniqueRuleByCompleteFingerprint(stylesheet, {
+  return findUniqueRuleByCompleteFingerprint(stylesheet, {
     selector: evidence.selector,
     declarations: declarationEvidence(evidence),
     contexts: generated.contexts,
   });
-  return fallback
-    ? { rule: fallback, exactIdentity: false }
-    : undefined;
 }
 
 function exactIdentityCandidate(
@@ -1010,11 +1005,13 @@ function originalRuleCarriesEvidence(
   );
   if (declarations === undefined) return false;
   // A rule written inside a mixin says `&`, or names a state by interpolation,
-  // and what that becomes is only known where the mixin is used -- as is the
-  // `@media` it is used under. Its selector and conditions cannot be compared
-  // with anything; what it declares directly still can, and the map is what
-  // says this is the rule.
-  const comparableSelector = !RELATIVE_SELECTOR.test(rule.selector);
+  // or says nothing at all and lets the `@include` around it decide -- and what
+  // that becomes is only known where the mixin is used, as is the `@media` it is
+  // used under. Its selector and conditions cannot be compared with anything;
+  // what it declares directly still can, and the map is what says this is the
+  // rule.
+  const comparableSelector = !RELATIVE_SELECTOR.test(rule.selector) &&
+    !rule.hasAuthoringRewrittenSelector;
   if (comparableSelector && !mapCarriedThisSource) {
     if (
       normalizeSelector(evidence.selector) !==
