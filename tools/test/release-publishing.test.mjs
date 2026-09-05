@@ -13,7 +13,7 @@ const {
   parseChecksumManifest,
 } = releasePublishing;
 
-const version = "0.4.0";
+const version = "0.4.1";
 const databaseId = "987654321";
 const unsignedName = `pin-op-firefox-${version}.zip`;
 const signedName = `pin-op-firefox-${version}.xpi`;

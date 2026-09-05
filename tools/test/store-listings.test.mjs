@@ -8,11 +8,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const attribution =
   "Pin-op by Volodymyr Moskvin (c) 2026 [Conus Vision](https://conus.vision)";
 const releaseArtifacts = [
-  "pin-op-vscode-0.4.0.vsix",
-  "pin-op-chrome-0.4.0.zip",
-  "pin-op-firefox-0.4.0.zip",
-  "pin-op-firefox-0.4.0.xpi",
-  "pin-op-firefox-source-0.4.0.zip",
+  "pin-op-vscode-0.4.1.vsix",
+  "pin-op-chrome-0.4.1.zip",
+  "pin-op-firefox-0.4.1.zip",
+  "pin-op-firefox-0.4.1.xpi",
+  "pin-op-firefox-source-0.4.1.zip",
   "SHA256SUMS",
 ];
 
@@ -185,7 +185,7 @@ test("GitHub About avoids unsupported speed claims", () => {
 
 test("VS Code README preserves the seven-step protocol recovery workflow", () => {
   assert.deepEqual(sectionHeadings(vscodeSections), [
-    "Install From VSIX",
+    "Install",
     "Link And Inspect",
     "What Pin-op Resolves",
     "Safety And Compatibility",
@@ -222,7 +222,7 @@ test("root README leads with the installed alpha workflow without timing claims"
     rootReadme,
     /> Alpha: product and installation details may change before 1\.0\./,
   );
-  assert.match(rootReadme, /The `0\.4\.0` release is being prepared\./);
+  assert.match(rootReadme, /The `0\.4\.1` GitHub Release is being prepared\./);
 });
 
 test("root README preserves release artifact trust facts", () => {
@@ -244,7 +244,7 @@ test("root README preserves release artifact trust facts", () => {
   );
   assert.ok(
     normalizedStatus.includes(
-      "No signed `0.4.0` XPI or public `0.4.0` release is claimed yet.",
+      "No self-distributed `0.4.1` XPI or public `0.4.1` GitHub Release is claimed yet.",
     ),
   );
 });

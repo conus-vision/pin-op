@@ -18,7 +18,7 @@ test("release workflows and package scripts use canonical Pin-op names", async (
 
   assert.equal(
     rootPackage.scripts["smoke:chrome-package"],
-    "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.4.0.zip",
+    "node tools/smoke-packaged-chrome.mjs artifacts/pin-op-chrome-0.4.1.zip",
   );
   for (const source of [ciSource, releaseSource, firefoxSource, rootPackageSource]) {
     assert.equal(source.toLowerCase().includes(legacyArtifactPrefix), false);
@@ -270,7 +270,7 @@ test("write jobs preserve release identity and race checks without AMO secrets",
 test("release guide documents protected tags, stateful resume, and fail-closed recovery", async () => {
   const source = await readFile(resolve(root, "docs/release.md"), "utf8");
 
-  assert.match(source, /git tag -a v0\.4\.0/);
+  assert.match(source, /git tag -a v0\.4\.1/);
   assert.doesNotMatch(source, /git tag -s|git verify-tag/);
   assert.match(source, /cryptographic tag\s+signing is not configured/i);
   assert.match(source, /branch ruleset|branch protection/i);
@@ -300,7 +300,7 @@ test("release guide documents protected tags, stateful resume, and fail-closed r
 test("release guide searches every current release-owned document", async () => {
   const source = await readFile(resolve(root, "docs/release.md"), "utf8");
   const searchBlock = source.match(
-    /\$releaseFiles = @\([\s\S]*?node tools\/verify-release-version\.mjs v0\.4\.0/,
+    /\$releaseFiles = @\([\s\S]*?node tools\/verify-release-version\.mjs v0\.4\.1/,
   )?.[0];
 
   assert.ok(searchBlock, "release version-search block is missing");

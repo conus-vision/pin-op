@@ -4,6 +4,14 @@ Normal use with installed Pin-op extensions is terminal-free. Contributor
 commands belong in [development-host verification](mvp-verification.md), not in
 the installed workflow.
 
+Install both halves first: the
+[Pin-op VS Code extension](https://marketplace.visualstudio.com/items?itemName=conus-vision.pin-op)
+and, for the browser you inspect in, the
+[Chrome Web Store](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)
+or [Firefox Add-ons](https://addons.mozilla.org/addon/pin-op/)
+listing. VS Code is the only IDE a browser window can link to, and support for
+other IDEs is in development.
+
 Ordinary and store Firefox/Chrome packages open one shared Chromium-derived,
 read-only Inspector UI by default. It adapts pinned BSD-licensed Chromium
 DevTools DOM Tree and Rules presentation to Pin-op's browser-local models; it is

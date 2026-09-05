@@ -43,6 +43,13 @@ The connection uses a loopback-only WebSocket and explicit browser-window
 linking, with no remote Pin-op service. Firefox 142 or newer and the matching
 Pin-op VS Code extension are required.
 
+Pin-op needs its matching IDE half. Install the Pin-op extension for Visual
+Studio Code from
+https://marketplace.visualstudio.com/items?itemName=conus-vision.pin-op
+(extension ID conus-vision.pin-op) and keep both halves on the same release.
+VS Code is the only IDE this panel can link to today; support for other IDEs is
+in development.
+
 Pin-op by Volodymyr Moskvin (c) 2026 [Conus Vision](https://conus.vision)
 
 ## Chrome Web Store
@@ -84,5 +91,12 @@ The Inspector's Source tab remains active-document-only.
 The connection uses a loopback-only WebSocket and explicit browser-window
 linking, with no remote Pin-op service. Chrome/Chromium 116 or newer and the
 matching Pin-op VS Code extension are required.
+
+Pin-op needs its matching IDE half. Install the Pin-op extension for Visual
+Studio Code from
+https://marketplace.visualstudio.com/items?itemName=conus-vision.pin-op
+(extension ID conus-vision.pin-op) and keep both halves on the same release.
+VS Code is the only IDE this panel can link to today; support for other IDEs is
+in development.
 
 Pin-op by Volodymyr Moskvin (c) 2026 [Conus Vision](https://conus.vision)

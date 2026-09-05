@@ -1,6 +1,6 @@
 # Firefox Source Submission
 
-These instructions reproduce the unsigned Firefox extension from the Pin-op 0.4.0 source ZIP, `pin-op-firefox-source-0.4.0.zip`, submitted to Mozilla. Run them from the extracted ZIP root on a clean system.
+These instructions reproduce the unsigned Firefox extension from the Pin-op 0.4.1 source ZIP, `pin-op-firefox-source-0.4.1.zip`, submitted to Mozilla. Run them from the extracted ZIP root on a clean system.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ The version command must print `9.15.0`. The build output is written to `extensi
 corepack pnpm --filter pin-op-firefox run package
 ```
 
-The unsigned extension is written to `artifacts/pin-op-firefox-0.4.0.zip`. The package command repeats the Firefox build before invoking the repository-pinned `web-ext@10.4.0` with its source and test exclusions.
+The unsigned extension is written to `artifacts/pin-op-firefox-0.4.1.zip`. The package command repeats the Firefox build before invoking the repository-pinned `web-ext@10.4.0` with its source and test exclusions.
 
 ## Reproducibility And Review Notes
 

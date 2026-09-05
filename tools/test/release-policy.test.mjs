@@ -80,15 +80,15 @@ test("release archives reject sensitive path segments", () => {
 });
 
 test("release versions must match the expected product version", () => {
-  assert.doesNotThrow(() => assertVersion("0.4.0", "manifest", "0.4.0"));
+  assert.doesNotThrow(() => assertVersion("0.4.1", "manifest", "0.4.1"));
   assert.throws(
-    () => assertVersion("0.3.1", "manifest", "0.4.0"),
-    /manifest version must be 0\.4\.0, received 0\.3\.1/,
+    () => assertVersion("0.3.1", "manifest", "0.4.1"),
+    /manifest version must be 0\.4\.1, received 0\.3\.1/,
   );
 });
 
 test("checksum artifact names must be printable ASCII", () => {
-  assert.doesNotThrow(() => assertAsciiFilename("pin-op-firefox-0.4.0.zip"));
+  assert.doesNotThrow(() => assertAsciiFilename("pin-op-firefox-0.4.1.zip"));
   assert.throws(() => assertAsciiFilename("bröwser.zip"), /printable ASCII/);
   assert.throws(() => assertAsciiFilename("line\nbreak.zip"), /printable ASCII/);
 });

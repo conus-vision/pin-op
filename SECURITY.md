@@ -4,11 +4,13 @@
 
 | Version | Status |
 | --- | --- |
-| 0.4.x | Supported when the `0.4.0` release is published. |
+| 0.4.x | Supported. |
 | Earlier versions | Unsupported. |
 
-No public `0.4.0` release is claimed yet. Until publication, identify the exact
-reviewed source commit when reporting or reproducing an issue.
+The `0.4.1` extensions are published on the Visual Studio Marketplace, the
+Chrome Web Store, and Firefox Add-ons. Name the installed extension versions
+when reporting or reproducing an issue, or the exact source commit when the
+build came from this repository.
 
 ## Report A Vulnerability
 

@@ -3,10 +3,23 @@
 Select a DOM element in Firefox or Chrome and see matching CSS or
 source-mapped SCSS ranges highlighted in the active VS Code file.
 
-## Install From VSIX
+## Install
+
+Pin-op is two halves and needs both. This extension is the IDE half; the
+browser half is a DevTools panel installed separately:
+
+- Chrome and Chromium 116+:
+  [Chrome Web Store](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)
+- Firefox Stable 142+:
+  [Firefox Add-ons](https://addons.mozilla.org/addon/pin-op/)
+
+Install the matching release of both halves. VS Code is the only IDE a browser
+window can link to; support for other IDEs is in development.
+
+To install this extension from a local package instead of the Marketplace:
 
 1. Open the Command Palette and run **Extensions: Install from VSIX...**.
-2. Select `pin-op-vscode-0.4.0.vsix` and reload VS Code if prompted.
+2. Select `pin-op-vscode-0.4.1.vsix` and reload VS Code if prompted.
 3. Open a local project. Pin-op starts automatically.
 
 ## Link And Inspect

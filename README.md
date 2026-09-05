@@ -122,6 +122,7 @@ providers remain future scope.
 | Firefox Stable 142+ | Supported |
 | Chrome/Chromium 116+ | Supported with feature parity |
 | Local VS Code | Supported; opens projects and starts automatically |
+| IDEs other than VS Code | In development |
 | CSS | Supported in the active document |
 | Source-mapped SCSS | Supported with a usable inline or external source map |
 | PHP templates | Supported in the active document; instrumented, else heuristic |
@@ -131,19 +132,34 @@ providers remain future scope.
 
 ## Install Status
 
-The `0.4.0` release is being prepared. Its complete GitHub Release will contain:
+Pin-op is two halves. Install the VS Code extension and the extension for the
+browser you inspect in; neither half does anything on its own.
 
-- `pin-op-vscode-0.4.0.vsix`;
-- `pin-op-chrome-0.4.0.zip`;
-- `pin-op-firefox-0.4.0.zip`;
-- `pin-op-firefox-0.4.0.xpi`;
-- `pin-op-firefox-source-0.4.0.zip`;
+- VS Code:
+  [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=conus-vision.pin-op),
+  extension ID `conus-vision.pin-op`.
+- Chrome and Chromium 116+:
+  [Chrome Web Store](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci).
+- Firefox Stable 142+:
+  [Firefox Add-ons](https://addons.mozilla.org/addon/pin-op/).
+
+VS Code is the only IDE a browser window can link to. Support for other IDEs is
+in development.
+
+The `0.4.1` GitHub Release is being prepared. It will contain:
+
+- `pin-op-vscode-0.4.1.vsix`;
+- `pin-op-chrome-0.4.1.zip`;
+- `pin-op-firefox-0.4.1.zip`;
+- `pin-op-firefox-0.4.1.xpi`;
+- `pin-op-firefox-source-0.4.1.zip`;
 - `SHA256SUMS`.
 
 `SHA256SUMS` verifies the five packaged artifacts. The Firefox ZIP is unsigned
 Mozilla-review/build input and cannot be installed persistently in Firefox
-Stable. No signed `0.4.0` XPI or public `0.4.0` release is claimed yet. Follow
-the [installed artifact guide](docs/installed-verification.md) for candidate
+Stable. Firefox Add-ons serves the signed build instead. No self-distributed
+`0.4.1` XPI or public `0.4.1` GitHub Release is claimed yet. Follow the
+[installed artifact guide](docs/installed-verification.md) for candidate
 installation and current evidence status.
 
 ## How It Works

@@ -2,7 +2,26 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.4.0] - Unreleased
+## [0.4.1] - Unreleased
+
+### Added
+
+- A welcome message in the empty Pin-op view that links the Chrome Web Store
+  and Firefox Add-ons pages for the browser half and repeats how to link a
+  window.
+
+### Changed
+
+- Pointed the public descriptions at the published store listings. The VS Code
+  README names the Chrome and Firefox pages, both browser listings name the
+  Visual Studio Marketplace page, and all of them state that support for IDEs
+  other than VS Code is in development. Release-status wording now says
+  `GitHub Release` where it means the GitHub Release rather than the store
+  listings, and the security policy supports `0.4.x` outright instead of
+  waiting on a publication that has happened.
+- Advanced the product release to `0.4.1`. The wire protocol stays at `7`.
+
+## [0.4.0] - 2026-09-01
 
 ### Added
 
