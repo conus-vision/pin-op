@@ -3,7 +3,7 @@
   "publisher": "conus-vision",
   "displayName": "Pin-op",
   "description": "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "license": "MIT",
   "repository": "https://github.com/conus-vision/pin-op",
   "homepage": "https://pin-op.conus.vision",
@@ -130,7 +130,7 @@
   "scripts": {
     "vscode:prepublish": "pnpm run build",
     "package": "node ./package-vsix.mjs",
-    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pin-op-vscode-0.4.1.vsix",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pin-op-vscode-0.4.2.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter pin-op-source-plugin-fixture build && vscode-test --label sourcePluginApi",

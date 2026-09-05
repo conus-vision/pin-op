@@ -1,6 +1,6 @@
 # Pin-op Release Guide
 
-This is the owner runbook for signed public releases. Version `0.4.1` is the
+This is the owner runbook for signed public releases. Version `0.4.2` is the
 current release candidate. Its external signing and installed-product evidence is
 pending. Do not create its release tag or publish a GitHub release until AMO
 signing and installed-product verification are complete.
@@ -29,23 +29,29 @@ AMO credentials until this setup exists.
    before the first release draft is created.
 3. Create the GitHub Environment named `release-settings` under **Settings >
    Environments**. Restrict deployments to the protected `master` branch and
-   protected `v*` tags. Add at least one required reviewer who is not the person
-   dispatching the workflow or creating the tag, and enable **Prevent self-review**.
+   protected `v*` tags. Add at least one required reviewer, and clear **Allow
+   administrators to bypass configured protection rules** so a repository
+   administrator cannot force a pending deployment through unapproved. Enable
+   **Prevent self-review** as soon as a second trusted reviewer exists. A
+   single-maintainer repository leaves that control off, because its only
+   reviewer is the person who pushes the tag and could otherwise never approve
+   the deployment the tag starts.
 4. Create a fine-grained personal access token scoped only to
    `conus-vision/pin-op`, with **Administration: Read-only** and no additional
    repository permission beyond GitHub's required metadata access. Add it as the
    `RELEASE_SETTINGS_TOKEN` environment secret inside `release-settings` only after
-   its deployment restrictions, required reviewer, and disabled self-review are
-   active. Rotate it before its expiration.
+   its deployment restrictions, required reviewer, and disabled administrator
+   bypass are active. Rotate it before its expiration.
 5. Register the Firefox extension for unlisted distribution in Mozilla Add-ons.
    Its add-on ID must exactly match `browser_specific_settings.gecko.id` in
    `extensions/firefox/manifest.json`; the current ID is `info@conus.vision`.
 6. Create the GitHub Environment named `amo-signing` under **Settings >
    Environments**.
 7. Restrict `amo-signing` deployments to the protected `master` branch. Add at
-   least one required reviewer who is not the person dispatching the workflow,
-   and enable **Prevent self-review** so self-review is disabled. Do not allow
-   unprotected branches or tags to deploy to this environment.
+   least one required reviewer and clear **Allow administrators to bypass
+   configured protection rules**, matching `release-settings`; enable **Prevent
+   self-review** there under the same condition. Do not allow unprotected
+   branches or tags to deploy to this environment.
 8. Only after those protections are active, create Mozilla JWT credentials and
    add `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` as environment secrets inside
    `amo-signing`. Do not create repository-level copies.
@@ -57,8 +63,16 @@ no repository code or release mutation runs with that credential. The later
 `contents: write` jobs cannot access it.
 
 Complete each Environment's protected branch or tag restriction, required reviewer,
-and disabled self-review controls before adding `RELEASE_SETTINGS_TOKEN`,
+and disabled administrator bypass before adding `RELEASE_SETTINGS_TOKEN`,
 `AMO_JWT_ISSUER`, or `AMO_JWT_SECRET` to that Environment.
+
+While a single maintainer runs releases and **Prevent self-review** is therefore
+off, environment approval is an explicit confirmation and a dated audit record
+by that maintainer, not a second-person control. It still stops an unattended
+run from reaching AMO credentials or a release mutation, because administrator
+bypass is disabled and every such job is gated on the environment. Treat the
+second reviewer as the control this configuration is missing, and enable
+**Prevent self-review** in both Environments on the day one exists.
 
 Every manual signing or publication run must be dispatched from `master`. The
 workflow checks `refs/heads/master`, and every job with AMO secrets or
@@ -138,7 +152,7 @@ $releaseFiles = @(
   'docs/security.md'
 )
 rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|pin-op-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|Pin-op\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
-node tools/verify-release-version.mjs v0.4.1
+node tools/verify-release-version.mjs v0.4.2
 ```
 
 Keep the changelog entry under `Unreleased` until the signed XPI passes installed
@@ -174,14 +188,14 @@ that the protected `amo-signing` environment and its required reviewer are ready
 Create and inspect an annotated tag:
 
 ```powershell
-git tag -a v0.4.1 -m "Pin-op 0.4.1"
-git cat-file -t refs/tags/v0.4.1
+git tag -a v0.4.2 -m "Pin-op 0.4.2"
+git cat-file -t refs/tags/v0.4.2
 git push origin master
-git push origin v0.4.1
+git push origin v0.4.2
 ```
 
 `git cat-file` must print `tag`; a lightweight tag is rejected. Cryptographic tag
-signing is not configured for the `0.4.1` release, and this runbook does not claim GPG
+signing is not configured for the `0.4.2` release, and this runbook does not claim GPG
 verification. Both release workflows require the annotated tag commit to be an
 ancestor of `origin/master`, and all package and manifest versions must match the
 `vX.Y.Z` tag.
@@ -316,7 +330,7 @@ separate signing and installed Stable checks above actually complete.
 Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
 
 ```powershell
-(Get-FileHash .\pin-op-firefox-0.4.1.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\pin-op-firefox-0.4.2.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
 ## Publish

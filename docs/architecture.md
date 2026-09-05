@@ -1,7 +1,7 @@
 # Architecture
 
 Pin-op is a local, read-only bridge from browser DevTools inspection to
-source highlighting in VS Code. Product semver is `0.4.1`; the independent wire
+source highlighting in VS Code. Product semver is `0.4.2`; the independent wire
 protocol version is `7`.
 
 ## Components

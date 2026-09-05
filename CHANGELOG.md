@@ -2,7 +2,7 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.4.1] - Unreleased
+## [0.4.2] - Unreleased
 
 ### Added
 
@@ -19,7 +19,7 @@ All notable changes to Pin-op will be documented in this file.
   `GitHub Release` where it means the GitHub Release rather than the store
   listings, and the security policy supports `0.4.x` outright instead of
   waiting on a publication that has happened.
-- Advanced the product release to `0.4.1`. The wire protocol stays at `7`.
+- Advanced the product release to `0.4.2`. The wire protocol stays at `7`.
 
 ### Fixed
 

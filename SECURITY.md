@@ -7,7 +7,7 @@
 | 0.4.x | Supported. |
 | Earlier versions | Unsupported. |
 
-The `0.4.1` extensions are published on the Visual Studio Marketplace, the
+The `0.4.2` extensions are published on the Visual Studio Marketplace, the
 Chrome Web Store, and Firefox Add-ons. Name the installed extension versions
 when reporting or reproducing an issue, or the exact source commit when the
 build came from this repository.

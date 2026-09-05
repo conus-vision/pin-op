@@ -24,7 +24,7 @@ const validProvenanceInput = {
   repository: "conus-vision/pin-op",
   workflowPath: ".github/workflows/firefox-sign.yml",
   eventName: "workflow_dispatch",
-  releaseTag: "v0.4.1",
+  releaseTag: "v0.4.2",
   releaseCommit,
   workflowCommit,
   runId: "123456789",
@@ -42,18 +42,18 @@ const validRun = {
 
 test("AMO state artifact names use only a validated tag and positive run id", () => {
   assert.equal(
-    createAmoStateArtifactName("v0.4.1", "123456789"),
-    "pin-op-amo-state-v0.4.1-run-123456789",
+    createAmoStateArtifactName("v0.4.2", "123456789"),
+    "pin-op-amo-state-v0.4.2-run-123456789",
   );
 
   for (const runId of ["", "0", "01", "-1", "1.5", "12x", " 12", "12\n"] ) {
     assert.throws(
-      () => createAmoStateArtifactName("v0.4.1", runId),
+      () => createAmoStateArtifactName("v0.4.2", runId),
       /run id must be a positive integer/,
     );
   }
   assert.throws(
-    () => createAmoStateArtifactName("v0.4.1;echo unsafe", "12"),
+    () => createAmoStateArtifactName("v0.4.2;echo unsafe", "12"),
     /must match vX\.Y\.Z/,
   );
 });
