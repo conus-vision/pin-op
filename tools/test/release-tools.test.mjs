@@ -85,6 +85,53 @@ test("prepackage removes only regular Pin-op release outputs", async () => {
   }
 });
 
+test("prepackage removes stale unpacked candidate builds", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "pin-op-unpacked-"));
+  const artifactDirectory = resolve(root, "artifacts");
+  const staleBuilds = [
+    "pin-op-chrome-0.2.0",
+    "pin-op-firefox-0.2.0",
+    "pin-op-firefox-source-0.2.0",
+    "pin-op-vscode-0.2.0",
+  ];
+  const preservedDirectories = [
+    "pin-op-chrome-9.9.9.zip",
+    "pin-op-chrome-0.2.0-backup",
+    "pin-op-chrome-latest",
+  ];
+  const preservedFiles = ["pin-op-vscode-0.3.0"];
+
+  try {
+    for (const name of staleBuilds) {
+      await mkdir(resolve(artifactDirectory, name, "dist"), {
+        recursive: true,
+      });
+      await writeFile(
+        resolve(artifactDirectory, name, "dist", "background.js"),
+        "unpacked build\n",
+      );
+    }
+    for (const name of preservedDirectories) {
+      await mkdir(resolve(artifactDirectory, name), { recursive: true });
+    }
+    for (const name of preservedFiles) {
+      await writeFile(resolve(artifactDirectory, name), `${name}\n`);
+    }
+
+    const { prepareArtifactDirectory } = await import(
+      "../prepare-artifacts.mjs"
+    );
+    await prepareArtifactDirectory(root);
+
+    assert.deepEqual(
+      (await readdir(artifactDirectory)).sort(),
+      [...preservedDirectories, ...preservedFiles].sort(),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("artifact verifier rejects a directory missing required release artifacts", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "pin-op-verify-"));
   try {

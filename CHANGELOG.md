@@ -21,6 +21,14 @@ All notable changes to Pin-op will be documented in this file.
   waiting on a publication that has happened.
 - Advanced the product release to `0.4.1`. The wire protocol stays at `7`.
 
+### Fixed
+
+- `prepackage` now also clears an unpacked candidate build left in
+  `artifacts/`. The artifact verifier rejects every non-file entry there, so
+  a directory extracted from the previous version failed the next
+  `pnpm package`. A directory that only mimics an artifact file name is still
+  preserved, and a symbolic link is never followed or removed.
+
 ## [0.4.0] - 2026-09-01
 
 ### Added
