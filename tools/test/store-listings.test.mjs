@@ -11,7 +11,6 @@ const releaseArtifacts = [
   "pin-op-vscode-0.4.2.vsix",
   "pin-op-chrome-0.4.2.zip",
   "pin-op-firefox-0.4.2.zip",
-  "pin-op-firefox-0.4.2.xpi",
   "pin-op-firefox-source-0.4.2.zip",
   "SHA256SUMS",
 ];
@@ -234,7 +233,7 @@ test("root README preserves release artifact trust facts", () => {
   }
   assert.ok(
     normalizedStatus.includes(
-      "`SHA256SUMS` verifies the five packaged artifacts.",
+      "`SHA256SUMS` verifies the four packaged artifacts.",
     ),
   );
   assert.ok(
@@ -244,7 +243,7 @@ test("root README preserves release artifact trust facts", () => {
   );
   assert.ok(
     normalizedStatus.includes(
-      "No self-distributed `0.4.2` XPI or public `0.4.2` GitHub Release is claimed yet.",
+      "No public `0.4.2` GitHub Release is claimed yet.",
     ),
   );
 });

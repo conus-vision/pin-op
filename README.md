@@ -155,14 +155,13 @@ The `0.4.2` GitHub Release is being prepared. It will contain:
 - `pin-op-vscode-0.4.2.vsix`;
 - `pin-op-chrome-0.4.2.zip`;
 - `pin-op-firefox-0.4.2.zip`;
-- `pin-op-firefox-0.4.2.xpi`;
 - `pin-op-firefox-source-0.4.2.zip`;
 - `SHA256SUMS`.
 
-`SHA256SUMS` verifies the five packaged artifacts. The Firefox ZIP is unsigned
+`SHA256SUMS` verifies the four packaged artifacts. The Firefox ZIP is unsigned
 Mozilla-review/build input and cannot be installed persistently in Firefox
-Stable. Firefox Add-ons serves the signed build instead. No self-distributed
-`0.4.2` XPI or public `0.4.2` GitHub Release is claimed yet. Follow the
+Stable. Firefox Add-ons serves the signed build instead. No public `0.4.2` GitHub
+Release is claimed yet. Follow the
 [installed artifact guide](docs/installed-verification.md) for candidate
 installation and current evidence status.
 
