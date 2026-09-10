@@ -2,7 +2,7 @@
 
 All notable changes to Pin-op will be documented in this file.
 
-## [0.4.2] - Unreleased
+## [0.4.2] - 2026-09-07
 
 ### Added
 
