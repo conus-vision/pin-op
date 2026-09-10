@@ -163,6 +163,9 @@ jobs:
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job never checks out the repository, so gh cannot read the
+          # remote from a working copy and has to be told which repository.
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
