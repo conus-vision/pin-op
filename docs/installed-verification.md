@@ -6,9 +6,9 @@ process: open a local project and the VS Code extension starts automatically.
 
 Pin-op `0.4.2` is published on the Visual Studio Marketplace, the Chrome Web
 Store and Firefox Add-ons, and those listings are how an ordinary user installs
-it. This runbook is for accepting a packaged candidate directly, before or
-apart from a store listing, so its steps install from artifact files rather
-than from a store.
+it. This runbook is for accepting a candidate build: the VS Code and Chrome
+legs install from artifact files, and the Firefox leg installs from the listing,
+because Firefox Stable keeps only an add-on Mozilla has signed.
 
 ## Candidate Files
 
@@ -17,10 +17,11 @@ keep them with that draft's `SHA256SUMS`:
 
 - `pin-op-vscode-0.4.2.vsix`;
 - `pin-op-chrome-0.4.2.zip`;
-- `pin-op-firefox-0.4.2.xpi`, signed by Mozilla.
+- `pin-op-firefox-0.4.2.zip`.
 
-The unsigned `pin-op-firefox-0.4.2.zip` is build and Mozilla-review input.
-It is not a persistent Firefox Stable add-on and cannot replace the signed XPI.
+The Firefox `.zip` is build and Mozilla-review input. Firefox Stable keeps only
+an add-on Mozilla has signed, which it serves from the listing, so the Firefox
+leg of this runbook installs from Firefox Add-ons rather than from a file.
 
 Install browser and IDE candidates from the same protocol generation. This
 runbook requires protocol v7. Protocol v6 is rejected with WebSocket close code
@@ -97,14 +98,14 @@ different bridge instance and current code.
 
 ## Install Firefox Stable
 
-This path requires the Mozilla-signed XPI. Leave Firefox acceptance pending
-until that exact file exists.
+Firefox Stable installs only what Mozilla has signed. Accept the Firefox leg
+against the listing, once the version under test is the one it serves.
 
-1. Open Firefox Stable 142 or newer and open Add-ons Manager.
-2. Open its tools menu and choose **Install Add-on From File...**.
-3. Select `pin-op-firefox-0.4.2.xpi` and approve its permissions.
-4. Confirm Pin-op `0.4.2` is enabled.
-5. Restart every Firefox process and confirm the signed add-on remains enabled.
+1. Open Firefox Stable 142 or newer.
+2. Open the Pin-op listing on addons.mozilla.org and add it to Firefox.
+3. Approve its permissions.
+4. Confirm Pin-op `0.4.2` is enabled and its version matches the candidate.
+5. Restart every Firefox process and confirm the add-on remains enabled.
 
 ## Default Inspector Flow
 
@@ -410,14 +411,14 @@ tab state, and applies only while that tab's panel participates.
   files. Only an explicit current Rules origin click may switch VS Code; Source
   excerpts remain active-document-only and can stay available while
   highlighting is intentionally off.
-- **Firefox rejects the file:** verify it is Mozilla's signed `.xpi`; the
-  unsigned `.zip` cannot be installed persistently in Firefox Stable.
+- **Firefox rejects the file:** the unsigned `.zip` cannot be installed
+  persistently in Firefox Stable. Install from the Firefox Add-ons listing.
 
 ## 0.4.2 Candidate Verification Record
 
 Pending external release evidence:
 
-- signed-XPI installation and restart in Firefox Stable;
+- listed add-on installation and restart in Firefox Stable;
 - installed VSIX activation and restart from the final `0.4.2` artifact;
 - unpacked Chrome/Chromium installation and restart from the final artifact;
 - complete Firefox/Chrome parity, two-window isolation, DOM-tree boundary,

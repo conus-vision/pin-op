@@ -63,7 +63,6 @@ const releaseArtifactNames = [
   "pin-op-vscode-0.4.2.vsix",
   "pin-op-chrome-0.4.2.zip",
   "pin-op-firefox-0.4.2.zip",
-  "pin-op-firefox-0.4.2.xpi",
   "pin-op-firefox-source-0.4.2.zip",
   "SHA256SUMS",
 ];
@@ -168,7 +167,7 @@ test("installed primary path is terminal-free and starts automatically", () => {
   assert.match(primaryPath, /starts automatically/i);
   assert.match(primaryPath, /Install from VSIX/);
   assert.match(primaryPath, /Load unpacked/);
-  assert.match(primaryPath, /Install Add-on From File/);
+  assert.match(primaryPath, /addons.mozilla.org and add it to Firefox/);
   assert.match(primaryPath, /click the Pin-op status item/i);
   assert.match(primaryPath, /five-digit port[\s\S]*two-digit PIN/i);
 });
@@ -1093,7 +1092,7 @@ test("README presents the canonical Pin-op workflow and release status", () => {
   }
   assert.ok(
     normalizedReadme.includes(
-      "`SHA256SUMS` verifies the five packaged artifacts.",
+      "`SHA256SUMS` verifies the four packaged artifacts.",
     ),
   );
   assert.ok(
@@ -1103,7 +1102,7 @@ test("README presents the canonical Pin-op workflow and release status", () => {
   );
   assert.ok(
     normalizedReadme.includes(
-      "No self-distributed `0.4.2` XPI or public `0.4.2` GitHub Release is claimed yet.",
+      "No public `0.4.2` GitHub Release is claimed yet.",
     ),
   );
   assert.ok(
