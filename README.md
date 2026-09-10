@@ -146,6 +146,10 @@ browser you inspect in; neither half does anything on its own.
 VS Code is the only IDE a browser window can link to. Support for other IDEs is
 in development.
 
+Those listings are the normal way to install Pin-op. The release artifacts below
+exist for checksum verification and offline installation, and they are a
+separate distribution from the stores.
+
 The `0.4.2` GitHub Release is being prepared. It will contain:
 
 - `pin-op-vscode-0.4.2.vsix`;

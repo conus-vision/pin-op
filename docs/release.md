@@ -1,9 +1,17 @@
 # Pin-op Release Guide
 
-This is the owner runbook for signed public releases. Version `0.4.2` is the
-current release candidate. Its external signing and installed-product evidence is
-pending. Do not create its release tag or publish a GitHub release until AMO
+This is the owner runbook for signed public releases. Version `0.4.2` is
+published on the Visual Studio Marketplace, the Chrome Web Store and Firefox
+Add-ons. What remains for it is the self-distributed path this runbook
+describes, whose external signing and installed-product evidence is still
+pending. Do not create a release tag or publish a GitHub release until AMO
 signing and installed-product verification are complete.
+
+A published version consumes its number. Mozilla does not free a number a
+version has used, so a number already taken by the listed channel cannot be
+submitted again for unlisted signing, and the **Sign Firefox** step below
+cannot run for it. Decide which channel owns a number before starting this
+runbook for that version.
 
 ## One-Time Security Setup
 
@@ -155,8 +163,9 @@ rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(
 node tools/verify-release-version.mjs v0.4.2
 ```
 
-Keep the changelog entry under `Unreleased` until the signed XPI passes installed
-verification. From a clean checkout, run:
+Keep the changelog entry under `Unreleased` until the version reaches users. A
+store listing releases it as surely as a GitHub release does, so date the entry
+on whichever happens first. From a clean checkout, run:
 
 ```powershell
 corepack pnpm install --lockfile-only
@@ -375,9 +384,9 @@ pin-op-vscode-X.Y.Z.vsix
 SHA256SUMS
 ```
 
-Only after publication move the changelog entry from `Unreleased` to its release
-date in the next normal commit. Unlisted AMO signing makes the XPI installable but
-does not create a listed AMO store page.
+Move the changelog entry from `Unreleased` to its release date in the next
+normal commit, unless a store listing already dated it. Unlisted AMO signing
+makes the XPI installable but does not create a listed AMO store page.
 
 ## Failure Policy
 

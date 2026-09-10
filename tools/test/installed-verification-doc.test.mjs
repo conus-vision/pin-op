@@ -246,7 +246,7 @@ test("ordinary installed artifacts use the shared Inspector by default", () => {
 
 test("current rollout docs reject stale opt-in and store-default legacy claims", () => {
   const [, currentChangelogAndLater = ""] = changelog.split(
-    "## [0.4.2] - Unreleased",
+    "## [0.4.2]",
   );
   const [currentChangelog = ""] = currentChangelogAndLater.split("\n## ");
   const currentScopes = [

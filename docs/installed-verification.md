@@ -4,6 +4,12 @@ This is the terminal-free installation and acceptance runbook for the
 Pin-op `0.4.2` release candidate. Normal use has no separate Pin-op
 process: open a local project and the VS Code extension starts automatically.
 
+Pin-op `0.4.2` is published on the Visual Studio Marketplace, the Chrome Web
+Store and Firefox Add-ons, and those listings are how an ordinary user installs
+it. This runbook is for accepting a packaged candidate directly, before or
+apart from a store listing, so its steps install from artifact files rather
+than from a store.
+
 ## Candidate Files
 
 Obtain all files from the repository owner or one trusted draft release and
@@ -421,6 +427,8 @@ Pending external release evidence:
 - checksum comparison against the final draft release;
 - privacy-reviewed screenshots and GIF evidence.
 
-No signed `0.4.2` XPI exists in the candidate evidence. Artifact hashes are
-pending. Screenshots and GIF evidence remain pending. No installed-product or
-external release evidence is claimed by this document yet.
+No signed `0.4.2` XPI exists in the candidate evidence. Mozilla's listed channel
+serves a signed `0.4.2` to Firefox users, and that build has not been through
+this runbook. Artifact hashes are pending. Screenshots and GIF evidence remain
+pending. No installed-product or external release evidence is claimed by this
+document yet.
