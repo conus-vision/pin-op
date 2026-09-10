@@ -114,6 +114,13 @@ test("tag workflow verifies artifacts before a minimal job creates the draft", a
   assert.match(draftSteps[create].run, /gh release create/);
   assert.match(draftSteps[create].run, /--draft/);
   assert.match(draftSteps[create].run, /--target master/);
+  // The job deliberately never checks out the repository, so gh cannot read
+  // the remote from a working copy and fails unless it is told the repository.
+  assert.ok(
+    draftSteps.every((step) => step.uses !== "actions/checkout"),
+    "create_draft must not check out repository code",
+  );
+  assert.equal(draftSteps[create].env?.GH_REPO, "${{ github.repository }}");
   assert.doesNotMatch(JSON.stringify(workflow.jobs.create_draft), /RELEASE_SETTINGS_TOKEN/);
   assertNoRepositoryCodeWithGhToken(draftSteps);
 });
