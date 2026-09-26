@@ -56,6 +56,7 @@ export const RULES_SOURCES_LIMITS = {
   unresolvedRules: 256,
   labelLength: 128,
   authorityIdLength: 128,
+  propertyNameLength: 256,
   line: 10_000_000,
   column: 1_000_000,
 } as const;

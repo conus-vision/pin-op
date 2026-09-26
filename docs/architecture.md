@@ -65,7 +65,10 @@ and [derivation record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES
 are exact provenance and reproduction inputs. The default Inspector exposes the
 native DOM and Rules views plus Pin-op's Source tab. Exact current Rules origins
 show the SCSS/source label and one-based line and can send an opaque open intent
-to VS Code; unresolved generated CSS origins stay non-clickable.
+to VS Code; unresolved generated CSS origins stay non-clickable. The declarations
+of such a rule send the same intent naming the clicked property and its
+occurrence, so VS Code lands on that value; an `@media` condition that names a
+viewport size asks the background to resize the inspected tab's window to it.
 
 The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,

@@ -456,6 +456,16 @@ describe("BrowserBridgeClient", () => {
       metadata: {},
     });
 
+    expect(harness.client.sendRulesOpen({
+      ...input,
+      declaration: { property: "color", occurrence: 0 },
+    })).toBe("sent");
+    expect(JSON.parse(harness.sockets[0].sent[2] ?? "{}")).toMatchObject({
+      type: "rules.open",
+      openAuthorityId: "authority-card",
+      declaration: { property: "color", occurrence: 0 },
+    });
+
     harness.sockets[0].throwOnSend = true;
     expect(harness.client.sendRulesOpen(input)).toBe("transport-error");
     expect(harness.errors.at(-1)?.message).toMatch(/rules open send/i);

@@ -747,7 +747,7 @@ Package gitHead: 23cccaa78f7458a5aad99c1af98dc1856d2494a3
 Package integrity: sha512-cXBay271CnEb+Y+Cxre3mjGDHFKhXVo9mGfNCVAruen/iwF+jnG6Z55mnC7yh078HD1rmKhBM9tKLKQbjVniVQ==
 Package repository: https://github.com/ChromeDevTools/devtools-frontend.git
 Runtime metadata: third_party/chromium-devtools-frontend/RUNTIME.json
-Runtime metadata SHA-256: 669e47d022cd0f54dfd5cb62ef652c239b3007c9798f833bb2a79fc5fb6d04a6
+Runtime metadata SHA-256: 4a7b362f11fa13dc7e42097ba4985b082ac46bf583ad67757f801bd8af079404
 
 DOM overlay manifest: third_party/chromium-devtools-frontend/patches/1.0.1681091/manifest.json
 DOM overlay manifest SHA-256: 6b59e990946b8a4851e1c540b79c63d2dd050150d6e47721d9703cd8c1609e5f
@@ -862,7 +862,7 @@ SHA-256: d2a538058651817f04cbd0a1104e083ccb256792a152b073978f7117478e50d2
 - front_end/third_party/lit/LICENSE 45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1
 
 Rules overlay manifest: third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/manifest.json
-Rules overlay manifest SHA-256: 119d711aa8e9a943c7c6cb2e33c74e02971b959d7cc119aa504bc8b329779d9d
+Rules overlay manifest SHA-256: 600f02fda09c6f66f3b4412e9258b59bc25897676952e39b8876d0990219078a
 
 ### Rules npm closure
 File count: 61
@@ -870,7 +870,7 @@ SHA-256: 737cc378739cc0205b63d41679bfc708794c3412514d0ee97038fc14ec4de5a6
 
 ### Rules overlay closure
 File count: 18
-SHA-256: a782d79e07b05476c24d5b01d0babc61ebf47ad7ea32d31f16bedfe751b89886
+SHA-256: 96e7491e22f348dccbc1b8ff2724148c37ddcf9d6630820e52cd17b5453b02e4
 
 ### Rules base overlay closure
 File count: 16
@@ -923,7 +923,7 @@ SHA-256: 7daabde1e29009d4153fa81374fff4344645b8bccb7ce0756ed15d6cb2267da8
 - facades/ui-utils.ts f1e91a60c929738ba3b2b2954386da487b22dbf2be1a403b78a9b12001df56b6
 - facades/ui.ts ed362815c2cec6c9b956bb728d12809c5e68d6a73054eed9d635ad11a89c9750
 - facades/visual-logging.ts 974b315f97a74053136624fc6162ae808408f72fcd229824f8e95d7af6dafe96
-- runtime/read-only-styles-runtime.ts 70e5583e6ae8c4fdd671bc3928853e2bf8923c1fa5ca51ba3f4c3a77c5991a3c
+- runtime/read-only-styles-runtime.ts 183a36278df43ba782bbfc6ecccd5d98b33bd22dbf2636a5b488e6adac7f1bf9
 
 ### Rules required license inventory
 - LICENSE ff11d445fb41a1087c7630e120ab15f1a2cb67c1b707173cb494141805fca35e

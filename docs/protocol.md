@@ -261,6 +261,32 @@ An explicit current Rules-origin click sends this minimal message:
 }
 ```
 
+A click on one of the rule's declarations adds the declaration it names, and
+nothing else:
+
+```json
+{
+  "protocolVersion": 7,
+  "type": "rules.open",
+  "messageId": "rules-open-2",
+  "sessionId": "default",
+  "inspectMessageId": "inspect-42",
+  "rulesGeneration": 1,
+  "openAuthorityId": "opaque-rule-open-1",
+  "declaration": {
+    "property": "margin-top",
+    "occurrence": 0
+  },
+  "metadata": {}
+}
+```
+
+`property` is a CSS identifier of at most 256 characters and `occurrence` counts
+earlier declarations of the same property in the rule's own list (`0`-`127`).
+The IDE looks for that declaration only inside the private range the authority
+already names and places the cursor at the start of its value; when the rule
+does not write it directly -- a mixin did -- the cursor stays on the rule.
+
 `rules.open` has no `source` field and cannot contain a `ruleRef`, URL, URI,
 path, line, column, range, document version, or command. The bridge accepts it
 only from the originating capable browser and only for a current IDE-issued

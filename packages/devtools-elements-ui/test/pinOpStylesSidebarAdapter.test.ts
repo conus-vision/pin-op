@@ -125,6 +125,49 @@ describe("PinOpStylesSidebarAdapter", () => {
     expect(harness.pane.resolveOrigin("rule:one")).toBeUndefined();
   });
 
+  it("forwards only a sanitized clicked declaration with a current open", () => {
+    const source = new FakeSourceLinkDelegate({
+      label: "theme.scss",
+      languageId: "scss",
+      startLine: 73,
+      startColumn: 5,
+      confidence: "sourcemap",
+      clickable: true,
+    });
+    const harness = createHarness({ source });
+    harness.host.render(styles("rule:one", 1));
+
+    harness.pane.openOrigin("rule:one", { property: "margin-top", occurrence: 1 });
+    harness.pane.openOrigin("rule:one", { property: "color: red", occurrence: 0 });
+    harness.pane.openOrigin("rule:one", { property: "color", occurrence: -1 });
+    harness.pane.openOrigin("rule:stale", { property: "color", occurrence: 0 });
+
+    expect(source.opened).toEqual(["rule:one"]);
+    expect(source.openedDeclarations).toEqual([
+      { property: "margin-top", occurrence: 1 },
+    ]);
+    expect(Object.isFrozen(source.openedDeclarations[0])).toBe(true);
+  });
+
+  it("forwards bounded media conditions to the delegate preview", () => {
+    const source = new FakeSourceLinkDelegate({
+      label: "theme.scss",
+      languageId: "scss",
+      startLine: 73,
+      startColumn: 5,
+      confidence: "sourcemap",
+      clickable: true,
+    });
+    const harness = createHarness({ source });
+
+    harness.pane.previewMediaQuery("(max-width: 600px)");
+    harness.pane.previewMediaQuery("   ");
+    harness.pane.previewMediaQuery("x".repeat(4096));
+    harness.pane.previewMediaQuery(42);
+
+    expect(source.mediaPreviews).toEqual(["(max-width: 600px)"]);
+  });
+
   it("revokes a source open when origin lookup reenters with newer authority", () => {
     const source = new FakeSourceLinkDelegate({
       label: "theme.scss",
@@ -1165,6 +1208,8 @@ class FakePseudoStateDataSource implements PseudoStateDataSource {
 class FakeSourceLinkDelegate implements SourceLinkDelegate {
   public readonly originRequests: string[] = [];
   public readonly opened: string[] = [];
+  public readonly openedDeclarations: unknown[] = [];
+  public readonly mediaPreviews: string[] = [];
   public openError: unknown;
   public onOriginFor: (() => void) | undefined;
 
@@ -1178,9 +1223,14 @@ class FakeSourceLinkDelegate implements SourceLinkDelegate {
     return this.origin;
   }
 
-  public openRuleOrigin(ruleRef: string): void {
+  public openRuleOrigin(ruleRef: string, ...declaration: unknown[]): void {
     if (this.openError !== undefined) throw this.openError;
     this.opened.push(ruleRef);
+    this.openedDeclarations.push(...declaration);
+  }
+
+  public previewMediaQuery(conditionText: string): void {
+    this.mediaPreviews.push(conditionText);
   }
 }
 

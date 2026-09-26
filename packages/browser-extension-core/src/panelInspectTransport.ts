@@ -21,6 +21,7 @@ import {
   parseInspectPortResult,
   parsePanelPresentationSettingsCommand,
   parsePanelRulesOpenCommand,
+  parsePanelViewportResizeCommand,
   parsePanelRulesSourcesInvalidatedState,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
@@ -379,6 +380,14 @@ export class PanelInspectTransport {
       message,
       parsePanelRulesOpenCommand,
       "Invalid Rules open command",
+    );
+  }
+
+  public dispatchViewportResize(message: unknown): void {
+    this.dispatchLocalCommand(
+      message,
+      parsePanelViewportResizeCommand,
+      "Invalid viewport resize command",
     );
   }
 

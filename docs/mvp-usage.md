@@ -213,6 +213,19 @@ basename label and one-based start position for display, confidence, and opaque
 authority ID. No workspace URI/path, full range, document version, source-map
 path/content, or command crosses the bridge. There is no open acknowledgement.
 
+Clicking a declaration in a rule whose origin is a link opens the same block
+with the cursor at the start of that declaration's value, so it can be edited
+straight away. A longhand under a shorthand opens the shorthand the stylesheet
+wrote; a declaration the rule does not write itself, because an `@include` put it
+there, opens the rule.
+
+Clicking an `@media` condition that names a viewport width or height -- they are
+underlined -- resizes the browser window so the inspected page is shown at that
+size. A range such as `(min-width: 768px) and (max-width: 1023.98px)` is shown at
+its widest matching width, an open-ended `min-width` at the minimum, and `em` or
+`rem` lengths are read at 16 px. A maximized window is restored first, and page
+zoom is corrected for. Only the window holding the inspected tab is resized.
+
 A rule that a preprocessor wrote through a mixin has no selector of its own to
 compare, so it is identified by its source map and by what it declares directly;
 its origin opens the line where those declarations are written, which may be the

@@ -2,6 +2,26 @@
 
 All notable changes to Pin-op will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Clicking a declaration in Rules opens its rule in VS Code with the cursor at
+  the start of that declaration's value, so it can be edited straight away
+  instead of being looked for inside the rule. A longhand under a shorthand
+  opens the shorthand the stylesheet wrote; a declaration the rule does not
+  write itself -- an `@include` put it there -- opens the rule, as the origin
+  link does. `rules.open` carries the clicked property name and its occurrence
+  in the rule and nothing else; the IDE finds the value inside the private range
+  it already holds. The wire protocol stays at `7`, and an IDE older than this
+  release rejects a declaration click, so the browser and VS Code halves should
+  be updated together.
+- Clicking an `@media` condition that names a viewport width or height resizes
+  the browser window so the inspected page is shown at that size. A range is
+  shown at its widest matching width, an open-ended `min-width` at the minimum,
+  and `em`/`rem` lengths at 16 px; a maximized window is restored first and page
+  zoom is corrected for. Only the window holding the panel's own tab is resized.
+
 ## [0.4.2] - 2026-09-07
 
 ### Added

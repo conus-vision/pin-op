@@ -288,9 +288,27 @@ export interface RuleOriginDecoration {
   readonly state?: RuleOriginState;
 }
 
+/**
+ * A declaration clicked in a rule: its property name and which occurrence of
+ * that name in the rule's own declaration list it is.
+ */
+export interface RuleOriginDeclaration {
+  readonly property: string;
+  readonly occurrence: number;
+}
+
 export interface SourceLinkDelegate {
   originFor(ruleRef: string): RuleOriginDecoration | undefined;
-  openRuleOrigin(ruleRef: string): void;
+  /**
+   * Opens the rule's source. With a declaration the editor lands on that
+   * declaration's value instead of the rule's start.
+   */
+  openRuleOrigin(ruleRef: string, declaration?: RuleOriginDeclaration): void;
+  /**
+   * Shows the inspected page at the viewport size an `@media` condition names,
+   * so the rules it guards can be seen applying.
+   */
+  previewMediaQuery?(conditionText: string): void;
 }
 
 export interface ElementsInspectorHost {

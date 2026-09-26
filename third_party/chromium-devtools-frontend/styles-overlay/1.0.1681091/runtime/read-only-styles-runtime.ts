@@ -59,11 +59,17 @@ interface OriginDecoration {
   readonly state?: 'pending'|'stale'|'incompatible';
 }
 
+interface OriginDeclaration {
+  readonly property: string;
+  readonly occurrence: number;
+}
+
 interface PaneOptions {
   readonly document: Document;
   readonly mount: HTMLElement;
   readonly resolveOrigin: (ruleRef: string) => OriginDecoration|undefined;
-  readonly openOrigin: (ruleRef: string) => void;
+  readonly openOrigin: (ruleRef: string, declaration?: OriginDeclaration) => void;
+  readonly previewMediaQuery?: (conditionText: string) => void;
   readonly onError: (error: unknown) => void;
 }
 
@@ -73,6 +79,22 @@ interface RenderedModel {
   readonly node: object;
   readonly ruleRefByStyle: ReadonlyMap<object, string>;
   readonly ruleByRef: ReadonlyMap<string, RuleSnapshot>;
+  readonly declarationByProperty: WeakMap<object, OriginDeclaration>;
+}
+
+interface PropertyTreeElement {
+  readonly property?: object;
+  readonly listItemElement?: HTMLElement;
+  children(): readonly PropertyTreeElement[];
+}
+
+interface PropertiesSection {
+  style(): object;
+  readonly propertiesTreeOutline?: {rootElement(): PropertyTreeElement};
+}
+
+interface ReadOnlyCSSQueryElement extends HTMLElement {
+  readonly data?: {readonly queryPrefix: string; readonly queryText: string};
 }
 
 interface MutableComputedStyleModel {
@@ -290,9 +312,77 @@ class ChromiumReadOnlyStylesPane {
           this.#options.openOrigin(ruleRef);
         }, {signal: originController.signal});
         subtitle.replaceChildren(button);
+        if (section) this.#decorateDeclarations(rendered, section, ruleRef, originController.signal);
       } else {
         subtitle.replaceChildren(this.#options.document.createTextNode(label));
       }
+    }
+    this.#decorateMediaQueries(originController.signal);
+  }
+
+  /**
+   * Makes each declaration of a rule whose source can be opened open it at that
+   * declaration's value, so the value can be edited straight away instead of
+   * being looked for inside the rule. Longhands shown under a shorthand open the
+   * shorthand the stylesheet wrote.
+   */
+  #decorateDeclarations(
+      rendered: RenderedModel, section: object, ruleRef: string, signal: AbortSignal): void {
+    const outline = (section as PropertiesSection).propertiesTreeOutline;
+    if (!outline) return;
+    const visit = (element: PropertyTreeElement, inherited: OriginDeclaration|undefined): void => {
+      const declaration = (element.property ? rendered.declarationByProperty.get(element.property) : undefined) ??
+          inherited;
+      const item = element.listItemElement;
+      if (declaration && item) {
+        item.classList.add(OPENABLE_DECLARATION_CLASS);
+        item.title = `Open ${declaration.property} in the IDE`;
+        item.style.cursor = 'pointer';
+        item.addEventListener('click', event => {
+          if (event.defaultPrevented || this.#options.document.getSelection()?.isCollapsed === false) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.#options.openOrigin(ruleRef, declaration);
+        }, {signal});
+        signal.addEventListener('abort', () => {
+          item.classList.remove(OPENABLE_DECLARATION_CLASS);
+          item.removeAttribute('title');
+          item.style.cursor = '';
+        }, {once: true});
+      }
+      for (const child of element.children()) visit(child, declaration);
+    };
+    for (const child of outline.rootElement().children()) visit(child, undefined);
+  }
+
+  /**
+   * Makes an `@media` condition that names a viewport size show the page at that
+   * size, so the rules it guards can be seen applying.
+   */
+  #decorateMediaQueries(signal: AbortSignal): void {
+    const previewMediaQuery = this.#options.previewMediaQuery;
+    if (!previewMediaQuery) return;
+    for (const query of this.#pane.contentElement.querySelectorAll<ReadOnlyCSSQueryElement>(
+             '.styles-section pin-op-readonly-css-query')) {
+      const data = query.data;
+      const text = query.shadowRoot?.querySelector<HTMLElement>('.query-text');
+      if (!data || !text || data.queryPrefix !== '@media' || !VIEWPORT_MEDIA_FEATURE.test(data.queryText)) {
+        continue;
+      }
+      const conditionText = data.queryText;
+      text.title = 'Resize the page to this size';
+      text.style.cursor = 'pointer';
+      text.style.textDecoration = 'underline dotted';
+      text.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        previewMediaQuery(conditionText);
+      }, {signal});
+      signal.addEventListener('abort', () => {
+        text.removeAttribute('title');
+        text.style.cursor = '';
+        text.style.textDecoration = '';
+      }, {once: true});
     }
   }
 
@@ -325,6 +415,8 @@ class ChromiumReadOnlyStylesPane {
 }
 
 const PREVIEWED_SELECTOR_CLASS = 'pin-op-previewed-selector';
+const OPENABLE_DECLARATION_CLASS = 'pin-op-openable-declaration';
+const VIEWPORT_MEDIA_FEATURE = /\b(?:(?:min|max)-)?(?:width|height)\b/i;
 
 const PIN_OP_CONTROL_STYLES = `
 .pseudo-state-toolbar-item {
@@ -472,6 +564,7 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
   });
   const ruleRefByStyle = new Map<object, string>();
   const propertyStates = new WeakMap<object, PropertyState|null>();
+  const declarationByProperty = new WeakMap<object, OriginDeclaration>();
   for (const style of matchedStyles.nodeStyles()) {
     const identity = style.cssText;
     const rule = identity ? ruleByIdentity.get(identity) : undefined;
@@ -485,6 +578,10 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
       if (!declaration) continue;
       const state = chromiumPropertyState(declaration.state);
       propertyStates.set(property, state);
+      declarationByProperty.set(property, Object.freeze({
+        property: declaration.name,
+        occurrence: declarationOccurrence(rule.declarations, index),
+      }));
       if (declaration.state === 'inactive') property.setActive(false);
     }
   }
@@ -498,7 +595,18 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
     node,
     ruleRefByStyle,
     ruleByRef: new Map(orderedRules.map(rule => [rule.ruleRef, rule])),
+    declarationByProperty,
   });
+}
+
+/** Which occurrence of its property name, within its own rule, a declaration is. */
+function declarationOccurrence(declarations: readonly DeclarationSnapshot[], index: number): number {
+  const name = declarations[index].name.toLowerCase();
+  let occurrence = 0;
+  for (let earlier = 0; earlier < index; earlier++) {
+    if (declarations[earlier].name.toLowerCase() === name) occurrence++;
+  }
+  return occurrence;
 }
 
 function orderedRuleSnapshots(snapshot: MatchedStylesSnapshot): RuleSnapshot[] {

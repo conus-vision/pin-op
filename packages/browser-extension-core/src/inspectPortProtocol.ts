@@ -1,6 +1,8 @@
 import {
   RESOLUTION_LIMITS,
   RULES_SOURCES_LIMITS,
+  RulesOpenDeclarationSchema,
+  type RulesOpenDeclaration,
   type RulesSourcesMessage,
   type SourceMatchesMessage,
   type SourceNavigationStateMessage,
@@ -21,6 +23,10 @@ import type {
   RefreshExecutionCommand,
 } from "./refreshRuntimeProtocol.js";
 import { snapshotExactDataRecord } from "./protocolDataSnapshot.js";
+import {
+  VIEWPORT_DIMENSION_MAX,
+  VIEWPORT_DIMENSION_MIN,
+} from "./mediaQueryViewport.js";
 import {
   parseStylesRequest,
   type StylesRequest,
@@ -128,6 +134,18 @@ export interface PanelRulesOpenCommand {
   readonly inspectMessageId: string;
   readonly rulesGeneration: number;
   readonly openAuthorityId: string;
+  /** The clicked declaration, when a property rather than the origin was clicked. */
+  readonly declaration?: RulesOpenDeclaration;
+}
+
+/**
+ * Shows the inspected page at the viewport size a Rules `@media` condition
+ * names. The background resizes only the window holding the panel's own tab.
+ */
+export interface PanelViewportResizeCommand {
+  readonly type: "pin-op.viewport.resize";
+  readonly width?: number;
+  readonly height?: number;
 }
 
 export interface PanelRulesSourcesInvalidatedState {
@@ -155,6 +173,7 @@ export type PanelToBackgroundInspectPortMessage =
   | PanelSourceNavigateCommand
   | PanelSourceOpenCommand
   | PanelRulesOpenCommand
+  | PanelViewportResizeCommand
   | PanelPresentationSettingsCommand
   | PanelTabSettingsCommand
   | DomRequest
@@ -498,15 +517,18 @@ export function parsePanelSourceOpenCommand(
   };
 }
 
+const RULES_OPEN_COMMAND_KEYS = [
+  "type",
+  "inspectMessageId",
+  "rulesGeneration",
+  "openAuthorityId",
+] as const;
+
 export function parsePanelRulesOpenCommand(
   value: unknown,
 ): PanelRulesOpenCommand | undefined {
-  const record = snapshotExactDataRecord(value, [
-    "type",
-    "inspectMessageId",
-    "rulesGeneration",
-    "openAuthorityId",
-  ]);
+  const record = snapshotExactDataRecord(value, RULES_OPEN_COMMAND_KEYS) ??
+    snapshotExactDataRecord(value, [...RULES_OPEN_COMMAND_KEYS, "declaration"]);
   if (
     !record ||
     record.type !== "pin-op.rules.open" ||
@@ -516,12 +538,61 @@ export function parsePanelRulesOpenCommand(
   ) {
     return undefined;
   }
+  const declaration = Object.hasOwn(record, "declaration")
+    ? parseRulesOpenDeclaration(record.declaration)
+    : undefined;
+  if (Object.hasOwn(record, "declaration") && !declaration) return undefined;
   return Object.freeze({
     type: record.type,
     inspectMessageId: record.inspectMessageId,
     rulesGeneration: record.rulesGeneration,
     openAuthorityId: record.openAuthorityId,
+    ...(declaration ? { declaration } : {}),
   });
+}
+
+export function parsePanelViewportResizeCommand(
+  value: unknown,
+): PanelViewportResizeCommand | undefined {
+  const record = snapshotExactDataRecord(value, ["type", "width", "height"]) ??
+    snapshotExactDataRecord(value, ["type", "width"]) ??
+    snapshotExactDataRecord(value, ["type", "height"]);
+  if (
+    !record ||
+    record.type !== "pin-op.viewport.resize" ||
+    (Object.hasOwn(record, "width") && !isViewportDimension(record.width)) ||
+    (Object.hasOwn(record, "height") && !isViewportDimension(record.height))
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    type: record.type,
+    ...(Object.hasOwn(record, "width") ? { width: record.width as number } : {}),
+    ...(Object.hasOwn(record, "height") ? { height: record.height as number } : {}),
+  });
+}
+
+function isViewportDimension(value: unknown): value is number {
+  return Number.isSafeInteger(value) &&
+    (value as number) >= VIEWPORT_DIMENSION_MIN &&
+    (value as number) <= VIEWPORT_DIMENSION_MAX;
+}
+
+/** Validates a clicked Rules declaration exactly as the wire schema does. */
+export function parseRulesOpenDeclaration(
+  value: unknown,
+): RulesOpenDeclaration | undefined {
+  try {
+    const parsed = RulesOpenDeclarationSchema.safeParse(value);
+    return parsed.success
+      ? Object.freeze({
+          property: parsed.data.property,
+          occurrence: parsed.data.occurrence,
+        })
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function parsePanelRulesSourcesInvalidatedState(
