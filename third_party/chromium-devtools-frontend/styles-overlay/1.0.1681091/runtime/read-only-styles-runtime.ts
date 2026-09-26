@@ -90,7 +90,10 @@ interface PropertyTreeElement {
 
 interface PropertiesSection {
   style(): object;
-  readonly propertiesTreeOutline?: {rootElement(): PropertyTreeElement};
+  readonly propertiesTreeOutline?: {
+    readonly contentElement?: HTMLElement;
+    rootElement(): PropertyTreeElement;
+  };
 }
 
 interface ReadOnlyCSSQueryElement extends HTMLElement {
@@ -324,35 +327,30 @@ class ChromiumReadOnlyStylesPane {
    * Makes each declaration of a rule whose source can be opened open it at that
    * declaration's value, so the value can be edited straight away instead of
    * being looked for inside the rule. Longhands shown under a shorthand open the
-   * shorthand the stylesheet wrote.
+   * shorthand the stylesheet wrote. The click is resolved against the outline
+   * when it happens, because "Show all" and a disclosure triangle create rows
+   * after the section was decorated.
    */
   #decorateDeclarations(
       rendered: RenderedModel, section: object, ruleRef: string, signal: AbortSignal): void {
     const outline = (section as PropertiesSection).propertiesTreeOutline;
-    if (!outline) return;
-    const visit = (element: PropertyTreeElement, inherited: OriginDeclaration|undefined): void => {
-      const declaration = (element.property ? rendered.declarationByProperty.get(element.property) : undefined) ??
-          inherited;
-      const item = element.listItemElement;
-      if (declaration && item) {
-        item.classList.add(OPENABLE_DECLARATION_CLASS);
-        item.title = `Open ${declaration.property} in the IDE`;
-        item.style.cursor = 'pointer';
-        item.addEventListener('click', event => {
-          if (event.defaultPrevented || this.#options.document.getSelection()?.isCollapsed === false) return;
-          event.preventDefault();
-          event.stopPropagation();
-          this.#options.openOrigin(ruleRef, declaration);
-        }, {signal});
-        signal.addEventListener('abort', () => {
-          item.classList.remove(OPENABLE_DECLARATION_CLASS);
-          item.removeAttribute('title');
-          item.style.cursor = '';
-        }, {once: true});
-      }
-      for (const child of element.children()) visit(child, declaration);
-    };
-    for (const child of outline.rootElement().children()) visit(child, undefined);
+    const list = outline?.contentElement;
+    if (!outline || !list) return;
+    adoptOpenableDeclarationStyles(list);
+    list.classList.add(OPENABLE_DECLARATIONS_CLASS);
+    list.title = 'Click a declaration to open its value in the IDE';
+    list.addEventListener('click', event => {
+      if (event.defaultPrevented || this.#options.document.getSelection()?.isCollapsed === false) return;
+      const declaration = clickedDeclaration(outline.rootElement(), rendered, event.composedPath());
+      if (!declaration) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.#options.openOrigin(ruleRef, declaration);
+    }, {signal});
+    signal.addEventListener('abort', () => {
+      list.classList.remove(OPENABLE_DECLARATIONS_CLASS);
+      list.removeAttribute('title');
+    }, {once: true});
   }
 
   /**
@@ -415,7 +413,7 @@ class ChromiumReadOnlyStylesPane {
 }
 
 const PREVIEWED_SELECTOR_CLASS = 'pin-op-previewed-selector';
-const OPENABLE_DECLARATION_CLASS = 'pin-op-openable-declaration';
+const OPENABLE_DECLARATIONS_CLASS = 'pin-op-openable-declarations';
 const VIEWPORT_MEDIA_FEATURE = /\b(?:(?:min|max)-)?(?:width|height)\b/i;
 
 const PIN_OP_CONTROL_STYLES = `
@@ -597,6 +595,43 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
     ruleByRef: new Map(orderedRules.map(rule => [rule.ruleRef, rule])),
     declarationByProperty,
   });
+}
+
+/**
+ * The declaration a click inside a properties outline landed on: the row on the
+ * event's path, or the shorthand row a longhand row belongs to.
+ */
+function clickedDeclaration(
+    root: PropertyTreeElement, rendered: RenderedModel, path: readonly EventTarget[]): OriginDeclaration|undefined {
+  const rows = new Map<EventTarget, OriginDeclaration>();
+  const visit = (element: PropertyTreeElement, inherited: OriginDeclaration|undefined): void => {
+    const declaration = (element.property ? rendered.declarationByProperty.get(element.property) : undefined) ??
+        inherited;
+    if (declaration && element.listItemElement) rows.set(element.listItemElement, declaration);
+    for (const child of element.children()) visit(child, declaration);
+  };
+  for (const child of root.children()) visit(child, undefined);
+  for (const target of path) {
+    const declaration = rows.get(target);
+    if (declaration) return declaration;
+  }
+  return undefined;
+}
+
+/**
+ * The properties outline renders inside a shadow root of its own, which neither
+ * the panel's stylesheet nor the pane's reaches, so the pointer cue is adopted
+ * next to it.
+ */
+function adoptOpenableDeclarationStyles(list: HTMLElement): void {
+  const root = list.getRootNode();
+  if (!(root instanceof ShadowRoot) || root.querySelector('style[data-part="pin-op-openable-declarations"]')) {
+    return;
+  }
+  const style = document.createElement('style');
+  style.setAttribute('data-part', 'pin-op-openable-declarations');
+  style.textContent = `.${OPENABLE_DECLARATIONS_CLASS} li { cursor: pointer; }`;
+  root.append(style);
 }
 
 /** Which occurrence of its property name, within its own rule, a declaration is. */
