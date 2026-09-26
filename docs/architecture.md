@@ -221,11 +221,11 @@ Unchanged saves do not publish refreshes.
 
 ### Source Plugins
 
-Built-in CSS and SCSS resolvers use source-plugin API v3, the same versioned API
-available to separately installed VS Code extensions. API v3 also accepts
-synchronous refresh classifiers. This document-first, protocol-driven boundary
-keeps the browser independent of the IDE and permits future IDE adapters to
-implement the same v7 contract.
+Built-in CSS, SCSS, PHP, and JavaScript resolvers use source-plugin API v3, the
+same versioned API available to separately installed VS Code extensions. API v3
+also accepts synchronous refresh classifiers. This document-first,
+protocol-driven boundary keeps the browser independent of the IDE and permits
+future IDE adapters to implement the same v7 contract.
 
 Source lookup first chooses a workspace strategy. Workspace-bound resolution is
 selected when the document or stylesheet URL path begins with an open workspace

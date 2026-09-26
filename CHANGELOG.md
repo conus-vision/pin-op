@@ -22,6 +22,17 @@ All notable changes to Pin-op will be documented in this file.
   and `em`/`rem` lengths at 16 px; a maximized window is restored first and page
   zoom is corrected for. Only the window holding the panel's own tab is resized.
 
+- JavaScript in Sources. A built-in provider resolves the active JavaScript,
+  TypeScript, JSX, or TSX document and lists, in Applicable Sources and the
+  Inspector's Source tab, where the script refers to the selected element and
+  its parent: selector literals judged by their subject (`.card .title` names a
+  `.title`), `getElementById`, `classList` and jQuery class calls, `className`
+  and `id` assignments, `dataset` members and attribute calls, JSX opening tags,
+  and markup written into strings. Comments, regular expressions, and whatever a
+  template substitution writes are never read as references. Every id, class,
+  and attribute value a literal names must be on the element; matches are
+  `heuristic`, ranked id, attribute, then class, at most eight per element.
+
 ### Changed
 
 - Rules finds the stylesheet behind a served URL by its content instead of by

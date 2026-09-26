@@ -19,6 +19,7 @@
     "css",
     "scss",
     "php",
+    "javascript",
     "source maps",
     "websocket"
   ],
@@ -76,7 +77,7 @@
     "viewsWelcome": [
       {
         "view": "pin-op.applicableRules",
-        "contents": "Select an element in Firefox or Chrome to list the CSS or SCSS that applies to it here.\n\nPin-op needs its matching browser half:\n[Install for Chrome](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)\n[Install for Firefox](https://addons.mozilla.org/addon/pin-op/)\n\nThen click the Pin-op status bar item to copy this window's link code and paste it into the Pin-op DevTools panel.\n\nSupport for IDEs other than VS Code is in development."
+        "contents": "Select an element in Firefox or Chrome to list the CSS, SCSS, PHP, or JavaScript in the active file that applies to it here.\n\nPin-op needs its matching browser half:\n[Install for Chrome](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)\n[Install for Firefox](https://addons.mozilla.org/addon/pin-op/)\n\nThen click the Pin-op status bar item to copy this window's link code and paste it into the Pin-op DevTools panel.\n\nSupport for IDEs other than VS Code is in development."
       }
     ],
     "colors": [

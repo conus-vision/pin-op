@@ -170,6 +170,16 @@ strategy with the exact local text `Workspace-bound: <folder>` (for example,
   branches of an `if`/`else` render it for different page types - so equally
   strong candidates are all listed; beyond eight the result is reported as
   ambiguous instead of guessed.
+- JavaScript, TypeScript, JSX, and TSX resolve the active script. Pin-op lists
+  where the script refers to the element -- a `querySelector(".card")`, a
+  `getElementById("hero")`, a `classList.toggle("open")`, a `dataset` member, a
+  JSX opening tag, markup written into a string -- strongest evidence first:
+  id, then `data-*`/`aria-*`/`role` attributes, then classes. Every id, class,
+  and attribute value a literal writes must be on the element, so a selector
+  whose subject is another element, or a class the script has not added yet, is
+  not listed. Comments, regular expressions, and whatever a `${...}`
+  substitution writes are never read as a reference. Matches are `heuristic`,
+  and each element lists at most eight.
 - Compatible separately installed source plugins can resolve other active
   document types through the versioned source-plugin API.
 

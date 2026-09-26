@@ -40,6 +40,7 @@ import {
 } from "../rules/rulesSourceResolver.js";
 import { createPinOpApi } from "../sourcePlugins/api.js";
 import { CssSourcePlugin } from "../sourcePlugins/cssSourcePlugin.js";
+import { JavaScriptSourcePlugin } from "../sourcePlugins/javascriptSourcePlugin.js";
 import { SourcePluginRegistry } from "../sourcePlugins/registry.js";
 import { PhpSourcePlugin } from "../sourcePlugins/phpSourcePlugin.js";
 import { ScssSourcePlugin } from "../sourcePlugins/scssSourcePlugin.js";
@@ -246,6 +247,7 @@ export function createPresenterRuntime(
     registry.register(new CssSourcePlugin()),
     registry.register(new ScssSourcePlugin()),
     registry.register(new PhpSourcePlugin()),
+    registry.register(new JavaScriptSourcePlugin()),
   ];
   const workspace = options.workspace ?? new VsCodeSourceWorkspace(
     createRulesWorkspaceHost(host),

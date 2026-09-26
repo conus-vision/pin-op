@@ -642,6 +642,7 @@ describe("presenter runtime", () => {
       "pin-op.css",
       "pin-op.scss",
       "pin-op.php",
+      "pin-op.javascript",
     ]);
     expect(harness.openDocumentCalls).toBe(0);
     expect(harness.runtime.tree.getDocumentUri()).toBe(
