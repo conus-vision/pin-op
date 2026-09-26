@@ -718,15 +718,15 @@ test("current product wording describes explicit opaque Rules navigation", () =>
   );
   assert.match(
     productMaterials,
-    /legacy rollback panel[\s\S]*Source[\s\S]*active-document-only/i,
+    /Source tab[\s\S]*active-document/i,
+  );
+  assert.doesNotMatch(
+    productMaterials,
+    /no visible Source tab|legacy rollback panel/i,
   );
   assert.match(
     productMaterials,
-    /new Inspector[\s\S]*no visible Source tab/i,
-  );
-  assert.match(
-    productMaterials,
-    /PHP[\s\S]*template[\s\S]*(?:future scope|future milestone)/i,
+    /Twig, Blade, and other template providers remain future scope/i,
   );
   assert.doesNotMatch(
     productMaterials,

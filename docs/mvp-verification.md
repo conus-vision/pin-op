@@ -264,7 +264,7 @@ reconnect/cleanup as described in the
 These remain manual acceptance steps. Build and load the ordinary Chrome and
 Firefox artifacts; both register the shared Inspector by default.
 
-1. Confirm the new Inspector shows DOM Tree and Rules with no visible Source tab.
+1. Confirm the Inspector shows the DOM Tree, Rules, and the Source tab.
 2. Verify exact CSS, inline-map SCSS, external-map SCSS, nested SCSS, and a
    selector/declaration split map. Each current origin label must identify only
    the verified generated CSS or exact original SCSS block.
@@ -529,7 +529,8 @@ Select `.card.featured` while `src/layout.scss` is active. Confirm:
 - the immediate parent's `.layout` block is Parent;
 - all ranges include closing braces and appear in Applicable Sources;
 - the final footer uses
-  `<N> rules highlighted · Selected <S> · Parent <P>`;
+  `<N> rules highlighted · Selected <S> · Parent <P>` (a PHP or script file
+  counts `<N> matches highlighted`);
 - selecting an Applicable Sources item reveals within the already active editor.
 
 Without another browser selection:

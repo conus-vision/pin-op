@@ -10,6 +10,7 @@ import type { InspectTarget, RuntimeFact } from "@pin-op/protocol";
 import { PhpSourcePlugin } from "../src/sourcePlugins/phpSourcePlugin.js";
 import { withDomAttributeFacts } from "../src/sourcePlugins/domFacts.js";
 import { parsePhpMarkup } from "../src/sourcePlugins/phpMarkup.js";
+import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 
 const TEMPLATE = [
   "<?php $title = get_the_title(); ?>",
@@ -371,7 +372,7 @@ describe("PhpSourcePlugin", () => {
     expect(result.matches).toEqual([]);
   });
 
-  it("reports no DOM evidence rather than scanning the whole template", async () => {
+  it("reports a target without DOM evidence as a miss the registry accepts", async () => {
     const result = await resolve(TEMPLATE, [{
       role: "selected",
       depth: 0,
@@ -380,8 +381,39 @@ describe("PhpSourcePlugin", () => {
       metadata: {},
     }]);
 
-    expect(result.status).toBe("no-facts");
+    expect(result.status).toBe("no-rule-match");
     expect(result.matches).toEqual([]);
+  });
+
+  it("keeps a bare parent from turning the selected element's miss into an error", async () => {
+    const registry = new SourcePluginRegistry();
+    registry.register(new PhpSourcePlugin());
+
+    const dispatch = await registry.resolve(
+      selection([
+        target("selected", { tag: "div", classes: ["absent"] }),
+        {
+          role: "parent",
+          depth: 1,
+          subject: { selector: "body", metadata: { tag: "body" } },
+          facts: [],
+          metadata: {},
+        },
+      ]),
+      phpDocument(TEMPLATE),
+      workspace(),
+      new AbortController().signal,
+    );
+
+    expect(dispatch.kind).toBe("resolved");
+    if (dispatch.kind !== "resolved") return;
+    expect(dispatch.candidates).toEqual([
+      expect.objectContaining({
+        pluginId: "pin-op.php",
+        status: "no-rule-match",
+        diagnostics: [],
+      }),
+    ]);
   });
 });
 
