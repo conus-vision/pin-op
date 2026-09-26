@@ -589,8 +589,9 @@ export const RulesSourcesMessageSchema = createRulesSourcesMessageSchema();
 /**
  * The declaration a Rules property click names inside the rule the opaque
  * authority already identifies: its property name and which occurrence of that
- * name in the rule's own declaration list it is. It carries no position; the
- * IDE finds the value inside the private range it holds.
+ * name it is, counted from the end of the rule's own declaration list (0 is the
+ * last, the one a browser keeps). It carries no position; the IDE finds the
+ * value inside the private range it holds.
  */
 export const RulesOpenDeclarationSchema = z
   .object({

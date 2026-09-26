@@ -10,11 +10,11 @@ import type { RulesOpenDeclaration } from "@pin-op/protocol";
  *
  * The rule is the private range the IDE already holds for the clicked origin;
  * only its own block is read, so a declaration of a nested rule, a mixin body
- * or a comment never answers for it. A browser keeps the last of two equal
- * declarations, so when the occurrence it counted is not in the file the last
- * written one is the one it showed. A property the rule does not write itself --
- * one an `@include` put there -- has no position, and the caller stays on the
- * rule.
+ * or a comment never answers for it. A browser keeps only the last of two equal
+ * declarations -- `height: 100vh; height: 100dvh` shows `100dvh` -- so the
+ * occurrence is counted from the end of the rule, and occurrence 0 is the last
+ * one written. A property the rule does not write itself -- one an `@include`
+ * put there -- has no position, and the caller stays on the rule.
  */
 export function declarationValuePosition(
   document: SourceDocument,
@@ -39,7 +39,10 @@ export function declarationValuePosition(
   const offsets = directDeclarationValueOffsets(text, bodyStart, end)
     .filter((entry) => entry.property === wanted)
     .map((entry) => entry.valueOffset);
-  const offset = offsets[declaration.occurrence] ?? offsets.at(-1);
+  // Counted from the end: the browser shows the last of equal declarations,
+  // so occurrence 0 is the last one the rule writes.
+  const offset = offsets[offsets.length - 1 - declaration.occurrence] ??
+    offsets[0];
   return offset === undefined ? undefined : document.positionAt(offset);
 }
 

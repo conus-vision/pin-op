@@ -33,11 +33,12 @@ describe("declarationValuePosition", () => {
       .toEqual({ line: 5, character: 9 });
   });
 
-  it("picks the counted occurrence and otherwise the last one the browser keeps", () => {
-    const text = ".a { display: block; display: grid; }";
-    expect(at(text, "display", 0)).toEqual({ line: 0, character: 14 });
-    expect(at(text, "display", 1)).toEqual({ line: 0, character: 30 });
-    expect(at(text, "DISPLAY", 5)).toEqual({ line: 0, character: 30 });
+  it("counts occurrences from the end, where the one the browser keeps is", () => {
+    const text = ".hero { height: 100vh; height: 100dvh; }";
+    // The browser shows `100dvh` and sends occurrence 0.
+    expect(at(text, "height", 0)).toEqual({ line: 0, character: 31 });
+    expect(at(text, "height", 1)).toEqual({ line: 0, character: 16 });
+    expect(at(text, "HEIGHT", 5)).toEqual({ line: 0, character: 16 });
   });
 
   it("is not misled by strings, urls, interpolation and selector colons", () => {

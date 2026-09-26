@@ -282,7 +282,9 @@ nothing else:
 ```
 
 `property` is a CSS identifier of at most 256 characters and `occurrence` counts
-earlier declarations of the same property in the rule's own list (`0`-`127`).
+later declarations of the same property in the rule's own list (`0`-`127`), so
+`0` is the last one, the declaration a browser keeps when a rule writes a
+property twice.
 The IDE looks for that declaration only inside the private range the authority
 already names and places the cursor at the start of its value; when the rule
 does not write it directly -- a mixin did -- the cursor stays on the rule.

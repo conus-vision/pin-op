@@ -169,6 +169,8 @@ export interface PresenterRuntimeOptions {
     resolve(
       request: RulesSourceResolverRequest,
     ): Promise<RulesSourceResolutionBatch>;
+    /** Told when any workspace stylesheet is created, changed, or deleted. */
+    stylesheetsChanged?(): void;
   };
   readonly sendRulesSources?: (
     payload: RulesSourcesPublicationPayload,
@@ -277,10 +279,12 @@ export function createPresenterRuntime(
   );
   const rulesWorkspace = rulesSourceSnapshotWorkspace(workspace);
   const rulesRegistry = new RulesOpenAuthorityRegistry();
+  const rulesResolver = options.rulesSourceResolver ??
+    new RulesSourceResolver(workspace);
   const rulesController = rulesWorkspace
     ? new RulesSourceController<PresenterDocumentLike, PresenterEditorLike>({
         workspace: rulesWorkspace,
-        resolver: options.rulesSourceResolver ?? new RulesSourceResolver(workspace),
+        resolver: rulesResolver,
         registry: rulesRegistry,
         publication: new RulesSourcesPublication(rulesRegistry, {
           ...(options.measureRulesSourcesEnvelope
@@ -300,7 +304,11 @@ export function createPresenterRuntime(
       })
     : undefined;
   const rulesLifecycle = rulesController
-    ? bindRulesSourceLifecycle(host, rulesController)
+    ? bindRulesSourceLifecycle(
+        host,
+        rulesController,
+        () => rulesResolver.stylesheetsChanged?.(),
+      )
     : undefined;
   const treeRegistration = host.registerTreeDataProvider(tree);
   const commandRegistration = registerPresenterCommands(
@@ -518,6 +526,7 @@ function createRulesWorkspaceHost(host: PresenterRuntimeHost): WorkspaceHost {
 function bindRulesSourceLifecycle(
   host: PresenterRuntimeHost,
   controller: RulesSourceController<PresenterDocumentLike, PresenterEditorLike>,
+  stylesheetsChanged: () => void,
 ): DisposableLike {
   let disposed = false;
   let watcherSubscriptions: DisposableLike[] = [];
@@ -526,6 +535,15 @@ function bindRulesSourceLifecycle(
     if (disposed) return;
     if (closedOnly && host.getOpenTextDocument?.(uri)) return;
     const value = uri.toString();
+    // Rules finds served stylesheets by content, so any stylesheet changing
+    // can change which file carries them, relevant dependency or not.
+    if (isStylesheetUri(value)) {
+      try {
+        stylesheetsChanged();
+      } catch (error) {
+        report(error);
+      }
+    }
     if (!controller.isDependencyRelevant(value)) return;
     advanceRulesSourceGeneration(host);
     void controller.dependencyChanged(value).catch(report);
@@ -555,6 +573,11 @@ function bindRulesSourceLifecycle(
     subscriptions.push(host.onDidChangeWorkspaceFolders(() => {
       if (disposed) return;
       advanceRulesSourceGeneration(host);
+      try {
+        stylesheetsChanged();
+      } catch (error) {
+        report(error);
+      }
       rebuildWatchers();
       void controller.workspaceChanged().catch(report);
     }));
@@ -699,3 +722,11 @@ function createHostRange(
 }
 
 export type { DecorationRole };
+
+function isStylesheetUri(uri: string): boolean {
+  try {
+    return /\.css$/i.test(new URL(uri).pathname);
+  } catch {
+    return false;
+  }
+}

@@ -31,6 +31,10 @@ const PREFIXED_FEATURE = new RegExp(
   String.raw`\(\s*(min|max)-(width|height)\s*:\s*${LENGTH}\s*\)`,
   "giu",
 );
+const EXACT_FEATURE = new RegExp(
+  String.raw`\(\s*(width|height)\s*:\s*${LENGTH}\s*\)`,
+  "giu",
+);
 const RANGE_FEATURE = new RegExp(
   String.raw`\(\s*(?:${LENGTH}\s*(<=|<|>=|>)\s*)?(width|height)(?:\s*(<=|<|>=|>|=)\s*${LENGTH})?\s*\)`,
   "giu",
@@ -52,6 +56,11 @@ export function viewportForMediaCondition(
     const value = pixels(match[3], match[4]);
     if (value === undefined) continue;
     tighten(bounds[match[2]!.toLowerCase() as Axis], match[1] === "min" ? ">=" : "<=", value);
+  }
+  for (const match of firstBranch.matchAll(EXACT_FEATURE)) {
+    const value = pixels(match[2], match[3]);
+    if (value === undefined) continue;
+    tighten(bounds[match[1]!.toLowerCase() as Axis], "=", value);
   }
   for (const match of firstBranch.matchAll(RANGE_FEATURE)) {
     const axis = match[4]!.toLowerCase() as Axis;

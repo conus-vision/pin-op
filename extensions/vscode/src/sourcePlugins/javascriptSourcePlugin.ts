@@ -53,6 +53,7 @@ const MAX_RENDERED_VALUE_LENGTH = 256;
 const MAX_TAG_LENGTH = 64;
 const MAX_RECENT_TOKENS = 8;
 const MAX_CLOSER_SEARCH_DEPTH = 16;
+const MAX_REGEX_FAILURES_PER_LINE = 8;
 
 /** Stands in for a `${...}` substitution, whose value the scan cannot know. */
 const PLACEHOLDER = "\u0000";
@@ -580,6 +581,10 @@ class ScriptScanner {
   private index = 0;
   private truncated = false;
   private stopped = false;
+  private regexFailureLine = -1;
+  private regexFailures = 0;
+  private lineStart = 0;
+  private lineStartCursor = 0;
 
   public constructor(
     private readonly text: string,
@@ -803,8 +808,38 @@ class ScriptScanner {
       this.operator("/", this.index - 1);
       return;
     }
-    if (regexAllowed(this.token(1)) && this.regex()) return;
+    if (regexAllowed(this.token(1)) && this.regexAttemptsLeft() && this.regex()) {
+      return;
+    }
     this.punctuator(SLASH);
+  }
+
+  /**
+   * A regular expression that fails to close scans to the end of its line, so
+   * a line of stray slashes would be rescanned once per slash. In valid code a
+   * slash where a regular expression may start almost always is one; after a
+   * few failures on one line the rest of its slashes are read as division,
+   * which keeps the scan linear.
+   */
+  private regexAttemptsLeft(): boolean {
+    const lineStart = this.lineStartOf(this.index);
+    if (lineStart !== this.regexFailureLine) {
+      this.regexFailureLine = lineStart;
+      this.regexFailures = 0;
+    }
+    return this.regexFailures < MAX_REGEX_FAILURES_PER_LINE;
+  }
+
+  private lineStartOf(index: number): number {
+    // Only asked for the current position, which only moves forward, so the
+    // search resumes where the last one stopped.
+    for (let cursor = this.lineStartCursor; cursor < index; cursor += 1) {
+      if (isLineTerminator(this.text.charCodeAt(cursor))) {
+        this.lineStart = cursor + 1;
+      }
+    }
+    this.lineStartCursor = Math.max(this.lineStartCursor, index);
+    return this.lineStart;
   }
 
   /** Returns false for a `/` that turns out not to open a regular expression. */
@@ -813,9 +848,11 @@ class ScriptScanner {
     let inClass = false;
     while (index < this.limit) {
       const code = this.text.charCodeAt(index);
-      if (isLineTerminator(code)) return false;
+      if (isLineTerminator(code)) return this.regexFailed();
       if (code === BACKSLASH) {
-        if (isLineTerminator(this.text.charCodeAt(index + 1))) return false;
+        if (isLineTerminator(this.text.charCodeAt(index + 1))) {
+          return this.regexFailed();
+        }
         index += 2;
         continue;
       }
@@ -824,7 +861,7 @@ class ScriptScanner {
       else if (code === SLASH && !inClass) break;
       index += 1;
     }
-    if (index >= this.limit) return false;
+    if (index >= this.limit) return this.regexFailed();
     index += 1;
     while (index < this.limit && isNameCharacter(this.text.charCodeAt(index))) {
       index += 1;
@@ -833,6 +870,11 @@ class ScriptScanner {
     this.index = index;
     this.push({ kind: "regex", value: "", start, end: index });
     return true;
+  }
+
+  private regexFailed(): false {
+    this.regexFailures += 1;
+    return false;
   }
 
   private skipLine(): void {

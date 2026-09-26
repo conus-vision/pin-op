@@ -20,6 +20,7 @@ describe("viewportForMediaCondition", () => {
     ["(max-height: 500px)", { height: 500 }],
     ["(max-width: 600px) and (min-height: 400px)", { width: 600, height: 400 }],
     ["(max-width: 600px), print", { width: 600 }],
+    ["(width: 800px)", { width: 800 }],
   ])("reads %s", (condition, expected) => {
     expect(viewportForMediaCondition(condition)).toEqual(expected);
   });
@@ -31,6 +32,7 @@ describe("viewportForMediaCondition", () => {
     "(min-width: 900px) and (max-width: 600px)",
     "(max-width: 50vw)",
     "(max-width: 600)",
+    "(max-device-width: 480px)",
   ])("has no viewport for %s", (condition) => {
     expect(viewportForMediaCondition(condition)).toBeUndefined();
   });

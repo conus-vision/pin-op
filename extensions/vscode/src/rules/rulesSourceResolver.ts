@@ -50,6 +50,7 @@ import type { CssDeclarationEvidence } from "../sourcePlugins/types.js";
 import { rulesSourceDocumentMetadata } from "../sourcePresentationMetadata.js";
 import {
   RulesStylesheetLocator,
+  StylesheetLocationMemory,
   type GeneratedStylesheetLocation,
   type StylesheetCandidateScore,
 } from "./rulesStylesheetLocator.js";
@@ -175,6 +176,7 @@ interface ResolutionBatchContext {
 
 export class RulesSourceResolver {
   private readonly maxRetainedSourceBytes: number;
+  private readonly stylesheetLocations = new StylesheetLocationMemory();
 
   public constructor(
     private readonly workspace: SourceWorkspace,
@@ -191,6 +193,15 @@ export class RulesSourceResolver {
     ) {
       throw new Error("Rules retained-source budget is invalid");
     }
+  }
+
+  /**
+   * A stylesheet in the workspace was created, changed, or deleted, so what
+   * earlier selections learned about where served stylesheets live may no
+   * longer hold.
+   */
+  public stylesheetsChanged(): void {
+    this.stylesheetLocations.forget();
   }
 
   public async resolve(
@@ -225,6 +236,7 @@ export class RulesSourceResolver {
       request.signal,
       this.maxRetainedSourceBytes,
       locatableRules(grouped),
+      this.stylesheetLocations,
     );
     const results: RuleSourceResolution[] = [];
     for (const entry of grouped) {
@@ -692,6 +704,7 @@ function createBatchContext(
   signal: AbortSignal | undefined,
   maxRetainedSourceBytes: number,
   rules: readonly InspectRuleEvidence[],
+  stylesheetLocations: StylesheetLocationMemory,
 ): ResolutionBatchContext {
   const sourceResolutions = new Map<string, Promise<SourceUriResolution>>();
   const initialSnapshots = new Map<
@@ -764,6 +777,8 @@ function createBatchContext(
       },
       rules,
       signal,
+      undefined,
+      stylesheetLocations,
     ),
     sourceMapWorkspace,
     snapshotWorkspace,

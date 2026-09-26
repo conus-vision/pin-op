@@ -142,7 +142,8 @@ describe("PinOpStylesSidebarAdapter", () => {
     harness.pane.openOrigin("rule:one", { property: "color", occurrence: -1 });
     harness.pane.openOrigin("rule:stale", { property: "color", occurrence: 0 });
 
-    expect(source.opened).toEqual(["rule:one"]);
+    // An unnameable declaration still opens its rule, without the declaration.
+    expect(source.opened).toEqual(["rule:one", "rule:one", "rule:one"]);
     expect(source.openedDeclarations).toEqual([
       { property: "margin-top", occurrence: 1 },
     ]);

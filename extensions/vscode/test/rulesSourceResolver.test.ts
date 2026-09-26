@@ -586,6 +586,88 @@ describe("RulesSourceResolver", () => {
     ]);
   });
 
+  it("remembers where a served stylesheet lives until a stylesheet changes", async () => {
+    const staleUri = "file:///workspace/dist/app.css";
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const workspace = rankingWorkspace({
+      [staleUri]: ".card { color: red; }",
+      [bundleUri]: ".card { color: red; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+    const tile = () => evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    });
+
+    await resolveWith(resolver, [tile()]);
+    expect(workspace.rankingReads.size).toBe(2);
+    workspace.rankingReads.clear();
+
+    // A later selection from the same stylesheet asks the remembered file and
+    // the one file that ends more like the URL, and ranks nothing.
+    const again = await resolveWith(resolver, [tile()]);
+    expect(again.results).toMatchObject([
+      { kind: "resolved", document: { uri: bundleUri } },
+    ]);
+    expect(workspace.rankingReads.size).toBe(0);
+
+    resolver.stylesheetsChanged();
+    await resolveWith(resolver, [tile()]);
+    expect(workspace.rankingReads.size).toBe(2);
+  });
+
+  it("lets a closer file that now carries every rule replace the remembered one", async () => {
+    const appUri = "file:///workspace/dist/app.css";
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const workspace = rankingWorkspace({
+      [appUri]: ".card { color: red; }",
+      [bundleUri]: ".card { color: red; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+
+    await resolveWith(resolver, [evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    })]);
+    const card = await resolveWith(resolver, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    ]);
+
+    expect(card.results).toMatchObject([
+      { kind: "resolved", document: { uri: appUri } },
+    ]);
+  });
+
+  it("does not remember a stylesheet whose rules were mentioned but not carried", async () => {
+    const appUri = "file:///workspace/dist/app.css";
+    const workspace = rankingWorkspace({
+      [appUri]: ".card { color: green; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+
+    const miss = await resolveWith(resolver, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    ]);
+    expect(miss.results).toMatchObject([{ kind: "unresolved" }]);
+    const hit = await resolveWith(resolver, [evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    })]);
+
+    expect(hit.results).toMatchObject([
+      { kind: "resolved", document: { uri: appUri } },
+    ]);
+  });
+
   it("uses the exact selector-start mapping and never a declaration-body mixin mapping", async () => {
     const cssUri = "file:///workspace/dist/app.css";
     const mapUri = `${cssUri}.map`;
@@ -2496,6 +2578,18 @@ async function resolveOne(
   expect(batch.selectionMessageId).toBe("inspect-1");
   expect(batch.results).toHaveLength(1);
   return batch.results[0]!;
+}
+
+function resolveWith(
+  resolver: RulesSourceResolver,
+  rules: readonly InspectRuleEvidence[],
+) {
+  return resolver.resolve({
+    selectionMessageId: "inspect-1",
+    pageUrl: "http://localhost:4173/page",
+    ruleEvidence: { rules, omittedRuleCount: 0 },
+    signal: new AbortController().signal,
+  });
 }
 
 async function resolveBatch(

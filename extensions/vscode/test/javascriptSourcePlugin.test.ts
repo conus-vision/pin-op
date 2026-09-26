@@ -10,6 +10,7 @@ import {
   JAVASCRIPT_SCAN_LIMITS,
   JavaScriptSourcePlugin,
   ScriptReferenceCache,
+  findScriptReferences,
   parseScriptReferences,
   selectorSubjects,
 } from "../src/sourcePlugins/javascriptSourcePlugin.js";
@@ -571,10 +572,27 @@ describe("parseScriptReferences", () => {
       "x = /abc\n".repeat(20_000),
       "'\n".repeat(50_000),
       'const s = `abc ${x + "q"',
+      // Each `/` could open a regular expression whose class never closes.
+      "/[\\];".repeat(50_000),
     ]) {
       expect(() => parseScriptReferences(text)).not.toThrow();
     }
     expect(performance.now() - start).toBeLessThan(5_000);
+  });
+
+  it("still reads regular expressions after stray slashes on other lines", () => {
+    const text = [
+      "/[\\];".repeat(20),
+      'const pattern = /\.card/; document.querySelector(".card");',
+    ].join("\n");
+    const found = findScriptReferences(parseScriptReferences(text), {
+      tag: "div",
+      id: undefined,
+      classes: ["card"],
+      attributes: new Map(),
+    });
+    expect(found.references.map((reference) => reference.label))
+      .toEqual(['querySelector(".card")']);
   });
 
   it("caches a parse per document version", () => {

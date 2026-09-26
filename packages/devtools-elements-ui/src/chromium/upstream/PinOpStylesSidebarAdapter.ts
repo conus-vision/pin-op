@@ -486,6 +486,8 @@ class RuleOriginBoundary {
   ): void => {
     const authorityRevision = this.authorityRevision;
     const delegate = this.delegate;
+    // A declaration that cannot be named safely still opens its rule, as the
+    // origin link would, rather than swallowing the click.
     const safeDeclaration = declaration === undefined
       ? undefined
       : sanitizeDeclaration(declaration);
@@ -493,8 +495,7 @@ class RuleOriginBoundary {
       this.disposed ||
       typeof ruleRef !== "string" ||
       !this.ruleRefs.has(ruleRef) ||
-      !delegate ||
-      (declaration !== undefined && !safeDeclaration)
+      !delegate
     ) return;
     let openRuleOrigin: SourceLinkDelegate["openRuleOrigin"];
     try {

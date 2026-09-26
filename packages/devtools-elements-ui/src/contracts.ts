@@ -290,7 +290,7 @@ export interface RuleOriginDecoration {
 
 /**
  * A declaration clicked in a rule: its property name and which occurrence of
- * that name in the rule's own declaration list it is.
+ * that name it is, counted from the end of the rule's own declaration list.
  */
 export interface RuleOriginDeclaration {
   readonly property: string;

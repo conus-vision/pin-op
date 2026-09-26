@@ -27,7 +27,7 @@ export const CHROMIUM_READ_ONLY_STYLES_RUNTIME = Object.freeze({
   overlayRoot:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091",
   manifestSha256:
-    "ac7cdbf3be3760c3963059fbe230ddc59de756640c7b441ee352c5c4ff423bc2",
+    "702d4e5c04f8d37adcc69a3981283ad379baaa4d4d742155ea701b9b4348eb02",
   entryPoint:
     "third_party/chromium-devtools-frontend/styles-overlay/1.0.1681091/entrypoints/read-only-styles.ts",
 });

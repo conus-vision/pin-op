@@ -74,6 +74,70 @@ export interface RulesStylesheetLocatorHost {
   ): Promise<StylesheetCandidateScore>;
 }
 
+/**
+ * What earlier selections learned about served stylesheets, kept across them
+ * until any stylesheet in the workspace changes. It holds only answers the
+ * locator re-verifies or that no file could contradict without changing.
+ */
+export class StylesheetLocationMemory {
+  private readonly located = new Map<string, string>();
+  private readonly unlocated = new Set<string>();
+
+  public recall(
+    sourceUrl: string,
+  ):
+    | { readonly kind: "located"; readonly uri: string }
+    | { readonly kind: "unlocated" }
+    | undefined {
+    const uri = this.located.get(sourceUrl);
+    if (uri !== undefined) return { kind: "located", uri };
+    return this.unlocated.has(sourceUrl) ? { kind: "unlocated" } : undefined;
+  }
+
+  public remember(
+    sourceUrl: string,
+    location: GeneratedStylesheetLocation,
+  ): void {
+    this.located.delete(sourceUrl);
+    this.unlocated.delete(sourceUrl);
+    if (location.kind === "located") {
+      this.located.set(sourceUrl, location.uri);
+    } else if (NOTHING_CARRIES_IT.has(location.reason)) {
+      this.unlocated.add(sourceUrl);
+    }
+    while (this.located.size > MEMORY_LIMIT) {
+      const oldest = this.located.keys().next().value;
+      if (oldest === undefined) break;
+      this.located.delete(oldest);
+    }
+    while (this.unlocated.size > MEMORY_LIMIT) {
+      const oldest = this.unlocated.values().next().value;
+      if (oldest === undefined) break;
+      this.unlocated.delete(oldest);
+    }
+  }
+
+  /** A stylesheet in the workspace changed: nothing learned still holds. */
+  public forget(): void {
+    this.located.clear();
+    this.unlocated.clear();
+  }
+}
+
+/**
+ * The outcome that says no workspace stylesheet even mentions the served
+ * stylesheet's selectors. A file that mentions them but carries none of this
+ * selection's rules exactly may still carry the next selection's, and an
+ * ambiguous, unreadable or over-budget outcome can change without any file
+ * changing, so none of those is remembered.
+ */
+const NOTHING_CARRIES_IT: ReadonlySet<string> = new Set([
+  "generated-source-not-found",
+]);
+const MEMORY_LIMIT = 256;
+/** More files closer to the served URL than this and the workspace is ranked. */
+const MAX_CLOSER_FILES_ASKED = 4;
+
 export interface RankedStylesheetCandidate {
   readonly uri: string;
   /** Reported rules whose selector the file's text could hold. */
@@ -175,6 +239,7 @@ export class RulesStylesheetLocator {
     private readonly signal?: AbortSignal,
     private readonly limits: RulesStylesheetLocatorLimits =
       RULES_STYLESHEET_LOCATOR_LIMITS,
+    private readonly memory = new StylesheetLocationMemory(),
   ) {
     this.stylesheets = reportedStylesheets(rules);
     this.words = new Set(
@@ -196,10 +261,64 @@ export class RulesStylesheetLocator {
   public async locateGenerated(
     sourceUrl: string,
   ): Promise<GeneratedStylesheetLocation> {
+    const location = await this.locateGeneratedAnew(sourceUrl);
+    throwIfAborted(this.signal);
+    this.memory.remember(sourceUrl, location);
+    return location;
+  }
+
+  /**
+   * An earlier selection's answer, when it still stands. A remembered file is
+   * kept while it carries every rule reported now, unless a file that ends more
+   * like the served URL carries every one of them too: that is the only file
+   * the choice could now prefer, and the few there are get asked. A URL whose
+   * selectors no file mentions stays unlocated until a stylesheet changes.
+   */
+  private async recalled(
+    sourceUrl: string,
+    stylesheet: ReportedStylesheet,
+    files: readonly WorkspaceStylesheetFile[],
+  ): Promise<GeneratedStylesheetLocation | undefined> {
+    const recalled = this.memory.recall(sourceUrl);
+    if (!recalled) return undefined;
+    if (recalled.kind === "unlocated") {
+      return unlocated("generated-source-not-found");
+    }
+    const remembered = files.find((file) => file.uri === recalled.uri);
+    if (!remembered) return undefined;
+    const similarity = sharedTrailingSegments(
+      stylesheet.urlSegments,
+      remembered.segments,
+    );
+    const closer = files.filter((file) =>
+      sharedTrailingSegments(stylesheet.urlSegments, file.segments) >
+        similarity
+    );
+    if (closer.length > MAX_CLOSER_FILES_ASKED) return undefined;
+    for (const file of [...closer, remembered]) {
+      throwIfAborted(this.signal);
+      const score = await this.host.scoreCandidate(file.uri, stylesheet.rules);
+      const carriesAll = score.kind === "verified" &&
+        score.verified === stylesheet.rules.length;
+      if (file !== remembered && carriesAll) return undefined;
+      if (file === remembered && !carriesAll) return undefined;
+    }
+    return { kind: "located", uri: remembered.uri };
+  }
+
+  private async locateGeneratedAnew(
+    sourceUrl: string,
+  ): Promise<GeneratedStylesheetLocation> {
     throwIfAborted(this.signal);
     const stylesheet = this.stylesheets.get(sourceUrl);
     if (!stylesheet) return unlocated("generated-source-not-found");
     this.generatedFiles ??= this.workspaceFiles("**/*.css", ".css");
+    const recalled = await this.recalled(
+      sourceUrl,
+      stylesheet,
+      await this.generatedFiles,
+    );
+    if (recalled) return recalled;
     const likeliest = closestFile(
       stylesheet.urlSegments,
       await this.generatedFiles,

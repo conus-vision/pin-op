@@ -768,6 +768,22 @@ describe("presenter runtime", () => {
     expect(getText).toHaveBeenCalledOnce();
   });
 
+  it("tells the Rules resolver whenever any workspace stylesheet changes", () => {
+    const changed: string[] = [];
+    const harness = rulesRuntimeHarness({
+      stylesheetsChanged: () => changed.push("stylesheets"),
+    });
+
+    harness.fireFileChange("file:///workspace/vendor/unrelated.css");
+    harness.fireFileCreate("file:///workspace/build/new.CSS");
+    harness.fireFileChange("file:///workspace/src/app.ts");
+    harness.fireTextDocument("file:///workspace/src/open.css");
+    harness.fireWorkspaceFoldersChanged();
+
+    expect(changed).toHaveLength(4);
+    harness.runtime.dispose();
+  });
+
   it("keeps Rules authority current across active-editor and Source navigation", async () => {
     const harness = rulesRuntimeHarness();
     harness.runtime.select(inspectMessageWithSelectedAndParent());
@@ -994,6 +1010,7 @@ function rulesRuntimeHarness(options: {
   readonly resolve?: (
     request: RulesSourceResolverRequest,
   ) => Promise<RulesSourceResolutionBatch>;
+  readonly stylesheetsChanged?: () => void;
   readonly strictPresenterPositions?: boolean;
   readonly sendRulesSources?: (
     payload: RulesSourcesPublicationPayload,
@@ -1112,7 +1129,12 @@ function rulesRuntimeHarness(options: {
   })));
   const runtime = createPresenterRuntime({
     workspace: rulesWorkspace,
-    rulesSourceResolver: { resolve },
+    rulesSourceResolver: {
+      resolve,
+      ...(options.stylesheetsChanged
+        ? { stylesheetsChanged: options.stylesheetsChanged }
+        : {}),
+    },
     sendRulesSources(payload) {
       rulesPublications.push(payload);
       return options.sendRulesSources?.(payload) ?? true;

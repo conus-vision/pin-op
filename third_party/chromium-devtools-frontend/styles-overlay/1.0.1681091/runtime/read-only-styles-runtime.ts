@@ -364,7 +364,8 @@ class ChromiumReadOnlyStylesPane {
              '.styles-section pin-op-readonly-css-query')) {
       const data = query.data;
       const text = query.shadowRoot?.querySelector<HTMLElement>('.query-text');
-      if (!data || !text || data.queryPrefix !== '@media' || !VIEWPORT_MEDIA_FEATURE.test(data.queryText)) {
+      if (!data || !text || data.queryPrefix !== '@media' || NEGATED_MEDIA_QUERY.test(data.queryText) ||
+          !VIEWPORT_MEDIA_FEATURE.test(data.queryText)) {
         continue;
       }
       const conditionText = data.queryText;
@@ -414,7 +415,14 @@ class ChromiumReadOnlyStylesPane {
 
 const PREVIEWED_SELECTOR_CLASS = 'pin-op-previewed-selector';
 const OPENABLE_DECLARATIONS_CLASS = 'pin-op-openable-declarations';
-const VIEWPORT_MEDIA_FEATURE = /\b(?:(?:min|max)-)?(?:width|height)\b/i;
+// Only a condition the viewport preview can size is offered as a link: a
+// viewport width or height (not `device-width`) compared with a px, em, or rem
+// length, outside a negated query.
+const VIEWPORT_MEDIA_FEATURE = new RegExp(
+    String.raw`(?<![\w-])(?:(?:min|max)-)?(?:width|height)\s*(?::|[<>]=?|=)\s*\d*\.?\d+\s*(?:px|em|rem)\b` +
+        String.raw`|\d*\.?\d+\s*(?:px|em|rem)\s*[<>]=?\s*(?:width|height)\b`,
+    'i');
+const NEGATED_MEDIA_QUERY = /^\s*not\b/i;
 
 const PIN_OP_CONTROL_STYLES = `
 .pseudo-state-toolbar-item {
@@ -634,12 +642,16 @@ function adoptOpenableDeclarationStyles(list: HTMLElement): void {
   root.append(style);
 }
 
-/** Which occurrence of its property name, within its own rule, a declaration is. */
+/**
+ * Which occurrence of its property name, counted from the end of its own rule,
+ * a declaration is. A browser keeps the last of two equal declarations, so the
+ * end is the anchor the stylesheet and the browser agree on.
+ */
 function declarationOccurrence(declarations: readonly DeclarationSnapshot[], index: number): number {
   const name = declarations[index].name.toLowerCase();
   let occurrence = 0;
-  for (let earlier = 0; earlier < index; earlier++) {
-    if (declarations[earlier].name.toLowerCase() === name) occurrence++;
+  for (let later = index + 1; later < declarations.length; later++) {
+    if (declarations[later].name.toLowerCase() === name) occurrence++;
   }
   return occurrence;
 }

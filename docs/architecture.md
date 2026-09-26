@@ -205,7 +205,10 @@ and verified. The file carrying the most reported rules exactly -- selector, eve
 declaration, grouping context -- is chosen; trailing path similarity and then the
 rules' reported positions break a tie, and a tie that remains chooses nothing.
 Ranking reads an open document as the editor shows it and every other file from
-disk; it never opens a document. A source map's sources are read relative to the
+disk; it never opens a document. What a selection learns is kept for the next
+one until any workspace stylesheet changes: a remembered file is reused while it
+still carries every reported rule and no file ending more like the URL carries
+them all too, and a URL whose selectors no file mentions stays unresolved. A source map's sources are read relative to the
 chosen file on disk. One a bundler named by its own scheme (`webpack://`) or by a
 path on another machine is the `.scss` file of that name whose text is the text
 the map carries, or the one file of that name when the map carries none; only
