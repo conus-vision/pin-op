@@ -193,6 +193,25 @@ they never create an approximate SCSS target. The private full range,
 dependency hashes, workspace generation, document identity, and version remain
 IDE-owned and are revalidated around the editor host call.
 
+Rules finds the file behind a served stylesheet by its content, not by the URL's
+folders: a dev server mounts `dist/` at the root, a CMS serves a theme from deep
+inside its install, a build renames `app.css`. Every workspace `.css` file is a
+candidate. When one file shares more of the served URL's trailing path than any
+other and carries every rule reported from that URL, it is the answer and nothing
+else is read. Otherwise the workspace's stylesheets are read once per selection
+(at most 2,000 files and 64 MiB, most path-similar first, files over 2 MiB
+skipped) for the words of the reported selectors, and the eight best are parsed
+and verified. The file carrying the most reported rules exactly -- selector, every
+declaration, grouping context -- is chosen; trailing path similarity and then the
+rules' reported positions break a tie, and a tie that remains chooses nothing.
+Ranking reads an open document as the editor shows it and every other file from
+disk; it never opens a document. A source map's sources are read relative to the
+chosen file on disk. One a bundler named by its own scheme (`webpack://`) or by a
+path on another machine is the `.scss` file of that name whose text is the text
+the map carries, or the one file of that name when the map carries none; only
+when no file has the name is the text looked for under any name. Source plugins
+keep the URL-based lookup below.
+
 The presenter also observes changed saves. Direct CSS settles for 150 ms.
 SCSS, Sass, and Less wait for a 750 ms quiet period within a two-second build
 window; generated CSS resets settlement to 150 ms. JavaScript, TypeScript, Vue,

@@ -22,6 +22,22 @@ All notable changes to Pin-op will be documented in this file.
   and `em`/`rem` lengths at 16 px; a maximized window is restored first and page
   zoom is corrected for. Only the window holding the panel's own tab is resized.
 
+### Changed
+
+- Rules finds the stylesheet behind a served URL by its content instead of by
+  the URL's folders. Every `.css` file in the workspace is a candidate, and the
+  one carrying the most of the rules the browser reported from that URL, matched
+  exactly, is chosen; a path ending like the URL only breaks a tie, and a tie
+  that remains is left unresolved rather than guessed. A dev server that mounts
+  `dist/` at the root, a CMS serving a theme from inside its install, or a
+  renamed build output no longer hides the source. The file whose path is most
+  like the URL is tried first and, when it carries every reported rule, nothing
+  else is read; otherwise the workspace's stylesheets are ranked from their text
+  without being opened as documents. Source maps are read relative to the chosen
+  file on disk, and a bundler-named source (`webpack://`) is matched to the
+  `.scss` file of that name whose text the map carries. Source-pane lookup is
+  unchanged.
+
 ## [0.4.2] - 2026-09-07
 
 ### Added

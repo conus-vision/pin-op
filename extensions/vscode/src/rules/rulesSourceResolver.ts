@@ -48,6 +48,11 @@ import {
 } from "../sourcePlugins/sourceWorkspace.js";
 import type { CssDeclarationEvidence } from "../sourcePlugins/types.js";
 import { rulesSourceDocumentMetadata } from "../sourcePresentationMetadata.js";
+import {
+  RulesStylesheetLocator,
+  type GeneratedStylesheetLocation,
+  type StylesheetCandidateScore,
+} from "./rulesStylesheetLocator.js";
 
 export const RULES_SOURCE_BATCH_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -157,6 +162,12 @@ interface ResolutionBatchContext {
     { readonly text: string; readonly contentHash: string }[]
   >;
   readonly stylesheets: Map<string, CachedStylesheet>;
+  /** Per served stylesheet URL, the workspace file its content led to. */
+  readonly generatedStylesheets: Map<
+    string,
+    Promise<GeneratedStylesheetLocation>
+  >;
+  readonly stylesheetLocator: RulesStylesheetLocator;
   readonly sourceMapWorkspace: SourceWorkspace;
   readonly snapshotWorkspace: RulesSourceSnapshotWorkspace;
   readonly retainedSourceBudget: RetainedSourceBudget;
@@ -206,13 +217,15 @@ export class RulesSourceResolver {
     } catch {
       return unresolvedBatch(request, "rules-source-snapshot-unavailable");
     }
+    const grouped = groupUniqueRules(request.ruleEvidence.rules);
     const batch = createBatchContext(
       this.workspace,
       snapshotWorkspace,
+      this.ast,
       request.signal,
       this.maxRetainedSourceBytes,
+      locatableRules(grouped),
     );
-    const grouped = groupUniqueRules(request.ruleEvidence.rules);
     const results: RuleSourceResolution[] = [];
     for (const entry of grouped) {
       throwIfAborted(request.signal);
@@ -272,22 +285,28 @@ export class RulesSourceResolver {
       return unresolved(evidence.ruleRef, "incomplete-rule-evidence");
     }
 
-    let resolution;
+    // The URL says where the page was served from, not where the file lives in
+    // the project; the file is the one whose content carries these rules.
+    let location: GeneratedStylesheetLocation;
     try {
-      resolution = await batchResolveSourceUri(
-        batch.sourceResolutions,
-        this.workspace,
+      location = await batchLocateGeneratedStylesheet(
+        batch,
         generated.sourceUrl,
-        request.pageUrl,
         request.signal,
       );
-    } catch {
-      return unresolved(evidence.ruleRef, "non-exact-workspace-match");
+    } catch (error) {
+      if (request.signal?.aborted) throw abortError();
+      return unresolved(
+        evidence.ruleRef,
+        error instanceof RulesSourceBatchLimitError
+          ? "source-budget-exceeded"
+          : "generated-source-unreadable",
+      );
     }
-    const generatedUri = exactWorkspaceUri(this.workspace, resolution);
-    if (!generatedUri) {
-      return unresolved(evidence.ruleRef, "non-exact-workspace-match");
+    if (location.kind === "unlocated") {
+      return unresolved(evidence.ruleRef, location.reason);
     }
+    const generatedUri = location.uri;
 
     let generatedSnapshot: HashedRulesSourceSnapshot;
     try {
@@ -322,15 +341,7 @@ export class RulesSourceResolver {
         generatedText,
       );
     } catch (error) {
-      if (error instanceof StylesheetParseLimitError) {
-        return unresolved(
-          evidence.ruleRef,
-          error.limit === "bytes"
-            ? "generated-source-too-large"
-            : "generated-source-too-complex",
-        );
-      }
-      return unresolved(evidence.ruleRef, "generated-source-parse-error");
+      return unresolved(evidence.ruleRef, generatedParseFailure(error));
     }
     const verified = verifyGeneratedRule(stylesheet, evidence);
     if (!verified) {
@@ -351,12 +362,14 @@ export class RulesSourceResolver {
       ReturnType<SourceMapLoader["resolveSelectorPrelude"]>
     >;
     try {
+      // A map names its sources relative to where it was written, which is
+      // beside the stylesheet on disk -- not wherever the page was served from.
       mapped = await this.sourceMaps.resolveSelectorPrelude(
         generatedDocumentUri,
         generatedText,
         verified,
         batch.sourceMapWorkspace,
-        generated.sourceUrl,
+        generatedDocumentUri,
         request.signal,
         (uri, text) => batchContentHash(
           batch.contentHashes,
@@ -419,26 +432,13 @@ export class RulesSourceResolver {
       }
     }
 
-    let originalResolution;
-    try {
-      originalResolution = await batchResolveSourceUri(
-        batch.sourceResolutions,
-        this.workspace,
-        mapped.sourceUrl,
-        generated.sourceUrl,
-        request.signal,
-      );
-    } catch {
-      return this.freshCssFallback(
-        cssResult,
-        generatedDocumentUri,
-        generatedText,
-        request,
-        batch,
-      );
-    }
-    const originalUri = exactWorkspaceUri(this.workspace, originalResolution);
-    if (!originalUri || !isScssUri(originalUri)) {
+    const originalUri = await this.originalSourceUri(
+      mapped,
+      generatedDocumentUri,
+      request,
+      batch,
+    );
+    if (!originalUri) {
       return this.freshCssFallback(
         cssResult,
         generatedDocumentUri,
@@ -583,6 +583,77 @@ export class RulesSourceResolver {
     );
   }
 
+  /**
+   * The SCSS file a source map names as the origin of a rule.
+   *
+   * A `file:` name, read relative to the map beside the stylesheet on disk,
+   * is the file when the workspace has it. When it has not -- the map named its
+   * sources by a bundler's own scheme, or by paths on the machine that ran the
+   * build -- the workspace is searched for the file by what the map says about
+   * it. A file that is there but cannot be used is not traded for another.
+   */
+  private async originalSourceUri(
+    mapped: Extract<
+      Awaited<ReturnType<SourceMapLoader["resolveSelectorPrelude"]>>,
+      { readonly kind: "mapped" }
+    >,
+    generatedUri: string,
+    request: RulesSourceResolverRequest,
+    batch: ResolutionBatchContext,
+  ): Promise<string | undefined> {
+    if (!isScssUri(mapped.sourceUrl)) return undefined;
+    if (isFileUri(mapped.sourceUrl)) {
+      let resolution: SourceUriResolution | undefined;
+      try {
+        resolution = await batchResolveSourceUri(
+          batch.sourceResolutions,
+          this.workspace,
+          mapped.sourceUrl,
+          generatedUri,
+          request.signal,
+        );
+      } catch {
+        if (request.signal?.aborted) throw abortError();
+      }
+      const onDisk = resolution &&
+        exactWorkspaceUri(this.workspace, resolution);
+      if (onDisk && isScssUri(onDisk)) {
+        try {
+          await batchReadSnapshot(
+            batch.initialSnapshots,
+            batch.contentHashes,
+            batch.retainedSourceBudget,
+            batch.snapshotWorkspace,
+            onDisk,
+            RULES_STYLESHEET_MAX_BYTES,
+            request.signal,
+          );
+          return onDisk;
+        } catch (error) {
+          if (request.signal?.aborted) throw abortError();
+          if (
+            error instanceof RulesSourceSnapshotLimitError ||
+            error instanceof RulesSourceBatchLimitError
+          ) {
+            return undefined;
+          }
+        }
+      }
+    }
+    try {
+      return await raceWithAbort(
+        batch.stylesheetLocator.locateOriginal(
+          mapped.sourceUrl,
+          mapped.sourceContent,
+        ),
+        request.signal,
+      );
+    } catch {
+      if (request.signal?.aborted) throw abortError();
+      return undefined;
+    }
+  }
+
   private async freshCssFallback(
     cssResult: ResolvedRuleSource,
     generatedUri: string,
@@ -617,8 +688,10 @@ export class RulesSourceResolver {
 function createBatchContext(
   workspace: SourceWorkspace,
   snapshotWorkspace: RulesSourceSnapshotWorkspace,
+  ast: StylesheetAstCache,
   signal: AbortSignal | undefined,
   maxRetainedSourceBytes: number,
+  rules: readonly InspectRuleEvidence[],
 ): ResolutionBatchContext {
   const sourceResolutions = new Map<string, Promise<SourceUriResolution>>();
   const initialSnapshots = new Map<
@@ -664,16 +737,179 @@ function createBatchContext(
     },
     isWorkspaceUri: (uri) => workspace.isWorkspaceUri(uri),
   };
-  return {
+  const batch: ResolutionBatchContext = {
     sourceResolutions,
     initialSnapshots,
     fenceSnapshots,
     contentHashes,
     stylesheets,
+    generatedStylesheets: new Map(),
+    stylesheetLocator: new RulesStylesheetLocator(
+      {
+        findFiles: (pattern) => workspace.findFiles(pattern),
+        isWorkspaceUri: (uri) => workspace.isWorkspaceUri(uri),
+        readText: (uri, maxBytes) => readRankingText(
+          snapshotWorkspace,
+          uri,
+          maxBytes,
+          signal,
+        ),
+        scoreCandidate: (uri, candidateRules) => scoreGeneratedCandidate(
+          batch,
+          ast,
+          uri,
+          candidateRules,
+          signal,
+        ),
+      },
+      rules,
+      signal,
+    ),
     sourceMapWorkspace,
     snapshotWorkspace,
     retainedSourceBudget,
   };
+  return batch;
+}
+
+/**
+ * Reads a file only to rank it. It bypasses the batch caches -- a file read
+ * this way is neither retained nor charged, and never becomes a dependency --
+ * and it prefers the workspace's own ranking read, which leaves unopened files
+ * unopened.
+ */
+async function readRankingText(
+  workspace: RulesSourceSnapshotWorkspace,
+  uri: string,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<{ readonly text: string; readonly bytes: number }> {
+  throwIfAborted(signal);
+  const canonicalUri = canonicalRulesSourceUri(uri) ?? uri;
+  if (typeof workspace.readRulesRankingText === "function") {
+    const text: unknown = await raceWithAbort(
+      Promise.resolve().then(() =>
+        workspace.readRulesRankingText!(canonicalUri, maxBytes, signal)
+      ),
+      signal,
+    );
+    if (typeof text !== "string") {
+      throw new Error("Rules ranking text is invalid");
+    }
+    const bytes = utf8ByteLength(text);
+    if (bytes > maxBytes) throw new RulesSourceSnapshotLimitError();
+    return { text, bytes };
+  }
+  const snapshot = await raceWithAbort(
+    Promise.resolve().then(() =>
+      workspace.readRulesSourceSnapshot(canonicalUri, maxBytes, signal)
+    ),
+    signal,
+  );
+  return {
+    text: snapshot.text,
+    bytes: validateRulesSourceSnapshot(snapshot, canonicalUri, maxBytes),
+  };
+}
+
+/** The rules whose stylesheet is looked for: each reported once, completely. */
+function locatableRules(
+  grouped: ReturnType<typeof groupUniqueRules>,
+): InspectRuleEvidence[] {
+  return grouped.flatMap((entry) =>
+    entry.kind === "unique" &&
+      entry.rule.generatedSource !== undefined &&
+      completeCssRuleEvidence(entry.rule) !== undefined
+      ? [entry.rule]
+      : []
+  );
+}
+
+async function batchLocateGeneratedStylesheet(
+  batch: ResolutionBatchContext,
+  sourceUrl: string,
+  signal: AbortSignal | undefined,
+): Promise<GeneratedStylesheetLocation> {
+  throwIfAborted(signal);
+  let pending = batch.generatedStylesheets.get(sourceUrl);
+  if (!pending) {
+    pending = Promise.resolve().then(() =>
+      batch.stylesheetLocator.locateGenerated(sourceUrl)
+    );
+    batch.generatedStylesheets.set(sourceUrl, pending);
+  }
+  const location = await raceWithAbort(pending, signal);
+  throwIfAborted(signal);
+  return location;
+}
+
+/**
+ * How many of the rules reported from one stylesheet a workspace file carries.
+ *
+ * A candidate that gets this far is read like any other source of the batch --
+ * retained, hashed and charged -- so the one chosen is resolved from exactly
+ * the text it was chosen by. A batch out of budget cannot finish choosing, and
+ * says so rather than choosing among fewer files.
+ */
+async function scoreGeneratedCandidate(
+  batch: ResolutionBatchContext,
+  ast: StylesheetAstCache,
+  uri: string,
+  rules: readonly InspectRuleEvidence[],
+  signal: AbortSignal | undefined,
+): Promise<StylesheetCandidateScore> {
+  let snapshot: HashedRulesSourceSnapshot;
+  try {
+    snapshot = await batchReadSnapshot(
+      batch.initialSnapshots,
+      batch.contentHashes,
+      batch.retainedSourceBudget,
+      batch.snapshotWorkspace,
+      uri,
+      RULES_STYLESHEET_MAX_BYTES,
+      signal,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw abortError();
+    if (error instanceof RulesSourceBatchLimitError) throw error;
+    return {
+      kind: "failed",
+      reason: error instanceof RulesSourceSnapshotLimitError
+        ? "generated-source-too-large"
+        : "generated-source-unreadable",
+    };
+  }
+  let stylesheet: ParsedStylesheet;
+  try {
+    stylesheet = batchParseStylesheet(
+      batch,
+      ast,
+      snapshot.uri,
+      "css",
+      snapshot.text,
+    );
+  } catch (error) {
+    return { kind: "failed", reason: generatedParseFailure(error) };
+  }
+  let verified = 0;
+  let corroborated = 0;
+  for (const rule of rules) {
+    throwIfAborted(signal);
+    const match = matchGeneratedRule(stylesheet, rule);
+    if (!match) continue;
+    verified += 1;
+    if (match.corroborated) corroborated += 1;
+  }
+  return { kind: "verified", verified, corroborated };
+}
+
+function generatedParseFailure(error: unknown): string {
+  if (error instanceof StylesheetParseLimitError) {
+    return error.limit === "bytes"
+      ? "generated-source-too-large"
+      : "generated-source-too-complex";
+  }
+  return "generated-source-parse-error";
 }
 
 async function batchResolveSourceUri(
@@ -844,6 +1080,14 @@ function isScssUri(uri: string): boolean {
   }
 }
 
+function isFileUri(uri: string): boolean {
+  try {
+    return new URL(uri).protocol === "file:";
+  } catch {
+    return false;
+  }
+}
+
 function mappedOriginalRule(
   stylesheet: ParsedStylesheet,
   mapped: Extract<
@@ -904,6 +1148,24 @@ function verifyGeneratedRule(
   stylesheet: ParsedStylesheet,
   evidence: InspectRuleEvidence,
 ): StylesheetRule | undefined {
+  return matchGeneratedRule(stylesheet, evidence)?.rule;
+}
+
+interface GeneratedRuleMatch {
+  readonly rule: StylesheetRule;
+  /**
+   * Whether the rule also stands where the browser said it does -- at the
+   * position and CSSOM path it reported -- rather than being found by what it
+   * carries alone. Two files carrying the same rules differ here when only one
+   * of them is laid out like the stylesheet the browser read.
+   */
+  readonly corroborated: boolean;
+}
+
+function matchGeneratedRule(
+  stylesheet: ParsedStylesheet,
+  evidence: InspectRuleEvidence,
+): GeneratedRuleMatch | undefined {
   const generated = evidence.generatedSource;
   if (!generated) return undefined;
   const byPosition = generated.startLine === undefined ||
@@ -923,13 +1185,14 @@ function verifyGeneratedRule(
     byPath,
   );
   if (identityCandidate && ruleMatchesEvidence(identityCandidate, evidence)) {
-    return identityCandidate;
+    return { rule: identityCandidate, corroborated: true };
   }
-  return findUniqueRuleByCompleteFingerprint(stylesheet, {
+  const relocated = findUniqueRuleByCompleteFingerprint(stylesheet, {
     selector: evidence.selector,
     declarations: declarationEvidence(evidence),
     contexts: generated.contexts,
   });
+  return relocated ? { rule: relocated, corroborated: false } : undefined;
 }
 
 function exactIdentityCandidate(

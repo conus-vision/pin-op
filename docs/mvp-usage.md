@@ -200,6 +200,16 @@ block, the label upgrades atomically to that SCSS origin. Missing, invalid,
 ambiguous, stale, or outside-workspace source maps show verified generated CSS
 only, with no approximate SCSS label or authority.
 
+Rules does not map the stylesheet URL onto a workspace folder. It looks at the
+project's `.css` files and takes the one whose content carries the rules the
+browser reported from that stylesheet, so a dev server, a CMS path or a renamed
+build output does not hide the source. Between files carrying as many of them,
+the one whose path ends most like the URL wins; identical copies that nothing
+tells apart leave the rule on its generated CSS. The SCSS behind it is found
+through the source map next to that file on disk, and a map written by a bundler
+(`webpack://...`) is matched to the `.scss` file of that name whose text it
+carries.
+
 Exact CSS and source-mapped original SCSS blocks open only after an explicit
 Rules origin click. That click may switch VS Code to another verified workspace
 CSS or SCSS document using a current IDE-issued opaque authority. The IDE
