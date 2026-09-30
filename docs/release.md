@@ -3,7 +3,8 @@
 Pin-op reaches users through three store listings: the Visual Studio
 Marketplace, the Chrome Web Store and Firefox Add-ons. A GitHub release is an
 archive of the same packages and their checksums, not a distribution channel.
-Version `0.4.2` is published on all three.
+Version `0.4.2` is published on all three, and `0.5.0` is the release being
+prepared.
 
 ## Release An Update
 
@@ -12,16 +13,19 @@ Version `0.4.2` is published on all three.
 2. Run the full gate from a clean checkout, ending in `corepack pnpm package`
    and `git diff --exit-code`.
 3. Check `artifacts/SHA256SUMS` with `sha256sum --check --strict`.
-4. Submit the three packages to their stores, as **Store Submissions**
-   describes. Store review is the long pole; start it first.
-5. Commit the prepared version, open a pull request, and merge it once CI
+4. Commit the prepared version, open a pull request, and merge it once CI
    passes. `master` requires the `verify` check, so a direct push is refused.
-6. Tag the merged commit and push the tag. **Release draft** rebuilds the
-   packages and creates a draft release; publish it from the Releases page
-   when the stores have approved.
+5. Tag the merged commit and push the tag. **Release draft** rebuilds the
+   packages and creates a draft release.
+6. Verify the draft's packages, then submit them to the three stores, as
+   [store publishing](store-publishing.md) describes step by step. Store review
+   is the long pole.
+7. When Firefox Add-ons has signed the version, attach its Mozilla-signed
+   `.xpi` to the draft, as **Attach The Firefox XPI** describes, and publish the
+   release from the Releases page.
 
-Steps 4 and 6 are independent. A store listing does not wait for a tag, and a
-tag does not wait for a store.
+A store listing does not wait for a tag, and a tag does not wait for a store;
+only the `.xpi` waits for Mozilla, because Mozilla alone can sign it.
 
 ## Store Submissions
 
@@ -30,6 +34,9 @@ tag does not wait for a store.
 | Visual Studio Marketplace | `pin-op-vscode-X.Y.Z.vsix` | Published immediately, no review |
 | Chrome Web Store | `pin-op-chrome-X.Y.Z.zip` | Reviewed |
 | Firefox Add-ons | `pin-op-firefox-X.Y.Z.zip` | Reviewed; attach `pin-op-firefox-source-X.Y.Z.zip` when asked for sources |
+
+[Store publishing](store-publishing.md) walks through each store's upload,
+review, and release controls.
 
 Submit the Firefox package to the listed channel, the one whose submission
 page says it is publicly listed on addons.mozilla.org. Mozilla does not free
@@ -164,7 +171,7 @@ $releaseFiles = @(
   'docs/security.md'
 )
 rg -n -g '!docs/superpowers/**' -g '!**/node_modules/**' -g '!pnpm-lock.yaml' '(?:(?:"version":\s*"|pin-op-(?:chrome|firefox(?:-source)?|vscode)-|(?:releaseVersion|VERSION)\s*=\s*"|manifest\?\.version\s*===\s*"|Pin-op\b|Version\b|product (?:release )?semver\b|packaged\b|final\b|^##\s+\[?)[^"\r\n]*[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+[^"\r\n]*(?:release|product|candidate|artifact|XPI))' -- $releaseFiles
-node tools/verify-release-version.mjs v0.4.2
+node tools/verify-release-version.mjs v0.5.0
 ```
 
 Keep the changelog entry under `Unreleased` until the version reaches users. A
@@ -202,14 +209,14 @@ reviewer are ready, because the tag starts a deployment to it.
 Create and inspect an annotated tag:
 
 ```powershell
-git tag -a v0.4.2 -m "Pin-op 0.4.2"
-git cat-file -t refs/tags/v0.4.2
+git tag -a v0.5.0 -m "Pin-op 0.5.0"
+git cat-file -t refs/tags/v0.5.0
 git push origin master
-git push origin v0.4.2
+git push origin v0.5.0
 ```
 
 `git cat-file` must print `tag`; a lightweight tag is rejected. Cryptographic tag
-signing is not configured for the `0.4.2` release, and this runbook does not claim GPG
+signing is not configured for the `0.5.0` release, and this runbook does not claim GPG
 verification. The release workflow requires the annotated tag commit to be an
 ancestor of `origin/master`, and all package and manifest versions must match the
 `vX.Y.Z` tag.
@@ -284,11 +291,45 @@ not replace the native cross-product click. `PARTIAL/HARNESS_BLOCKED` is not a
 release pass. Do not claim public-release evidence until the installed Stable
 checks above actually complete.
 
+## Attach The Firefox XPI
+
+Firefox Stable installs only what Mozilla has signed, and Mozilla signs a
+version number once: the listed submission to Firefox Add-ons is the only
+signature `X.Y.Z` will ever get. So the release does not sign anything itself.
+It carries the file Mozilla signed for the listing, checked against the
+release's own Firefox package before it is attached.
+
+1. When the version shows as approved in the Firefox Add-ons Developer Hub,
+   open **Manage Status & Versions**, select `X.Y.Z`, and download its file.
+2. Rename it `pin-op-firefox-X.Y.Z.xpi`, download `pin-op-firefox-X.Y.Z.zip`
+   from the draft, and run:
+
+   ```bash
+   corepack pnpm release:verify-xpi pin-op-firefox-X.Y.Z.xpi pin-op-firefox-X.Y.Z.zip X.Y.Z
+   ```
+
+   The check requires every file of the release ZIP in the `.xpi` byte for
+   byte, only Mozilla's `META-INF` signature files in addition, a signed JAR
+   manifest whose SHA-256 digests match every file, the release version, and a
+   signing certificate issued to `info@conus.vision`. It writes
+   `pin-op-firefox-X.Y.Z.xpi.sha256`. Firefox verifies Mozilla's signature
+   itself when it installs the file.
+3. Attach both files to the draft before publishing; a published release is
+   immutable:
+
+   ```bash
+   gh release upload vX.Y.Z pin-op-firefox-X.Y.Z.xpi pin-op-firefox-X.Y.Z.xpi.sha256
+   ```
+
+A release published before Mozilla approves the version stays without an
+`.xpi`; Firefox users then install from Firefox Add-ons.
+
 ## Publish
 
 The draft holds the same four packages the stores received, plus their
-checksums. Publishing it is a button on the release page, and immutability
-locks the assets at that moment.
+checksums and, once Mozilla has signed the version, the Firefox `.xpi`.
+Publishing it is a button on the release page, and immutability locks the
+assets at that moment.
 
 Publish only after installed verification passes. Confirm the release contains
 exactly:
@@ -296,6 +337,8 @@ exactly:
 ```text
 pin-op-chrome-X.Y.Z.zip
 pin-op-firefox-X.Y.Z.zip
+pin-op-firefox-X.Y.Z.xpi
+pin-op-firefox-X.Y.Z.xpi.sha256
 pin-op-firefox-source-X.Y.Z.zip
 pin-op-vscode-X.Y.Z.vsix
 SHA256SUMS

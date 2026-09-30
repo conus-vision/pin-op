@@ -24,7 +24,7 @@ window can link to; support for other IDEs is in development.
 To install this extension from a local package instead of the Marketplace:
 
 1. Open the Command Palette and run **Extensions: Install from VSIX...**.
-2. Select `pin-op-vscode-0.4.2.vsix` and reload VS Code if prompted.
+2. Select `pin-op-vscode-0.5.0.vsix` and reload VS Code if prompted.
 3. Open a local project. Pin-op starts automatically.
 
 ## Link And Inspect

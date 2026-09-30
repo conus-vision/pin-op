@@ -12,7 +12,7 @@ describe("Chrome extension manifest", () => {
       manifest_version: 3,
       name: "Pin-op",
       description: productDescription,
-      version: "0.4.2",
+      version: "0.5.0",
       minimum_chrome_version: "116",
       devtools_page: "dist/devtools.html",
       background: { service_worker: "dist/background.js" },

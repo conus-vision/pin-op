@@ -164,20 +164,41 @@ The store listings are the normal way to install Pin-op. The release artifacts
 below exist for checksum verification and offline installation, and they are
 distributed separately from the stores.
 
-The `0.4.2` GitHub Release is being prepared. It will contain:
+The `0.5.0` GitHub Release is being prepared. It will contain:
 
-- `pin-op-vscode-0.4.2.vsix`;
-- `pin-op-chrome-0.4.2.zip`;
-- `pin-op-firefox-0.4.2.zip`;
-- `pin-op-firefox-source-0.4.2.zip`;
+- `pin-op-vscode-0.5.0.vsix`;
+- `pin-op-chrome-0.5.0.zip`;
+- `pin-op-firefox-0.5.0.zip`;
+- `pin-op-firefox-source-0.5.0.zip`;
 - `SHA256SUMS`.
 
 `SHA256SUMS` verifies the four packaged artifacts. The Firefox ZIP is unsigned
 Mozilla-review/build input and cannot be installed persistently in Firefox
-Stable. Firefox Add-ons serves the signed build instead. No public `0.4.2` GitHub
+Stable. Firefox Add-ons serves the signed build instead. No public `0.5.0` GitHub
 Release is claimed yet. The
 [installed artifact guide](docs/installed-verification.md) covers candidate
 installation and the current evidence status.
+
+Once Firefox Add-ons has signed `0.5.0`, the release also carries
+`pin-op-firefox-0.5.0.xpi`, the file Mozilla signed for the listing, with
+`pin-op-firefox-0.5.0.xpi.sha256`. Before it is attached, the release checks it
+against `pin-op-firefox-0.5.0.zip` file by file.
+
+### Install from a GitHub release
+
+Download the files for your browser and the VS Code extension from the same
+release, and check them against `SHA256SUMS`.
+
+- VS Code: run **Extensions: Install from VSIX...** from the Command Palette
+  and select `pin-op-vscode-0.5.0.vsix`.
+- Chrome or Chromium: extract `pin-op-chrome-0.5.0.zip` into a folder you keep,
+  open `chrome://extensions`, turn on **Developer mode**, choose **Load
+  unpacked**, and select that folder. Chrome does not update an unpacked
+  extension; install the next release the same way.
+- Firefox: open `pin-op-firefox-0.5.0.xpi` in Firefox (drag it onto a window,
+  or use **Install Add-on From File** in `about:addons`). Firefox checks
+  Mozilla's signature and keeps the add-on across restarts. A release without
+  an `.xpi` has not been signed yet; install from Firefox Add-ons instead.
 
 ## How It Works
 

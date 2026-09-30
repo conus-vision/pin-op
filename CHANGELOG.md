@@ -48,6 +48,7 @@ All notable changes to Pin-op will be documented in this file.
 
 ### Changed
 
+- Advanced the product release to `0.5.0`. The wire protocol stays at `7`.
 - Rules finds the stylesheet behind a served URL by its content instead of by
   the URL's folders. Every `.css` file in the workspace is a candidate, and the
   one carrying the most of the rules the browser reported from that URL, matched
