@@ -78,6 +78,7 @@ const expectedExports = [
   "PseudoStateSnapshot",
   "RuleContextKind",
   "RuleContextSnapshot",
+  "RuleOriginDeclaration",
   "RulesDataSource",
   "RulesDiagnosticSeverity",
   "RulesDiagnosticSnapshot",
